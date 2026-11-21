@@ -39,7 +39,7 @@ export function learningOf(env: NodeJS.ProcessEnv, given?: string): LearningMode
  *  is on main, or `dropped` with a reason from the closed list. A learning fault never refuses a run: it starts with
  *  nothing learned, `seed_failed`. */
 export const LEARNING_STATES = ["seeded", "reflecting", "merged", "dropped"] as const;
-export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] as const;
+export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset", "paused"] as const;
 /** A run's own `learning` on its start (POST /agents/{agent_id}/runs): it starts from what its agent learned, as a run that
  *  learns does, and keeps nothing (no compile, no correction, at any end), so runs of one agent read one learned state
  *  however many run at once. Its learning ends `dropped`, reason `use`. */

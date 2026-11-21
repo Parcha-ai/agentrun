@@ -425,12 +425,20 @@ export const LEARNING_SCRIPT = { file: (): string => SCRIPT_FILE, env: (): Recor
  *  cannot answer. Fails closed: nothing learned is read, nothing is written. */
 export class FolderUnreadable extends Error {
   readonly link: boolean;
-  constructor(link: boolean, message: string) {
+  /** The backend's own words (its WorkspaceError's), or the message. */
+  readonly why: string;
+  constructor(link: boolean, message: string, why = message) {
     super(message);
     this.name = "FolderUnreadable";
     this.link = link;
+    this.why = why;
   }
 }
+
+/** Whether `error` pauses the agent's learning rather than failing it: the folder's backend can't answer (an
+ *  UNAVAILABLE exec or read, e.g. an Archil account with exec off), never a link in it. Learning tries again on the next
+ *  run; nothing is counted against it. */
+export const folderPaused = (error: unknown): error is FolderUnreadable => error instanceof FolderUnreadable && !error.link;
 
 /** A workspace failure as the folder's: ESCAPE (a link below the root, Local) or a read of a link (Archil's file API:
  *  UNAVAILABLE naming a symbolic link) in words that name the link; any other UNAVAILABLE as the folder unreadable. */
@@ -439,7 +447,7 @@ export function folderFailure(error: unknown): unknown {
   if (isWorkspaceError(error, "ESCAPE") || (isWorkspaceError(error, "UNAVAILABLE") && /symbolic link/.test(error.message))) {
     return new FolderUnreadable(true, `a link in the learning folder at ${(error as WorkspaceError).path || "its root"} can't be followed, so nothing learned is read or written; remove the link`);
   }
-  if (isWorkspaceError(error, "UNAVAILABLE")) return new FolderUnreadable(false, `the agent's learning folder can't be read right now: ${(error as WorkspaceError).message}`);
+  if (isWorkspaceError(error, "UNAVAILABLE")) return new FolderUnreadable(false, `the agent's learning folder can't be read right now: ${(error as WorkspaceError).message}`, (error as WorkspaceError).message);
   return error;
 }
 

@@ -159,7 +159,11 @@ export function storyOf(input: {
     stages.push({ key: "compiled", title: "Learning", value: "Corrections", detail: execution === "cli" ? "Your CLI receives your corrections on later prompts. Workflow learning needs an approved tool connection and is unavailable here." : "Native runs are given your corrections; learned workflows are unavailable.", state: "later" });
     return stages;
   }
-  if (active.length || (lastCompile && lastCompile.digest)) {
+  // Learning paused: the learning folder's disk can't run the folder script (the loop read's own words). Nothing was
+  // counted against the compile, and the next run tries again.
+  if (loop?.paused) {
+    stages.push({ key: "compiled", title: "Compile", value: "Paused", detail: loop.paused, state: "warn" });
+  } else if (active.length || (lastCompile && lastCompile.digest)) {
     const name = active[0]?.name ?? lastCompile?.workflow ?? "a workflow";
     stages.push({ key: "compiled", title: "Compiled", value: name, detail: lastCompile ? `${lastCompile.attempts.length} ${lastCompile.attempts.length === 1 ? "attempt" : "attempts"}` : "a learned workflow", state: "done" });
   } else if (failedCompile) {

@@ -13,6 +13,7 @@
 import { cutStrings } from "../key-refusal.js";
 import { type Problem, redactSecrets } from "../learn/index.js";
 import { type CompileAsk, type CompiledRecord, compileTurn, type DraftChecked } from "../learn/compile.js";
+import { folderPaused } from "../learn/folder.js";
 import type { LearnedFile } from "../learning.js";
 import { correctionsCapOf, said, STOPPED } from "../learning-words.js";
 import type { AlsoRow, EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
@@ -30,10 +31,11 @@ export type DraftCommit = {
 };
 
 /** What a merge landed: the commit (and the correction it left out beside its draft, learn/commit.ts
- *  LearningCommitResult `refusedCorrection`), or why it did not. */
+ *  LearningCommitResult `refusedCorrection`), or why it did not: `paused`, the folder's backend can't answer, in its
+ *  words. */
 export type Committed =
   | { readonly ok: true; readonly commit: string; readonly refusedCorrection?: readonly Problem[] }
-  | { readonly ok: false; readonly reason: "conflict" | "refused" | "unavailable"; readonly problems: readonly Problem[] };
+  | { readonly ok: false; readonly reason: "conflict" | "refused" | "unavailable"; readonly problems: readonly Problem[]; readonly paused?: string };
 
 /** What the step reads of the run and the host. */
 export interface ReflectDeps {
@@ -148,6 +150,9 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       // since), and it is the revised workflow's conflict base in every check of the turn.
       let revised = compile.mode === "revise" && compile.base ? { workflow: compile.workflow, base: compile.base } : undefined;
       let capped = false;
+      // A draft's check whose learning folder's disk can't run its script (learn/folder.ts folderPaused) pauses learning:
+      // the turn is not asked again, no compile attempt is recorded, and the next run tries again.
+      let paused = "";
       const result = await compileTurn<DraftCommit>({
         ask: async (prompt, attempt, left) => {
           asked = true;
@@ -164,7 +169,13 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         check: (one) => deps.checkDraft({ runId: input.runId, agentId: input.agentId, draft: one, refuse, ...(revised ? { revised } : {}) }),
         ...(deps.compileDeadlineMs !== undefined ? { deadlineMs: deps.compileDeadlineMs } : {}),
         now,
+        stop: folderPaused,
+      }).catch((error: unknown) => {
+        if (!folderPaused(error)) throw error;
+        paused = error.why;
+        return undefined;
       });
+      if (!result) return close(dropped("paused", said.paused(paused)));
       if (capped && !result.kept) {
         if (!taken) return close(dropped("no_budget", said.noBudget));
       } else if (result.kept) {
@@ -196,6 +207,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         const problems = [...refusedCorrection, ...(left ?? []), ...draftProblems];
         return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(corrections ? { corrections } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, corrections, problems) }));
       }
+      if (done.paused !== undefined) return close(dropped("paused", said.paused(done.paused), compiledFields));
       if (done.reason === "unavailable") return close(dropped("reflect_failed", said.stopped(STOPPED.failed), compiledFields));
       return close(dropped("checker", correctionWords(done.problems), { problems: [...done.problems], ...compiledFields }));
     }

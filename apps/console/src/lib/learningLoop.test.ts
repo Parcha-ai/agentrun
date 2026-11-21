@@ -169,7 +169,7 @@ describe("the story", () => {
   });
   it("once it took over and got cheaper, tells it whole, with how often it handed back", () => {
     const runs = [run(1, "agent"), run(2, "workflow"), run(3, "handed_back"), run(4, "workflow")];
-    const loop = { agent: "a", completed_runs: 0, compiles: [{ run_id: "r1", round: 1, at: at(1), workflow: "sort-invoice", attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }], } as LearningLoop;
+    const loop = { agent: "a", completed_runs: 0, paused: null, compiles: [{ run_id: "r1", round: 1, at: at(1), workflow: "sort-invoice", attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }], } as LearningLoop;
     const stages = storyOf({ ...base, corrections: 3,runs: 4, workflows: [{ name: "sort-invoice", status: "serving" }], loop, promotions: [record({})],
       cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.89 }, after: { runs: 25, mean_usd: 0.127 }, times_cheaper: 7, hand_backs: { ran: 3, back: 1 } }, runs) });
     expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([

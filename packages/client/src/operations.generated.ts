@@ -444,7 +444,7 @@ export type RunSummary = {
   error?: RunError | null;
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "paused" | null;
     detail: string | null;
     workflows?: Array<{
       file: string;
@@ -782,7 +782,7 @@ export type Run = {
   };
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "paused" | null;
     detail: string | null;
     at: string;
     workflows?: Array<{
@@ -1001,7 +1001,7 @@ export type TimelineRow = {
   tool_result_text?: string | null;
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "paused" | null;
     detail: string | null;
   };
 };
@@ -1527,6 +1527,7 @@ export type GetLearningLoopResponse = {
     draft_errors: Array<string>;
     withheld: boolean;
   }>;
+  paused: string | null;
 };
 
 /** Read a native connection (GET /agents/{agent_id}/native). */
@@ -3828,7 +3829,7 @@ export type HandBackRunComputerResponse = {
 export type GetRunLearningResponse = {
   run: string;
   state: "seeded" | "reflecting" | "merged" | "dropped";
-  reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+  reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "paused" | null;
   detail: string | null;
   at: string;
   seed: string | null;

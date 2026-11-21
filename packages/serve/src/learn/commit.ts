@@ -9,7 +9,7 @@
 import type { Workspace } from "../workspace/index.js";
 import type { Problem } from "./check.js";
 import { CORRECTIONS_CAP, CORRECTIONS_FILE, correctionLine, correctionsProblems } from "./corrections.js";
-import { blobOid, type FolderChange, FolderMerged, FolderRefused, FolderTooLarge, readLearning, readRunDiff, readSnapshot, type RunDiff, runDiffKey, runMergeOf, type Snapshot, writeLearning } from "./folder.js";
+import { blobOid, type FolderChange, FolderMerged, folderPaused, FolderRefused, FolderTooLarge, readLearning, readRunDiff, readSnapshot, type RunDiff, runDiffKey, runMergeOf, type Snapshot, writeLearning } from "./folder.js";
 import { held, isHeld } from "./workflow-draft.js";
 
 /** A run's merge, one a round: its compiled draft's files, already checked, and its owner's correction. */
@@ -47,7 +47,8 @@ export type LearningCommitResult =
   | { ok: true; main: string; commit: string; files: string[]; already?: true; refusedCorrection?: Problem[] }
   | { ok: false; reason: "conflict"; problems: Problem[] }
   | { ok: false; reason: "refused"; problems: Problem[] }
-  | { ok: false; reason: "unavailable"; error: string };
+  /** `paused`: the folder's backend can't answer (folder.ts folderPaused), in its words: learning pauses. */
+  | { ok: false; reason: "unavailable"; error: string; paused?: string };
 
 /** The blob `path` is on the snapshot's main: corrections.md or a draft's file. */
 function blobOf(snapshot: Snapshot | undefined, path: string): string | undefined {
@@ -68,7 +69,7 @@ function failure(error: unknown): LearningCommitResult {
   if (error instanceof FolderRefused && error.seed !== undefined) return { ok: false, reason: "conflict", problems: [{ rule: "kept", detail: "the agent's learning was reset after the run started, so what it learned has nothing to land on" }] };
   if (error instanceof FolderRefused) return { ok: false, reason: "conflict", problems: [...error.same, ...error.absent].map((path): Problem => ({ rule: "kept", path, detail: `${path} changed on main after the run started` })) };
   if (error instanceof FolderTooLarge) return { ok: false, reason: "refused", problems: [{ rule: "too_large", detail: error.message }] };
-  return { ok: false, reason: "unavailable", error: (error as Error)?.message ?? String(error) };
+  return { ok: false, reason: "unavailable", error: (error as Error)?.message ?? String(error), ...(folderPaused(error) ? { paused: error.why } : {}) };
 }
 
 /** What a write landed, from writeLearning's answer: its new main and the paths it changed. */

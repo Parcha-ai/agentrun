@@ -172,6 +172,17 @@ export function compileStoppedOf(records: readonly PromotionRecord[]): boolean {
   return last !== undefined && draftFailedOf(last) && last.check?.stopped === true;
 }
 
+/** Whether the agent's learning is paused, and why: its newest learning end (of `ends`, each run round's kept row with
+ *  when it was kept) was dropped `paused`, its learning folder's disk unable to run the folder script (runner/
+ *  reflect-hook.ts): that end's words. Null otherwise: any later end clears it, so nothing is reset once the disk runs
+ *  it again. Nothing is counted against the compile (newCompileAttempt, compileStoppedOf read none of it). */
+export function pausedOf(ends: readonly { readonly createdAt: number; readonly proposal: unknown }[]): string | null {
+  let newest: { readonly createdAt: number; readonly proposal: unknown } | undefined;
+  for (const end of ends) if (!newest || end.createdAt >= newest.createdAt) newest = end;
+  const row = newest?.proposal as { reason?: unknown; detail?: unknown } | null | undefined;
+  return row?.reason === "paused" && typeof row.detail === "string" ? row.detail : null;
+}
+
 /** Whether a store run ended completed (its state `ended`, a plain completion), and is no audit's shadow run (an
  *  agent's answer kept for an audit, never a run of the agent's own to learn from). */
 export const completedRun = (run: { readonly id: string; readonly state: string; readonly outcome: string | null }) => run.state === "ended" && (run.outcome === null || run.outcome === "completed") && !isShadowRun(run.id);
@@ -579,6 +590,9 @@ export async function compileTurn<K>(input: {
   readonly now?: () => number;
   /** Already-opened secret values, used only when a stateless SDK retry repeats its own failed answer as data. */
   readonly refuse?: readonly string[];
+  /** A check failure that is no draft's (a learning folder whose disk can't run its script): thrown to the caller at
+   *  once, the turn neither asked again nor recorded. Any other check failure is the attempt's "the checks could not run". */
+  readonly stop?: (error: unknown) => boolean;
 }): Promise<{ record?: CompiledRecord; kept?: K; draftErrors: string[]; draftProblems?: Problem[]; drafted?: true }> {
   const now = input.now ?? Date.now;
   const deadline = now() + (input.deadlineMs ?? COMPILE_TIMEOUT_MS);
@@ -605,7 +619,10 @@ export async function compileTurn<K>(input: {
     if (!read.ok) errors = [read.error];
     else {
       name = read.name;
-      const checked = await input.check({ name: read.name, text: read.text }).catch(() => undefined);
+      const checked = await input.check({ name: read.name, text: read.text }).catch((error: unknown) => {
+        if (input.stop?.(error)) throw error;
+        return undefined;
+      });
       errors = checked ? keptErrors(checked.errors) : ["the checks could not run"];
       if (checked && !checked.errors.length && checked.kept !== undefined) {
         attempts.push({ ok: true, errors: [] });

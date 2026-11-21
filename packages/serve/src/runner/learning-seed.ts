@@ -3,7 +3,8 @@
 // the tool's budget, none holding a host secret). Nothing is laid in the run's work: its corrections reach it in its
 // instructions (learning.ts laidLearned, from the launch's learning start).
 import { chooseWorkflows, type LearnedWorkflow, type Seed, seedAt, type Shown } from "../learning.js";
-import type { LearningFolder } from "../learn/folder.js";
+import { folderPaused, type LearningFolder } from "../learn/folder.js";
+import { said } from "../learning-words.js";
 
 /** What a claim reads its seed with: the commit, the agent's learning folder where the run's place keeps it (opened for
  *  the read and ended after it), the server's secrets as cuts (`shown`), its log, and `workflows: false` for a run that
@@ -34,7 +35,7 @@ export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | 
   try {
     seed = await seedAt(folder.workspace, lay.seed);
   } catch (error) {
-    lay.log(`the run starts with no learned workflow: ${message(error)}`);
+    lay.log(`the run starts with no learned workflow: ${folderPaused(error) ? said.paused(error.why) : message(error)}`);
     return undefined;
   } finally {
     await folder.end().catch(() => undefined);

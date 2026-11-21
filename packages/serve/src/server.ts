@@ -5260,7 +5260,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const said = (error: string) => shown.text(printable({ rule: "workflow", detail: error }, all).detail);
           return { ...one, workflow, attempts: one.attempts.map(({ ok, errors }) => ({ ok, errors: errors.map(said) })), draft_errors: one.draft_errors.map(said), withheld: false };
         }));
-        return send(res, 200, { agent: id, completed_runs: read.completed_runs, compiles });
+        // Paused: the words of the agent's newest learning end that paused (its disk can't run the folder script), cut as a
+        // compile's error is cut of the host's secrets.
+        const paused = read.paused === null ? null : shown.text(printable({ rule: "workflow", detail: read.paused }, values).detail);
+        return send(res, 200, { agent: id, completed_runs: read.completed_runs, compiles, paused });
       }
       case "listLearningLog":
         await needAgent(id);

@@ -4,7 +4,7 @@
 // own words only: no input, no answer.
 import { FINAL_STATES, type Store } from "../store/store.js";
 import { promotionOf, promotionsOf } from "../learn/promote.js";
-import { lastOwnRuns, promotedOf, sinceReset } from "../learn/compile.js";
+import { lastOwnRuns, pausedOf, promotedOf, sinceReset } from "../learn/compile.js";
 import { loopOf } from "../learning-setting.js";
 import { roundsOf } from "./learning.js";
 
@@ -29,8 +29,10 @@ const texts = (list: unknown): string[] => (Array.isArray(list) ? list.filter((o
  *  (not imported, not archived) since its learning's reset (sinceReset: a compile before it wrote what the reset
  *  deleted), and how many completed runs of its own count toward its compile. A compile's `promoted` is its revision's
  *  promotion as the records say now (null while undecided): whether it serves now is the promotions read's `serving`.
- *  Runs on no named disk alone: one on a named disk learns nothing (learn/learning-of.ts). */
-export async function agentLoopOverStore(store: Store, agentId: string): Promise<{ compiles: LoopCompile[]; completed_runs: number }> {
+ *  Runs on no named disk alone: one on a named disk learns nothing (learn/learning-of.ts). `paused`: the words of the
+ *  agent's newest learning end when it paused (learn/compile.ts pausedOf: its folder's disk can't run the folder
+ *  script), else null. */
+export async function agentLoopOverStore(store: Store, agentId: string): Promise<{ compiles: LoopCompile[]; completed_runs: number; paused: string | null }> {
   const since = await sinceReset(store, agentId);
   const ended = (await store.runs.list({ agentId, disk: null })).filter((run) => run.agentId === agentId && FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && since(run)).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   // The completed runs of the agent's own toward its compile (what compileDue counts), at most compile_after: the tab
@@ -40,8 +42,10 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
   const completed_runs = (await lastOwnRuns(store, agentId, loopOf(body?.learning).compile_after)).length;
   const promotions = await promotionsOf(store.settings, agentId).catch(() => []);
   const compiles: (LoopCompile & { createdAt: number })[] = [];
+  const ends: { createdAt: number; proposal: unknown }[] = [];
   for (const run of ended) {
     for (const kept of await roundsOf(store, run.id).catch(() => [])) {
+      ends.push(kept);
       const row = (kept.proposal ?? null) as { compiled?: unknown; draft_errors?: unknown } | null;
       if (!row) continue;
       const errors = texts(row.draft_errors);
@@ -63,5 +67,5 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
   // Newest first by when each round kept it (a later round of an earlier run can be newer than a later run's), the run's
   // start and its round breaking a tie.
   const newest = compiles.map((one, i) => ({ one, i })).sort((a, b) => b.one.createdAt - a.one.createdAt || b.i - a.i).slice(0, LOOP_COMPILES_MAX);
-  return { compiles: newest.map(({ one: { createdAt: _createdAt, ...one } }) => one), completed_runs };
+  return { compiles: newest.map(({ one: { createdAt: _createdAt, ...one } }) => one), completed_runs, paused: pausedOf(ends) };
 }

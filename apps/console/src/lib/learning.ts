@@ -129,7 +129,7 @@ export const runsWord = (n: number) => `${n} ${n === 1 ? "run" : "runs"}`;
 /** What kind of outcome a dropped run's learning had: a draft the checks refused, nothing to keep, a skip with a fix, or
  *  a stop. The tab lists the first kind and counts the others. */
 export type DropKind = "refused" | "nothing" | "skipped" | "stopped";
-const KIND: Record<string, DropKind> = { checker: "refused", empty: "nothing", use: "nothing", no_budget: "skipped", unknown_cost: "skipped" };
+const KIND: Record<string, DropKind> = { checker: "refused", empty: "nothing", use: "nothing", no_budget: "skipped", unknown_cost: "skipped", paused: "skipped" };
 export const dropKind = (reason: string | null): DropKind => KIND[reason ?? ""] ?? "stopped";
 
 /** Why a run kept nothing, in plain words: the server's own sentence when it sends one, else the console's for the

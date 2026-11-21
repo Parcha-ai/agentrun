@@ -272,7 +272,7 @@ export async function commitDirect(deps: { readonly folder: () => LearningFolder
 
 /** A merge's result as the hook reads it. */
 const committedOf = (done: LearningCommitResult): Committed =>
-  done.ok ? { ok: true, commit: done.commit, ...(done.refusedCorrection ? { refusedCorrection: done.refusedCorrection } : {}) } : done.reason === "unavailable" ? { ok: false, reason: "unavailable", problems: [] } : { ok: false, reason: done.reason, problems: done.problems };
+  done.ok ? { ok: true, commit: done.commit, ...(done.refusedCorrection ? { refusedCorrection: done.refusedCorrection } : {}) } : done.reason === "unavailable" ? { ok: false, reason: "unavailable", problems: [], ...(done.paused !== undefined ? { paused: done.paused } : {}) } : { ok: false, reason: done.reason, problems: done.problems };
 
 /** What a run's owner said of it, in order, each a line for corrections.md: the grade's words its end closes (a feedback
  *  round, feedback-round.ts pendingFeedbackOf over its root `entries`), and each message a person sent in this round of
