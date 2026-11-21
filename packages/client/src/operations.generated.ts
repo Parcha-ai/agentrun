@@ -122,6 +122,11 @@ export type DefinitionInput = {
   output_schema?: JsonObject;
   workflow?: JsonObject;
   max_cost_usd?: number;
+  cli_learning?: {
+    runtime: "codex" | "claude-code";
+    connection_id: string;
+    project: string;
+  };
   sdk?: {
     runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
   } | {
@@ -374,6 +379,23 @@ export type RunSummary = {
     model: string | null;
     session_id: string | null;
     learning_revision: string | null;
+    usage: {
+      input_tokens?: number | null;
+      output_tokens?: number | null;
+      cache_read_tokens?: number | null;
+      cache_write_tokens?: number | null;
+      cost_usd?: number | null;
+    } | null;
+  };
+  cli_learning?: {
+    runtime: "codex-cli" | "claude-code-cli";
+    session_id: string;
+    turn_id: string;
+    model: string | null;
+    learning_revision: string | null;
+    seed_observed: boolean;
+    policy_complete: boolean;
+    evidence_complete: boolean;
     usage: {
       input_tokens?: number | null;
       output_tokens?: number | null;
@@ -663,6 +685,23 @@ export type Run = {
     model: string | null;
     session_id: string | null;
     learning_revision: string | null;
+    usage: {
+      input_tokens?: number | null;
+      output_tokens?: number | null;
+      cache_read_tokens?: number | null;
+      cache_write_tokens?: number | null;
+      cost_usd?: number | null;
+    } | null;
+  };
+  cli_learning?: {
+    runtime: "codex-cli" | "claude-code-cli";
+    session_id: string;
+    turn_id: string;
+    model: string | null;
+    learning_revision: string | null;
+    seed_observed: boolean;
+    policy_complete: boolean;
+    evidence_complete: boolean;
     usage: {
       input_tokens?: number | null;
       output_tokens?: number | null;
@@ -1772,6 +1811,165 @@ export type GetCapacityResponse = {
   hand_backs: {
     window_minutes: number;
     count: number;
+  };
+};
+
+/** Close an existing CLI prompt window exactly once (POST /cli-learning/runs/{run_id}/complete). */
+export type CompleteCliLearningRunBody = {
+  status: "completed" | "failed" | "cancelled";
+  answer: string;
+  error?: string;
+  model?: string;
+  session_id?: string;
+  usage?: {
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cache_read_tokens?: number | null;
+    cache_write_tokens?: number | null;
+    cost_usd?: number | null;
+  };
+  evidence_complete?: boolean;
+  seed_observed?: boolean;
+  seed_revision?: string;
+  source_policy?: {
+    instructions: string;
+    complete: boolean;
+  };
+};
+export interface CompleteCliLearningRunParams {
+  "Idempotency-Key"?: string;
+}
+export type CompleteCliLearningRunResponse = {
+  accepted: true;
+};
+
+/** Enable learning for an existing local CLI without launching it (POST /cli-learning/connections). */
+export type EnrollCliLearningBody = {
+  runtime: "codex" | "claude-code";
+  project: string;
+  name?: string;
+};
+export type EnrollCliLearningResponse = {
+  connection_id: string;
+  agent_id: string;
+  runtime: "codex" | "claude-code";
+  project: string;
+  active: boolean;
+  last_hook_at?: string;
+  last_run_id?: string;
+  token: string;
+};
+
+/** Upload bounded role-preserving CLI dialogue and tool evidence (POST /cli-learning/runs/{run_id}/events). */
+export type CliLearningEventsBody = {
+  sequence: number;
+  events: Array<{
+    type: "message";
+    role: "user" | "assistant";
+    text: string;
+  } | {
+    type: "text";
+    text: string;
+  } | {
+    type: "session";
+    session_id: string;
+  } | {
+    type: "workflow_check";
+    id: string;
+    digest: string;
+    outcome: "answered" | "handed_back" | "failed" | "skipped_write";
+    answer?: string;
+    reason?: string;
+    skipped?: {
+      tool: string;
+      unmarked?: true;
+    };
+    fresh_reads?: number;
+  } | {
+    type: "tool";
+    id: string;
+    name: string;
+    status: "started" | "completed" | "failed";
+    input?: unknown;
+    output?: unknown;
+    parent_tool_use_id?: string;
+  }>;
+};
+export interface CliLearningEventsParams {
+  "Idempotency-Key"?: string;
+}
+export type CliLearningEventsResponse = {
+  accepted: true;
+};
+
+/** Read CLI prompt-window learning progress (GET /cli-learning/runs/{run_id}). */
+export type GetCliLearningRunResponse = {
+  run_id: string;
+  state: "running" | "processing" | "completed" | "failed" | "cancelled";
+  learning_run_id?: string;
+  learning: unknown;
+};
+
+/** Read enrolled CLI learning connections (GET /cli-learning/connections). */
+export type ListCliLearningResponse = {
+  connections: Array<{
+    connection_id: string;
+    agent_id: string;
+    runtime: "codex" | "claude-code";
+    project: string;
+    active: boolean;
+    last_hook_at?: string;
+    last_run_id?: string;
+  }>;
+};
+
+/** Revoke CLI capture and guidance delivery, retaining history and learned files (DELETE /cli-learning/connections/{connection_id}). */
+export type RevokeCliLearningResponse = {
+  connection_id: string;
+  agent_id: string;
+  runtime: "codex" | "claude-code";
+  project: string;
+  active: boolean;
+  last_hook_at?: string;
+  last_run_id?: string;
+};
+
+/** Register one prompt window from an existing CLI session (POST /cli-learning/connections/{connection_id}/runs). */
+export type StartCliLearningRunBody = {
+  session_id: string;
+  turn_id: string;
+  input: string;
+  instructions: string;
+  policy_complete: boolean;
+  model?: string;
+};
+export interface StartCliLearningRunParams {
+  "Idempotency-Key": string;
+}
+export type StartCliLearningRunResponse = {
+  run_id: string;
+  agent_id: string;
+  console_url: string;
+  token: string;
+  learning: {
+    enabled: boolean;
+    revision: string | null;
+    context: string;
+    workflows: Array<{
+      name: string;
+      workflow: string;
+      description: string;
+    }>;
+    check?: {
+      id: string;
+      revision: string;
+      digest: string;
+      workflow: {
+        name: string;
+        workflow: string;
+        description: string;
+      };
+    };
   };
 };
 
@@ -3329,6 +3527,7 @@ export type GetObservationsResponse = {
     updated_at: string;
     sequence: number;
     display_name: string;
+    project_name?: string;
     models: Array<string>;
     usage: {
       input_tokens: number;
@@ -3341,6 +3540,13 @@ export type GetObservationsResponse = {
       status: "reported" | "unavailable";
     };
     observation_only: true;
+    learning: {
+      state: "on" | "off" | "setup_required" | "unknown" | "unsupported";
+      reason: "ready" | "source_setup_required" | "source_unknown" | "delegated_session" | "connection_unavailable" | "server_disabled" | "agent_disabled" | "awaiting_activation";
+      agent_id?: string;
+      connection_id?: string;
+      mode?: "off" | "notes" | "corrections" | "workflows";
+    };
   }>;
   usage: {
     input_tokens: number | null;
@@ -4103,6 +4309,27 @@ export type GetStatsResponse = {
     runs: number;
   };
   analytics: {
+    usage: {
+      tokens: number | null;
+      input: number | null;
+      output: number | null;
+      cache_read: number | null;
+      cache_write: number | null;
+      known_runs: number;
+      unknown_runs: number;
+      observed_sessions: number;
+      unknown_sessions: number;
+      partial_days: number;
+      retention_limited: boolean;
+      by_day: Array<{
+        day: string;
+        tokens: number | null;
+      }>;
+      by_harness: Array<{
+        harness: string;
+        tokens: number | null;
+      }>;
+    };
     filter: {
       from: string | null;
       to: string | null;
@@ -4114,6 +4341,7 @@ export type GetStatsResponse = {
       needs_review: number;
       failed: number;
       runs_with_metrics: number;
+      runs_with_token_metrics: number;
       tokens: number | null;
       cost_usd: number | null;
       unknown_cost_runs: number;
@@ -4138,6 +4366,7 @@ export type GetStatsResponse = {
       needs_review: number;
       failed: number;
       runs_with_metrics: number;
+      runs_with_token_metrics: number;
       tokens: number | null;
       cost_usd: number | null;
       unknown_cost_runs: number;
@@ -4149,6 +4378,7 @@ export type GetStatsResponse = {
       needs_review: number;
       failed: number;
       runs_with_metrics: number;
+      runs_with_token_metrics: number;
       tokens: number | null;
       cost_usd: number | null;
       unknown_cost_runs: number;
@@ -4160,6 +4390,7 @@ export type GetStatsResponse = {
       needs_review: number;
       failed: number;
       runs_with_metrics: number;
+      runs_with_token_metrics: number;
       tokens: number | null;
       cost_usd: number | null;
       unknown_cost_runs: number;
@@ -5755,6 +5986,13 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   updateDefinition: {"method":"PUT","path":"/agents/{agent_id}/definition","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   verifyNative: {"method":"POST","path":"/agents/{agent_id}/native/verify","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getCapacity: {"method":"GET","path":"/capacity","pathParams":[],"multiSegment":[],"query":["window"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  completeCliLearningRun: {"method":"POST","path":"/cli-learning/runs/{run_id}/complete","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  enrollCliLearning: {"method":"POST","path":"/cli-learning/connections","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  cliLearningEvents: {"method":"POST","path":"/cli-learning/runs/{run_id}/events","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getCliLearningRun: {"method":"GET","path":"/cli-learning/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listCliLearning: {"method":"GET","path":"/cli-learning/connections","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  revokeCliLearning: {"method":"DELETE","path":"/cli-learning/connections/{connection_id}","pathParams":["connection_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  startCliLearningRun: {"method":"POST","path":"/cli-learning/connections/{connection_id}/runs","pathParams":["connection_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeRemoteCommand: {"method":"POST","path":"/connectors/{connector_id}/commands/{command_id}/complete","pathParams":["connector_id","command_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   enrollRemoteConnector: {"method":"POST","path":"/connectors/enrollment","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   importRemoteHistory: {"method":"POST","path":"/connectors/{connector_id}/targets/{target_id}/history","pathParams":["connector_id","target_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5953,6 +6191,22 @@ export function resources(call: Call) {
     capabilities: {
       /** The runs waiting and held, the live runners and the recent hand-backs (GET /capacity). */
       getCapacity: (params?: GetCapacityParams, options?: RequestOptions): Promise<GetCapacityResponse> => call("getCapacity", [], undefined, params, options),
+    },
+    cliLearning: {
+      /** Close an existing CLI prompt window exactly once (POST /cli-learning/runs/{run_id}/complete). */
+      complete: (runId: string, body: CompleteCliLearningRunBody, params?: CompleteCliLearningRunParams, options?: RequestOptions): Promise<CompleteCliLearningRunResponse> => call("completeCliLearningRun", [runId], body, params, options),
+      /** Enable learning for an existing local CLI without launching it (POST /cli-learning/connections). */
+      enroll: (body: EnrollCliLearningBody, options?: RequestOptions): Promise<EnrollCliLearningResponse> => call("enrollCliLearning", [], body, undefined, options),
+      /** Upload bounded role-preserving CLI dialogue and tool evidence (POST /cli-learning/runs/{run_id}/events). */
+      events: (runId: string, body: CliLearningEventsBody, params?: CliLearningEventsParams, options?: RequestOptions): Promise<CliLearningEventsResponse> => call("cliLearningEvents", [runId], body, params, options),
+      /** Read CLI prompt-window learning progress (GET /cli-learning/runs/{run_id}). */
+      get: (runId: string, options?: RequestOptions): Promise<GetCliLearningRunResponse> => call("getCliLearningRun", [runId], undefined, undefined, options),
+      /** Read enrolled CLI learning connections (GET /cli-learning/connections). */
+      list: (options?: RequestOptions): Promise<ListCliLearningResponse> => call("listCliLearning", [], undefined, undefined, options),
+      /** Revoke CLI capture and guidance delivery, retaining history and learned files (DELETE /cli-learning/connections/{connection_id}). */
+      revoke: (connectionId: string, options?: RequestOptions): Promise<RevokeCliLearningResponse> => call("revokeCliLearning", [connectionId], undefined, undefined, options),
+      /** Register one prompt window from an existing CLI session (POST /cli-learning/connections/{connection_id}/runs). */
+      start: (connectionId: string, body: StartCliLearningRunBody, params: StartCliLearningRunParams, options?: RequestOptions): Promise<StartCliLearningRunResponse> => call("startCliLearningRun", [connectionId], body, params, options),
     },
     connectors: {
       /** Complete a source command once under its valid lease (POST /connectors/{connector_id}/commands/{command_id}/complete). */
