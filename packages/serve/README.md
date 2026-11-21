@@ -849,7 +849,9 @@ one computer that it keeps between runs, instead of a fresh one for each run:
 **A video of each run.** `computer: {"kind": "desktop", "provider": "e2b", "record": true}` records the computer's
 screen during each of the agent's runs. Off by default; a desktop, a phone or a browser (a sandbox is 422). A browser's is
 each session's page, one file per session (its computer), from the live view's own screencast of it, which the viewer
-shares: frames come as the page changes.
+shares: frames come as the page changes. `GET /v2/computers` says per kind whether its runs can record here, in
+`record` (`{"available": false, "why": "..."}` for a sandbox, for no computer, and for every kind on a server with no
+`ffmpeg` on its PATH), and the console's Recording switch reads it.
 
 - **It shows everything on the screen.** That includes what a person types while they have taken over the computer, and
   any password, key or private page shown on it. Pixels can't be redacted. Turn it on only for an agent whose screen
