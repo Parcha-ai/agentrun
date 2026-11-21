@@ -52,6 +52,10 @@ export interface RunLaunch {
   /** The uploaded file ids the run was started with, in order (the create body's file_ids, already checked ready): the
    *  runner copies them into the run's work/inputs/ at its claim, as the old start copied them before the process ran. */
   readonly files?: readonly string[];
+  /** The server copied `files` into the run's folder (work/inputs/) when it started the run, before its row was written:
+   *  a run on an Archil disk (Mode 2, uploads-archil.ts placeRunFiles). Its claim reads no upload (uploads.ts
+   *  filesToCopy). Absent: the claim copies them from the server's data directory, as before. */
+  readonly filesPlaced?: true;
   /** The run's learning start, when its agent learns and the server's learning is on, decided once here so the runner reads
    *  no learning folder or git: `seed`, the learning commit's sha (or null when the seed could not be read); `section`,
    *  the exact # Learned text to lay into the prompt (its owner's corrections, learning.ts learnedSection); `workflows`,
@@ -163,6 +167,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.boxAllow !== undefined ? { box_allow: launch.boxAllow } : {}),
     ...(launch.boxAllowSet ? { box_allow_set: true } : {}),
     ...(launch.files?.length ? { files: launch.files } : {}),
+    ...(launch.filesPlaced ? { files_placed: true } : {}),
     ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}) } } : {}),
     ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
     ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest } } : {}),
@@ -214,6 +219,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(boxAllow !== undefined ? { boxAllow } : {}),
     ...(stored.box_allow_set === true ? { boxAllowSet: true as const } : {}),
     ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
+    ...(stored.files_placed === true ? { filesPlaced: true as const } : {}),
     ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { seed: null, section: "" } } : {}),
     ...(stored.workflow_first === false ? { workflowFirst: false as const } : {}),
     ...(readReplay(stored.replay) ? { replay: readReplay(stored.replay)! } : {}),
