@@ -16,7 +16,8 @@
 # holds a key, and nothing in it is fetched when a box runs. A box's commands get PATH and HOME but not the image's
 # environment, so `hyperframes` on PATH is a small script that names the browser to render with (the headless shell where
 # the image has it, else Chromium) unless the caller names one in HYPERFRAMES_BROWSER_PATH: HyperFrames would otherwise
-# try to download its pinned shell, which a box with no network cannot.
+# try to download its pinned shell, which a box with no network cannot. The script also turns off HyperFrames' usage
+# reports and its update check unless the caller turns them on: a box with a network sends nothing of its work home.
 FROM python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
 
 # The default image's tools (but its nodejs and npm, which Node's tarball brings), then Chromium, FFmpeg and the fonts.
@@ -52,7 +53,8 @@ RUN set -eu; \
     fi
 
 # The HyperFrames CLI at an exact version, its dependencies as the registry had them when it was published (--before), no
-# install script run, behind the script that names its browser. Then `chrome`, the name a box's needs use, for Chromium.
+# install script run, behind the script that names its browser and turns off its reports. Then `chrome`, the name a
+# box's needs use, for Chromium.
 RUN npm install --global --ignore-scripts --before=2026-11-21T20:42:00Z hyperframes@0.9.78 \
  && npm cache clean --force \
  && rm /usr/local/bin/hyperframes \
@@ -63,6 +65,8 @@ RUN npm install --global --ignore-scripts --before=2026-11-21T20:42:00Z hyperfra
     '  [ -x /usr/local/bin/chrome-headless-shell ] && HYPERFRAMES_BROWSER_PATH=/usr/local/bin/chrome-headless-shell' \
     '  export HYPERFRAMES_BROWSER_PATH' \
     'fi' \
+    'export HYPERFRAMES_NO_TELEMETRY="${HYPERFRAMES_NO_TELEMETRY:-1}"' \
+    'export HYPERFRAMES_NO_UPDATE_CHECK="${HYPERFRAMES_NO_UPDATE_CHECK:-1}"' \
     'exec node /usr/local/lib/node_modules/hyperframes/bin/hyperframes.mjs "$@"' \
     > /usr/local/bin/hyperframes \
  && chmod 755 /usr/local/bin/hyperframes \
