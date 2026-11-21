@@ -404,6 +404,15 @@ test("a stored agent disk Archil no longer has refuses the claim before any file
   assert.deepEqual(await agentDiskOf(env.store, "agent-a"), { diskId: MISSING }, "the agent keeps its disk row until its owner drops it");
 });
 
+test("a disk Archil reads as deleted is gone, as one it has no record of is: the agent's refuses the claim with the way out, and a launch's is refused naming the region", async (t) => {
+  const DELETED = "dsk-de1e7ed0000000d1";
+  const env = await setup(t, { disks: [...SEEDED, { id: DELETED, name: "removed", status: "deleted" }] });
+  await storeAgentDisk(env.store, "agent-a", { diskId: DELETED });
+  await assert.rejects(diskFor(env, { agentId: "agent-a", runId: "run-1" }), (error) => error instanceof ArchilClaimRefused && error.message.includes(`Archil has no disk ${DELETED} in region ${REGION}`) && error.message.includes("DELETE /v2/agents/agent-a/archil"));
+  assert.equal(posts(env.control, "/api/disks").length, 0, "no disk made in its place");
+  await assert.rejects(diskFor(env, { agentId: "agent-b", runId: "run-2", launch: { diskId: DELETED, kind: "launch" } }), (error) => error instanceof ArchilClaimRefused && error.message.includes(`no disk ${DELETED} in region ${REGION}`));
+});
+
 test("a stored agent disk in another region than the server's key refuses the claim naming both regions", async (t) => {
   const env = await setup(t);
   await storeAgentDisk(env.store, "agent-a", { diskId: ELSEWHERE });
