@@ -21,6 +21,7 @@ import { ARCHIL_SETTINGS_ENV } from "../archil-settings.js";
 import { BOX_ALLOW_ENV } from "../box-settings.js";
 import { TOOL_KEY_ROWS } from "../key-words.js";
 import { PRIVATE_HOSTS_ENV } from "../mcp-private-hosts.js";
+import { HARNESS_MODULES_SETTING } from "../harness-table.js";
 import { GATEWAY_IDS_ENV } from "../model-gateway.js";
 import { MCP_ALLOW_LOOPBACK_ENV } from "../start-switches.js";
 import { bootSealKey } from "../seal-key.js";
@@ -60,6 +61,9 @@ const FIXED: ReadonlySet<string> = new Set([
   // from the environment of the process that runs the run.
   GATEWAY_IDS_ENV,
   MCP_ALLOW_LOOPBACK_ENV,
+  // The harness modules a server loads (harness-table.ts): a runner without them claims their runs and has no harness to
+  // run them on.
+  HARNESS_MODULES_SETTING,
 ].filter((name) => !NOT_RUN_FACING.has(name)));
 
 /** Whether `name` is one a run's claim reads from its runner's environment (FIXED, or an upstream's address). */
