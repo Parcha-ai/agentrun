@@ -503,7 +503,7 @@ export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: 
   if (heartbeatOnly && !check) throw new RunnerRefused("--heartbeat goes with --check: runner --check --heartbeat --data D [--name N]");
   if (heartbeatOnly && envOnly) throw new RunnerRefused("--check takes --env (its environment alone) or --heartbeat (its heartbeat alone), not both: give neither to check both");
   // `--check --env` checks the environment alone, which needs no data directory where the store is AGENTRUN_STORE_URL's.
-  if (envOnly) return { dataDir: dataDir ?? "", check: true, envOnly: true, ...(harnessModules.length ? { harnessModules } : {}), ...(name === undefined ? {} : { name }) };
+  if (envOnly) return { dataDir: dataDir ?? "", check: true, envOnly: true, ...(harnessModules.length ? { harnessModules } : {}), ...(loops === undefined ? {} : { loops }), ...(drainMs === undefined ? {} : { drainMs }), ...(name === undefined ? {} : { name }) };
   if (!dataDir) throw new RunnerRefused("a runner needs its data directory: --data D");
   if (heartbeatOnly) return { dataDir, check: true, heartbeatOnly: true, ...(name === undefined ? {} : { name }) };
   if (fauxBrowser !== undefined && faux === undefined) throw new RunnerRefused("--faux-browser goes with --faux");
@@ -716,7 +716,8 @@ async function runnerCheck(args: ReturnType<typeof runnerArgs>, env: NodeJS.Proc
   // Archil settings it is given, checked the same way, so a runner whose start would stop never passes this check.
   if (!args.heartbeatOnly) {
     try {
-      runnerHolds({}, env);
+      // The flags the runner is started with win over the environment there (--loops, --drain-timeout), and here.
+      runnerHolds({ ...("loops" in args && args.loops !== undefined ? { loops: args.loops } : {}), ...("drainMs" in args && args.drainMs !== undefined ? { drainMs: args.drainMs } : {}) }, env);
       archilSettingsFromEnv(env);
       rows.push({ state: "ok", name: "start", why: "the runner's start takes its settings: run slots, drain, free-model requests, Archil" });
     } catch (error) {

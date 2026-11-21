@@ -84,6 +84,10 @@ test("runner --check --env with settings the runner's start refuses (Archil's S3
   // Settings the start takes: the row is ok.
   const fine = await run(["runner", "--check", "--env", "--data", root], { ...baseEnv(root), AGENTRUN_ARCHIL_REGION: "r", AGENTRUN_ARCHIL_S3_URL: "https://s3.example.com", AGENTRUN_MAX_RUNS: "2" });
   assert.equal(stateOf(fine.out, "start"), "ok", fine.out);
+  // The flags a runner starts with win over its environment, there and here: --loops over AGENTRUN_MAX_RUNS, and
+  // --drain-timeout over AGENTRUN_DRAIN_TIMEOUT.
+  const flagged = await run(["runner", "--check", "--env", "--data", root, "--loops", "2", "--drain-timeout", "5s"], { ...baseEnv(root), AGENTRUN_MAX_RUNS: "0", AGENTRUN_DRAIN_TIMEOUT: "soon" });
+  assert.equal(stateOf(flagged.out, "start"), "ok", flagged.out + flagged.err);
 });
 
 test("--env goes with --check, and a heartbeat check needs a name", async (t) => {
