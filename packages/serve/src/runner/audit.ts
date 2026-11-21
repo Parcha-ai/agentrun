@@ -34,7 +34,7 @@ import { FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isObject, type Json } from "../validate.js";
 import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
-import { lastRunsOf } from "../learn/compile.js";
+import { lastRunsOf, sinceReset } from "../learn/compile.js";
 import { readLearning, writeLearning, type LearningFolder } from "../learn/folder.js";
 import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
 import { excerptShown } from "../learn/secrets.js";
@@ -106,14 +106,17 @@ export async function auditedAnswerOf(deps: Pick<AuditDeps, "store" | "context" 
   return open ? auditedAnswer(deps, open) : null;
 }
 
-/** The served runs of `workflow` (at `digest` when given) that `keep` keeps too, the newest `n` of them (lastRunsOf: the
- *  shadows and the agent's own runs among them never push one out of the read). */
-const servedRuns = (store: Pick<Store, "runs">, agentId: string, n: number, workflow: string, digest: string | undefined, keep: (row: RunRow) => boolean = () => true) =>
-  lastRunsOf(store, agentId, n, (row) => served(row) && metricsOf(row).workflow === workflow && (digest === undefined || metricsOf(row).workflow_digest === digest) && keep(row));
+/** The served runs of `workflow` (at `digest` when given) that `keep` keeps too, since the agent's learning's reset
+ *  (sinceReset), the newest `n` of them (lastRunsOf: the shadows and the agent's own runs among them never push one out
+ *  of the read). */
+const servedRuns = async (store: Pick<Store, "runs" | "settings">, agentId: string, n: number, workflow: string, digest: string | undefined, keep: (row: RunRow) => boolean = () => true) => {
+  const since = await sinceReset(store, agentId);
+  return lastRunsOf(store, agentId, n, (row) => served(row) && metricsOf(row).workflow === workflow && (digest === undefined || metricsOf(row).workflow_digest === digest) && keep(row) && since(row));
+};
 
 /** How many of the newest stop_window runs `workflow` at `digest` served were not auditable (auditableLaunch: a trigger
  *  started them): what the promotions read counts beside the audit line. */
-export async function notAuditableOf(store: Pick<Store, "runs">, agentId: string, workflow: string, digest: string, loop: Pick<AuditLoop, "stop_window">): Promise<number> {
+export async function notAuditableOf(store: Pick<Store, "runs" | "settings">, agentId: string, workflow: string, digest: string, loop: Pick<AuditLoop, "stop_window">): Promise<number> {
   return (await servedRuns(store, agentId, loop.stop_window, workflow, digest)).filter((row) => (metricsOf(row) as { not_auditable?: unknown }).not_auditable === true).length;
 }
 
@@ -161,7 +164,9 @@ async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch; readon
  *  spend past the served run's cap; with less than a run's smallest cap left (or a spend not known), no shadow is started
  *  and its row says `skipped: "no allowance"`. Its started line is appended first: a shadow is created only once the
  *  ledger names it (settlement finds it there, never in a window of runs), and one whose line could not be written is
- *  never created. Idempotent: one line and one shadow per run. */
+ *  never created. Idempotent: one line and one shadow per run. A run the agent's learning reads no more starts none, as
+ *  it adds no grade row (gradeRow): one before its learning's reset (sinceReset), ended again after it by a follow-up,
+ *  or one on a named disk (learn/learning-of.ts). */
 export async function startAudit(deps: AuditDeps & { readonly runId: string; readonly launch: RunLaunch; readonly room?: () => Promise<number | null> }, serve: Pick<WorkflowFirst, "name" | "digest" | "replay"> | undefined): Promise<void> {
   const { store, agentId, runId, launch, log } = deps;
   if (!serve || serve.replay || launch.replay || launch.audit || !launch.learning || !auditableLaunch(launch)) return;
@@ -170,6 +175,9 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
   const off = deps.spendOff?.("A shadow audit");
   if (off) return void log(`workflow-first: ${off}`);
   try {
+    // The run is there at its end (its end commits after this step).
+    const row = await store.runs.get(runId);
+    if (row && ((row.disk ?? null) !== null || !(await sinceReset(store, agentId))(row))) return;
     // Read after the claim pinned the revision's MCP tools (mcp-claim.ts pinFirst): the pin a revision saved without one
     // takes at its first run is what its tools are classed by.
     const revision = await store.agents.revision(deps.revisionId);
@@ -284,10 +292,14 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
 
 /** The row an owner's grade of served run `run` writes (source grade, agreed = the grade, counted for the digest's
  *  promotion now), then the hold rule: only for a run the workflow answered alone (its answer is the workflow's).
- *  Nothing else: no round, no compile by itself. */
+ *  Nothing else: no round, no compile by itself. A run before the agent's learning reset (sinceReset) adds no row: its
+ *  grade is kept, but a promotion of the same digest after the reset is never held by what came before it. A run on a
+ *  named disk adds none either (learn/learning-of.ts): the hold rule would copy its answers into the promotion's
+ *  disagreements, and the agent's compile reads those. */
 export async function gradeRow(deps: AuditDeps, run: RunRow, correct: boolean): Promise<void> {
   const m = metricsOf(run);
   if (m.path !== "workflow" || typeof m.workflow !== "string" || typeof m.workflow_digest !== "string") return;
+  if ((run.disk ?? null) !== null || !(await sinceReset(deps.store, deps.agentId))(run)) return;
   const promoted = promotionStartOf(await promotionsOf(deps.store.settings, deps.agentId), m.workflow, m.workflow_digest);
   // The answer graded: the run's newest now, kept by its row's id (as a shadow's audit keeps its turn).
   const turn = turnOf((await answerRowOf(deps.store, run.id, deps.context))?.id);

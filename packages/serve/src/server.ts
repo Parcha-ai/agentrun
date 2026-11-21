@@ -54,7 +54,7 @@ import { DEFAULT_HOST, elsewhereOf, listenOn, minFreeMibOf, takeOver, urlOf } fr
 import { IMPORT_ASKED, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
-import { LEARNING_LABEL, learningFolderOf, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
+import { LEARNING_LABEL, learningFolderOf, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf, withAgentRepo } from "./learning.js";
 import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
 import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, learningLog, pendingCount, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/workflow-draft.js";
@@ -104,6 +104,7 @@ import { type AgenticBody, type AgentRow, type McpCredentialMark, type MonidPinB
 import { agentDeleting, answerOf, logged, purgedAgent } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
+import { namedDisksOf } from "./learn/learning-of.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
@@ -210,6 +211,7 @@ import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folder
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
 import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgeRun, purgingKey } from "./agent-delete.js";
+import { type LearningResetHost, resetLearning } from "./learning-reset.js";
 import { agentComputerHoldKey } from "./workspace/agent-computer.js";
 import { sdkRunKey } from "./sdk/runs.js";
 import { waitEndedKey } from "./browser-wait-ended.js";
@@ -777,6 +779,8 @@ export const ROUTES: readonly Route[] = [
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
+  // The agent's learning reset, the agent and its runs kept (learning-reset.ts).
+  { method: "DELETE", pattern: /^\/agents\/([^/]+)\/learning$/, name: "deleteAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/promotions$/, name: "listLearningPromotions" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/audits$/, name: "listLearningAudits" },
@@ -2515,11 +2519,38 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. ${again}`, { retry_after_ms: 5_000 });
     }
   };
+  /** The Archil disks agent `agentId`'s learning folder may be on: a Mode 2 run's end writes it on the disk its claim
+   *  mounted (workspace/learning-workspace.ts, at learningKey), the agent's stored disk (named here only for
+   *  `agentDisk`) or one a launch named (kind "launch", a customer's: each run's disk, learn/learning-of.ts namedDisksOf,
+   *  read off its row, so a purged run whose launch is gone still names it). A run's kept disk, or a launch's kind
+   *  "agent", is the agent's own disk, mounted only while it is still the stored one (workspace/run-disk.ts runDiskOf):
+   *  one no longer stored was removed at Archil, its folder with it. */
+  const learningDisksOf = async (agentId: string, agentDisk: boolean): Promise<string[]> => {
+    const disks = new Set<string>();
+    const stored = agentDisk ? await agentDiskOf(store, agentId) : undefined;
+    if (stored) disks.add(stored.diskId);
+    for (const disk of await namedDisksOf(store, agentId)) disks.add(disk);
+    return [...disks];
+  };
+  /** Step 2 of DELETE /agents/{id}, and DELETE /agents/{id}/learning: the learning module's delete over the agent's
+   *  learning folder on this server's disk, as the learning routes open it (learningFolderOf), which deleteLearning ends
+   *  in its finally, and over its folder on each Archil disk a launch of its runs named and, for a reset (`agentDisk`),
+   *  on its own disk, which the agent's delete removes whole in step 3 (archil-routes.ts removeLearningFolder; Archil
+   *  off or refusing is 503 unavailable, nothing here deleted, for the next call). */
+  const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId, { keepResetLedger = false, agentDisk = false } = {}) => deleteLearning(given, agentId, learningFolderOf(data, agentId), {
+    keepResetLedger,
+    elsewhere: async () => {
+      for (const diskId of await learningDisksOf(agentId, agentDisk)) {
+        try {
+          await archil.removeLearningFolder(agentId, diskId);
+        } catch (error) {
+          if (!(error instanceof ApiError && ["unavailable", "upstream_failed"].includes(error.code))) throw error;
+          throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. The agent's learning folder on this server and its learning records are kept: send the DELETE again once it can be reached.`, { retry_after_ms: 5_000 });
+        }
+      }
+    },
+  }));
   /** What DELETE /agents/{id} does outside the store's rows, on this server (agent-delete.ts AgentDeleteHost). */
-  /** Step 2 of DELETE /agents/{id}: the learning module's delete over the agent's learning folder on this server's disk,
-   *  as the learning routes open it (learningFolderOf), which deleteLearning ends in its finally. A learning folder on
-   *  the agent's Archil disk goes with that disk in step 3. */
-  const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId) => deleteLearning(given, agentId, learningFolderOf(data, agentId)));
   const agentDeleteHost: AgentDeleteHost = {
     store,
     deleteLearning: learningDelete,
@@ -2564,6 +2595,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // DELETE. A run on its agent's own disk: with its agent's delete that disk went whole (removeDisk), its folder with
       // it; deleted alone, its folder there is deleted, the disk kept, read from its disk setting, which goes after.
       const launched = await store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
+      // Purged alone, the agent's learning stays, maybe on that disk too: the run's tombstone keeps its disk (runs.disk),
+      // for the agent's reset or delete to find (learningDisksOf).
       if (launched?.kind === "launch") await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"], again);
       else if (alone) {
         const own = launched?.diskId ?? (await runDiskKept(store, runId));
@@ -2607,6 +2640,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     waitMs: options.agentDeleteWaitMs ?? 30_000,
     pollMs: 200,
     ...(options.agentDeleteAt ? { at: options.agentDeleteAt } : {}),
+  };
+  /** What DELETE /agents/{id}/learning does outside the learning module (learning-reset.ts): the agent delete's learning
+   *  step, cancel path and wait, and the agent's learning queue, where a run's start reads its seed. */
+  const learningResetHost: LearningResetHost = {
+    store,
+    deleteLearning: learningDelete,
+    cancel: agentDeleteHost.cancel,
+    inQueue: (agentId, work) => withAgentRepo(data, agentId, work),
+    waitMs: agentDeleteHost.waitMs,
+    pollMs: agentDeleteHost.pollMs,
   };
   // A run's live moment from the store (store-view momentOf), for the one acceptance each act a run takes reads. The run
   // routes read from the store + the run view now, not a live Run.
@@ -4140,13 +4183,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Answering a tool call's approval takes the owner's password sign-in in the console, never a token." : "Answering a tool call's approval takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
-    // Purging a run or an agent, or deleting another system's agent, cannot be undone: the owner's session or the API
-    // token. A console session counts as the owner's only where it does for a secret (secret-writes.ts: accounts off on a
-    // loopback-bound server); bound off loopback with accounts off, whoever opened the console is no owner. With no
-    // credential at all it is 401, as every route is.
-    if ((found.name === "deleteRun" || found.name === "deleteAgent") && byConsoleSession(req) && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
+    // Purging a run or an agent, deleting another system's agent, or resetting an agent's learning cannot be undone: the
+    // owner's session or the API token. A console session counts as the owner's only where it does for a secret
+    // (secret-writes.ts: accounts off on a loopback-bound server); bound off loopback with accounts off, whoever opened the
+    // console is no owner. With no credential at all it is 401, as every route is.
+    if ((found.name === "deleteRun" || found.name === "deleteAgent" || found.name === "deleteAgentLearning") && byConsoleSession(req) && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
       authFailed(`/v2${path}`, "delete_without_owner");
-      throw new ApiError("forbidden", "Deleting a run or an agent takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token.");
+      throw new ApiError("forbidden", "Deleting a run or an agent, or resetting an agent's learning, takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token.");
     }
     // Saving, replacing or removing a secret (secret-writes.ts): the one check. Who may is mayWriteSecrets' alone (the
     // owner's session); which writes are secret is each plane's registered predicate, read from the body, so a token's
@@ -5236,6 +5279,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // A write to the agent's learning: in its delete turn (agentWrite), the body read before, outside it.
         const written = await agentWrite(id, () => correctionsWrite(data, id, { text, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse }));
         return send(res, 200, written, { etag: written.etag });
+      }
+      case "deleteAgentLearning": {
+        // The agent's learning reset (learning-reset.ts), a write to its learning: in its delete turn (agentWrite), which
+        // reads the agent there (404 unknown) and refuses one being deleted.
+        await agentWrite(id, () => resetLearning(learningResetHost, id));
+        // A run's list row that read a workflow of the agent's says what the folder says now, at the next list.
+        await lister.learningChanged(id);
+        res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        return void res.end();
       }
       case "listLearnedWorkflowRevisions":
         await needAgent(id);

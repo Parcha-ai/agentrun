@@ -94,6 +94,7 @@
     "writeHomeFile": ["home", "write"],
     "deleteHomeFile": ["home", "delete"],
     "getAgentLearning": ["learning", "get"],
+    "deleteAgentLearning": ["learning", "reset"],
     "getLearningCost": ["learning", "cost"],
     "getLearningCorrections": ["learning", "corrections"],
     "putLearningCorrections": ["learning", "write-corrections"],
