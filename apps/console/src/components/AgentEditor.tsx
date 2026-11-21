@@ -211,7 +211,6 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const toolCount = (query: string) => builtIns(query).length
     + (caps.mcp && !workflow ? mcpShownCount(mcpServers ?? null, f.tools ?? [], query) : 0)
     + (!workflow ? monidCards(f.tools ?? [], monidSeen, query).length : 0);
-  const shownTools = toolCount(toolQuery);
   // What a new agent still needs before Create is on.
   const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !starting && !f.instructions?.trim() ? ["Write its instructions to create it."] : [])];
   // The agent's approvals as the form has them: changed here, else the definition's, else ask (the server's default).
@@ -239,6 +238,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools") && (s.id !== "computer" || (!workflow && !starting && !!(caps.computers || caps.places))));
   // A step this agent or server has none of (the Computer step on a server that lists no places) opens the first one.
   const step: Step = steps.some((s) => s.id === chosen) ? chosen : steps[0]!.id;
+  // Counted only while the Tools step shows: it scans every MCP tool, and the other steps re-render on each keystroke.
+  const shownTools = step === "tools" ? toolCount(toolQuery) : 0;
   const at = steps.findIndex((s) => s.id === step);
   const save = async () => {
     if (!onSave) return;
