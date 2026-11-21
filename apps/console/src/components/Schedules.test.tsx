@@ -672,6 +672,18 @@ describe("editing a schedule", () => {
 // Tester findings on the New schedule form (11-09): an empty cost cap means the agent's own default, so the field's
 // placeholder says that default as served (definition.max_cost_usd), never a made-up example; and a one time is to the
 // minute, so its field asks for no seconds.
+describe("every create form's run target", () => {
+  // The agent, what each run is asked and (with no default cap on the agent) the cap are required on every form: the
+  // email form marks them as the schedule, webhook and feed forms do.
+  for (const kind of ["schedule", "webhook", "feed", "email"] as const) {
+    it(`the ${kind} form marks its agent, what each run is asked and its cap required`, async () => {
+      const t = await open(server().v2, { trigger: null, kind });
+      const labels = [...t.host.querySelectorAll("label")].map((l) => l.textContent ?? "").filter((x) => /^(Agent|Each run is asked|Cost cap)/.test(x));
+      expect(labels).toEqual(["Agent *", "Each run is asked *", "Cost cap, US dollars a run *"]);
+    });
+  }
+});
+
 describe("the New schedule form's cost cap and one time", () => {
   const cap = (host: Element) => host.querySelector<HTMLInputElement>('input[name="maxCost"]')!;
 

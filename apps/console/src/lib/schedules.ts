@@ -546,14 +546,21 @@ export function feedUrlsOf(text: string): { urls: string[]; issues: Record<strin
   return { urls, issues };
 }
 
-/** A feed trigger's source, or what is wrong, by the field the server would name. `minEvery`: the shortest interval the
- *  server takes, when it says. A pointer is sent as typed, spaces and all; one left empty is left out, unless the source as read had it empty too. */
-export function feedSourceOf(d: FeedDraft, minEvery?: number): { source: FeedSource; issues: Record<string, string> } {
-  const { urls, issues } = feedUrlsOf(d.urls);
+/** A checked trigger's interval in seconds (`every`, a count of `everyUnit`): a count that is no number, or one under
+ *  `minEvery` when the server says one, is put in `issues` under source.every_s. */
+function everyOf(d: { every: string; everyUnit: EveryUnit }, minEvery: number | undefined, issues: Record<string, string>): number {
   const n = numberOf(d.every);
   const every = Math.round((n ?? 0) * UNIT_S[d.everyUnit]);
   if (n === undefined) issues["source.every_s"] = NEEDED;
   else if (minEvery && every < minEvery) issues["source.every_s"] = atLeast(minEvery);
+  return every;
+}
+
+/** A feed trigger's source, or what is wrong, by the field the server would name. `minEvery`: the shortest interval the
+ *  server takes, when it says. A pointer is sent as typed, spaces and all; one left empty is left out, unless the source as read had it empty too. */
+export function feedSourceOf(d: FeedDraft, minEvery?: number): { source: FeedSource; issues: Record<string, string> } {
+  const { urls, issues } = feedUrlsOf(d.urls);
+  const every = everyOf(d, minEvery, issues);
   const pointer = (name: "items" | "id") => {
     // Sent as typed: a space in a JSON Pointer is part of its key ("/data " names "data ").
     const typed = d[name];
@@ -587,10 +594,7 @@ export const EMAIL_FIELDS = new Set(["name", "enabled", "source.mailbox", "sourc
  *  `minEvery`, when the server says), whether it is on, and bodyOf's rules for the run it starts. */
 export function emailBodyOf(d: EmailDraft, minEvery?: number, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
   const issues: Record<string, string> = {};
-  const n = numberOf(d.every);
-  const every = Math.round((n ?? 0) * UNIT_S[d.everyUnit]);
-  if (n === undefined) issues["source.every_s"] = NEEDED;
-  else if (minEvery && every < minEvery) issues["source.every_s"] = atLeast(minEvery);
+  const every = everyOf(d, minEvery, issues);
   const made = createOf(d, { kind: "email", mailbox: d.mailbox.trim() || "INBOX", every_s: every }, issues, capOptional, "an email trigger");
   return made.body ? { body: { ...made.body, enabled: d.enabled } } : made;
 }
