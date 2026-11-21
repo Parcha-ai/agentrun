@@ -152,3 +152,26 @@ test("the recipe's sign-in fields are checked: the name a key is handed as, the 
   assert.match(recipeProblems({ ...base, authMethod: '' }).join(' '), /not a method's id/);
   assert.match(recipeProblems({ ...base, stderr: 'all' }).join(' '), /"tail" or "none"/);
 });
+
+/** Variables a dynamic loader, an interpreter, a shell or git reads before the agent's own code runs: one of each kind. */
+const LAUNCHERS = ['PATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES', 'NODE_OPTIONS', 'NODE_PATH', 'PYTHONPATH', 'PYTHONSTARTUP', 'BASH_ENV', 'ENV', 'GIT_CONFIG_GLOBAL', 'GIT_SSH_COMMAND'];
+
+test("no key is handed as, and no env sets, a variable that changes what the agent's process loads or runs (the kernel's one list)", async () => {
+  const { launchEnv } = await import('@parcha/agentrun-kernel');
+  const base = { id: 'x', command: '/bin/true', declares: { load: false, mcp: 'http' }, billing: { kind: 'plan', maxTurns: 1, maxToolCalls: 0 } };
+  for (const name of LAUNCHERS) {
+    assert.equal(launchEnv(name), true, `${name} is on the list`);
+    assert.match(recipeProblems({ ...base, keys: ['X_KEY'], keyEnv: { X_KEY: name } }).join(' '), /loads or runs/, `a key handed as ${name}`);
+    assert.match(recipeProblems({ ...base, env: { [name]: 'x' } }).join(' '), /loads or runs|the adapter sets/, `env setting ${name}`);
+  }
+  assert.match(recipeProblems({ ...base, keys: ['LD_PRELOAD'] }).join(' '), /loads or runs/, 'a key under its own name');
+  for (const name of ['GEMINI_API_KEY', 'GEMINI_HOME', 'MY_ENV', 'NODEJS_HOME', 'PATHS']) assert.equal(launchEnv(name), false, `${name} is not`);
+});
+
+test("a sign-in never points the agent's folder variable at one that changes what it loads or runs, nor one the adapter sets: refused before it starts", async () => {
+  const { signInAgent } = await import('@parcha/agentrun-harness-acp');
+  const dir = scratch();
+  for (const homeEnv of [...LAUNCHERS, 'HOME', 'TMPDIR', 'XDG_CONFIG_HOME']) {
+    await assert.rejects(signInAgent({ command: join(dir, 'never-started'), args: [], method: LOGIN, homeEnv, home: dir }), (error) => error.message.startsWith(`${ACP_CODES.authFailed}: `) && error.message.includes(homeEnv), homeEnv);
+  }
+});

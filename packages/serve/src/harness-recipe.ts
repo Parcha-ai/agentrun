@@ -7,6 +7,7 @@ import { ARCHIVE_FORMATS, type ArchiveFormat, type ArchiveInstallOptions, archiv
 import { BUILTIN_HARNESS_IDS } from "./harness-table.js";
 import { commandData } from "./harness-owned.js";
 import { harnessesOf, installDirOf, shellWord } from "./harness-install.js";
+import { launchEnv } from "@parcha/agentrun-kernel";
 import { acpPackage } from "./acp-package.js";
 import { keyShaped } from "./secret-name.js";
 import { SECRET_NAMES } from "./secrets.js";
@@ -225,6 +226,7 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
       // adapter's, the proxy's, or the server's own (AGENTRUN_, AGENT_MODEL_).
       if (!ENV_NAME.test(env)) say(RECIPE_CODES.keys, `the key ${name}'s env ${JSON.stringify(env)} is not a variable name`);
       else if (SET_BY_ADAPTER.has(env) || env.startsWith("AGENTRUN_") || env.startsWith("AGENT_MODEL_")) say(RECIPE_CODES.env, `the key ${name} is handed as ${env}, which the adapter, the proxy or the server sets`);
+      else if (launchEnv(env)) say(RECIPE_CODES.env, `the key ${name} is handed as ${env}, which changes what the agent's process loads or runs`);
       if (handed.has(env)) say(RECIPE_CODES.keys, `two keys are handed as ${env}`);
       handed.add(env);
     }
@@ -239,6 +241,7 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
     if (!ENV_NAME.test(name)) say(RECIPE_CODES.env, `the env name ${JSON.stringify(name)} is not a variable name`);
     else if (serverKey(name) || keyShaped(name) || keys.has(name)) say(RECIPE_CODES.keys, `env names ${name}, a key: a key is never written in a recipe; name it in keys, and only a key of this harness's own`);
     else if (SET_BY_ADAPTER.has(name)) say(RECIPE_CODES.env, `env names ${name}, which the adapter or the proxy sets`);
+    else if (launchEnv(name)) say(RECIPE_CODES.env, `env names ${name}, which changes what the agent's process loads or runs`);
     if (typeof value !== "string") say(RECIPE_CODES.env, `env.${name} must be a string`);
     else if (EXPANDS.test(value)) say(RECIPE_CODES.env, `env.${name} reads the host's environment ($NAME); write the value out, as nothing of the host's environment reaches the agent`);
   }
@@ -250,6 +253,7 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
     if (model.wire !== "anthropic-messages") say(RECIPE_CODES.invalid, 'a proxy-billed agent speaks Anthropic\'s Messages API: model.wire is "anthropic-messages"');
     if (typeof model.env !== "string" || !ENV_NAME.test(model.env)) say(RECIPE_CODES.invalid, "model.env names the variable the agent reads its model from");
     else if (SET_BY_ADAPTER.has(model.env) || serverKey(model.env) || keyShaped(model.env)) say(RECIPE_CODES.env, `model.env names ${model.env}, which is the adapter's, the proxy's or a key`);
+    else if (launchEnv(model.env)) say(RECIPE_CODES.env, `model.env names ${model.env}, which changes what the agent's process loads or runs`);
     else if (isPlain(r.env) && model.env in r.env) say(RECIPE_CODES.env, `env names ${model.env}, which the run's model sets`);
     if (model.hostEnv !== undefined && !PROXY_HOST_ENVS.includes(model.hostEnv as string)) say(RECIPE_CODES.env, `model.hostEnv is the variable the agent reads the proxy's address from: ${PROXY_HOST_ENVS.join(" or ")}`);
     for (const field of Object.keys(model)) if (!["billing", "wire", "env", "hostEnv"].includes(field)) say(RECIPE_CODES.invalid, `model.${field} is not a field of proxy billing`);
@@ -272,6 +276,7 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
       else if (signIn.method === r.keyMethod) say(RECIPE_CODES.invalid, `signIn.method ${signIn.method} is also keyMethod: a person's sign-in and a key are two methods`);
       if (typeof signIn.homeEnv !== "string" || !ENV_NAME.test(signIn.homeEnv)) say(RECIPE_CODES.invalid, "signIn.homeEnv is the variable the agent reads the folder it keeps its own sign-in in from (GEMINI_HOME)");
       else if (SET_BY_ADAPTER.has(signIn.homeEnv) || serverKey(signIn.homeEnv) || keyShaped(signIn.homeEnv) || keys.has(signIn.homeEnv)) say(RECIPE_CODES.env, `signIn.homeEnv names ${signIn.homeEnv}, which is the adapter's, the proxy's or a key`);
+      else if (launchEnv(signIn.homeEnv) || signIn.homeEnv.startsWith("AGENTRUN_") || signIn.homeEnv.startsWith("AGENT_MODEL_")) say(RECIPE_CODES.env, `signIn.homeEnv names ${signIn.homeEnv}, which changes what the agent's process loads or runs, or the server sets`);
       else if (isPlain(r.env) && signIn.homeEnv in r.env) say(RECIPE_CODES.env, `env names ${signIn.homeEnv}, which an attended run points at its owner's sign-in`);
       // The runs its vendor's terms allow a person's sign-in on (HARNESS.md#vendor-terms): attended ones alone today.
       if (signIn.runs !== "attended") say(RECIPE_CODES.invalid, 'signIn.runs is "attended": the runs the vendor\'s terms allow a person\'s sign-in on (a run its one owner started by hand and is at)');

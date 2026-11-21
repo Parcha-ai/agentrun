@@ -2,6 +2,7 @@
 // keeps its sessions and who bills its model. The loader's own rules (keys, registry archives, owner installs) are S5's;
 // these are the checks the adapter itself needs before it starts anything. Written for AgentRun.
 import { isAbsolute, normalize, sep } from "node:path";
+import { launchEnv } from "@parcha/agentrun-kernel";
 
 /** Who pays for the agent's model requests. `plan`: the vendor bills the owner's plan (Cursor), no request reaches us, so
  *  the adapter itself stops the run at these limits. `proxy`: the agent's model goes through the host's proxy, which the
@@ -105,6 +106,8 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
   for (const path of recipe.state ?? []) if (!homePath(path)) problems.push(`the state path ${JSON.stringify(path)} must be inside the private HOME`);
   const reserved = Object.keys(recipe.env ?? {}).filter((name) => RESERVED_ENV.has(name));
   if (reserved.length) problems.push(`the env names ${reserved.join(", ")}, which the adapter sets`);
+  const launching = Object.keys(recipe.env ?? {}).filter((name) => !RESERVED_ENV.has(name) && launchEnv(name));
+  if (launching.length) problems.push(`the env names ${launching.join(", ")}, which change what the agent's process loads or runs`);
   for (const name of recipe.keys ?? []) {
     if (typeof name !== "string" || !KEY_NAME.test(name)) problems.push(`the key ${JSON.stringify(name)} is not a variable's name (capitals, digits and _)`);
     else if (RESERVED_ENV.has(name)) problems.push(`the key ${name} is a variable the adapter sets`);
@@ -122,6 +125,7 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
     const as = recipe.keyEnv?.[name] ?? name;
     if (typeof as !== "string" || !KEY_NAME.test(as)) problems.push(`the key ${name} is handed as ${JSON.stringify(as)}, which is not a variable's name`);
     else if (RESERVED_ENV.has(as)) problems.push(`the key ${name} is handed as ${as}, a variable the adapter sets`);
+    else if (launchEnv(as)) problems.push(`the key ${name} is handed as ${as}, which changes what the agent's process loads or runs`);
     else if (as !== name && Object.hasOwn(recipe.env ?? {}, as)) problems.push(`the key ${name} is handed as ${as}, which is also in env`);
     if (handed.has(as)) problems.push(`two keys are handed as ${as}`);
     handed.add(as);

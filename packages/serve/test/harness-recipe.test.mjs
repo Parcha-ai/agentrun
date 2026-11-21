@@ -732,3 +732,22 @@ test("a recipe's keys and sign-in are checked: keys handed under the name the ag
   assert.equal(neither.code, RECIPE_CODES.invalid);
   assert.match(neither.message, /in keys or the sign-in in signIn/);
 });
+
+test("a key's handed name, signIn.homeEnv and env never name a variable that changes what the agent's process loads or runs, and homeEnv never one the adapter sets", () => {
+  const plan = { billing: "plan", maxTurns: 8, maxToolCalls: 8 };
+  const SIGN_IN = { method: "model-agent-login", homeEnv: "MODEL_AGENT_HOME", runs: "attended" };
+  const KEY = { name: "MODEL_AGENT_GEMINI_API_KEY", env: "GEMINI_API_KEY" };
+  const LAUNCHERS = ["PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONSTARTUP", "BASH_ENV", "ENV", "GIT_CONFIG_GLOBAL", "GIT_SSH_COMMAND"];
+  for (const name of LAUNCHERS) {
+    const handed = refusalOf(recipeOf(undefined, { model: plan, keys: [{ name: "MODEL_AGENT_GEMINI_API_KEY", env: name }] }));
+    assert.ok(handed.codes.includes(RECIPE_CODES.env), `a key handed as ${name}: ${handed.message}`);
+    assert.match(handed.message, /loads or runs|the adapter, the proxy or the server sets/);
+    const home = refusalOf(recipeOf(undefined, { model: plan, keys: [KEY], signIn: { ...SIGN_IN, homeEnv: name } }));
+    assert.ok(home.codes.includes(RECIPE_CODES.env), `signIn.homeEnv ${name}: ${home.message}`);
+    const env = refusalOf(recipeOf(undefined, { model: plan, keys: [KEY], env: { [name]: "x" } }));
+    assert.ok(env.codes.includes(RECIPE_CODES.env), `env setting ${name}: ${env.message}`);
+  }
+  for (const name of ["HOME", "TMPDIR", "XDG_CONFIG_HOME", "GIT_CEILING_DIRECTORIES"]) {
+    assert.ok(refusalOf(recipeOf(undefined, { model: plan, keys: [KEY], signIn: { ...SIGN_IN, homeEnv: name } })).codes.includes(RECIPE_CODES.env), `signIn.homeEnv ${name}`);
+  }
+});
