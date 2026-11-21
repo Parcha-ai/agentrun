@@ -275,7 +275,7 @@ for (const [scenario, turn] of Object.entries(releases)) test(`a turn that canno
   assert.deepEqual((await server.latest(flow.name)).runs, [next.run_id]);
   await finish(server, next, report(next));
   const champion = championOf(await server.records(), flow.name);
-  assert.equal(champion?.check.released, 1, 'the promotion says how many turns were given back');
+  assert.equal(champion?.check.released, undefined, 'the turn that landed started the give-back count again');
   assert.deepEqual(champion?.check.of, [next.run_id]);
 });
 

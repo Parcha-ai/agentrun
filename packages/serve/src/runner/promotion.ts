@@ -651,13 +651,10 @@ async function reserve(deps: PromotionDeps, workflow: LearnedWorkflow, digest: s
 /** An input a replay runs on: the agent run whose input it is, and that run's launch. */
 type ReplayInput = { readonly run: string; readonly launch: RunLaunch };
 
-/** How many of a connected agent's reserved native turns its check gives back before it stops. A turn is given back
- *  when it cannot be the check's baseline: cancelled or failed, a learned workflow or nested call in it, redacted
- *  evidence, no shadow report, or a shadow that did not answer. One or two are ordinary (a person cancels a task, an
- *  input carries a secret); five say the integration cannot give one (a client with no shadow check, inputs it never
- *  resolves, a draft whose shadow always refuses), and each reserved turn runs without the champion. The fifth stops it,
- *  never promoted, whatever turns it checked before (stopUnchecked), which asks no recompile: a revision would have no
- *  baseline either. */
+/** How many of a connected agent's reserved native turns its check gives back in a row (failed, a learned workflow or
+ *  nested call in it, redacted evidence, no shadow report, or a shadow that did not answer; never a cancel, and a turn
+ *  that lands starts the count again) before it holds the draft, never promoted, for the agent's next run to recompile:
+ *  five in a row say the integration cannot give a baseline now, not that it never will. */
 export const SDK_CHECK_RELEASES = 5;
 
 /** A connected agent's draft reserved on one native turn: what its start hands the caller (sdk/runs.ts receipt). */
@@ -733,7 +730,8 @@ const sdkTurnsWords = (check: CheckRecord): string =>
  *  at a write gives its turn back), so each is one of the n. Kept only while `still` holds of the digest's record; a
  *  check a newer revision overtook keeps no turn (it would hide the newer record), as a release does. */
 export async function sdkCheckTurn(deps: DecideDeps, record: PromotionRecord & { readonly check: CheckRecord }, row: CheckRow, still: Parameters<typeof recordPromotion>[3], read: { exactMismatchReason?: string; fresh_reads?: number } = {}) {
-  const { turns: before, ...bar } = record.check;
+  // A turn that lands starts the give-back count again (SDK_CHECK_RELEASES counts them in a row).
+  const { turns: before, released: _released, ...bar } = record.check;
   const outcomes = { ...NO_OUTCOMES, [row.outcome]: 1 };
   // The turn lands once: its completion and its deadline can both read the reservation, and the first to write takes
   // the turn off it, so the second finds it gone (heldTurn) and never adds the turn twice or replaces the first's row.
