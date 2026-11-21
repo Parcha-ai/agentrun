@@ -43,7 +43,7 @@ func helloInit(t *testing.T) string {
 func pairServer(t *testing.T, status int, answer string) (*httptest.Server, *[]map[string]json.RawMessage, *atomic.Int32) {
 	var bodies []map[string]json.RawMessage
 	var tries atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(ours(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tries.Add(1)
 		if r.Method != http.MethodPost || r.URL.Path != "/base/v2/computers/pair" || r.Header.Get("Authorization") != "" {
 			t.Errorf("the server was sent %s %s with Authorization %q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
@@ -57,7 +57,7 @@ func pairServer(t *testing.T, status int, answer string) (*httptest.Server, *[]m
 		w.Header().Set("content-type", "application/json")
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, answer)
-	}))
+	})))
 	t.Cleanup(srv.Close)
 	return srv, &bodies, &tries
 }
@@ -116,7 +116,7 @@ func TestARefusedPairingIsTheServersWordsAndWritesNothing(t *testing.T) {
 // A redirect is not followed: the code goes to the URL given and no other, and nothing is written.
 func TestPairFollowsNoRedirect(t *testing.T) {
 	var elsewhere atomic.Int32
-	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { elsewhere.Add(1) }))
+	other := httptest.NewServer(ours(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { elsewhere.Add(1) })))
 	t.Cleanup(other.Close)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusTemporaryRedirect)
