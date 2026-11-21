@@ -15,10 +15,12 @@ const flow = { name: 'status', description: 'Read release status.', workflow: { 
 const nextFlow = { ...flow, description: 'Newer status draft.', workflow: { ...flow.workflow, root: { ...flow.workflow.root, args: { mode: 'new' } } } };
 const TASK = '{"release":"r1"}';
 const RELEASES = 5;
-async function setup(t, runtime = 'eve', runner = true) {
+// compile_after 1 unless a test sets it: the check decides on one native turn, as a managed check of such an agent
+// decides on its one input. The workflow is landed, so no compile is due either way.
+async function setup(t, runtime = 'eve', runner = true, learning = { compile_after: 1 }) {
   const server = await serve(t, { runner });
   const id = `shadow-${runtime}`;
-  assert.equal((await server.api('POST', '/agents', { definition: { id, name: id, instructions: 'Report readiness.', sdk: { runtime }, learning: { compile_after: 200 }, tools: [] } })).status, 201);
+  assert.equal((await server.api('POST', '/agents', { definition: { id, name: id, instructions: 'Report readiness.', sdk: { runtime }, learning, tools: [] } })).status, 201);
   await landWorkflows(server.data, id, [flow]);
   const start = async (key, input = TASK) => {
     const response = await server.api('POST', `/agents/${id}/sdk-runs`, { runtime, input, instructions: 'Report readiness.', workflow_tools: [tool] }, { 'Idempotency-Key': key });
@@ -110,6 +112,90 @@ test('a different native answer holds the draft, and the held digest is not chec
   assert.deepEqual(next.learning.workflows, []);
   assert.equal(next.learning.check, undefined, 'a held digest is not silently checked again');
   await cancel(server, next);
+});
+
+// The evidence bar of a managed check: it decides once, on compile_after inputs. A connected agent's check collects its
+// native turns until it holds compile_after of them, the native agent answering each, and then decides once on them all.
+const DIGEST = workflowDigest({ workflow: JSON.stringify(flow.workflow) });
+async function checkTurn(server, key, answer = '{"ready":true}') {
+  const receipt = await server.start(key);
+  assert.equal(receipt.learning.check?.digest, DIGEST, `${key} checks the draft`);
+  assert.deepEqual(receipt.learning.workflows, [], `${key}: the native agent answers it, no workflow serves`);
+  await finish(server, receipt, report(receipt, { answer }));
+  return receipt;
+}
+function stillChecking(records, turns) {
+  assert.equal(championOf(records, flow.name), undefined, `${turns} checked turn(s) promote nothing`);
+  const waiting = promotionOf(records, flow.name, DIGEST);
+  assert.equal(waiting.decided, 'replaying', JSON.stringify(waiting));
+  assert.equal(waiting.via, 'sdk');
+  assert.equal(waiting.runs, undefined, 'it waits for the next turn the draft takes');
+  assert.equal(waiting.check.n, undefined, 'a check still collecting turns has no decision\'s numbers');
+  assert.equal(waiting.check.turns?.n, turns, JSON.stringify(waiting.check));
+  assert.match(waiting.reason, new RegExp(`${turns} of 3 native turns`));
+  return waiting;
+}
+
+test('one agreeing native turn does not promote a draft its agent checks on compile_after turns; the third decides', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  const first = await checkTurn(server, 'turn-1');
+  stillChecking(await server.records(), 1);
+  const concurrent = await server.start('while-checking');
+  assert.equal(concurrent.learning.check, undefined, 'one turn at a time is reserved');
+  assert.deepEqual(concurrent.learning.workflows, [], 'an unpromoted draft never serves');
+  await cancel(server, concurrent);
+  const second = await checkTurn(server, 'turn-2');
+  stillChecking(await server.records(), 2);
+  const third = await checkTurn(server, 'turn-3');
+  const champion = championOf(await server.records(), flow.name);
+  assert.equal(champion?.digest, DIGEST);
+  assert.equal(champion.via, 'sdk');
+  assert.deepEqual([champion.check.n, champion.check.agreed, champion.check.alone], [3, 3, 3]);
+  assert.deepEqual(champion.check.of, [third.run_id, second.run_id, first.run_id], 'the turns it decided on, newest first');
+  assert.deepEqual(champion.check.outcomes, { answered: 3, handed_back: 0, failed: 0, skipped_write: 0 });
+  assert.equal(champion.check.turns, undefined, 'the decision carries the numbers, not the turns collected');
+  assert.match(champion.reason, /checked on 3 of the agent's inputs.*: promoted$/);
+  const served = await server.start('served');
+  assert.equal(served.learning.check, undefined);
+  assert.deepEqual(served.learning.workflows.map(one => one.name), [flow.name]);
+  await cancel(server, served);
+});
+
+test('compile_after checked turns with too few agreeing hold the draft; a disagreement alone does not hold it early', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  const first = await checkTurn(server, 'differs', '{"ready":false}');
+  const waiting = stillChecking(await server.records(), 1);
+  assert.deepEqual(waiting.check.turns.disagreements.map(one => one.run), [first.run_id]);
+  await checkTurn(server, 'agrees-1');
+  await checkTurn(server, 'agrees-2');
+  const held = promotionOf(await server.records(), flow.name, DIGEST);
+  assert.equal(held.decided, 'hold', JSON.stringify(held));
+  assert.equal(championOf(await server.records(), flow.name), undefined);
+  assert.deepEqual([held.check.n, held.check.agreed, held.check.alone], [3, 2, 3], '2 of 3 agree: under agree_min 0.8');
+  assert.deepEqual(held.check.disagreements.map(one => one.run), [first.run_id]);
+  assert.equal(held.check.turns, undefined);
+  assert.equal(held.check.attempt, 1);
+  assert.match(held.reason, /recompiles it once/);
+  assert.ok(heldNamesOf(await server.records()).has(flow.name), 'its hold asks the one recompile');
+});
+
+test('a turn past its deadline is one failed row of the turns collected, not a decision of its own', async t => {
+  const server = await setup(t, 'eve', false, { compile_after: 3 });
+  const abandoned = await server.start('abandoned');
+  await expire(server, abandoned);
+  const swept = await server.start('sweeps');
+  assert.equal(swept.learning.check?.digest, DIGEST, 'the check still collects turns, so the sweeping turn is reserved');
+  const records = await server.records();
+  assert.equal(championOf(records, flow.name), undefined);
+  const reserved = promotionOf(records, flow.name, DIGEST);
+  assert.equal(reserved.decided, 'replaying', JSON.stringify(reserved));
+  assert.deepEqual(reserved.runs, [swept.run_id]);
+  assert.equal(reserved.check.n, undefined);
+  assert.equal(reserved.check.turns?.n, 1, JSON.stringify(reserved.check));
+  assert.equal(reserved.check.turns.outcomes.failed, 1);
+  assert.deepEqual(reserved.check.turns.of, [abandoned.run_id]);
+  assert.match(reserved.reason, /1 of 3 native turns/);
+  await cancel(server, swept);
 });
 
 // A turn that cannot be the check's baseline gives the reservation back: nothing is decided, and the next turn the draft
@@ -320,7 +406,7 @@ test('server-native learned_workflow tool also withholds drafts without promotio
 
 test('shadow agreement uses the owner-selected decision fields, not unrelated response text', async t => {
   const server = await setup(t);
-  await server.api('PUT', `/agents/${server.id}/definition`, { definition: { instructions: 'Report readiness.', learning: { compile_after: 200, agree_on: ['ready'], agree_min: 1, alone_min: 1 } } });
+  await server.api('PUT', `/agents/${server.id}/definition`, { definition: { instructions: 'Report readiness.', learning: { compile_after: 1, agree_on: ['ready'], agree_min: 1, alone_min: 1 } } });
   const first = await server.start('decision-fields');
   await finish(server, first, report(first, { answer: '{"ready":true,"explanation":"Different phrasing"}' }));
   const champion = championOf(await server.records(), flow.name);
