@@ -15,7 +15,7 @@ const MEDIA = ["chrome", "ffmpeg", "ffprobe", "hyperframes"];
 describe("a sandbox's needs across a switch", () => {
   it("another sandbox provider keeps them", () => {
     const current = { kind: "sandbox", provider: "docker", needs: MEDIA } as Computer;
-    const sandboxOnDaytona = { ...SANDBOX, providers: [provider("daytona", "Daytona")] } as ComputerKindView;
+    const sandboxOnDaytona = { ...SANDBOX, providers: [provider("daytona", "Daytona")] } as unknown as ComputerKindView;
     const { computer, dropped } = pickKind(sandboxOnDaytona, current);
     expect(computer).toEqual({ kind: "sandbox", provider: "daytona", needs: MEDIA });
     expect(dropped).toEqual({});
