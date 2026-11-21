@@ -139,9 +139,11 @@ test(`an agent that asks for another command instead of the approved one ${REASK
   await parkFirst(t, recipe, store, asked);
   // Each runner: the person allowed every call asked before; the agent asks for another one, which parks.
   let end;
+  let promptsAtLast = 0;
   for (let runner = 0; runner < REASK_LIMIT + 2 && !end; runner++) {
     const allowed = new Set(asked.map((c) => c.callId));
     const count = asked.length;
+    promptsAtLast = prompts(recipe).length;
     const next = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), allowed.has(call.callId) ? 'allow' : PARK) });
     let stopped = false;
     const ended = next.session.recover().then(() => next.session.turnEnd()).then((e) => (stopped ? undefined : (end = e)), () => undefined);
@@ -156,8 +158,11 @@ test(`an agent that asks for another command instead of the approved one ${REASK
   assert.match(end.error ?? '', new RegExp(`^${REASK_CODE}: `));
   assert.match(end.error, /Run ls/, 'it names the command the person approved');
   assert.deepEqual(lines(nativeLog), [], 'no command ran on another command\'s approval');
-  const refused = fakeEvents(recipe).filter((e) => e.type === 'permission' && e.outcome === 'selected' && e.kind === 'reject_once');
-  assert.equal(refused.length, 1, 'the last one is refused at the protocol');
+  // Ended on the resume, before the agent started again: a park commits the run parked, so the limit never answers one.
+  assert.equal(prompts(recipe).length, promptsAtLast, 'the last runner sent the agent nothing');
+  assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission' && e.kind === 'reject_once'), [], 'no request was refused at the protocol');
+  const records = await streamRecords(store, 'acp.permission');
+  assert.equal(records.filter((r) => r.type === 'reasked').length, REASK_LIMIT, 'each counted ask parked');
 });
 
 for (const load of [true, false]) {
