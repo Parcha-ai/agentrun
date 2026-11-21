@@ -44,6 +44,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve runner --check --data DIR [--name NAME]
        agentrun-serve runner --check --env [--data DIR]
        agentrun-serve runner --check --heartbeat --data DIR [--name NAME]
+       agentrun-serve store-schema [--data DIR]
+       agentrun-serve store-schema --build
        agentrun-serve native discover|connect --project PATH [--runtime claude-code|codex] [--agent NAME|--profile NAME] [--url URL] [--data DIR]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
@@ -126,6 +128,13 @@ What is left out is counted by why; --verbose lists each file. --include-deleted
 deleted worktree's); --all keeps those and temporary ones too. Each run keeps what its session used (tokens, requests, tools,
 time at work), priced at the catalog's list prices when its source did not price it. Both end with a summary of every
 session found, those imported before included, and the address to open the console at (--port as the server takes it).
+
+\`agentrun-serve store-schema\` prints, as one line of JSON, the store's schema version and runner floor (the oldest version
+a runner's build must know to run on it) beside the version this build knows, and what this build's server and runner do
+on it: for a deploy's check before it starts a build, which must not be older than the store. It reads and changes
+nothing (no lock, no migration). The store is the server's: AGENTRUN_STORE_URL's Postgres, else SQLite in --data. Exit 0
+once read, 1 when the store could not be read, 2 for bad arguments. --build reads no store and prints only the versions
+this build knows. A running server says the same in GET /v2/capabilities (store_schema).
 
 \`agentrun-serve eval-template DIR\` runs a template package's eval cases (all, or each --case) as real runs of its agent
 and grades each run with the case's graders (templates/README.md, "Running the evals"). By default on a server of its
@@ -361,11 +370,18 @@ if (process.argv[2] === "eval-template") {
 }
 
 // The runner process (runner/main.ts): beside the server, its own store connection in --data, claiming runs until SIGTERM
-// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know, 1 anything else, 0 closed. `--check` checks its
-// environment by name (runner-check.ts) and its heartbeat; `--check --env` its environment alone (0 complete, 1 a gap).
+// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know (or one whose runner floor rose above it while it
+// ran: its runs handed back), 1 anything else, 0 closed. `--check` checks its environment by name (runner-check.ts) and its
+// heartbeat; `--check --env` its environment alone (0 complete, 1 a gap).
 if (process.argv[2] === "runner") {
   const { runnerMain } = await import("./runner/main.js");
   process.exit(await runnerMain(process.argv.slice(3)));
+}
+
+// The store's schema and runner floor, read-only (store/store-schema.ts), for a deploy's skew check.
+if (process.argv[2] === "store-schema") {
+  const { storeSchemaMain } = await import("./store/store-schema.js");
+  process.exit(await storeSchemaMain(process.argv.slice(3), defaultData(), USAGE));
 }
 
 if (process.argv[2] === "import") {
