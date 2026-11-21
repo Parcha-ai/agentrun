@@ -271,6 +271,8 @@ export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly co
   { table: "runs", columns: ["labels"], why: "add each run's labels" },
   { table: "triggers", columns: ["template_id"], why: "add each trigger's package mark" },
   { table: "runners", columns: ["host"], why: "keep each runner's word that it is there and its relay in one table (runners)" },
+  { table: "runners", columns: Object.keys(RUNNERS_ADDED), why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
+  { table: "hand_backs", columns: ["run_id"], why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
 ];
 
 /** What a runner of this build waits for on a file of this version (SQLITE_RUNNER_NEEDS' first missing column's `why`),

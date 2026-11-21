@@ -31,10 +31,10 @@ test("on a file this build's server set up, store-schema says its server and run
 for (const need of SQLITE_RUNNER_NEEDS) {
   test(`a file of this version without ${need.table}.${need.columns.join(", ")}: store-schema says the runner waits, as its open refuses it`, async (t) => {
     const dir = await serverMade(t);
-    // An earlier build of this version left the file without the column; runners, without the table (its relay was in
-    // runner_relays then), which the server makes at its start.
+    // An earlier build of this version left the file without the column; without the runners table (its relay was in
+    // runner_relays then) or hand_backs, which the server makes at its start.
     const db = new DatabaseSync(join(dir, STORE_FILE));
-    if (need.table === "runners") db.exec("DROP TABLE runners");
+    if (need.columns.includes("host") || need.table === "hand_backs") db.exec(`DROP TABLE ${need.table}`);
     else for (const column of need.columns) {
       for (const { name } of db.prepare(`SELECT name FROM pragma_index_list('${need.table}')`).all()) {
         if (db.prepare(`SELECT 1 FROM pragma_index_info('${name}') WHERE name = ?`).get(column) && !name.startsWith("sqlite_autoindex")) db.exec(`DROP INDEX "${name}"`);
@@ -58,8 +58,8 @@ for (const need of SQLITE_RUNNER_NEEDS) {
 test("every wait the SQLite runner's open says for a column is on SQLITE_RUNNER_NEEDS, so store-schema reads them all", () => {
   const source = readFileSync(new URL("../src/store/sqlite/store.ts", import.meta.url), "utf8");
   const said = [...source.matchAll(/new StoreAwaitsServer\((?:"([^"]*)"|'([^']*)')\)/g)].map((match) => match[1] ?? match[2]);
-  assert.ok(said.length >= SQLITE_RUNNER_NEEDS.length, `the open's waits: ${said.join(" | ")}`);
   const listed = new Set(SQLITE_RUNNER_NEEDS.map((need) => need.why));
+  assert.ok(said.length >= listed.size, `the open's waits: ${said.join(" | ")}`);
   assert.deepEqual(said.filter((why) => !listed.has(why)), [], "each is listed");
 });
 

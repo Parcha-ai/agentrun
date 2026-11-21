@@ -27,6 +27,10 @@ const ONLY = postgresOnly("a runner beside a later server's migrations");
 const SEAL = randomBytes(32).toString("base64");
 const KNOWN = migrationsIn().at(-1).version;
 
+/** The floor a store that applied this build's migrations up to `version` holds: the newest of them marked breaking, or
+ *  LAST_UNMARKED and before. */
+const floorAt = (version) => Math.max(...migrationsIn().filter((m) => m.version <= version && (m.breaking || m.version <= LAST_UNMARKED)).map((m) => m.version));
+
 /** The later release's migration, one past this build's last: additive unless `breaking`. */
 function later(breaking, version = KNOWN + 1) {
   const sql = breaking
@@ -206,7 +210,7 @@ test("store-schema reads the live schema and floor beside this build's version, 
   assert.deepEqual(await read(), { store: "postgres", where, schema: null, runnerFloor: null, build: KNOWN, server: "sets up", runner: "refused" });
   assert.equal((await sql.query("SELECT 1 FROM pg_namespace WHERE nspname = $1", [schema])).rowCount, 0, "no schema made");
   await migrate(sql, schema, Date.now(), migrationsIn().slice(0, -1));
-  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN - 1, runnerFloor: KNOWN - 1, build: KNOWN, server: "migrates", runner: "waits" });
+  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN - 1, runnerFloor: floorAt(KNOWN - 1), build: KNOWN, server: "migrates", runner: "waits" });
   await migrateTo(sql, schema, []);
   assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN, runnerFloor: LAST_UNMARKED, build: KNOWN, server: "opens", runner: "opens" });
   await migrateTo(sql, schema, [later(false)]);
