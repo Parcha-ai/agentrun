@@ -283,4 +283,34 @@ describe("the Tools step's filter box", () => {
       act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
     }
   });
+
+  it("filters a monid grant by its name, as every other card, and counts the one it keeps", async () => {
+    const grants = ["read", "monid:acme/search"];
+    const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+    const fetch = (async (url: string) => {
+      const path = String(url);
+      if (path === "/v2/agents/calc") return json(200, agent(grants), { etag: '"r1"' });
+      if (path.startsWith("/v2/agents/calc/revisions")) return json(200, { revisions: [{ revision: "r1", version: 1, current: true, note: null, created_at: "2026-11-04T10:00:00Z", kind: "agentic", definition: definition(grants) }], next_cursor: null });
+      if (path === "/v2/settings/mcp-servers") return json(200, { servers: [FAKE] });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    }) as typeof globalThis.fetch;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await settle();
+    const filter = host.querySelector('input[aria-label="Filter tools"]') as HTMLInputElement;
+    const type = (q: string) => act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter, q); filter.dispatchEvent(new Event("input", { bubbles: true })); });
+    const monid = () => [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"][value]')].map((b) => b.value).filter((v) => v.startsWith("monid:"));
+    const status = () => filter.closest("div")!.querySelector('[role="status"]')!.textContent;
+    await type("acme");
+    expect(monid()).toEqual(["monid:acme/search"]);
+    expect(status()).toMatch(/^1 of \d+ shown$/);
+    expect(host.textContent).not.toContain("No tool matches");
+    await type("no-such-tool");
+    expect(monid()).toEqual([]);
+    expect(host.textContent).toContain("No tool matches");
+  });
 });
