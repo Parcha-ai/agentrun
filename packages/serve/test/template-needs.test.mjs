@@ -66,7 +66,7 @@ async function filmServer(t, { docker = false, archil = false } = {}) {
 test("a template's needs read beside computer: [shell] alone, as a list of program names; anything else is refused in words", async (t) => {
   assert.deepEqual(readPackage(await packageDir(t, "film", FILM)).needs, NEEDS);
   assert.equal(readPackage(await packageDir(t, "film", FILM.replace("needs: [hyperframes, ffmpeg]\n", ""))).needs, undefined, "none named: none");
-  const beside = /^needs: the programs a sandbox must have, so computer is \[shell\]: a template that needs them never falls back to no computer, nor runs where a new agent does$/;
+  const beside = /^agent\.md: needs: the programs a sandbox must have, so computer is \[shell\]: a template that needs them never falls back to no computer, nor runs where a new agent does$/;
   for (const computer of ["computer: [shell, none]\n", "computer: [none]\n", "computer: default\n", ""]) {
     const problems = await problemsOf(t, "computer: [shell]\n", computer);
     assert.ok(problems.some((p) => beside.test(p)), `${JSON.stringify(computer)}: ${JSON.stringify(problems)}`);

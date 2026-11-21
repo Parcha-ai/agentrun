@@ -7360,6 +7360,7 @@ class ImportTemplateResponseTemplate(TypedDict):
     checkout: Literal["pull_request"] | None
     tool_policy: ImportTemplateResponseTemplateToolPolicy | None
     computer: list[Literal["shell", "none"]] | None
+    needs: list[str] | None
     computer_here: ImportTemplateResponseTemplateComputerHere | None
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
@@ -7428,6 +7429,7 @@ class _ImportTemplateResponseTemplateComputerHereComputerRequired(TypedDict):
 
 class ImportTemplateResponseTemplateComputerHereComputer(_ImportTemplateResponseTemplateComputerHereComputerRequired, total=False):
     provider: str
+    needs: list[str]
 
 
 class ImportTemplateResponseTemplateMcpItem(TypedDict):
@@ -7485,6 +7487,7 @@ class ListTemplatesResponseTemplatesItem(TypedDict):
     checkout: Literal["pull_request"] | None
     tool_policy: ListTemplatesResponseTemplatesItemToolPolicy | None
     computer: list[Literal["shell", "none"]] | None
+    needs: list[str] | None
     computer_here: ListTemplatesResponseTemplatesItemComputerHere | None
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
@@ -7553,6 +7556,7 @@ class _ListTemplatesResponseTemplatesItemComputerHereComputerRequired(TypedDict)
 
 class ListTemplatesResponseTemplatesItemComputerHereComputer(_ListTemplatesResponseTemplatesItemComputerHereComputerRequired, total=False):
     provider: str
+    needs: list[str]
 
 
 class ListTemplatesResponseTemplatesItemMcpItem(TypedDict):

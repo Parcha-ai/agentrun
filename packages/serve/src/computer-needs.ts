@@ -50,10 +50,13 @@ export async function missingNeeds(client: ComputerClient, needs: readonly strin
   return { missing };
 }
 
+/** How to give the Docker box an image that has the programs a sandbox needs. */
+export const DOCKER_IMAGE_FIX = `Set AGENTRUN_DOCKER_IMAGE to an image that has them and restart the server. For video (chrome, ffmpeg, ffprobe, hyperframes), build the media image: docker build -t agentrun-media:<first 12 hex of its sha256> - < ${MEDIA_RECIPE_PATH}, and name that tag.`;
+
 /** How to give `entry`'s box an image that has the programs: a Docker box's is AGENTRUN_DOCKER_IMAGE (the media image
  *  for video tools), a provider that names its image by a setting (imageEnv) by that one, any other its own image. */
 function fixFor(entry: Pick<ProviderEntry, "label" | "local" | "imageEnv"> | undefined): string {
-  if (entry?.local) return `Set AGENTRUN_DOCKER_IMAGE to an image that has them and restart the server. For video (chrome, ffmpeg, ffprobe, hyperframes), build the media image: docker build -t agentrun-media:<first 12 hex of its sha256> - < ${MEDIA_RECIPE_PATH}, and name that tag.`;
+  if (entry?.local) return DOCKER_IMAGE_FIX;
   if (entry?.imageEnv) return `Set ${entry.imageEnv} to an image of ${entry.label}'s that has them and restart the server, or run this agent on the Docker box with an image that has them (AGENTRUN_DOCKER_IMAGE).`;
   return `Give this agent a computer whose image has them: on the Docker box, set AGENTRUN_DOCKER_IMAGE to such an image (the media image, ${MEDIA_RECIPE_PATH}, has chrome, ffmpeg, ffprobe and hyperframes).`;
 }

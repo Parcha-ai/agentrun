@@ -865,7 +865,9 @@ ffprobe, hyperframes), build the media image: ...
 
 Nothing is installed and nothing falls back. A provider whose image is a setting of its own (Daytona's
 `AGENTRUN_DAYTONA_SNAPSHOT`) is named in the fix instead. Only a sandbox takes `needs` (422 `not_allowed` on another
-kind); an agent without it is checked for nothing, and its revision is as before.
+kind); an agent without it is checked for nothing, and its revision is as before. A template states them as `needs`
+beside `computer: [shell]` ([templates](templates/README.md)), and apply writes them onto the sandbox it picks, or
+refuses where the shell here is no sandbox.
 
 **A lost sandbox.** A run's sandbox can be lost mid-run: its vendor deleted it (from its own console or API), or no
 longer has it. The tool call in flight when the loss is confirmed fails with code `gone`: `the computer <name> was lost
