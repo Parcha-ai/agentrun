@@ -14,8 +14,9 @@
 //   that fails, or runs past that, refuses the start in words, and what it wrote is removed. The launch then says so
 //   (RunLaunch.filesPlaced) and names the disk, so the claim mounts that disk and copies nothing.
 // - Retention (sweepUploads): a file older than the retention (AGENTRUN_UPLOAD_RETENTION, default 7d; "off" keeps every
-//   file) that no run in the store names is deleted. A mark of a run the store no longer has does not count, but a mark
-//   younger than MARK_GRACE_MS does: its run may be starting now, its row not yet written.
+//   file) that no run in the store names is deleted. A mark of a run the store no longer has, or keeps only as a deleted
+//   run's tombstone (runKeepsUploads), does not count, but a mark younger than MARK_GRACE_MS does: its run may be
+//   starting now, its row not yet written.
 //
 // Mode 1 is uploads.ts alone, unchanged.
 import { type ArchilSettings, loadArchilSettings, serverIdOf } from "./archil-settings.js";
@@ -280,6 +281,14 @@ export interface Placed {
   readonly launch: RunLaunch;
   undo(): Promise<void>;
 }
+
+/** Whether run `runId` keeps the uploads it was started with, for retention (sweep's hasRun): the store has it and it
+ *  was not deleted. A deleted run's row stays as a tombstone (purgedAt set), which keeps no upload. */
+export const runKeepsUploads = (store: { runs: { get(runId: string): Promise<{ readonly purgedAt: number | null } | undefined> } }) =>
+  async (runId: string): Promise<boolean> => {
+    const run = await store.runs.get(runId);
+    return run !== undefined && run.purgedAt === null;
+  };
 
 /** Mode 2's uploads for one server: the uploads store (`here`), a start's placing of its files (`place`), and the sweep.
  *  Every call reads the Archil settings first: with none (Mode 1), `here` and `place` answer undefined, and the caller

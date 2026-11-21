@@ -178,7 +178,7 @@ import { wakeAnsweredBySetting } from "./settings-wake.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR, type UploadStore } from "./uploads.js";
-import { archilUploads, UPLOAD_RETENTION_ENV, UPLOAD_SWEEP_EVERY_MS, uploadRetentionMs } from "./uploads-archil.js";
+import { archilUploads, runKeepsUploads, UPLOAD_RETENTION_ENV, UPLOAD_SWEEP_EVERY_MS, uploadRetentionMs } from "./uploads-archil.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { recordingsOf, recordingsWorkspace } from "./run-recordings.js";
 import { recordingsFolder } from "./workspace/paths.js";
@@ -1677,7 +1677,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     let sweeping: Promise<void> = Promise.resolve();
     const sweepUploads = () => {
       sweeping = sweeping.then(async () => {
-        const removed = await archilFiles.sweep(uploadRetention, async (runId) => (await store.runs.get(runId)) !== undefined);
+        const removed = await archilFiles.sweep(uploadRetention, runKeepsUploads(store));
         if (removed.length) log?.(logLine("uploads_expired", { removed: removed.length }));
       }).catch((error: Error) => void log?.(logLine("uploads_sweep_failed", { why: String(error?.message ?? error).slice(0, 300) })));
     };

@@ -239,3 +239,31 @@ test("Mode 2: starts at once share the server's copy slots: at most PLACE_CONCUR
     for (let i = 0; i < 5; i++) assert.equal(Buffer.from(disks.get(launch.archilDisk.diskId).files.get(`${runKey("mode2-slots", runId)}/inputs/${run}/f${i}.txt`) ?? "").toString("utf8"), `${run} ${i}`);
   }
 });
+
+test("Mode 2 retention: a run deleted (its tombstone kept) no longer keeps its uploads, while a run that is there still does", { timeout: 120_000 }, async (t) => {
+  const { api, disks, control, store, upload, serverId } = await split(t);
+  const { runKeepsUploads, WorkspaceUploads, UPLOADS_KEY, MARK_GRACE_MS } = await import("../dist/uploads-archil.js");
+  const { archilWorkspace } = await import("../dist/workspace/archil.js");
+  const gone = await upload("gone.txt", Buffer.from("gone"));
+  const kept = await upload("kept.txt", Buffer.from("kept"));
+  const saved = await whenFree(() => api("POST", "/agents", agent("mode2-retain", { tools: ["read"] })));
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  const runs = {};
+  for (const [name, file] of [["gone", gone], ["kept", kept]]) {
+    const started = await whenFree(() => api("POST", "/agents/mode2-retain/runs", { input: { content: "Go." }, file_ids: [file.file_id] }));
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    runs[name] = started.body.run_id;
+    await follow(api, runs[name], ["completed", "failed"], { deadlineMs: 90_000 });
+  }
+  assert.equal((await api("DELETE", `/runs/${runs.gone}`)).status, 204);
+  assert.ok((await store.runs.get(runs.gone))?.purgedAt, "the deleted run's tombstone is in the store");
+  const keeps = runKeepsUploads(store);
+  assert.equal(await keeps(runs.gone), false, "a deleted run keeps no upload");
+  assert.equal(await keeps(runs.kept), true, "a run that is there keeps its uploads");
+  assert.equal(await keeps("01a1fb00-0000-7000-8000-000000000000"), false, "nor does a run the store never had");
+  // The sweep, past the retention and the marks' grace, deletes the deleted run's upload and keeps the other.
+  const uploadsDisk = [...control.disks.values()].find((disk) => disk.name === `agentrun-${serverId}-files`);
+  const sweeper = new WorkspaceUploads(archilWorkspace(disks.get(uploadsDisk.id), UPLOADS_KEY));
+  const removed = await sweeper.sweep(1, keeps, Date.now() + MARK_GRACE_MS + 60_000);
+  assert.deepEqual(removed, [gone.file_id]);
+});
