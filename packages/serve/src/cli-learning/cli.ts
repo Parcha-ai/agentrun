@@ -1,8 +1,9 @@
-import { mkdir, open, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { secret } from '../secrets.js';
 import { defaultData } from '../server-fs.js';
+import { takeHold, releaseHold } from '../harness-install.js';
 import { cliLearningUrl, installCliLearning, removeCliLearning, statusCliLearning, type CliLearningRuntime } from './install.js';
 import { connectionFile, readConnection, saveConnection, type CliLearningConnection } from './state.js';
 
@@ -63,14 +64,12 @@ async function hookInput(input: AsyncIterable<string | Uint8Array>): Promise<unk
 
 async function connectionLock<T>(file: string, operation: () => Promise<T>): Promise<T> {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-  const path = `${file}.lock`;
-  let handle;
-  try { handle = await open(path, 'wx', 0o600); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('Another learning connection change is in progress for this project.');
-    throw error;
-  }
-  try { return await operation(); } finally { await handle.close(); await rm(path, { force: true }); }
+  const holdPath = `${file}.lock`;
+  // A long retry must never lose its hold merely because time passed. A dead local
+  // process (including PID reuse) or an abandoned legacy empty lock is recoverable.
+  const token = await takeHold(dirname(file), { holdPath, timeoutMs: Infinity });
+  if (!token) throw new Error('Another learning connection change is in progress for this project.');
+  try { return await operation(); } finally { await releaseHold(dirname(file), token, { holdPath }); }
 }
 
 /** Installer/status command plus the bounded stdin worker invoked by ordinary CLI hooks. */

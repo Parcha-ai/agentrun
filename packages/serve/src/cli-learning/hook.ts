@@ -40,8 +40,18 @@ type Turn = {
   prior: DialogueMessage[]; priorTruncated?: boolean; priorWithheld?: boolean; sourceRedacted?: boolean; policyRecoveryAllowed?: boolean; sourceStanding?: NativeInstructionSnapshot; dialogue?: DialogueMessage[]; receipt?: Receipt; context?: string; seedMarker?: string;
   events?: Event[]; completion?: Completion; sentBatches?: number; delivered?: boolean; failure?: string;
 };
-type Session = { active: string[]; history: DialogueMessage[]; historyTruncated?: boolean; historyWithheld?: boolean; completed: string[] };
+type Session = { active: string[]; history: DialogueMessage[]; historyTruncated?: boolean; historyWithheld?: boolean; completed: string[]; retryAfter?: string };
 type PendingHook = { version: 1; createdAt: number; input: Record<string, unknown>; cursor?: TranscriptCursor | null; redacted?: boolean };
+type RetryCursor = { pendingAfter?: string; sessionAfter?: string };
+
+/** A retained receipt or busy lock never permanently occupies a bounded retry slot. Names,
+ * not array offsets, keep progress stable when hooks add or remove receipts between retries. */
+function retryBatch(names: string[], after?: string): string[] {
+  const sorted = names.slice().sort();
+  const next = typeof after === 'string' ? sorted.findIndex(name => name > after) : 0;
+  const start = next < 0 ? 0 : next;
+  return [...sorted.slice(start), ...sorted.slice(0, start)].slice(0, 100);
+}
 
 const rootOf = (options: CliLearningHookOptions, connection: CliLearningConnection) => journalRoot(options.dataDir, connection);
 const changedEnrollment = () => new Error('CLI capture enrollment changed. The prior journal is preserved for review; it was not retried.');
@@ -143,13 +153,13 @@ async function hasPendingSubmit(root: string, sessionId: string, turnId?: string
     return Boolean(await readPrivateJson<PendingHook>(path));
   }
   const names = (await readdir(directory).catch(() => [])).filter(name => /^[a-f0-9]{64}\.json$/.test(name));
-  for (const name of names.slice(0, 100)) {
+  // Read the whole pending index: a large queue of SessionEnd receipts alone
+  // must not make each one defer forever. Retry dispatch remains bounded.
+  for (const name of names) {
     const pending = await readPrivateJson<PendingHook>(join(directory, name));
     if (pending?.input.hook_event_name === 'UserPromptSubmit' && pending.input.session_id === sessionId) return true;
   }
-  // The bounded retry drain removes older receipts. Defer SessionEnd until it can establish
-  // that no earlier source prompt remains, rather than discarding an unindexed terminal.
-  return names.length > 100;
+  return false;
 }
 
 const historyLimit = (history: DialogueMessage[]): { history: DialogueMessage[]; truncated: boolean } => {
@@ -406,24 +416,41 @@ export async function flushCliLearning(options: CliLearningHookOptions, dependen
   baseUrl(connection);
   const scope = connectionScope(connection);
   counts.blocked_journals = await blockedJournals(options, connection);
-  const pendingDirectory = join(rootOf(options, connection), 'pending');
+  const root = rootOf(options, connection);
+  const cursorPath = join(root, 'retry.json');
+  const cursor = await readPrivateJson<RetryCursor>(cursorPath) ?? {};
+  const pendingDirectory = join(root, 'pending');
   const pending = await readdir(pendingDirectory).catch(() => []);
+  const selected = retryBatch(pending.filter(name => /^[a-f0-9]{64}\.json$/.test(name)), cursor.pendingAfter);
+  if (selected.length) {
+    cursor.pendingAfter = selected.at(-1);
+    await writePrivateJson(cursorPath, cursor);
+  }
   const queued: PendingHook[] = [];
-  for (const name of pending.slice(0, 100)) {
-    if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+  for (const name of selected) {
     const receipt = await readPrivateJson<PendingHook>(join(pendingDirectory, name));
     if (receipt) queued.push(receipt);
   }
   queued.sort((a, b) => a.createdAt - b.createdAt || Number(b.input.hook_event_name === 'UserPromptSubmit') - Number(a.input.hook_event_name === 'UserPromptSubmit'));
   for (const receipt of queued) await runCliLearningHook(options, receipt.input, { ...dependencies, connectionScope: scope });
-  const directories = await readdir(rootOf(options, connection), { withFileTypes: true }).catch(() => []);
-  for (const entry of directories.slice(0, 100)) {
-    if (!entry.isDirectory() || !/^[a-f0-9]{64}$/.test(entry.name)) continue;
-    const directory = join(rootOf(options, connection), entry.name);
+  const directories = (await readdir(root, { withFileTypes: true }).catch(() => []))
+    .filter(entry => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+  const sessions = retryBatch(directories.map(entry => entry.name), cursor.sessionAfter);
+  if (sessions.length) {
+    cursor.sessionAfter = sessions.at(-1);
+    await writePrivateJson(cursorPath, cursor);
+  }
+  for (const name of sessions) {
+    const directory = join(root, name);
     await locked(directory, async () => {
       const session = await readPrivateJson<Session>(join(directory, 'session.json'));
       if (!session) return;
-      for (const key of session.active.slice(0, 100)) {
+      const keys = retryBatch(session.active, session.retryAfter);
+      if (keys.length) {
+        session.retryAfter = keys.at(-1);
+        await writePrivateJson(join(directory, 'session.json'), session);
+      }
+      for (const key of keys) {
         const path = turnFile(directory, key), turn = await readPrivateJson<Turn>(path);
         if (!turn?.completion || turn.connectionId !== connection.connection_id) continue;
         try { await deliver(options.dataDir, connection, path, turn, dependencies.fetch ?? fetch); }
@@ -437,8 +464,7 @@ export async function flushCliLearning(options: CliLearningHookOptions, dependen
   const remaining = await readdir(pendingDirectory).catch(() => []);
   counts.pending = remaining.filter(name => /^[a-f0-9]{64}\.json$/.test(name)).length;
   for (const entry of directories) {
-    if (!entry.isDirectory() || !/^[a-f0-9]{64}$/.test(entry.name)) continue;
-    const directory = join(rootOf(options, connection), entry.name);
+    const directory = join(root, entry.name);
     const session = await readPrivateJson<Session>(join(directory, 'session.json'));
     for (const key of session?.active ?? []) {
       const turn = await readPrivateJson<Turn>(turnFile(directory, key));

@@ -29,6 +29,8 @@ describe("existing agent observation", () => {
     expect(section!.textContent).toContain("Keep starting Codex CLI and Claude Code normally");
     expect(section!.querySelector('[role="group"][aria-label="Enable learning options"]')).not.toBeNull();
     expect(section!.textContent).toContain("selected project");
+    expect(section!.textContent).toContain("owner corrections");
+    expect(section!.textContent).not.toMatch(/reflection|notes and skills|native sign-in/i);
   });
   it("uses native connection and activity states without interpreting idle as a completed task", () => {
     expect(observedState(session)).toBe("Running");

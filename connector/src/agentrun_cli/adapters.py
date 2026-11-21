@@ -111,16 +111,21 @@ def codex_rows(native_ids=None, diagnostic=None, stopping=None, loaded_only=Fals
 
             call("initialize", {"clientInfo": {"name": "agentrun_observer", "version": __version__}})
             socket.send(json.dumps({"method": "initialized"}))
+            seen = set()
             if native_ids is not None:
                 for native in native_ids:
+                    if native in seen: continue
                     try:
-                        rows.append(call("thread/read", {"threadId": native, "includeTurns": False})["thread"])
+                        row = call("thread/read", {"threadId": native, "includeTurns": False})["thread"]
+                        if isinstance(row, dict) and row.get("id") not in seen:
+                            rows.append(row); seen.add(row.get("id"))
                     except (ValueError, KeyError, TypeError):
                         continue
-                return rows
-            # Loaded threads include exec and delegated sessions. Read these first
-            # so the bounded history walk cannot hide agents currently running.
-            seen = set()
+                if not loaded_only:
+                    return rows
+            # Mixed selections also read explicitly selected unloaded sessions above, inside this same
+            # pass deadline. Loaded threads include exec and delegated sessions; read them before any
+            # fallback history walk so that walk cannot hide agents currently running.
             loaded_available = False
             try:
                 loaded = call("thread/loaded/list", {"limit": 100})
@@ -128,7 +133,7 @@ def codex_rows(native_ids=None, diagnostic=None, stopping=None, loaded_only=Fals
                     raise ValueError("codex_invalid_response")
                 loaded_available = True
                 for native in loaded.get("data", [])[:100]:
-                    if not isinstance(native, str): continue
+                    if not isinstance(native, str) or native in seen: continue
                     try:
                         row = call("thread/read", {"threadId": native, "includeTurns": False})["thread"]
                         if isinstance(row, dict) and row.get("id") not in seen:
@@ -268,11 +273,11 @@ def observe(state, stopping=None):
         return rows
     codex = [source for source in selections if source["harness"] == "codex"]
     if codex:
-        identifiers = {source["external_session_id"] for source in codex}
+        identifiers = {source["external_session_id"] for source in codex if source["mode"] == "session"}
         native_ids = [key.split(":", 1)[1] for key, value in state.data["identities"].items()
                       if key.startswith("codex:") and value in identifiers]
         diagnostic = {"harness": "codex"}
-        observed = candidates(state, "codex", codex_rows(None if any(source["mode"] != "session" for source in codex) else native_ids,
+        observed = candidates(state, "codex", codex_rows(native_ids,
                               diagnostic=diagnostic, stopping=stopping, loaded_only=any(source["mode"] != "session" for source in codex)), selections=selections, diagnostic=diagnostic)
         diagnostic["sessions"] = len(observed)
         diagnostics.append(diagnostic)

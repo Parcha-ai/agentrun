@@ -1262,8 +1262,8 @@ test("public learning connection verbs reach the local installer while existing 
   const help = spawnSync(process.execPath, [BIN, "learning", "connect", "--help"], {env,encoding:"utf8",timeout:30_000});
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /--runtime codex\|claude-code/);
-  const api = spawnSync(process.execPath, [BIN, "learning", "record-eval", "--help"], {env,encoding:"utf8",timeout:30_000});
+  const api = spawnSync(process.execPath, [BIN, "learning", "corrections", "--help"], {env,encoding:"utf8",timeout:30_000});
   assert.equal(api.status, 0, api.stderr);
-  assert.match(api.stdout, /record-eval/);
+  assert.match(api.stdout, /corrections/);
   assert.doesNotMatch(api.stdout, /server command/);
 });

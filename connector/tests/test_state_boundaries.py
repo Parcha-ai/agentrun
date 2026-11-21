@@ -130,6 +130,95 @@ class StateBoundaries(unittest.TestCase):
         requested = next(call['params']['sourceKinds'] for call in calls if call['method'] == 'thread/list')
         self.assertTrue({'cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentThreadSpawn', 'unknown'} <= set(requested))
 
+    def test_mixed_codex_selections_keep_explicit_history_and_filter_loaded_sessions(self):
+        for mode in ('project', 'harness'):
+            for loaded_available in (True, False):
+                with self.subTest(mode=mode, loaded_available=loaded_available), tempfile.TemporaryDirectory() as directory:
+                    state = State(directory)
+                    historical = state.identity('codex', 'historical')
+                    live = state.identity('codex', 'live')
+                    project = state.project('codex', '/fixture/subscribed')
+                    state.data['selections'] = [
+                        {'source_id': identity, 'harness': 'codex', 'mode': 'session',
+                         'external_session_id': identity, 'include_future_sessions': False}
+                        for identity in (historical, live)
+                    ] + [{'source_id': project if mode == 'project' else 'codex', 'harness': 'codex', 'mode': mode,
+                          'external_session_id': '', 'include_future_sessions': True}]
+                    raw = {
+                        'historical': {'id': 'historical', 'cwd': '/fixture/history', 'name': 'Historical task',
+                                       'path': '/fixture/history/rollout.jsonl', 'model': 'codex-model', 'status': {'type': 'idle'}},
+                        'live': {'id': 'live', 'cwd': '/fixture/subscribed', 'name': 'Current task',
+                                 'status': {'type': 'active', 'activeFlags': ['waitingOnApproval']}},
+                        'outside': {'id': 'outside', 'cwd': '/fixture/other', 'name': 'Another task', 'status': {'type': 'active'}},
+                    }
+                    calls = []
+                    class Socket:
+                        def __enter__(self): return self
+                        def __exit__(self, *args): pass
+                        def send(self, message):
+                            self.message = json.loads(message)
+                            if 'id' in self.message: calls.append(self.message)
+                        def recv(self, timeout):
+                            method = self.message['method']
+                            if method == 'thread/loaded/list' and not loaded_available:
+                                return json.dumps({'id': self.message['id'], 'error': {'code': -32601}})
+                            result = ({'data': ['live', 'outside']} if method == 'thread/loaded/list' else
+                                      {'thread': raw[self.message['params']['threadId']]} if method == 'thread/read' else
+                                      {'data': [raw['live'], raw['outside']], 'nextCursor': None} if method == 'thread/list' else {})
+                            return json.dumps({'id': self.message['id'], 'result': result})
+                    with patch.object(adapters, 'command_json', return_value={'status': 'running', 'socketPath': '/fixture/codex.sock'}), \
+                         patch.object(adapters.Path, 'is_socket', return_value=True), patch.object(adapters, 'unix_connect', return_value=Socket()):
+                        observed = adapters.observe(state)
+                    by_native = {row.native_id: row for row in observed}
+                    self.assertIn('historical', by_native, 'an unloaded explicit session must be read, not replaced by an unknown placeholder')
+                    self.assertEqual((by_native['historical'].id, by_native['historical'].display_name, by_native['historical'].activity),
+                                     (historical, 'Historical task', 'idle'))
+                    self.assertEqual(by_native['historical'].usage_path, '/fixture/history/rollout.jsonl')
+                    self.assertEqual(by_native['historical'].model, 'codex-model')
+                    self.assertEqual((by_native['live'].display_name, by_native['live'].activity), ('Current task', 'waiting_input'))
+                    expected = {'historical', 'live', 'outside'} if mode == 'harness' else {'historical', 'live'}
+                    self.assertEqual(set(by_native), expected)
+                    self.assertEqual(len(observed), len(expected), 'explicit and loaded results represent each session only once')
+                    self.assertEqual('codex:outside' in state.data['identities'], mode == 'harness', 'project observation must not allocate an unapproved identity')
+                    reads = [call['params'] for call in calls if call['method'] == 'thread/read']
+                    self.assertEqual(reads.count({'threadId': 'historical', 'includeTurns': False}), 1)
+                    self.assertEqual(reads.count({'threadId': 'live', 'includeTurns': False}), 1, 'a loaded explicit session needs only one read')
+                    self.assertEqual(sum(call['method'] == 'initialize' for call in calls), 1, 'both reads share one connection and pass deadline')
+                    self.assertFalse(any(call['method'] in {'thread/resume', 'thread/start'} for call in calls))
+                    if loaded_available:
+                        self.assertFalse(any(call['method'] == 'thread/list' for call in calls), 'mixed selections do not widen into an unnecessary history scan')
+
+    def test_mixed_codex_unreadable_explicit_session_does_not_hide_loaded_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            missing = state.identity('codex', 'missing')
+            project = state.project('codex', '/fixture/subscribed')
+            state.data['selections'] = [
+                {'source_id': missing, 'harness': 'codex', 'mode': 'session', 'external_session_id': missing, 'include_future_sessions': False},
+                {'source_id': project, 'harness': 'codex', 'mode': 'project', 'external_session_id': '', 'include_future_sessions': True},
+            ]
+            calls = []
+            class Socket:
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def send(self, message):
+                    self.message = json.loads(message)
+                    if 'id' in self.message: calls.append(self.message)
+                def recv(self, timeout):
+                    method = self.message['method']
+                    if method == 'thread/read' and self.message['params']['threadId'] == 'missing':
+                        return json.dumps({'id': self.message['id'], 'error': {'code': -32602}})
+                    result = ({'data': ['live']} if method == 'thread/loaded/list' else
+                              {'thread': {'id': 'live', 'cwd': '/fixture/subscribed', 'name': 'Current task', 'status': {'type': 'active'}}}
+                              if method == 'thread/read' else {})
+                    return json.dumps({'id': self.message['id'], 'result': result})
+            with patch.object(adapters, 'command_json', return_value={'status': 'running', 'socketPath': '/fixture/codex.sock'}), \
+                 patch.object(adapters.Path, 'is_socket', return_value=True), patch.object(adapters, 'unix_connect', return_value=Socket()):
+                observed = adapters.observe(state)
+            self.assertEqual([(row.native_id, row.activity) for row in observed], [('live', 'working'), ('', 'unknown')])
+            self.assertEqual(observed[1].id, missing)
+            self.assertTrue(any(call['method'] == 'thread/read' and call['params']['threadId'] == 'missing' for call in calls))
+
     def test_server_mode_survives_response_validation(self):
         response = {'connector': {'id': 'connector', 'workspace_id': 'workspace', 'selections_revision': 1, 'selections': [], 'ingestion_mode': 'otlp'},
                     'credential': 'fixture-credential', 'credential_expires_at': '2099-01-01T00:00:00Z'}

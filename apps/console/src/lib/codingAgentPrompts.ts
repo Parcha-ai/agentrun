@@ -113,6 +113,15 @@ export function queryRunsPrompt(origin: string, agentId?: string): string {
 Help me investigate ${agentId === undefined ? "runs across all agents" : `runs of agent ${JSON.stringify(agentId)}`}. Ask what I want to know and the time range if unclear, then make read-only requests to ${root}/v2${path}, following pagination, and inspect relevant run timelines/files. Include server-run sessions and imported history; for an unfiltered cross-agent query, also read /v2/observations for independently running sessions. Identify the source and data freshness; observed idle sessions are not proof of completed tasks. Summarize findings with links to the runs, distinguish unknown metrics from zero, and do not create, edit, rerun or cancel anything.`;
 }
 
+/** Session identities scope observation and usage reads; they are not managed agent IDs. */
+export function queryObservedSessionPrompt(origin: string, sessionId: string, from?: string): string {
+  const root = server(origin).origin;
+  const usage = new URLSearchParams({ agent: sessionId, ...(from ? { from } : {}) });
+  return `${setup(origin)}
+
+Help me investigate connected session ${JSON.stringify(sessionId)}. Ask what I want to know if unclear, then make read-only requests to ${root}/v2/observations?session_id=${encodeURIComponent(sessionId)} for its source and activity, and ${root}/v2/stats?${usage} for usage in the selected range. This session ID is not a managed agent ID; do not request an agent-runs endpoint with it. Identify the source and data freshness; idle sessions are not proof of completed tasks. Distinguish unknown or incomplete metrics from zero. Link to ${root}/#/observations/${encodeURIComponent(sessionId)} and do not create, edit, rerun or cancel anything.`;
+}
+
 export function runAgentPrompt(origin: string, agentId: string, sdk?: BackendSdkBinding, cli?: CliLearningRuntime): string {
   const root = server(origin).origin;
   if (cli) return `${setup(origin)}

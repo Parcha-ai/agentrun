@@ -25,7 +25,7 @@ function deferred<T>() {
 }
 const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0); for (let i = 0; i < 20; i++) await Promise.resolve(); });
 const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
-async function mount(answerStats: (n: number, url: URL) => Response | Promise<Response>, answerRecent: (n: number) => Response | Promise<Response> = () => json(recent("Current recent run"))) {
+async function mount(answerStats: (n: number, url: URL) => Response | Promise<Response>, answerRecent: (n: number) => Response | Promise<Response> = () => json(recent("Current recent run")), answerAgents?: (url: URL) => Response | Promise<Response>) {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   const statsCalls: URL[] = [], recentCalls: URL[] = [];
@@ -34,8 +34,9 @@ async function mount(answerStats: (n: number, url: URL) => Response | Promise<Re
     if (u.pathname === "/v2/auth/session") return json({ password_set: true, signed_in: true });
     if (u.pathname === "/v2/capabilities") return json({ models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
     if (u.pathname === "/v2/health") return json({ status: "ok" });
+    if (u.pathname === "/v2/observations") return json({ sessions: [], connectors: [], usage: { input_tokens: null, output_tokens: null, total_tokens: null, cache_read_tokens: null, cache_write_tokens: null, cache_hit_rate: null, status: "unavailable", models: [], daily: [] } });
     // A connected agent remains visible independently of the stats/recent-run refreshes below.
-    if (u.pathname === "/v2/agents") return json({ agents: u.searchParams.get("archived") === "true" ? [] : [{ agent_id: "calc", kind: "agentic", archived_at: null, revision: "r1", revisions: 1, definition: { version: 1, name: "Calculator", instructions: "Help", tools: [], skills: [] } }], next_cursor: null });
+    if (u.pathname === "/v2/agents") return answerAgents?.(u) ?? json({ agents: u.searchParams.get("archived") === "true" ? [] : [{ agent_id: "calc", kind: "agentic", archived_at: null, revision: "r1", revisions: 1, definition: { version: 1, name: "Calculator", instructions: "Help", tools: [], skills: [] } }], next_cursor: null });
     if (u.pathname === "/v2/stats") { statsCalls.push(u); return answerStats(statsCalls.length, u); }
     if (u.pathname === "/v2/runs" && u.searchParams.get("limit") === "10" && !u.searchParams.has("status")) { recentCalls.push(u); return answerRecent(recentCalls.length); }
     if (u.pathname === "/v2/runs") return json({ runs: [], next_cursor: null });
@@ -74,6 +75,31 @@ it("keeps explicit refresh effective while automatic refresh waits for its slow 
   expect(page.statsCalls).toHaveLength(2);
   await act(async () => held.resolve(json(stats(88)))); await flush();
   expect(page.total()).toBe("88");
+});
+
+it("keeps the last connected-agent inventory through a failed poll and explicit refresh, with an error until recovery", async () => {
+  let fail = false;
+  const recovery = deferred<Response>();
+  let recovering = false;
+  const agents = () => json({ agents: [{ agent_id: "calc", kind: "agentic", archived_at: null, revision: "r1", revisions: 1, definition: { version: 1, name: "Calculator", instructions: "Help", tools: [], skills: [] } }], next_cursor: null });
+  const page = await mount(() => json(stats(1)), undefined, url => url.searchParams.get("archived") === "true" ? json({ agents: [], next_cursor: null }) : recovering ? recovery.promise : fail ? unavailable() : agents());
+  const inventory = () => page.host.querySelector('section[aria-label="Connected agents"]')!;
+  const count = () => page.host.querySelector('a[href="#/agents"]')?.querySelectorAll("p")[1]?.textContent;
+  expect(inventory().textContent).toContain("Calculator");
+  expect(count()).toBe("1");
+  fail = true;
+  await advance(10_000); await flush();
+  expect(inventory().textContent).toContain("Calculator");
+  expect(count()).toBe("1");
+  expect(inventory().querySelector('[role="alert"]')?.textContent).toContain("Could not refresh connected agents");
+  recovering = true;
+  await act(async () => page.host.querySelector<HTMLButtonElement>('[aria-label="Refresh Mission Control"]')!.click()); await flush();
+  expect(inventory().textContent).toContain("Calculator");
+  expect(count()).toBe("1");
+  expect(inventory().querySelector('[role="alert"]')).not.toBeNull();
+  await act(async () => recovery.resolve(agents())); await flush();
+  expect(inventory().textContent).toContain("Calculator");
+  expect(inventory().querySelector('[role="alert"]')).toBeNull();
 });
 
 it("lets a user scope change supersede a pending read without its late answer unlocking or overwriting the new scope", async () => {

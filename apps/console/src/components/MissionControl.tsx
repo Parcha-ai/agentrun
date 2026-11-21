@@ -36,7 +36,7 @@ function MissionFrame({ actions, children }: { actions?: React.ReactNode; childr
  *  or failed (each count a link to its list), what they cost (said with its basis, never $0 for a cost not known), runs
  *  a connected-agent inventory, and the latest runs with their agent, duration and cost, with combined tokens and run time, success and tools
  *  over the range picked (MissionAnalytics). Before the owner's first run, `startHere` sits above the data; it never replaces it. */
-export function MissionControl({ view, error, onRetry, scope, needsYou, asking, failed, live, startHere, actions, observed, agents }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; asking?: number | null; failed?: number | null; live?: number | null; startHere?: React.ReactNode; actions?: React.ReactNode; observed?: ObservationRead; agents?: Agent[] | null }) {
+export function MissionControl({ view, error, onRetry, scope, needsYou, asking, failed, live, startHere, actions, observed, agents, agentsError }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; asking?: number | null; failed?: number | null; live?: number | null; startHere?: React.ReactNode; actions?: React.ReactNode; observed?: ObservationRead; agents?: Agent[] | null; agentsError?: string | null }) {
   const inventory = agentInventory(agents ?? [], observed?.data?.sessions ?? []);
   const managed = agents === undefined ? (view?.perAgent ?? []).map(a => ({ id: a.agentId, name: a.name, href: agentHash(a.agentId, "runs"), detail: `${a.runs} runs` }))
     : inventory.agents.map(a => ({ id: a.agent_id, name: a.definition.name ?? a.agent_id, href: agentHash(a.agent_id, "runs"), detail: `${view?.perAgent.find(row => row.agentId === a.agent_id)?.runs ?? a.runs?.count ?? 0} runs` }));
@@ -49,6 +49,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
   const inventoryNote = inventoryMissing ? observed?.loading ? "Loading connected agents" : "Agent count unavailable" : undefined;
   const connectedAgents = <section className="min-w-0 overflow-hidden border bg-card" aria-label="Connected agents">
     <h2 className="caps flex min-h-12 items-center gap-2 border-b px-5 py-3 text-small font-semibold"><Brain className="size-4" aria-hidden />Connected agents</h2>
+    {agentsError && <Banner tone="error">Could not refresh connected agents: {agentsError}</Banner>}
     {observed?.error && <Banner tone="error">Could not refresh connected agents: {observed.error}</Banner>}
     {observed?.data?.connectors.some(connector => connector.storage_full) && <Banner tone="warning">A connection has reached its activity storage limit. New usage reports may be missing.</Banner>}
     {filtered.length ? <ul>{filtered.map(row => <li key={row.href} className="border-b last:border-b-0">

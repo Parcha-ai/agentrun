@@ -50,8 +50,8 @@ export function NativeConnections({ v2, go, initialSource = "server" }: { v2: Cl
       <CodingAgentAction label="Connect agent" prompt={`${connectExistingAgentsPrompt(location.origin)}\n\nI selected observation of an existing application. Preserve its current job trigger and SDK configuration; do not import or launch a replacement agent.`} />
     </section><section className="space-y-4 border bg-card p-4" aria-label="Learn from existing CLI sessions">
       <h2 className="text-lg font-semibold">Learn as you code</h2>
-      <p className="max-w-prose text-body text-muted-foreground">Keep starting Codex CLI and Claude Code normally. Enable learning for a selected project to send completed prompt windows for reflection and receive approved guidance on later prompts.</p>
-      <p className="max-w-prose text-small text-muted-foreground">Uses your local AgentRun server and native sign-in. No SDK wrapper required. Review notes and skills in the agent’s Learning tab.</p>
+      <p className="max-w-prose text-body text-muted-foreground">Keep starting Codex CLI and Claude Code normally. Capture prompt windows for a selected project and deliver owner corrections on later prompts.</p>
+      <p className="max-w-prose text-small text-muted-foreground">Uses your local AgentRun server. No SDK wrapper required. Add and review corrections in the agent’s Learning tab.</p>
       <CodingAgentAction variant="primary" label="Enable learning" prompt={enableCliLearningPrompt(location.origin)} />
     </section></> : source === "remote" ? <RemoteConnections v2={v2} /> : <>
     <ConnectExistingAgents />

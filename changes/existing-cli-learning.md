@@ -24,3 +24,5 @@ records need review.
 
 Disconnect disables local capture before removing hooks or contacting the server. If server revocation is
 pending, loaded hooks and retries stay disabled until disconnect completes; status exposes `capture_enabled`.
+Retries advance across retained sessions, queued hooks and unfinished turns so older entries cannot indefinitely
+hide later uploads. Interrupted connection commands recover an abandoned lock while a live owner keeps it.

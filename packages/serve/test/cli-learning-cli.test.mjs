@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { learningMain } from '../dist/cli-learning/cli.js';
 import { connectionFile } from '../dist/cli-learning/state.js';
@@ -140,3 +142,50 @@ for (const state of ['revoked', 'missing', 'offline']) {
     await stat(f.privateFile);
   });
 }
+
+test('a connection command recovers a lock left by a killed owner',async t=>{
+ const f=await fixture(t);
+ const child=spawn(process.execPath,['--input-type=module','-e',`
+  const { learningMain }=await import(${JSON.stringify(new URL('../dist/cli-learning/cli.js',import.meta.url).href)});
+  await learningMain(JSON.parse(process.argv[1]),{
+   stdout:()=>{},stderr:()=>{},command:['node','/opt/agentrun/cli.js'],
+   fetch:async()=>{process.stdout.write('operation-started\\n');return new Promise(()=>setInterval(()=>{},1000));},
+  });
+ `,JSON.stringify(f.args('connect'))],{stdio:['ignore','pipe','pipe']});
+ t.after(()=>child.kill('SIGKILL'));
+ const exited=once(child,'exit');
+ const [ready]=await once(child.stdout,'data',{signal:AbortSignal.timeout(5000)});
+ assert.match(String(ready),/operation-started/);
+ child.kill('SIGKILL');await exited;
+ assert.equal(await learningMain(f.args('connect'),f.io),0,'a dead lock owner must not block connection changes forever');
+ assert.equal(f.requests.filter(request=>request.method==='POST').length,1);
+ await assert.rejects(readFile(`${f.privateFile}.lock`),{code:'ENOENT'});
+});
+
+test('an old empty connection lock is recovered while a fresh incomplete lock stays protected',async t=>{
+ const f=await fixture(t),lock=`${f.privateFile}.lock`;
+ await mkdir(dirname(f.privateFile),{recursive:true});
+ await writeFile(lock,'',{mode:0o600});
+ assert.equal(await learningMain(f.args('connect'),f.io),2);
+ assert.equal(f.requests.length,0,'a fresh incomplete owner record must not be stolen');
+ const before=new Date(Date.now()-60_000);await utimes(lock,before,before);
+ assert.equal(await learningMain(f.args('connect'),f.io),0,'legacy empty locks abandoned by a crash become recoverable');
+ await assert.rejects(readFile(lock),{code:'ENOENT'});
+});
+
+test('a live connection owner excludes a concurrent command until it releases the lock',async t=>{
+ const f=await fixture(t),original=f.io.fetch;
+ let release,started;
+ const gate=new Promise(resolve=>{release=resolve;});
+ const entered=new Promise(resolve=>{started=resolve;});
+ f.io.fetch=async(url,request)=>{if(request.method==='POST'){started();await gate;}return original(url,request);};
+ const first=learningMain(f.args('connect'),f.io);
+ try{
+  await entered;
+  assert.equal(await learningMain(f.args('disconnect'),f.io),2);
+  assert.match(f.stderr.at(-1),/in progress/);
+  assert.equal(f.requests.length,0,'the competing command never reaches the server');
+ }finally{release();}
+ assert.equal(await first,0);
+ assert.equal(await learningMain(f.args('disconnect'),f.io),0);
+});

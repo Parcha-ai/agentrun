@@ -28,7 +28,7 @@ async function fixture(t,runtime='codex'){
  const unlock=()=>unlink(join(directory,'.lock'));
  const finish=()=>appendFile(transcript,JSON.stringify({type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'Ready.'}]}})+'\n');
  const pendingCount=async()=>(await readdir(pending).catch(()=>[])).length;
- return {options,dependencies,directory,calls,input,prompt,lock,unlock,finish,pendingCount,transcript};
+ return {options,dependencies,root,directory,calls,input,prompt,lock,unlock,finish,pendingCount,transcript};
 }
 
 test('Stop survives a queued submit when the session lock clears before the terminal hook',async t=>{
@@ -139,4 +139,79 @@ test('retry reports a frozen undelivered completion even when its session lock i
  const result=await flushCliLearning(f.options,{fetch:f.dependencies.fetch});
  assert.equal(result.pending,1);
  await f.unlock();
+});
+
+async function terminalReceipt(f, directory, key) {
+ await mkdir(directory,{recursive:true});
+ await writeFile(join(directory,`${key}.json`),JSON.stringify({
+  version:1,key,connectionId:'connection-1',events:[],
+  receipt:{run_id:'retry-run',agent_id:'agent-1',token:'fixture-run-token'},
+  completion:{status:'completed',answer:'Ready.',session_id:'retry-session',evidence_complete:false,seed_observed:false},
+ }));
+}
+
+test('bounded retries eventually reach a completion after more than 100 retained completed sessions',async t=>{
+ const f=await fixture(t);
+ for(let index=0;index<100;index++){
+  const directory=join(f.root,index.toString(16).padStart(64,'0'));
+  await mkdir(directory,{recursive:true});
+  await writeFile(join(directory,'session.json'),JSON.stringify({active:[],history:[],completed:['earlier-turn']}));
+ }
+ const directory=join(f.root,'f'.repeat(64)),key=stateHash('later-terminal');
+ await terminalReceipt(f,directory,key);
+ await writeFile(join(directory,'session.json'),JSON.stringify({active:[key],history:[],completed:[]}));
+ let result;
+ for(let attempt=0;attempt<3;attempt++)result=await flushCliLearning(f.options,{fetch:f.dependencies.fetch});
+ assert.equal(f.calls.filter(call=>call.path.endsWith('/complete')).length,1,'retained completed sessions must not permanently hide later terminal receipts');
+ assert.equal(result.pending,0);
+});
+
+test('bounded retries rotate past busy queued hooks instead of starving later sessions',async t=>{
+ const f=await fixture(t),pending=join(f.root,'pending');
+ await mkdir(pending,{recursive:true});
+ const hooks=Array.from({length:101},(_,index)=>{
+  const input=f.input('Stop',{session_id:`queued-session-${index}`,last_assistant_message:'Finished before enrollment.'});
+  return {input,name:`${stateHash(JSON.stringify([input.session_id,input.turn_id,'Stop']))}.json`};
+ }).sort((a,b)=>a.name.localeCompare(b.name));
+ for(const [index,hook] of hooks.entries()){
+  await writeFile(join(pending,hook.name),JSON.stringify({version:1,createdAt:index,input:hook.input}));
+  if(index<100){
+   const directory=join(f.root,stateHash(hook.input.session_id));
+   await mkdir(directory,{recursive:true});
+   await writeFile(join(directory,'.lock'),JSON.stringify({pid:process.pid}));
+  }
+ }
+ await flushCliLearning(f.options,{fetch:f.dependencies.fetch});
+ assert.equal(await f.pendingCount(),101,'the first retry has a bounded 100-hook budget');
+ await flushCliLearning(f.options,{fetch:f.dependencies.fetch});
+ await assert.rejects(readFile(join(pending,hooks.at(-1).name)),{code:'ENOENT'},'a later unlocked hook gets its next retry even while earlier locks stay busy');
+ assert.equal(await f.pendingCount(),100);
+ assert.equal(f.calls.length,0,'unmatched terminals never dispatch a source task');
+});
+
+test('bounded retries rotate past unfinished turns within one session',async t=>{
+ const f=await fixture(t),keys=Array.from({length:100},(_,index)=>index.toString(16).padStart(64,'0'));
+ const last='f'.repeat(64);
+ await terminalReceipt(f,f.directory,last);
+ await writeFile(join(f.directory,'session.json'),JSON.stringify({active:[...keys,last],history:[],completed:[]}));
+ await flushCliLearning(f.options,{fetch:f.dependencies.fetch});
+ assert.equal(f.calls.length,0,'one retry inspects at most 100 turns per session');
+ const result=await flushCliLearning(f.options,{fetch:f.dependencies.fetch});
+ assert.equal(f.calls.filter(call=>call.path.endsWith('/complete')).length,1);
+ assert.equal(result.pending,0);
+});
+
+test('more than 100 queued session endings without earlier submits do not defer each other forever',async t=>{
+ const f=await fixture(t),pending=join(f.root,'pending');
+ await mkdir(pending,{recursive:true});
+ for(let index=0;index<101;index++){
+  const input=f.input('SessionEnd',{session_id:`ended-session-${index}`,turn_id:undefined});
+  const name=`${stateHash(JSON.stringify([input.session_id,input.turn_id,'SessionEnd']))}.json`;
+  await writeFile(join(pending,name),JSON.stringify({version:1,createdAt:index,input}));
+ }
+ await flushCliLearning(f.options,{fetch:f.dependencies.fetch});
+ assert.equal(await f.pendingCount(),1,'a terminal-only queue makes progress within its 100-hook budget');
+ const result=await flushCliLearning(f.options,{fetch:f.dependencies.fetch});
+ assert.equal(result.pending,0);
+ assert.equal(f.calls.length,0);
 });

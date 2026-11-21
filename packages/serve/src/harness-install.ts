@@ -529,8 +529,8 @@ async function readHold(at: string): Promise<Partial<Hold> | undefined> {
  *  way. A hold its installer left (gone, or past that bound, or unreadable and older than HOLD_WRITING_MS) is taken over
  *  by one taker alone: the one that links it to a name of that very file's removes it, and only while it is still that
  *  file, so a hold another taker made meanwhile is never removed. */
-export async function takeHold(dir: string, { isAlive = alive, identity = processIdentity, host = hostname(), pidns = pidNamespace(), timeoutMs = INSTALL_TIMEOUT_MS }: { isAlive?: (pid: number) => boolean; identity?: (pid: number) => string | undefined; host?: string; pidns?: string; timeoutMs?: number } = {}): Promise<string | undefined> {
-  const at = installHoldOf(dir);
+export async function takeHold(dir: string, { isAlive = alive, identity = processIdentity, host = hostname(), pidns = pidNamespace(), timeoutMs = INSTALL_TIMEOUT_MS, holdPath = installHoldOf(dir) }: { isAlive?: (pid: number) => boolean; identity?: (pid: number) => string | undefined; host?: string; pidns?: string; timeoutMs?: number; holdPath?: string } = {}): Promise<string | undefined> {
+  const at = holdPath;
   await mkdir(dirname(at), { recursive: true });
   const token = randomUUID();
   const draft = `${at}.${token}`;
@@ -590,8 +590,8 @@ export async function takeHold(dir: string, { isAlive = alive, identity = proces
 
 /** Lets go of the hold on installs into `dir` that `token` took; a hold of another's (one that took over this one past
  *  its bound) stays. */
-export async function releaseHold(dir: string, token: string): Promise<void> {
-  const at = installHoldOf(dir);
+export async function releaseHold(dir: string, token: string, { holdPath = installHoldOf(dir) }: { holdPath?: string } = {}): Promise<void> {
+  const at = holdPath;
   if ((await readHold(at))?.token === token) await rm(at, { force: true });
 }
 

@@ -164,3 +164,31 @@ test("this process's identity is read from the system where it shows one, the sa
   assert.equal(processIdentity(2 ** 22 + 7), undefined, "no such process");
   assert.match(pidNamespace() ?? "", /^pid:\[\d+\]$/, "this process's pid namespace");
 });
+
+test("an explicit hold path shares stale-owner exclusion and releases only that path's owner", async t => {
+  const root = scratch(t, "explicit-hold"), dir = join(root, "harnesses", "fake");
+  const holdPath = join(root, "connection.lock");
+  mkdirSync(dirname(installHoldOf(dir)), { recursive: true });
+  writeFileSync(installHoldOf(dir), "unrelated install hold");
+  writeFileSync(holdPath, JSON.stringify({ host: "this-host", pid: 1, startedAt: Date.now(), token: "left" }));
+  const options = { holdPath, timeoutMs: Infinity, host: "this-host", isAlive: pid => pid !== 1 };
+  const tokens = (await Promise.all(Array.from({ length: 8 }, () => takeHold(dir, options)))).filter(Boolean);
+  assert.equal(tokens.length, 1, "only one concurrent command recovers the dead owner");
+  assert.equal(JSON.parse(readFileSync(holdPath, "utf8")).token, tokens[0]);
+  await releaseHold(dir, "not-the-owner", { holdPath });
+  assert.equal(JSON.parse(readFileSync(holdPath, "utf8")).token, tokens[0]);
+  await releaseHold(dir, tokens[0], { holdPath });
+  assert.equal(existsSync(holdPath), false);
+  assert.equal(readFileSync(installHoldOf(dir), "utf8"), "unrelated install hold");
+});
+
+test("an unlimited explicit hold never expires a live local owner when process birth identity is unavailable", async t => {
+  const root = scratch(t, "explicit-hold-alive"), dir = join(root, "harnesses", "fake");
+  const holdPath = join(root, "connection.lock");
+  writeFileSync(holdPath, JSON.stringify({ host: "this-host", pid: 4242, startedAt: Date.now() - 86_400_000, token: "running" }));
+  const options = { holdPath, timeoutMs: Infinity, host: "this-host", identity: () => undefined };
+  assert.equal(await takeHold(dir, { ...options, isAlive: () => true }), undefined);
+  const token = await takeHold(dir, { ...options, isAlive: pid => pid !== 4242 });
+  assert.equal(typeof token, "string", "the dead process is recoverable even with no time limit");
+  await releaseHold(dir, token, { holdPath });
+});
