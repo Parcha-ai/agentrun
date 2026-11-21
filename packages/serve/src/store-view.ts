@@ -49,6 +49,7 @@ import {
   usersOf,
   withAsks,
   withApprovalRows,
+  windDownOf,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
 import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
@@ -237,6 +238,8 @@ interface StoreRun {
   /** The budget card the run shows while it stands parked at its cap (pending, kind budget), or undefined when it is not
    *  parked there. Also the source of the `budgetWaiting` fact. */
   readonly budget: Pending | undefined;
+  /** How the run wound down for its cap (run-view.ts windDownOf): its `stopped_for` and `budget_refused_calls`. */
+  readonly windDown: ReturnType<typeof windDownOf>;
   /** Whether a workflow run stands paused in its process now (pausedOf): the source of the `paused` fact. */
   readonly paused: boolean;
   /** The browser hand-over the run's agent waits on (the newest ask still waiting), or undefined. Also the `browserAsk`
@@ -481,6 +484,10 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
   const budget = budgetOf(records.entries, { meta, rows, updatedAt: iso(updatedAtMs) });
+  // How it wound down for its cap (run-view.ts windDownOf), under the cap it has now; its end-of-run turns' entries are
+  // learning's, never the job's.
+  const reflectTurns = reflectRanges(records.submissions ?? [], records.entries);
+  const windDown = windDownOf(records.entries, capUsd, (id) => inReflect(reflectTurns, id));
   const pause = activePauseOf(records.entries);
   // Whether a workflow run stands paused in its process now (its parked row with the pause's words, its newest pause not
   // resumed), the `paused` fact the status table reads for a paused workflow.
@@ -556,7 +563,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const endSaidCost = endCost && !lookingBack ? endSaid !== undefined : false;
   const endUnread = !lookingBack && bookedCost !== undefined && !endCost && endSaid === null;
   const heal = lookingBack ? undefined : healOf(endCost, runRow);
-  return { ...(cli_learning ? {cli_learning}:{}), ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}) };
+  return { ...(cli_learning ? {cli_learning}:{}), ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, windDown, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}) };
 }
 
 /** Run read `read` (a run still going, as the store holds it) as the end `ended` keeps (its state, summary and end time:
@@ -814,6 +821,11 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
     pending,
     // Its own spend: an audit's shadow run of it is learning (GET /runs/{id}'s cost.learning_usd), never its cost.usd.
     cost: costOfView(run),
+    // Why a completed run stopped: `budget` when it wound down to stay under its cap (its model told to wrap up, or its
+    // tool calls refused, under the cap it has now: windDownOf), else null; and how many tool calls the cap's wrap-up
+    // refused (stoppedfor/1). A run paused at its cap (pending budget) or failed for it (spend_cap_reached) says so there.
+    stopped_for: status === "completed" && run.windDown.woundDown ? "budget" : null,
+    budget_refused_calls: run.windDown.refusedCalls,
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
     // The path it took and the learned workflow that served it, as its record keeps them: the read the cost per run makes
@@ -846,14 +858,14 @@ export async function summaryOverStore(store: Store, runId: string, deps: ViewDe
 
 /** What a list shows of a run's view (summaryOverStore). */
 export function summaryOfView(view: Record<string, unknown>): Record<string, unknown> {
-  const { run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, labels, learning } = view as Record<string, unknown>;
+  const { run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, stopped_for, budget_refused_calls, archived_at, imported_from, trigger, labels, learning } = view as Record<string, unknown>;
   return {
     run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title,
     ...(view.cli_learning ? {cli_learning:view.cli_learning} : {}),
     ...(view.sdk ? {sdk:view.sdk} : {}),
     ...(view.native ? {native:view.native} : {}),
     ...(effort ? { effort } : {}),
-    created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, labels,
+    created_at, ended_at, error, review, pending, cost, stopped_for, budget_refused_calls, archived_at, imported_from, trigger, labels,
     learning: learning ? shortOf(learning as Parameters<typeof shortOf>[0]) : null,
     // Read off the run's record, so a list carries it with no read of the run's journal.
     path: view.path, workflow: view.workflow,
@@ -893,8 +905,12 @@ export async function listingOverStore(store: Store, runId: string, deps: ViewDe
  *  (server.ts runsPage): the run's view cuts a value whole where it holds a secret (a note's name reads [redacted]), which
  *  cutting the built item again could not do. */
 export function builtOfNow(listing: KeptListing, serverSecrets: readonly string[]): boolean {
-  return listing.cut === secretsDigest(serverSecrets);
+  return listing.cut === secretsDigest(serverSecrets) && LISTING_SINCE.every((field) => field in listing.item);
 }
+
+/** List item fields an earlier server's listing was built without: a listing that lacks one is built again, once, so
+ *  every list item carries them (stoppedfor/1). */
+const LISTING_SINCE = ["stopped_for", "budget_refused_calls"] as const;
 
 /** A listing's list item as a list serves it (listingOverStore): its console link at `origin`, its archive time now
  *  (`archivedAt`, ms, the run's or its agent's), and, when the server's secrets moved between its build and this (within
