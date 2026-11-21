@@ -3095,7 +3095,8 @@ serves these routes alone:
 - what an agent learned, for the backend whose runs it learned from: the loop's compile turns
   (`GET /agents/{id}/learning/loop`), each learned workflow's promotion and what serves
   (`GET /agents/{id}/learning/promotions`), the cost per run (`GET /agents/{id}/learning/cost`) and a run's learning
-  (`GET /runs/{id}/learning`), each cut of the host's secrets as the console's reads are;
+  (`GET /runs/{id}/learning`), each cut of the host's secrets as the console's reads are; and its reset
+  (`DELETE /agents/{id}/learning`, the agent and its runs kept), its one learning write served here;
 - a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
   minted;
 - `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
@@ -3997,6 +3998,15 @@ with the token, an archived agent's too:
 - `GET .../learning/workflows/{name}/revisions` lists a learned workflow's revisions on `main`;
   `GET .../learning/promotions` its promotion records; `GET .../learning/loop` each compile turn; and
   `GET .../learning/cost` the agent's cost per run, run after run.
+- `DELETE /agents/{agent_id}/learning` resets the agent's learning: its learning folder whole (`corrections.md`, its
+  workflows, their history and the audit ledger), here and on every Archil disk its runs used (`503` while one can't be
+  reached), then its promotion records and grades. The agent and its runs stay,
+  with their files, costs and each run's own learning, so the run list, `GET /stats` and `GET /usage` read the same (a
+  served run keeps its share of its revision's compile and check); a run's learning diff goes with the folder (404);
+  the next run takes the agent path, given nothing learned. It cancels the runs that exist only for learning (replays,
+  audit shadows) and waits for them; while a run of the agent's own is still going it is `409 learning_busy` (each named
+  in `details.runs`), and nothing is deleted. `204`, a second call and an agent that never learned included. The
+  API-only profile serves it too.
 - `GET /runs/{run_id}/learning`: the run's learning whole (its seed, its merge, the corrections it added, the workflow it
   wrote, its compile turn's attempts and the checks' problems), `null` for a run that does not learn.
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, each file's patch as git writes it

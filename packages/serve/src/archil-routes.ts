@@ -31,7 +31,7 @@ import { unknownFields } from "./validate.js";
 import { ArchilClaimRefused } from "./workspace/archil-claim.js";
 import { type ArchilDisk, type ArchilDiskOptions, archilDisk } from "./workspace/archil-disk.js";
 import { deleteDisk, getDisk, listOneDisk } from "./workspace/archil-disks.js";
-import { archilWorkspace } from "./workspace/archil.js";
+import { archilWorkspace, spillFolderOf } from "./workspace/archil.js";
 import { agentDirName } from "./workspace/paths.js";
 import { WorkspaceError } from "./workspace/workspace.js";
 import { ARCHIL_API_KEY_ENV, archilApiKey } from "./workspace/archil-key.js";
@@ -302,6 +302,29 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
     }
   }
 
+  /** Agent `agentId`'s learning folder on disk `diskId` deleted over the disk's file API: agents/<agent>/learning and
+   *  everything under it (paths.ts learningKey), which a Mode 2 run's end writes on the disk its claim mounted, the
+   *  agent's own or one its launch named (the caller's: never made, renamed or removed here), and the folder a learning
+   *  exec spills beside it (workspace/archil.ts spillFolderOf: a write's input text, left by a failed cleanup). Nothing
+   *  else on the disk is touched: the agent's runs' folders stay. Done again, it does nothing: a folder not there is gone, and so is the
+   *  folder of a disk Archil says is gone. Archil off, or no account key, is 503 unavailable; a delete Archil refuses
+   *  (a computer that still holds the folder, Archil not reached) is 424 upstream_failed, what was not deleted left for
+   *  the next call. */
+  async function removeLearningFolder(agentId: string, diskId: string): Promise<void> {
+    const what = `The agent ${agentId}'s learning folder on the Archil disk ${diskId}`;
+    const settings = await loadArchilSettings(store, env);
+    if (settings === undefined) throw new ApiError("unavailable", `${what} is not deleted yet: Archil is off on this server, so it can't be reached. Turn Archil on again (PUT /v2/workspace/archil)`);
+    const key = await keyOr("unavailable", `${what} can't be deleted`);
+    const disk = (options.control?.makeDisk ?? archilDisk)({ disk: diskId, region: settings.region, s3BaseUrl: settings.s3Url, key: () => key });
+    try {
+      const agent = archilWorkspace(disk, `agents/${agentDirName(agentId)}`, { queueMs: 5_000 });
+      for (const name of ["learning", spillFolderOf("learning")]) await agent.remove(name, { recursive: true, force: true });
+    } catch (error) {
+      if (await diskGone(settings, key, diskId)) return;
+      throw new ApiError("upstream_failed", `${what} is not deleted there yet: ${describe(error).split(key).join("[the key]")}`);
+    }
+  }
+
   /** Whether Archil's control plane says disk `diskId` is gone: its read answers that the account has no such disk (404,
    *  getDisk's undefined) or reads it as deleted. Only Archil's word counts: a read that fails (not reached, a 5xx, the key
    *  refused) says nothing, so the disk is taken as still there. */
@@ -314,7 +337,7 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
     }
   }
 
-  return { view, save, off, test, agentView, removeAgentDisk, checkLaunchDisk, removeRunFolder };
+  return { view, save, off, test, agentView, removeAgentDisk, checkLaunchDisk, removeRunFolder, removeLearningFolder };
 }
 
 export type ArchilRoutes = ReturnType<typeof createArchilRoutes>;
