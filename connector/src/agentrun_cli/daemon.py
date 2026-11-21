@@ -98,10 +98,11 @@ def tick(state, queue, stopping=None):
             learning_reports[candidate.id] = discover_learning(candidate, api_origin, cache)
 
     def enqueue(_latest):
-        # Only loaded sessions can accrue new native usage. Rotate a bounded
-        # selection to keep each poll below 32 MiB, even on a very busy daemon.
+        # A failed session can still have final counters since its last poll.
+        # Keep reading its checkpointed tail while selected, under the same
+        # 32 MiB rotating budget as the loaded sessions.
         eligible = [candidate.id for candidate in candidates if candidate.harness == 'codex' and
-                    candidate.activity in {'working', 'waiting_input', 'idle'} and getattr(candidate, 'usage_path', None)]
+                    candidate.activity in {'working', 'waiting_input', 'idle', 'failed'} and getattr(candidate, 'usage_path', None)]
         cursor = getattr(queue, 'usage_cursor', 0) % max(1, len(eligible))
         selected_usage = set((eligible[cursor:] + eligible[:cursor])[:32])
         queue.usage_cursor = cursor + 32

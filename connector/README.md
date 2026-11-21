@@ -53,6 +53,8 @@ a baseline, then new input, output, cache-read and cache-write increments retain
 already includes cache tokens. Polling does not backfill lifetime totals. Missing counters remain unknown;
 rotation, truncation or a tail gap establishes a fresh baseline, and dropped delivery events mean partial
 coverage. Native usage checkpoints and outgoing events commit together so retries do not double count.
+Selected failed sessions remain eligible for final counter reads, including counters flushed after the failure;
+repeated polls and daemon restarts retain the checkpoint and do not repeat reported usage.
 
 Receivers advertising `session_labels: true` also receive bounded native session titles and project basenames
 for the selected sessions. Delegated sessions can use their native task basename and nickname. Conversation

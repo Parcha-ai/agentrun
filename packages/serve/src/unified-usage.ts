@@ -6,7 +6,6 @@ import type { AnalyticsFilter } from './store-reads/analytics.js';
 import { runReadState } from './store-reads/runs.js';
 import { isShadowRun } from './learn/audit.js';
 import { DEFAULT_HARNESS } from './harness.js';
-import { sdkInbox } from './sdk/runs.js';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { journalEntries } from './runner/journal-reader.js';
 import { REQUEST_COST, runMetricsOf, type EntryLike } from './timeline/index.js';
@@ -18,7 +17,7 @@ type Counts = Record<typeof fields[number], number | null> & { tokens: number | 
 type Fact = Counts & { day: string; harness: string; runId?: string };
 type Observed = { id: string; key: string; collector: string; verified: boolean; received: number; harness: string; facts: Fact[]; partial: Set<string> };
 type Recorded = { id: string; fact: Fact; key?: string; imported: boolean; opaqueImport: boolean; sdk: boolean; window?: string;
-  purged: boolean; runtimeErased: boolean; nativeReflection: boolean };
+  purged: boolean; runtimeErased: boolean; nativeReflection: boolean; usage?: unknown };
 export type UnifiedUsage = Counts & {
   known_runs: number; unknown_runs: number; observed_sessions: number; unknown_sessions: number;
   partial_days: number; retention_limited: boolean;
@@ -66,22 +65,28 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
     const cliRuntime = cli.runtime === 'codex' ? 'codex-cli' : cli.runtime === 'claude-code' ? 'claude-code-cli' : cli.runtime;
     let harness = metrics.cli_runtime ?? metrics.sdk_runtime ?? metrics.native_runtime ?? cliRuntime ?? sdk.runtime ?? native.runtime ?? run.importedFrom?.source ?? body.harness ?? DEFAULT_HARNESS;
     let session = metrics.cli_session_id ?? metrics.sdk_session_id ?? metrics.native_session_id ?? run.importedFrom?.session;
+    const inRange = !(run.startedAt < from || run.startedAt >= to);
+    // A filtered observation may match a historical run's native identity, even outside this date range.
+    if (!inRange && !filter.agent) continue;
+    const isCli = Boolean(metrics.cli_runtime || Object.keys(cli).length);
+    const isSdk = Boolean(isCli || metrics.sdk_runtime || Object.keys(sdk).length);
+    const metadata = run.purgedAt == null && (isCli || (inRange && isSdk))
+      ? await store.runs.usageMetadata(run.id, { completion: inRange && isSdk }).catch(() => undefined) : undefined;
     let window: Record<string, any> = {};
-    if (run.purgedAt == null && (metrics.cli_runtime || Object.keys(cli).length)) {
-      const launch = object((await store.runs.launch(run.id).catch(() => undefined))?.body);
-      window = object(launch.cli_learning);
+    if (isCli) {
+      window = object(metadata?.cli);
       if (!session) { session = window.session_id; harness = window.runtime ?? harness; }
     }
     const key = nativeKey(runtime(harness), session);
     if (key) selectedNative.add(key);
-    if (run.startedAt < from || run.startedAt >= to) continue;
+    if (!inRange) continue;
     runs.push({ id: run.id, key, imported: run.importedFrom !== null,
       opaqueImport: Boolean(metrics.remote_history_sha256 || String(session).startsWith('redacted-')),
       purged: run.purgedAt != null, runtimeErased: run.purgedAt != null && !Object.keys(body).length,
       nativeReflection: Boolean(window.native_grading),
       ...(key && key === nativeKey(runtime(window.runtime), window.session_id) && typeof window.turn_id === 'string' && window.turn_id
         ? { window: window.turn_id } : {}),
-      sdk: Boolean(metrics.cli_runtime || metrics.sdk_runtime || Object.keys(cli).length || Object.keys(sdk).length),
+      sdk: isSdk, usage: metadata?.completionUsage,
       fact: { ...(runReadState(run, revision?.kind === 'workflow' ? 'workflow' : 'agentic') === 'running' ? empty() : runCounts(metrics)),
       day: date(run.startedAt), harness: String(harness), runId: run.id } });
   }
@@ -222,7 +227,7 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
       if (run.fact.tokens === null) { facts.push(run.fact); unknownRuns.add(run.id); continue; }
       let fact = run.fact, window: string | undefined;
       if (run.sdk && !run.purged) {
-        const usage = (await sdkInbox(store, run.id).catch(() => undefined))?.completion?.usage;
+        const usage = object(run.usage);
         const task = runCounts({ input: usage?.input_tokens, output: usage?.output_tokens,
           cacheRead: usage?.cache_read_tokens, cacheWrite: usage?.cache_write_tokens });
         if (task.tokens !== null && fields.every(field => fact[field]! >= task[field]!)) {

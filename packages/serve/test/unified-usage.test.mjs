@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { serve } from './support.mjs';
 import { transcriptOf } from '../dist/import.js';
+import { unifiedUsage } from '../dist/unified-usage.js';
 
 const DAY = 86_400_000;
 const today = () => Date.parse(new Date().toISOString().slice(0, 10));
@@ -35,6 +36,41 @@ async function observed(s, id, days, { native, connection, harness = 'codex', co
   } });
 }
 const read = async (s, query = '') => { const result = await s.api('GET', '/stats' + query); assert.equal(result.status, 200); return result.body.analytics; };
+
+test('stats reads token receipts without materializing CLI launches or multi-megabyte SDK replay', async t => {
+  const s = await serve(t, { runner: false });
+  await cliWindow(s, 'captured', 100, 20, { reflection: 15 });
+  await run(s, 'sdk', { ...counts(20, 2), sdk_runtime: 'codex-sdk', sdk_session_id: 'another-session' }, 'sdk');
+  await run(s, 'managed', counts(5, 2));
+  for (const [id, input, output] of [['captured', 100, 20], ['sdk', 20, 2]]) await s.store.settings.put(`sdk-run:${id}`, {
+    batches: [{ sequence: 1, events: [{ text: 'private-replay-'.repeat(240_000) }] }],
+    completion: { answer: 'private-answer-'.repeat(8_000), usage: { input_tokens: input, output_tokens: output, cache_read_tokens: 0, cache_write_tokens: 0 } },
+  });
+  await observed(s, 'os_source', { [date(today())]: { model: usage(300, 20, { cache_read_tokens: 0, cache_write_tokens: 0 }) } },
+    { native: 'native-session', connection: 'connection' });
+  const fullReads = [], get = s.store.settings.get, launch = s.store.runs.launch;
+  t.mock.method(s.store.settings, 'get', async key => { if (key.startsWith('sdk-run:')) fullReads.push(key); return get(key); });
+  t.mock.method(s.store.runs, 'launch', async id => { fullReads.push(`launch:${id}`); return launch(id); });
+  const u = await unifiedUsage(s.store, { from: new Date(today()).toISOString() });
+  assert.deepEqual([u.tokens, u.input, u.output], [364, 340, 24], '320 observed +15 independent reflection +22 SDK +7 managed');
+  assert.deepEqual(fullReads, [], 'polling stats must project usage/provenance in the database, never load replay or launch content');
+});
+
+test('a filtered source still matches the projected CLI identity of a run outside the requested dates', async t => {
+  const s = await serve(t, { runner: false });
+  await s.store.agents.create({ id: 'old-profile', name: 'Old profile' }, { id: 'old-rev', kind: 'agentic', body: { cli_learning: { runtime: 'codex' } } });
+  await s.store.importRun({ id: 'old-captured', agentId: 'old-profile', revisionId: 'old-rev', importedFrom: null,
+    launch: { body: { cli_learning: { runtime: 'codex-cli', session_id: 'old-native', turn_id: 'old-turn', instructions: 'private-policy-'.repeat(8_000) } } },
+    metrics: counts(900, 90), startedAt: today() - DAY, endedAt: today() - DAY + 1, transcript: [] });
+  await observed(s, 'os_old', { [date(today())]: { model: usage(30, 3) } }, { native: 'old-native', connection: 'no-profile-mapping' });
+  const fullReads = [], launch = s.store.runs.launch;
+  t.mock.method(s.store.runs, 'launch', async id => { fullReads.push(id); return launch(id); });
+  const u = await unifiedUsage(s.store, { agent: 'old-profile', from: new Date(today()).toISOString() });
+  assert.equal(u.tokens, 33, 'historical identity selects current source usage without counting yesterday’s run');
+  assert.equal(u.known_runs, 0);
+  assert.deepEqual(u.by_day, [{ day: date(today()), tokens: 33 }]);
+  assert.deepEqual(fullReads, [], 'historical identity needs only a projection, never the full private policy');
+});
 
 for (const [input, output, expected] of [[100, 20, [120, 100, 20]], [1, 200, [201, 1, 200]], [20, 3, [120, 100, 20]]]) {
   test(`already-lost observation identity keeps a conservative coherent total for ${input + output} reported tokens`, async t => {
