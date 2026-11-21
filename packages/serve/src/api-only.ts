@@ -9,7 +9,8 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
 /** The routes (server.ts ROUTES, by name) an API-only server serves. Past a run's own, why each group is here:
  *  - a run's hosted machine fetches computerd with the token its create minted, not the server's;
  *  - the computers list and the Archil settings are read before a launch, naming keys, never a value;
- *  - an agent its inline runs made has its disk and its delete sent by the backend that made it;
+ *  - an agent its inline runs made has its disk, its delete and its runs' purges sent by the backend that made it (a run
+ *    of an agent made here is refused by the purge's route itself, server.ts deleteRun, in this profile's words);
  *  - a run's computer, take-over, hand-back and viewer link go to the backend, which has no owner's session here;
  *  - a backend reads what its agents learned (loop, promotions, cost per run, a run's learning), cut as the console's;
  *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is. */
@@ -17,7 +18,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
   "listComputers", "getWorkspaceArchil",
-  "getAgentArchil", "deleteAgentArchil", "deleteAgent",
+  "getAgentArchil", "deleteAgentArchil", "deleteAgent", "deleteRun",
   "getLearningLoop", "listLearningPromotions", "getLearningCost", "getRunLearning",
   "getRun", "getRunUsage", "listRuns", "listAllRuns", "getTimeline",
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
