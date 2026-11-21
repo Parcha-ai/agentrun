@@ -48,10 +48,142 @@ test('HTTP statuses and exact structured capacity code survive without provider 
   }
 });
 
-test('generic adapter does not parse broker messages, unknown codes or wrong paths', async () => {
+test('HTTP failures expose only the provider typed error fields', async () => {
+  const cases = [
+    [402, { type: 'billing_error', code: 'quota_exhausted', detail: { error_type: 'billing_error', message: secret }, message: secret },
+      { providerType: 'billing_error', providerCode: 'quota_exhausted', providerErrorType: 'billing_error' }],
+    [401, { error: { type: 'authentication_error', code: 'token_not_found_in_db', message: secret, param: 'None' } },
+      { providerType: 'authentication_error', providerCode: 'token_not_found_in_db', providerErrorType: undefined }],
+    // The observed broker wraps the vendor object in a JSON string; only its typed fields are exposed.
+    [403, { error: { type: 'None', code: '403', message: JSON.stringify({ detail: { error_type: 'billing_error' } }) } },
+      { providerType: 'None', providerCode: '403', providerErrorType: 'billing_error' }],
+  ];
+  for (const [status, body, expected] of cases) {
+    const run = createJevRunner({
+      maxAttempts: 1,
+      client: { async systemOne() { throw new APIError(status, body, new Headers({ 'x-typesafe-request-id': secret })); } },
+    });
+    await assert.rejects(run(params), error => {
+      assert.equal(error.code, 'http');
+      assert.equal(error.status, status);
+      assert.deepEqual({
+        providerType: error.providerType,
+        providerCode: error.providerCode,
+        providerErrorType: error.providerErrorType,
+      }, expected);
+      assert.equal(error.message, `Jev returned HTTP ${status}.`);
+      safe(error);
+      return true;
+    });
+  }
+});
+
+test('outcome_unknown and final retry failures retain typed provider fields', async () => {
+  for (const status of [408, 500, 503]) {
+    const run = createJevRunner({
+      maxAttempts: 1,
+      client: { async systemOne() {
+        throw new APIError(status, { type: `provider_${status}_type`, code: `provider_${status}_code` }, new Headers());
+      } },
+    });
+    await assert.rejects(run(params), error => {
+      assert.equal(error.code, 'outcome_unknown');
+      assert.equal(error.status, status);
+      assert.deepEqual({
+        providerType: error.providerType,
+        providerCode: error.providerCode,
+        providerErrorType: error.providerErrorType,
+      }, {
+        providerType: `provider_${status}_type`,
+        providerCode: `provider_${status}_code`,
+        providerErrorType: undefined,
+      });
+      safe(error);
+      return true;
+    });
+  }
+
+  let calls = 0;
+  const run = createJevRunner({
+    retryAfterSend: true,
+    maxAttempts: 2,
+    retryBaseMs: 0,
+    retryMaxMs: 0,
+    client: { async systemOne() {
+      calls++;
+      if (calls === 1) {
+        throw new APIError(503, { type: 'server_failure', code: 'overloaded', detail: { error_type: 'capacity_error' } }, new Headers());
+      }
+      throw new APIError(429, { type: 'rate_limit_error', code: 'quota_exhausted', detail: { error_type: 'billing_error' } },
+        new Headers({ 'retry-after': '0' }));
+    } },
+  });
+  await assert.rejects(run(params), error => {
+    assert.equal(error.code, 'http');
+    assert.equal(error.status, 503);
+    assert.equal(error.attempts, 2);
+    assert.deepEqual({
+      providerType: error.providerType,
+      providerCode: error.providerCode,
+      providerErrorType: error.providerErrorType,
+    }, {
+      providerType: 'server_failure',
+      providerCode: 'overloaded',
+      providerErrorType: 'capacity_error',
+    });
+    safe(error);
+    return true;
+  });
+  assert.equal(calls, 2);
+});
+
+test('provider diagnostics enforce token and wrapped JSON length boundaries', async () => {
+  const token128 = 'a'.repeat(128);
+  const token129 = 'b'.repeat(129);
+  const constructorError = new JevError('http', 'fixed', 1, 400, undefined, undefined,
+    { type: token128, code: token129, errorType: token128 });
+  assert.deepEqual([constructorError.providerType, constructorError.providerCode, constructorError.providerErrorType],
+    [token128, undefined, token128]);
+  safe(constructorError);
+
+  const run = createJevRunner({ maxAttempts: 1, client: { async systemOne() {
+    throw new APIError(400, { type: token128, code: token129 }, new Headers());
+  } } });
+  await assert.rejects(run(params), error => {
+    assert.equal(error.providerType, token128);
+    assert.equal(error.providerCode, undefined);
+    safe(error);
+    return true;
+  });
+
+  const wrappedAtLength = length => {
+    const prefix = '{"detail":{"error_type":"billing_error"},"padding":"';
+    const suffix = '"}';
+    return `${prefix}${'x'.repeat(length - prefix.length - suffix.length)}${suffix}`;
+  };
+  const wrappedRun = wrapped => createJevRunner({ maxAttempts: 1, client: { async systemOne() {
+    throw new APIError(400, { error: { message: wrapped } }, new Headers());
+  } } });
+  const accepted = wrappedAtLength(16_384);
+  const rejected = wrappedAtLength(16_385);
+  assert.equal(accepted.length, 16_384);
+  assert.equal(rejected.length, 16_385);
+  await assert.rejects(wrappedRun(accepted)(params), error => {
+    assert.equal(error.providerErrorType, 'billing_error');
+    safe(error);
+    return true;
+  });
+  await assert.rejects(wrappedRun(rejected)(params), error => {
+    assert.equal(error.providerErrorType, undefined);
+    safe(error);
+    return true;
+  });
+});
+
+test('generic adapter ignores unknown codes, wrong paths and non-JSON broker messages', async () => {
   for (const body of [secret, { message: 'max_tokens_exceeded' }, { detail: { error_type: 'MAX_TOKENS_EXCEEDED' } },
-    { detail: { error_type: secret } }, { error: { message: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }) } },
-    { error: { detail: { error_type: 'max_tokens_exceeded' } } }]) {
+    { detail: { error_type: secret } }, { error: { detail: { error_type: 'max_tokens_exceeded' } } },
+    { error: { message: `{"detail":{"error_type":"${secret}"}` } }]) {
     const run = createJevRunner({ maxAttempts: 3, client: { async systemOne() { throw new APIError(400, body, new Headers({ private: secret })); } } });
     await assert.rejects(run(params), error => { assert.equal(error.code, 'http'); assert.equal(error.status, 400); assert.equal(error.responseDiagnostic, undefined); assert.equal(error.message, 'Jev returned HTTP 400.'); safe(error); return true; });
   }
@@ -76,6 +208,11 @@ test('malformed HTTP status and forged diagnostic cannot disclose arbitrary valu
   assert.equal(isJevResponseReason(secret), false);
   const error = new JevError('invalid_response', 'fixed', 1, undefined, undefined, { reason: secret, extra: secret });
   assert.equal(error.responseDiagnostic, undefined); safe(error);
+  const providerError = new JevError('http', 'fixed', 1, 400, undefined, undefined,
+    { type: 'not a token', code: /** @type {any} */ ({}), errorType: secret });
+  assert.deepEqual([providerError.providerType, providerError.providerCode, providerError.providerErrorType],
+    [undefined, undefined, undefined]);
+  safe(providerError);
 });
 
 test('abort wins over lateinvalid response, late400, and retrybackoff', async () => {
