@@ -40,6 +40,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
+       agentrun-serve learning connect|status|disconnect|retry --project PATH --runtime codex|claude-code [--url URL] [--data DIR]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
        agentrun-serve runner --check --env [--data DIR]
@@ -171,6 +172,11 @@ if (process.argv[2] === "remote-bridge") {
   const { runRemoteWorkerBridge } = await import("./native/remote-worker-bridge.js");
   await runRemoteWorkerBridge();
   process.exit(0);
+}
+
+if (process.argv[2] === "learning") {
+  const { learningMain } = await import("./cli-learning/cli.js");
+  process.exit(await learningMain(process.argv.slice(3)));
 }
 
 if (process.argv[2] === "native") {

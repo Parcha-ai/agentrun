@@ -24,6 +24,7 @@ import type { Place } from "./workspace/place.js";
  *  the old path recomputed; here they are pinned at start, and optional (a built-in run may name none). */
 export interface RunLaunch {
   readonly sdk?: SdkBinding & {instructions: string; model?: string; workflow_tools?: SdkWorkflowTool[]; workflow_adapters?: SdkWorkflowAdapter[]};
+  readonly cli_learning?: {runtime: "codex-cli" | "claude-code-cli"; connection_id: string; connection_generation: string; session_id: string; turn_id: string; instructions: string; policy_complete: boolean; model?: string};
   readonly native?: NativeBinding;
   /** The start request's body, as the person or trigger gave it, or an object a built-in run names. */
   readonly input: unknown;
@@ -153,6 +154,7 @@ export function launchBody(launch: RunLaunch): Json {
   return {
     input: launch.input,
     ...(launch.sdk ? {sdk:launch.sdk as unknown as Json}:{}),
+    ...(launch.cli_learning ? {cli_learning:launch.cli_learning as unknown as Json}:{}),
     ...(launch.native ? {native:launch.native}:{}),
     title: launch.title,
     ...(launch.repo !== undefined ? { repo: launch.repo } : {}),
@@ -206,6 +208,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     input: stored.input,
     ...(isObject(stored.sdk) && sdkBindingOf(stored.sdk) && typeof stored.sdk.instructions === "string" ? {sdk: stored.sdk as unknown as NonNullable<RunLaunch["sdk"]>} : {}),
     ...(nativeOf(stored) ? {native:nativeOf(stored)}:{}),
+    ...(isObject(stored.cli_learning) && ["codex-cli", "claude-code-cli"].includes(String(stored.cli_learning.runtime)) && typeof stored.cli_learning.instructions === "string" ? {cli_learning:stored.cli_learning as unknown as NonNullable<RunLaunch["cli_learning"]>} : {}),
     title: typeof stored.title === "string" ? stored.title : "",
     ...(typeof stored.repo === "string" ? { repo: stored.repo } : {}),
     place,

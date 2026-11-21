@@ -133,6 +133,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 
 - `agentrun agents`: archive, connect-native, create, delete-agent, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, list, list-learning-audits, list-learning-promotions, runs, unarchive, update, verify-native
 - `agentrun capabilities`: get-capacity
+- `agentrun cli-learning`: complete, enroll, events, get, list, revoke, start
 - `agentrun connectors`: complete-remote-command, enroll-remote-connector, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, register-remote-connector, remote-command-events, revoke-remote-connector
 - `agentrun doctor`: Check how this AgentRun is set up (Node, the server, its service, address, password, models, switches, Docker) and print what to change; read-only (exit 0 ok or warnings, 1 a check failed, 3 no server answering)
 - `agentrun files`: create, delete, get, list, upload

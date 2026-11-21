@@ -75,7 +75,8 @@ async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch,
   }
   // A backend SDK run's compile turn is asked on the runner's one model route, on the agent's own model (its learning
   // start's), its key from the runner's environment, else the one saved in Settings → Model keys, read at each ask.
-  if (launch.sdk) return createSdkLoop(launch, deps, async () => {
+  if (launch.sdk || launch.cli_learning) return createSdkLoop(launch, deps, async () => {
+    if (launch.cli_learning) throw new Error("Connected CLI capture has no workflow execution bridge.");
     const base = deps.env ?? process.env;
     const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
     // It runs after its backend reported the run complete, on no run's key: on a server that holds no gateway key it is

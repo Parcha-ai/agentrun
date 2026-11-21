@@ -144,6 +144,7 @@ async function controlLaunchBody(store: RunsStore, runId: string): Promise<unkno
 /** Only the application can abort its SDK and tools. An HTTP acknowledgement must not pretend that it did. */
 async function refuseSdkStop(store: RunsStore, runId: string): Promise<void> {
   const launch = await controlLaunchBody(store, runId);
+  if (isObject(launch) && launch.cli_learning) throw new ApiError("not_continuable", "This run belongs to your existing CLI session. Stop it in that session; AgentRun does not control its execution.");
   if (isObject(launch) && launch.sdk) throw new ApiError("not_continuable", "This agent runs in your backend SDK. Cancel it using the original application's cancellation signal; its wrapper will report that outcome here.");
 }
 
@@ -186,6 +187,7 @@ export async function message(
   await refuseWhileNoRunner(store.runners);
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   const launchBody = await controlLaunchBody(store, moment.id);
+  if (isObject(launchBody) && launchBody.cli_learning) throw new ApiError("not_continuable", "Continue in the original CLI session.");
   if (isObject(launchBody) && launchBody.sdk) throw new ApiError("not_continuable", "Backend SDK runs are single-task sessions. Start a new SDK call for another task.");
   if (nativeOf(launchBody)) throw new ApiError("input_invalid", "Native jobs do not support in-session steering or follow-up messages. Start a new native run.");
   // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished). Another
@@ -542,6 +544,7 @@ export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revis
  *  runner's. Under `origin`, a key that already started a run gets that run (the store's one-run-per-key), so a retry never
  *  starts a second. */
 export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed }: StartOptions = {}): Promise<RunRow> {
+  if ((entry.revision?.body as {cli_learning?:unknown})?.cli_learning) throw new ApiError("agent_not_runnable", "Start the next prompt in your existing CLI session. AgentRun records its learning; it does not launch this connection.");
   if ((entry.revision?.body as {sdk?:unknown})?.sdk) throw new ApiError("agent_not_runnable", "This agent runs in your backend SDK. Start it through its SDK learning wrapper; AgentRun does not launch its tools or credentials.");
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}) });
   keyedOrRefused(deps, launch, revision.kind, sealed);

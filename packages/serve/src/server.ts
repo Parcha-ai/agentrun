@@ -1,3 +1,7 @@
+import type {RunLaunch} from "./run-launch.js";
+import { CliLearningConnections } from "./cli-learning/connections.js";
+import { ObservationLearning } from "./observation/learning.js";
+import { cliLearningOf } from "./store/agent-body.js";
 import { maintainObservations, Observations } from './observation/observer.js';
 import { isObservationRoute, observationHttp } from './observation/http.js';
 import { SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
@@ -7,7 +11,7 @@ import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './
 import { REMOTE_HISTORY_BODY_BYTES } from './native/history.js';
 import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED, NATIVE_CAP_UNSUPPORTED } from "./native/binding.js";
 import { discoverNative } from "./native/discovery.js";
-import { isNativeRuntime } from "./native/runtimes.js";
+import { isNativeRuntime, NATIVE_RUNTIME_FACTS } from "./native/runtimes.js";
 import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
@@ -129,6 +133,7 @@ import { recordRunEnv, runFacingNames } from "./runner/runner-check.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { type CostBasis, joinedBasis } from "./runner/metrics.js";
+import { unifiedUsage } from "./unified-usage.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
 import { printable } from "./learn/index.js";
 import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, costStopOverStore, learningCountsOverStore, learningSpendOverStore, runAllInOverStore, runLearningEnd } from "./store-reads/learning.js";
@@ -578,6 +583,13 @@ export const ROUTES: readonly Route[] = [
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/poll$/,name:"pollRemoteConnector"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/events$/,name:"remoteCommandEvents"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/complete$/,name:"completeRemoteCommand"},
+  {method:"POST",pattern:/^\/cli-learning\/connections$/,name:"enrollCliLearning"},
+  {method:"GET",pattern:/^\/cli-learning\/connections$/,name:"listCliLearning"},
+  {method:"DELETE",pattern:/^\/cli-learning\/connections\/([^/]+)$/,name:"revokeCliLearning"},
+  {method:"POST",pattern:/^\/cli-learning\/connections\/([^/]+)\/runs$/,name:"startCliLearningRun"},
+  {method:"GET",pattern:/^\/cli-learning\/runs\/([^/]+)$/,name:"getCliLearningRun"},
+  {method:"POST",pattern:/^\/cli-learning\/runs\/([^/]+)\/events$/,name:"cliLearningEvents"},
+  {method:"POST",pattern:/^\/cli-learning\/runs\/([^/]+)\/complete$/,name:"completeCliLearningRun"},
   {method:"POST",pattern:/^\/agents\/([^/]+)\/sdk-runs$/,name:"startSdkRun"},
   {method:"GET",pattern:/^\/sdk-runs\/([^/]+)$/,name:"getSdkRun"},
   {method:"POST",pattern:/^\/sdk-runs\/([^/]+)\/events$/,name:"sdkRunEvents"},
@@ -1747,7 +1759,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // no box relay here — a runner (its own process, sharing only this store) claims and runs every run. The leaves a start
   // needs that live in this request layer are gathered once as StartDeps; the run's model is resolved once, now (the runner
   // reads launch.model alone).
-  const modelOf = (_entry: AgentEntry, revision: Revision) => nativeOf(revision.body) ? Promise.resolve(undefined) : runModelRef(env, revision);
+  const modelOf = (_entry: AgentEntry, revision: Revision) => (nativeOf(revision.body) || cliLearningOf(revision.body)) ? Promise.resolve(undefined) : runModelRef(env, revision);
   // Why no runner here can take a run, while every runner there refused to claim (runner/presence.ts): read from the
   // store at each start, capabilities and health answer, so a runner in another process (or on another host over one
   // Postgres) counts as the one beside this server does, and a runner that can claim, once there, clears it at once.
@@ -2693,6 +2705,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). `price`:
    *  what prices an OpenRouter decision model under that cap; a start's reads OpenRouter's catalog (decisionPrice). */
   async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice }: { capped?: boolean; price?: (model: string) => Promise<unknown> } = {}): Promise<void> {
+    if (cliLearningOf(revision.body)) throw new ApiError("agent_not_runnable", "Continue in the original CLI session; this connection records learning without launching its tools.");
     if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
     const native = nativeOf(revision.body);
     if (native) {
@@ -2834,7 +2847,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (execution.length) throw invalid(execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })));
       return { warnings: [], stamp: {} };
     }
-    if (sdkOf(body)) return { warnings: [], stamp: {} };
+    if (cliLearningOf(body) || sdkOf(body)) return { warnings: [], stamp: {} };
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
     const harnessId = revision.kind === "agentic" ? harnessOfBody(body) : undefined;
     const install = harnessId !== undefined && Object.hasOwn(installs, harnessId) ? installs[harnessId] : undefined;
@@ -3426,6 +3439,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (runs-over-store startInline). The answer is POST /agents/{agent_id}/runs' own: 202 and the run. */
   async function createInlineRun(req: IncomingMessage) {
     const { body, handed } = handedLaunchSecrets(await bodyOf(req));
+    if (isObject(body.definition) && body.definition.cli_learning !== undefined) throw new ApiError("input_invalid", "CLI learning references are registered only through /cli-learning/connections on the source machine.");
     if (isObject(body.definition) && body.definition.native !== undefined) throw new ApiError("input_invalid", "Native references are registered only through /native/connect on the source machine; an inline definition cannot create one.");
     const { external, definition, skills, note, revision: pinned, ...run } = body;
     const given = { definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) };
@@ -4188,6 +4202,38 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const commandId = decodeURIComponent(parts[2]!);
       return send(res, 200, found.name === "remoteCommandEvents" ? await broker.events(connectorId, commandId, body) : await broker.complete(connectorId, commandId, body));
     }
+    if (found.name === "startCliLearningRun") {
+      if (options.apiOnly || options.publicUrl || !isLoopback(host) || !isLoopback(req.socket.remoteAddress ?? "")) throw new ApiError("forbidden", "CLI learning runs require the enrolled local source server.");
+      const connectionId=decodeURIComponent(found.pattern.exec(path)![1]!);
+      const broker=new CliLearningConnections(store,sdkSecret);
+      const connection=await broker.authenticate(connectionId,String(req.headers.authorization??"").replace(/^Bearer /,""));
+      if(!req.headers["idempotency-key"])throw new ApiError("bad_request","A CLI prompt window requires Idempotency-Key.");
+      const body=await bodyOf(req);
+      if(Object.keys(body).some(key=>!["session_id","turn_id","input","instructions","policy_complete","model"].includes(key)) || typeof body.session_id!=="string" || !body.session_id || body.session_id.length>256 || typeof body.turn_id!=="string" || !body.turn_id || body.turn_id.length>256 || typeof body.policy_complete!=="boolean")throw new ApiError("input_invalid","Supply session_id, turn_id, input, instructions, and explicit policy_complete.");
+      const entry=await needAgent(connection.agent_id);
+      const runtime = NATIVE_RUNTIME_FACTS[connection.runtime].captureRuntime;
+      const sdk=new SdkRuns(store,data,sdkSecret,()=>[...serverSecrets(),broker.token(connection)],[],"cli");
+      const input={runtime,input:body.input,instructions:body.instructions,...(body.model!==undefined?{model:body.model}:{})};
+      const key=`cli-window:${connectionId}:${connection.generation}:${createHash("sha256").update(`${body.session_id}\0${body.turn_id}`).digest("hex")}`;
+      const fingerprint=createHash("sha256").update(stable(body)).digest("hex");
+      const answer=await idempotent(req,`${path}:${connection.generation}`,body,async()=>({status:201,body:await sdk.start(entry,input,startDeps, {key,fingerprint},{check:async()=>{}},linkOrigin(req),{runtime,connection_id:connectionId,connection_generation:connection.generation,session_id:body.session_id as string,turn_id:body.turn_id as string,instructions:String(body.instructions??""),policy_complete:body.policy_complete as boolean})}));
+      const receipt=await sdk.receipt((answer.body as {run_id:string}).run_id,linkOrigin(req));
+      await broker.recordWindow(connectionId,connection.generation,receipt.run_id,body.session_id as string);
+      return send(res,answer.status,receipt,answer.headers);
+    }
+    if (["getCliLearningRun","cliLearningEvents","completeCliLearningRun"].includes(found.name)) {
+      const runId=decodeURIComponent(found.pattern.exec(path)![1]!);
+      const authentication=new SdkRuns(store,data,sdkSecret,serverSecrets,[],"cli");
+      await authentication.authenticate(runId,String(req.headers.authorization??"").replace(/^Bearer /,""));
+      const launch=(await store.runs.launch(runId)).body as unknown as RunLaunch;
+      if(!launch.cli_learning)throw new ApiError("not_found","This is not a CLI learning prompt window.");
+      const connection=await new CliLearningConnections(store,sdkSecret).get(launch.cli_learning.connection_id);
+      if(!connection.active || connection.generation !== launch.cli_learning.connection_generation)throw new ApiError("unauthenticated","The CLI learning connection was disconnected.");
+      const sdk=new SdkRuns(store,data,sdkSecret,()=>[...serverSecrets(),new CliLearningConnections(store,sdkSecret).token(connection)],[],"cli");
+      if(found.name==="cliLearningEvents")return send(res,200,await sdk.events(runId,await bodyOf(req)));
+      if(found.name==="completeCliLearningRun"){const result=await sdk.complete(runId,await bodyOf(req));await new CliLearningConnections(store,sdkSecret).recordWindow(connection.connection_id,connection.generation,runId,launch.cli_learning.session_id);return send(res,200,result);}
+      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,statuses},store,runId)});
+    }
     if (["getSdkRun","sdkRunEvents","completeSdkRun"].includes(found.name)) {
       const runId=decodeURIComponent(found.pattern.exec(path)![1]!);
       const sdk=new SdkRuns(store,data,sdkSecret,serverSecrets,tokens.map((entry) => entry.token));
@@ -4201,7 +4247,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
     }
     if (found.capability) throw unsupported(found.capability, UNSUPPORTED[found.capability]!);
-    if (["discoverNative","connectNative"].includes(found.name) && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("forbidden", "Native connections require AgentRun on the source machine, bound to loopback without a public URL. A hosted browser cannot discover your laptop.");
+    if (["discoverNative","connectNative","enrollCliLearning"].includes(found.name) && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("forbidden", "Native connections require AgentRun on the source machine, bound to loopback without a public URL. A hosted browser cannot discover your laptop.");
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
     // A purged run or agent (DELETE /runs/{id}, /agents/{id}): every route of it but its DELETE answers 410 purged, with
@@ -4217,6 +4263,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
     }
     switch (found.name) {
+      case "enrollCliLearning": {
+        if(!isLoopback(req.socket.remoteAddress ?? ""))throw new ApiError("forbidden","CLI learning enrollment must come from the local source machine.");
+        return send(res,201,await new CliLearningConnections(store,sdkSecret).enroll(await bodyOf(req)));
+      }
+      case "listCliLearning": return send(res,200,await new CliLearningConnections(store,sdkSecret).list());
+      case "revokeCliLearning": return send(res,200,await new CliLearningConnections(store,sdkSecret).revoke(id));
       case "startSdkRun": {
         if(!req.headers["idempotency-key"])throw new ApiError("bad_request","An SDK run requires Idempotency-Key so a retried start never duplicates execution.");
         const body=await bodyOf(req),entry=await needAgent(id);
@@ -4242,7 +4294,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getObservations": {
         const days = Number(url.searchParams.get("days") ?? 30);
         if (!Number.isInteger(days) || days < 1 || days > 31) throw new ApiError("input_invalid", "Choose an observation window from 1 to 31 days.");
-        return send(res, 200, await new Observations(store).snapshot(days, url.searchParams.get("session_id") ?? undefined));
+        return send(res, 200, await new Observations(store, Date.now, new ObservationLearning(store, new CliLearningConnections(store, sdkSecret), learning !== "off")).snapshot(days, url.searchParams.get("session_id") ?? undefined));
       }
       case "listRemoteConnectors": return send(res, 200, await new RemoteConnectors(store).list());
       case "enrollRemoteConnector": return send(res, 200, await new RemoteConnectors(store).enroll(await bodyOf(req)));
@@ -4276,7 +4328,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "createAgent": {
         const body = await bodyOf(req);
-        if (isObject(body.definition) && body.definition.native !== undefined) throw new ApiError("input_invalid", "Native references are registered only through /native/connect on the source machine.");
+        if (isObject(body.definition) && body.definition.cli_learning !== undefined) throw new ApiError("input_invalid", "CLI learning references are registered only through /cli-learning/connections on the source machine.");
+    if (isObject(body.definition) && body.definition.native !== undefined) throw new ApiError("input_invalid", "Native references are registered only through /native/connect on the source machine.");
         const answer = await idempotent(req, "/agents", body, async () => {
           const { entry, warnings } = await createAgentOf(body);
           return { status: 201, body: { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
@@ -4319,6 +4372,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // contract's is the definition itself, and takes the contract's preconditions: If-Match, and a version past the
         // current one.
         const contract = !("definition" in body);
+        const cliEdit=contract?body.cli_learning:isObject(body.definition)?body.definition.cli_learning:undefined;
+        if(cliEdit!==undefined&&stable(cliEdit)!==stable(cliLearningOf(entry.revision?.body)))throw new ApiError("input_invalid","CLI learning bindings are changed only through their enrollment endpoints.");
         const nativeEdit = contract ? body.native : isObject(body.definition) ? body.definition.native : undefined;
         if (nativeEdit !== undefined && stable(nativeEdit) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "Native references are changed only through the native connection endpoints. Normal edits retain the existing reference.");
         // Check explicit native selectors before canonicalization (the ordinary default harness, pi, is not stored).
@@ -4359,6 +4414,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
           const candidate = await agents.revision(id, revision);
           if (!candidate) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
+          if (stable(cliLearningOf(candidate.revision.body)) !== stable(cliLearningOf(entry.revision?.body))) throw new ApiError("input_invalid", "A revision restore cannot change the enrolled CLI learning connection.");
           if (stable(nativeOf(candidate.revision.body)) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "This revision changes the native connection. Reconnect or verify through the native connection controls; ordinary revision restore cannot change its source or connection state.");
           if (nativeOf(candidate.revision.body)) {
             const overrides = nativeModelOverrides(candidate.revision.body);
@@ -4830,7 +4886,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The store's counts and cost sums (store-reads/stats), the runs' metrics summed (store-reads/analytics), and the
         // runs over the store for the learning counts. No in-process pending set and no held Runs: the runner writes a
         // run's end to the store before it lets it go.
-        const [s, a] = await Promise.all([statsOverStore(store), analyticsOverStore(store, { ...filter })]);
+        const [s, a, tokens] = await Promise.all([statsOverStore(store), analyticsOverStore(store, { ...filter }), unifiedUsage(store, filter)]);
         // Each running row's status over the store (viewOverStore), for the active/needs_input/unknown buckets.
         const vd = viewDepsFor(ownOriginOf());
         const runningStatus = new Map<string, Status>();
@@ -4838,7 +4894,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // How the runs that tried to learn fared, over the store (learning-1's learningCountsOverStore): the same figures the
         // ledger gave, run for run; no held run's learning from memory.
         const learning = await learningCountsOverStore(store, filter);
-        return send(res, 200, { ...statsView(s, (id) => runningStatus.get(id)), analytics: analyticsView(a, filter), learning });
+        return send(res, 200, { ...statsView(s, (id) => runningStatus.get(id)), analytics: { ...analyticsView(a, filter), usage: tokens }, learning });
       }
       case "listToolKeys":
         // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.
@@ -5508,7 +5564,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (raw === "/skills/agentrun-serve/SKILL.md") return void answerSkill(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(consoleSessions ? { sessions: consoleSessions } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
-    if (isObservationRoute(raw)) return void observationHttp(req, res, url, new Observations(store), (header) => bearer(header, req)).catch(fail);
+    if (isObservationRoute(raw)) return void observationHttp(req, res, url, new Observations(store, Date.now, new ObservationLearning(store, new CliLearningConnections(store, sdkSecret), learning !== "off")), (header) => bearer(header, req)).catch(fail);
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never
     // decoded here, where a throw would leave the request listener.
