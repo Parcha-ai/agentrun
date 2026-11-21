@@ -6,7 +6,7 @@ import { NATIVE_RUNTIME_FACTS } from "../native/runtimes.js";
 import { chooseModel } from "../model.js";
 import { formOf, pickerCandidates } from "../model-form.js";
 import type { SourceSnapshot, SourceSnapshotTool } from "../native/source-snapshot-types.js";
-import type { BoxOffer } from "../place-offers.js";
+import { BOX_IDS, type BoxOffer } from "../place-offers.js";
 import { NEW_AGENT_TOOLS, type Place } from "../place.js";
 import { isHostTool } from "../tool-list.js";
 import { wireOf } from "../wires.js";
@@ -94,7 +94,7 @@ export function sourcePolicy(snapshot: SourceSnapshot, boxes: readonly BoxOffer[
     // owner ask for shell and external operations instead of widening those exceptional effects.
     shellPermission = "ask"; externalPermission = "ask";
   }
-  const box = boxes.find(box => box.available && ["docker", "daytona", "modal"].includes(box.id) && box.network !== "none");
+  const box = boxes.find(box => box.available && BOX_IDS.includes(box.id) && box.network !== "none");
   if (!box) return refused("execution_environment", "Set up an AgentRun sandbox with the network access this source requires.");
   const names = [...tools].sort();
   return { source: policy, tools: names, approvals: "ask" as const, place: { mode: "sandbox", box: box.id } as Place,
