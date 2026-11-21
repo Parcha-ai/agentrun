@@ -85,6 +85,18 @@ test('the mounted learning setting carries agree_on into the agent the client re
   assert.deepEqual(server.requests.find(row => row.path === '/v2/agents').body.definition.learning, learning);
 });
 
+test('the mount refuses an agree_on the server would refuse', () => {
+  const mount = agree_on => () => mountExtension({ baseUrl: 'https://agentrun.example/v2', apiKey: 'fake-test-key', agentId: 'eve-support',
+    instructions: 'Keep existing tool permissions.', learning: { agree_on } });
+  for (const agree_on of [[], ['mcc', 'mcc'], ['verdict..decision'], ['.mcc'], ['mcc.'], [''], ['a.b.c.d.e.f.g.h.i'], ['m'.repeat(129)],
+    Array.from({ length: 17 }, (_, i) => `field${i}`)]) assert.throws(mount(agree_on), /learning\.agree_on/, JSON.stringify(agree_on));
+  for (const agree_on of ['mcc', [1]]) assert.throws(mount(agree_on), /learning/, JSON.stringify(agree_on));
+  for (const agree_on of [['verdict.decision', 'mcc'], ['a.b.c.d.e.f.g.h'], ['m'.repeat(128)], Array.from({ length: 16 }, (_, i) => `field${i}`)]) {
+    mount(agree_on)();
+    assert.deepEqual(mountExtension.config.learning, { agree_on });
+  }
+});
+
 test('Learning Off never renders owner corrections', () => {
   const record = { receipt: { learning: { enabled: false, revision: 'old', context: 'Existing owner correction.' } } };
   assert.equal(learningInstructions(record), '');

@@ -10,7 +10,7 @@ export interface LearningConfig extends ClientOptions {
   agentId: string;
   name?: string;
   instructions: string;
-  learning?: boolean | { compile_after?: number };
+  learning?: boolean | { compile_after?: number; agree_on?: readonly string[] };
   workflows?: EveWorkflowOptions;
 }
 export interface TurnSource {
