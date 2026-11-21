@@ -153,7 +153,10 @@ class ArchilWorkspace implements Workspace {
   #execs: Promise<unknown> = Promise.resolve();
   /** Why Archil refused an exec's network policy, once it has: an exec asking for no network then runs with it open. */
   #egressOpen: string | undefined;
+  /** The root is on the disk: ensureRoot found or made it, or an exec made it. */
   #rooted = false;
+  /** The exec spill folder is on the disk: an exec made it. */
+  #spilled = false;
 
   constructor(disk: ArchilDisk, root: string, options: ArchilWorkspaceOptions = {}) {
     if (relativeSegments(root).length === 0) throw new WorkspaceError("REFUSED", "an Archil workspace's root is a folder of the disk, not its root");
@@ -461,13 +464,11 @@ class ArchilWorkspace implements Workspace {
   async ensureRoot(): Promise<void> {
     const marker = `${this.#root}/`;
     try {
-      for await (const page of this.#pages(this.#root, false)) {
-        if (page.commonPrefixes.includes(marker) || page.objects.some((o) => o.key === marker)) return;
-      }
-      await this.#put(marker, () => this.#disk.putObject(marker, new Uint8Array(0)));
+      if (!(await this.#folderThere(this.#root))) await this.#put(marker, () => this.#disk.putObject(marker, new Uint8Array(0)));
     } catch (error) {
       throw failed(error, "", "mkdir");
     }
+    this.#rooted = true;
   }
 
   async grep(pattern: string, options: GrepOptions = {}): Promise<GrepResult> {
@@ -638,7 +639,7 @@ class ArchilWorkspace implements Workspace {
     const readBack = options.onOutput ? Math.max(maxOutput, EXEC_OUTPUT_MAX) : maxOutput;
     const run = async (): Promise<ExecResult> => {
       if (signal?.aborted) throw abortError(signal);
-      if (!this.#rooted) await this.#makeRoot();
+      if (!this.#spilled) await this.#makeRoot();
       // This exec's files in the spill folder, beside the workspace's folder: stdin, and the output read back.
       const name = spillName();
       const files = spillKeys(this.#spill, name);
@@ -693,13 +694,15 @@ class ArchilWorkspace implements Workspace {
     });
   }
 
-  /** The root and its spill folder made on the disk: an exec mounts both, so they have to be there. Called inside the
-   *  exec queue, so it does not wait for it. */
+  /** The root and its spill folder made on the disk: an exec mounts both, so they have to be there. The root is put only
+   *  when ensureRoot has not found or made it already (a kept computer's write delegation refuses a put there). Called
+   *  inside the exec queue, so it does not wait for it. */
   async #makeRoot(): Promise<void> {
-    for (const folder of [this.#root, this.#spill]) {
+    for (const folder of this.#rooted ? [this.#spill] : [this.#root, this.#spill]) {
       await this.#put(`${folder}/`, () => this.#disk.putObject(`${folder}/`, new Uint8Array(0)), true).catch((error: unknown) => { throw failed(error, "", "mkdir"); });
     }
     this.#rooted = true;
+    this.#spilled = true;
   }
 
   /** One exec's spill files deleted, failed deletes tried once more. Whatever still stays is reported (onCleanupFailed)
