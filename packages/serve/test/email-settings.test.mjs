@@ -40,11 +40,11 @@ test("GET, PUT, test and DELETE: the account's view never holds the password; pr
   assert.equal(missing.status, 422);
   assert.deepEqual(missing.body.error.fields.map((f) => f.field).sort(), ["address", "imap", "password", "smtp"]);
 
-  const gmail = await api("PUT", "/settings/email", { preset: "gmail", address: "me@gmail.com", password: faux.password });
-  assert.equal(gmail.status, 200, JSON.stringify(gmail.body));
-  assert.deepEqual(gmail.body, { configured: true, preset: "gmail", address: "me@gmail.com", user: "me@gmail.com", imap: { host: "imap.gmail.com", port: 993 }, smtp: { host: "smtp.gmail.com", port: 465 }, password_unreadable: false });
+  // A preset fills the servers (read as a save reads its body: a save signs in, and these are the providers' own).
+  const { accountOf } = await import("../dist/email/account.js");
+  assert.deepEqual(accountOf({ preset: "gmail", address: "me@gmail.com", password: faux.password }), { preset: "gmail", address: "me@gmail.com", user: "me@gmail.com", password: faux.password, imap: { host: "imap.gmail.com", port: 993 }, smtp: { host: "smtp.gmail.com", port: 465 } });
   for (const [preset, imap, smtp] of [["fastmail", "imap.fastmail.com:993", "smtp.fastmail.com:465"], ["icloud", "imap.mail.me.com:993", "smtp.mail.me.com:587"]]) {
-    const view = (await api("PUT", "/settings/email", { preset, address: "me@example.com", password: faux.password })).body;
+    const view = accountOf({ preset, address: "me@example.com", password: faux.password });
     assert.deepEqual([`${view.imap.host}:${view.imap.port}`, `${view.smtp.host}:${view.smtp.port}`], [imap, smtp], preset);
   }
 
@@ -78,7 +78,7 @@ test("GET, PUT, test and DELETE: the account's view never holds the password; pr
 
   // Nowhere in the clear: no answer, no log line, no byte of the store.
   const password = faux.password;
-  for (const answer of [put, tested, wrong, gmail]) assert.ok(!JSON.stringify(answer.body).includes(password));
+  for (const answer of [put, tested, wrong]) assert.ok(!JSON.stringify(answer.body).includes(password));
   assert.ok(!lines.join("\n").includes(password), "the log never holds it");
   assert.ok(!storeBytes(data).includes(Buffer.from(password)), "the store holds it sealed only");
 
@@ -87,6 +87,56 @@ test("GET, PUT, test and DELETE: the account's view never holds the password; pr
   const none = await api("POST", "/settings/email/test", {});
   assert.equal(none.status, 422, JSON.stringify(none.body));
   assert.match(JSON.stringify(none.body), /Settings → Email/);
+});
+
+test("a save signs in as the test does: a password the servers refuse, or a server not reached, is refused with the test's words, nothing saved and the account kept as it was", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const lines = [];
+  const server = await serve(t, { runner: false, log: (line) => lines.push(line) });
+  const { api, data } = server;
+  const faux = await mailbox(t);
+
+  // None saved yet: a wrong password saves nothing.
+  const first = await api("PUT", "/settings/email", { ...accountBody(faux), password: "not-a-secret" });
+  assert.equal(first.status, 424, JSON.stringify(first.body));
+  assert.equal(first.body.error.code, "upstream_failed");
+  assert.deepEqual([first.body.error.details.imap.ok, first.body.error.details.smtp.ok], [false, false], JSON.stringify(first.body));
+  assert.match(first.body.error.details.imap.message, /refused the sign-in/);
+  assert.match(first.body.error.message, /not saved/i);
+  assert.match(first.body.error.message, /refused the sign-in/);
+  assert.equal((await api("GET", "/settings/email")).body.configured, false, "nothing saved");
+  await meets(api, "put", "/settings/email", "424", first.body);
+
+  // One saved: a save the servers refuse leaves it as it was, password and all.
+  const good = await api("PUT", "/settings/email", accountBody(faux));
+  assert.equal(good.status, 200, JSON.stringify(good.body));
+  const other = await mailbox(t);
+  const wrong = await api("PUT", "/settings/email", { ...accountBody(other), password: "not-a-secret" });
+  assert.equal(wrong.status, 424, JSON.stringify(wrong.body));
+  assert.deepEqual((await api("GET", "/settings/email")).body, good.body, "the account as it was");
+  const still = await api("POST", "/settings/email/test", {});
+  assert.equal(still.body.ok, true, `the saved password still signs in: ${JSON.stringify(still.body)}`);
+
+  // The right password on servers that refuse every sign-in, and a server not reached: refused the same way.
+  faux.refuseLogin(true);
+  const refusing = await api("PUT", "/settings/email", accountBody(faux));
+  assert.equal(refusing.status, 424, JSON.stringify(refusing.body));
+  faux.refuseLogin(false);
+  const closed = await mailbox(t);
+  const port = closed.imap.port;
+  await closed.close();
+  const unreached = await api("PUT", "/settings/email", accountBody(faux, { imap: { host: "127.0.0.1", port } }));
+  assert.equal(unreached.status, 424, JSON.stringify(unreached.body));
+  assert.deepEqual([unreached.body.error.details.imap.ok, unreached.body.error.details.smtp.ok], [false, true], JSON.stringify(unreached.body));
+  assert.deepEqual((await api("GET", "/settings/email")).body, good.body);
+
+  // A body that does not read is still 422 by field, before any sign-in.
+  const unread = await api("PUT", "/settings/email", { preset: "other", address: "not an address" });
+  assert.equal(unread.status, 422);
+
+  for (const answer of [first, wrong, refusing, unreached]) assert.ok(!JSON.stringify(answer.body).includes(faux.password));
+  assert.ok(!lines.join("\n").includes(faux.password), "the log never holds it");
+  assert.ok(!storeBytes(data).includes(Buffer.from("not-a-secret")), "a refused password is never kept");
 });
 
 test("a server to anywhere but 127.0.0.1 is reached over TLS: 993 and 465 from the start, any other port with STARTTLS required, never in the clear", async () => {
@@ -186,8 +236,10 @@ test("the password's cap is one: the OpenAPI document's maxLength is the code's,
   const schema = doc.paths["/settings/email"].put.requestBody.content["application/json"].schema;
   const body = schema.$ref ? doc.components.schemas[schema.$ref.split("/").at(-1)] : schema;
   assert.equal(body.properties.password.maxLength, PASSWORD_MAX);
-  const faux = await mailbox(t);
-  assert.equal((await api("PUT", "/settings/email", accountBody(faux, { password: "p".repeat(PASSWORD_MAX) }))).status, 200);
+  // A save signs in: the fake takes the longest password there is.
+  const faux = await mailbox(t, { password: "p".repeat(PASSWORD_MAX) });
+  const longest = await api("PUT", "/settings/email", accountBody(faux));
+  assert.equal(longest.status, 200, JSON.stringify(longest.body).slice(0, 400));
   const over = await api("PUT", "/settings/email", accountBody(faux, { password: "p".repeat(PASSWORD_MAX + 1) }));
   assert.equal(over.status, 422, JSON.stringify(over.body));
   assert.deepEqual(over.body.error.fields.map((f) => f.field), ["password"]);

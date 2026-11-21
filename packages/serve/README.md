@@ -2831,7 +2831,9 @@ account's app password (Gmail, iCloud and Fastmail each make one in the account'
 sign-in password is refused by most providers), at most 1,024 characters. It is sealed under the server's seal key
 (`AGENTRUN_SEAL_KEY`) and is in no answer, event or log line. Every connection is TLS: 993 and 465 from the start, any
 other port with STARTTLS required. Only `127.0.0.1` is reached in the clear. `POST /v2/settings/email/test` signs in to
-both servers and sends nothing; `DELETE` forgets the account.
+both servers and sends nothing. A save signs in the same way first: an account either server refuses, or one a server
+can't be reached for, is 424 `upstream_failed` in the test's words (`details.imap` and `details.smtp`), with nothing
+saved and any account saved before kept as it was. `DELETE` forgets the account.
 
 **The trigger.** `{kind: "email", mailbox?: "INBOX", every_s?: 60, accept?}` reads the mailbox every `every_s` seconds
 and starts a run for each new message its `accept` takes (a rule's `where` reads `/from`, `/to`, `/subject`, `/text`).
@@ -2859,7 +2861,8 @@ after asks, saying "this run has sent 5 emails" (the count is the run's own reco
 stops two auto-responders answering each other. On a run an email started whose `email_read` is thread-scoped (no
 `scope: "mailbox"`), a send to anyone outside the thread's people
 (the account's own address and every From, To and Cc of the thread's messages) asks too, naming them ("eve@example.com
-is outside this email's thread"). The approval's `summary` ends "Asks because ...". With accounts off, where no one can
+is outside this email's thread"). The pending approval carries the reason as `asks_because`, which the console's card
+says above the call's arguments ("Asks because ..."). With accounts off, where no one can
 approve, such a send is refused in those words.
 
 ## Templates

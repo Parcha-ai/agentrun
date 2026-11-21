@@ -26,6 +26,7 @@ import type { CostParts } from "@parcha/agentrun-kernel";
 export type SignInReader = ReturnType<typeof signInReads>;
 import { KINDS } from "./runner/journal-kinds.js";
 import { ASKED_BECAUSE, ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
+import { isObject } from "./validate.js";
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -141,7 +142,8 @@ export type State = "working" | "waiting" | "idle";
 
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
-export type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: ApprovalPrice; destructive?: true; resolved?: true };
+/** `asks_because`: why the gate asked a call its setting allows (its card's ASKED_BECAUSE), kept out of `args_json`. */
+export type Approval = { id: string; tool: string; call_id: string; args_json: string; asks_because?: string; requested_at: string; price?: ApprovalPrice; destructive?: true; resolved?: true };
 /** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
 /** `by`: "message", a deny a person's message gave while the call waited (Runs.message); "setting", the allow or deny the tool's setting gave an ask that waited (the tool set to allow or deny since it asked). */
 /** `superseded`: the answer a stop or a cancel overrode before the run's process acted on it, or the person's allow a deny set since overrode, kept as it was given. */
@@ -181,11 +183,15 @@ export function asksOf(entries: readonly JournalEntry[]): Map<string, Approval> 
     const d = dataOf<AskEntry>(entry);
     if (typeof d?.callId !== "string" || map.has(d.callId)) continue;
     const price = priceOfAsk(d.price);
+    // The card's reason for asking a call its setting allows is the gate's, never one of the call's arguments.
+    const raw: unknown = d.args ?? {};
+    const { [ASKED_BECAUSE]: because, ...args } = isObject(raw) ? raw : {};
     map.set(d.callId, {
       id: d.callId,
       tool: d.tool,
       call_id: d.callId,
-      args_json: JSON.stringify(d.args ?? {}) ?? "{}",
+      args_json: JSON.stringify(isObject(raw) ? args : raw) ?? "{}",
+      ...(typeof because === "string" ? { asks_because: because } : {}),
       requested_at: d.requestedAt,
       ...(price !== undefined ? { price } : {}),
       ...(d.destructive === true ? { destructive: true as const } : {}),
@@ -489,23 +495,22 @@ export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
-/** A call's approval summary, where its tool has one (tools.ts ToolEntry.approvalSummary), then why it asks when its tool
- *  asked about it itself (the card's ASKED_BECAUSE, the gate's), redacted as its arguments are. */
+/** A call's approval summary, where its tool has one (tools.ts ToolEntry.approvalSummary), redacted as its arguments are. */
 function summaryOf(approval: Pick<Approval, "tool" | "args_json">, redact: (text: string) => string): { summary?: string } {
   const summarize = toolOf(approval.tool)?.approvalSummary;
+  if (!summarize) return {};
   let args: unknown;
   try {
     args = JSON.parse(approval.args_json);
   } catch {
     return {};
   }
-  const because = typeof args === "object" && args !== null && typeof (args as Record<string, unknown>)[ASKED_BECAUSE] === "string" ? ((args as Record<string, unknown>)[ASKED_BECAUSE] as string) : undefined;
-  const parts = [summarize?.(args), because === undefined ? undefined : `Asks because ${because}.`].filter((part): part is string => part !== undefined);
-  return parts.length ? { summary: redact(parts.join("\n\n")) } : {};
+  const summary = summarize(args);
+  return summary === undefined ? {} : { summary: redact(summary) };
 }
 export const approvalOf = (run: Pick<RunView, "approvals" | "meta">, redact: (text: string) => string): PendingApproval | undefined => {
   const waiting = waitingApproval(run);
-  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), ...summaryOf(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}), ...(waiting.destructive ? { destructive: true as const } : {}) } : undefined;
+  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), ...summaryOf(waiting, redact), ...(waiting.asks_because !== undefined ? { asks_because: redact(waiting.asks_because) } : {}), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}), ...(waiting.destructive ? { destructive: true as const } : {}) } : undefined;
 };
 /** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
  *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
