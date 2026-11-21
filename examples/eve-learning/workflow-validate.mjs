@@ -1,7 +1,8 @@
 // Real native traces → compilation → independent native shadow check → promoted workflow → original callbacks. No seeded workflow.
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { link, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { AgentRun } from '@parcha/agentrun-client';
@@ -17,10 +18,17 @@ const DEMO_LEARNING = { compile_after: 5 };
 const summarize = run => ({ runId: run.run_id, runtime: run.sdk?.runtime, sessionId: run.sdk?.session_id,
   status: run.status, revision: run.sdk?.learning_revision ?? null, learningState: run.learning?.state ?? null });
 
-/** Saves `value` as the checkpoint at `path`; with `replace` false, a file already there is refused (EEXIST). `write` is
- *  a test's. */
+/** Saves `value` as the checkpoint at `path`: written whole to a new file beside it, then put in its place in one step (a
+ *  rename; with `replace` false a link, which refuses a file already there, EEXIST). A save cut short leaves the last
+ *  checkpoint whole for --resume. `write` is a test's. */
 export async function saveCheckpoint(path, value, { replace, write = writeFile }) {
-  await write(path, JSON.stringify(value, null, 2) + '\n', { flag: replace ? 'w' : 'wx', mode: 0o600 });
+  const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+  try {
+    await write(temp, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    await (replace ? rename(temp, path) : link(temp, path));
+  } finally {
+    await rm(temp, { force: true });
+  }
 }
 
 /** The journal is test-fixture data, independent of the model's claim that it ran a workflow. */

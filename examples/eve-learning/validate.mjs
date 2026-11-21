@@ -1,6 +1,8 @@
 // Opt-in integration proof. Never re-send a paid task after a failure or uncertain result.
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { link, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AgentRun } from '@parcha/agentrun-client';
 import { readReport, report } from './invoke.mjs';
@@ -11,10 +13,17 @@ const task = service => `Read release status for ${service} and report its servi
 export const CORRECTION = `Begin every release status report with the exact prefix "${PREFIX}" and use one concise sentence.`;
 const POLL_MS = 180_000;
 
-/** Saves `value` as the checkpoint at `path`; with `replace` false, a file already there is refused (EEXIST). `write` is
- *  a test's. */
+/** Saves `value` as the checkpoint at `path`: written whole to a new file beside it, then put in its place in one step (a
+ *  rename; with `replace` false a link, which refuses a file already there, EEXIST). A save cut short leaves the last
+ *  checkpoint whole for --resume. `write` is a test's. */
 export async function saveCheckpoint(path, value, { replace, write = writeFile }) {
-  await write(path, `${JSON.stringify(value, null, 2)}\n`, { flag: replace ? 'w' : 'wx', mode: 0o600 });
+  const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+  try {
+    await write(temp, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    await (replace ? rename(temp, path) : link(temp, path));
+  } finally {
+    await rm(temp, { force: true });
+  }
 }
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 
