@@ -301,19 +301,28 @@ test('a cancelled turn is given back uncounted: cancels never stop the check', a
   assert.equal(championOf(await server.records(), flow.name)?.digest, DIGEST);
 });
 
-test(`${RELEASES} given-back turns stop the check with nothing checked and no recompile`, async t => {
+test(`${RELEASES} give-backs in a row hold the check, never for good: the next compile's revision is checked afresh`, async t => {
   const server = await setup(t);
   for (let at = 1; at <= RELEASES; at++) await giveBack(server, `failed-${at}`);
-  const stopped = await server.latest(flow.name);
-  assert.equal(stopped.decided, 'hold');
-  assert.equal(stopped.check.stopped, true);
-  assert.equal(stopped.check.released, RELEASES);
-  assert.equal(stopped.check.n, 0);
-  assert.match(stopped.reason, /^nothing to check it on: the connected agent gave back 5 reserved native turns/);
-  assert.ok(!heldNamesOf(await server.records()).has(flow.name), 'a stop with nothing checked asks no recompile');
-  const after = await server.start('after-stop');
-  assert.equal(after.learning.check, undefined);
+  const held = await server.latest(flow.name);
+  assert.equal(held.decided, 'hold');
+  assert.equal(held.check.stopped, undefined, 'give-backs never stop it for good');
+  assert.equal(held.check.released, RELEASES);
+  assert.equal(held.check.n, 0);
+  assert.match(held.reason, /the connected agent gave back 5 reserved native turns in a row/);
+  assert.ok(heldNamesOf(await server.records()).has(flow.name), 'its hold asks the next compile for a revision');
+  const after = await server.start('after-hold');
+  assert.equal(after.learning.check, undefined, 'the held digest is not checked again');
   await cancel(server, after);
+  await land(server);
+  const next = await server.start('recompiled');
+  const digest = workflowDigest({ workflow: JSON.stringify(nextFlow.workflow) });
+  assert.equal(next.learning.check?.digest, digest, 'the revision reserves a turn');
+  const fresh = await server.latest(flow.name);
+  assert.equal(fresh.check.released, undefined, 'its give-back count starts at 0');
+  assert.equal(fresh.check.attempt, 1, 'give-backs spend no recompile');
+  await finish(server, next, report(next));
+  assert.equal(championOf(await server.records(), flow.name)?.digest, digest, 'and it can promote');
 });
 
 test('a JSON task the draft does not take, and a protected start, reserve no check', async t => {
