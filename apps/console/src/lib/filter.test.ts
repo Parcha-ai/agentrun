@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchesFilter } from "./ListFilter";
+import { matchesFilter } from "./filter";
 
 describe("matchesFilter", () => {
   it("keeps a row when each word of the query, case aside, is in one of its texts", () => {

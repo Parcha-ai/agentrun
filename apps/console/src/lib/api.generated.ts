@@ -509,6 +509,7 @@ export interface components {
       repick_max_chars?: number;
     };
     checkout?: "pull_request" | "none";
+    max_requests?: number;
   };
   Effort: "low" | "medium" | "high";
   Error: {
@@ -950,7 +951,7 @@ export interface components {
     };
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
       detail: string | null;
       at: string;
       workflows?: {
@@ -1194,7 +1195,7 @@ export interface components {
     error?: components["RunError"] | null;
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
       detail: string | null;
       workflows?: {
         file: string;
@@ -1377,7 +1378,7 @@ export interface components {
     tool_result_text?: string | null;
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
       detail: string | null;
     };
   };
@@ -2030,6 +2031,10 @@ export interface operations {
         disk_id: string;
       } | null;
     };
+  };
+  deleteAgentLearning: {
+    body: never;
+    answer: never;
   };
   deleteCalendar: {
     body: never;
@@ -2999,7 +3004,7 @@ export interface operations {
     answer: {
       run: string;
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
       detail: string | null;
       at: string;
       seed: string | null;
@@ -3810,6 +3815,7 @@ export interface operations {
         secrets: string[];
         budget: {
           per_run_usd: number;
+          max_requests?: number;
         } | null;
         learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
@@ -4467,6 +4473,7 @@ export interface operations {
         secrets: string[];
         budget: {
           per_run_usd: number;
+          max_requests?: number;
         } | null;
         learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";

@@ -42,6 +42,15 @@ describe("existing agent observation", () => {
     expect(observedState({ ...session, connection_state: "disconnected" })).toBe("Disconnected");
     expect(observedState({ ...session, selection_active: false })).toBe("Not selected");
   });
+  it("finds a connected agent by each word typed, in any order, as the console's other filters do", async () => {
+    const host = await render(createElement(AgentsList, { agents: [], observations: read }));
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="Search agents"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "test-model backend");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("Existing backend");
+  });
   it("shows the original harness and model with coding-agent handoffs on the existing agents page", async () => {
     const host = await render(createElement(AgentsList, { agents: [], observations: read }));
     expect(host.querySelector<HTMLImageElement>("li a img")?.getAttribute("src")).toBe(claudeMark);

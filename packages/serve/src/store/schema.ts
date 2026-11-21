@@ -38,9 +38,10 @@
 // .incarnation), the run the machine works for (.run), why the server refused to relay its dial (.refused), and where each
 // such runner takes the dials the server relays to it (runners.host and .port, dial-relay.ts). Version 14 keeps when a run or
 // an agent was purged (runs.purged_at, agents.purged_at; DELETE /runs/{id} and /agents/{id}, agent-delete.ts): its row is
-// then a tombstone, its content gone and its cost kept. The server upgrades these in place at its open (listingUpgrade from
-// 11, relayUpgrade from 12, then purgeUpgrade from 13); a runner waits for it.
-export const SCHEMA_VERSION = 14;
+// then a tombstone, its content gone and its cost kept. Version 15 keeps the disk a run's launch named as its own
+// (runs.disk; a run on one learns nothing, learn/learning-of.ts). The server upgrades these in place at its open
+// (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13, then diskUpgrade from 14); a runner waits for it.
+export const SCHEMA_VERSION = 15;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -70,6 +71,17 @@ export const RUNS_COST_UPPER_BOUND = `ALTER TABLE runs ADD COLUMN ${COST_UPPER_B
 /** A run's labels (JSON, null for none): in STORE_DDL, and added at a server open to a store an earlier build of this version
  *  made, as RUNS_COST_UPPER_BOUND is (a run started before reads as given none). */
 export const RUNS_LABELS = `ALTER TABLE runs ADD COLUMN ${json("labels", true)}`;
+/** Version 14 → 15 on SQLite (the server's open, sqlite/store.ts), given the runs' columns now: each run's disk
+ *  (RunRow.disk), written for every run already there from its launch body, as a new run's is at its create, and the
+ *  version, in one durable write. A run whose launch named no disk of its own reads as the default disk's, and so does a
+ *  run purged before (its launch body gone): nothing of it is left to learn from. */
+export function diskUpgrade(runColumns: ReadonlySet<string>): readonly string[] {
+  return [
+    ...(runColumns.has("disk") ? [] : ["ALTER TABLE runs ADD COLUMN disk TEXT"]),
+    "UPDATE runs SET disk = (SELECT json_extract(body, '$.archil_disk.disk_id') FROM run_launch WHERE run_launch.run_id = runs.id AND json_extract(body, '$.archil_disk.kind') = 'launch')",
+    "UPDATE store_meta SET schema_version = 15 WHERE singleton = 1",
+  ];
+}
 /** A trigger's package mark (TriggerRow.templateId): the id of the template package whose apply made or last kept it, null
  *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as
  *  RUNS_LABELS is (a trigger made before reads as no package's). */
@@ -420,6 +432,10 @@ export const STORE_DDL: readonly string[] = [
     -- server and only filtered on (runs.list). Null when it was given none. Added at a server open to a store an earlier
     -- build of this version made (RUNS_LABELS), its runs reading as given none.
     ${json("labels", true)},
+    -- The disk the run's launch named as its own (RunRow.disk: a customer's Archil disk, by its id), set once with the queued
+    -- run from its launch body; null for the default disk's. Learning reads an agent's runs on one disk alone. Version 15
+    -- (diskUpgrade): added then and written from each run's launch. A purge keeps it on the run's tombstone.
+    disk TEXT,
     started_at INTEGER NOT NULL,
     ended_at INTEGER,
     -- The run's listing (RUN_LISTING_COLUMNS): what a runs list shows of it, kept on its row so a list reads rows alone.

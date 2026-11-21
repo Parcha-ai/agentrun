@@ -25,6 +25,18 @@ export function writeLaunch(tx: Pick<SqliteExecutor, "run">, runId: string, laun
   return tx.run("INSERT INTO run_launch (run_id, body, sealed, created_at) VALUES (?, ?, ?, ?)", runId, JSON.stringify(launch.body ?? null), launch.sealed ?? null, at);
 }
 
+/** The disk a launch body names as the run's own (runs.disk, RunRow.disk): its `archil_disk` of kind "launch", by its id
+ *  (run-launch.ts launchBody writes it so); null for none, or its agent's own disk (the default disk). The one read of the
+ *  body's disk the store makes, at every create of a run, so no path that queues a run can leave it out. */
+export function launchDiskOf(launch: RunLaunchInput | undefined): string | null {
+  const body = launch?.body;
+  if (typeof body !== "object" || body === null) return null;
+  const disk = (body as { archil_disk?: unknown }).archil_disk;
+  if (typeof disk !== "object" || disk === null) return null;
+  const { disk_id: id, kind } = disk as { disk_id?: unknown; kind?: unknown };
+  return kind === "launch" && typeof id === "string" && id !== "" ? id : null;
+}
+
 /** A message's launch secrets written over the run's (runs.command, runs.reopen), inside `tx`: the bytes as given, or a
  *  function's answer to the bytes the launch holds now, read in the same transaction. */
 export async function writeLaunchSealed(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, launchSealed: LaunchSealed): Promise<void> {
@@ -53,9 +65,9 @@ function postgresUnicodeRefusal(error: unknown): boolean {
 }
 
 /** Postgres SQL for JSON text `column` with its escaped NULs and surrogates (\u0000, \ud800-\udfff) read as escaped
- *  spaces, for a read of one number or id out of a document whose other strings may hold one (0026_run_disk.sql does
- *  the same). A replaced escape stays an escape, so it is still JSON. Only an escape is replaced: u0000 after an escaped
- *  backslash (the text \u0000 in an id, written \\u0000) is text and is kept, so an id reads as it is. */
+ *  spaces, for a read of one number or id out of a document whose other strings may hold one (0026_run_disk.sql blanks
+ *  them for its backfill). A replaced escape stays an escape, so it is still JSON. Only an escape is replaced: u0000 after
+ *  an escaped backslash (the text \u0000 in an id, written \\u0000) is text and is kept, so an id reads as it is. */
 const postgresReadableJson = (column: string): string => `regexp_replace(${column}, '(?<!\\\\)((?:\\\\\\\\)*)\\\\u(0000|[dD][89a-fA-F][0-9a-fA-F]{2})', '\\1\\\\u0020', 'g')`;
 
 /** Project accounting facts before crossing the database boundary. An SDK inbox can contain megabytes of replay;
@@ -123,4 +135,21 @@ export async function readLearningStarts(executor: Pick<SqliteExecutor, "all"> &
     runId: row.run_id,
     learning: row.body != null ? ((JSON.parse(row.body) as { learning?: unknown } | null)?.learning ?? undefined) : row.learning === null ? undefined : JSON.parse(row.learning),
   }));
+}
+
+/** The ids of agent `agentId`'s runs started after `at` whose learning seed was read at or before it (the launch body's
+ *  `learning.seededAt`), in one read of that one number a run started after `at`: never a run's section or input. */
+export async function readSeededBefore(executor: Pick<SqliteExecutor, "all"> & { readonly dialect: Dialect }, agentId: string, at: number): Promise<string[]> {
+  const read = (body: string) => executor.all<{ run_id: string; seeded_at: string | number | null }>(`SELECT run_id, ${executor.dialect.jsonText(body, ["learning", "seededAt"])} AS seeded_at FROM run_launch WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ? AND started_at > ?)`, agentId, at);
+  let rows: Awaited<ReturnType<typeof read>>;
+  try {
+    rows = await read("body");
+  } catch (error) {
+    // A body holding an escaped NUL or a lone surrogate anywhere (a run's input) makes Postgres refuse the whole read: the
+    // one number is read again from copies with those escapes blanked (postgresReadableJson), never a run's text. On an
+    // ordinary store connection, as readUsageMetadata's, so the retry is outside a failed transaction.
+    if (executor.dialect.name !== "postgres" || !postgresUnicodeRefusal(error)) throw error;
+    rows = await read(postgresReadableJson("body"));
+  }
+  return rows.flatMap((row) => (row.seeded_at !== null && Number(row.seeded_at) <= at ? [row.run_id] : []));
 }
