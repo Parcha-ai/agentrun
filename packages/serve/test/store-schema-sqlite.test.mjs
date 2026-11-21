@@ -10,7 +10,7 @@ import { test } from "node:test";
 
 const { openSqliteStore, StoreAwaitsServer } = await import("../dist/store/index.js");
 const { SQLITE_RUNNER_NEEDS, STORE_FILE } = await import("../dist/store/sqlite/store.js");
-const { readStoreSchema } = await import("../dist/store/store-schema.js");
+const { readStoreSchema, storeSchemaReport } = await import("../dist/store/store-schema.js");
 const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 
 const sqliteEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "AGENTRUN_STORE_URL"));
@@ -61,4 +61,17 @@ test("every wait the SQLite runner's open says for a column is on SQLITE_RUNNER_
   assert.ok(said.length >= SQLITE_RUNNER_NEEDS.length, `the open's waits: ${said.join(" | ")}`);
   const listed = new Set(SQLITE_RUNNER_NEEDS.map((need) => need.why));
   assert.deepEqual(said.filter((why) => !listed.has(why)), [], "each is listed");
+});
+
+test("on SQLite, a runner waits only for a version its server upgrades in place (11-13); any other earlier one, and a later one, is refused", () => {
+  const target = { kind: "sqlite", dataDir: "/data" };
+  const verdict = (version) => {
+    const report = storeSchemaReport(target, { version, runnerFloor: version }, SCHEMA_VERSION);
+    return [report.server, report.runner];
+  };
+  assert.deepEqual(verdict(10), ["refuses", "refused"], "10: no in-place upgrade, so neither waits on it");
+  for (const version of [11, 12, 13]) assert.deepEqual(verdict(version), ["migrates", "waits"], String(version));
+  assert.deepEqual(verdict(SCHEMA_VERSION), ["opens", "opens"]);
+  assert.deepEqual(verdict(SCHEMA_VERSION + 1), ["refuses", "refused"], "a later server's file");
+  assert.deepEqual(verdict(null), ["sets up", "refused"]);
 });

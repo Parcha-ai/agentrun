@@ -72,7 +72,8 @@ const BREAKING: readonly { readonly why: string; readonly test: (statement: stri
   { why: "adds a primary key, which makes its columns NOT NULL", test: (s) => /^ALTER\s+TABLE\b/.test(s) && /\bADD\s+(?:CONSTRAINT\s+(?:"[^"]+"|\w+)\s+)?PRIMARY\s+KEY\b/.test(s) },
   {
     why: "adds a NOT NULL column with no default, which an earlier runner's inserts leave out",
-    test: (s) => /^ALTER\s+TABLE\b/.test(s) && addedColumns(s).map(outerWords).map((column) => column.replace(/\bSET\s+DEFAULT\b/g, "")).some((column) => /\bNOT\s+NULL\b/.test(column) && !/\bDEFAULT\b/.test(column) && !/\bGENERATED\b/.test(column)),
+    // A column's own PRIMARY KEY makes it NOT NULL as well.
+    test: (s) => /^ALTER\s+TABLE\b/.test(s) && addedColumns(s).map(outerWords).map((column) => column.replace(/\bSET\s+DEFAULT\b/g, "")).some((column) => (/\bNOT\s+NULL\b/.test(column) || /\bPRIMARY\s+KEY\b/.test(column)) && !/\bDEFAULT\b/.test(column) && !/\bGENERATED\b/.test(column)),
   },
 ];
 

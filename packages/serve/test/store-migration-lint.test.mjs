@@ -65,6 +65,7 @@ test("the lint finds a drop, a rename, a type change, a column made NOT NULL and
     // A primary key makes its columns NOT NULL; ON DELETE SET DEFAULT is no default of the column's own.
     "ALTER TABLE runs ADD PRIMARY KEY (note);",
     "ALTER TABLE runs ADD CONSTRAINT runs_note_key PRIMARY KEY (note);",
+    "ALTER TABLE events ADD COLUMN sequence BIGINT PRIMARY KEY;",
     "ALTER TABLE runs ADD COLUMN owner_id BIGINT NOT NULL REFERENCES owners (id) ON DELETE SET DEFAULT;",
     // A dollar-quoted body whose tag holds a digit is still a body, and a statement after it still read.
     "DO $fn1$ BEGIN PERFORM 1; END $fn1$; ALTER TABLE runs DROP COLUMN labels;",
@@ -80,6 +81,7 @@ test("the lint passes additive steps, and reads no comment or string as a statem
     "ALTER TABLE computer_intervals ADD COLUMN IF NOT EXISTS booked_ms BIGINT NOT NULL DEFAULT 0 CHECK (booked_ms >= 0);",
     "ALTER TABLE runs ADD COLUMN note TEXT;",
     "ALTER TABLE runs ADD COLUMN made BIGINT NOT NULL GENERATED ALWAYS AS (0) STORED;",
+    "ALTER TABLE events ADD COLUMN sequence BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY;",
     "ALTER TABLE runs ALTER COLUMN labels DROP NOT NULL;",
     "ALTER TABLE runs ADD CONSTRAINT runs_note_check CHECK (note <> '');",
     "-- this file does not drop or rename anything\nUPDATE store_meta SET schema_version = 24 WHERE singleton = 1;",

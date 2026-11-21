@@ -48,7 +48,10 @@ export function storeSchemaReport(target: StoreTarget, state: SchemaState, build
     ? "refuses"
     : version === null ? "sets up" : version === build ? "opens" : version > build ? "refuses" : target.kind === "postgres" || SQLITE_UPGRADES.has(version) ? "migrates" : "refuses";
   // A SQLite runner opens only its own version: its floor is the version (sqlite/store.ts schemaState).
-  const runner = awaits && version === build ? "waits" : runnerOn(target.kind === "sqlite" ? { version, runnerFloor: version } : state, build);
+  // On SQLite a runner waits only for a version its server upgrades in place (11-13), and refuses any other earlier one.
+  const runner = target.kind === "sqlite" && version !== null && version < build && !SQLITE_UPGRADES.has(version)
+    ? "refused"
+    : awaits && version === build ? "waits" : runnerOn(target.kind === "sqlite" ? { version, runnerFloor: version } : state, build);
   return { store: target.kind, where: storePlace(target), schema: version, runnerFloor: state.runnerFloor, build, server, runner };
 }
 
