@@ -9,7 +9,8 @@
     "docker",
     "daytona",
     "boxd",
-    "smolcloud"
+    "smolcloud",
+    "groundbox"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -72,6 +73,10 @@
       "types": "./dist/boxd.d.ts",
       "default": "./dist/boxd.js"
     },
+    "./groundbox": {
+      "types": "./dist/groundbox.d.ts",
+      "default": "./dist/groundbox.js"
+    },
     "./orgo": {
       "types": "./dist/orgo.d.ts",
       "default": "./dist/orgo.js"
@@ -124,6 +129,7 @@
     "test:modal": "node --test --test-timeout=1800000 test/modal/*.test.mjs",
     "test:e2b": "node --test --test-timeout=1800000 test/e2b/*.test.mjs",
     "test:boxd": "node --test --test-timeout=1800000 test/boxd/*.test.mjs",
+    "test:groundbox": "node --test --test-timeout=1800000 test/groundbox/*.test.mjs",
     "conformance": "node dist/conformance/cli.js"
   },
   "repository": {
