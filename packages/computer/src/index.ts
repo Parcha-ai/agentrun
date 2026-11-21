@@ -8,7 +8,7 @@ export { type CallOptions, DaemonClient, type DaemonStream, findNodes, refusedSt
 export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } from "./actions.js";
 export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
 export { type FolderMeta, FolderSync, folderPathProblem, PUSHED_MTIME, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES, type SyncCounts, type SyncSink } from "./sync-folder.js";
-export { type TarEntry, TarReader, tarEntry, tarOf, tarStream, untar, untarStream } from "./tar.js";
+export { MAX_TAR_MTIME, type TarEntry, TarReader, tarEntry, tarOf, tarStream, untar, untarStream } from "./tar.js";
 export { listProcesses, readAll, type ReadAllResult } from "./processes.js";
 export {
 	type ActionMapper,

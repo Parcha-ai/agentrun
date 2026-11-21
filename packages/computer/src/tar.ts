@@ -8,9 +8,15 @@ export interface TarEntry {
 	mode: number;
 	body?: Uint8Array;
 	link?: string;
-	/** The mtime its header carries, in whole seconds since the epoch; now where none is given. untar leaves it out. */
+	/**
+	 * The mtime its header carries, in whole seconds since the epoch, 0 to MAX_TAR_MTIME (ustar's 11 octal digits, 2242);
+	 * now where none is given. Any other value is refused (a RangeError) before the entry is written. untar leaves it out.
+	 */
 	mtime?: number;
 }
+
+/** The latest mtime a ustar header holds: 11 octal digits of seconds. */
+export const MAX_TAR_MTIME = 8 ** 11 - 1;
 
 const BLOCK = 512;
 const END = Buffer.alloc(2 * BLOCK);
@@ -48,6 +54,10 @@ function record(key: string, value: string): string {
 
 /** One entry's blocks: a pax header first where its name or link does not fit ustar's 100 bytes, then its own, its body and the padding. */
 export function tarEntry(entry: TarEntry): Buffer[] {
+	const { mtime } = entry;
+	if (mtime !== undefined && !(Number.isInteger(mtime) && mtime >= 0 && mtime <= MAX_TAR_MTIME)) {
+		throw new RangeError(`${entry.name}: mtime ${mtime} is no whole number of seconds from 0 to ${MAX_TAR_MTIME}, which a ustar header holds`);
+	}
 	const body = entry.type === "file" ? Buffer.from(entry.body ?? new Uint8Array()) : Buffer.alloc(0);
 	const link = entry.link ?? "";
 	const records = [...(Buffer.byteLength(entry.name) > 100 ? [record("path", entry.name)] : []), ...(Buffer.byteLength(link) > 100 ? [record("linkpath", link)] : [])].join("");
