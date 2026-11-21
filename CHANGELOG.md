@@ -192,7 +192,7 @@ Runs and the server
 
 - A run whose revision ships skills no longer fails at its claim on a fresh Archil folder with `".agents/skills" is not there` when it runs in its own process: a `WorkspaceError` crosses the run's channel as a `WorkspaceError` with its `code`, as the other run errors do. Runs in the runner's process were not affected (#3354). <!-- changes/run-process-workspace-error.md -->
 - A disk removed at Archil while a run is on it now fails that run's next disk call as the disk being gone (`UNAVAILABLE`, in Archil's words), not as a missing file (#3363). <!-- changes/archil-disk-gone-midrun.md -->
-- A person's answer to an ACP agent's own tool call (Cursor's shell) reaches the run when the agent, started again, asks for another command instead: the adapter asks about each request the turn left waiting before it starts the agent, and with no answer yet the run parks again with no prompt sent. Before, the answer was never taken and the run restarted the agent every few seconds, each time with a new approval, until the plan's turn limit. An agent that keeps asking the person about other commands instead of the one they allowed ends its turn with `ACP_REASK_LIMIT` (#3356). <!-- changes/acp-parked-permission-settled.md -->
+- An ACP agent's own tool call (Cursor's shell) that parked on a person no longer loops once answered: the resume takes the answer before the agent starts, and the recovery note says what the person decided. Before, restarted Cursor asked for a different command, the answer was never taken, and the run restarted every few seconds until the plan's turn limit (#3356). <!-- changes/acp-parked-permission-settled.md -->
 
 Templates, triggers and email
 
