@@ -191,6 +191,7 @@ export type DefinitionInput = {
     surface?: "code" | "tools";
     exec?: boolean;
     record?: boolean;
+    needs?: Array<string>;
   };
   tool_settings?: {
     read?: {

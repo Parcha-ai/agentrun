@@ -388,6 +388,7 @@ export interface components {
       surface?: "code" | "tools";
       exec?: boolean;
       record?: boolean;
+      needs?: string[];
     };
     tool_settings?: {
       read?: {
