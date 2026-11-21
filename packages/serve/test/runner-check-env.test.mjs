@@ -59,6 +59,13 @@ test("runner --check --env with nothing: the store's URL and the seal key are mi
   assert.match(err, /AGENTRUN_STORE_URL: /, "each gap on stderr too");
 });
 
+test("runner --check --env with a pool size the runner's start refuses: bad, by name, and it exits 1", async (t) => {
+  const root = await scratch(t);
+  const { code, out, err } = await run(["runner", "--check", "--env", "--data", root], { ...baseEnv(root), AGENTRUN_STORE_POOL_SIZE: "0" });
+  assert.equal(code, 1, out + err);
+  assert.match(out, /^bad\s+AGENTRUN_STORE_POOL_SIZE\s+the runner's store does not open with it: AGENTRUN_STORE_POOL_SIZE is a whole number/m);
+});
+
 test("--env goes with --check, and a heartbeat check needs a name", async (t) => {
   const root = await scratch(t);
   assert.equal((await run(["runner", "--env", "--data", root], baseEnv(root))).code, 2);
@@ -122,6 +129,12 @@ test("on Postgres: every run-facing name the server holds must be the runner's, 
   // Its two rows: the server's name held, and its forwarder answering.
   assert.match(whole.out, /^ok\s+ANTHROPIC_BASE_URL\s+on this machine's loopback, and a forwarder answers there$/m);
   assert.match(whole.out, /^Runner environment: complete/m);
+  // A pool size the runner's own start refuses fails the check too, though the check opens its store with a pool of one.
+  const pooled = await check({ AGENTRUN_SEAL_KEY: SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream, AGENT_MODEL_FAST: "faux-fast", AGENTRUN_STORE_POOL_SIZE: "0" });
+  neverPrinted(pooled);
+  assert.equal(pooled.code, 1, pooled.out + pooled.err);
+  assert.equal(stateOf(pooled.out, "AGENTRUN_STORE_POOL_SIZE"), "bad", pooled.out);
+  assert.match(pooled.out, /^Runner environment: 1 gap: AGENTRUN_STORE_POOL_SIZE$/m);
   // The server's own token on a runner is warned of, and fails nothing.
   const tokened = await check({ AGENTRUN_SEAL_KEY: SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream, AGENT_MODEL_FAST: "faux-fast", AGENTRUN_TOKEN: TOKEN });
   assert.equal(tokened.code, 0, tokened.out);

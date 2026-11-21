@@ -28,6 +28,8 @@ import { SEAL_KEY_ENV } from "../tool-keys.js";
 /** The store.settings key a server keeps the names of its run-facing environment under at each start: `{ v: 1, names }`. */
 export const RUN_ENV_KEY = "server.run_env";
 export const STORE_URL_ENV = "AGENTRUN_STORE_URL";
+/** The most connections a Postgres store holds at once; its start refuses a value that is no size (store/open.ts). */
+const POOL_SIZE_ENV = "AGENTRUN_STORE_POOL_SIZE";
 
 /** The server's own secrets: never a runner's (runner/main.ts RUNNER_ONLY keeps them from its runs, too). */
 const SERVER_ONLY: readonly string[] = ["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY"];
@@ -137,10 +139,18 @@ export async function checkRunnerEnv(options: RunnerEnvCheckOptions): Promise<Ch
   if (!url && options.dataDir === undefined) {
     rows.push({ state: "missing", name: STORE_URL_ENV, why: "the store's URL: unset, and no --data to find a SQLite store in" });
   } else {
+    // The check opens its store with a pool of one, so a pool size the runner's own start refuses (open.ts, on either
+    // store) is checked as given first: a runner whose start would fail never passes this check.
+    const { storePoolSize } = await import("../store/open.js");
+    try {
+      storePoolSize(env);
+    } catch (error) {
+      rows.push({ state: "bad", name: POOL_SIZE_ENV, why: `the runner's store does not open with it: ${(error as Error)?.message ?? String(error)}` });
+    }
     try {
       // Read when the check runs: the server imports this module for its names alone, never the runner's start.
       const { openRunnerStore } = await import("./main.js");
-      const opened = await openRunnerStore(dataDir, { ...env, AGENTRUN_STORE_POOL_SIZE: "1" }, () => {}, url);
+      const opened = await openRunnerStore(dataDir, { ...env, [POOL_SIZE_ENV]: "1" }, () => {}, url);
       store = opened.store;
       rows.push({ state: "ok", name: STORE_URL_ENV, why: url ? `the store opens: ${opened.kind}, schema v${opened.schema}` : "unset: the store is SQLite in the data directory, which is the server's" });
     } catch (error) {
