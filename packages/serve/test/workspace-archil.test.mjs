@@ -825,6 +825,57 @@ test("archil-disk: a disk Archil does not have fails every SDK call naming the d
   }
 });
 
+test("archil-disk: a disk removed at Archil after the seam's first call fails the next SDK call and ranged read as ArchilDiskMissing; a missing key on a disk still there stays its own 404", async () => {
+  const id = "dsk-00000000000000ab";
+  let gone = false;
+  const seen = [];
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      // The seam never asks for "/": a request there is another test's probe of a port this server reused, not the seam's.
+      if (request.url === "/") { response.writeHead(404); return response.end(); }
+      seen.push(`${request.method} ${request.url.split("?")[0]}`);
+      if (request.url === `/api/disks/${id}`) {
+        response.writeHead(gone ? 404 : 200, { "content-type": "application/json" });
+        return response.end(JSON.stringify(gone
+          ? { success: false, error: "Disk not found", code: "not_found" }
+          : { success: true, data: { id, name: "dev", organization: "o", status: "ready", provider: "aws", region: "aws-us-east-1", createdAt: "2026-11-08T00:00:00Z" } }));
+      }
+      if (!gone && request.method === "PUT" && request.url.startsWith(`/${id}/agents/a/`)) { response.writeHead(200); return response.end(); }
+      if (!gone && request.method === "GET" && request.url === `/${id}/agents/a/x.txt`) {
+        response.writeHead(206, { "content-range": "bytes 0-1/2" });
+        return response.end("ok");
+      }
+      // A key that is not there, or (once gone) every object call: the S3 endpoint's plain 404, as for a missing key.
+      response.writeHead(404, { "content-type": "application/xml" });
+      response.end("<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>");
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const disk = archilDisk({ disk: id, region: "aws-us-east-1", key: () => "loopback-dummy", baseUrl: base, s3BaseUrl: `${base}/` });
+    const missing = (error) => error.name === "ArchilDiskMissing" && error.status === undefined && error.message.startsWith(`the Archil disk ${id} is not there in region aws-us-east-1: `) && error.message.includes("Disk not found");
+    const missingKey = (error) => error.name !== "ArchilDiskMissing" && error.status === 404;
+    const lookups = () => seen.filter((call) => call === `GET /api/disks/${id}`).length;
+    await disk.putObject("agents/a/x.txt", new Uint8Array(2));
+    assert.equal(text((await disk.getRange("agents/a/x.txt", "bytes=0-1")).body), "ok");
+    assert.equal(lookups(), 1, "the first call looks the disk up once");
+    // The disk is there: a missing key is its own 404, after one more look at the disk each.
+    await assert.rejects(disk.putObject("agents/b/x.txt", new Uint8Array(1)), missingKey);
+    await assert.rejects(disk.getRange("agents/a/nope.txt", "bytes=0-1"), missingKey);
+    assert.equal(lookups(), 3, "one disks.get after each 404, no more");
+    // Removed at Archil mid-run: the call that meets it fails as the disk being gone, never as a missing key.
+    gone = true;
+    await assert.rejects(disk.putObject("agents/a/y.txt", new Uint8Array(1)), missing);
+    await assert.rejects(disk.listPage("agents/a/", { recursive: false }), missing);
+    await assert.rejects(disk.getRange("agents/a/x.txt", "bytes=0-1"), missing);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("ArchilWorkspace: a disk gone at Archil is UNAVAILABLE in its words on every call, never a folder that is not there, so laying a run's skills fails naming the disk", async () => {
   const disk = new FakeArchilDisk();
   disk.gone = { region: "aws-us-east-1", words: "Disk not found" };
