@@ -57,7 +57,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/runs/run_1/usage"], ["HEAD", "/v2/runs/run_1/usage"],
     ["PUT", "/v2/runs/run_1/grade"], ["POST", "/v2/runs/run_1/messages"], ["POST", "/v2/runs/run_1/stop"], ["POST", "/v2/runs/run_1/cancel"],
     ["GET", "/v2/runs/run_1/files"], ["GET", "/v2/runs/run_1/files/out/report.md"], ["POST", "/v2/files"], ["GET", "/v2/files/file_1"],
-    ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"],
+    ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"], ["GET", "/v2/capacity"],
     ["GET", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1"], ["GET", "/v2/computers/daemon"],
     ["GET", "/v2/computers"], ["HEAD", "/v2/computers"], ["GET", "/v2/workspace/archil"], ["HEAD", "/v2/workspace/archil"],
     ["GET", "/v2/runs/run_1/computer"], ["POST", "/v2/runs/run_1/computer/take-over"], ["POST", "/v2/runs/run_1/computer/hand-back"],
@@ -98,7 +98,11 @@ async function send(server, method, path, { token = true, body, headers = {} } =
 test("an API-only server serves a run's routes with the token", async (t) => {
   const server = await serve(t, { apiOnly: true, runner: false });
   assert.equal((await send(server, "GET", "/v2/health", { token: false })).status, 200, "health");
-  assert.equal((await send(server, "GET", "/v2/capabilities")).status, 200, "capabilities");
+  const capabilities = await send(server, "GET", "/v2/capabilities");
+  assert.equal(capabilities.status, 200, "capabilities");
+  // The store's schema and runner floor beside this build's, for a deploy's skew check (runnerfloor/1).
+  const { version, runner_floor: floor, known } = capabilities.body.store_schema;
+  assert.ok(Number.isSafeInteger(known) && version === known && Number.isSafeInteger(floor) && floor <= known, JSON.stringify(capabilities.body.store_schema));
   const runs = await send(server, "GET", "/v2/runs");
   assert.equal(runs.status, 200, `the runs list: ${JSON.stringify(runs.body)}`);
   assert.equal((await send(server, "GET", "/v2/usage")).status, 200, "usage");

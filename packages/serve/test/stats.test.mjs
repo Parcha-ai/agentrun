@@ -74,7 +74,7 @@ test("GET /v2/stats counts by status, sums only known costs, leaves archived out
     cost: { usd: 1.75, basis: "estimate", unknown_runs: 3 },
     archived: { agents: 1, runs: 2 },
   });
-  assert.deepEqual([analytics.totals.runs, analytics.totals.runs_with_metrics, analytics.totals.tokens], [6, 0, 0], "rows with no metrics: runs, none of them covered");
+  assert.deepEqual([analytics.totals.runs, analytics.totals.runs_with_metrics, analytics.totals.tokens], [6, 0, null], "rows with no metrics: unknown tokens, none of them covered");
   assert.deepEqual([analytics.totals.completed, analytics.totals.needs_review, analytics.totals.failed], [2, 1, 1], "the escalated run is completed, and needs review; never failed");
   await assertRunningPartitioned(data, stats.body);
   const { doc, op, schema } = await statsSchema(baseUrl);
@@ -104,7 +104,7 @@ async function measured(t) {
   return data;
 }
 
-const row = (runs, completed, failed, runs_with_metrics, tokens, cost_usd, unknown_cost_runs, needs_review = 0) => ({ runs, completed, needs_review, failed, runs_with_metrics, tokens, cost_usd, unknown_cost_runs });
+const row = (runs, completed, failed, runs_with_metrics, tokens, cost_usd, unknown_cost_runs, needs_review = 0) => ({ runs, completed, needs_review, failed, runs_with_metrics, runs_with_token_metrics: runs_with_metrics, tokens, cost_usd, unknown_cost_runs });
 
 test("an escalated run is completed and needs review, never failed: in the counts, and in analytics with and without its filters", async (t) => {
   const { data } = await seeded(t, [["alpha", "Alpha"], ["beta", "Beta"]], [
@@ -128,6 +128,14 @@ test("GET /v2/stats's analytics sums the runs' metrics by harness and effort, da
   assert.equal(status, 200, JSON.stringify(body));
   assert.deepEqual(body.analytics, {
     filter: { from: null, to: null, agent: null },
+    // The three fixture runs contribute 1,120 + 60 + 10 tokens. There are no observation records or unknown
+    // counters here; the imported session retains its actual Claude source in the unified harness breakdown.
+    usage: {
+      tokens: 1190, input: 155, output: 35, cache_read: 1000, cache_write: 0,
+      known_runs: 3, unknown_runs: 0, observed_sessions: 0, unknown_sessions: 0, partial_days: 0, retention_limited: false,
+      by_day: [{ day: "2026-10-01", tokens: 10 }, { day: "2026-10-02", tokens: 1120 }, { day: "2026-10-03", tokens: 60 }],
+      by_harness: [{ harness: "claude-code", tokens: 10 }, { harness: "codex", tokens: 60 }, { harness: "pi", tokens: 1120 }],
+    },
     totals: { ...row(3, 2, 1, 3, 1190, 0.75, 1), input: 155, cache_read: 1000, cache_write: 0, output: 35, requests: 4, unmetered: 0 },
     time: { ended_runs: 3, wall_ms: 66_000, active_runs: 1, active_ms: 3000 },
     by_harness_effort: [

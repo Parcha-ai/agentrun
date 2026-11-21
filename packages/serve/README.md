@@ -10,16 +10,30 @@ runner starts beside the server. The capabilities document (`GET /v2/capabilitie
 Already use Claude Code or Codex? Choose **Connect agent** in the console and select your coding agent from the
 dropdown. Its skill asks whether to connect for future jobs, import past history, or both, then confirms the source
 project and machine. No destination model key is needed for this connection: a live agent uses its existing native
-sign-in and configuration. Turn **Self-improving** On separately to give later runs your corrections and the
-workflows its runs compile;
-imported history stays historical and does not automatically train the agent.
+sign-in and configuration. Turn **Self-improving** On separately to give later runs your owner-written
+corrections. Eligible server-run and SDK agents can also compile checked workflows; CLI capture has no workflow
+bridge. Imported history stays historical and does not automatically train the agent.
 
 For a source on a different laptop, VM or container, choose **Connection setup → Another machine** and use the
 matching [Python source connector](../../connector/README.md). Remote execution currently needs the server and
 connector from the same reviewed development checkout; the published observation-only CLI does not include it.
 The source worker must stay online. See [Native agents](../../docs/native-agents.md) for setup, history scopes and
-runtime limits. Connected agents use ordinary agent revisions and the existing checked learning pipeline; managed
-adapter isolation is unchanged.
+runtime limits. Connected agents use ordinary agent revisions; each connection declares whether it can launch runs
+and execute checked workflows. The console shows server-run and source-connected agents in one inventory, with their
+actual connection and activity state. A CLI capture profile linked to a source appears with that source; an unlinked
+profile remains visible. A source session is not itself a recorded run. Managed adapter isolation is unchanged.
+
+`GET /v2/observations` also reports `learning` for each observed session: `on`, `off`, `setup_required`,
+`unknown` or `unsupported`, with a reason and verified profile IDs when available. Polling sources advertise
+support through `cli_learning.session_association` in `/api/v2/control/connectors/capabilities`. A source may
+attach `metadata.cli_learning` after matching the exact canonical project, runtime and server origin to an
+existing private CLI learning connection. Its proof binds the connector, selected source, observed session,
+runtime, connection, readiness, native-session hash and sequence using that connection's scoped credential.
+The receiver stores verified identifiers, never the credential or proof, and returns no source paths or native
+session hashes. On requires configured hooks and an accepted hook window for that exact native session;
+configuration alone is `unknown` with `awaiting_activation`. Agent and server learning settings are read live.
+Missing support, invalid proofs or revoked credentials do not interrupt activity or usage reporting. Delegated
+subagents report `unsupported`. Observing a session never enrolls its project or changes its learning setting.
 
 ## Quick start (no key, no network)
 
@@ -362,6 +376,28 @@ entry (`max_concurrent_runs`, beside `run_memory_mib`).
 A data directory serves one AgentRun Server at a time: a second server on the same data root is refused at start
 (`server.lock`).
 
+`GET /v2/capacity`, with the token, says how much room the runners have, read from the store alone. A server with no
+runner beside it (`--no-runner`, `AGENTRUN_API_ONLY=1`) answers it for every runner on its store. Read it to size the
+runners by backlog, not by CPU. It gives:
+
+- `runs.queued`: the runs waiting for a runner now. These are queued runs, runs handed back or whose claim ran out (past
+  any backoff), and parked runs with something to wake them.
+- `runs.executing`: the runs a live claim holds now, on any runner.
+- `runners`: each runner that said it was there in the last 30 s, by name. Each has its build's `version`, its `slots`
+  (the most runs it holds at once), what it holds (`executing`), its `free_slots` and whether it `refused` to claim.
+  `version` and `slots` are null for a runner of an earlier build that is still running. (On Postgres, an earlier
+  runner refuses to start once the server has applied `0024_runner_capacity.sql`, so upgrade runners with the server.)
+  A runner also claims by its host's memory, so a free
+  slot is the most it may take.
+- `free_slots`: the sum of the live runners' free slots.
+- `hand_backs`: how many runs a runner gave back still running within `?window=` minutes (1 to 1440, default 15). A
+  drain, a loop that closed itself and a claim given back each count; a claim whose lease ran out does not.
+
+It names no run, agent or address. Each runner also prints metric lines in the server's log format, which a log-based
+metric counts: `runner_claimed` (`took_over=1` when it took over a run whose lease ran out), `runner_hand_back` with its
+`cause` (`drain`, `interrupted`, `end_retry`, `give_back`, or `claim_lost` with its `why`), `runner_drained` once per close
+that held a run (`ms`, `held`, `left`), and `runner_gauge` every minute (`active`, `slots`, `rss_mib`).
+
 `GET /v2/health`, with no credential like capabilities, answers `200 {status: "ok", checks: {store: "ok", disk: "ok"}}`
 when the agent store opens for a read and the data directory's disk has at least 64 MiB free (`AGENTRUN_MIN_FREE_MB`),
 and `503` with `status: "failing"` and which check failed (`store: "does_not_open"`, `disk: "below_floor"`, or
@@ -375,8 +411,10 @@ time, writes nothing more to the run, and the store refuses any write under a cl
 claim lapses another runner claims the run and resumes it from its journal. A run's own computer doesn't survive a
 runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
 timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does. `agentrun-serve runner --check --data DIR --name N`
-(or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) says whether the runner named `N` has a fresh heartbeat: it exits 0
-when it does and 1 when it does not, and 2 when no name is given. Name a runner you start yourself with
+(or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) checks the runner's environment by name (its store, its seal key,
+every run-facing name its server holds, a forwarder on loopback) and whether the runner named `N` has a fresh
+heartbeat: it exits 0 when both hold, 1 when either does not, and 2 when no name is given. `--check --env` checks the
+environment alone, and `--check --heartbeat` the heartbeat alone ([deploy/README.md](../../deploy/README.md#the-runners-environment-runner---check)). Name a runner you start yourself with
 `agentrun-serve runner --data DIR --name N`.
 
 ## Start-time switches
@@ -391,6 +429,7 @@ AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use`
 | --- | --- | --- | --- |
 | `AGENTRUN_MCP_ALLOW_LOOPBACK=1` | An MCP server on this machine's loopback ([MCP servers](#mcp-servers)) | off | Loopback is this machine's other services too: set it only on a machine you alone use |
 | `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` | The outbound webhook to a private network or this machine ([Webhooks](#webhooks)) | off | Whoever may set the webhook could make the server POST inside its network: only on a machine you alone use |
+| `AGENTRUN_PRIVATE_HOSTS` | Bounds the private-network hosts an owner may allow an MCP server or a calendar on (Settings → MCP servers): `none` allows none (and only an empty list can be saved), or a comma list of address ranges (`10.20.0.0/16,fd12:3456::/32`) every listed host's address must also fall in. Loopback, link-local (cloud metadata) and this machine's addresses stay refused whatever it says. A value that is neither reads as `none` | unset: the owner's list holds | On a server or runner many customers share, an owner's list would reach the operator's own private network: set `none` there, on the server and on each runner (each process holds to its own) |
 | `AGENTRUN_BOX_ALLOW` | The hosts a run's computer may reach: a comma list, or `none` ([A run in a Docker box](#a-run-in-a-docker-box)) | the package registries and GitHub | A run's network is the operator's policy, not a caller's |
 | `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS` | A Docker computer's size ([Computers](#computers)) | 2 CPUs, 4 GiB, 1,024 processes | The machine's capacity is the operator's |
 
@@ -2829,7 +2868,9 @@ account's app password (Gmail, iCloud and Fastmail each make one in the account'
 sign-in password is refused by most providers), at most 1,024 characters. It is sealed under the server's seal key
 (`AGENTRUN_SEAL_KEY`) and is in no answer, event or log line. Every connection is TLS: 993 and 465 from the start, any
 other port with STARTTLS required. Only `127.0.0.1` is reached in the clear. `POST /v2/settings/email/test` signs in to
-both servers and sends nothing; `DELETE` forgets the account.
+both servers and sends nothing. A save signs in the same way first: an account either server refuses, or one a server
+can't be reached for, is 424 `upstream_failed` in the test's words (`details.imap` and `details.smtp`), with nothing
+saved and any account saved before kept as it was. `DELETE` forgets the account.
 
 **The trigger.** `{kind: "email", mailbox?: "INBOX", every_s?: 60, accept?}` reads the mailbox every `every_s` seconds
 and starts a run for each new message its `accept` takes (a rule's `where` reads `/from`, `/to`, `/subject`, `/text`).
@@ -2857,7 +2898,8 @@ after asks, saying "this run has sent 5 emails" (the count is the run's own reco
 stops two auto-responders answering each other. On a run an email started whose `email_read` is thread-scoped (no
 `scope: "mailbox"`), a send to anyone outside the thread's people
 (the account's own address and every From, To and Cc of the thread's messages) asks too, naming them ("eve@example.com
-is outside this email's thread"). The approval's `summary` ends "Asks because ...". With accounts off, where no one can
+is outside this email's thread"). The pending approval carries the reason as `asks_because`, which the console's card
+says above the call's arguments ("Asks because ..."). With accounts off, where no one can
 approve, such a send is refused in those words.
 
 ## Templates
@@ -2894,6 +2936,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | Route | Here |
 | --- | --- |
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
+| `GET /capacity` | This server's own (`capacity/1`): the runs waiting for a runner and held by one, each live runner's version, slots and free slots, and the hand-backs within `?window=` minutes, read from the store ([capacity and health](#capacity-and-health)). Served under `AGENTRUN_API_ONLY=1` too. |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve`, the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
 | `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0 ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a schedule trigger starts is handed that trigger's last completed `result.output` after its message; no other source's runs are, since each of their firings is a different event. Over 32 KiB, a scheduled run is handed only the fields the producing run's schema names in `x-carried`; carried arrays lose entries from the front until they fit, and the run is told how many. A save refuses an `x-carried` that is not unique root property names. `checkout` (agentic only): `pull_request` has the server check out, before each run's first turn, the pull request the run's GitHub event names, in `repo/` at its head with its base and merge base, using a read-only token of its GitHub App that the agent never holds ([GitHub triggers](#github-triggers-connect-github)); `none` clears it, and an edit that leaves it out keeps it. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). It also adds `run_blockers` (`x-agentrun-serve: "runblockers/1"`): `{message, fields}` as a start with no overrides would be refused now (`409 agent_not_runnable`), or null. It is always null for an archived, native or SDK agent and for a revision whose MCP tools its first run pins, and the read asks no other service, so under the agent's `max_cost_usd` an OpenRouter decision model's missing price is named only once a save or a start has read OpenRouter's catalog: null is no promise that a start is accepted. |
@@ -2914,7 +2957,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw, one byte range at a time on asking (`Range`, `206`); and its screen recordings under `recordings/` ([A video of each run](#computers)). |
 | `POST /files`, `PUT /files/{id}`, `GET /files`, `GET` and `DELETE /files/{id}` | [Uploads](#uploads): a file sent in one call (`POST /v2/files?path=...`, its bytes the body), or reserved and then sent (`PUT /v2/files/{id}`); the server's uploads listed, read and deleted. |
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
-| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` (`reported`, `estimate` or `unpriced`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis)), or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that the `from` and `to` query parameters (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the store ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
+| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates and verified source reports; source completion counters are read when needed to separate overlapping usage. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` (`reported`, `estimate` or `unpriced`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis)), or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that the `from` and `to` query parameters (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, `runs_with_token_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. Token totals sum only runs with every token counter reported, counted by `runs_with_token_metrics`; other runs remain in `runs` but cannot hide the known partial total. If runs exist but none reports a complete count, `tokens` is null; an empty scope is zero. Individual token-kind totals remain null when a measured run reports that counter as unknown. `analytics.usage` combines recorded runs and connected source reports ([Unified token usage](#unified-token-usage)). `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the store ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; once it ended, its store is read lock-free, so a poll never waits on it and never answers `home_busy`. An agentic run has none (`404`). |
 | `GET /runs/{id}/usage` | This server's own (`runusage/1`): what one run cost, line by line: its model requests by model and provider, its paid tool calls by who charged for them, its browser time by provider, its computers' time by provider and resource (`runusage/4`), joining to its `cost.usd` ([A run's cost, line by line](#a-runs-cost-line-by-line)); beside them its browser sessions (`runusage/2`) and the computers it made, each from its create to its proven delete (`runusage/3`). Lines once the run ended; `reason` says why there are none. |
 | `GET /runs/{id}/trace` | A run's trace, for a person who debugs it: each model request that answered and each tool call as one span, in the order they started. A span has its `kind` (`model` or `tool`), its `name` (the model, or the tool), when it started and ended, how it ended (`status`), and the span it ran under (`parent_id`: the request that made a call, the call a subagent's request was started by). A model request also has its `tokens` (`input` not read from cache, `cache_read`, `cache_write`, `output`, and `reasoning` where reported), and its `usd`. A tool call also has the head of its arguments and of its output, as its Timeline rows show them, and what was charged under it (`usd`, `charged`, `not_metered`). A call that asked for approval ends as its approval did: `waiting` until it is answered, `refused` on a deny, `interrupted` when it was withdrawn with its run. Nothing is measured again or estimated: `model_requests` says what the run's record keeps. `priced`: each request is a span with its cost. `tokens_only`: a workflow run. Its model nodes' requests carry tokens and no cost, since the run's cost is its booking's; each of its decisions (a judge's, a route's, a verify's request) is a span too (`decision: true`), named by the model its provider answered with and labelled by its node, with its own cost. `not_recorded`: a CLI harness's record keeps no request, so its trace is its tool calls. A computer's own time is its provider's to bill and is in no span. Readable while the run goes; one read serves the run's first 2,000 spans and counts the rest in `dropped`. Its words are cut as the Timeline's are, and a run whose handed sign-in can't be read back is refused (`403`), as its graph is. The console's Dev tools tab reads it. |
@@ -2936,6 +2979,53 @@ Quotes answer `501 unsupported_here` naming the feature. Home export and import 
 `POST /runs/{id}/kill` are not served here: they answer `404`, and the served document leaves them out (its
 `info.x-agentrun-serve.not_served` lists them). Capabilities declare each of the four false. No run waits out `input_wait_s` here (`null`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
+
+### Unified token usage
+
+`GET /stats` includes `analytics.usage`, the dashboard's single reported token total across recorded runs and
+connected source sessions. It contains `tokens`, uncached `input`, `output`, `cache_read`, `cache_write`, `by_day`
+and `by_harness`. A source's inclusive input plus output can establish its total even when its cache breakdown is
+unavailable; the unavailable breakdown remains null. Run counts, outcomes, time and cost retain their existing
+meaning and do not treat an observed session as a completed run.
+
+`known_runs` counts usable run contributions; `unknown_runs` marks missing counters or unresolved overlap.
+`observed_sessions` counts source identities with usable reports in scope, including when another view supplies
+the selected total; `unknown_sessions` marks missing or
+incomplete source coverage. Known and unknown counts can overlap: a selected aggregate can supply a lower bound
+without proving complete coverage. A verified native session hash and runtime link observations to CLI prompt windows,
+native runs, SDK runs or imported sessions. Same-source aggregates are added only when their windows prove they
+do not overlap. When retained daily source reports and run counters may overlap without an exact intersection,
+the result is a conservative lower bound and `unknown_runs` marks incomplete coverage, even when every source
+reported its counters. Offline prompt captures may arrive on a later day, so server timestamps alone do not
+prove their usage is separate from source day buckets. An imported root can include descendants with no retained
+identity. When its journal exactly reconciles with its saved counters, the root’s own usage can be separated and
+counted against source reports. Its full aggregate remains an alternative to the same runtime’s native total;
+the larger coherent view is retained, never added to that total. An unavailable or inconsistent journal uses the
+same conservative alternative. Unresolved descendant coverage stays in `unknown_runs`.
+CLI/SDK run metrics may also contain reflection in a separate session. When both the full metrics and immutable
+source completion counters are known, their nonnegative difference remains included. Historical CLI native
+reflections can themselves appear in source observations; when that overlap is possible, their full run is a
+runtime alternative too. Purged runs retain numeric counters but no private source identity: native counters
+remain conservative alternatives to potentially overlapping source views. Otherwise an unproven remainder is
+counted in `unknown_runs` coverage rather than silently discarded or guessed as zero.
+Historical identity remains valid when learning is
+disabled or revoked. Archiving a learning profile does not disconnect its observed source. Multiple collectors
+reporting the same verified session use the copy with the largest reported total for each UTC day, then the freshest
+receipt and stable session id. Disjoint days remain included; overlapping same-day copies are never added because
+the server retains daily aggregates rather than request identities. This may leave unknown coverage when collectors
+hold disjoint requests within the same day; their aggregate intersection cannot be inferred. The selected figure
+is then a lower bound, not a complete count of that session.
+Unbound observations have no native identity proof and remain distinct. Display names and project labels never
+establish identity, so an unbound collector cannot deduplicate a separately recorded run.
+
+Run tokens use the run's start date. Source tokens use the UTC day on which usage was observed, not a session's
+lifetime total or an inferred request date. Only daily buckets fully inside `[from, to)` are counted; `partial_days`
+reports boundary days excluded because their aggregate cannot be split exactly. With no `to`, today's reported
+usage is included. Source history is retained for 90 days; `retention_limited` says the requested range extends
+beyond it. These figures are reported coverage, not a claim that unobserved history cost zero.
+
+`agent` may select a recorded agent and its associated sessions, or a connected session id (`os_...`) for only that
+session's usage. The latter selects no recorded runs. It does not import or create an agent definition.
 
 ### Feed triggers
 
@@ -3005,7 +3095,7 @@ serves these routes alone:
   (`GET /runs/{id}/learning`), each cut of the host's secrets as the console's reads are;
 - a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
   minted;
-- `GET /capabilities`, `GET /health` and `GET /usage`;
+- `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
@@ -3068,6 +3158,25 @@ upload stays in the runs that copied it; a run started after names it in vain. E
 `bytes.*.tmp` in a file's folder), each only when it is a regular file (a `DIR/files/` that is a link is not swept), and
 logs `event=uploads_swept removed=N`. `upload.expires_at`, which the contract requires, is advisory and not enforced in
 this release: a `PUT` after it is still taken.
+
+With Archil on (Mode 2), uploads live on Archil, not in `DIR`, so a runner needs no disk of the server's. The server
+keeps them on an Archil disk of its own, `agentrun-<server id>-files`, made by its first upload, at
+`files/<file_id>/` (the same bytes and record). Listing, reading and deleting read that disk; the routes, limits and
+answers are the ones above, but the bytes are held in the server's memory (up to 50 MiB a file) instead of streamed to
+disk. When a run is started with `file_ids`, the server copies each file into the run's folder on its disk, at
+`work/inputs/<path>` (the launch's `archil_disk`, else its agent's, made first when the agent has none), before the run
+is queued, for at most 45 s. The server copies 2 files at a time across all the runs it is starting, because Archil
+resets a connection carrying more large writes at once; 20 files of 10 MiB took 11 to 14 s. A copy that fails or takes
+longer refuses the start with
+`424 upstream_failed` ("The run's files could not be copied into its folder on Archil, so it was not started: ..."). No
+run is made and what was copied is removed. The run's claim then finds its files in place and reads no upload. Files
+uploaded while Archil was off stay in `DIR/files/` and are not seen while it is on, and the other way round.
+
+In Mode 2, an uploaded file that no run names is deleted once it is older than `AGENTRUN_UPLOAD_RETENTION` (default
+`7d`; a whole number with `ms`, `s`, `m`, `h` or `d`, or `off` to keep every file). The server sweeps its uploads disk
+once an hour and logs `event=uploads_expired removed=N`. A file is kept while a run the store still has was started with
+it, or while a run started with it in the last hour (whose row may not be written yet). A file kept by a run that has
+since been deleted becomes unnamed and goes after the retention. Mode 1 keeps every upload, as before.
 
 ## Agent home
 
@@ -3666,6 +3775,15 @@ These reads make no paid request, and saving a matching key refreshes the setup 
 
 Importing Claude Code, Codex or pi session history does not replay learning or connect a live learning stream.
 Before/after cost and duration are observations, not an accuracy evaluation.
+
+**Existing CLI capture.** A project enrolled with `cli_learning` keeps running in its original Codex CLI or Claude
+Code process. Its hooks record normal prompt windows and provide the agent's explicit owner-written corrections
+on later prompts when learning is enabled. Capturing a prompt does not turn its content or answer into a correction.
+CLI capture starts no extra source prompt, native grading turn or automatic note/skill extraction. It has no
+approved workflow tool bridge, so it neither compiles nor executes learned workflows. The Learning tab edits
+corrections and shows captured runs; new captures begin with the next normal prompt after hooks are ready.
+Historical learning files remain stored and are not converted into owner corrections or deleted. Older stored
+CLI `learning: "notes"` settings read publicly as `true`; that compatibility read does not rewrite the revision.
 
 An agent that learns has a learning folder, `learning/` in its folder on the disk (`DATA/disk/agents/<key>/learning/`):
 
@@ -4502,16 +4620,23 @@ carries no cost at all, as from a provider that does not price the model. The te
   process of its uid).
 - In the image, each run's process also runs as a user of its own: slot `s` of its runner is uid and gid `1001 + s`
   (256 slots), started through `agentrun-runas`, a helper installed root:node `0750` with the file capabilities
-  `cap_setuid`, `cap_setgid` and `cap_setpcap`. The helper reaches only that range and refuses uid and gid 0; it sets
+  `cap_chown`, `cap_setuid`, `cap_setgid` and `cap_setpcap`. The helper reaches only that range and refuses uid and gid 0; it sets
   the run's uid, gid and groups (its slot's group alone: not node's, not the Docker socket's group compose gives the
   server), empties every capability set, sets `no_new_privs` and keeps only the run's two descriptors open. So one run
   reads neither another live run's folder nor its process's memory, environment or descriptors, and none reads the data
   directory (`0711`: crossed to its own folders, never listed), the store's files (`0600`), the seal key or the
-  server's memory. A run's folders are its slot group's (`2770`), which the server's user is in. At the run's end every
-  process of its uid is killed, one in a session of its own included, its files in `/tmp`, `/var/tmp`, `/dev/shm`,
-  `/run/lock` (`/var/lock`) and `/dev/mqueue` are removed, and its folders go back to the server's group, which the
-  slot's next run cannot enter. SysV IPC objects (`ipcs`) a run leaves are not removed.
-  `GET /v2/capabilities` says `run_isolation: "uid"`.
+  server's memory. The server's user (node) is in one group, its own (1000), and in no slot's; no slot is in node's.
+  Before a run starts, its folders and everything in them are given to its slot: the slot's uid, node's group, folders
+  `2770` with the setgid bit (`agentrun-runas own <slot>`, keeping `cap_chown` alone and changing each entry through a
+  descriptor it opened without following a link). The run reaches them as their owner and the server reads them through
+  its one group; no other slot can enter them. A folder the run itself shuts (`chmod 700`, which drops the setgid bit,
+  since node's group is not the run's) the server cannot read until the run ends. At the run's end every process of its
+  uid is killed, one in a session of its own included, its files in `/tmp`, `/var/tmp`, `/dev/shm`, `/run/lock`
+  (`/var/lock`) and `/dev/mqueue` are removed, and its folders and everything in them go back to node
+  (`agentrun-runas own runner`), which the slot's next run cannot enter. A give-back that fails retires the slot, as a
+  reap that does not hold does. SysV IPC objects (`ipcs`) a run leaves are not removed.
+  `GET /v2/capabilities` says `run_isolation: "uid"`. A runner shared by many customers: see the threat model,
+  [docs/multi-tenant-runners.md](../../docs/multi-tenant-runners.md).
 - A platform that strips the image's file capabilities, or starts it with `no-new-privileges` (Docker's
   `security_opt: no-new-privileges:true`, Kubernetes' `allowPrivilegeEscalation: false`), leaves the helper unable to
   switch, or unable to start (a spawn `EPERM`): the runner then refuses to claim, saying so and naming the setting, and

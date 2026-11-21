@@ -34,6 +34,21 @@ function mount(p: Partial<ApprovalCardProps> = {}) {
 }
 
 describe("ApprovalCard", () => {
+  it("says why a call its setting allows asks, as a sentence above its arguments, never among them", () => {
+    const send: PendingApproval = { kind: "approval", id: "ap_send", tool: "email_send", call_id: "call_6", args_preview: "{\"to\":[\"ana@example.com\"],\"subject\":\"Note 6\",\"text\":\"Note 6.\"}", asks_because: "this run has sent 5 emails", requested_at: "2026-11-04T10:00:00.000Z" };
+    for (const compact of [false, true]) {
+      const { host } = mount({ pending: send, compact });
+      const why = [...host.querySelectorAll("p")].find((p) => p.textContent?.startsWith("Asks because"));
+      expect(why?.textContent, compact ? "on Mission Control's strip" : "on the run page").toBe("Asks because this run has sent 5 emails.");
+      const args = host.querySelector("pre")!;
+      expect(why!.compareDocumentPosition(args) & Node.DOCUMENT_POSITION_FOLLOWING, "above the arguments' box").toBeTruthy();
+      expect(args.textContent).not.toMatch(/asked_because|Asks because/);
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
+    // A call that asks by its setting says no reason.
+    expect(mount().host.textContent).not.toContain("Asks because");
+  });
+
   it("names the tool, shows its arguments in a block of their own that scrolls, and what a call costs", () => {
     const { host } = mount();
     expect(host.querySelector("[aria-label='Approval required']")).toBeTruthy();

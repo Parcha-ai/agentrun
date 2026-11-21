@@ -1,3 +1,4 @@
+import {cliPolicyOf} from "./sdk/runs.js";
 // A run's served view, built from the one store (design 2.1): the same object GET /runs/{id} answered from the per-run
 // files, now composed from the store's row (store-reads/runs.ts), its journal (store-reads/journal.ts) and its learning end
 // (store-reads/learning.ts), fed through the run view's pure functions (run-view.ts) so the figures and words a person or a
@@ -213,6 +214,7 @@ function pausedOf(runRow: RunRow, entries: readonly { kind?: string; id?: unknow
 interface StoreRun {
   readonly native?: Record<string, unknown>;
   readonly sdk?: Record<string, unknown>;
+  readonly cli_learning?: Record<string,unknown>;
   readonly row: NonNullable<Awaited<ReturnType<typeof readRun>>>;
   readonly runRow: RunRow;
   readonly launch: RunLaunch | undefined;
@@ -355,12 +357,11 @@ async function lookingBackOf(stored: RunRow, entries: Awaited<ReturnType<typeof 
   return kept !== undefined && !rows.some(waitingMessage) ? kept : undefined;
 }
 
-/** The end run `runId` keeps while it looks back after its job ended, as every reader serves it (lookingBackOf), else
- *  undefined: a run that reads ended while it is still learning from that end. */
-export async function lookingBackEnd(store: Store, runId: string): Promise<KeptEnd | undefined> {
-  const stored = await store.runs.get(runId);
-  if (stored?.state !== "running") return undefined;
-  return lookingBackOf(stored, (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries, () => store.commands(runId, 0));
+/** The end run `stored` (its row as the caller read it) keeps while it looks back after its job ended, as every reader
+ *  serves it (lookingBackOf), else undefined: a run that reads ended while it is still learning from that end. */
+export async function lookingBackEnd(store: Store, stored: RunRow): Promise<KeptEnd | undefined> {
+  if (stored.state !== "running") return undefined;
+  return lookingBackOf(stored, (await journalRecords(store.readJournal(stored.id), BACKGROUND_CONTEXT)).entries, () => store.commands(stored.id, 0));
 }
 
 /** `storeRunOf`'s reads, over `store` (a snapshot) and the run's cut, begun at `since` (servedSince). */
@@ -417,6 +418,8 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const sdkCompletion = records.entries.findLast(entry => entry.kind === "agentrun.sdk.completion")?.data as import("./sdk/runs.js").SdkCompletion | undefined;
   const sdkSession = records.entries.findLast(entry => entry.kind === "agentrun.sdk.session")?.data as {session_id:string} | undefined;
   const sdk = launch?.sdk ? {runtime:launch.sdk.runtime,...(launch.sdk.runtime === "external" ? {platform:launch.sdk.platform} : {}),model:sdkCompletion?.model??launch.sdk.model??null,session_id:sdkCompletion?.session_id??sdkSession?.session_id??null,learning_revision:launch.learning?.seed??null,usage:sdkCompletion?.usage??null} : undefined;
+  const cliCompletion = records.entries.findLast(entry => entry.kind === "agentrun.cli.completion")?.data as import("./sdk/runs.js").SdkCompletion | undefined;
+  const cli_learning = launch?.cli_learning ? {runtime:launch.cli_learning.runtime,session_id:launch.cli_learning.session_id,turn_id:launch.cli_learning.turn_id,model:cliCompletion?.model??launch.cli_learning.model??null,learning_revision:launch.learning?.seed??null,seed_observed:cliCompletion?.seed_observed??false,policy_complete:cliPolicyOf(launch,cliCompletion)?.complete??false,evidence_complete:cliCompletion?.evidence_complete??false,usage:cliCompletion?.usage??null} : undefined;
   const nativeConfiguration = records.entries.findLast(e=>e.kind === "agentrun.native.configuration")?.data as Record<string,unknown>|undefined;
   const nativeEvents = records.entries.filter(e=>e.kind === "agentrun.native.usage").map(e=>e.data as {phase:string;model?:string;usage:import("./native/types.js").NativeUsage;session_id:string});
   const reflectRange = (await runReflect(store, runId, context)) as Reflect | undefined;
@@ -553,7 +556,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const endSaidCost = endCost && !lookingBack ? endSaid !== undefined : false;
   const endUnread = !lookingBack && bookedCost !== undefined && !endCost && endSaid === null;
   const heal = lookingBack ? undefined : healOf(endCost, runRow);
-  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}) };
+  return { ...(cli_learning ? {cli_learning}:{}), ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}) };
 }
 
 /** Run read `read` (a run still going, as the store holds it) as the end `ended` keeps (its state, summary and end time:
@@ -776,6 +779,7 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
   const settled = terminal && ended && !run.lookingBack;
 
   return {
+    ...(run.cli_learning && !unshown ? {cli_learning:redactedOutput(run.cli_learning,values)}:{}),
     ...(run.sdk && !unshown ? {sdk:redactedOutput(run.sdk,values)}:{}),
     ...(run.native && !unshown ? {native:redactedOutput(run.native,values)}:{}),
     run_id: row.id,
@@ -845,6 +849,7 @@ export function summaryOfView(view: Record<string, unknown>): Record<string, unk
   const { run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, labels, learning } = view as Record<string, unknown>;
   return {
     run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title,
+    ...(view.cli_learning ? {cli_learning:view.cli_learning} : {}),
     ...(view.sdk ? {sdk:view.sdk} : {}),
     ...(view.native ? {native:view.native} : {}),
     ...(effort ? { effort } : {}),

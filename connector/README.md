@@ -46,6 +46,40 @@ For existing local sessions, use `agentrun discover`, then ordinary `agentrun co
 projects or harness subscriptions you want. This polling mode runs the existing observer daemon. OTLP mode uses
 the externally supervised Collector instead; `daemon stop` does not stop that Collector.
 
+On a receiver advertising `token_usage.polling: true`, existing local Codex sessions also report token usage
+without changing or restarting Codex. The observer reads only native session identity, model and cumulative
+counter metadata from bounded local rollout tails; conversation content stays local. Existing totals establish
+a baseline, then new input, output, cache-read and cache-write increments retain their source UTC dates. Input
+already includes cache tokens. Polling does not backfill lifetime totals. Missing counters remain unknown;
+rotation, truncation or a tail gap establishes a fresh baseline, and dropped delivery events mean partial
+coverage. Native usage checkpoints and outgoing events commit together so retries do not double count.
+Selected failed sessions remain eligible for final counter reads, including counters flushed after the failure;
+repeated polls and daemon restarts retain the checkpoint and do not repeat reported usage.
+
+Receivers advertising `session_labels: true` also receive bounded native session titles and project basenames
+for the selected sessions. Delegated sessions can use their native task basename and nickname. Conversation
+previews, prompts and full paths are never used as labels; unsafe names fall back to a harness label and a stable
+ID suffix. An idle session's renamed title is refreshed without waiting for its activity to change. Older receivers
+continue receiving the original activity metadata, without these additional fields.
+
+Receivers advertising `cli_learning.session_association: true` can also show learning status beside an
+observed session. The source checks the exact project (or an enclosing project) and runtime against existing
+AgentRun hook receipts, configuration and a private connection for the same server. It signs the association
+with that connection's scoped credential; credentials, full paths and raw native session IDs are not sent.
+Configuration alone does not establish activation: the receiver must have a hook receipt from that same
+native session before reporting learning on. Missing setup, unreadable configuration and delegated sessions
+are reported separately. This status check never installs hooks, enrolls a project or reads conversation history.
+
+Upgrade the receiver before enabling new connector metadata. Before rolling the receiver back to a version
+without this capability, drain pending events through a compatible receiver. Pending events retain their exact
+payloads for safe retries; an older receiver cannot accept those fields, even though new observations omit them
+when the capability is absent.
+
+A Codex harness or project subscription follows loaded sessions, including delegated and exec agents, before
+bounded history discovery. An explicitly selected historical session remains selectable. A loaded idle session
+is not reported as running, and an unavailable native interface does not prove the agent finished. The local
+observer reads at most 32 MiB of counter data per poll, rotating among loaded sessions on busy machines.
+
 Open **Connected agents**, **Runs** or **Mission Control** to inspect observed sessions. Verify a real activity or
 usage receipt at the destination; local CLI status alone does not prove Collector delivery. Sessions remain
 read-only: idle does not prove a job completed, and a missing heartbeat is not a model failure. Stop the Collector
@@ -75,7 +109,7 @@ and refuses further ingestion with the old connector credential.
 
 The OSS receiver accepts Collector HTTP/JSON logs, including bounded gzip, and advertises its formats at
 `/api/v2/control/connectors/capabilities`. It retains deduplication receipts for seven days, shows session activity
-for 90 days and keeps usage buckets for 90 days after their received UTC day ends. A stale session's internal
+for 90 days and keeps usage buckets for 90 days after the bucket’s UTC day ends (source day for polling increments, received day for OTLP). A stale session's internal
 record remains only while its accepted usage still needs it; cleanup runs at startup and every minute, including
 for revoked connections. Older event timestamps cannot recreate expired receipts or count tokens twice. Each
 connector accepts up to 2,000 new events per minute, 100,000 receipts in the rolling window and 1,000 retained
@@ -102,7 +136,7 @@ agentrun remote connect --origin https://your-console.example \
 
 For automation, supply a private mode-0600 file owned by the source user containing two JSON fields: `origin` for the exact destination origin and `api_key` for the enrollment token using `--credential-file /private/enrollment.json --yes`. The enrollment credential is not retained. State contains only the connector-scoped credential and the locally approved target. Never put a token in a prompt, URL or command argument.
 
-The imported agent uses ordinary AgentRun revisions and learning controls. Turn on self-improvement in the destination, run a task, inspect its checked/graded learning in Learning Dojo, then start a fresh run. The worker delivers the pinned notes and skills additively; original instructions, MCP configuration and credentials remain on the source machine. Skills are materialized under a private per-run directory, never copied over project files. Reflection and grading use the same native signed-in runtime; they are additional model calls.
+The imported agent uses ordinary AgentRun revisions and learning controls. Turn on self-improvement in the destination and edit the owner's standing corrections in Learning. The worker supplies the pinned corrections to later runs; original instructions, authored skills, MCP configuration and credentials remain on the source machine. Native connections do not generate automatic notes or skills, compile learned workflows, or launch extra reflection sessions.
 
 ## Choose live runs, history, or both
 

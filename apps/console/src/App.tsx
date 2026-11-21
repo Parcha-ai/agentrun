@@ -1,6 +1,6 @@
 import { backendSdkOf } from "@/lib/backendSdk";
-import { ObservedSessionPage, ObservedSessions } from "@/components/ObservedSessions";
-import { useObservations } from "@/lib/observations";
+import { ObservedSessionPage } from "@/components/ObservedSessions";
+import { observationHash, useObservations } from "@/lib/observations";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Picker } from "@/components/ui";
 import { Code, RefreshCw } from "lucide-react";
@@ -35,7 +35,7 @@ import { TemplatesPage } from "@/components/Templates";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
-import { queryRunsPrompt } from "@/lib/codingAgentPrompts";
+import { queryObservedSessionPrompt, queryRunsPrompt } from "@/lib/codingAgentPrompts";
 import { NeedsYouStrip } from "@/components/NeedsYouStrip";
 import { ConnectExistingAgents, NativeConnections } from "@/components/NativeConnections";
 import { StartHere } from "@/components/StartHere";
@@ -74,7 +74,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   if (h === "#/dojo") return { section: "dojo" };
@@ -118,6 +118,7 @@ export function route(h: string = location.hash): Where {
   if (h === "#/triggers/new-github") return { section: "triggers", trigger: null, kind: "github" };
   if (h === "#/triggers/new-composio") return { section: "triggers", trigger: null, kind: "composio" };
   if (h === "#/triggers/new-feed") return { section: "triggers", trigger: null, kind: "feed" };
+  if (h === "#/triggers/new-email") return { section: "triggers", trigger: null, kind: "email" };
   m = h.match(/^#\/triggers\/([^/?]+)(\/edit)?$/);
   if (m) return { section: "triggers", trigger: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
   if (h.startsWith("#/triggers")) return { section: "triggers" };
@@ -355,6 +356,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const observedDays = statsRange === "7d" ? 7 : 30;
   const observations = useObservations(v2, { active: where.section === "mission" || (where.section === "runs" && !where.run && !where.runsOf && !where.archived && !where.status), days: observedDays });
   const [statsAgent, setStatsAgent] = useState<string | null>(null);
+  // Keep the selected identity through refreshes that temporarily clear the connection list.
+  const [sessionSelected, setSessionSelected] = useState(false);
   const [missionReading, setMissionReading] = useState(false);
   // Automatic refresh must not invalidate a valid slow stats/recent-runs answer. User scope changes still replace it.
   const missionPending = useRef(false);
@@ -382,6 +385,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const namesAsked = useRef(0);
   // The active agents whose learned workflows wait for their owner's OK, with how many (Needs you).
   const [learningWaits, setLearningWaits] = useState<{ agent_id: string; name: string; pending: number }[]>([]);
+  const [missionAgents, setMissionAgents] = useState<Agent[] | null>(null);
+  const [missionAgentsError, setMissionAgentsError] = useState<string | null>(null);
   // The `refreshed` the names were last read for.
   const namesAfter = useRef(-1);
   const [error, setError] = useState<Problem | null>(null);
@@ -436,11 +441,11 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); return true; }, () => false); };
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
-  // view or Mission Control opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere,
-  // is named at once, and again when an import at setup ends while this page watches (`refreshed`).
-  // Only the newest read lands.
+  // view, Mission Control or Triggers opens (the list, one agent's runs, a run's page, a trigger's page), so an agent made
+  // since, here or elsewhere (a template's apply makes one with its triggers), is named at once, and again when an import
+  // at setup ends while this page watches (`refreshed`). Only the newest read lands.
   useEffect(() => {
-    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && namesAfter.current === refreshed) return;
+    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && where.section !== "triggers" && namesAfter.current === refreshed) return;
     namesAfter.current = refreshed;
     const n = ++namesAsked.current;
     setNamesRead(false);
@@ -529,8 +534,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     missionPending.current = true;
     setMissionError(null); setMissionReading(true);
     const from = rangeFrom(statsRange);
-    // An agent picked: its own latest runs, as every figure below the picker follows it.
-    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), statsAgent ? v2.listAgentRuns(statsAgent, 10) : v2.listRuns(10)])
+    // A session's usage is queryable without pretending it is a server agent with its own run endpoint.
+    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), sessionSelected ? Promise.resolve({ runs: [] }) : statsAgent ? v2.listAgentRuns(statsAgent, 10) : v2.listRuns(10)])
       .then(([s, r]) => {
         if (!live) return;
         setMission(missionFrom(s, r.runs));
@@ -541,7 +546,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
       .catch((e) => { if (live) setMissionError(problem(e, "Mission Control")); })
       .finally(() => { if (live) { missionPending.current = false; setMissionReading(false); } });
     return () => { live = false; missionPending.current = false; };
-  }, [v2, where.section, missionTry, statsRange, statsAgent, refreshed]);
+  }, [v2, where.section, missionTry, statsRange, statsAgent, sessionSelected, refreshed]);
   // Back after the server was away: Mission Control reads again what may have moved meanwhile, keeping the page.
   useResumed(() => setMissionTry((n) => n + 1));
   // Coding-agent actions happen outside this tab. Read their results on return, and keep visible counts current.
@@ -555,7 +560,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   }, [where.section]);
   useEffect(() => {
     // Left Mission Control: its counts are read afresh on the way back, so the failed runs seen start over.
-    if (where.section !== "mission") { failedSeenRef.current = null; return; }
+    if (where.section !== "mission") { failedSeenRef.current = null; setMissionAgents(null); setMissionAgentsError(null); return; }
     let live = true;
     // The failed runs the last read listed: one it did not (a run that failed since) reads the page's counts again, so the
     // failed total under the Failed tile and list ("See all N") never falls behind them. GET /stats is no cheap read (the
@@ -568,7 +573,12 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     // With them, every active agent, for which wait for their owner's OK on what they learned (`learning.pending`): a
     // run that ends leaving learned workflows shows in Needs you at the next read. A failed read keeps the last answer.
     const waiting = () => allPages((cursor) => v2.listAgents({ archived: false, cursor }), (p) => p.agents)
-      .then((agents) => { if (live) setLearningWaits(agents.filter((a) => waitingOf(a) > 0).map((a) => ({ agent_id: a.agent_id, name: a.definition.name ?? a.agent_id, pending: waitingOf(a) }))); }, () => {});
+      .then((agents) => { if (live) {
+        setLearningWaits(agents.filter((a) => waitingOf(a) > 0).map((a) => ({ agent_id: a.agent_id, name: a.definition.name ?? a.agent_id, pending: waitingOf(a) })));
+        // The dashboard and Agents page resolve source profiles through the same inventory.
+        setMissionAgents(agents);
+        setMissionAgentsError(null);
+      } }, (error) => { if (live) setMissionAgentsError(problemOf(error)); });
     const read = () => Promise.allSettled([upTo("input_required"), upTo("failed"), upTo("working"), waiting()])
       .then(([asking, failed, working]) => {
         if (!live) return;
@@ -733,9 +743,11 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
         // Source connection and history browsing need no managed model; setup follows an explicit choice to run here.
         ? <div className="flex h-full flex-col">
             <div className="min-h-0 flex-1">
-              <MissionControl hasObservedSessions={!!observations.data?.sessions.length} observations={<ObservedSessions read={observations} view="summary" days={observedDays} />} view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
-                actions={<><Button size="icon" aria-label="Refresh Mission Control" disabled={missionReading} onClick={() => { setMissionTry((n) => n + 1); setNeedsTry((n) => n + 1); }}><RefreshCw className="size-4" aria-hidden /></Button><CodingAgentAction label="Query" prompt={queryRunsPrompt(location.origin, statsAgent ?? undefined)} playgroundHref={queryPlaygroundHref(statsAgent ?? undefined)} /><ConnectExistingAgents variant="primary" /></>}
-                scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
+              <MissionControl observed={observations} agents={missionAgents} agentsError={missionAgentsError} view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
+                actions={<><Button size="icon" aria-label="Refresh Mission Control" disabled={missionReading} onClick={() => { setMissionTry((n) => n + 1); setNeedsTry((n) => n + 1); observations.refresh(); }}><RefreshCw className="size-4" aria-hidden /></Button>{sessionSelected && statsAgent
+                  ? <CodingAgentAction label="Query" prompt={queryObservedSessionPrompt(location.origin, statsAgent, rangeFrom(statsRange))} playgroundHref={observationHash(statsAgent)} playgroundLabel="Connected agent" />
+                  : <CodingAgentAction label="Query" prompt={queryRunsPrompt(location.origin, statsAgent ?? undefined)} playgroundHref={queryPlaygroundHref(statsAgent ?? undefined)} />}<ConnectExistingAgents variant="primary" /></>}
+                scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: id => { setSessionSelected(!!id && !!observations.data?.sessions.some(session => session.id === id)); setStatsAgent(id); }, refreshing: missionReading && mission !== null }}
                 asking={needs && askingRead ? needs.asking.length : null} failed={needs && failedRead ? failureCount(needs.failed) : null} live={needs && liveRead ? needs.live.length : null}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false && !observations.data?.sessions.length ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
@@ -771,7 +783,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
           </section>
         : where.section === "agents"
         ? where.observation ? <ObservedSessionPage v2={v2} sessionId={where.observation} go={go} /> : where.nativeConnect ? <NativeConnections v2={v2} go={go} initialSource={where.connectionSource} />
-          : where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
+          : where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} learning={learningCap} />
           : where.agent === null ? <BuildAgent origin={location.origin} v2={v2} />
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).

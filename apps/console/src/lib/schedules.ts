@@ -413,6 +413,11 @@ export type ComposioTrigger = Trigger & { source: ComposioSource; target: Trigge
 export type ComposioSource = Extract<TriggerSource, { kind: "composio" }>;
 export const isComposioTrigger = (t: Trigger): t is ComposioTrigger => t.source.kind === "composio" && t.target.kind === "start_run";
 
+/** An email trigger that starts a run (serve's trigger-email.ts): each new message in a mailbox of the server's email
+ *  account (Settings → Email), read every `every_s`, and its filter. */
+export type EmailTrigger = Trigger & { source: Extract<TriggerSource, { kind: "email" }>; target: TriggerTarget };
+export const isEmailTrigger = (t: Trigger): t is EmailTrigger => t.source.kind === "email" && t.target.kind === "start_run";
+
 /** One field of an event's config, read from its JSON schema (the events list's `config`): its name, title, description,
  *  whether it is required, and how it is typed in (`json`: an object, a list or a type the form has no input for, typed as
  *  JSON). A deprecated field is never offered. */
@@ -568,6 +573,26 @@ export function feedBodyOf(d: FeedDraft, minEvery?: number, capOptional = false)
 /** The fields a feed form says an issue under: its URLs (each by its place), its interval, its pointers and its filter's. */
 export function feedFields(urls: number, conditions: readonly number[]): Set<string> {
   return new Set(["name", "source.urls", ...Array.from({ length: urls }, (_, i) => `source.urls[${i}]`), "source.every_s", "source.items", "source.id", "target.agent_id", "target.input", "target.max_cost_usd", ...acceptFields(conditions)]);
+}
+
+/** A new email trigger's fields as typed: the mailbox of the server's account it reads (INBOX unless told), how often
+ *  (as a count of `everyUnit`; the server's least, a minute, by default), on or off from now, then the run each new
+ *  message starts (as a schedule's). */
+export type EmailDraft = { name: string; mailbox: string; every: string; everyUnit: EveryUnit; enabled: boolean; agentId: string; content: string; maxCost: string };
+export const emptyEmail = (): EmailDraft => ({ name: "", mailbox: "INBOX", every: "1", everyUnit: "minutes", enabled: true, agentId: "", content: "", maxCost: "" });
+/** The fields an email form says an issue under. */
+export const EMAIL_FIELDS = new Set(["name", "enabled", "source.mailbox", "source.every_s", "target.agent_id", "target.input", "target.max_cost_usd"]);
+
+/** A new email trigger's create body, or what is wrong: its mailbox (INBOX when left empty) and interval (at least
+ *  `minEvery`, when the server says), whether it is on, and bodyOf's rules for the run it starts. */
+export function emailBodyOf(d: EmailDraft, minEvery?: number, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+  const issues: Record<string, string> = {};
+  const n = numberOf(d.every);
+  const every = Math.round((n ?? 0) * UNIT_S[d.everyUnit]);
+  if (n === undefined) issues["source.every_s"] = NEEDED;
+  else if (minEvery && every < minEvery) issues["source.every_s"] = atLeast(minEvery);
+  const made = createOf(d, { kind: "email", mailbox: d.mailbox.trim() || "INBOX", every_s: every }, issues, capOptional, "an email trigger");
+  return made.body ? { body: { ...made.body, enabled: d.enabled } } : made;
 }
 
 /** A new GitHub trigger's create body, or what is missing: its filter's shape, and bodyOf's rules for the run it starts. */

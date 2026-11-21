@@ -152,6 +152,14 @@ export interface RunnerOptions {
    *  loop is turning. The runner process writes its heartbeat from it (runner/main.ts), so a check sees a runner that is
    *  idle and well, and not one whose loop has stopped. A throw is the caller's. */
   onBeat?: () => void;
+  /** Whether this runner may claim now: undefined while it may, else why not, in words a person can act on (runner/main.ts
+   *  diskFreeGate: a runner whose data directory is not the server's, while the server keeps runs' folders on its own
+   *  disk). Asked before each poll's claims (`fresh` false: an answer a few seconds old will do) and again, fresh, once a
+   *  poll claimed any, before a loop starts on them: a run claimed as the answer changed is released at once, untouched,
+   *  for a runner that can serve it. While it refuses, the runner claims nothing and says why on its presence row, where
+   *  the server reads it (presence.ts runnersRefused); a throw is said as an error and that poll claims nothing. Absent:
+   *  always. */
+  claimGate?: (fresh: boolean) => Promise<string | undefined>;
   /** For tests: the claim deadline's clock (the deadline a claim not renewed in time is lost at, and the time its claimed
    *  until is reckoned from). Default: the real one. Nothing else in the runner reads it. */
   clock?: { now(): number; setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
@@ -173,8 +181,25 @@ export type RunnerEvent =
   | { type: "ended"; runId: string; agent: string; status: RunState | "cancelled"; costUsd: number | null; costAtMostUsd?: number }
   | { type: "claim-lost"; runId: string; epoch: number; why: "fenced" | "not-renewed" }
   | { type: "released"; runId: string; epoch: number; end: LoopEnd["state"] }
+  /** A release that left the run running for another claim (the store keeps it: hand_backs), after its `released`, and
+   *  why (HandBackCause). */
+  | { type: "handed-back"; runId: string; epoch: number; cause: HandBackCause }
+  /** close()'s drain is over: how long it took (`ms`), how many held runs it began with (`held`) and how many were still
+   *  going at its end (`left`: stopped for the shutdown and handed back). Said once per close that held a run, a drain of
+   *  0 ms (no --drain-timeout) included. */
+  | { type: "drained"; ms: number; held: number; left: number }
   | { type: "refused"; runId: string; commandId: number; reason: string }
+  /** The runner stopped claiming (`reason`, its claimGate's words) or claims again (null): said once at each change. */
+  | { type: "refusing"; reason: string | null }
   | { type: "error"; runId?: string; step: string; message: string };
+
+/** Why a runner handed a run back, still running, for another claim: `drain`, its close stopped the run's loop after the
+ *  drain; `interrupted`, the run's loop ended interrupted with the runner not closing (its Session closed itself: its
+ *  backoff doubles in a row); `end_retry`, a stopped end refused
+ *  (EndNotWithdrawn), tried again after a backoff; `give_back`, a claim nothing here holds, given back at once (an
+ *  Unanswered claim that had landed, or one made as the runner closed). A lost claim is no hand-back: it is said as
+ *  `claim-lost`, and the store moves the run without the runner. */
+export type HandBackCause = "drain" | "interrupted" | "end_retry" | "give_back";
 
 export interface Runner {
   readonly name: string;
@@ -640,6 +665,7 @@ export function startRunner(options: RunnerOptions): Runner {
     // whatever its backoff (a person's stop never waits on a failed resume's), so the run would be claimed again at once.
     await release(claim, { state: "running", backoffUntil: now() + wait });
     emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "interrupted" });
+    emit({ type: "handed-back", runId: claim.runId, epoch: claim.epoch, cause: "end_retry" });
   };
 
   /** Whether the run under `claim` never started: its journal has no conversation yet, so no input of it went out. A
@@ -726,6 +752,8 @@ export function startRunner(options: RunnerOptions): Runner {
         : inARow > 0 ? { backoffUntil: Date.now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
         : {});
       emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: end.state });
+      // Left running for another claim: a hand-back, by its cause (this runner's close stopped its loop, or it ended so).
+      if (end.state === "interrupted") emit({ type: "handed-back", runId: claim.runId, epoch: claim.epoch, cause: closed && !closedItself ? "drain" : "interrupted" });
       if (end.state === "ended" || end.state === "stopped" || end.state === "failed") await announceEnd(claim);
     } catch (error) {
       emit({ type: "error", runId: claim.runId, step: isFenced(error) ? "release (fenced)" : "release", message: message(error) });
@@ -874,7 +902,10 @@ export function startRunner(options: RunnerOptions): Runner {
       for (const claim of mine) {
         if (runs.get(claim.runId)?.claim.epoch === claim.epoch || endingClaims.has(`${claim.runId}:${claim.epoch}`) || known.some((k) => k.runId === claim.runId && k.epoch === claim.epoch)) continue;
         emit({ type: "error", runId: claim.runId, step: "claim", message: `run ${claim.runId}: a claim answered Unanswered had landed (epoch ${claim.epoch}); given back` });
-        await release(claim, {}).catch((error: unknown) => emit({ type: "error", runId: claim.runId, step: "claim give-back", message: message(error) }));
+        await release(claim, {}).then(
+          () => emit({ type: "handed-back", runId: claim.runId, epoch: claim.epoch, cause: "give_back" }),
+          (error: unknown) => emit({ type: "error", runId: claim.runId, step: "claim give-back", message: message(error) }),
+        );
       }
     }
   };
@@ -885,6 +916,7 @@ export function startRunner(options: RunnerOptions): Runner {
     try {
       const free = loops - runs.size - replaced.size;
       if (free <= 0) return;
+      if (!(await gateOpen(false))) return;
       // By count alone, one store call claims the batch, each run at its own epoch + 1 (store.runs.claimMany): filling 300
       // loops, or taking a dead runner's runs over, is one transaction, not 300. By memory, each run that fits is claimed
       // on its own (claimByMemory).
@@ -896,6 +928,12 @@ export function startRunner(options: RunnerOptions): Runner {
       } catch (error) {
         if (error instanceof Unanswered) await giveBackUnknown([]);
         throw error;
+      }
+      // Asked again, fresh, before any loop starts on what this poll claimed: a run claimed as the gate's answer changed is
+      // given back untouched (released at its epoch, as a closing runner gives back a batch), for a runner that can serve it.
+      if (claims.length > 0 && !(await gateOpen(true))) {
+        for (const claim of claims) await release(claim, {}).catch((error: unknown) => emit({ type: "error", runId: claim.runId, step: "claim give-back", message: message(error) }));
+        return;
       }
       // A claim whose run must only end, with no loop (endRetried), so no turn, model request or tool runs on it:
       // - a run stopped or cancelled while it had not started: claimed from queued, or claimed from running when an earlier
@@ -925,7 +963,7 @@ export function startRunner(options: RunnerOptions): Runner {
         if (closed || killed || (before && !before.fence.lost)) {
           // Closed while the batch was claimed (or a run this runner still holds, which a claim cannot be): given back.
           if (before && !before.fence.lost) emit({ type: "error", runId: claim.runId, step: "claim", message: "claimed a run this runner still holds" });
-          await release(claim, {}).catch(() => {});
+          await release(claim, {}).then(() => emit({ type: "handed-back", runId: claim.runId, epoch: claim.epoch, cause: "give_back" }), () => {});
           continue;
         }
         try {
@@ -981,6 +1019,27 @@ export function startRunner(options: RunnerOptions): Runner {
     }
     return claims;
   };
+  /** The claim gate's last answer (RunnerOptions.claimGate): null while it lets this runner claim. */
+  let refusing: string | null = null;
+  /** Whether this runner may claim now (claimGate), its presence row and its lines told at each change of answer. A gate
+   *  that throws is said, and claims nothing this poll; its last answer stands. */
+  const gateOpen = async (fresh: boolean): Promise<boolean> => {
+    if (!options.claimGate) return true;
+    let words: string | undefined;
+    try {
+      words = await options.claimGate(fresh);
+    } catch (error) {
+      emit({ type: "error", step: "claim gate", message: message(error) });
+      return false;
+    }
+    const now = words ?? null;
+    if (now !== refusing) {
+      refusing = now;
+      emit({ type: "refusing", reason: now });
+      await (options.presence ?? presence)?.refuse(now).catch(() => undefined);
+    }
+    return now === null;
+  };
   /** The poll's claim in flight, if any: close() waits for it, so a runner whose close resolved claims nothing after it. */
   let claiming: Promise<void> | undefined;
   /** A run was queued while a poll was in flight (claimNow): one more poll follows that poll's end at once. */
@@ -1009,7 +1068,7 @@ export function startRunner(options: RunnerOptions): Runner {
 
   // Its word in the store that a runner that claims is here (presence.ts), for as long as it runs: a server reads a
   // refusal left by an earlier runner as over once this is there. One its caller keeps is its caller's to close.
-  const presence = options.presence ? undefined : store.runners ? keepPresence(store.runners, name, null, { warn: (line) => emit({ type: "error", step: "presence", message: line }) }) : undefined;
+  const presence = options.presence ? undefined : store.runners ? keepPresence(store.runners, name, null, { warn: (line) => emit({ type: "error", step: "presence", message: line }), slots: loops }) : undefined;
   poll();
   commandTimer = setTimeout(deliverAll, commandPollMs);
   // A run queued in this process is claimed now (claimNow). A command written for a run this runner holds is handed on
@@ -1091,12 +1150,15 @@ export function startRunner(options: RunnerOptions): Runner {
       // them), its claims renewed, for up to drainMs; a turn in flight then finishes, never cut and paid again on the
       // resume. Whatever is still going at the bound is stopped below, for a shutdown, where it can resume.
       const going = [...runs.values()].filter((held) => !held.fence.lost && !held.ending);
+      const drainFrom = Date.now();
       if (draining && going.length > 0) {
         let bound: NodeJS.Timeout | undefined;
         await Promise.race([Promise.all(going.map((held) => held.done)), new Promise<void>((resolve) => (bound = setTimeout(resolve, drainMs)))]);
         clearTimeout(bound);
       }
       draining = false;
+      // How long the drain took, and what it left for the shutdown to hand back (the runner's metrics: runner-metrics.ts).
+      if (going.length > 0) emit({ type: "drained", ms: Date.now() - drainFrom, held: going.length, left: going.filter((held) => !held.ending && !held.fence.lost).length });
       clearTimeout(commandTimer);
       const live = [...runs.values()].filter((held) => !held.fence.lost);
       // One window for the stop after the drain, the one runnerCloseBoundMs counts (the lease less its margin): the read

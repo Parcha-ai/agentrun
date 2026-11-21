@@ -1,11 +1,16 @@
 // The Store on Postgres: the same domain code as SQLite's (sqlite/store.ts storeOver) over a Postgres connection
 // (connection.ts) in the store's own schema (default "agentrun"). The server sets the schema up (migrate.ts) and holds the
-// owner lock, one server per schema; runners are many, set nothing up, and refuse a schema version they do not know.
+// owner lock, one server per schema; runners are many, set nothing up, wait for the server on a schema behind them, and
+// run on one ahead of them while its runner floor is at most what they know (migrate.ts runnerFloorOf).
 import { SchemaVersionUnknown, StoreAwaitsServer, type Store, type StoreOwned, type StoreRole } from "../store.js";
 import { backfillNativeCommandOwners } from '../native-command-owner.js';
 import { storeOver } from "../sqlite/store.js";
 import { PgConnection, SCHEMA_NAME } from "./connection.js";
-import { migrate, migrationsIn, placeOf, versionOf } from "./migrate.js";
+import { migrate, migrationsIn, placeOf, refuseBelowFloor, runnerFloorOf, versionOf } from "./migrate.js";
+
+/** How long Store.schemaState waits for the database before it is Unanswered and its connection is dropped (ms): under
+ *  the runner's 10 s floor read, so a read that hangs never outlasts the next one. */
+export const SCHEMA_STATE_MS = 5_000;
 
 /** The schema a store is in when none is named. */
 export const DEFAULT_SCHEMA = "agentrun";
@@ -54,9 +59,11 @@ export interface PostgresStoreOptions {
 }
 
 /** Opens the store in `schema` on the Postgres at `url`. As the server (the default): takes the owner lock (StoreOwned when
- *  another server holds the schema) and applies the pending migrations. As a runner: sets nothing up, and warns when its
- *  clock is far from the database's. Either refuses a schema version this build does not know (SchemaVersionUnknown), a
- *  runner also a schema not set up yet, and one this build's server has yet to migrate (StoreAwaitsServer). */
+ *  another server holds the schema) and applies the pending migrations; it refuses a schema a later build migrated
+ *  (SchemaVersionUnknown). As a runner: sets nothing up, and warns when its clock is far from the database's. It refuses a
+ *  schema not set up yet (SchemaVersionUnknown) and one this build's server has yet to migrate (StoreAwaitsServer), and
+ *  opens one a later build migrated while that schema's runner floor is at most this build's version (RunnerBelowFloor
+ *  past it). The store it answers reads the version and the floor again (Store.schemaState). */
 export async function openPostgresStore(options: PostgresStoreOptions): Promise<Store> {
   const schema = options.schema ?? DEFAULT_SCHEMA;
   if (!SCHEMA_NAME.test(schema)) throw new TypeError(`the store's schema is a lower-case name of letters, digits and underscores, not ${JSON.stringify(schema)}`);
@@ -81,9 +88,17 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     },
   });
   try {
-    const found = await connection.withClient((client) => (role === "server" ? migrate(client, schema, now(), migrations) : versionOf(client, schema)));
-    if (role === "runner" && found !== null && found < known) throw new StoreAwaitsServer(`bring this store from version ${found} to ${known}`);
-    if (found !== known) throw new SchemaVersionUnknown(placeOf(schema), found, known);
+    if (role === "server") {
+      const found = await connection.withClient((client) => migrate(client, schema, now(), migrations));
+      if (found !== known) throw new SchemaVersionUnknown(placeOf(schema), found, known);
+    } else {
+      const state = await connection.withClient((client) => runnerFloorOf(client, schema));
+      const found = state.version;
+      if (found !== null && found < known) throw new StoreAwaitsServer(`bring this store from version ${found} to ${known}`);
+      if (found === null) throw new SchemaVersionUnknown(placeOf(schema), found, known);
+      // Ahead of this build: additive migrations leave the floor where it was, and this runner runs on them.
+      refuseBelowFloor(schema, state, known);
+    }
     if(role==="server")await backfillNativeCommandOwners(connection);
     if (role === "runner" && options.warn) {
       const gap = now() - (await connection.clock());
@@ -95,5 +110,9 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     await connection.close().catch(() => undefined);
     throw error;
   }
-  return storeOver(connection, now);
+  const store = storeOver(connection, now);
+  // Bounded: a runner reads it on a timer, and a database that stops answering must neither hold that timer's read for good
+  // nor the store's close, which waits for every call in flight.
+  const schemaState = async () => ({ ...(await connection.withClient((client) => runnerFloorOf(client, schema), SCHEMA_STATE_MS)), known });
+  return Object.assign(store, { schemaState });
 }

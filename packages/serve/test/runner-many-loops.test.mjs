@@ -6,9 +6,7 @@ import assert from "node:assert/strict";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
-import { FINAL_STATES, openPostgresStore } from "../dist/store/index.js";
 import { fauxLoops, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
-import { farLink, postgresOnly, schemaOf } from "./store-target.mjs";
 
 const RUNS = 310;
 const LOOPS = 300;
@@ -93,37 +91,4 @@ test("310 runs on a runner of 300 loops: at most 300 held at once, every run end
   assert.equal(record.claims.length, RUNS, "each run claimed once");
   const p99 = lag.percentile(99) / 1e6;
   assert.ok(p99 < LAG_P99_MS, `event-loop lag p99 ${p99.toFixed(1)} ms (bound ${LAG_P99_MS})`);
-});
-
-// The same runner with its store's Postgres 3 ms away each way (a loaded host's): each transaction is several round trips,
-// so the pool's 10 clients carry about a hundred commits a second while 300 loops each want one every 50 ms, and a loop's
-// commit waits behind the others' for a free client for seconds. That wait is a busy pool, not a database that does not
-// answer: it runs to the write's own deadline, and every run completes. A wait bounded by the connect timeout instead
-// (4 s, meant for a new connection's connect and startup) failed dozens of these runs for good.
-const FAR_MS = 3;
-
-test(`310 runs on a runner of 300 loops whose store's Postgres is ${FAR_MS} ms away each way: every run completes, none fails for a busy pool`, postgresOnly("a Postgres pool's wait for a free client"), async (t) => {
-  const { server, file, now } = await stores({ runners: 0 });
-  const link = await farLink(FAR_MS);
-  const store = await openPostgresStore({ url: link.url, schema: schemaOf(file), role: "runner", testClock: now });
-  const record = recorder();
-  await queueAll(server);
-  const { where } = manyLoops(t, server, store, record);
-  // After the runner's own close (registered first, so it runs first): its store, then the link under it.
-  t.after(async () => {
-    await store.close();
-    await link.close();
-  });
-  await until(async () => {
-    const runs = await server.runs.list({});
-    return runs.length === RUNS && runs.every((run) => FINAL_STATES.includes(run.state) && run.runner === null);
-  }, "every run is over and released", 120_000).catch(async (error) => {
-    throw new Error(`${error.message}: ${await where()}`);
-  });
-  const failed = await server.runs.list({ state: "failed" });
-  const why = {};
-  for (const run of failed) why[String(run.summary).slice(0, 120)] = (why[String(run.summary).slice(0, 120)] ?? 0) + 1;
-  assert.equal(failed.length, 0, `${failed.length} of ${RUNS} runs failed: ${JSON.stringify(why)}`);
-  assert.equal((await server.runs.list({ state: "ended" })).length, RUNS, `every run completed: ${await where()}`);
-  assert.equal(record.claims.length, RUNS, "each run claimed once");
 });

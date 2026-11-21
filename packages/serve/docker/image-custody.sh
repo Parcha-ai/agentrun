@@ -8,6 +8,7 @@
 # container is read. The container is given a group (CUSTODY_SOCKET_GID, 4242 by default) as compose gives the server's
 # user the Docker socket's. It fails, one line for each, when:
 #   - the capabilities do not say run_isolation "uid";
+#   - the server's user is in more than 4 groups, or in any slot's group;
 #   - the run's process holds any secret but its model's (OpenAI's: the agent is on an OpenAI model), as its own secrets
 #     module answers secret(name), or has one in its environment;
 #   - the run's process, or a program it starts, runs as the uid that owns the data directory (the server's) or one
