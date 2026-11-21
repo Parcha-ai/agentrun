@@ -295,7 +295,7 @@ test("Mode 2: the agent's learning folder on every Archil disk its runs used (it
   assert.equal((await api("DELETE", "/agents/spread/learning")).status, 204, "and again");
 });
 
-test("Mode 2, the last run naming a caller's disk purged (DELETE /runs/{id}, its launch record gone, its tombstone keeping the disk): the reset still deletes the agent's learning folder on that disk, and leaves no other learning setting of the agent", { timeout: 120_000 }, async (t) => {
+test("Mode 2, the last run naming a caller's disk purged (DELETE /runs/{id}, its launch record gone, its tombstone keeping the disk): the purge takes the agent's learning folder on that disk with the run's own (it may hold the run's diff and correction), and the reset after it leaves no learning of the agent there and no other learning setting", { timeout: 120_000 }, async (t) => {
   const customer = "dsk-c0570e4e00000003";
   const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks: [{ id: customer, name: "a-customers-disk" }] });
   withEnv(t, { ARCHIL_API_KEY: "fake-test-key" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
@@ -315,7 +315,7 @@ test("Mode 2, the last run naming a caller's disk purged (DELETE /runs/{id}, its
   const purged = await api("DELETE", "/runs/on-customer");
   assert.equal(purged.status, 204, JSON.stringify(purged.body));
   assert.equal(disk.files.has(`${dir}/runs/on-customer/work/notes.md`), false, "the purge took the run's folder there");
-  assert.ok(learningOn().length > 0, "and left the agent's learning folder there");
+  assert.deepEqual(learningOn(), [], "and the agent's learning folder there");
 
   const reset = await api("DELETE", "/agents/gone-run/learning");
   assert.equal(reset.status, 204, JSON.stringify(reset.body));
