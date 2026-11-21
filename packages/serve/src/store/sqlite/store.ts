@@ -2260,7 +2260,8 @@ class SqliteStore implements Store {
    *  request of the store's one connection queues behind it (the purge already committed). One it held back (or that
    *  failed) leaves secureRewrite's marker, so the next start's scrub truncates the log, a crash between included. A marker
    *  that cannot be written (a full disk) throws, the purge committed: its caller answers it as the fault it is (a 500 the
-   *  server logs), and drops what it served of the purged run all the same (agent-delete.ts purgeOneOrRefuse). */
+   *  server logs), and drops what it served of the purged run all the same (agent-delete.ts purgeOneOrRefuse); the
+   *  client's retry finds the row purged and runs this again through purgeScrub. */
   async #purged(): Promise<void> {
     const marker = this.#scrubMarker;
     const db = this.#db;
@@ -2273,6 +2274,12 @@ class SqliteStore implements Store {
     } catch (error) {
       throw new Error(`The purge committed, but its WAL checkpoint was held back and the scrub's marker could not be written (${(error as Error).message}): the log may keep the purged bytes until a later checkpoint truncates it.`, { cause: error });
     }
+  }
+
+  async purgeScrub(): Promise<void> {
+    const marker = this.#scrubMarker;
+    if (marker === undefined || existsSync(marker)) return;
+    await this.#purged();
   }
 
   async secureRewrite(work: () => Promise<number>, options: SecureRewriteOptions = {}): Promise<SecureRewrite> {
