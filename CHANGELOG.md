@@ -58,8 +58,15 @@ Console
 
 Repository and deploy
 
-- `npm run build` works on Windows: the repository's scripts run npm's own CLI with the current Node instead of spawning `npm` by name, and never through `cmd.exe` (#3385, #3388). <!-- changes/windows-npm-spawn.md -->
+- `npm run build` works on Windows: the repository's scripts run npm's own CLI with the current Node instead of spawning `npm` by name, and never through `cmd.exe` (#3385, #3388, #3395). <!-- changes/windows-npm-spawn.md -->
 - The daily Render walk first asks GHCR whether `render.yaml`'s image tag is published, and makes no service when it is not (a release moves the pin before its image is published). The Deploy to Render button fails the same way until the image is published (#3375). <!-- changes/render-walk-image-published.md -->
+
+Also in this release
+
+- `DELETE /v2/runs/{id}` on a run whose launch named a caller's Archil disk now also deletes the agent's learning folder on that disk, together with the run's own folder. Before, the folder stayed until the agent's learning reset or the agent's delete, and the run's merge diff and its correction line stayed in it after the purge. Nothing reads that folder: a run on a named disk gets no learning seed (#3396). <!-- changes/purge-learning-folder.md -->
+- A connected agent's workflow check now holds only after five give-backs in a row, never counts a cancelled turn, and starts the count again when a turn lands. A check held that way is never stopped for good: the agent's next compile revises the workflow and checks the revision afresh (#3390). <!-- changes/sdk-check-give-backs-in-a-row.md -->
+- A backend SDK run's compile ask now stops at the agent's own max_requests on a free model, as every other run of the agent does, when that is under the server's AGENTRUN_FREE_MODEL_REQUESTS (#3394). <!-- changes/sdk-compile-max-requests.md -->
+- Two files uploaded in one millisecond now list newest first in `GET /v2/files`. Upload ids are minted by the same monotonic UUIDv7 as agent ids, so each sorts after the one before it; before, two ids in one millisecond carried random bits after the time and could list in either order (#3393). <!-- changes/uploads-monotonic-id.md -->
 
 ## 0.1.0-beta.51 (2026-11-21)
 
