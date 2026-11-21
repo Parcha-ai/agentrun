@@ -18,7 +18,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions } from "../mcp-gateway.js";
-import { type MediaReader, meterFor, publicMedia } from "../fal-price.js";
+import { meterFor, publicMedia } from "../fal-price.js";
 import { FAUX_ENV } from "../model.js";
 import { fetchOptions } from "../web-fetch-direct.js";
 import { fakeSaveOptions, type WebFake } from "../web-fake.js";
@@ -77,9 +77,12 @@ export interface McpForClaimOptions {
   readonly fetch?: typeof fetch;
   readonly callBounds?: { callMs?: number; connectMs?: number };
   readonly githubTimer?: GithubTimer;
-  /** Whether the run has a spend cap, and the reader of a metered job's input media (McpGatewayOptions). */
-  readonly capped?: McpGatewayOptions["capped"];
-  readonly media?: McpGatewayOptions["media"];
+  /** Whether the run has a spend cap (its launch's max_cost_usd): under one, a metered job that can't be priced is refused
+   *  unsent. None: it has. */
+  readonly capped?: boolean;
+  /** Where a metered job's input media are read from, through the guard web_save downloads by: an eval's web fake `web`,
+   *  else the faux module or the public network by `env`, in web_save's `slots`. None: such a job can't be priced. */
+  readonly media?: { readonly env: NodeJS.ProcessEnv; readonly web?: WebFake; readonly slots?: SaveSlots };
   /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
   readonly hold?: (values: string[]) => void;
 }
@@ -108,10 +111,6 @@ export interface ClaimMcp {
   /** Drops every credential held: the pass ended, the claim is lost, or its signal aborted. */
   release(): void;
 }
-
-/** A claim's reader of a metered job's input media: through the guard web_save downloads by (an eval's web fake, a faux
- *  module, else the public network), in `slots`. */
-export const mediaForClaim = (env: NodeJS.ProcessEnv, web?: WebFake, slots?: SaveSlots): MediaReader => publicMedia(async () => (web ? fakeSaveOptions(web) : fetchOptions(env, FAUX_ENV)), slots);
 
 /** The wire names a subagent's `grant` gives of the run's MCP and monid tools, by the gate's keys; else the grant's own. */
 export function catalogSessionNames(catalog: Pick<ClaimMcp, "tools" | "catalogOf"> | undefined, grant: string): string[] {
@@ -157,6 +156,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     return undefined;
   }
   const network = options.network ?? systemNetwork;
+  const media = options.media;
   const gateway = mcpGateway({
     pin,
     credentials: step.credentials,
@@ -178,8 +178,8 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.callBounds ? { bounds: options.callBounds } : {}),
-    ...(options.capped ? { capped: options.capped } : {}),
-    ...(options.media ? { media: options.media } : {}),
+    capped: () => options.capped !== false,
+    ...(media ? { media: publicMedia(async () => (media.web ? fakeSaveOptions(media.web) : fetchOptions(media.env, FAUX_ENV)), media.slots) } : {}),
   });
   const catalog = new Map<string, string>();
   const declared = new Map<string, ReadonlySet<string>>();
