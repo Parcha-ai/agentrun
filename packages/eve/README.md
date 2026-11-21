@@ -74,8 +74,10 @@ in this mount opts in on first registration only. Without workflow bindings the 
 turns and supplies those corrections; it cannot learn executable workflows.
 With explicit workflow bindings, `learning: { compile_after: 5 }` opts a new agent into
 workflow learning with a five-completed-run compilation threshold (the server default is 20).
-The mount exposes the compilation cadence only; promotion thresholds stay in the agent's server
-settings. An existing agent's console setting always wins. The extension declares its own build dependencies;
+An Eve check compares the answer fields `agree_on` names, as in
+`learning: { compile_after: 5, agree_on: ["mcc"] }` (dotted paths into the answer's JSON object, such as
+`verdict.decision`). Connected checks use no grader, so without `agree_on` the whole answer must match exactly.
+Promotion thresholds stay in the agent's server settings. An existing agent's console setting always wins. The extension declares its own build dependencies;
 the application's model, tools and `agent.ts` build configuration need no changes.
 
 Removing the extension restores the original eve integration; it does not delete AgentRun history.
