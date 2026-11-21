@@ -114,12 +114,14 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the one address the ref
 
 /** A loopback HTTP proxy that records what the agent reaches for beyond loopback. It tunnels a CONNECT to one of `vendor`
  *  (a plan-billed recipe's model.hosts, `host` for port 443 or `host:port`) and refuses everything else. */
-async function egressProxy(vendor: readonly string[] = []): Promise<{ url: string; asked: { method: string; target: string; tunneled: boolean }[]; close(): Promise<void> }> {
+export async function egressProxy(vendor: readonly string[] = []): Promise<{ url: string; asked: { method: string; target: string; tunneled: boolean }[]; close(): Promise<void> }> {
   const asked: { method: string; target: string; tunneled: boolean }[] = [];
   const sockets = new Set<Socket>();
   const allowed = new Set(vendor.map((host) => (host.includes(":") ? host : `${host}:443`)));
   const server = createServer((req, res) => {
-    asked.push({ method: req.method ?? "GET", target: req.url ?? "", tunneled: false });
+    // A client of a proxy names where it goes (absolute-form); a request for a path alone (origin-form) is one to this
+    // port as a server, such as another process's poll of a port this proxy reused: refused, and not the agent's.
+    if (!(req.url ?? "").startsWith("/")) asked.push({ method: req.method ?? "GET", target: req.url ?? "", tunneled: false });
     res.writeHead(403).end();
   });
   server.on("connect", (req, socket: Socket, head: Buffer) => {

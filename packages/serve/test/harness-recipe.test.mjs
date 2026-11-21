@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { crc32, deflateRawSync } from "node:zlib";
@@ -441,6 +442,23 @@ test("harness-check lists what the agent reaches for beyond loopback, refused by
   const run = await check(t, file, data, env);
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
   assert.ok(run.report.stage2.side_requests.beyondLoopbackRefused.includes("CONNECT telemetry.invalid:443"), JSON.stringify(run.report.stage2.side_requests));
+});
+
+test("the check's egress proxy lists what a client asks it to reach (absolute-form or CONNECT), never a request to its own port as a server (origin-form, a stray that reused the port)", async (t) => {
+  const { egressProxy } = await import("../dist/harness-check.js");
+  const proxy = await egressProxy([]);
+  t.after(() => proxy.close());
+  const { port, hostname } = new URL(proxy.url);
+  const send = (path) => new Promise((resolve, reject) => {
+    const request = httpRequest({ host: hostname, port, method: "GET", path }, (response) => (response.resume(), response.on("end", () => resolve(response.statusCode))));
+    request.on("error", reject);
+    request.end();
+  });
+  assert.equal(await send("/"), 403);
+  assert.equal(await send("/health"), 403);
+  assert.deepEqual(proxy.asked, [], "a request to the proxy itself is refused and not one the agent sent beyond loopback");
+  assert.equal(await send("http://telemetry.invalid/ping"), 403);
+  assert.deepEqual(proxy.asked, [{ method: "GET", target: "http://telemetry.invalid/ping", tunneled: false }]);
 });
 
 test("harness-check passes a plan-billed agent that reaches its vendor through HTTPS_PROXY: the hosts its recipe names are tunneled, the rest refused", { skip: linux, timeout: 120_000 }, async (t) => {
