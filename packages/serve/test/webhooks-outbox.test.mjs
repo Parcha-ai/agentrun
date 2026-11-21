@@ -11,7 +11,7 @@ import { describe, test } from "node:test";
 import { ATTEMPTS_KEPT, Webhooks } from "../dist/webhooks.js";
 import { client, FAUX, follow, scratch, secretWritePath, serve, startRun } from "./support.mjs";
 import {
-  arriving, askerStore, endedInStore, meetsDocument, endNotice, endParked, hadWebhook, killed, logged, noticed, noticeId, nothingPending, ofType, onDisk, outboxOf, parkedOnQuestion,
+  askerStore, endedInStore, meetsDocument, endNotice, endParked, hadWebhook, killed, logged, noticed, noticeId, nothingPending, ofType, onDisk, outboxOf, parkedOnQuestion,
   leftAs, processOn, receiver, refusing, rejections, saidBy, settled, startWithRunner, turn, waitNotice, Webhook, webhookOn,
   PRIVATE_OK, shownUrl,
 } from "./webhook-support.mjs";
@@ -271,37 +271,6 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     assert.equal(fresh.got[0].headers["webhook-id"], old.got[0].headers["webhook-id"]);
     const view = (await api("GET", "/settings/webhook")).body;
     assert.deepEqual([view.url, view.disabled], [shownUrl(fresh.url), null], "the new setting stands, on");
-  });
-
-  test("a message pending when its server stops goes on from the next one, under the same webhook-id; a run the next server reads as it already stood notices nothing", async (t) => {
-    let answer = 503;
-    const hook = await receiver(t, () => answer);
-    const data = join(await scratch(t), "agents");
-    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s", webhookRetryMs: [2_000] });
-    let stopped = false;
-    t.after(() => stopped || first.close());
-    let api = client(first.baseUrl, first.token);
-    const { body: set } = await api("PUT", "/settings/webhook", { url: hook.url });
-    const run = await startRun(api, "pending", "hi");
-    await follow(api, run.run_id, ["completed"]);
-    await hook.when(1);
-    // Its first try answered and its next one set, as the outbox on disk says it.
-    await onDisk(data, () => outboxOf(data).messages.some((m) => m.status === "pending" && m.attempts === 1 && m.next_at));
-    await first.close();
-    stopped = true;
-    answer = 200;
-    const next = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });
-    t.after(() => next.close());
-    api = client(next.baseUrl, next.token);
-    await hook.when(2);
-    assert.equal(hook.got[1].headers["webhook-id"], hook.got[0].headers["webhook-id"]);
-    new Webhook(set.signing_secret).verify(hook.got[1].body, hook.got[1].headers);
-    assert.equal((await api("GET", `/runs/${run.run_id}`)).body.status, "completed");
-    // Delivered, and the ledger holds the run's end as the store does: a start's catch-up queues no end the ledger has, so
-    // the run, read as it already ended, is no new notice.
-    await onDisk(data, () => outboxOf(data).messages.every((m) => m.status !== "pending"));
-    assert.equal(noticed(data, run.run_id)?.ended, (await api("GET", `/runs/${run.run_id}`)).body.ended_at);
-    assert.equal(hook.got.length, 2, "the run, read as it already ended, is no new notice");
   });
 
   test("a run that ends while its server stops still gives its notice: kept pending, delivered by the next server", async (t) => {

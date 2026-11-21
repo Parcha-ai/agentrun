@@ -15,8 +15,15 @@ const TOOLS = ["email_search", "email_read", "email_draft", "email_send"];
 const calls = (list) => `Email calls: ${JSON.stringify(list)}`;
 const ALLOW = { email_send: { permission: "allow" } };
 const mailAgent = (id, extra = {}) => agent(id, { harness: "pi", tools: TOOLS, ...extra });
-/** What a pending approval shows a person: its summary and its card's arguments. */
-const shown = (pending) => `${pending?.summary ?? ""}\n${pending?.args_preview ?? ""}`;
+/** What a pending approval shows a person: why it asks, its summary and its card's arguments. */
+const shown = (pending) => `${pending?.asks_because ?? ""}\n${pending?.summary ?? ""}\n${pending?.args_preview ?? ""}`;
+/** A call that asks though its setting allows it says why in its own field (`asks_because`), never among the call's
+ *  arguments or in its summary. */
+const asksBecause = (pending, why) => {
+  assert.match(pending?.asks_because ?? "", why, `the ask says why in asks_because: ${JSON.stringify(pending)}`);
+  assert.doesNotMatch(pending.args_preview, /asked_because/, "not among the call's arguments");
+  assert.doesNotMatch(pending.summary ?? "", /Asks because/, "nor in its summary");
+};
 
 /** The run, once it waits on a person or has ended: its status and pending approval. */
 async function settled(api, runId) {
@@ -74,6 +81,7 @@ test("email_send on allow: a run's first 5 sends go unasked; the 6th asks, sayin
   assert.equal(sixth.status, "input_required", `the 6th send asks: ${JSON.stringify(sixth.pending)}`);
   assert.deepEqual([sixth.pending?.kind, sixth.pending?.tool], ["approval", "email_send"]);
   assert.match(shown(sixth.pending), /this run has sent 5 emails/, "the ask says why");
+  asksBecause(sixth.pending, /^this run has sent 5 emails$/);
   assert.equal(await decide(runId, sixth.pending.id, "allow"), 204);
 
   // The pause let the run's claim go: the 7th send is asked on a new host, the count read from the run's record.
@@ -182,6 +190,7 @@ test("on a thread run with email_send on allow, a send to the thread's sender go
   const outside = /([^\n"]*?) (?:is|are) outside this email's thread/.exec(shown(pending))?.[1];
   assert.match(outside ?? "", /eve@example\.com/, `the ask names who is outside it: ${shown(pending)}`);
   assert.doesNotMatch(outside ?? "", /ana@|bo@/, "and only them");
+  asksBecause(pending, /eve@example\.com (?:is|are) outside this email's thread/);
   assert.equal(await server.decide(runId, pending.id, "deny"), 204);
   await follow(server.api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(faux.sent().length, 1);

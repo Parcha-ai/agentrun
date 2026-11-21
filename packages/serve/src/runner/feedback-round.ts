@@ -30,25 +30,25 @@ export interface KeptEnd {
   readonly endedAt: number;
 }
 
-/** A feedback round, as its steer's body carries it (`feedback`) and its FEEDBACK entry keeps it: the round, whether the
- *  grade said right, the grade's words (`text`), and the end the run had when the grade opened it again (`kept`). */
+/** A feedback round, as its FEEDBACK entry keeps it: the round, whether the grade said right, and the grade's words
+ *  (`text`). */
 export interface FeedbackData {
   readonly round: FeedbackRound;
   readonly correct: boolean;
   readonly text: string;
-  readonly kept?: KeptEnd;
 }
 
-const END_STATES: readonly unknown[] = ["ended", "stopped", "failed"];
-const OUTCOMES: readonly unknown[] = ["completed", "escalated", "stopped", "cancelled"];
+/** A feedback round as its steer's body carries it (`feedback`, beside the words): with the end the run had when the
+ *  grade opened it again (`kept`), which the steer's taking keeps as the job's end (KINDS.jobEnd, beside FEEDBACK). */
+export interface FeedbackSteer extends FeedbackData {
+  readonly kept: KeptEnd;
+}
 
-/** A kept end as a steer's body or a journal entry holds it, else undefined. */
-function keptOf(value: unknown): KeptEnd | undefined {
-  const kept = value as Partial<KeptEnd> | null | undefined;
-  if (!kept || typeof kept !== "object" || !END_STATES.includes(kept.state) || typeof kept.endedAt !== "number") return undefined;
-  if (kept.summary !== undefined && typeof kept.summary !== "string") return undefined;
-  if (kept.outcome !== undefined && !OUTCOMES.includes(kept.outcome)) return undefined;
-  return { state: kept.state!, ...(kept.summary !== undefined ? { summary: kept.summary } : {}), ...(kept.outcome !== undefined ? { outcome: kept.outcome } : {}), endedAt: kept.endedAt };
+/** A feedback round's `round`, `correct` and words, else undefined. */
+function roundOf(fed: unknown, text: unknown): FeedbackData | undefined {
+  const round = fed as Partial<FeedbackData> | null | undefined;
+  if (!round || typeof round !== "object" || !FEEDBACK_ROUNDS.includes(round.round as FeedbackRound) || typeof round.correct !== "boolean" || typeof text !== "string") return undefined;
+  return { round: round.round as FeedbackRound, correct: round.correct, text };
 }
 
 /** The end run `run` has now, as a grade's round keeps it: only one a round opens again (reopenableWhere: ended, or
@@ -67,20 +67,16 @@ export function jobEndOpen(entries: readonly { readonly kind: string }[]): boole
 
 /** The end run's look-back keeps while it runs, from the run's root `entries` and its command rows, else undefined (no
  *  look-back under way, or one whose job's end was never kept):
- *  - the job's end its claim kept before the end-of-run step (KINDS.jobEnd, with its time), newer than the run's last end;
- *  - else the end a grade's round kept, from its FEEDBACK entry newer than the run's last end;
+ *  - the job's end kept for it (KINDS.jobEnd, with its time), newer than the run's last end: by its claim before the
+ *    end-of-run step, or for a grade's round by the steer's taking;
  *  - else from the round's steer the grade wrote, not taken yet (the run opened again, no runner on it yet).
  *  A follow-up's own turn keeps none until its job's end is kept: its run reads as going on, as main's does. */
 export function keptEndOf(entries: readonly { readonly kind: string; readonly data?: unknown }[], commands: readonly Pick<Command, "kind" | "body" | "takenAt" | "refused">[]): KeptEnd | undefined {
-  const last = (kind: string) => entries.findLastIndex((entry) => entry.kind === kind);
-  const end = last(KINDS.end);
   if (jobEndOpen(entries)) {
-    const data = entries[last(KINDS.jobEnd)]!.data as Partial<JobEndData> | undefined;
-    return keptOf(data?.end && data.endedAt !== undefined ? { ...data.end, endedAt: data.endedAt } : undefined);
+    const { end, endedAt } = entries.findLast((entry) => entry.kind === KINDS.jobEnd)!.data as JobEndData;
+    return { state: end.state, ...(end.summary !== undefined ? { summary: end.summary } : {}), ...(end.outcome !== undefined ? { outcome: end.outcome } : {}), endedAt };
   }
-  const fed = last(KINDS.feedback);
-  if (fed > end) return keptOf((entries[fed]!.data as { kept?: unknown } | undefined)?.kept);
-  const steer = commands.find((command) => command.kind === "steer" && command.takenAt === null && command.refused === null && feedbackOf(command.body)?.kept !== undefined);
+  const steer = commands.find((command) => command.kind === "steer" && command.takenAt === null && command.refused === null && feedbackOf(command.body) !== undefined);
   return steer ? feedbackOf(steer.body)!.kept : undefined;
 }
 
@@ -91,14 +87,12 @@ export function feedbackRoundOf(grade: { readonly path: RunPath }, label: string
   return (grade.path === "agent" || grade.path === "handed_back") && label ? "correction" : undefined;
 }
 
-/** The feedback round a steer's body asks for (`body.feedback`, the server's own: server.ts gradeRun writes it, and the
- *  message API never does), else undefined. */
-export function feedbackOf(body: unknown): FeedbackData | undefined {
-  const fed = (body as { feedback?: unknown; text?: unknown } | null)?.feedback as Partial<FeedbackData> | undefined;
-  const text = (body as { text?: unknown } | null)?.text;
-  if (!fed || typeof fed !== "object" || !FEEDBACK_ROUNDS.includes(fed.round as FeedbackRound) || typeof fed.correct !== "boolean" || typeof text !== "string") return undefined;
-  const kept = keptOf(fed.kept);
-  return { round: fed.round as FeedbackRound, correct: fed.correct, text, ...(kept ? { kept } : {}) };
+/** The feedback round a steer's body asks for (`body.feedback`, the server's own: openFeedbackRound writes it with the
+ *  end it kept, and the message API never does), else undefined. */
+export function feedbackOf(body: unknown): FeedbackSteer | undefined {
+  const fed = (body as { feedback?: { kept?: unknown } } | null)?.feedback;
+  const round = roundOf(fed, (body as { text?: unknown } | null)?.text);
+  return round && fed?.kept ? { ...round, kept: fed.kept as KeptEnd } : undefined;
 }
 
 /** The feedback round the run's root `entries` say its next end closes: its newest FEEDBACK entry when no end came after
@@ -106,7 +100,7 @@ export function feedbackOf(body: unknown): FeedbackData | undefined {
 export function pendingFeedbackOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): FeedbackData | undefined {
   const at = entries.findLastIndex((entry) => entry.kind === KINDS.feedback);
   if (at < 0 || entries.slice(at + 1).some((entry) => entry.kind === KINDS.end)) return undefined;
-  return feedbackOf({ feedback: entries[at]!.data, text: (entries[at]!.data as { text?: unknown } | undefined)?.text });
+  return roundOf(entries[at]!.data, (entries[at]!.data as { text?: unknown } | undefined)?.text);
 }
 
 /** What the end-of-run turn of a feedback round is told before its prompt: the grade and its words. */
@@ -157,7 +151,7 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
   const launched = await store.runs.launch(grade.run).catch(() => undefined);
   const launch = launched ? readLaunchBody(launched.body) : undefined;
   // Source sessions and application-owned SDK tasks cannot consume a managed feedback steer.
-  if (launch?.native || launch?.sdk) return null;
+  if (launch?.native || launch?.sdk || launch?.cli_learning) return null;
   const learning = launch?.learning;
   if (!learning || learning.use) return null;
   // The round is a turn of the run with no caller's model key (a grade hands none): where the server holds no key for the

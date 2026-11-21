@@ -24,6 +24,7 @@ import type { Place } from "./workspace/place.js";
  *  the old path recomputed; here they are pinned at start, and optional (a built-in run may name none). */
 export interface RunLaunch {
   readonly sdk?: SdkBinding & {instructions: string; model?: string; workflow_tools?: SdkWorkflowTool[]; workflow_adapters?: SdkWorkflowAdapter[]};
+  readonly cli_learning?: {runtime: "codex-cli" | "claude-code-cli"; connection_id: string; connection_generation: string; session_id: string; turn_id: string; instructions: string; policy_complete: boolean; model?: string};
   readonly native?: NativeBinding;
   /** The start request's body, as the person or trigger gave it, or an object a built-in run names. */
   readonly input: unknown;
@@ -52,6 +53,10 @@ export interface RunLaunch {
   /** The uploaded file ids the run was started with, in order (the create body's file_ids, already checked ready): the
    *  runner copies them into the run's work/inputs/ at its claim, as the old start copied them before the process ran. */
   readonly files?: readonly string[];
+  /** The server copied `files` into the run's folder (work/inputs/) when it started the run, before its row was written:
+   *  a run on an Archil disk (Mode 2, uploads-archil.ts placeRunFiles). Its claim reads no upload (uploads.ts
+   *  filesToCopy). Absent: the claim copies them from the server's data directory, as before. */
+  readonly filesPlaced?: true;
   /** The run's learning start, when its agent learns and the server's learning is on, decided once here so the runner reads
    *  no learning folder or git: `seed`, the learning commit's sha (or null when the seed could not be read); `section`,
    *  the exact # Learned text to lay into the prompt (its owner's corrections, learning.ts learnedSection); `workflows`,
@@ -149,6 +154,7 @@ export function launchBody(launch: RunLaunch): Json {
   return {
     input: launch.input,
     ...(launch.sdk ? {sdk:launch.sdk as unknown as Json}:{}),
+    ...(launch.cli_learning ? {cli_learning:launch.cli_learning as unknown as Json}:{}),
     ...(launch.native ? {native:launch.native}:{}),
     title: launch.title,
     ...(launch.repo !== undefined ? { repo: launch.repo } : {}),
@@ -163,6 +169,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.boxAllow !== undefined ? { box_allow: launch.boxAllow } : {}),
     ...(launch.boxAllowSet ? { box_allow_set: true } : {}),
     ...(launch.files?.length ? { files: launch.files } : {}),
+    ...(launch.filesPlaced ? { files_placed: true } : {}),
     ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}) } } : {}),
     ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
     ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest } } : {}),
@@ -201,6 +208,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     input: stored.input,
     ...(isObject(stored.sdk) && sdkBindingOf(stored.sdk) && typeof stored.sdk.instructions === "string" ? {sdk: stored.sdk as unknown as NonNullable<RunLaunch["sdk"]>} : {}),
     ...(nativeOf(stored) ? {native:nativeOf(stored)}:{}),
+    ...(isObject(stored.cli_learning) && ["codex-cli", "claude-code-cli"].includes(String(stored.cli_learning.runtime)) && typeof stored.cli_learning.instructions === "string" ? {cli_learning:stored.cli_learning as unknown as NonNullable<RunLaunch["cli_learning"]>} : {}),
     title: typeof stored.title === "string" ? stored.title : "",
     ...(typeof stored.repo === "string" ? { repo: stored.repo } : {}),
     place,
@@ -214,6 +222,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(boxAllow !== undefined ? { boxAllow } : {}),
     ...(stored.box_allow_set === true ? { boxAllowSet: true as const } : {}),
     ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
+    ...(stored.files_placed === true ? { filesPlaced: true as const } : {}),
     ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { seed: null, section: "" } } : {}),
     ...(stored.workflow_first === false ? { workflowFirst: false as const } : {}),
     ...(readReplay(stored.replay) ? { replay: readReplay(stored.replay)! } : {}),

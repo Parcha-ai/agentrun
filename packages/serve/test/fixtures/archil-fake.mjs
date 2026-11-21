@@ -25,9 +25,9 @@
 //   service refused a run's skills laid after its computer mounted the run's folder. `banner` (a test's) is printed
 //   before the command's own stdout, as a platform's message would be, and `answerLimit` cuts the answer's stdout, as a
 //   platform's limit on an answer would;
-// - a disk Archil no longer has (`gone`, a test's: { region, words }) fails every SDK call as the seam fails it when
-//   Archil's lookup of the disk answers 404 (archil-disk.ts ArchilDiskMissing), naming the disk, the region and Archil's
-//   words; the ranged read, the seam's own fetch with no lookup, is left as it is;
+// - a disk Archil no longer has (`gone`, a test's: { region, words }) fails every call, the ranged read included, as the
+//   seam fails it when Archil's lookup of the disk answers 404 (archil-disk.ts ArchilDiskMissing; the seam looks again
+//   after any 404, so a disk removed mid-run fails the same way), naming the disk, the region and Archil's words;
 // - a put or an append under a folder that is not there (`parentless`) is 404 NoSuchKey, as staging's Archil answered,
 //   where the default makes the parents as the SDK's documentation says.
 // Every call is recorded in `calls`: { op, key | prefix | directory | mounts, ... }; every exec's materialized file keys
@@ -188,8 +188,7 @@ export class FakeArchilDisk {
   }
 
   async getRange(key, range) {
-    // The seam's own fetch, not the SDK's: no lookup of the disk before it, so `gone` does not fail it.
-    this.calls.push({ op: "getRange", key, range });
+    this.#record({ op: "getRange", key, range });
     if (this.links.has(key)) throw new FakeDiskError(501, "NotImplemented", "Not Implemented");
     const bytes = this.files.get(key);
     if (bytes === undefined) throw new FakeDiskError(404, "NoSuchKey", `${key} is not there`);
@@ -265,12 +264,13 @@ export class FakeArchilDisk {
   }
 
   async deleteObjects(keys) {
-    if (this.gone !== undefined) this.#record({ op: "deleteObjects", keys: [...keys] });
     const errors = [];
     for (const key of keys) {
       try {
         await this.deleteObject(key);
       } catch (error) {
+        // A key's refusal is listed; a failure of the whole call (a disk that is gone) fails it, as the SDK's does.
+        if (!(error instanceof FakeDiskError)) throw error;
         errors.push({ key, code: error.code, message: error.message });
       }
     }

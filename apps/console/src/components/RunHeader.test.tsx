@@ -65,3 +65,12 @@ describe("RunHeader's cost when some charges have no price", () => {
     expect(html).not.toContain("so far");
   });
 });
+
+it.each(["codex-cli", "claude-code-cli"] as const)("keeps %s execution in the original CLI", (runtime) => {
+  const run = { ...runWith({ usd: null, basis: "estimate", charge_state: null, cap_usd: null }), status: "working", state: "working",
+    cli_learning: { runtime, session_id: "source-session", turn_id: "source-turn", model: "source-model", learning_revision: null, seed_observed: false, policy_complete: true, evidence_complete: false, usage: null } } as Run;
+  const html = renderToStaticMarkup(createElement(RunHeader, { run, agentName: "Coding", actions: { onStop() {}, onCancel() {} } }));
+  expect(html).toContain("your CLI");
+  expect(html).toContain("source-model");
+  expect(html).not.toMatch(/>Stop<|Cancel run/);
+});

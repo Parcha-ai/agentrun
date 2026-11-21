@@ -164,3 +164,13 @@ describe("RunDetail, opened on a Graph tab that is not there", () => {
     expect(open[0]).toContain('tabindex="0"');
   });
 });
+
+it("shows CLI evidence limits and keeps follow-ups in the source session", () => {
+  const f = runFixture("run.input_required.waiting.1");
+  const run = { ...f.run, status: "working", state: "working", cli_learning: { runtime: "claude-code-cli", session_id: "source-session", turn_id: "source-turn", model: null, learning_revision: "learned-revision", seed_observed: false, policy_complete: true, evidence_complete: false, usage: null } } as Run;
+  const shown = page(run, []);
+  expect(shown).toContain("source-session");
+  expect(shown).toContain("Reuse not verified");
+  expect(shown).toContain("Original CLI");
+  expect(shown).not.toContain("Steer the run");
+});
