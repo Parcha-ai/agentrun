@@ -1,3 +1,6 @@
+import {runCliLearningHook,flushCliLearning} from '../dist/cli-learning/hook.js';
+import {saveConnection} from '../dist/cli-learning/state.js';
+import {appendFile} from 'node:fs/promises';
 import {sdkInbox} from '../dist/sdk/runs.js';
 import {learningRepo} from '../dist/learning.js';
 import assert from 'node:assert/strict';
@@ -120,4 +123,28 @@ test('a redacted initial CLI task is publicly incomplete even when later complet
  assert.equal(view.cli_learning.policy_complete,true,'an intact standing policy remains complete');
  assert.equal(view.cli_learning.evidence_complete,false,'redacted initial dialogue must not be reported as complete source evidence');
  assert.equal((await sdkInbox(server.store,receipt.run_id)).evidence_incomplete,true);
+});
+
+
+test('oversized native prompt and answer complete through the real SDK lane with bounded incomplete evidence', {timeout:120000}, async t => {
+ const server=await fixture(t), {api,project}=server;
+ const enrolled=await api('POST','/cli-learning/connections',{runtime:'codex',project});assert.equal(enrolled.status,201);
+ const connection={...enrolled.body,version:1,runtime:'codex',project,url:server.baseUrl};
+ await saveConnection(server.data,connection);
+ const options={runtime:'codex',project,dataDir:server.data};
+ const transcript=join(project,'native.jsonl');await writeFile(transcript,'');
+ const sent=[];
+ const dependencies={env:{},snapshot:async()=>({text:'Keep source permissions.',files:[],truncated:false}),fetch:async(url,request)=>{
+   const response=await fetch(url,request);sent.push({path:new URL(url).pathname,status:response.status,body:JSON.parse(request.body)});return response;
+ }};
+ const source=(event,turn,fields)=>({hook_event_name:event,session_id:turn,turn_id:turn,cwd:project,transcript_path:transcript,...fields});
+ for(const [turn,prompt,answer] of [['long-prompt','p'.repeat(130_000),'Ready.'],['long-answer','Task.','a'.repeat(130_000)],['escaped-answer','Task.','\u0001'.repeat(40_000)]]){
+   await runCliLearningHook(options,source('UserPromptSubmit',turn,{prompt}),dependencies);
+   await appendFile(transcript,JSON.stringify({type:'response_item',payload:{type:'message',role:'assistant',content:answer}})+'\n');
+   await runCliLearningHook(options,source('Stop',turn,{last_assistant_message:answer}),dependencies);
+ }
+ const complete=sent.filter(call=>call.path.endsWith('/complete'));assert.equal(complete.length,3);
+ assert.ok(sent.every(call=>call.status<300),sent.map(call=>`${call.path}: ${call.status}`).join('\n'));
+ assert.ok(complete.every(call=>call.body.evidence_complete===false));
+ const retried=await flushCliLearning(options,{fetch:dependencies.fetch});assert.equal(retried.pending,0);
 });

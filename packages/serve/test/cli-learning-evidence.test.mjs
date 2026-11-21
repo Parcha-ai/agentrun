@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import { mkdtemp, writeFile, appendFile, rm, rename, symlink } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
@@ -455,4 +456,68 @@ test('hook normalization requires genuine prompt identifiers and rejects nested 
   assert.equal(normalizeHookInput('codex', { ...common, turn_id: 'turn-1', agent_id: 'child' }), null);
   assert.equal(normalizeHookInput('codex', { ...common, turn_id: 'turn-1' }).turnId, 'turn-1');
   assert.equal(normalizeHookInput('claude-code', { ...common, prompt_id: 'prompt-1' }).turnId, 'prompt-1');
+});
+
+
+test('oversized terminal and transcript answers retain bounded evidence with an explicit incomplete marker', async t => {
+  const answer = 'a'.repeat(130_000);
+  for (const terminal of [answer, undefined]) {
+    const f = await fixture(t);
+    await appendFile(f.path, lines([{ type: 'response_item', payload: { type: 'message', role: 'assistant', content: answer } }]));
+    const evidence = await collectPromptEvidence({ runtime: 'codex', cursor: f.cursor, turnId: 'turn-1', answer: terminal });
+    assert.equal(evidence.answer.length, 128_000);
+    assert.ok(evidence.messages.every(message => message.text.length <= 128_000));
+    assert.equal(evidence.complete, false);
+    assert.match(evidence.reason, /limit|truncat/i);
+  }
+  const unavailable = await collectPromptEvidence({ runtime: 'codex', cursor: null, turnId: 'turn-1', answer });
+  assert.equal(unavailable.answer.length, 128_000, 'even a missing transcript cannot retain an unuploadable answer');
+  assert.equal(unavailable.complete, false);
+});
+
+test('capture budgets count UTF-8 and JSON bytes without splitting a Unicode character', async t => {
+  for (const [answer, expected] of [
+    ['a'.repeat(128_000), 'a'.repeat(128_000)],
+    ['😀'.repeat(32_769), '😀'.repeat(32_768)],
+    ['漢'.repeat(43_691), '漢'.repeat(43_690)],
+    ['x' + '😀'.repeat(32_768), 'x' + '😀'.repeat(32_767)],
+    ['\u0001'.repeat(40_000), '\u0001'.repeat(33_333)],
+  ]) {
+    const f = await fixture(t);
+    await appendFile(f.path, lines([{ type: 'response_item', payload: { type: 'message', role: 'assistant', content: answer } }]));
+    const evidence = await collectPromptEvidence({ runtime: 'codex', cursor: f.cursor, turnId: 'turn-1', answer });
+    assert.ok(evidence.answer === expected, 'retained prefix must fit all capture budgets');
+    assert.ok(evidence.answer.isWellFormed());
+    assert.ok(Buffer.byteLength(evidence.answer) <= 131_072);
+    assert.ok(Buffer.byteLength(JSON.stringify({ sequence: 1, events: [{ type: 'message', role: 'assistant', text: evidence.answer }] })) <= 256_000);
+    assert.equal(evidence.complete, answer === expected);
+  }
+});
+
+
+test('a clipped terminal digest proves the entire final answer, never just a shared prefix', async t => {
+  const original = 'a'.repeat(130_000);
+  const answerDigest = createHash('sha256').update(original).digest('hex');
+  for (const matching of [true, false]) {
+    const f = await fixture(t);
+    await appendFile(f.path, lines([codexCount('response-1', nativeTokens()),
+      { type: 'response_item', payload: { type: 'message', role: 'assistant', content: matching ? original : original.slice(0, -1) + 'b' } },
+    ]));
+    const evidence = await collectPromptEvidence({ runtime: 'codex', cursor: f.cursor, sessionId: 'session-1', turnId: 'turn-1', answer: original.slice(0, 128_000), answerDigest });
+    assert.equal(evidence.complete, false);
+    assert.equal(evidence.usage?.input_tokens, matching ? 40 : undefined);
+  }
+});
+
+
+test('a failed first-file source proof cannot supply a transcript-derived fallback answer', async t => {
+  const f = await fixture(t), path = join(f.root, 'first-claude.jsonl');
+  const cursor = await captureTranscriptCursor(path, { runtime: 'claude-code', sessionId: 'session-1', turnId: 'prompt-1' });
+  await delay(5);
+  await writeFile(path, lines([...firstClaudeRows(), { type: 'assistant', sessionId: 'foreign-session', message: { role: 'assistant', content: 'Foreign answer.' } }]));
+  const evidence = await collectPromptEvidence({ runtime: 'claude-code', cursor, sessionId: 'session-1', turnId: 'prompt-1' });
+  assert.equal(evidence.complete, false);
+  assert.deepEqual(evidence.messages, []);
+  assert.equal(evidence.answer, '');
+  assert.equal(evidence.verifiedCursor, undefined);
 });

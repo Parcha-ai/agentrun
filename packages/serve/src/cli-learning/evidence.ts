@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
-import type { CliLearningRuntime } from './state.js';
+import { stateHash, type CliLearningRuntime } from './state.js';
 import type { SdkUsage } from '../sdk/runs.js';
 
 export type TranscriptCursor = {
@@ -23,6 +23,8 @@ export type PromptEvidence = {
   complete: boolean;
   reason?: string;
   seedObserved: boolean;
+  redacted?: boolean;
+  truncated?: boolean;
 };
 export type CliHookInput = {
   event: 'UserPromptSubmit' | 'Stop' | 'Interrupt' | 'StopFailure' | 'SessionEnd';
@@ -38,6 +40,21 @@ export type CliHookInput = {
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
 const identifier = (v: unknown): v is string => typeof v === 'string' && /^[\w.:@+-]{1,200}$/.test(v);
 const bounded = (v: unknown, max = 131072): v is string => typeof v === 'string' && Buffer.byteLength(v) <= max;
+
+/** SDK text is limited in UTF-16 code units. Also keep the source UTF-8 budget and
+ * leave room for an event envelope inside the SDK's 256 KB JSON batch. Call only
+ * after redacting the whole value, so a cut cannot expose part of a held secret. */
+export function boundCaptureText(text: string, maxBytes = 131072): { text: string; truncated: boolean } {
+  if (text.length <= 128000 && Buffer.byteLength(text) <= maxBytes
+    && Buffer.byteLength(JSON.stringify(text)) <= 200000) return { text, truncated: false };
+  let end = 0, bytes = 0, jsonBytes = 2;
+  for (const character of text) {
+    const width = Buffer.byteLength(character), encoded = Buffer.byteLength(JSON.stringify(character)) - 2;
+    if (end + character.length > 128000 || bytes + width > maxBytes || jsonBytes + encoded > 200000) break;
+    end += character.length; bytes += width; jsonBytes += encoded;
+  }
+  return { text: text.slice(0, end), truncated: end !== text.length };
+}
 
 const tokenKeys = ['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens'] as const;
 type TokenCounts = Record<typeof tokenKeys[number], number>;
@@ -61,15 +78,16 @@ export function normalizeHookInput(runtime: CliLearningRuntime, input: unknown):
   if (input.agent_id) return null; // Independently enroll root sessions, not every spawned child.
   const turnId = runtime === 'codex' ? input.turn_id : input.prompt_id;
   if (input.hook_event_name !== 'SessionEnd' && !identifier(turnId)) return null;
-  if (input.hook_event_name === 'UserPromptSubmit' && !bounded(input.prompt)) return null;
+  if (input.hook_event_name === 'UserPromptSubmit' && !bounded(input.prompt, 1048576)) return null;
   return {
     event: input.hook_event_name,
     sessionId: input.session_id,
     ...(identifier(turnId) ? { turnId } : {}),
     cwd: input.cwd,
     ...(bounded(input.transcript_path, 4096) && isAbsolute(input.transcript_path) ? { transcriptPath: input.transcript_path } : {}),
-    ...(bounded(input.prompt) ? { prompt: input.prompt } : {}),
-    ...(bounded(input.last_assistant_message) ? { answer: input.last_assistant_message } : {}),
+    // Preserve the whole bounded stdin value until the hook redacts it before cutting.
+    ...(bounded(input.prompt, 1048576) ? { prompt: input.prompt } : {}),
+    ...(bounded(input.last_assistant_message, 1048576) ? { answer: input.last_assistant_message } : {}),
     ...(bounded(input.model, 200) ? { model: input.model } : {}),
     stopHookActive: input.stop_hook_active === true,
   };
@@ -119,11 +137,23 @@ export async function collectPromptEvidence(options: {
   sessionId?: string;
   prompt?: string;
   answer?: string;
+  /** Original terminal text digest, retained only when a local size cut changed it. */
+  answerDigest?: string;
   seedMarker?: string;
   maxBytes?: number;
+  /** Redact whole source values before applying storage/upload limits. */
+  redact?: (text: string) => string;
 }): Promise<PromptEvidence> {
-  const result: PromptEvidence = { messages: [], tools: [], answer: options.answer ?? '', complete: true, seedObserved: false };
+  const result: PromptEvidence = { messages: [], tools: [], answer: '', complete: true, seedObserved: false };
   const incomplete = (reason: string) => { result.complete = false; result.reason ??= reason; };
+  const capture = (text: string, maxBytes?: number) => {
+    const redacted = options.redact?.(text) ?? text;
+    if (redacted !== text) { result.redacted = true; incomplete('Source dialogue contains withheld or redacted text.'); }
+    const bounded = boundCaptureText(redacted, maxBytes);
+    if (bounded.truncated) { result.truncated = true; incomplete('The prompt dialogue exceeds the evidence limit; retained text is truncated.'); }
+    return bounded.text;
+  };
+  result.answer = capture(options.answer ?? '');
   if (!options.cursor) { incomplete('The prompt transcript was unavailable at enrollment.'); return result; }
   const cursor = options.cursor;
   if (cursor.absent && (options.runtime !== 'claude-code' || options.sessionId !== cursor.absent.sessionId
@@ -149,9 +179,10 @@ export async function collectPromptEvidence(options: {
   let finalAssistantText: string | undefined;
   const message = (role: 'user' | 'assistant', text: string) => {
     if (!text) return;
-    evidenceBytes += Buffer.byteLength(text);
-    if (evidenceBytes > 131072 || result.messages.length >= 200) { incomplete('The prompt dialogue exceeds the evidence limit.'); return; }
-    result.messages.push({ role, text });
+    if (result.messages.length >= 200) { incomplete('The prompt dialogue exceeds the evidence limit.'); return; }
+    const kept = capture(text, Math.max(0, 131072 - evidenceBytes));
+    evidenceBytes += Buffer.byteLength(kept);
+    if (kept) result.messages.push({ role, text: kept });
   };
   const call = (id: unknown, name: unknown) => {
     if (!identifier(id) || !bounded(name, 200)) return;
@@ -297,17 +328,20 @@ export async function collectPromptEvidence(options: {
   if (cursor.absent) {
     if (!freshRootVerified || freshIdentityInvalid) {
       incomplete('The first Claude transcript could not be bound to the enrolled prompt.');
-      result.messages = []; tools.clear(); result.seedObserved = false; delete result.model;
+      result.messages = []; tools.clear(); finalAssistantText = undefined; result.seedObserved = false; delete result.model;
       invalidUsage = true;
     } else if (readCursor) result.verifiedCursor = readCursor;
   }
   result.tools = [...tools.values()];
   if (result.tools.some(tool => tool.status === 'started')) incomplete('A tool call has no recorded result in this prompt window.');
-  if (!options.answer?.trim() || finalAssistantText?.trim() !== options.answer.trim()) {
+  const finalMatches = options.answerDigest !== undefined
+    ? /^[a-f0-9]{64}$/.test(options.answerDigest) && finalAssistantText !== undefined && stateHash(finalAssistantText.trim()) === options.answerDigest
+    : finalAssistantText?.trim() === options.answer?.trim();
+  if (!options.answer?.trim() || !finalMatches) {
     invalidUsage = true;
     incomplete('The final assistant response is not yet present in this prompt transcript.');
   }
-  if (!result.answer) result.answer = result.messages.filter(message => message.role === 'assistant').at(-1)?.text ?? '';
+  if (!result.answer) result.answer = capture(finalAssistantText ?? result.messages.filter(message => message.role === 'assistant').at(-1)?.text ?? '');
   if (!invalidUsage && requestUsage.size && [...requestUsage.values()].every(value => value !== undefined)) {
     const total: TokenCounts = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 };
     for (const usage of requestUsage.values()) for (const key of tokenKeys) total[key] += usage![key];

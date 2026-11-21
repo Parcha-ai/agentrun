@@ -49,6 +49,21 @@ class LearningAssociations(unittest.TestCase):
     def discover(self, cache=None):
         return discover_learning(self.candidate, self.origin, cache)
 
+    def test_pending_local_revocation_does_not_report_ready_when_hooks_remain(self):
+        # Disconnect disables capture before hook removal or server revocation.
+        # A protected installer lock can leave the exact owned hooks in place.
+        for runtime, harness in [('codex', 'codex'), ('claude-code', 'claude')]:
+            with self.subTest(runtime=runtime):
+                self.install(runtime)
+                self.candidate.harness = harness
+                self.assertEqual(self.discover().readiness, 'ready')
+                connection = json.loads(self.connection.read_text())
+                self.write(self.connection, {**connection, 'revocation_pending': True})
+                report = self.discover()
+                self.assertEqual(report.readiness, 'unknown')
+                self.assertIsNone(report.credential, 'a credential retained only for revocation cannot authorize a readiness proof')
+                self.assertEqual(report.metadata('connector', 'source', self.candidate.id, 2), {'readiness': 'unknown'})
+
     def linked_worktree(self):
         common = self.directory / 'main' / '.git'; common.mkdir(parents=True, exist_ok=True)
         gitdir = common / 'worktrees' / 'fixture'; gitdir.mkdir(parents=True, exist_ok=True)

@@ -1,13 +1,14 @@
-import { mkdir, open, readdir, realpath, stat, unlink } from 'node:fs/promises';
+import { mkdir, readdir, realpath, unlink } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import type { NativeInstructionSnapshot } from '../native/instructions.js';
 import { redactSecrets } from '../learn/secrets.js';
 import { runnerSecrets } from '../runner/redact.js';
 import { captureSourcePolicy, CLI_POLICY_BYTES, CLAUDE_SNAPSHOT_PENDING, CLAUDE_IMPORTS_PENDING } from './policy.js';
-import { captureTranscriptCursor, collectPromptEvidence, normalizeHookInput, type CliHookInput, type DialogueMessage, type TranscriptCursor } from './evidence.js';
+import { boundCaptureText, captureTranscriptCursor, collectPromptEvidence, normalizeHookInput, type CliHookInput, type DialogueMessage, type TranscriptCursor } from './evidence.js';
 import { connectionScope, journalParent, journalRoot, readConnection, readPrivateJson, stateHash, writePrivateJson, type CliLearningConnection, type CliLearningRuntime } from './state.js';
 import { codexHookLocation } from './codex-worktree.js';
 import type { SdkUsage } from '../sdk/runs.js';
+import { takeHold, releaseHold } from '../harness-install.js';
 
 export type CliLearningHookOptions = { runtime: CliLearningRuntime; project: string; dataDir: string; url?: string };
 export type CliLearningHookDependencies = {
@@ -18,6 +19,11 @@ export type CliLearningHookDependencies = {
   cursor?: TranscriptCursor | null;
   processed?: () => Promise<void>;
   sourceRedacted?: boolean;
+  sourceTruncated?: boolean;
+  /** Private proof of the full terminal answer when only its bounded prefix is stored. */
+  answerDigest?: string;
+  /** Original durable inbox time, retained when a queued hook is replayed. */
+  receivedAt?: number;
   /** A queued hook must not change enrollment between reading its receipt and replaying it. */
   connectionScope?: string;
 };
@@ -36,12 +42,12 @@ type Completion = {
   usage?: SdkUsage;
 };
 type Turn = {
-  version: 1; key: string; createdAt: string; connectionId: string; start: Start; cursor: TranscriptCursor | null;
-  prior: DialogueMessage[]; priorTruncated?: boolean; priorWithheld?: boolean; sourceRedacted?: boolean; policyRecoveryAllowed?: boolean; sourceStanding?: NativeInstructionSnapshot; dialogue?: DialogueMessage[]; receipt?: Receipt; context?: string; seedMarker?: string;
+  version: 1; key: string; createdAt: string; submittedAt?: number; completedAt?: number; connectionId: string; start: Start; cursor: TranscriptCursor | null;
+  prior: DialogueMessage[]; priorTruncated?: boolean; priorUnordered?: boolean; priorWithheld?: boolean; sourceRedacted?: boolean; sourceTruncated?: boolean; policyRecoveryAllowed?: boolean; sourceStanding?: NativeInstructionSnapshot; dialogue?: DialogueMessage[]; receipt?: Receipt; context?: string; seedMarker?: string;
   events?: Event[]; completion?: Completion; sentBatches?: number; delivered?: boolean; failure?: string;
 };
-type Session = { active: string[]; history: DialogueMessage[]; historyTruncated?: boolean; historyWithheld?: boolean; completed: string[]; retryAfter?: string };
-type PendingHook = { version: 1; createdAt: number; input: Record<string, unknown>; cursor?: TranscriptCursor | null; redacted?: boolean };
+type Session = { active: string[]; history: DialogueMessage[]; historyThrough?: number; historyUnordered?: boolean; historyTruncated?: boolean; historyWithheld?: boolean; completed: string[]; retryAfter?: string };
+type PendingHook = { version: 1; createdAt: number; input: Record<string, unknown>; cursor?: TranscriptCursor | null; redacted?: boolean; truncated?: boolean; answerDigest?: string };
 type RetryCursor = { pendingAfter?: string; sessionAfter?: string };
 
 /** A retained receipt or busy lock never permanently occupies a bounded retry slot. Names,
@@ -61,6 +67,14 @@ function checkScope(connection: CliLearningConnection, expected?: string): strin
   return scope;
 }
 const turnFile = (directory: string, key: string) => join(directory, `${key}.json`);
+const receiptTime = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+/** A legacy turn's creation is an upper bound on its submit. Equal or unknown times
+ * prove no order, so replay cannot invent an interruption of another prompt. */
+function precedes(turn: Turn, receivedAt: number | undefined): boolean {
+  const submittedAt = receiptTime(turn.submittedAt) ?? Date.parse(turn.createdAt);
+  return receivedAt !== undefined && Number.isFinite(submittedAt) && submittedAt < receivedAt;
+}
+
 const safeError = (error: unknown) => error instanceof TransportError ? `AgentRun request failed (${error.status}).` : 'CLI learning capture could not reach AgentRun; its receipt is retained for retry.';
 class TransportError extends Error { constructor(readonly status: number) { super(`AgentRun request failed (${status}).`); } }
 
@@ -126,27 +140,17 @@ async function deliver(dataDir: string, connection: CliLearningConnection, path:
 
 async function locked<T>(directory: string, task: () => Promise<T>, processed?: () => Promise<void>): Promise<T | undefined> {
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const path = join(directory, '.lock');
-  let lock;
-  try { lock = await open(path, 'wx', 0o600); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    const owner = await readPrivateJson<{ pid: number }>(path).catch(() => undefined);
-    if (owner?.pid) {
-      try { process.kill(owner.pid, 0); return undefined; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') return undefined; }
-      await unlink(path).catch(() => {});
-      return locked(directory, task, processed);
-    }
-    const info = await stat(path).catch(() => undefined);
-    if (info && Date.now() - info.mtimeMs > 5000) { await unlink(path).catch(() => {}); return locked(directory, task, processed); }
-    return undefined;
-  }
-  try { await lock.writeFile(JSON.stringify({ pid: process.pid })); await lock.sync(); const result = await task(); await processed?.(); return result; }
-  finally { await lock.close(); await unlink(path).catch(() => {}); }
+  const holdPath = join(directory, '.lock');
+  // Recovery must prove the old owner is gone and still owns the lock being
+  // removed. A PID-only or incomplete legacy lock stays pending for explicit
+  // recovery; its age cannot authorize concurrent journal writers.
+  const token = await takeHold(directory, { holdPath, timeoutMs: Infinity, recoverUnknownOwner: false });
+  if (!token) return undefined;
+  try { const result = await task(); await processed?.(); return result; }
+  finally { await releaseHold(directory, token, { holdPath }); }
 }
 
-async function hasPendingSubmit(root: string, sessionId: string, turnId?: string): Promise<boolean> {
+async function hasPendingSubmit(root: string, sessionId: string, turnId?: string, priorTo?: { turnId: string; receivedAt?: number }): Promise<boolean> {
   const directory = join(root, 'pending');
   if (turnId) {
     const path = join(directory, `${stateHash(JSON.stringify([sessionId, turnId, 'UserPromptSubmit']))}.json`);
@@ -157,7 +161,13 @@ async function hasPendingSubmit(root: string, sessionId: string, turnId?: string
   // must not make each one defer forever. Retry dispatch remains bounded.
   for (const name of names) {
     const pending = await readPrivateJson<PendingHook>(join(directory, name));
-    if (pending?.input.hook_event_name === 'UserPromptSubmit' && pending.input.session_id === sessionId) return true;
+    if (pending?.input.hook_event_name !== 'UserPromptSubmit' || pending.input.session_id !== sessionId) continue;
+    if (!priorTo) return true;
+    if ((pending.input.turn_id ?? pending.input.prompt_id) === priorTo.turnId) continue;
+    const receivedAt = receiptTime(pending.createdAt);
+    // A possibly earlier submit has not yet contributed its dialogue. Neither a
+    // tied timestamp nor a legacy receipt with no time proves it was later.
+    if (receivedAt === undefined || priorTo.receivedAt === undefined || receivedAt <= priorTo.receivedAt) return true;
   }
   return false;
 }
@@ -205,18 +215,21 @@ export async function runCliLearningHook(options: CliLearningHookOptions, input:
   let pending = await readPrivateJson<PendingHook>(path);
   if (!pending) {
     const redacted = [hook.prompt, hook.answer, hook.model].some(value => value !== undefined && redact(value) !== value);
-    pending = { version: 1, createdAt: Date.now(), redacted, input: {
+    const prompt = hook.prompt === undefined ? undefined : boundCaptureText(redact(hook.prompt));
+    const answer = hook.answer === undefined ? undefined : boundCaptureText(redact(hook.answer));
+    pending = { version: 1, createdAt: Date.now(), redacted, truncated: prompt?.truncated || answer?.truncated,
+      ...(answer?.truncated && hook.answer && redact(hook.answer) === hook.answer ? { answerDigest: stateHash(hook.answer.trim()) } : {}), input: {
       hook_event_name: hook.event, session_id: hook.sessionId, cwd,
       ...(hook.turnId ? { [options.runtime === 'codex' ? 'turn_id' : 'prompt_id']: hook.turnId } : {}),
-      ...(hook.prompt !== undefined ? { prompt: redact(hook.prompt) } : {}),
-      ...(hook.answer !== undefined ? { last_assistant_message: redact(hook.answer) } : {}),
+      ...(prompt ? { prompt: prompt.text } : {}),
+      ...(answer ? { last_assistant_message: answer.text } : {}),
       ...(hook.transcriptPath ? { transcript_path: hook.transcriptPath } : {}),
       ...(hook.model ? { model: redact(hook.model) } : {}), stop_hook_active: hook.stopHookActive,
     }, ...(hook.event === 'UserPromptSubmit' ? { cursor: await captureTranscriptCursor(hook.transcriptPath,
       { runtime: options.runtime, sessionId: hook.sessionId, turnId: hook.turnId! }) } : {}) };
     await writePrivateJson(path, pending);
   }
-  return processCliLearningHook(options, pending.input, { ...dependencies, cursor: pending.cursor, sourceRedacted: pending.redacted, connectionScope: scope, processed: () => unlink(path).catch(() => {}) });
+  return processCliLearningHook(options, pending.input, { ...dependencies, cursor: pending.cursor, sourceRedacted: pending.redacted, sourceTruncated: pending.truncated, answerDigest: pending.answerDigest, receivedAt: pending.createdAt, connectionScope: scope, processed: () => unlink(path).catch(() => {}) });
 }
 
 async function processCliLearningHook(options: CliLearningHookOptions, input: unknown, dependencies: CliLearningHookDependencies): Promise<Record<string, unknown> | undefined> {
@@ -238,6 +251,7 @@ async function processCliLearningHook(options: CliLearningHookOptions, input: un
   const redact = (text: string) => redactSecrets(text, secrets, CLI_POLICY_BYTES);
   const root = rootOf(options, connection);
   const directory = join(root, stateHash(hook.sessionId));
+  const receivedAt = receiptTime(dependencies.receivedAt);
   let deferred = false;
   return locked(directory, async () => {
     const sessionPath = join(directory, 'session.json');
@@ -248,7 +262,7 @@ async function processCliLearningHook(options: CliLearningHookOptions, input: un
       if (await hasPendingSubmit(root, hook.sessionId)) { deferred = true; return; }
       for (const key of session.active) {
         const path = turnFile(directory, key), previous = await readPrivateJson<Turn>(path);
-        if (previous && !previous.completion) await finish(previous, path, { ...hook, event: 'Interrupt', turnId: previous.start.turn_id }, session, false);
+        if (previous && !previous.completion && precedes(previous, receivedAt)) await finish(previous, path, { ...hook, event: 'Interrupt', turnId: previous.start.turn_id }, session, false);
       }
       await writePrivateJson(sessionPath, session);
       return;
@@ -270,18 +284,23 @@ async function processCliLearningHook(options: CliLearningHookOptions, input: un
     }
     if (hook.event === 'UserPromptSubmit') {
       if (!turn) {
-        // A new prompt ends any prior window lacking Stop. Never call that missing completion a success.
+        // Only a later source receipt ends a prior window lacking Stop. Replay order
+        // is not source order: an older queued submit must leave newer windows open.
         for (const active of session.active) {
           const oldPath = turnFile(directory, active), previous = await readPrivateJson<Turn>(oldPath);
-          if (previous && !previous.completion) await finish(previous, oldPath, { ...hook, event: 'Interrupt', turnId: previous.start.turn_id, answer: undefined }, session, false);
+          if (previous && !previous.completion && precedes(previous, receivedAt)) await finish(previous, oldPath, { ...hook, event: 'Interrupt', turnId: previous.start.turn_id, answer: undefined }, session, false);
         }
         const cursor = dependencies.cursor !== undefined ? dependencies.cursor : await captureTranscriptCursor(hook.transcriptPath,
           { runtime: options.runtime, sessionId: hook.sessionId, turnId: hook.turnId! });
+        const historyThrough = receiptTime(session.historyThrough);
+        const priorUnordered = (session.history.length > 0 && (session.historyUnordered || historyThrough === undefined || receivedAt === undefined || historyThrough >= receivedAt))
+          || await hasPendingSubmit(root, hook.sessionId, undefined, { turnId: hook.turnId!, receivedAt });
+        const submittedInput = boundCaptureText(redact(hook.prompt!));
         turn = {
-          version: 1, key, connectionId: connection.connection_id, createdAt: new Date().toISOString(), cursor,
-          start: { session_id: hook.sessionId, turn_id: hook.turnId!, input: redact(hook.prompt!),
+          version: 1, key, connectionId: connection.connection_id, createdAt: new Date().toISOString(), submittedAt: receivedAt, cursor,
+          start: { session_id: hook.sessionId, turn_id: hook.turnId!, input: submittedInput.text,
             instructions: 'Source policy capture did not finish; automatic promotion is disabled.', policy_complete: false,
-            ...(hook.model ? { model: redact(hook.model) } : {}) }, prior: session.history, priorTruncated: session.historyTruncated, priorWithheld: session.historyWithheld, sourceRedacted: dependencies.sourceRedacted,
+            ...(hook.model ? { model: redact(hook.model) } : {}) }, prior: priorUnordered ? [] : session.history, priorUnordered, priorTruncated: session.historyTruncated, priorWithheld: session.historyWithheld, sourceRedacted: dependencies.sourceRedacted, sourceTruncated: dependencies.sourceTruncated || submittedInput.truncated,
         };
         await writePrivateJson(path, turn);
         session.active.push(key);
@@ -294,7 +313,7 @@ async function processCliLearningHook(options: CliLearningHookOptions, input: un
         turn.sourceStanding = snapshot.sourceStanding;
         turn.policyRecoveryAllowed = !snapshot.truncated && instructions === policyText
           && (!snapshot.incomplete || snapshot.incomplete === CLAUDE_SNAPSHOT_PENDING || snapshot.incomplete === CLAUDE_IMPORTS_PENDING);
-        turn.start = { session_id: hook.sessionId, turn_id: hook.turnId!, input: redact(hook.prompt!), instructions,
+        turn.start = { session_id: hook.sessionId, turn_id: hook.turnId!, input: submittedInput.text, instructions,
             policy_complete: !snapshot.incomplete && !snapshot.truncated && instructions === policyText && Buffer.byteLength(instructions) <= CLI_POLICY_BYTES,
             ...(hook.model ? { model: redact(hook.model) } : {}) };
         if (Buffer.byteLength(turn.start.instructions) > CLI_POLICY_BYTES) turn.start.instructions = 'Source policy exceeded the capture evidence limit; policy capture is incomplete.';
@@ -324,31 +343,38 @@ async function processCliLearningHook(options: CliLearningHookOptions, input: un
 
     async function finish(turn: Turn, path: string, terminal: CliHookInput, session: Session, deliverNow = true) {
       if (!turn.completion) {
-        const evidence = await collectPromptEvidence({ runtime: options.runtime, cursor: turn.cursor, turnId: turn.start.turn_id, sessionId: turn.start.session_id, prompt: turn.start.input, answer: terminal.answer, seedMarker: turn.seedMarker });
+        const evidence = await collectPromptEvidence({ runtime: options.runtime, cursor: turn.cursor, turnId: turn.start.turn_id, sessionId: turn.start.session_id, prompt: turn.start.input, answer: terminal.answer, answerDigest: dependencies.answerDigest, seedMarker: turn.seedMarker, redact });
         // Hook input is the source user's submitted text. Transcript user envelopes may also contain
         // other hooks' synthetic context; they are never promoted into user corrections here.
-        const redactedEvidence = turn.priorWithheld || turn.sourceRedacted || dependencies.sourceRedacted || evidence.answer !== redact(evidence.answer)
+        const redactedEvidence = evidence.redacted || turn.priorWithheld || turn.sourceRedacted || dependencies.sourceRedacted || evidence.answer !== redact(evidence.answer)
           || (evidence.model !== undefined && evidence.model !== redact(evidence.model))
           || evidence.messages.some(message => message.role === 'assistant' && message.text !== redact(message.text))
           || evidence.tools.some(tool => tool.id !== redact(tool.id) || tool.name !== redact(tool.name));
         if (redactedEvidence) session.historyWithheld = true;
-        const dialogue = evidence.messages.filter(message => message.role === 'assistant').map(message => ({ ...message, text: redact(message.text) }));
-        const initial: DialogueMessage = { role: 'user', text: turn.start.input };
+        let truncated = turn.sourceTruncated || dependencies.sourceTruncated || evidence.truncated;
+        const capture = (text: string) => {
+          const bounded = boundCaptureText(redact(text));
+          truncated ||= bounded.truncated;
+          return bounded.text;
+        };
+        const dialogue = evidence.messages.filter(message => message.role === 'assistant').map(message => ({ ...message, text: capture(message.text) }));
+        const initial: DialogueMessage = { role: 'user', text: capture(turn.start.input) };
         if (!dialogue.some(message => message.role === 'user' && message.text === initial.text)) dialogue.unshift(initial);
-        const answer = redact(evidence.answer);
+        const answer = capture(evidence.answer);
         if (answer && !dialogue.some(message => message.role === 'assistant' && message.text === answer)) dialogue.push({ role: 'assistant', text: answer });
         turn.dialogue = dialogue;
         turn.events = [
-          ...turn.prior.map(message => ({ type: 'message' as const, ...message })),
+          ...turn.prior.map(message => ({ type: 'message' as const, ...message, text: capture(message.text) })),
           ...dialogue.map(message => ({ type: 'message' as const, ...message })),
           ...evidence.tools.map(tool => ({ type: 'tool' as const, ...tool, id: redact(tool.id), name: redact(tool.name) })),
         ];
+        turn.sourceTruncated ||= truncated;
         turn.completion = {
           status: terminal.event === 'Stop' ? 'completed' : terminal.event === 'StopFailure' ? 'failed' : 'cancelled',
-          answer, evidence_complete: terminal.event === 'Stop' && evidence.complete && Boolean(terminal.answer) && !terminal.stopHookActive && !turn.priorTruncated && !redactedEvidence,
+          answer, evidence_complete: terminal.event === 'Stop' && evidence.complete && Boolean(terminal.answer) && !terminal.stopHookActive && !truncated && !turn.priorTruncated && !turn.priorUnordered && !redactedEvidence,
           seed_observed: evidence.seedObserved,
           ...(evidence.seedObserved && turn.receipt?.learning.revision ? { seed_revision: turn.receipt.learning.revision } : {}),
-          ...(redactedEvidence ? { error: 'Source dialogue or tool metadata contains withheld or redacted text; automatic promotion is disabled.' } : turn.priorTruncated ? { error: 'Earlier post-enrollment dialogue exceeded the capture limit; automatic promotion is disabled for this session.' } : evidence.reason ? { error: evidence.reason } : {}),
+          ...(redactedEvidence ? { error: 'Source dialogue or tool metadata contains withheld or redacted text; automatic promotion is disabled.' } : turn.priorUnordered ? { error: 'Earlier post-enrollment dialogue order could not be verified; automatic promotion is disabled.' } : truncated ? { error: 'Source dialogue exceeded the capture limit; retained text is truncated.' } : turn.priorTruncated ? { error: 'Earlier post-enrollment dialogue exceeded the capture limit; automatic promotion is disabled for this session.' } : evidence.reason ? { error: evidence.reason } : {}),
           ...(terminal.model ?? evidence.model ? { model: redact((terminal.model ?? evidence.model)!) } : {}), session_id: turn.start.session_id,
           ...(evidence.usage ? { usage: evidence.usage } : {}),
         };
@@ -365,12 +391,19 @@ async function processCliLearningHook(options: CliLearningHookOptions, input: un
             complete: Boolean(turn.policyRecoveryAllowed) && !snapshot.incomplete && !snapshot.truncated
               && instructions === snapshot.text && Buffer.byteLength(instructions) <= CLI_POLICY_BYTES };
         }
+        turn.completedAt = receivedAt;
         await writePrivateJson(path, turn);
       }
       if (!session.completed.includes(turn.key)) {
+        const submittedAt = receiptTime(turn.submittedAt), completedAt = receiptTime(turn.completedAt), historyThrough = receiptTime(session.historyThrough);
+        // Keep the private history, but never serve out-of-order completions as a
+        // verified sequence of prior dialogue. Legacy history has no order proof.
+        session.historyUnordered ||= submittedAt === undefined || completedAt === undefined || completedAt < submittedAt
+          || (session.history.length > 0 && (historyThrough === undefined || submittedAt <= historyThrough));
+        if (completedAt !== undefined) session.historyThrough = Math.max(historyThrough ?? completedAt, completedAt);
         const kept = historyLimit([...session.history, ...(turn.dialogue ?? [])]);
         session.history = kept.history;
-        session.historyTruncated ||= kept.truncated;
+        session.historyTruncated ||= kept.truncated || turn.sourceTruncated;
         session.completed.push(turn.key);
       }
       await writePrivateJson(sessionPath, session);

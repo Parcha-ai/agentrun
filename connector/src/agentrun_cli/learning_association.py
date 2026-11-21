@@ -201,6 +201,10 @@ def _project(project, runtime, origin):
             or not isinstance(connection.get('connection_id'), str) or not re.fullmatch(r'[a-f0-9]{32}', connection['connection_id'])
             or not isinstance(connection.get('token'), str) or not re.fullmatch(r'ar_cli_[A-Za-z0-9_-]{43}', connection['token'])):
         raise ValueError('unmatched_learning_connection')
+    if connection.get('revocation_pending') is True:
+        # Capture stops before hook removal and remote revocation finish. The
+        # retained credential may only revoke; intact hooks cannot prove readiness.
+        raise ValueError('learning_revocation_pending')
     events = ['UserPromptSubmit', 'Stop', 'Interrupt', 'SessionEnd'] if runtime == 'codex' else ['UserPromptSubmit', 'Stop', 'StopFailure', 'SessionEnd']
     handlers = receipt.get('handlers')
     if (not isinstance(handlers, dict) or set(handlers) != set(events) or

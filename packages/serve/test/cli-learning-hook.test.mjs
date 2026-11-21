@@ -205,3 +205,43 @@ test('redacted source prompts remain incomplete even when the final answer itsel
   await f.stop('turn-2', 'Done again.');
   assert.equal(f.calls.filter(call => call.path.endsWith('/complete')).at(-1).body.evidence_complete, false);
 });
+
+
+test('bounded source text survives offline retry and stays explicitly incomplete after redaction expansion', async t => {
+  const cases = [
+    { prompt: 'p'.repeat(130_000), answer: 'Ready.' },
+    { prompt: 'Task.', answer: 'a'.repeat(130_000) },
+    { prompt: 'Task.', answer: '😀'.repeat(32_769) },
+    { prompt: 'Task.', answer: '\u0001'.repeat(40_000) },
+    { prompt: 'password '.repeat(14_000), answer: 'password '.repeat(14_000), env: { OPENAI_API_KEY: 'password' } },
+    // A cut through a held value must not expose its leading fragment.
+    { prompt: 'p'.repeat(127_996) + 'abcdefghij', answer: 'Ready.', env: { OPENAI_API_KEY: 'abcdefghij' } },
+  ];
+  for (const source of cases) await t.test(`prompt ${source.prompt.length}, answer ${source.answer.length}, redacted ${Boolean(source.env)}`, async t => {
+    const f = await setup(t);
+    f.dependencies.env = source.env ?? {};
+    f.offline(true);
+    await f.prompt('turn-1', source.prompt);
+    await f.append([
+      { type: 'token_usage_record', payload: { thread_id: 'session-1', turn_id: 'turn-1', response_id: 'response-1', usage: { input_tokens: 100, cached_input_tokens: 60, cache_write_input_tokens: 0, output_tokens: 12 } } },
+      answerRow(source.answer),
+    ]);
+    await f.stop('turn-1', source.answer);
+    f.offline(false);
+    const flushed = await flushCliLearning(f.options, { fetch: f.dependencies.fetch });
+    assert.equal(flushed.delivered, 1);
+    assert.equal(flushed.pending, 0);
+    const started = f.calls.filter(call => call.path.endsWith('/runs')).at(-1).body;
+    assert.ok(started.input.length <= 128_000);
+    const completed = f.calls.find(call => call.path.endsWith('/complete')).body;
+    assert.ok(completed.answer.length <= 128_000);
+    if (!source.env) assert.deepEqual(completed.usage, { input_tokens: 40, output_tokens: 12, cache_read_tokens: 60, cache_write_tokens: 0, cost_usd: null }, 'a verified full-answer digest preserves exact usage despite local clipping');
+    assert.equal(completed.evidence_complete, false);
+    assert.match(completed.error, /limit|truncat|redact|withheld/i);
+    for (const batch of f.calls.filter(call => call.path.endsWith('/events'))) {
+      assert.ok(Buffer.byteLength(JSON.stringify(batch.body)) <= 256_000);
+      assert.ok(batch.body.events.every(event => event.type !== 'message' || event.text.length <= 128_000));
+    }
+    if (source.env?.OPENAI_API_KEY === 'abcdefghij') assert.ok(!started.input.includes('abcd'), 'redact the entire secret before cutting text');
+  });
+});

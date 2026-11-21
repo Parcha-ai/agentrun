@@ -56,6 +56,128 @@ test('SessionEnd waits for its queued submit and closes that recovered window as
  assert.equal(await f.pendingCount(),0);
 });
 
+for (const [runtime,equalTimes] of [['codex',false],['claude-code',false],['codex',true]]) {
+ test(`${runtime}: retrying an older queued submit preserves the newer prompt until its real Stop${equalTimes?' with equal receipt times':''}`,async t=>{
+  if(equalTimes){const now=Date.now();t.mock.method(Date,'now',()=>now);}
+  const f=await fixture(t,runtime);
+  f.dependencies.fetch=async(url,request)=>{
+   const path=new URL(url).pathname,body=JSON.parse(request.body);f.calls.push({path,body});
+   return Response.json(path.endsWith('/runs')?{run_id:body.turn_id,agent_id:'agent-1',token:'fixture-run-token',learning:{enabled:true,revision:null,context:'',workflows:[]}}:{accepted:true});
+  };
+  await f.lock();await f.prompt();await f.unlock();
+  await delay(5);
+  const turnField=runtime==='codex'?'turn_id':'prompt_id';
+  await runCliLearningHook(f.options,f.input('UserPromptSubmit',{[turnField]:'turn-2',prompt:'Finish the newer task.'}),f.dependencies);
+  await flushCliLearning(f.options,{fetch:f.dependencies.fetch});
+  assert.equal(f.calls.some(call=>call.path==='/v2/cli-learning/runs/turn-2/complete'),false,'replay must not prematurely complete the newer prompt');
+  const rows=runtime==='codex'?[
+   {type:'turn_context',payload:{turn_id:'turn-2'}},
+   {type:'token_usage_record',payload:{thread_id:'session-1',turn_id:'turn-2',response_id:'response-2',usage:{input_tokens:100,cached_input_tokens:60,cache_write_input_tokens:0,output_tokens:12}}},
+   {type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'Newer task finished.'}]}},
+  ]:[
+   {type:'user',sessionId:'session-1',promptId:'turn-2',uuid:'user-2',parentUuid:null,message:{role:'user',content:'Finish the newer task.'}},
+   {type:'assistant',sessionId:'session-1',uuid:'answer-2',parentUuid:'user-2',message:{id:'message-2',role:'assistant',content:'Newer task finished.',usage:{input_tokens:40,cache_read_input_tokens:60,cache_creation_input_tokens:0,output_tokens:12}}},
+  ];
+  await appendFile(f.transcript,rows.map(row=>JSON.stringify(row)).join('\n')+'\n');
+  await runCliLearningHook(f.options,f.input('Stop',{[turnField]:'turn-2',last_assistant_message:'Newer task finished.'}),f.dependencies);
+  const completions=f.calls.filter(call=>call.path==='/v2/cli-learning/runs/turn-2/complete');
+  assert.equal(completions.length,1);
+  assert.equal(completions[0].body.status,'completed');
+  assert.equal(completions[0].body.answer,'Newer task finished.');
+  assert.equal(completions[0].body.evidence_complete,false,'the known queued earlier prompt left a gap in prior dialogue');
+  assert.match(completions[0].body.error,/order could not be verified/);
+  assert.deepEqual(completions[0].body.usage,{input_tokens:40,output_tokens:12,cache_read_tokens:60,cache_write_tokens:0,cost_usd:null},'uncertain prior dialogue does not discard exact current-prompt usage');
+ });
+}
+
+test('a known earlier queued submit makes the newer prompt prior context incomplete before any retry',async t=>{
+ const f=await fixture(t);await f.lock();await f.prompt();await f.unlock();await delay(5);
+ await runCliLearningHook(f.options,f.input('UserPromptSubmit',{turn_id:'turn-2',prompt:'Complete this prompt while the earlier capture waits.'}),f.dependencies);
+ await f.finish();
+ await runCliLearningHook(f.options,f.input('Stop',{turn_id:'turn-2',last_assistant_message:'Ready.'}),f.dependencies);
+ const completion=f.calls.find(call=>call.path.endsWith('/complete')).body;
+ assert.equal(completion.status,'completed');assert.equal(completion.answer,'Ready.');
+ assert.equal(completion.evidence_complete,false,'a queued source prompt is a known gap in prior history');
+ assert.match(completion.error,/order could not be verified/);
+});
+
+test('replaying an old submit after a newer completion withholds later dialogue from its prior context',async t=>{
+ const f=await fixture(t);
+ f.dependencies.fetch=async(url,request)=>{
+  const path=new URL(url).pathname,body=JSON.parse(request.body);f.calls.push({path,body});
+  return Response.json(path.endsWith('/runs')?{run_id:body.turn_id,agent_id:'agent-1',token:'fixture-run-token',learning:{enabled:true,revision:null,context:'',workflows:[]}}:{accepted:true});
+ };
+ await f.lock();await f.prompt();await f.unlock();await delay(5);
+ await runCliLearningHook(f.options,f.input('UserPromptSubmit',{turn_id:'turn-2',prompt:'A later private task.'}),f.dependencies);
+ await appendFile(f.transcript,JSON.stringify({type:'turn_context',payload:{turn_id:'turn-2'}})+'\n');
+ await f.finish();
+ await runCliLearningHook(f.options,f.input('Stop',{turn_id:'turn-2',last_assistant_message:'Ready.'}),f.dependencies);
+ await flushCliLearning(f.options,{fetch:f.dependencies.fetch});
+ await runCliLearningHook(f.options,f.input('Stop',{last_assistant_message:'Older task finished.'}),f.dependencies);
+ const earlierEvents=f.calls.filter(call=>call.path==='/v2/cli-learning/runs/turn-1/events').flatMap(call=>call.body.events);
+ assert.ok(earlierEvents.some(event=>event.role==='user'&&event.text==='Report release status.'));
+ assert.equal(earlierEvents.some(event=>event.text==='A later private task.'||event.text==='Ready.'),false,'later completed dialogue is not earlier context');
+ const earlier=f.calls.find(call=>call.path==='/v2/cli-learning/runs/turn-1/complete');
+ assert.equal(earlier.body.evidence_complete,false,'withheld history cannot be claimed complete');
+ await runCliLearningHook(f.options,f.input('UserPromptSubmit',{turn_id:'turn-3',prompt:'A task after both completions.'}),f.dependencies);
+ await f.finish();
+ await runCliLearningHook(f.options,f.input('Stop',{turn_id:'turn-3',last_assistant_message:'Ready.'}),f.dependencies);
+ const laterEvents=f.calls.filter(call=>call.path==='/v2/cli-learning/runs/turn-3/events').flatMap(call=>call.body.events);
+ assert.deepEqual(laterEvents.filter(event=>event.role==='user').map(event=>event.text),['A task after both completions.'],'out-of-order completions do not become a fabricated prior conversation');
+ const later=f.calls.find(call=>call.path==='/v2/cli-learning/runs/turn-3/complete').body;
+ assert.equal(later.evidence_complete,false);assert.match(later.error,/order could not be verified/);
+});
+
+test('an earlier submit whose Stop arrived after the queued prompt is not prior completed dialogue',async t=>{
+ const f=await fixture(t);
+ f.dependencies.fetch=async(url,request)=>{
+  const path=new URL(url).pathname,body=JSON.parse(request.body);f.calls.push({path,body});
+  return Response.json(path.endsWith('/runs')?{run_id:body.turn_id,agent_id:'agent-1',token:'fixture-run-token',learning:{enabled:true,revision:null,context:'',workflows:[]}}:{accepted:true});
+ };
+ await f.prompt();await f.lock();await delay(5);
+ await runCliLearningHook(f.options,f.input('UserPromptSubmit',{turn_id:'turn-2',prompt:'The already submitted next task.'}),f.dependencies);
+ await f.unlock();await delay(5);
+ await appendFile(f.transcript,JSON.stringify({type:'turn_context',payload:{turn_id:'turn-1'}})+'\n');
+ await f.finish();
+ await runCliLearningHook(f.options,f.input('Stop',{last_assistant_message:'Ready.'}),f.dependencies);
+ await flushCliLearning(f.options,{fetch:f.dependencies.fetch});
+ await runCliLearningHook(f.options,f.input('Stop',{turn_id:'turn-2',last_assistant_message:'Next task finished.'}),f.dependencies);
+ const events=f.calls.filter(call=>call.path==='/v2/cli-learning/runs/turn-2/events').flatMap(call=>call.body.events);
+ assert.deepEqual(events.filter(event=>event.role==='user').map(event=>event.text),['The already submitted next task.'],'an earlier submit does not prove its completion preceded this prompt');
+ const completion=f.calls.find(call=>call.path==='/v2/cli-learning/runs/turn-2/complete').body;
+ assert.equal(completion.evidence_complete,false);assert.match(completion.error,/order could not be verified/);
+});
+
+test('a queued SessionEnd cannot interrupt a prompt submitted after that session ending',async t=>{
+ const f=await fixture(t);
+ f.dependencies.fetch=async(url,request)=>{
+  const path=new URL(url).pathname,body=JSON.parse(request.body);f.calls.push({path,body});
+  return Response.json(path.endsWith('/runs')?{run_id:body.turn_id,agent_id:'agent-1',token:'fixture-run-token',learning:{enabled:true,revision:null,context:'',workflows:[]}}:{accepted:true});
+ };
+ await f.prompt();await f.lock();
+ await runCliLearningHook(f.options,f.input('SessionEnd',{turn_id:undefined}),f.dependencies);
+ await f.unlock();await delay(5);
+ await runCliLearningHook(f.options,f.input('UserPromptSubmit',{turn_id:'turn-2',prompt:'A task after the queued session ending.'}),f.dependencies);
+ await flushCliLearning(f.options,{fetch:f.dependencies.fetch});
+ assert.equal(f.calls.some(call=>call.path==='/v2/cli-learning/runs/turn-2/complete'),false,'the older session ending cannot close a later prompt');
+ assert.equal(f.calls.find(call=>call.path==='/v2/cli-learning/runs/turn-1/complete').body.status,'cancelled','a genuine later prompt still closes its unfinished predecessor');
+ await f.finish();
+ await runCliLearningHook(f.options,f.input('Stop',{turn_id:'turn-2',last_assistant_message:'Ready.'}),f.dependencies);
+ const completions=f.calls.filter(call=>call.path==='/v2/cli-learning/runs/turn-2/complete');
+ assert.equal(completions.length,1);assert.equal(completions[0].body.status,'completed');
+});
+
+test('legacy history without source order proof is withheld rather than reported as complete prior dialogue',async t=>{
+ const f=await fixture(t);await mkdir(f.directory,{recursive:true});
+ await writeFile(join(f.directory,'session.json'),JSON.stringify({active:[],completed:[],history:[{role:'user',text:'Legacy dialogue with unknown order.'}]}));
+ await f.prompt();await f.finish();
+ await runCliLearningHook(f.options,f.input('Stop',{last_assistant_message:'Ready.'}),f.dependencies);
+ const events=f.calls.filter(call=>call.path.endsWith('/events')).flatMap(call=>call.body.events);
+ assert.equal(events.some(event=>event.text==='Legacy dialogue with unknown order.'),false);
+ const completion=f.calls.find(call=>call.path.endsWith('/complete')).body;
+ assert.equal(completion.evidence_complete,false);assert.match(completion.error,/order could not be verified/);
+});
+
 test('a submit replay repairs an orphan durable turn before SessionEnd or retry drains it',async t=>{
  const f=await fixture(t);await f.prompt();
  // Simulate the crash after turn.json was durable but before session.json was committed.
