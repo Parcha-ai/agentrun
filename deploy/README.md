@@ -331,6 +331,7 @@ opens the store with one connection and closes it.
 | Every run-facing name the server holds | The server says the names (never the values) of its run-facing environment in the store at each start: model, tool and box keys, each box provider's settings (`DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, ...), the Archil settings, the tiers' models (`AGENT_MODEL`, `AGENT_MODEL_FAST`, `AGENT_MODEL_STRONG`), `AGENTRUN_BOX_ALLOW`, the operator's bound on owners' private hosts (`AGENTRUN_PRIVATE_HOSTS`), how a gateway is sent a model id (`AGENT_MODEL_GATEWAY_IDS`), whether runs may reach an MCP server on loopback (`AGENTRUN_MCP_ALLOW_LOOPBACK`), the harness modules it loads (`AGENTRUN_SERVE_HARNESS_MODULES`, which a runner may hold as `--harness-module`, given to its check too; a server given them as `--harness-module` says nothing of them), and every upstream address (`*_BASE_URL`, `*_API_URL`). The runner must hold each one: a run's claim reads it from the runner's environment. A server older than this release says none, and this part is `skipped`. |
 | Each `*_BASE_URL` / `*_API_URL` on loopback | Something answers a TCP connect there within 2 s: the forwarder beside the runner that the upstream names. |
 | `AGENTRUN_TOKEN`, `AGENTRUN_TOKENS`, `AGENTRUN_API_KEY` | `warn` when set: the server's own secrets, which a runner never needs. Fails nothing. |
+| `start` | What the runner's start refuses before it claims, checked the same way: its run slots (`AGENTRUN_MAX_RUNS`), drain (`AGENTRUN_DRAIN_TIMEOUT`), free-model requests, and its Archil settings (the region and an https S3 URL set together). |
 
 ```
 ok      AGENTRUN_STORE_URL  the store opens: postgres, schema v23
@@ -338,6 +339,7 @@ ok      AGENTRUN_SEAL_KEY   the store's seal key
 ok      ANTHROPIC_BASE_URL  the server holds it, and so does this runner
 missing MONID_API_KEY       the server holds it and a run's claim reads it here: hand it to this runner too
 ok      ANTHROPIC_BASE_URL  on this machine's loopback, and a forwarder answers there
+ok      start               the runner's start takes its settings: run slots, drain, free-model requests, Archil
 Runner environment: 1 gap: MONID_API_KEY
 ```
 

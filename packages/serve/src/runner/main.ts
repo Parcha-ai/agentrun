@@ -712,6 +712,18 @@ async function runnerCheck(args: ReturnType<typeof runnerArgs>, env: NodeJS.Proc
   const flagged = "harnessModules" in args && args.harnessModules?.length ? args.harnessModules.join(",") : undefined;
   const read = (one: string) => (one === HARNESS_MODULES_SETTING && flagged !== undefined ? flagged : (secret(one) ?? env[one]));
   const rows: CheckRow[] = args.heartbeatOnly ? [] : await checkRunnerEnv({ ...(args.dataDir ? { dataDir: args.dataDir } : {}), env, read });
+  // What the runner's start refuses before it claims (runnerMain): its run slots, drain and free-model requests, and the
+  // Archil settings it is given, checked the same way, so a runner whose start would stop never passes this check.
+  if (!args.heartbeatOnly) {
+    try {
+      runnerHolds({}, env);
+      archilSettingsFromEnv(env);
+      rows.push({ state: "ok", name: "start", why: "the runner's start takes its settings: run slots, drain, free-model requests, Archil" });
+    } catch (error) {
+      if (!(error instanceof RunnerRefused) && !(error instanceof ArchilSettingsEnvInvalid)) throw error;
+      rows.push({ state: "bad", name: "start", why: `the runner's start refuses its environment: ${error.message}` });
+    }
+  }
   if (!args.envOnly && name) {
     const checked = checkRunner({ dataDir: args.dataDir, name });
     rows.push(checked.ok ? { state: "ok", name: "heartbeat", why: `Runner ${name} is alive` } : { state: "bad", name: "heartbeat", why: checked.why });

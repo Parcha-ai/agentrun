@@ -69,6 +69,23 @@ test("runner --check --env with a pool size the runner's start refuses: bad, by 
   assert.match(out, /^bad\s+AGENTRUN_STORE_POOL_SIZE\s+the runner's store does not open with it: AGENTRUN_STORE_POOL_SIZE is a whole number/m);
 });
 
+test("runner --check --env with settings the runner's start refuses (Archil's S3 URL not https, no run slots): a bad start row, and it exits 1", async (t) => {
+  const root = await scratch(t);
+  for (const [given, words] of [
+    [{ AGENTRUN_ARCHIL_REGION: "r", AGENTRUN_ARCHIL_S3_URL: "http://example.com" }, /AGENTRUN_ARCHIL_S3_URL is the region's S3 endpoint, an https URL/],
+    [{ AGENTRUN_ARCHIL_REGION: "r" }, /set AGENTRUN_ARCHIL_REGION and AGENTRUN_ARCHIL_S3_URL together/],
+    [{ AGENTRUN_MAX_RUNS: "0" }, /max runs is a positive integer/],
+  ]) {
+    const { code, out, err } = await run(["runner", "--check", "--env", "--data", root], { ...baseEnv(root), ...given });
+    assert.equal(code, 1, out + err);
+    assert.match(rowOf(out, "start") ?? "", /^bad\s+start\s+the runner's start refuses its environment: /, out);
+    assert.match(out, words);
+  }
+  // Settings the start takes: the row is ok.
+  const fine = await run(["runner", "--check", "--env", "--data", root], { ...baseEnv(root), AGENTRUN_ARCHIL_REGION: "r", AGENTRUN_ARCHIL_S3_URL: "https://s3.example.com", AGENTRUN_MAX_RUNS: "2" });
+  assert.equal(stateOf(fine.out, "start"), "ok", fine.out);
+});
+
 test("--env goes with --check, and a heartbeat check needs a name", async (t) => {
   const root = await scratch(t);
   assert.equal((await run(["runner", "--env", "--data", root], baseEnv(root))).code, 2);
