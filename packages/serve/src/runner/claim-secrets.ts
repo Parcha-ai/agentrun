@@ -22,7 +22,8 @@ import { savedGatewayIn } from "../model-gateway.js";
 import type { HeldRedact } from "./redact.js";
 import { type HeldModelKey, noServerKeyWords, runKeyEndedFor, runModelOrigin, withRunModelKey, withRunModelKeyLater } from "../run-model-key.js";
 import { openRunLaunch, type RunModelKey } from "../store/seal.js";
-import { StoreLaunchMissing } from "../store/store.js";
+import { type Claim, StoreLaunchMissing } from "../store/store.js";
+import { withRequestMetadata } from "../request-metadata.js";
 
 /** Every server secret a run might be handed (runs.ts RUN_SECRETS is the tool and model keys; the decision keys go beside
  *  them). Read from the store into a working environment, then scoped to the run below. */
@@ -303,9 +304,10 @@ export async function claimSpendOff(deps: ClaimSecretsDeps, runKey: ClaimModelKe
 /** The env a claimed run's model routes read: the run's own key alone where the claim opened one (withRunModelKey); else
  *  the runner's environment with the keys `opened` for it (withModelKeys), whose gateway variables read the run's key
  *  once a message hands it one (withRunModelKeyLater). */
-export function claimModelEnv(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv, runKey: ClaimModelKey | undefined): NodeJS.ProcessEnv {
-  if (!runKey) return withModelKeys(env, opened);
-  return keyedAtClaim(runKey) ? withRunModelKey(env, runKey) : withRunModelKeyLater(withModelKeys(env, opened), runKey);
+export function claimModelEnv(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv, runKey: ClaimModelKey | undefined, claim?: Pick<Claim, "runId" | "turn" | "attempt">): NodeJS.ProcessEnv {
+  // The claim's run, turn and attempt, which each request on serve's gateway names (request-metadata.ts).
+  if (!runKey) return withRequestMetadata(withModelKeys(env, opened), claim);
+  return withRequestMetadata(keyedAtClaim(runKey) ? withRunModelKey(env, runKey) : withRunModelKeyLater(withModelKeys(env, opened), runKey), claim);
 }
 
 /** The decision providers' own keys (decisions.ts: Jev's TypeSafe key, OpenRouter's, Parallel's): some are also pi-ai

@@ -61,7 +61,7 @@ const okOrigin = (sent) => async (_url, init = {}) => {
 /** run-1 of `flow` (the extract chain, or the llm calls with the `llm` tool granted) on the free model under a limit of
  *  one free request, capped at `capUsd` or not: its row once it ends (or the last row seen when it never does), its
  *  view, and the model requests that reached the provider. */
-async function limitedRun(t, capUsd, flow = workflow) {
+async function limitedRun(t, capUsd, flow = workflow, { env = { AGENTRUN_FREE_MODEL_REQUESTS: "1" }, body = {} } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-free-wf-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -73,7 +73,7 @@ async function limitedRun(t, capUsd, flow = workflow) {
     rmSync(dir, { recursive: true, force: true });
   });
   const calls = flow === llmCalls;
-  await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: flow, ...(calls ? { tools: ["llm"] } : {}) } });
+  await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: flow, ...(calls ? { tools: ["llm"] } : {}), ...body } });
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "a doc" }, title: "t", place: { mode: "runner" }, ...(capUsd === undefined ? {} : { max_cost_usd: capUsd }) } });
   const sent = [];
   const fetch = calls ? okOrigin(sent) : scriptedOrigin([{ call: "submit", args: { n: 1 } }], sent);
@@ -81,7 +81,7 @@ async function limitedRun(t, capUsd, flow = workflow) {
     modelId: FREE.id, api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"o"}`,
     policy: anthropicPolicy({ model: FREE.id, tools: [] }), price: () => 0, capModel: FREE, fetch,
   });
-  runner = startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf, env: { AGENTRUN_FREE_MODEL_REQUESTS: "1" } })), name: "runner-a", ...TIMING });
+  runner = startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf, env })), name: "runner-a", ...TIMING });
   const from = Date.now();
   let row;
   for (;;) {
@@ -114,3 +114,11 @@ for (const capUsd of [undefined, 100]) {
     assert.equal(sent.length, 1, "the first call's request was sent; the second call's was refused before it was");
   });
 }
+
+// The agent's own limit (definition.max_requests, its revision's maxRequests) below the server's: the workflow stops at it.
+test("a workflow whose revision limits its free requests to 1 ends failed at that limit under the server's default of 60", { timeout: 60_000 }, async (t) => {
+  const { row, sent } = await limitedRun(t, undefined, workflow, { env: {}, body: { maxRequests: 1 } });
+  assert.equal(row.state, "failed", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(row.summary, "spend_cap_reached: Not sent: this run reached its 1-request limit for free models.");
+  assert.equal(sent.length, 1);
+});

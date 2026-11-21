@@ -100,7 +100,15 @@ test("a tool-call budget is no field: a definition's max_tool_calls and a manife
   const issues = definitionIssues({ name: "a", instructions: "x", max_tool_calls: 30 });
   assert.deepEqual(issues.map((i) => [i.field, i.reason]), [["definition.max_tool_calls", "not_allowed"]]);
   const problems = await problemsOf(t, ({ edit }) => edit(/^budget: .*\n/m, "budget: { per_run_usd: 0.50, tool_calls: 30 }\n"));
-  assert.ok(problems.some((p) => /budget is \{per_run_usd: a number above 0\}/.test(p)), JSON.stringify(problems));
+  assert.ok(problems.some((p) => /budget is \{per_run_usd: a number above 0/.test(p)), JSON.stringify(problems));
+});
+
+test("a manifest's budget.max_requests is a whole number above 0: the package lists it; 0, a fraction or a word is refused, naming it", async (t) => {
+  assert.deepEqual(await problemsOf(t, ({ edit }) => edit(/^budget: .*\n/m, "budget: { per_run_usd: 2, max_requests: 20 }\n")), []);
+  for (const bad of ["0", "2.5", "lots", "-3"]) {
+    const problems = await problemsOf(t, ({ edit }) => edit(/^budget: .*\n/m, `budget: { per_run_usd: 2, max_requests: ${bad} }\n`));
+    assert.ok(problems.some((p) => /budget is \{per_run_usd: a number above 0, max_requests: a whole number of free-model requests above 0, when given\}/.test(p)), `${bad}: ${JSON.stringify(problems)}`);
+  }
 });
 
 test("the validator refuses a malformed package, naming each problem", async (t) => {

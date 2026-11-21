@@ -15,6 +15,7 @@ import { isAskable, isHostTool, isTableTool, isWebHostTool, replayOf } from "../
 import { buildToolHost, webHostTools } from "../dist/runner/adapter-run-spec.js";
 import { webFixtureOf } from "../dist/web-fake.js";
 import { PNG } from "./fixtures/faux-web-files.mjs";
+import { SAMPLES } from "./fixtures/media-samples.mjs";
 import { scratch } from "./support.mjs";
 
 const FAUX_WEB_FILES = new URL("./fixtures/faux-web-files.mjs", import.meta.url).pathname;
@@ -191,6 +192,33 @@ test("each media type the server plays is saved when its declared type and its b
     assert.equal(saved.content_type, answered, kind);
     assert.deepEqual([...readFileSync(join(work, "media", name))], [...BODY[kind]], kind);
   }
+});
+
+test("a saved audio or video file answers its length, duration_s, read from its bytes to the millisecond; an image, or media whose length its bytes don't give, answers none", async (t) => {
+  const { ws } = await folders(t);
+  const timed = [
+    ["mp3Info", "audio/mpeg", "info.mp3"],
+    ["mp3Cbr", "audio/mpeg", "cbr.mp3"],
+    ["wav", "audio/wav", "a.wav"],
+    ["m4a", "audio/mp4", "a.m4a"],
+    ["mp4", "video/mp4", "a.mp4"],
+    ["mp4Fast", "video/mp4", "fast.mp4"],
+  ];
+  for (const [sample, type, name] of timed) {
+    const saved = await webSave({ url: `https://cdn.example/${name}`, path: name }, ws, serving(`https://cdn.example/${name}`, SAMPLES[sample].bytes, type));
+    assert.equal(saved.ok, true, `${sample}: ${JSON.stringify(saved)}`);
+    assert.equal(typeof saved.duration_s, "number", `${sample}: ${JSON.stringify(saved)}`);
+    assert.ok(Math.abs(saved.duration_s - SAMPLES[sample].seconds) <= 0.05, `${sample}: ${saved.duration_s}, not ${SAMPLES[sample].seconds}`);
+    assert.equal(saved.duration_s, Math.round(saved.duration_s * 1000) / 1000, `${sample}: ${saved.duration_s} is not in milliseconds`);
+  }
+  // An image; an mp4 with no movie header; an ogg and a webm, whose length this server does not read.
+  for (const [kind, type, name] of [["png", "image/png", "b.png"], ["mp4", "video/mp4", "bare.mp4"], ["ogg", "audio/ogg", "b.ogg"], ["webm", "video/webm", "b.webm"]]) {
+    const saved = await webSave({ url: `https://cdn.example/${name}`, path: name }, ws, serving(`https://cdn.example/${name}`, BODY[kind], type));
+    assert.equal(saved.ok, true, `${kind}: ${JSON.stringify(saved)}`);
+    assert.equal("duration_s" in saved, false, `${kind}: ${JSON.stringify(saved)}`);
+  }
+  // The model reads it in the tool's description.
+  assert.match(webSaveTool(() => ws, () => ({})).description, /duration_s/);
 });
 
 test("the type is checked: a declared type the bytes disagree with, a path whose extension disagrees, and a page that is not media are refused", async (t) => {

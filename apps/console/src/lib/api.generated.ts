@@ -509,6 +509,7 @@ export interface components {
       repick_max_chars?: number;
     };
     checkout?: "pull_request" | "none";
+    max_requests?: number;
   };
   Effort: "low" | "medium" | "high";
   Error: {
@@ -950,7 +951,7 @@ export interface components {
     };
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
       detail: string | null;
       at: string;
       workflows?: {
@@ -1194,7 +1195,7 @@ export interface components {
     error?: components["RunError"] | null;
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
       detail: string | null;
       workflows?: {
         file: string;
@@ -1377,7 +1378,7 @@ export interface components {
     tool_result_text?: string | null;
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
       detail: string | null;
     };
   };
@@ -2029,6 +2030,10 @@ export interface operations {
         disk_id: string;
       } | null;
     };
+  };
+  deleteAgentLearning: {
+    body: never;
+    answer: never;
   };
   deleteCalendar: {
     body: never;
@@ -2998,7 +3003,7 @@ export interface operations {
     answer: {
       run: string;
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
       detail: string | null;
       at: string;
       seed: string | null;
@@ -3111,6 +3116,8 @@ export interface operations {
         quantity: number | null;
         unit: "token" | "call" | "second" | "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
         basis: "reported" | "estimate" | "unpriced";
+        attempt: number | null;
+        billable: boolean;
         usd: number | null;
         so_far_usd?: number;
         unpriced?: number;
@@ -3144,6 +3151,8 @@ export interface operations {
           proxy_bytes: number | null;
         } | null;
         provider_record_status: "read" | "not_offered" | "not_found" | "failed" | "no_session" | null;
+        attempt: number | null;
+        billable: boolean;
       }[] | null;
       computer_intervals: {
         provider: string;
@@ -3160,7 +3169,10 @@ export interface operations {
         ended_at: string | null;
         kept: boolean;
         booked_seconds: number;
+        attempt: number | null;
+        billable: boolean;
       }[] | null;
+      infra_usd: number | null;
       reason: "running" | "not_booked" | "reopened" | null;
     };
   };
@@ -3802,6 +3814,7 @@ export interface operations {
         secrets: string[];
         budget: {
           per_run_usd: number;
+          max_requests?: number;
         } | null;
         learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
@@ -3944,6 +3957,10 @@ export interface operations {
         groups: string[];
         tools: string[];
         settings: string[];
+        record: {
+          available: boolean;
+          why?: string;
+        };
         providers: {
           id: string;
           name: string;
@@ -4124,6 +4141,28 @@ export interface operations {
           stopped?: true;
           released?: number;
           fresh_reads?: number;
+          turns?: {
+            n: number;
+            agreed: number;
+            alone: number;
+            of: string[];
+            outcomes: {
+              answered: number;
+              handed_back: number;
+              failed: number;
+              skipped_write: number;
+            };
+            disagreements?: {
+              run: string;
+              input: string;
+              agent: string | null;
+              draft?: string;
+              escalated?: string;
+              failed?: true;
+              differs_on?: string;
+            }[];
+            fresh_reads?: number;
+          };
         };
         runs?: string[];
         inputs?: string[];
@@ -4213,6 +4252,28 @@ export interface operations {
             stopped?: true;
             released?: number;
             fresh_reads?: number;
+            turns?: {
+              n: number;
+              agreed: number;
+              alone: number;
+              of: string[];
+              outcomes: {
+                answered: number;
+                handed_back: number;
+                failed: number;
+                skipped_write: number;
+              };
+              disagreements?: {
+                run: string;
+                input: string;
+                agent: string | null;
+                draft?: string;
+                escalated?: string;
+                failed?: true;
+                differs_on?: string;
+              }[];
+              fresh_reads?: number;
+            };
           } | null;
         } | null;
       }[];
@@ -4411,6 +4472,7 @@ export interface operations {
         secrets: string[];
         budget: {
           per_run_usd: number;
+          max_requests?: number;
         } | null;
         learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";

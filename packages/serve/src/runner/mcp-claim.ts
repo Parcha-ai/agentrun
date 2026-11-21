@@ -514,7 +514,7 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     const at = Object.hasOwn(saved, server) ? saved[server]! : undefined;
     const listed = at?.tools.find((one) => one.name === tool);
     if (!at || !listed) throw new McpClaimRefused(`The MCP tool ${name} was not pinned when this agent's revision was saved, so this run cannot call it. Save the agent again to pin it. Nothing was sent.`);
-    const kept = (pinned[server] ??= { url: at.url, tools: [] });
+    const kept = (pinned[server] ??= { url: at.url, tools: [], ...(at.meter ? { meter: at.meter } : {}) });
     if (!kept.tools.some((one) => one.name === listed.name)) kept.tools.push(listed);
     const price = at.prices && Object.hasOwn(at.prices, listed.name) ? at.prices[listed.name] : undefined;
     if (price !== undefined) (kept.prices ??= Object.create(null) as Record<string, number>)[listed.name] = price;

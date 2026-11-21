@@ -287,6 +287,7 @@ export type DefinitionInput = {
     repick_max_chars?: number;
   };
   checkout?: "pull_request" | "none";
+  max_requests?: number;
 };
 
 export type JsonObject = Record<string, unknown>;
@@ -443,7 +444,7 @@ export type RunSummary = {
   error?: RunError | null;
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
     detail: string | null;
     workflows?: Array<{
       file: string;
@@ -781,7 +782,7 @@ export type Run = {
   };
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
     detail: string | null;
     at: string;
     workflows?: Array<{
@@ -1000,7 +1001,7 @@ export type TimelineRow = {
   tool_result_text?: string | null;
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
     detail: string | null;
   };
 };
@@ -1638,6 +1639,28 @@ export type ListLearningPromotionsResponse = {
       stopped?: true;
       released?: number;
       fresh_reads?: number;
+      turns?: {
+        n: number;
+        agreed: number;
+        alone: number;
+        of: Array<string>;
+        outcomes: {
+          answered: number;
+          handed_back: number;
+          failed: number;
+          skipped_write: number;
+        };
+        disagreements?: Array<{
+          run: string;
+          input: string;
+          agent: string | null;
+          draft?: string;
+          escalated?: string;
+          failed?: true;
+          differs_on?: string;
+        }>;
+        fresh_reads?: number;
+      };
     };
     runs?: Array<string>;
     inputs?: Array<string>;
@@ -1727,6 +1750,28 @@ export type ListLearningPromotionsResponse = {
         stopped?: true;
         released?: number;
         fresh_reads?: number;
+        turns?: {
+          n: number;
+          agreed: number;
+          alone: number;
+          of: Array<string>;
+          outcomes: {
+            answered: number;
+            handed_back: number;
+            failed: number;
+            skipped_write: number;
+          };
+          disagreements?: Array<{
+            run: string;
+            input: string;
+            agent: string | null;
+            draft?: string;
+            escalated?: string;
+            failed?: true;
+            differs_on?: string;
+          }>;
+          fresh_reads?: number;
+        };
       } | null;
     } | null;
   }>;
@@ -2472,6 +2517,8 @@ export type GetLearnedWorkflowReplayResponse = {
   reason?: string;
 };
 
+/** Reset the agent's learning: everything it learned deleted, the agent and its runs kept (DELETE /agents/{agent_id}/learning). */
+
 /** Retire a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
 export interface RetireLearningFileParams {
   "If-Match"?: string;
@@ -2809,6 +2856,10 @@ export type ListComputersResponse = {
     groups: Array<string>;
     tools: Array<string>;
     settings: Array<string>;
+    record: {
+      available: boolean;
+      why?: string;
+    };
     providers: Array<{
       id: string;
       name: string;
@@ -3777,7 +3828,7 @@ export type HandBackRunComputerResponse = {
 export type GetRunLearningResponse = {
   run: string;
   state: "seeded" | "reflecting" | "merged" | "dropped";
-  reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+  reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
   detail: string | null;
   at: string;
   seed: string | null;
@@ -3978,6 +4029,8 @@ export type GetRunUsageResponse = {
     quantity: number | null;
     unit: "token" | "call" | "second" | "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
     basis: "reported" | "estimate" | "unpriced";
+    attempt: number | null;
+    billable: boolean;
     usd: number | null;
     so_far_usd?: number;
     unpriced?: number;
@@ -4011,6 +4064,8 @@ export type GetRunUsageResponse = {
       proxy_bytes: number | null;
     } | null;
     provider_record_status: "read" | "not_offered" | "not_found" | "failed" | "no_session" | null;
+    attempt: number | null;
+    billable: boolean;
   }> | null;
   computer_intervals: Array<{
     provider: string;
@@ -4027,7 +4082,10 @@ export type GetRunUsageResponse = {
     ended_at: string | null;
     kept: boolean;
     booked_seconds: number;
+    attempt: number | null;
+    billable: boolean;
   }> | null;
+  infra_usd: number | null;
   reason: "running" | "not_booked" | "reopened" | null;
 };
 
@@ -4532,6 +4590,7 @@ export type ImportTemplateResponse = {
     secrets: Array<string>;
     budget: {
       per_run_usd: number;
+      max_requests?: number;
     } | null;
     learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";
@@ -4624,6 +4683,7 @@ export type ListTemplatesResponse = {
     secrets: Array<string>;
     budget: {
       per_run_usd: number;
+      max_requests?: number;
     } | null;
     learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";
@@ -6016,6 +6076,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listLearningLog: {"method":"GET","path":"/agents/{agent_id}/learning/log","pathParams":["agent_id"],"multiSegment":[],"query":["cursor","limit"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   readLearningFile: {"method":"GET","path":"/agents/{agent_id}/learning/files/{file}","pathParams":["agent_id","file"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json+text","secret":false,"publicFields":[],"tagged":true},
   getLearnedWorkflowReplay: {"method":"GET","path":"/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}","pathParams":["agent_id","name","digest","replay_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  deleteAgentLearning: {"method":"DELETE","path":"/agents/{agent_id}/learning","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   retireLearningFile: {"method":"POST","path":"/agents/{agent_id}/learning/files/{file}/retire","pathParams":["agent_id","file"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":null,"answer":"text","secret":false,"publicFields":[],"tagged":true},
   listLearnedWorkflowRevisions: {"method":"GET","path":"/agents/{agent_id}/learning/workflows/{name}/revisions","pathParams":["agent_id","name"],"multiSegment":[],"query":["limit"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   putLearningCorrections: {"method":"PUT","path":"/agents/{agent_id}/learning/corrections","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["text/markdown","text/plain","application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
@@ -6262,6 +6323,8 @@ export function resources(call: Call) {
       read: (agentId: string, file: string, options?: RequestOptions): Promise<Tagged<ReadLearningFileResponse | string>> => call("readLearningFile", [agentId, file], undefined, undefined, options),
       /** Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
       replay: (agentId: string, name: string, digest: string, replayId: string, options?: RequestOptions): Promise<GetLearnedWorkflowReplayResponse> => call("getLearnedWorkflowReplay", [agentId, name, digest, replayId], undefined, undefined, options),
+      /** Reset the agent's learning: everything it learned deleted, the agent and its runs kept (DELETE /agents/{agent_id}/learning). */
+      reset: (agentId: string, options?: RequestOptions): Promise<void> => call("deleteAgentLearning", [agentId], undefined, undefined, options),
       /** Retire a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
       retire: (agentId: string, file: string, params?: RetireLearningFileParams, options?: RequestOptions): Promise<Tagged<string>> => call("retireLearningFile", [agentId, file], undefined, params, options),
       /** A learned workflow's revisions on main, oldest first, each with its workflow.json as it was then (GET /agents/{agent_id}/learning/workflows/{name}/revisions). */

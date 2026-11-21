@@ -742,7 +742,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   // web_save (web-save.ts). It makes no paid request, so nothing books it. No node or call node names it: a workflow's
   // effect has only a local work path, not the run's Workspace.
   [WEB_SAVE_TOOL]: {
-    summary: `Download one public file into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, url } or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, a media type only when its bytes agree.`,
+    summary: `Download one public file into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, duration_s?, url } (duration_s an mp3, wav, mp4 or m4a's length in seconds) or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, a media type only when its bytes agree.`,
     needs: [],
     nodes: false,
     bind: async (host) => {

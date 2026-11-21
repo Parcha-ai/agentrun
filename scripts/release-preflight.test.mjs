@@ -108,9 +108,11 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
     await mkdir(join(root, '.release'));
     await mkdir(join(root, 'bin'));
     await cp(new URL('./check-typescript-floor.mjs', import.meta.url), join(root, 'scripts/check-typescript-floor.mjs'));
+    await cp(new URL('./npm-command.mjs', import.meta.url), join(root, 'scripts/npm-command.mjs'));
     await writeFile(join(root, '.release/typescript-floor.json'), '{"status":"passed"}');
-    await writeFile(join(root, 'bin/npm'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
-    await assert.rejects(exec(process.execPath, ['scripts/check-typescript-floor.mjs'], { cwd: root, env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}` } }));
+    // An npm that fails, as the CLI script npm names under `npm run` (npm_execpath).
+    await writeFile(join(root, 'bin/npm-cli.cjs'), 'process.exit(1);\n');
+    await assert.rejects(exec(process.execPath, ['scripts/check-typescript-floor.mjs'], { cwd: root, env: { ...process.env, npm_execpath: join(root, 'bin/npm-cli.cjs') } }));
     assert.equal(JSON.parse(await readFile(join(root, '.release/typescript-floor.json'), 'utf8')).status, 'failed');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
