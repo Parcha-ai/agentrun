@@ -41,10 +41,11 @@ export interface Migration {
 /** The line of a migration's leading comment that marks it breaking for runners of earlier builds (Migration.breaking). */
 export const RUNNERS_BREAKING = "-- runners: breaking";
 
-/** The newest migration written before migrations said whether they break runners: none of 0001-0023 carries the header,
+/** The newest migration the lint never checked: 0001-0022 were written before migrations said whether they break runners,
  *  and a runner of a build before the floor opened only the exact version it knew. Each one up to it counts as breaking,
- *  so the floor is never below it on a schema that has it. */
-export const LAST_UNMARKED = 23;
+ *  so the floor is never below it on a schema that has it. 0023 (computer_intervals' disk_gb and booked_ms, released
+ *  without the header) is the first the lint reads: additive, a nullable column and a NOT NULL one with a default. */
+export const LAST_UNMARKED = 22;
 
 /** Whether `sql`'s leading comment (its first lines, each a `--` comment or blank) holds RUNNERS_BREAKING. */
 export function marksBreaking(sql: string): boolean {

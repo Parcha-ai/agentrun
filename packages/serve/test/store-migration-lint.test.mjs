@@ -27,6 +27,13 @@ test("every shipped migration past LAST_UNMARKED that an earlier runner cannot r
   );
 });
 
+test("0023, the first migration past LAST_UNMARKED, is additive: a nullable column, and a NOT NULL one with a default and a CHECK", () => {
+  const m = migrationsIn().find((each) => each.version === 23);
+  assert.ok(m && m.version === LAST_UNMARKED + 1, "0023 is the first the lint reads");
+  assert.deepEqual(breakingStatements(m.sql), [], name(m));
+  assert.equal(m.breaking, false, "and it carries no header");
+});
+
 test("no migration up to LAST_UNMARKED carries the header: the rule starts after them, and each of them counts as breaking", () => {
   const shipped = migrationsIn();
   assert.ok(shipped.length >= LAST_UNMARKED, "the unmarked ones ship");
