@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { test as nodeTest } from 'node:test';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import * as acp from '@parcha/agentrun-harness-acp';
-import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, until } from './helpers.mjs';
+import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, transcript, until } from './helpers.mjs';
 
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
 const lines = (file) => {
@@ -163,6 +163,36 @@ test(`an agent that asks for another command instead of the approved one ${REASK
   assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission' && e.kind === 'reject_once'), [], 'no request was refused at the protocol');
   const records = await streamRecords(store, 'acp.permission');
   assert.equal(records.filter((r) => r.type === 'reasked').length, REASK_LIMIT, 'each counted ask parked');
+});
+
+test('a message sent while the run waited at the limit still reaches the agent, as a turn of its own', async (t) => {
+  const dir = scratch();
+  const { recipe } = reasking(dir, true);
+  const store = memorySessionStore();
+  const asked = [];
+  await parkFirst(t, recipe, store, asked);
+  // REASK_LIMIT runners: each allows what was asked before; the agent asks for another command, which parks.
+  for (let runner = 0; runner < REASK_LIMIT; runner++) {
+    const allowed = new Set(asked.map((c) => c.callId));
+    const count = asked.length;
+    const next = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), allowed.has(call.callId) ? 'allow' : PARK) });
+    next.session.recover().catch(() => undefined);
+    await until(() => asked.length > count + 1, 'the run to park again');
+    next.stop(new Error('the run parked again'));
+    await next.session.turnEnd().catch(() => undefined);
+  }
+  // The person answers the last park and sends new instructions; the resume ends the old turn at the limit.
+  const allowed = new Set(asked.map((c) => c.callId));
+  const before = prompts(recipe).length;
+  const last = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), allowed.has(call.callId) ? 'allow' : PARK) });
+  await last.session.send('then print the date');
+  await until(() => prompts(recipe).slice(before).some((e) => e.text.join('\n').includes('then print the date')), 'the new message to reach the agent');
+  last.stop(new Error('done'));
+  await last.session.turnEnd().catch(() => undefined);
+  const sent = prompts(recipe).slice(before).map((e) => e.text.join('\n'));
+  assert.ok(sent.every((text) => !text.includes('[Recovery]')), `the ended turn is not recovered: ${JSON.stringify(sent)}`);
+  const entries = await transcript(store);
+  assert.ok(entries.some((e) => e.type === 'turn' && e.status === 'failed' && new RegExp(`^${REASK_CODE}: `).test(e.error ?? '')), 'the old turn ended at the limit, in words');
 });
 
 for (const load of [true, false]) {

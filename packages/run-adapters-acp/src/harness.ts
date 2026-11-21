@@ -757,14 +757,15 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       if (!ctx.state().effects.has(toolKey(call.callId))) refusedLines.push(`- ${call.tool}(${clip(JSON.stringify(call.args) ?? "{}", 300)}), call ${call.callId}: refused by the host. Its answer:`, indent(clip(outcome.text, 1500)));
     });
     // So is each request for a tool of the agent's own the turn left waiting: its answer is taken now, or the drive parks
-    // here, with no agent started and no prompt sent. Past REASK_LIMIT, the turn ends here, saying so.
+    // here, with no agent started and no prompt sent. Past REASK_LIMIT, the open turn ends here, saying so, with nothing
+    // of the inbox placed: a message sent while the run waited is a turn of its own, below, the agent started for it.
     const { lines: permissionLines, limit: reaskLimit } = await settlePermissions(ctx, journal);
     if (reaskLimit) {
       log("acp: the agent kept asking for other calls instead of the allowed one", { limit: REASK_LIMIT });
-      await placeSubmissions(ctx, ctx.pending());
       journal.message({ type: "turn", status: "failed", error: reaskLimit } satisfies TranscriptEntry);
       await journal.flush();
-      return;
+      await ctx.refresh();
+      if (ctx.pending().length === 0) return;
     }
 
     let rt = runtime;
@@ -875,7 +876,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     try {
       // A turn a crash cut off: the kernel's note (quoting the turn's prompts, which a new agent session never saw), as a
       // user message, with the pending messages it carries.
-      const note = recoveryNote(ctx.state(), { prompts: true });
+      const note = reaskLimit ? undefined : recoveryNote(ctx.state(), { prompts: true });
       if (note) {
         const text = [
           note.text,
