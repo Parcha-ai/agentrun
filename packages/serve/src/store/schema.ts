@@ -19,8 +19,9 @@
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
 // (IMPORTED_TEMPLATES), as it does the one-answer index. A hosted machine's minted token (minted_tokens, MINTED_TOKENS) is
 // added the same way, and so is each runner's word that it is there and whether it refused to claim (runners, RUNNERS),
-// and each computer a run made, from its create to its proven delete (computer_intervals, COMPUTER_INTERVALS), and each
-// claim of a run with the turn it works and its attempt at it (run_attempts, RUN_ATTEMPTS).
+// and each computer a run made, from its create to its proven delete (computer_intervals, COMPUTER_INTERVALS). Each runner's
+// version and slots (runners.version, .slots: RUNNERS_ADDED), each hand-back (hand_backs, HAND_BACKS) and each claim of a
+// run with the turn it works and its attempt at it (run_attempts, RUN_ATTEMPTS) are added the same way.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -163,8 +164,35 @@ export const RUNNERS = `CREATE TABLE IF NOT EXISTS runners (
     refused TEXT,
     host TEXT,
     port INTEGER,
-    seen_at INTEGER NOT NULL
+    seen_at INTEGER NOT NULL,
+    version TEXT,
+    slots INTEGER
   ) STRICT`;
+/** What a runner says of itself for the server's capacity read (GET /v2/capacity, capacity.ts): its build's version
+ *  (`version`) and the most runs it holds at once (`slots`), each null on a row an earlier build wrote. In RUNNERS, and
+ *  added where missing at a server open to a runners table an earlier build of this version made, as
+ *  COMPUTER_INTERVALS_ADDED is: nullable, so nothing is copied and no row is refused. */
+export const RUNNERS_ADDED: Readonly<Record<string, string>> = {
+  version: "ALTER TABLE runners ADD COLUMN version TEXT",
+  slots: "ALTER TABLE runners ADD COLUMN slots INTEGER",
+};
+/** Each hand-back (store.release that leaves its run running: a runner's drain, a loop that closed itself, a claim given
+ *  back): the run, the runner that let it go, the epoch it let go of and when, on the deadlines' clock. Counts and ids
+ *  only; the capacity read (capacity.ts) counts the rows within its window. A release's own write keeps it, in the same
+ *  transaction, and removes the rows older than HAND_BACKS_KEPT_MS. In STORE_DDL, and made at a server open on a store an
+ *  earlier build of this version made. */
+export const HAND_BACKS = `CREATE TABLE IF NOT EXISTS hand_backs (
+    run_id TEXT NOT NULL,
+    runner TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    at INTEGER NOT NULL
+  ) STRICT`;
+/** The hand-backs by time, for the capacity read's window and the release's prune. */
+export const HAND_BACKS_AT = "CREATE INDEX IF NOT EXISTS hand_backs_at ON hand_backs (at)";
+/** A run's hand-backs, for its purge and its delete (dropRunContent), so neither scans every hand-back kept. */
+export const HAND_BACKS_RUN = "CREATE INDEX IF NOT EXISTS hand_backs_run ON hand_backs (run_id)";
+/** How long a hand-back's row is kept: the longest window the capacity read takes. */
+export const HAND_BACKS_KEPT_MS = 24 * 60 * 60_000;
 
 /** Each claim of a run (store.runAttempts, RunAttemptRow): the turn it works and its attempt at it, why the attempt before
  *  was cut (`cause`: drain, crash, lease_lapse, retry; null on a turn's first), why this one let the run go unfinished
@@ -648,6 +676,9 @@ export const STORE_DDL: readonly string[] = [
   IMPORTED_TEMPLATES,
   MINTED_TOKENS,
   RUNNERS,
+  HAND_BACKS,
+  HAND_BACKS_AT,
+  HAND_BACKS_RUN,
   COMPUTER_INTERVALS,
   COMPUTER_INTERVALS_RUN,
   RUN_ATTEMPTS,

@@ -55,6 +55,7 @@ __all__ = [
     "CapabilitiesPlacesBoxesItem",
     "CapabilitiesPlacesDefaultPlace1",
     "CapabilitiesPlacesDefaultPlace2",
+    "CapabilitiesResource",
     "CapabilitiesSecrets",
     "CapabilitiesServer",
     "CapabilitiesSwitchesValue",
@@ -336,6 +337,10 @@ __all__ = [
     "GetAgentResponseToolsItem",
     "GetCalendarResponse",
     "GetCapabilitiesResponse",
+    "GetCapacityResponse",
+    "GetCapacityResponseHandBacks",
+    "GetCapacityResponseRunnersItem",
+    "GetCapacityResponseRuns",
     "GetChatGPTSignInResponse",
     "GetClaudeLoginResponse",
     "GetClaudeLoginResponseAccount",
@@ -2837,6 +2842,34 @@ class VerifyNativeResponseNativeCapabilities(TypedDict):
 class VerifyNativeResponseNativeRemote(TypedDict):
     connector_id: str
     target_id: str
+
+
+class GetCapacityResponse(TypedDict):
+    at: str
+    runs: GetCapacityResponseRuns
+    runners: list[GetCapacityResponseRunnersItem]
+    free_slots: int
+    hand_backs: GetCapacityResponseHandBacks
+
+
+class GetCapacityResponseRuns(TypedDict):
+    queued: int
+    executing: int
+
+
+class GetCapacityResponseRunnersItem(TypedDict):
+    id: str
+    version: str | None
+    slots: int | None
+    executing: int
+    free_slots: int | None
+    refused: bool
+    seen_at: str
+
+
+class GetCapacityResponseHandBacks(TypedDict):
+    window_minutes: int
+    count: int
 
 
 class _CompleteRemoteCommandBodyRequired(TypedDict):
@@ -9190,6 +9223,7 @@ OPERATIONS: dict[str, Operation] = {
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "updateDefinition": Operation(method="PUT", path="/agents/{agent_id}/definition", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=True),
     "verifyNative": Operation(method="POST", path="/agents/{agent_id}/native/verify", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getCapacity": Operation(method="GET", path="/capacity", path_params=(), multi_segment=(), query=("window",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "completeRemoteCommand": Operation(method="POST", path="/connectors/{connector_id}/commands/{command_id}/complete", path_params=("connector_id", "command_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "enrollRemoteConnector": Operation(method="POST", path="/connectors/enrollment", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "importRemoteHistory": Operation(method="POST", path="/connectors/{connector_id}/targets/{target_id}/history", path_params=("connector_id", "target_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9421,6 +9455,14 @@ class AgentsResource(Group):
     def verify_native(self, agent_id: str, *, timeout: float | None = None) -> VerifyNativeResponse:
         """Check native CLI and sign-in without a paid model call (POST /agents/{agent_id}/native/verify)."""
         return self._call("verifyNative", (agent_id,), None, None, timeout=timeout)
+
+
+class CapabilitiesResource(Group):
+    """client.capabilities: one method per operation."""
+
+    def get_capacity(self, *, window: int | None = None, timeout: float | None = None) -> GetCapacityResponse:
+        """The runs waiting and held, the live runners and the recent hand-backs (GET /capacity)."""
+        return self._call("getCapacity", (), None, {"window": window}, timeout=timeout)
 
 
 class ConnectorsResource(Group):
@@ -10083,6 +10125,7 @@ class Resources:
     """The resource groups, each operation a method that sends it through `call`. `runs` is the client's own: RunsResource with the methods it writes by hand."""
 
     agents: AgentsResource
+    capabilities: CapabilitiesResource
     connectors: ConnectorsResource
     files: FilesResource
     home: HomeResource
@@ -10104,6 +10147,7 @@ class Resources:
     def __init__(self, call: Call) -> None:
         self._operation = call
         self.agents = AgentsResource(call)
+        self.capabilities = CapabilitiesResource(call)
         self.connectors = ConnectorsResource(call)
         self.files = FilesResource(call)
         self.home = HomeResource(call)
