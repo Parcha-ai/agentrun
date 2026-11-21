@@ -150,10 +150,11 @@ interface Runtime {
 }
 
 type CallRecord = { type: "seen" | "answered"; callId: string; tool?: string; args?: unknown; text?: string; isError?: boolean; refused?: boolean };
-/** `asked` and `answered` as the stream's doc says, an answer taken on a resume before the agent started again being
- *  `settled` in its turn (`turn`, the open turn's id); `given`: the answer was handed to the agent, which uses it up (a
- *  later ask of the same request is a call of its own); `reasked`: another call (`callId`) parked on the person while
- *  an allow they gave (`instead`) was still not asked for. */
+/** One record of an agent's own permission request:
+ *  - `asked`: the request, as the agent sent it.
+ *  - `answered`: what the gate said; `settled` when a resume took it before the agent started again, in `turn`.
+ *  - `given`: the answer was handed to the agent, which uses it up.
+ *  - `reasked`: this call was asked while an allow (`instead`) was still not asked for again. */
 type PermissionRecord = { type: "asked" | "answered" | "given" | "reasked"; callId: string; toolCallId?: string; title?: string; kind?: string; input?: unknown; answer?: "allow" | "deny"; words?: string; settled?: true; turn?: string; instead?: string };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -372,14 +373,6 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
    *  asks about it again (settlePermissions), so both reach the one approval. */
   const permissionGateCall = (callId: string, kind: string, title: string, input: unknown): GateCall => ({ callId, tool: `acp_${kind.replace(/[^A-Za-z0-9_]/g, "_")}`, args: { title, kind, input } });
 
-  /** The open turn's permission requests still waiting (asked, never answered), in order, as the records hold them. */
-  const waitingPermissions = (state: SessionState): PermissionRecord[] => {
-    const since = openTurn(state)?.since ?? Number.POSITIVE_INFINITY;
-    const records = journalRecords<PermissionRecord>(state, PERMISSION_STREAM);
-    const answered = new Set(records.filter((r) => r.data?.type === "answered").map((r) => r.data.callId));
-    return records.filter((r) => r.at > since && r.data?.type === "asked" && !answered.has(r.data.callId)).map((r) => r.data);
-  };
-
   /** The recovery note's line for a settled answer: the request as the agent asked it (its kind, title and input, so an
    *  agent started without session/load can ask for the same call) and what the person said. */
   const answerLine = (asked: PermissionRecord | undefined, answer: PermissionRecord): string => {
@@ -408,7 +401,9 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const askedOf = (callId: string) => records.find((r) => r?.type === "asked" && r.callId === callId);
     const given = new Set(records.filter((r) => r?.type === "given").map((r) => r.callId));
     const said = records.filter((r) => r?.type === "answered" && r.settled && r.turn === turnId && !given.has(r.callId)).map((r) => answerLine(askedOf(r.callId), r));
-    for (const request of waitingPermissions(ctx.state())) {
+    const answered = new Set(records.filter((r) => r?.type === "answered").map((r) => r.callId));
+    const waiting = records.filter((r) => r?.type === "asked" && !answered.has(r.callId));
+    for (const request of waiting) {
       const kind = request.kind ?? "other";
       const title = request.title ?? kind;
       const refused = await askGate(gate, permissionGateCall(request.callId, kind, title, request.input ?? null), ctx.signal);
@@ -450,14 +445,12 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const title = typeof call.title === "string" ? call.title : kind;
     const input = call.rawInput ?? null;
     // The request's id is the open turn's: the turn, what it asks, and which of the turn's requests that ask the same it
-    // is. The records hold the ids the turn's requests took (another runner's agent process asked some of them): this
-    // process's request takes, of those it has not taken itself and whose answer no agent was handed (`given`: an
-    // allow-once is used once), the first one still waiting for its answer, else the first one answered (an answer a
-    // resume took, the agent asking again for it), else a new one.
+    // is. Of the ids this process has not taken and no agent was handed an answer for (`given`: an allow-once is used
+    // once), it takes the first one answered (a resume took the answer; the agent asks again for it), else the first
+    // unanswered one. With a gate no id is left waiting by now: settlePermissions answered them before the agent started.
     const opened = openTurn(cur.ctx.state());
     const turnId = opened?.placed[0] ?? "";
     const all = cur.journal.records<PermissionRecord>(PERMISSION_STREAM).map((r) => r.data);
-    const askedIds = new Set(all.filter((r) => r?.type === "asked").map((r) => r.callId));
     const answeredIds = new Set(all.filter((r) => r?.type === "answered").map((r) => r.callId));
     const givenIds = new Set(all.filter((r) => r?.type === "given").map((r) => r.callId));
     let callId: string | undefined;
@@ -465,9 +458,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     for (let nth = 0; callId === undefined; nth++) {
       const id = permissionCallId(turnId, { title, kind, rawInput: input }, nth);
       if (rt.claimed.has(id) || givenIds.has(id)) continue;
-      if (!askedIds.has(id)) callId = firstAnswered ?? id;
-      else if (!answeredIds.has(id)) callId = id;
-      else firstAnswered ??= id;
+      if (answeredIds.has(id)) firstAnswered ??= id;
+      else callId = firstAnswered ?? id;
     }
     rt.claimed.add(callId);
     const records = all.filter((r) => r?.callId === callId);
