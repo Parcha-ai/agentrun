@@ -8,7 +8,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { request } from "node:http";
+import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
@@ -39,7 +40,7 @@ import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
 import { git, resnap } from "./learn-support.mjs";
-import { agent, follow, serve, withEnv } from "./support.mjs";
+import { agent, cookieOf, follow, serve, withEnv } from "./support.mjs";
 
 after(closeOpenSessions);
 
@@ -345,6 +346,36 @@ test("a grade of a run served before the reset is kept, and writes no audit row:
   assert.deepEqual((await promotionsOf(store.settings, "regraded")).map((one) => [one.decided, one.digest]), [["promote", DIGEST]], "the promotion after the reset stands: no hold from a run before it");
   const audits = await api("GET", "/agents/regraded/learning/audits");
   assert.deepEqual([audits.status, audits.body.audits], [200, []], "no audit row of a run before the reset");
+});
+
+test("a console session that is no owner's (accounts off on a server bound off loopback) is 403 forbidden, nothing reset", { timeout: 120_000 }, async (t) => {
+  const host = Object.values(networkInterfaces()).flat().find((nic) => nic && nic.family === "IPv4" && !nic.internal)?.address;
+  if (!host) return t.skip("this machine has no address off loopback");
+  const server = await serve(t, { host, learning: "on", runner: false });
+  assert.equal((await server.api("POST", "/agents", agent("not-yours", { learning: true }))).status, 201);
+  await learned(server.store, server.data, "not-yours");
+  const at = (method, path, headers = {}) =>
+    new Promise((resolve, reject) => {
+      const req = request({ host, port: server.port, method, path, headers: { host: `${host}:${server.port}`, ...headers } }, (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk)).on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          let json;
+          try {
+            json = JSON.parse(text);
+          } catch {}
+          resolve({ status: res.statusCode, headers: res.headers, text, json });
+        });
+      });
+      req.once("error", reject).end();
+    });
+  const link = await at("GET", `/?launch=${server.launchCode}`);
+  assert.equal(link.status, 303, `the launch link sets the console's cookie: ${link.text}`);
+  const refused = await at("DELETE", "/v2/agents/not-yours/learning", { cookie: cookieOf(link), origin: `http://${host}:${server.port}`, "content-type": "application/json" });
+  assert.deepEqual([refused.status, refused.json?.error?.code], [403, "forbidden"], refused.text);
+  assert.ok(existsSync(join(learningDir(server.data, "not-yours"), "corrections.md")), "the learning folder is kept");
+  assert.equal((await promotionsOf(server.store.settings, "not-yours")).length, 1, "and its promotions");
+  assert.equal(await server.store.settings.get(resetAtKey("not-yours")), undefined, "no watermark set");
 });
 
 test("a grade of a run on a named disk is kept, and writes no audit row: its answers never hold the agent's promotion nor reach its compile", async (t) => {
