@@ -222,6 +222,29 @@ test('a turn lands once: a deadline, a give-back or a second settle that read th
   assert.equal(after.check.released, undefined);
 });
 
+/** A reserved turn that fails, so it cannot be the check's baseline: given back, and counted. */
+async function giveBack(server, key) {
+  const receipt = await server.start(key);
+  assert.equal(receipt.learning.check?.digest, DIGEST, `${key} is reserved`);
+  await finish(server, receipt, report(receipt), { status: 'failed' });
+}
+
+test('only give-backs in a row stop the check: a turn that lands starts the count again', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  for (let at = 1; at < RELEASES; at++) await giveBack(server, `before-${at}`);
+  assert.equal((await server.latest(flow.name)).check.released, RELEASES - 1);
+  await checkTurn(server, 'turn-1');
+  assert.equal(stillChecking(await server.records(), 1).check.released, undefined, 'the landed turn starts the count again');
+  for (let at = 1; at < RELEASES; at++) await giveBack(server, `between-${at}`);
+  assert.equal((await server.latest(flow.name)).check.released, RELEASES - 1, `${2 * (RELEASES - 1)} give-backs, never ${RELEASES} in a row`);
+  await checkTurn(server, 'turn-2');
+  const third = await checkTurn(server, 'turn-3');
+  const champion = championOf(await server.records(), flow.name);
+  assert.equal(champion?.digest, DIGEST, 'the third turn decides it');
+  assert.deepEqual([champion.check.n, champion.check.agreed, champion.check.of[0]], [3, 3, third.run_id]);
+  assert.equal(champion.check.released, undefined, 'no turn was given back since the last one landed');
+});
+
 // A turn that cannot be the check's baseline gives the reservation back: nothing is decided, and the next turn the draft
 // takes is reserved in its place.
 const releases = {
