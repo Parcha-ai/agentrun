@@ -80,12 +80,12 @@ func startRelay(t *testing.T, tlsOn bool) (*relay, *x509.CertPool) {
 		_, _ = conn.Write(closeFrame(CloseNormal, "done"))
 		_, _ = readClient(br)
 	})
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	srv := httptest.NewUnstartedServer(ours(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		r.mu.Lock()
 		r.hosts = append(r.hosts, req.Host)
 		r.mu.Unlock()
 		answer(w, req)
-	}))
+	})))
 	// The handshakes a test fails on purpose are no news.
 	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
 	var roots *x509.CertPool

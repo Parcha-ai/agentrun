@@ -62,7 +62,7 @@ import { compareEndOfRun } from "./compare-end.js";
 import type { Compared } from "../learn/promote.js";
 import { learnedFirst, type LearnedFirst } from "./learned-first.js";
 import { workflowsAt } from "./learning-seed.js";
-import { heldMcpOf, mcpForClaim } from "./mcp-run.js";
+import { heldMcpOf, mcpForClaim, mediaForClaim } from "./mcp-run.js";
 import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
@@ -76,7 +76,7 @@ import { registerRunErrors } from "./run-errors.js";
 import { exposeSaveSlots } from "./save-slots.js";
 import { type RunBigWrites, runBigWrites } from "./big-writes.js";
 import { type SaveSlots, SERVER_SLOTS } from "../web-save.js";
-import { readLaunchBody, type RunLaunch } from "../run-launch.js";
+import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { SUBAGENT_TOOL } from "./subagent.js";
 import type { AlsoRow, JournalReads, Store } from "../store/store.js";
 import type { Tier } from "../model.js";
@@ -650,7 +650,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     mcp: async (ask) => {
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach });
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach, capped: () => launch.maxCostUsd !== undefined, media: mediaForClaim(deps.env, deps.evalFakes?.(run.agentId)?.web, deps.saveSlots) });
       if (!made) return undefined;
       releases.push(() => made.release());
       return heldMcpOf(made, cut);
@@ -1048,7 +1048,9 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
       return (started ??= (async (): Promise<LoopEnd> => {
         const runRow = await deps.store.runs.get(claim.runId);
         if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
-        const launch = readLaunchBody((await deps.store.runs.launch(claim.runId)).body);
+        // The launch as this run runs it: on a named disk, with nothing learned on another disk (launchOnItsDisk).
+        const read = readLaunchBody((await deps.store.runs.launch(claim.runId)).body);
+        const launch = read && launchOnItsDisk(read);
         if (!launch) throw new Error(`run ${claim.runId}: its launch record could not be read as a launch`);
         const revisionRow = await deps.store.agents.revision(runRow.revisionId);
         if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);

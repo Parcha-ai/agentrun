@@ -16,6 +16,26 @@ import { isMain } from "../../scripts/is-main.mjs";
 
 export const PREFIX = "agentrun-render-walk-";
 
+/** Whether an anonymous pull finds the image `ghcr.io/<repo>:<tag>`, as Render's pull of a public image does: true when
+ *  GHCR has the tag, false when it answers that it has none (404), undefined when it can't tell (another registry, a
+ *  digest, any other answer, or the network). A release moves render.yaml's pin before its image is published, and a
+ *  service made from a tag that isn't there bills while its deploy fails at the pull. */
+export async function imagePublished(ref, http = fetch) {
+  const m = /^ghcr\.io\/([a-z0-9._/-]+):([\w][\w.-]{0,127})$/.exec(ref);
+  if (!m) return undefined;
+  const [, repo, tag] = m;
+  try {
+    const grant = await http(`https://ghcr.io/token?scope=repository:${repo}:pull`, { signal: AbortSignal.timeout(15_000) });
+    if (!grant.ok) return undefined;
+    const { token } = await grant.json();
+    const accept = ["application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json", "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"];
+    const r = await http(`https://ghcr.io/v2/${repo}/manifests/${tag}`, { method: "HEAD", headers: { authorization: `Bearer ${token}`, accept: accept.join(", ") }, signal: AbortSignal.timeout(15_000) });
+    return r.status === 200 ? true : r.status === 404 ? false : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** render.yaml's first service as the request that makes it, with the generated values in place of generateValue's, and
  *  the walk's usage counts off (docs/telemetry.md). */
 export function serviceRequest(blueprint, { ownerId, name, generated }) {
@@ -97,6 +117,11 @@ async function main() {
       await gone(s.id);
       step.pass("earlier walk's service deleted", `${s.name} (${s.id})`);
     }
+
+    // The button's service pulls this tag too: one that isn't published fails both, so the walk says so and makes nothing.
+    const published = await imagePublished(svc.image.url);
+    if (published === false) throw new Error(`render.yaml's image ${svc.image.url} is not published (GHCR has no such tag for an anonymous pull): nothing made. A release moves this pin before its image is published, and the Deploy to Render button fails the same way until it is`);
+    if (published) step.pass("image published", `${svc.image.url}: GHCR has it for an anonymous pull, as Render pulls it`);
 
     const name = `${PREFIX}${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15).toLowerCase()}`;
     const token = randomBytes(32).toString("hex");

@@ -1,9 +1,9 @@
-import { ArrowDown, ChevronLeft, ChevronRight, Download, Maximize2, Search, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ArrowDown, ChevronLeft, ChevronRight, Download, Maximize2, X, ZoomIn, ZoomOut } from "lucide-react";
 import { type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Banner } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
-import { fieldBoxClass, Input } from "@/components/ui/field";
+import { ListFilter } from "@/components/ListFilter";
 import { Segmented } from "@/components/ui/segmented";
 import { Spinner } from "@/components/ui/spinner";
 import { tabPanelProps, Tabs } from "@/components/ui/tabs";
@@ -799,16 +799,10 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
         <div className="flex flex-wrap items-center gap-2">
           <Segmented name="trace-view" label="What the tab shows" size="sm" value={view} onChange={setView} options={[{ value: "calls", label: "Calls" }, { value: "breakdown", label: "Breakdown" }]} />
           {view === "calls" && spans.length > 0 && (
-            <>
-              <label className={cn(fieldBoxClass, "flex h-control-sm min-w-40 flex-1 items-center gap-2 px-2.5")}>
-                <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                <Input bare value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter by tool, model or arguments" aria-label="Filter calls" className="h-full flex-1 text-small" />
-              </label>
+            <ListFilter value={query} onChange={setQuery} label="Filter calls" placeholder="Filter by tool, model or arguments" shown={shown.length} total={spans.length} active={filtered} className="flex-1 gap-2">
               <Segmented name="trace-kind" label="Kind of call" size="sm" value={kind} onChange={setKind}
                 options={([["all", "All"], ["model", "Model"], ["tool", "Tools"], ["failed", "Failed"]] as const).map(([value, label]) => ({ value, label: <>{label} <span className="font-normal">{counts[value]}</span></> }))} />
-              {/* How many the filter keeps, said as it changes: a screen reader hears it without leaving the field. */}
-              <p role="status" className="font-mono text-small text-muted-foreground">{filtered ? `${shown.length} of ${spans.length} shown` : ""}</p>
-            </>
+            </ListFilter>
           )}
           <Button size="sm" className="ml-auto" onClick={exportJson} title="Save the trace as the server sent it"><Download aria-hidden />Export JSON</Button>
         </div>

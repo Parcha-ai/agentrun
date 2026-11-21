@@ -40,6 +40,50 @@ export interface Claim {
   /** The runner that held the run when this claim took it over: its lease ran out with the run still running (that
    *  runner was lost, or lost its claim). Its loop says so on the run's timeline. Absent for any other claim. */
   readonly lost?: { readonly runner: string };
+  /** Which turn of the run this claim works and which attempt at it (run_attempts, RunAttemptRow): set by the claim that
+   *  took the run, absent on a claim read back (claimsOf) and on a store that keeps none (a test's). */
+  readonly turn?: number;
+  readonly attempt?: number;
+}
+
+/** Why a claim let its run go while the run was still at work, so another claim does that work again: `drain`, its
+ *  runner closed (a deploy, a scale-down) and handed the run back; `retry`, its loop ended interrupted on its own (or its
+ *  end was refused) and the run was released to be tried again; `lease_lapse`, its runner was there but could not renew
+ *  the claim before it ran out; `crash`, the claim's lease ran out with nothing said of it (its runner died). */
+export type AttemptCause = "drain" | "crash" | "lease_lapse" | "retry";
+
+/** One claim of a run (store schema `run_attempts`), written by the claim itself: the turn it works and its attempt at
+ *  it. A turn is the work one claim starts afresh: the run's first, a follow-up's, a resume after a park. A claim that
+ *  takes over a turn another claim was cut from (its run still running, and that claim let it go for `cut`, or its lease
+ *  ran out) works the same turn again: its attempt is one more, and `cause` says why the one before was cut. Infra's
+ *  work, not the run's: every request the cut attempt made is made again. `journalFrom`: the first journal entry id this
+ *  claim could write (the run's next id when it claimed), so each entry of the run's journal is read as its claim's. */
+export interface RunAttemptRow {
+  readonly runId: string;
+  readonly epoch: number;
+  readonly turn: number;
+  readonly attempt: number;
+  /** Why the attempt before was cut; null on a turn's first attempt. */
+  readonly cause: AttemptCause | null;
+  /** Why this claim let the run go with its turn unfinished (`drain`, `retry`, `lease_lapse`); null while it holds the
+   *  run, and when it ended the turn (an answer, a park, the run's end) or died without a word. */
+  readonly cut: Exclude<AttemptCause, "crash"> | null;
+  readonly runner: string;
+  readonly from: RunState;
+  readonly journalFrom: number;
+  /** When the claim took the run, on the store's clock (ms). */
+  readonly claimedAt: number;
+}
+
+/** Each claim of a run, its turn and attempt (RunAttemptRow): written in the claim's own transaction, its `cut` in its
+ *  release's. Data only: nothing reads it to decide what a run does. */
+export interface RunAttempts {
+  /** The claim at `epoch` lost its lease while its runner was there (runner.ts loseClaim): its cut, and the cause of the
+   *  claim that took the run over from it if that one was read as a crash. Unfenced and idempotent: a cut already said, or
+   *  a claim with no row, is left as it is. */
+  lapsed(runId: string, epoch: number): Promise<void>;
+  /** The run's claims, by epoch. */
+  forRun(runId: string): Promise<RunAttemptRow[]>;
 }
 
 /** A command the server wrote for a run (stop, cancel, steer, approve, deny, raise): one row, read by the run's runner in id order
@@ -237,6 +281,10 @@ export interface RunRow {
   readonly signInHanded: readonly string[] | null;
   /** The caller's labels, given at its start (RunLabels): opaque to the server, kept as given, {} when none. */
   readonly labels: RunLabels;
+  /** The disk the run's launch named as its own (a customer's Archil disk: the launch body's `archil_disk` of kind "launch"),
+   *  by its id, written once with the queued run; null for a run on the default disk (its launch named none, or its agent's
+   *  own). A run on a named disk learns nothing, so learning reads only runs with none (learn/learning-of.ts). */
+  readonly disk: string | null;
   readonly startedAt: number;
   readonly endedAt: number | null;
   /** When the run was purged (Runs.purge): its row is then a tombstone, its cost and times kept, everything else of it
@@ -874,11 +922,16 @@ export interface Runs {
    *  run, its learning view) needs of its runs at once, never a read a run. Only that member is read: no run's input, no
    *  sealed bytes. A run with no launch row has no entry. */
   learningStarts(agentId: string): Promise<{ runId: string; learning: unknown }[]>;
+  /** The ids of agent `agentId`'s runs started after `at` whose learning seed was read at or before it (the launch body's
+   *  `learning.seededAt`): a reset's watermark (learn/compile.ts sinceReset). Reads that one number of the runs started
+   *  after `at` alone. */
+  seededBefore(agentId: string, at: number): Promise<string[]>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
    *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value.
+   *  `disk`: only the runs on that disk (RunRow.disk), null for the default disk's; not given, every disk's.
    *  A purged run (Runs.purge) only with `purged`: the readers of money and counts (usage, stats, analytics) and an
    *  import's read of the sessions it holds, never a reader of a run's content. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number; purged?: boolean }): Promise<RunRow[]>;
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number; purged?: boolean }): Promise<RunRow[]>;
   /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
    *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
    *  behind, and its agent's archive time. `archived` filters on the run's archive or its agent's (true: either; false:
@@ -919,9 +972,10 @@ export interface Runs {
   costUnknown(options: { limit: number; after?: string }): Promise<string[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
-  /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs included (which list leaves
-   *  out): what deleting the agent stops and removes, with the runner that holds each (null: none) and its purge time. */
-  every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null }[]>;
+  /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs and purged runs included
+   *  (which list leaves out): what deleting the agent stops and removes, with the runner that holds each (null: none),
+   *  its purge time and its disk (RunRow.disk: where a learning folder of the agent may be, learn/learning-of.ts namedDisksOf). */
+  every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null; disk: string | null }[]>;
   /** The runs made from run `runId` that hold what it was given or did, by id: each run whose launch replays its input
    *  (the launch body's `replay.of`) or audits it (`audit.of`: its audit's shadow run), and each learning run its kept
    *  learning names (learning_proposals' learning_run_id). What purging the run purges with it. */
@@ -1683,6 +1737,8 @@ export interface Store {
   readonly computerLedger: ComputerLedger;
   /** Each computer a run made, from its create to its proven delete. */
   readonly computerIntervals: ComputerIntervals;
+  /** Each claim of a run: the turn it works and its attempt at it, and why it let the run go unfinished. */
+  readonly runAttempts: RunAttempts;
   /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
   readonly pairedComputers: PairedComputers;
   /** The tokens minted for hosted machines that dial this server, each kept as its SHA-256. */
@@ -1730,7 +1786,7 @@ export interface Store {
   /** Gives the run back (no runner, no claimed_until; `state` when given; `wakeAt` and `backoffUntil` or none), in a
    *  durable commit (as flush). Fenced when the epoch moved on. Never a final state: the run's end commit is the one write
    *  that makes it final (a release asked for one is refused with a TypeError). */
-  release(claim: Claim, options?: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
+  release(claim: Claim, options?: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null; cut?: "drain" | "retry" }): Promise<void>;
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;

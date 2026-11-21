@@ -1,6 +1,6 @@
 // When a run or an agent was purged (runs.purged_at, agents.purged_at): SQLite version 13 comes to 14 at its server's
-// open (schema.ts purgeUpgrade), never at a runner's, every row it kept read as not purged; Postgres 0020 takes 0021
-// (migrations/0021_purged.sql) the same way.
+// open (schema.ts purgeUpgrade), never at a runner's, every row it kept read as not purged, then on to this version
+// (15, diskUpgrade: each run's disk); Postgres 0020 takes 0021 (migrations/0021_purged.sql) the same way.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,12 +13,12 @@ const { migrate, migrationsIn, openPostgresStore, openSqliteStore, SCHEMA_VERSIO
 
 const T = Date.parse("2026-11-19T09:00:00.000Z");
 
-test("SQLite: a version 13 store comes to 14 at its server's open, never at a runner's: its runs and agents read as not purged", sqliteOnly("the SQLite upgrade"), async (t) => {
-  assert.equal(SCHEMA_VERSION, 14);
+test("SQLite: a version 13 store comes to this version at its server's open, never at a runner's: its runs and agents read as not purged", sqliteOnly("the SQLite upgrade"), async (t) => {
+  assert.equal(SCHEMA_VERSION, 15);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-purge-upgrade-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "store.sqlite");
-  // Version 13's shape: this version's store with purged_at taken out, holding an agent and a run of it.
+  // Version 13's shape: this version's store with purged_at and runs.disk taken out, holding an agent and a run of it.
   const made = await openSqliteStore({ file });
   await made.agents.create({ id: "agent-old", name: "Old" }, { id: "rev-old", kind: "agentic", body: { instructions: "Answer." } });
   await made.runs.create({ id: "run-old", agentId: "agent-old", revisionId: "rev-old" }, { body: { input: { content: "What is six times seven?" } } });
@@ -26,6 +26,7 @@ test("SQLite: a version 13 store comes to 14 at its server's open, never at a ru
   const old = new DatabaseSync(file);
   try {
     for (const table of ["runs", "agents"]) old.exec(`ALTER TABLE ${table} DROP COLUMN purged_at`);
+    old.exec("ALTER TABLE runs DROP COLUMN disk");
     old.exec("UPDATE store_meta SET schema_version = 13 WHERE singleton = 1");
   } finally {
     old.close();
@@ -41,18 +42,19 @@ test("SQLite: a version 13 store comes to 14 at its server's open, never at a ru
   };
   const before = read();
   assert.deepEqual(before, { version: 13, runs: false, agents: false });
-  await assert.rejects(openSqliteStore({ file, role: "runner" }), /Start the AgentRun server to bring this store from version 13 to 14 before opening a runner/);
+  await assert.rejects(openSqliteStore({ file, role: "runner" }), /Start the AgentRun server to bring this store from version 13 to 15 before opening a runner/);
   assert.deepEqual(read(), before, "a runner's refusal changes nothing");
   const store = await openSqliteStore({ file });
   try {
-    assert.deepEqual(read(), { version: 14, runs: true, agents: true });
+    assert.deepEqual(read(), { version: 15, runs: true, agents: true });
+    assert.equal((await store.runs.get("run-old"))?.disk, null, "its launch names no disk: the default disk's");
     assert.deepEqual([(await store.runs.get("run-old"))?.purgedAt, (await store.agents.get("agent-old"))?.purgedAt], [null, null], "the rows it kept are not purged");
     assert.deepEqual((await store.runs.list({ agentId: "agent-old" })).map((run) => run.id), ["run-old"], "and list as before");
   } finally {
     await store.close();
   }
   await (await openSqliteStore({ file })).close();
-  assert.equal(read().version, 14, "a second open changes nothing");
+  assert.equal(read().version, 15, "a second open changes nothing");
   await (await openSqliteStore({ file, role: "runner" })).close();
 });
 

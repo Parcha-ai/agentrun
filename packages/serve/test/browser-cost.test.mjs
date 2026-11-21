@@ -756,7 +756,7 @@ test("through the API: an uncapped run's browser minutes are its cost, folded in
   assert.equal(usage.total_usd, 0.002);
   // The run's own lines (GET /runs/{id}/usage): its browser time by provider, in raw seconds and dollars.
   const own = (await api("GET", `/runs/${started.body.run_id}/usage`)).body;
-  assert.deepEqual(own.lines.filter((line) => line.meter === "browser_time"), [{ meter: "browser_time", model: null, provider: "browserbase", charged_by: null, quantity: 60, unit: "second", basis: "estimate", usd: 0.002 }]);
+  assert.deepEqual(own.lines.filter((line) => line.meter === "browser_time"), [{ meter: "browser_time", model: null, provider: "browserbase", charged_by: null, quantity: 60, unit: "second", basis: "estimate", attempt: 1, billable: true, usd: 0.002 }]);
   assert.deepEqual(own.total, { usd: 0.002 });
   // And its one session: the provider's id for it, when this server opened and let it go, the seconds charged for it (the
   // line's), and no provider record, since this provider keeps none (not_offered), never one of zeros.

@@ -2,6 +2,7 @@ import type { Agent } from "./agentForm";
 import { backendSdkLabel, backendSdkOf } from "./backendSdk";
 import { cliLearningLabel, cliLearningOf } from "./cliLearning";
 import { nativeReadinessOf, nativeRuntimeLabel } from "./native";
+import { matchesFilter } from "./filter";
 import { observedSearchText, type ObservedSession } from "./observations";
 
 /** An agent's source changes its controls, not whether it belongs in the inventory. */
@@ -12,11 +13,10 @@ export function agentInventory(agents: readonly Agent[], sessions: readonly Obse
   // Only an explicit source association can replace a learning profile's separate card. A profile with no retained
   // linked session must remain reachable, including while source telemetry has not been read or is unavailable.
   const represented = new Set(latest.map((session) => session.learning?.agent_id).filter((id) => id && profiles.has(id)));
-  const search = query.trim().toLowerCase();
-  const shownAgents = listed.filter((agent) => !represented.has(agent.agent_id) && agentSearchText(agent).includes(search));
+  const shownAgents = listed.filter((agent) => !represented.has(agent.agent_id) && matchesFilter(query, agentSearchText(agent)));
   const shownSessions = latest.filter((session) => {
     const profile = session.learning?.agent_id ? profiles.get(session.learning.agent_id) : undefined;
-    return `${observedSearchText(session)} ${profile ? agentSearchText(profile) : ""}`.includes(search);
+    return matchesFilter(query, observedSearchText(session), profile && agentSearchText(profile));
   });
   return { agents: shownAgents, sessions: shownSessions, count: shownAgents.length + shownSessions.length };
 }

@@ -181,6 +181,12 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
     workflow: "flow", digest: "d-audit", at: new Date().toISOString(), decided: "hold", reason: "its audits disagreed with the agent on 1 of 1",
     audit: { window: 1, disagree: 1, rows: 1, disagreements: [{ run: shadow, served: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] },
   }, () => true);
+  // A connected agent's check still collecting native turns, which disagreed on it (runner/promotion.ts sdkCheckTurn).
+  const collecting = {
+    workflow: "turns", digest: "d-turns", at: new Date().toISOString(), decided: "replaying", via: "sdk", replay_id: "turns-check", reason: "Waiting for the next native turn of the connected agent that it takes.",
+    check: { ...bar, turns: { n: 1, agreed: 0, alone: 1, of: [gone], outcomes: { answered: 1, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [{ run: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] } },
+  };
+  await recordPromotion(store.settings, "calc", collecting, () => true);
   // Its kept learning: what its learning turn asked and what it proposed.
   const db = await raw(place);
   try {
@@ -221,6 +227,13 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   assert.deepEqual(check.check.disagreements, [{ run: gone, input: "", agent: null, draft: "" }], "its disagreement names the run still, its content blanked");
   assert.match(check.reason, /reached a different decision from the agent's on 1 of 2;/, "its reason keeps its numbers, the grader's words gone");
   assert.deepEqual([audit?.decided, audit?.audit.rows, audit?.audit.disagreements], ["hold", 1, [{ run: shadowRunId(gone), served: gone, input: "", agent: null, draft: null }]], `the audit's hold keeps its numbers and run ids: ${JSON.stringify(audit)}`);
+  const turns = promotions.find((one) => one.digest === "d-turns")?.check.turns;
+  assert.deepEqual([turns?.n, turns?.agreed, turns?.alone, turns?.of, turns?.disagreements], [1, 0, 1, [gone], [{ run: gone, input: "", agent: null, draft: "" }]], `the turns collected keep their numbers and run ids: ${JSON.stringify(turns)}`);
+  // A next turn's write built on the turns read before the purge (sdkCheckTurn, racing it) keeps what the purge blanked.
+  const next = { ...collecting, at: new Date().toISOString(), check: { ...collecting.check, turns: { ...collecting.check.turns, n: 2, alone: 2, agreed: 1, of: [kept.body.run_id, gone] } } };
+  const written = await recordPromotion(store.settings, "calc", next, () => true);
+  assert.deepEqual([written.won, written.record.check.turns.n, written.record.check.turns.disagreements], [true, 2, [{ run: gone, input: "", agent: null, draft: "" }]], `the copy read before the purge is written blanked: ${JSON.stringify(written.record)}`);
+  assert.deepEqual(await inTables(place, word), [], "no table holds the sentinel again");
   // The sibling is untouched.
   const sibling = await api("GET", `/runs/${kept.body.run_id}/timeline`);
   assert.ok(JSON.stringify(sibling.body).includes("42"), "the sibling's timeline is kept");

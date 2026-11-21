@@ -72,7 +72,8 @@ function readsOf(db: JournalConnection): Pick<SqliteExecutor, "get" | "all"> {
 }
 
 /** A run's first id to mint: pi's root conversation is 1. */
-const FIRST_ID = 2;
+export const JOURNAL_FIRST_ID = 2;
+const FIRST_ID = JOURNAL_FIRST_ID;
 
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 

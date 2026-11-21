@@ -374,7 +374,8 @@ Tar archives move whole trees without holding an archive in memory, and no line 
   open when it ends are ended with it.
 - `tar.push.begin {path}` makes the directory if missing and returns `{id}`; `tar.push.write {id, data}` hands it the
   next bytes (send each after the last one's reply), and extraction runs as they come; `tar.push.end {id}` returns
-  `{entries}`. Files, directories and symlinks are extracted with their modes and never chowned; a directory keeps
+  `{entries}`. Files, directories and symlinks are extracted with their modes and never chowned; a file gets its
+  header's mtime, as tar gives it (a synced folder's push sets `PUSHED_MTIME`, 2000-01-01); a directory keeps
   owner access until the archive ends, then gets its mode, deepest first, whether the push made it or found it. An
   entry that is absolute, has a `..` part, or has a symlink or a file on its way is `denied`, and ends the push;
   entries before it stay. A symlink at an entry's own name is replaced, never followed. A file is written beside its

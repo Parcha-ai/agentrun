@@ -3,14 +3,15 @@
 //  - It starts with the environment allowlist (child.ts), in its own process group, watched by this process
 //    (parentWatched) inside the host's confinement: a SIGKILLed host leaves no agent behind.
 //  - Its stderr is kept, its tail only, for a failure's words; nothing it prints reaches the log whole. The keys it was
-//    handed are cut from the tail before it is shortened, and a key's end at the head of a cut tail goes too (key-cut.ts).
+//    handed are cut from the tail before it is shortened, a key's end at the head of a cut tail goes too, and so does a
+//    key's start at its end (one the agent is still writing, read mid-run) (key-cut.ts).
 //  - kill() ends its whole group; so does an abort of `signal`.
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { client, ndJsonStream, type ClientConnection, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification } from "@agentclientprotocol/sdk";
 import { parentWatched, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { childEnv, confined, type ConfineChild } from "./child.js";
-import { cutKeyEndAtHead, cutKeys, keysToCut } from "./key-cut.js";
+import { cutKeys, keysToCut } from "./key-cut.js";
 
 const STDERR_TAIL = 8 * 1024;
 
@@ -59,10 +60,9 @@ export function startAgent(options: AgentProcessOptions): AgentProcess {
       cut = true;
     }
   };
-  const stderrTail = (): string => {
-    const text = cutKeys(raw, keys);
-    return (cut ? cutKeyEndAtHead(text, keys) : text).slice(-STDERR_TAIL);
-  };
+  // A key's start at the end goes at every read, the agent alive or not: alive, it may be a key still being written;
+  // ended, the most it drops is a key's length less one, and only text that spells a key's start.
+  const stderrTail = (): string => cutKeys(raw, keys, { head: cut, tail: true }).slice(-STDERR_TAIL);
   child.stderr!.setEncoding("utf8");
   child.stderr!.on("data", take);
   // A write to a stdin the agent closed is its exit's to report, never an unhandled error.

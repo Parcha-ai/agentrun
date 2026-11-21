@@ -247,13 +247,14 @@ export class McpServersOverStore {
    *  A server whose credential is not this server's to send (per_run, each run hands its own) or whose access token only a
    *  run refreshes (oauth) and that refuses the listing for its credential is pinned as its owner's last save or refresh
    *  listed it, with the credential it had then. Any other failure is the ApiError the listing threw, in its words. */
-  async pinListing(name: string, stop?: AbortSignal): Promise<{ url: string; tools: (McpTool & { grantable?: false; reason?: string })[]; prices: McpPrices } | undefined> {
+  async pinListing(name: string, stop?: AbortSignal): Promise<{ url: string; tools: (McpTool & { grantable?: false; reason?: string })[]; prices: McpPrices; toolkit: string | null } | undefined> {
     const row = await this.store.mcp.server(name);
     if (!row) return undefined;
+    const { toolkit } = await this.sourceOf(row);
     const url = new URL(row.url);
     const pinned = (tools: McpTool[]) => {
       const listed = marked(row.url, { tools });
-      return { url: row.url, tools: listed.tools, prices: pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools) };
+      return { url: row.url, tools: listed.tools, prices: pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools), toolkit };
     };
     const send = await this.reached(row.auth, url, stop);
     try {
