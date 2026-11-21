@@ -312,9 +312,9 @@ any runner that can't serve. The runner checks again every 5 s, and claims again
 mode is the server's, never the runner's: Archil settings in a runner's environment alone do not let it claim, and a
 runner that lacks them while the server has them in its own environment claims nothing and says to hand them over. A
 store whose server is older than this release has said no data root, and every runner is taken as sharing its disk, as
-before. Not on a disk of its own yet: a run's uploads (`file_ids`), which the server holds on its own disk (such a run
-fails at its claim, saying its files were not copied), and screen recordings, which the runner writes on its own disk
-where the server does not serve them.
+before. A run's uploads (`file_ids`) need no disk of the server's in Mode 2: the server keeps them on its Archil disk and
+places them in the run's folder at its start (changes/uploads-on-archil.md). Not on a disk of its own yet: screen
+recordings, which the runner writes on its own disk where the server does not serve them.
 
 ### The runner's environment: `runner --check`
 
