@@ -35,7 +35,7 @@ export const readmeOf = (name, description, extra = "") => `---\nname: ${name}\n
 export async function landWorkflows(data, agentId, flows) {
   // The folder made as a first run makes it (the learning script's init).
   await seedOf(data, agentId);
-  const folder = learningWorkspace({ mode: "local", data, agentId });
+  const folder = learningWorkspace({ data, agentId });
   try {
     let at = 0;
     for (const { name, description, workflow, status } of flows) {
@@ -56,7 +56,7 @@ export async function landWorkflows(data, agentId, flows) {
     const retired = await changeWorkflow(data, agentId, readme, { action: "retire", ifMatch: `"${item.files.find((file) => file.path === readme).oid}"`, refuse: [] });
     assert.equal(retired.status, 200, JSON.stringify(retired));
   }
-  const folder2 = learningWorkspace({ mode: "local", data, agentId });
+  const folder2 = learningWorkspace({ data, agentId });
   try {
     const statuses = Object.fromEntries((await readSnapshot(folder2.workspace)).workflows.map((one) => [one.name, one.status]));
     assert.deepEqual(statuses, Object.fromEntries(flows.map(({ name, status = "active" }) => [name, status])), "each workflow lands with its status");
@@ -68,7 +68,7 @@ export async function landWorkflows(data, agentId, flows) {
 
 /** Agent `agentId`'s learning folder snapshot, the folder opened for the read and ended after. */
 async function snapshotOf(data, agentId) {
-  const folder = learningWorkspace({ mode: "local", data, agentId });
+  const folder = learningWorkspace({ data, agentId });
   try {
     return await readSnapshot(folder.workspace);
   } finally {

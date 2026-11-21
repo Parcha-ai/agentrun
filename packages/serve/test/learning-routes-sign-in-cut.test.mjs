@@ -29,7 +29,7 @@ async function world(t, { other } = {}) {
   await signInsOverStore(server.store, key, { remove: async () => {} }).forget("alpha", (await server.store.signIns.list("alpha"))[0].name);
   await saveSignIn(server.store, key, { agentId: "alpha", provider: "browserbase", pointer: LIVE });
   await seedOf(server.data, "alpha");
-  const folder = learningWorkspace({ mode: "local", data: server.data, agentId: "alpha" });
+  const folder = learningWorkspace({ data: server.data, agentId: "alpha" });
   try {
     const made = await learningCommit(folder.workspace, { runId: "run_signin", reason: "feedback", files: [], correction: `Open ${LIVE}, or the old ${FORGOTTEN}.` });
     assert.equal(made.ok, true, JSON.stringify(made));

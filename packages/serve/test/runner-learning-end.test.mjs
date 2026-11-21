@@ -73,7 +73,7 @@ async function world(t, body, launchOf, setup = async () => {}) {
     stores.push(store);
     const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
     // Mode 1: the agent's learning folder is the local one under the data directory.
-    const endOfRun = endOfRunOf({ store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId) });
+    const endOfRun = endOfRunOf({ store, data: dir, env: {} });
     const createLoop = (deps) => createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, ...(endOfRun ? { endOfRun } : {}) });
     runners.push(startRunner({ store, createLoop, name: "runner-a", ...TIMING }));
   };

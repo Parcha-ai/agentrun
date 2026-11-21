@@ -675,7 +675,7 @@ export class FolderTooLarge extends Error {
 
 /** What one commit did: landed (its main and the snapshot written), stale (main is `main`, not the one it read:
  *  nothing was written), refused (a precondition failed on main: nothing was written), landed without its files
- *  brought in line (main moved, no snapshot written), or merged (the run, this round, merged already: its merge commit,
+ *  brought in line (main moved; no snapshot written, or the one written overtaken by a newer main), or merged (the run, this round, merged already: its merge commit,
  *  nothing written). */
 export type Committed =
   | { landed: true; main: string; snapshot: Snapshot }
@@ -794,7 +794,8 @@ export async function learningRepair(ws: Workspace): Promise<Snapshot | undefine
     if (written.code === 0) return snapshot;
     if (written.code !== 3) throw failed("snapshot", written);
   }
-  throw new Error("the learning folder's main kept moving while its snapshot was rebuilt");
+  // Other writers' commits kept landing as it was rebuilt: each of them rebuilds it after its own.
+  throw new FolderBusy();
 }
 
 /** The folder's first commit when it has no main yet (an empty tree, the host's), and main's commit: through the
@@ -873,7 +874,11 @@ export async function writeLearning<T>(ws: Workspace, compute: (folder: FolderRe
     if ("refused" in done) throw new FolderRefused(done.refused);
     if ("merged" in done) throw new FolderMerged(done.merged);
     if ("unaligned" in done) {
-      const repaired = await learningRepair(ws);
+      // The commit landed: a rebuild that other writers' commits keep overtaking is theirs to finish.
+      const repaired = await learningRepair(ws).catch((error: unknown) => {
+        if (error instanceof FolderBusy) return undefined;
+        throw error;
+      });
       return { result: out.result, main: done.main, ...(repaired ? { snapshot: repaired } : {}) };
     }
     // Stale: a write landed since the snapshot was read. A snapshot that names another main than the one that won is

@@ -141,7 +141,7 @@ async function world(t, { learning = true, flow, submit, revise = "broken" }) {
     return row;
   };
   const audits = async () => {
-    const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
+    const folder = learningWorkspace({ data: dir, agentId: "agent-1" });
     try {
       return await readAudits(folder.workspace);
     } finally {
@@ -193,7 +193,7 @@ test("(a) two claims serving the refused revision at once write one hold between
   const launch = readLaunchBody(await w.launchOf("What is six times seven"));
   const claim = (runId) => promotionGate(claimPromotion({
     store: w.server, agentId: "agent-1", runId, revisionId: "rev-1", launch, context: BACKGROUND_CONTEXT, log: () => {},
-    shown: async () => secretsShown([]), folder: () => learningWorkspace({ mode: "local", data: w.dir, agentId: "agent-1" }),
+    shown: async () => secretsShown([]), folder: () => learningWorkspace({ data: w.dir, agentId: "agent-1" }),
   }));
   const laid = { name: "answer", description: "Answers a question as a number", workflow: JSON.stringify(REFUSED) };
   await Promise.all([claim("claim-a")(laid, digest), claim("claim-b")(laid, digest)]);

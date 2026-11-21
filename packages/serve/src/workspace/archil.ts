@@ -69,7 +69,7 @@ const GREP_CALL_GRACE_MS = 2_000;
 export type ArchilWorkspaceOptions = {
   /** How long a call waits for another client's hold on the folder (default 60 s). */
   readonly queueMs?: number;
-  /** The image every exec runs in, the same for every workspace serve makes (a run's or a learning folder's), pinned by
+  /** The image every exec runs in, the same for every workspace serve makes (a run's), pinned by
    *  digest (an image given without one is refused): a public image `<name>@sha256:…`, or one built through Archil's
    *  images API with its digest. With none, Archil's default exec image, whose git (2.34.1, measured) is older than a
    *  bash policy's floor; serve's claim always names one (archil-settings.ts DEFAULT_ARCHIL_EXEC_IMAGE). */

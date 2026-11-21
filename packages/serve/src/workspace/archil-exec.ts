@@ -7,7 +7,7 @@
 // - /mnt/archil/work: the workspace's folder, where the program runs;
 // - /mnt/archil/out: its spill folder, BESIDE it and never inside it (archil.ts spillFolderOf), which holds this call's
 //   stdin and output files. The workspace's file calls are rooted at the folder, so they never meet them.
-// The rest of the owner's disk (other runs, the learning folders) is not in the container at all. Archil answers once
+// The rest of the owner's disk (other runs) is not in the container at all. Archil answers once
 // the line ended, stdout and stderr as text, and cuts that answer somewhere below 14 MB (measured live), so the
 // program's output never rides in it: the line spills it to files that are read back through the file API.
 // The Workspace port wants argv, the whole environment, binary stdin and stdout, a deadline that kills everything the

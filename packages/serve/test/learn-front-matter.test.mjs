@@ -121,7 +121,7 @@ async function byHand(t, readmes) {
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "drafts by hand"]);
   await resnap(data, "agent-1");
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  const folder = learningWorkspace({ data, agentId: "agent-1" });
   try {
     const snapshot = await readSnapshot(folder.workspace);
     return { statuses: Object.fromEntries(snapshot.workflows.map(({ name, status }) => [name, status])), laid: (await seedOf(data, "agent-1")).workflows.map(({ name }) => name) };

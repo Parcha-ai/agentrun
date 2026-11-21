@@ -567,7 +567,7 @@ const REVISED_INSTRUCTIONS = "Answer the question as a whole number, checking th
 const answerWith = (instructions) => ({ ...answerFlow, root: { ...answerFlow.root, steps: [{ ...answerFlow.root.steps[0], instructions }, answerFlow.root.steps[1]] } });
 /** Merges `answer` with `instructions` on agent-1's main under `data`, as another run's revision lands. */
 async function answerOnMain(data, instructions, runId) {
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  const folder = learningWorkspace({ data, agentId: "agent-1" });
   try {
     const merged = await learningCommit(folder.workspace, { runId, reason: "revised", files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(answerWith(instructions)) }] });
     assert.equal(merged.ok, true, JSON.stringify(merged));
@@ -578,7 +578,7 @@ async function answerOnMain(data, instructions, runId) {
 }
 /** Agent-1's main under `data` now, and `paths`' texts on it. */
 async function mainOf(data, paths) {
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  const folder = learningWorkspace({ data, agentId: "agent-1" });
   try {
     const main = (await readSnapshot(folder.workspace)).main;
     return { main, texts: await textsAt(folder.workspace, main, paths) };

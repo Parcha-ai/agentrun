@@ -243,7 +243,7 @@ function launchOnDisk(data, runId, diskId) {
   }
 }
 
-test("Mode 2: the agent's learning folder on every Archil disk its runs used (its own disk, and a disk a run's launch named) is deleted with the server's own; its runs' folders there and what is not the agent's stay; Archil off is 503 with the records kept, and the next call finishes", { timeout: 120_000 }, async (t) => {
+test("Mode 2: the reset empties the agent's learning folder in the server's data directory and reaches no Archil disk, Archil off or on; its runs' folders on the disks stay", { timeout: 120_000 }, async (t) => {
   const own = "dsk-0a0e1ea4e0000001";
   const customer = "dsk-c0570e4e00000002";
   const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks: [{ id: own, name: "its-own-disk" }, { id: customer, name: "a-customers-disk" }] });
@@ -253,7 +253,6 @@ test("Mode 2: the agent's learning folder on every Archil disk its runs used (it
   const reached = new Set();
   const { api, data, store } = await serve(t, { learning: "on", runner: false, archilControl: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: (options) => (reached.add(options.disk), disks.get(options.disk)) } });
   assert.equal((await api("POST", "/agents", agent("spread", { learning: true }))).status, 201);
-  await learned(store, data, "spread");
   // Two finished runs: one on the agent's own disk (kept for it as a run in Archil mode keeps it), one on the caller's.
   const revisionId = (await store.agents.get("spread")).currentRevision;
   for (const runId of ["on-own", "on-customer"]) {
@@ -263,65 +262,25 @@ test("Mode 2: the agent's learning folder on every Archil disk its runs used (it
   await storeAgentDisk(store, "spread", { diskId: own });
   await keepRunDisk(store, "on-own", own);
   launchOnDisk(data, "on-customer", customer);
-  // What Mode 2 runs left on each disk: the agent's learning folder (learningKey) and each run's folder (runKey), beside
-  // what is not the agent's.
   const dir = `agents/${agentDirOf("spread")}`;
-  // With what a learning exec spilled beside it (archil.ts spillFolderOf: "<root>.exec-out"), a write's input text left
-  // there by a failed cleanup.
-  const learning = [`${dir}/learning/corrections.md`, `${dir}/learning/workflows/answer/workflow.json`, `${dir}/learning/.git/HEAD`, `${dir}/learning/.agentrun/snapshot.json`, `${dir}/learning.exec-out/in-1/corrections.md`];
-  const kept = { [own]: [`${dir}/runs/on-own/work/notes.md`, `${dir}/runs/on-own/exec-out/spill.txt`, `agents/${agentDirOf("another")}/learning/corrections.md`, `agents/${agentDirOf("another")}/learning.exec-out/in-1/corrections.md`], [customer]: [`${dir}/runs/on-customer/work/notes.md`, "shared/customers.csv"] };
-  for (const [id, disk] of disks) for (const key of [...learning, ...kept[id]]) await disk.putObject(key, Buffer.from("bytes"));
-  const learningOn = (id) => [...disks.get(id).files.keys(), ...disks.get(id).dirs].filter((key) => [`${dir}/learning`, `${dir}/learning.exec-out`].some((root) => key === root || key.startsWith(`${root}/`)));
+  const kept = { [own]: [`${dir}/runs/on-own/work/notes.md`], [customer]: [`${dir}/runs/on-customer/work/notes.md`, "shared/customers.csv"] };
+  for (const [id, disk] of disks) for (const key of kept[id]) await disk.putObject(key, Buffer.from("bytes"));
 
-  // Archil off (its settings not saved yet): the disks can't be reached, so nothing is deleted: 503, for the next call.
+  // Archil off (its settings not saved): nothing of learning is on a disk, so nothing waits for one.
+  await learned(store, data, "spread");
   const off = await api("DELETE", "/agents/spread/learning");
-  assert.deepEqual([off.status, off.body.error?.code, off.body.error?.retryable], [503, "unavailable", true], JSON.stringify(off.body));
-  assert.match(off.body.error.message, /Archil is off/);
-  assert.deepEqual(await recordsOf(store, "spread"), [promotionsKey("spread"), gradesKey("spread")], "the records are kept");
-  assert.ok(existsSync(join(learningDir(data, "spread"), "corrections.md")), "and the server's own folder");
-  for (const id of [own, customer]) assert.equal(learningOn(id).length > 0, true, `and the folder on ${id}`);
-  await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
-
-  const reset = await api("DELETE", "/agents/spread/learning");
-  assert.equal(reset.status, 204, JSON.stringify(reset.body));
-  for (const id of [own, customer]) {
-    assert.deepEqual(learningOn(id), [], `no learning of the agent is left on ${id}`);
-    for (const key of kept[id]) assert.ok(disks.get(id).files.has(key), `${key} on ${id} is kept`);
-  }
-  assert.equal(existsSync(join(learningDir(data, "spread"), "corrections.md")), false, "the server's own folder is emptied too");
+  assert.equal(off.status, 204, JSON.stringify(off.body));
+  assert.equal(existsSync(join(learningDir(data, "spread"), "corrections.md")), false, "the server's folder is emptied");
   assert.deepEqual(await recordsOf(store, "spread"), []);
-  assert.ok(control.disks.has(own) && control.disks.has(customer), "both disks are kept");
-  assert.deepEqual([...reached].sort(), [own, customer].sort(), "only the disks its runs used were reached");
-  assert.equal((await api("DELETE", "/agents/spread/learning")).status, 204, "and again");
-});
 
-test("Mode 2, the last run naming a caller's disk purged (DELETE /runs/{id}, its launch record gone, its tombstone keeping the disk): the reset still deletes the agent's learning folder on that disk, and leaves no other learning setting of the agent", { timeout: 120_000 }, async (t) => {
-  const customer = "dsk-c0570e4e00000003";
-  const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks: [{ id: customer, name: "a-customers-disk" }] });
-  withEnv(t, { ARCHIL_API_KEY: "fake-test-key" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
-  const disk = Object.assign(new FakeArchilDisk(), { id: customer });
-  const { api, data, store } = await serve(t, { learning: "on", runner: false, archilControl: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: () => disk } });
   await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
-  assert.equal((await api("POST", "/agents", agent("gone-run", { learning: true }))).status, 201);
-  await learned(store, data, "gone-run");
-  const revisionId = (await store.agents.get("gone-run")).currentRevision;
-  await store.runs.create({ id: "on-customer", agentId: "gone-run", revisionId }, { body: { input: ASK, title: "t", place: { mode: "runner" } } });
-  await endAsRunner(store, "on-customer", "ended");
-  launchOnDisk(data, "on-customer", customer);
-  const dir = `agents/${agentDirOf("gone-run")}`;
-  for (const key of [`${dir}/learning/corrections.md`, `${dir}/learning/.git/HEAD`, `${dir}/runs/on-customer/work/notes.md`, "shared/customers.csv"]) await disk.putObject(key, Buffer.from("bytes"));
-  const learningOn = () => [...disk.files.keys(), ...disk.dirs].filter((key) => key === `${dir}/learning` || key.startsWith(`${dir}/learning/`));
-
-  const purged = await api("DELETE", "/runs/on-customer");
-  assert.equal(purged.status, 204, JSON.stringify(purged.body));
-  assert.equal(disk.files.has(`${dir}/runs/on-customer/work/notes.md`), false, "the purge took the run's folder there");
-  assert.ok(learningOn().length > 0, "and left the agent's learning folder there");
-
-  const reset = await api("DELETE", "/agents/gone-run/learning");
-  assert.equal(reset.status, 204, JSON.stringify(reset.body));
-  assert.deepEqual(learningOn(), [], "no learning of the agent is left on the caller's disk");
-  assert.ok(disk.files.has("shared/customers.csv"), "what is not the agent's stays");
-  assert.deepEqual((await store.settings.all({ prefix: "learning." })).map((row) => row.key).filter((key) => key.includes("gone-run") && !key.startsWith("learning.reset")), [], "no other learning setting of the agent is left");
+  await learned(store, data, "spread");
+  const on = await api("DELETE", "/agents/spread/learning");
+  assert.equal(on.status, 204, JSON.stringify(on.body));
+  assert.equal(existsSync(join(learningDir(data, "spread"), "corrections.md")), false, "emptied again");
+  assert.deepEqual(await recordsOf(store, "spread"), []);
+  assert.deepEqual([...reached], [], "no disk was reached");
+  for (const [id, disk] of disks) for (const key of kept[id]) assert.ok(disk.files.has(key), `${key} on ${id} is kept`);
 });
 
 test("a grade of a run served before the reset is kept, and writes no audit row: a promotion of the same digest after the reset is never held by the old runs' grades", async (t) => {
@@ -626,13 +585,12 @@ async function corrected(w) {
 }
 
 /** A runner for the agent's runs, its end-of-run step learningEndOfRun of `launch` wrapped by `wrap`; `feedback` is
- *  queued on `runId` first (the owner's words its end keeps as a correction). `folderData`: the data directory whose
- *  learning folder the end writes (by default the server's, the one its seed was read from). */
-async function runnerFor(w, runId, launch, { script, feedback, wrap = (step) => step, folderData = w.dir }) {
+ *  queued on `runId` first (the owner's words its end keeps as a correction). */
+async function runnerFor(w, runId, launch, { script, feedback, wrap = (step) => step }) {
   if (feedback !== undefined) await sendCommand(w.server, runId, { kind: "steer", body: { text: feedback } });
   const store = await openSqliteStore({ dataDir: w.dir, role: "runner" });
   const spec = piAdapterSpec({ script, tools: {}, hooks: HOOKS }, { requests: [] });
-  const step = learningEndOfRun(launch, { store, data: w.dir, env: {}, learningFolder: (agentId) => learningFolderOf(folderData, agentId) });
+  const step = learningEndOfRun(launch, { store, data: w.dir, env: {} });
   assert.ok(step, "the run learns at its end");
   const createLoop = (deps) => createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, endOfRun: wrap(step) });
   const runner = startRunner({ store, createLoop, name: `runner-${runId}`, ...TIMING });
@@ -758,24 +716,6 @@ test("(c) a run whose start read its seed before the reset, its row made after i
   assert.deepEqual(second.compiled?.attempts?.length, 1, `one attempt, a first compile: ${JSON.stringify(second.compiled)}`);
   assert.ok(w.onMain().includes(WORKFLOW_JSON), `its draft is on main: ${w.onMain().join(", ")}`);
   assert.ok(!(await promotionsOf(w.server.settings, "agent-1")).some((one) => one.decided === "hold"), "no hold");
-});
-
-test("a run seeded after the reset whose end writes another learning folder than the one its seed was read from (a Mode 2 run's, on its disk, seeded from the server's): its learning is not dropped, and its owner's correction lands on that folder", { timeout: 120_000 }, async (t) => {
-  const w = await storeWorld(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 100 } });
-  // The disk the run's end writes, standing in as a data directory of its own: its folder never held the server's seed.
-  const disk = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-reset-disk-"));
-  t.after(() => rmSync(disk, { recursive: true, force: true }));
-  await corrected(w);
-  assert.equal(await w.reset(), 204);
-  const launch = { input: { content: "What is six times seven?" }, title: "t", place: { mode: "runner" }, learning: startOf(await seedOf(w.dir, "agent-1")) };
-  await w.server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
-  await runnerFor(w, "run-1", launch, { feedback: FEEDBACK, folderData: disk, script: [{ say: "The job's answer." }, { say: "Noted." }] });
-  assert.equal((await w.ended("run-1")).state, "ended");
-  const proposal = (await w.server.learning.proposal("run-1"))?.proposal;
-  assert.equal(proposal?.state, "merged", JSON.stringify(proposal));
-  const repo = learningDir(disk, "agent-1");
-  assert.ok(git(repo, ["show", "main:corrections.md"]).includes(FEEDBACK), "its correction is on the disk's folder");
-  assert.equal(w.onMain().includes("corrections.md"), false, "and not on the server's");
 });
 
 const PRE = "PRE-RESET-MARKER";

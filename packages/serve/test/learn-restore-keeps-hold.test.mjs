@@ -119,7 +119,7 @@ test("a run's merge never writes over a draft a person held since its seed: a co
   // Since the run's seed, its owner held the draft (as a retire and a restore of a held one leaves it).
   put({ [README("share-files")]: readme("share-files", "status: pending\n") }, "held by its owner");
   await resnap(data, "agent-1");
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  const folder = learningWorkspace({ data, agentId: "agent-1" });
   try {
     const over = await learningCommit(folder.workspace, { runId: "run-m2", reason: "x", files: [{ path: README("share-files"), text: readme("share-files") }, { path: "workflows/share-files/workflow.json", text: workflow({ name: "share-files", node: "extract" }) }], seed });
     assert.deepEqual([over.ok, over.reason], [false, "conflict"], JSON.stringify(over));

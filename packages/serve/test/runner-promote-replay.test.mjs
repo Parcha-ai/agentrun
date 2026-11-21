@@ -367,7 +367,7 @@ const REVISED = workflowDigest({ workflow: JSON.stringify(revisedFlow) });
 
 /** Lands `flow`, a revision of answer, on the learning folder's main from `seed`, as a compile turn lands one. */
 async function landRevision(w, runId, flow, seed) {
-  const folder = learningWorkspace({ mode: "local", data: w.dir, agentId: "agent-1" });
+  const folder = learningWorkspace({ data: w.dir, agentId: "agent-1" });
   try {
     const merged = await learningCommit(folder.workspace, { kind: "merge", runId, reason: "revised answer", graded: {}, seed,
       files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(flow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }] });

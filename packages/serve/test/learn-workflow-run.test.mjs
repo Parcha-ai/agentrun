@@ -314,7 +314,7 @@ test("a learned workflow whose README's front matter does not read one way (not 
     assert.equal(seed.workflows.some((flow) => flow.name === "answer"), false, `${why}: ${JSON.stringify(seed.workflows)}`);
     // The one reader (learn/skills.ts learnedStatus) reads it retired in the folder's snapshot, as the console shows it: the
     // seed's read never gives its files, so the run never meets it.
-    const folder = learningWorkspace({ mode: "local", data, agentId: id });
+    const folder = learningWorkspace({ data, agentId: id });
     try {
       const snapshot = await readSnapshot(folder.workspace);
       assert.deepEqual(snapshot.workflows.map(({ name, status }) => [name, status]), [["answer", "retired"]], why);

@@ -24,7 +24,7 @@ const README = `workflows/${NAME}/README.md`;
 
 /** The README's ETag on main now, as GET answers it. */
 async function etagOf(data, agentId) {
-  const folder = learningWorkspace({ mode: "local", data, agentId });
+  const folder = learningWorkspace({ data, agentId });
   try {
     const item = (await readSnapshot(folder.workspace)).workflows.find((one) => one.name === NAME);
     return `"${item.files.find((file) => file.path === README).oid}"`;

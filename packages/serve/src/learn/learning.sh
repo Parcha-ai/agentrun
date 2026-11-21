@@ -2,8 +2,9 @@
 # learning.sh: the one writer of an agent's learning folder (learn/folder.ts runs it). POSIX sh only (/bin/sh may be
 # dash), git 2.32 or later. The host writes it into the folder once per version as `.agentrun/learning-<sha8>.sh` and
 # runs `sh .agentrun/learning-<sha8>.sh <op> [args]` there, the folder its working directory, under an environment it
-# names whole. Each run is one hold of the folder: on an Archil disk one exec, so what it writes lands together or not
-# at all; on a local folder one process.
+# names whole. Each run is one process on the folder. The server and the runners beside it on one data directory run it
+# on one folder at once: what keeps them apart is git's own locks, the compare and swap on main, and main read again
+# after every snapshot is placed.
 #
 # The host computes everything it can (the tree, the front matter, the history, the log, the snapshot) and hands it in;
 # this script does the git plumbing, the file writes and the atomic swap, in this order, and nothing else:
@@ -13,16 +14,22 @@
 #      second merge of it, however it raced the first, exits 6 and writes nothing but the first one's diff file when a
 #      stop left it none;
 #   2. for a run's merge, `.agentrun/diffs/<run>.json`: each path's patch, parent against merge, as git diffs it;
-#   3. the working tree brought in line with the new main (read-tree -u --reset);
-#   4. `.agentrun/snapshot.json`, written to a temporary name and moved into place, LAST.
-# So a reader that finds snapshot.json finds every file it names at its main, or a newer one (a write in flight). A stop
-# between 1 and 2 leaves a run's ref with no diff file: `merged` (and a second merge's exit 6) writes it from the ref.
+#   3. the working tree brought in line with the new main (read-tree -u --reset; another writer's on git's index lock
+#      waited for);
+#   4. `.agentrun/snapshot.json`, written to a temporary name and moved into place, LAST;
+#   5. main read again: a writer whose commit landed after this one's may have written its tree and snapshot first,
+#      which this one's then overwrote with an older main's. Said as exit 5, and the host rebuilds both from main.
+# So a reader that finds snapshot.json finds every file it names at its main, or a newer one (a write in flight), or
+# an older one until the writer that overwrote it rebuilds it from main. A stop between 1 and 2 leaves a run's ref with
+# no diff file: `merged` (and a second merge's exit 6) writes it from the ref.
 #
 # Ops:
-#   init                 make the folder a repository when it is not one, then commit as `commit` does with no parent;
-#                        main must not be there yet (else 3, with main on stdout)
+#   init                 make the folder a repository (git init, which leaves one that is there as it is, and finishes
+#                        one another init is making), then commit as `commit` does with no parent; main must not be
+#                        there yet (else 3, with main on stdout)
 #   commit <old> [run]   commit on main from <old>; with <run>, a run's merge, which writes its diff file
-#   snapshot <main>      the working tree and snapshot.json written again at <main>, which must be main (else 3)
+#   snapshot <main>      the working tree and snapshot.json written again at <main>, which must be main, before and
+#                        after (else 3)
 #   read [commit]        main's (or <commit>'s) tree, its first-parent log and its blobs, for the host to build a
 #                        snapshot from; 1 when <commit> is not in the repository
 #   merged <run>         run <run>'s merge (its ref) on stdout, its diff file written from it when there is none; 1
@@ -38,8 +45,9 @@
 #                        and must hold still (else 4: "seed <commit>" on stdout): a reset since merges nothing, a
 #                        correction alone included
 # Exit: 0 done (the new main on stdout), 3 stale (main as it is on stdout), 4 a precondition failed, 5 main moved but
-# the files could not be brought in line (the new main on stdout; no snapshot written), 6 the run merged already (its
-# merge on stdout), else git's error on stderr.
+# the files could not be brought in line, or main moved again past it by the time its snapshot was placed (the new
+# main on stdout; the snapshot is not main's), 6 the run merged already (its merge on stdout), else git's error on
+# stderr.
 set -u
 set -f
 
@@ -68,10 +76,16 @@ die() {
   exit 2
 }
 
-# Every git call: no hook, no fsmonitor, no signing, no transport; objects and refs synced where git can (2.36+).
+# Every git call: no hook, no fsmonitor, no signing, no transport; objects and refs synced where git can (2.36+); a ref
+# another writer holds locked waited for up to 10 s.
 g() {
   git --no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false \
-    -c protocol.allow=never -c core.fsync=committed "$@"
+    -c protocol.allow=never -c core.fsync=committed -c core.filesRefLockTimeout=10000 -c core.packedRefsTimeout=10000 "$@"
+}
+
+# A short wait before trying again a lock another writer holds (a fraction of a second where sleep takes one).
+pause() {
+  sleep 0.05 2> /dev/null || sleep 1
 }
 
 tmp=$(mktemp -d) || die "no temporary folder"
@@ -145,9 +159,15 @@ place_snapshot() {
 }
 
 # The working tree as commit $1 holds it: files main no longer holds removed, the rest written. Untracked files
-# (.agentrun/) are left alone.
+# (.agentrun/) are left alone. Another writer's checkout holds git's index lock: waited for, up to 10 s.
 check_out() {
-  g read-tree -u --reset "$1" 2> "$tmp/checkout"
+  tries=0
+  while ! g read-tree -u --reset "$1" 2> "$tmp/checkout"; do
+    grep -q 'index\.lock' "$tmp/checkout" || return 1
+    tries=$((tries + 1))
+    [ "$tries" -lt 200 ] || return 1
+    pause
+  done
 }
 
 # Each path the working tree is about to hold or lose ($tmp/paths: "<mode> <path>" lines, mode 000000 for one it
@@ -309,6 +329,9 @@ commit() {
   stage_snapshot "$new"
   place_snapshot
   printf '%s\n' "$new"
+  # A commit that landed after this one's, its tree and snapshot written before this one's: the folder is at an older
+  # main than main.
+  [ "$(main_now)" = "$new" ] || exit 5
 }
 
 op=${1:-}
@@ -316,10 +339,18 @@ case $op in
   init)
     old=
     run=
-    if [ ! -d "$GIT_DIR" ]; then
-      # Without GIT_DIR and GIT_WORK_TREE, so the repository records no path of this machine's.
-      (unset GIT_DIR GIT_WORK_TREE && g init -q --template= --initial-branch=main . > /dev/null) || die "git init failed"
-    fi
+    # git init whether or not the folder holds a repository: another writer's init may be making it at this moment,
+    # half made, and init finishes it (and leaves a whole one as it is). Two inits at once meet on the config's lock:
+    # tried again. Without GIT_DIR and GIT_WORK_TREE, so the repository records no path of this machine's.
+    tries=0
+    until (unset GIT_DIR GIT_WORK_TREE && g init -q --template= --initial-branch=main . > /dev/null 2> "$tmp/init"); do
+      tries=$((tries + 1))
+      [ "$tries" -lt 200 ] || {
+        cat "$tmp/init" >&2
+        die "git init failed"
+      }
+      pause
+    done
     # The host's folder is never the repository's: kept out of git's view of the working tree.
     if ! grep -qx '/.agentrun/' "$GIT_DIR/info/exclude" 2> /dev/null; then
       mkdir -p "$GIT_DIR/info" && printf '/.agentrun/\n' >> "$GIT_DIR/info/exclude" || die "the exclude file could not be written"
@@ -357,6 +388,12 @@ case $op in
     fi
     stage_snapshot "$old"
     place_snapshot
+    # Main moved while the snapshot was written: it is not main's, and the host writes it again.
+    cur=$(main_now)
+    if [ "$cur" != "$old" ]; then
+      printf '%s\n' "$cur"
+      exit 3
+    fi
     printf '%s\n' "$old"
     ;;
   read)

@@ -8,7 +8,7 @@
 //   - the claim lays the revision's skills, and the build writes nothing the delegation refuses;
 //   - a second claim (epoch 2) of the same run, its folder already holding the skills (one edited by the run since),
 //     mounts the folder again, writes no skill again and keeps the first claim's files as they are.
-//   - a learning run reads its seed from its learning folder on the disk and writes nothing of it into the run's folder
+//   - a learning run reads its seed from its learning folder in the data directory and writes nothing of it into the run's folder
 //     (its corrections reach it in its instructions): no write is refused, nothing goes under .learning/, and the spec
 //     says what it handed the run (learningLaid).
 // On the old order (the lay after computerForClaim) the first test's build fails with the disk's 409, after the
@@ -54,12 +54,12 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     assert.equal(Buffer.from(disk.files.get(SKILL_KEY)).toString("utf8"), `${SKILL}Edited by the run.\n`, "the first claim's skill, as the run left it");
   });
 
-  test(`${name} in Mode 2: a learning run reads its seed from the disk's learning folder and writes none of it into the run's folder`, async (t) => {
+  test(`${name} in Mode 2: a learning run reads its seed from the data directory's learning folder and writes none of it into the run's folder`, async (t) => {
     const disk = new FakeArchilDisk();
     const run = await mode2Run(t, { harness, disk, learns: true });
     const { spec } = await run.claimNext(build);
     assert.deepEqual(disk.refusedByDelegation, [], "no write to the run's folder was refused by the mount's delegation");
-    assert.ok(run.read.count > 0, "the claim read the agent's learning folder on its Archil disk");
+    assert.ok(run.read.count > 0, "the claim read the agent's learning folder in the data directory");
     assert.deepEqual(spec.learningLaid, { workflows: [] }, "the spec says what the claim handed the run: no learned workflow");
     assert.deepEqual(putsOf(disk, `${KEY}/.learning`), [], "nothing of the seed is put in the run's folder");
     assert.equal(run.mounts.length, 1, "the computer mounted the run's folder once");

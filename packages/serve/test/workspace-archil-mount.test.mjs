@@ -5,7 +5,7 @@
 // own epoch. The disk token is never asked for by attach and never in an error.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { archilWorkspace, learningKey, openRunWorkspace, runKey, WorkspaceError } from "../dist/workspace/index.js";
+import { archilWorkspace, openRunWorkspace, runKey, WorkspaceError } from "../dist/workspace/index.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { readBackOf } from "./fixtures/archil-readback.mjs";
 
@@ -77,7 +77,7 @@ test("archil attach: a read-back of another folder, region or disk, or a mount i
   const exact = { kind: "archil", disk: disk.id, region: REGION, folder: runKey(AGENT, RUN), exclusive: true, epoch: EPOCH };
   const cases = [
     { ...exact, folder: `/${runKey(AGENT, RUN)}` },
-    { ...exact, folder: learningKey(AGENT) },
+    { ...exact, folder: runKey(AGENT, RUN).split("/runs/")[0] },
     { ...exact, folder: runKey(AGENT, "r2") },
     { ...exact, region: "aws-us-west-2" },
     { ...exact, disk: "dsk-0000000000000002" },

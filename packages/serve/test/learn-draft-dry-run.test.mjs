@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
 import * as drafts from "../dist/learn/workflow-draft.js";
-import { learningFolderOf, seedOf } from "../dist/learning.js";
+import { seedOf } from "../dist/learning.js";
 import { checkDraftOf } from "../dist/runner/learning-end.js";
 
 const { draftProblems, DRY_RUN_FAILED } = drafts;
@@ -37,7 +37,7 @@ async function checked(t, flow, example, refuse = []) {
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const { sha } = await seedOf(data, AGENT);
   // A run the store does not hold: no tools, no gate, no output schema.
-  const deps = { store: { runs: { get: async () => undefined }, mcp: {} }, data, learningFolder: (agentId) => learningFolderOf(data, agentId) };
+  const deps = { store: { runs: { get: async () => undefined }, mcp: {} }, data };
   return checkDraftOf(deps, { runId: "run-1", agentId: AGENT, seed: sha, draft: { name: flow.name, text: block(flow, example) }, refuse });
 }
 /** Whether `errors` is one error at `name`'s workflow.json saying its dry run failed. */

@@ -158,7 +158,7 @@ async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap, 
   }, `the ${count} replay runs ended`, ms);
   const replays = async () => launches((launch) => launch?.replay);
   const audits = async () => {
-    const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
+    const folder = learningWorkspace({ data: dir, agentId: "agent-1" });
     try {
       return await readAudits(folder.workspace);
     } finally {
@@ -171,7 +171,7 @@ async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap, 
 
 /** Lands `workflow` as the next revision of `answer` on the learning folder's main. */
 async function landRevision(dir, workflow, runId) {
-  const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
+  const folder = learningWorkspace({ data: dir, agentId: "agent-1" });
   try {
     const merged = await learningCommit(folder.workspace, {
       kind: "merge", runId, reason: "revised answer", graded: {},

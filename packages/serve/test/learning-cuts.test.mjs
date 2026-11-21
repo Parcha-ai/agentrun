@@ -29,7 +29,7 @@ const cut = (text) => redactSecrets(text, [SECRET]);
 /** Agent `agentId`'s owner's corrections `lines` appended on main, as a run's merge appends them (no check: a pointer
  *  saved after the correction was written). */
 async function corrected(data, agentId, lines) {
-  const folder = learningWorkspace({ mode: "local", data, agentId });
+  const folder = learningWorkspace({ data, agentId });
   try {
     for (const [i, text] of lines.entries()) {
       const made = await appendCorrection(folder.workspace, { runId: `run-${i + 1}`, text });

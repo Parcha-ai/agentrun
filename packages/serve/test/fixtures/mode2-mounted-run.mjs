@@ -81,25 +81,23 @@ function sandboxOverArchil(disk, scratch, mounts) {
   }));
 }
 
-/** The agent's learning folder, holding one correction on its main, as a local folder that stands in for the one on the
- *  run's Archil disk (folderTestHooks.workspace): the seed's commit, for the launch's learning start. `read` counts the
- *  claim's reads of it. */
+/** The agent's learning folder in the data directory `dir` (a Mode 2 run's too: never on its Archil disk), holding one
+ *  correction on its main: the seed's commit, for the launch's learning start. `read` counts the claim's reads of it
+ *  (folderTestHooks.workspace). */
 async function learningSeedIn(t, dir, read) {
-  const folderData = join(dir, "learning-disk");
-  mkdirSync(folderData);
-  await seedOf(folderData, AGENT);
-  const folder = learningWorkspace({ mode: "local", data: folderData, agentId: AGENT });
+  await seedOf(dir, AGENT);
+  const folder = learningWorkspace({ data: dir, agentId: AGENT });
   try {
     const made = await learningCommit(folder.workspace, { runId: "run-0", reason: "feedback", files: [], correction: CORRECTION });
     assert.equal(made.ok, true, JSON.stringify(made));
   } finally {
     await folder.end();
   }
-  const seed = (await seedOf(folderData, AGENT)).sha;
+  const seed = (await seedOf(dir, AGENT)).sha;
   folderTestHooks.workspace = (place) => {
-    assert.equal(place.mode, "archil", "a Mode 2 run reads its learning folder on its Archil disk");
+    assert.deepEqual(place, { agentId: AGENT, data: dir }, "a Mode 2 run reads its learning folder in the data directory");
     read.count += 1;
-    return learningWorkspace({ mode: "local", data: folderData, agentId: place.agentId });
+    return learningWorkspace(place);
   };
   t.after(() => delete folderTestHooks.workspace);
   return seed;

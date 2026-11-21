@@ -175,7 +175,7 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
     return row;
   };
   const audits = async () => {
-    const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
+    const folder = learningWorkspace({ data: dir, agentId: "agent-1" });
     try {
       return await readAudits(folder.workspace);
     } finally {
@@ -192,7 +192,7 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
 
 /** Lands `workflow` as the next revision of `answer` on the learning folder's main, as the recompile's merge lands it. */
 async function landRevision(dir, workflow, runId) {
-  const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
+  const folder = learningWorkspace({ data: dir, agentId: "agent-1" });
   try {
     const merged = await learningCommit(folder.workspace, {
       kind: "merge", runId, reason: "revised answer", graded: {},
@@ -427,7 +427,7 @@ test("(r3) a secret straddling char 1,200 of an audited input leaves no 8 charac
   assert.ok(held.audit.disagreements[0].input.includes("Leaky"), "the hold quotes the input");
   const [ask] = w.asks.get("leak-next");
   assert.ok(fenceOf(ask ?? "").includes("Leaky"), `the recompile ask quotes it: ${(ask ?? "").slice(0, 300)}`);
-  const folder = learningWorkspace({ mode: "local", data: w.dir, agentId: "agent-1" });
+  const folder = learningWorkspace({ data: w.dir, agentId: "agent-1" });
   let ledger;
   try {
     ledger = await readLearning(folder.workspace, async (read) => (read.snapshot?.audits ? read.body(AUDITS_FILE, read.snapshot.audits.oid) : ""));
@@ -522,7 +522,7 @@ test("(r2) the served count reads past the shadows: audit_every 1 over 1,100 ser
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const claimOf = async (served) => {
     const { store, made } = servedStore(served, learning, DIGEST);
-    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch }, serve);
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch }, serve);
     return { store, made };
   };
   // 900 served: under audit_later_after, every served run is drawn (1 in 1).
@@ -547,7 +547,7 @@ test("a run before the agent's learning reset, or on a named disk, starts no aud
     rows.unshift(row);
     store.settings.get = async (key) => (resetAt !== undefined && key === "learning.reset-at.agent-1" ? { at: resetAt } : undefined);
     store.runs.seededBefore = async () => [];
-    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId: row.id, launch }, serve);
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId: row.id, launch }, serve);
     return made;
   };
   // The reset at 10,000 leaves no served run before it counted, so the rate is 1 in 1.
@@ -761,7 +761,7 @@ test("(r4) a drawn run whose cap leaves under a run's smallest cap (or a spend n
   const launch = { input: { content: "Next?" }, title: "Next", place: { mode: "runner" }, maxCostUsd: 1, learning: startAt("0".repeat(40)) };
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-room-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const folder = () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
+  const folder = () => learningWorkspace({ data: dir, agentId: "agent-1" });
   const endOf = async (runId, room) => {
     const { store, made, launches } = servedStore(3, learning, DIGEST);
     await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder, shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch, room: async () => room }, serve);

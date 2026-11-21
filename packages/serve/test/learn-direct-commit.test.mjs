@@ -77,7 +77,7 @@ async function world(t, body) {
     const origin = scriptedOrigin(script, requests);
     const fetch = beforeAnswer ? async (url, init = {}) => (await beforeAnswer(JSON.parse(String(init.body ?? "{}"))), origin(url, init)) : origin;
     const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch });
-    const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, handed: [HANDED], log: (line) => logs.push(line), learningFolder: (agentId) => learningFolderOf(dir, agentId) });
+    const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, handed: [HANDED], log: (line) => logs.push(line) });
     const createLoop = (deps) => {
       const job = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, ...(endOfRun ? { endOfRun } : {}) });
       let mine = false;

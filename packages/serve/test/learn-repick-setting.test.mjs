@@ -21,7 +21,7 @@ import { added, DRAFT_PATH, README_PATH, readme } from "./learn-format-support.m
 const setting = await import("../dist/learning-setting.js");
 const { checkDraft, compactStateProblems, quoteCheckProblems, repickLabels, repickSiteOf } = await import("../dist/learn/check.js");
 const { draftProblems } = await import("../dist/learn/workflow-draft.js");
-const { learningFolderOf, seedOf } = await import("../dist/learning.js");
+const { seedOf } = await import("../dist/learning.js");
 const { checkDraftOf } = await import("../dist/runner/learning-end.js");
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
@@ -219,7 +219,7 @@ async function compiled(t, learning, flow, log) {
   await store.runs.create({ id: "run-1", agentId: AGENT, revisionId: "rev-1" }, { body: { input: { content: "Refunds?" }, title: "t", place: { mode: "runner" } } });
   await store.flush?.();
   const { sha } = await seedOf(data, AGENT);
-  return checkDraftOf({ store, data, learningFolder: (id) => learningFolderOf(data, id), ...(log ? { log } : {}) }, { runId: "run-1", agentId: AGENT, seed: sha, draft: { name: flow.name, text: block(flow) }, refuse: [] });
+  return checkDraftOf({ store, data, ...(log ? { log } : {}) }, { runId: "run-1", agentId: AGENT, seed: sha, draft: { name: flow.name, text: block(flow) }, refuse: [] });
 }
 const keptJson = (result) => result.kept?.files.find(({ path }) => path.endsWith("workflow.json"))?.text;
 

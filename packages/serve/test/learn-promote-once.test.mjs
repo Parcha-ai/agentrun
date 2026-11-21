@@ -161,7 +161,7 @@ async function world(t, { learning, prior = 0, flows = [{ name: "answer", descri
 
 /** Lands `workflow` as the next revision of `answer` on the learning folder's main, as a graded recompile merges it. */
 async function landRevision(dir, workflow, runId) {
-  const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
+  const folder = learningWorkspace({ data: dir, agentId: "agent-1" });
   try {
     const merged = await learningCommit(folder.workspace, {
       kind: "merge", runId, reason: "revised answer", graded: {},
@@ -424,7 +424,13 @@ test("(a) compile_after 5, 5 own completed runs then 250 workflow-served runs, t
     agents: { revision: async () => ({ body: { learning: { compile_after: 5 } } }) },
     learning: { proposal: async () => undefined },
   };
-  const deps = { store, learningFolder: () => { opened++; throw new Error("folder opened: the compile is due"); } };
-  await askOf(deps, { runId: "now", agentId: "agent-1", outcome: "completed", refuse: [], seedWorkflows: 0 }).catch(() => undefined);
+  const { folderTestHooks } = await import("../dist/learn/folder.js");
+  const deps = { store, data: "/nonexistent-data" };
+  folderTestHooks.workspace = () => { opened++; throw new Error("folder opened: the compile is due"); };
+  try {
+    await askOf(deps, { runId: "now", agentId: "agent-1", outcome: "completed", refuse: [], seedWorkflows: 0 }).catch(() => undefined);
+  } finally {
+    folderTestHooks.workspace = undefined;
+  }
   assert.equal(opened > 0, true, "the 5 own runs are found behind the 250 served ones: the compile is due");
 });

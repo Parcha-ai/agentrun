@@ -455,9 +455,8 @@ test("a run's folder on the Archil disk its launch named (the caller's) is delet
   // What the run wrote there (its work folder and its exec spill folder, runKey's and spillFolderOf's), beside what is the
   // caller's own and another agent's run.
   const own = `agents/${agentDir(agentId)}`;
-  // Its learning folder there too (learningKey): a Mode 2 run's end writes the agent's learning on the run's disk.
-  const its = [`${own}/runs/${runId}/work/notes.md`, `${own}/runs/${runId}/work/deep/out.json`, `${own}/runs/${runId}/exec-out/spill.txt`, `${own}/learning/corrections.md`, `${own}/learning/.git/HEAD`];
-  const theirs = ["shared/customers.csv", `agents/${agentDir("another-agent")}/runs/run-other/work/kept.md`, `agents/${agentDir("another-agent")}/learning/corrections.md`];
+  const its = [`${own}/runs/${runId}/work/notes.md`, `${own}/runs/${runId}/work/deep/out.json`, `${own}/runs/${runId}/exec-out/spill.txt`];
+  const theirs = ["shared/customers.csv", `agents/${agentDir("another-agent")}/runs/run-other/work/kept.md`];
   for (const key of [...its, ...theirs]) await disk.putObject(key, Buffer.from("bytes"));
 
   // A computer still holds the run's work folder (Archil's write delegation): its files can't be deleted there yet.
