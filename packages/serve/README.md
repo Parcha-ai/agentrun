@@ -3096,6 +3096,25 @@ upload stays in the runs that copied it; a run started after names it in vain. E
 logs `event=uploads_swept removed=N`. `upload.expires_at`, which the contract requires, is advisory and not enforced in
 this release: a `PUT` after it is still taken.
 
+With Archil on (Mode 2), uploads live on Archil, not in `DIR`, so a runner needs no disk of the server's. The server
+keeps them on an Archil disk of its own, `agentrun-<server id>-files`, made by its first upload, at
+`files/<file_id>/` (the same bytes and record). Listing, reading and deleting read that disk; the routes, limits and
+answers are the ones above, but the bytes are held in the server's memory (up to 50 MiB a file) instead of streamed to
+disk. When a run is started with `file_ids`, the server copies each file into the run's folder on its disk, at
+`work/inputs/<path>` (the launch's `archil_disk`, else its agent's, made first when the agent has none), before the run
+is queued, for at most 45 s. The server copies 2 files at a time across all the runs it is starting, because Archil
+resets a connection carrying more large writes at once; 20 files of 10 MiB took 11 to 14 s. A copy that fails or takes
+longer refuses the start with
+`424 upstream_failed` ("The run's files could not be copied into its folder on Archil, so it was not started: ..."). No
+run is made and what was copied is removed. The run's claim then finds its files in place and reads no upload. Files
+uploaded while Archil was off stay in `DIR/files/` and are not seen while it is on, and the other way round.
+
+In Mode 2, an uploaded file that no run names is deleted once it is older than `AGENTRUN_UPLOAD_RETENTION` (default
+`7d`; a whole number with `ms`, `s`, `m`, `h` or `d`, or `off` to keep every file). The server sweeps its uploads disk
+once an hour and logs `event=uploads_expired removed=N`. A file is kept while a run the store still has was started with
+it, or while a run started with it in the last hour (whose row may not be written yet). A file kept by a run that has
+since been deleted becomes unnamed and goes after the retention. Mode 1 keeps every upload, as before.
+
 ## Agent home
 
 Each agent has a home, a directory of its own at `<data>/homes/<key>/`, kept across its runs; runs do not see it yet.

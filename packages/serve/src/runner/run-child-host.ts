@@ -56,7 +56,7 @@ import { liveForRun, runnerLiveOf } from "../live-reach.js";
 import { type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
 import { learningStartOf, seedFailed } from "../run-launch.js";
 import { messageText } from "../run-manifest.js";
-import { placeRunInputs } from "../uploads.js";
+import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { withAudit } from "./audit.js";
 import { compareEndOfRun } from "./compare-end.js";
 import type { Compared } from "../learn/promote.js";
@@ -846,7 +846,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         ? await openRunWorkspace({ mode: 1, agentId: run.agentId, runId: claim.runId, data: deps.data, log })
         : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: made, log });
       try {
-        await placeRunInputs(deps.data, claim.runId, ws.workspace, launch.files ?? [], messageText(launch.input));
+        await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
       } finally {
         await ws.end();
       }
