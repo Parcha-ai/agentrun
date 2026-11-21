@@ -12,6 +12,7 @@ import { approvalsOf } from "./approvals.js";
 import { ApiError, invalid } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { type LearningSetting, learningSettingIssue } from "./learning-setting.js";
+import { learningSettingForBody } from "./store/agent-body.js";
 import { storedHarness } from "./harness-table.js";
 import {
   AgentBodyInvalid, type AgenticBody, RevisionMoved, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
@@ -136,6 +137,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   return {
     kind: "agentic",
     instructions: definition.instructions as string,
+    ...(definition.cli_learning !== undefined ? {cli_learning: definition.cli_learning as import("./store/agent-body.js").CliLearningBinding} : {}),
     ...(definition.sdk !== undefined ? {sdk: definition.sdk as import("./store/agent-body.js").SdkBinding} : {}),
     ...(isObject(definition.native) ? { native: definition.native as unknown as import("./native/types.js").NativeBinding } : {}),
     ...(typeof definition.model === "string" ? { model: definition.model } : {}),
@@ -236,7 +238,7 @@ export async function createAgent(
   if (given !== undefined && !ID_PATTERN.test(given)) throw invalid([{ field: "definition.id", reason: "invalid", message: `definition.id does not match ${ID_PATTERN.source}` }]);
   if (given !== undefined && (await store.agents.get(given))) throw new ApiError("agent_exists", `an agent ${given} exists here`);
   // Stamped on the revision now, never resolved at run time: an agent saved with no place keeps running on the runner.
-  const placed = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow) && !isObject(definition.sdk)
+  const placed = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow) && !isObject(definition.sdk) && !isObject(definition.cli_learning)
     ? { place: options.fresh.place, ...(definition.tools === undefined ? { tools: [...options.fresh.tools] } : {}) }
     : {};
   // A template's agent keeps the package it was applied from on its first revision (store `revisions.package`).
@@ -361,6 +363,7 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
   if (files === undefined) files = (isObject(current?.skills) ? (current!.skills as Record<string, string>) : {});
   const carried = current
     ? {
+        ...((currentBody as AgenticBody).cli_learning && definition.cli_learning === undefined ? { cli_learning: (currentBody as AgenticBody).cli_learning } : {}),
         ...((currentBody as AgenticBody).sdk && definition.sdk === undefined ? { sdk: (currentBody as AgenticBody).sdk } : {}),
         ...((currentBody as AgenticBody).native && definition.native === undefined ? { native: (currentBody as AgenticBody).native } : {}),
         ...(definition.harness === undefined && currentBody.harness ? { harness: currentBody.harness } : {}),
@@ -373,7 +376,7 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
   // What the host owns (the sdk and native references, the harness, the computer and place) carries as an edit's does.
   const owned = current && !fromPackage
     ? {
-        ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).learning !== undefined ? { learning: (currentBody as AgenticBody).learning } : {}),
+        ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && learningSettingForBody(currentBody) !== undefined ? { learning: learningSettingForBody(currentBody) } : {}),
         // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals),
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
@@ -427,7 +430,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
   const body = revision.body as Body;
   const common = body.maxCostUsd !== undefined ? { max_cost_usd: body.maxCostUsd } : {};
   const kindBody = revision.kind === "agentic"
-    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).inputSchema !== undefined ? { input_schema: (body as AgenticBody).inputSchema } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
+    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...(learningSettingForBody(body) !== undefined ? { learning: learningSettingForBody(body) } : {}), ...((body as AgenticBody).inputSchema !== undefined ? { input_schema: (body as AgenticBody).inputSchema } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
   return {
     id: agent.id,
@@ -435,6 +438,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     name: agent.name,
     ...(agent.description !== null && agent.description !== undefined ? { description: agent.description } : {}),
     ...kindBody,
+    ...((body as AgenticBody).cli_learning ? { cli_learning: (body as AgenticBody).cli_learning } : {}),
     ...((body as AgenticBody).sdk ? { sdk: (body as AgenticBody).sdk } : {}),
     ...((body as AgenticBody).native ? { native: (body as AgenticBody).native } : {}),
     // Its approvals, of either kind: "ask" where none is set, as the definition read says it (definitionOf).

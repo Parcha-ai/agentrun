@@ -299,11 +299,18 @@ export function sessionEnded(error: unknown): boolean {
 function typed(error: unknown, deadlineMs?: number): Error {
   // Already the store's own (a failed statement's error, met again at the commit of a callback that caught it).
   if (error instanceof Fenced || error instanceof RunFinal || error instanceof StoreClosed || error instanceof StoreDeadline || error instanceof StoreConstraint || error instanceof StoreBusy || error instanceof Unanswered) return error;
-  const e = error as { code?: string; message?: string };
+  const e = error as { code?: string; message?: string; detail?: string };
   const message = String(e?.message ?? error);
   const code = typeof e?.code === "string" ? e.code : "";
   // 23: integrity, its rule by SQLSTATE; 22P02 a CHECK's json cast of text that is not JSON.
-  if (code.startsWith("23") || code === "22P02") return new StoreConstraint(message, RULES[code] ? { rule: RULES[code] } : code === "22P02" ? { rule: "check" } : {});
+  if (code.startsWith("23") || code === "22P02") {
+    const refused = new StoreConstraint(message, RULES[code] ? { rule: RULES[code] } : code === "22P02" ? { rule: "check" } : {});
+    // JSON TEXT can hold lone surrogates that extraction refuses. Keep only a fixed, private diagnostic so a
+    // read-only projection can use its legacy JS parser; never retain JSON context, query text or parameters.
+    if (code === "22P02" && (e.detail === "Unicode low surrogate must follow a high surrogate." || e.detail === "Unicode high surrogate must not follow a high surrogate."))
+      Object.defineProperty(refused, "cause", { value: { code, reason: "json_surrogate" } });
+    return refused;
+  }
   // 55P03 a lock not granted within lock_timeout; 40P01 a deadlock; 40001 a serialization failure.
   if (code === "55P03" || code === "40P01" || code === "40001") return new StoreBusy(`the store stayed locked past its busy wait: ${message}`);
   // 57014: a statement cancelled by the transaction's statement_timeout, its deadline.

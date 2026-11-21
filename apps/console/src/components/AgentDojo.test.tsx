@@ -30,6 +30,14 @@ const refresh = () => host.querySelector<HTMLButtonElement>('button[aria-label="
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("Learning Dojo", () => {
+  it("keeps shared project learning profiles and their settings accessible outside the agent inventory", async () => {
+    const profile = agent("cli-project");
+    profile.definition = { ...profile.definition, cli_learning: { runtime: "codex", connection_id: "connection", project: "/projects/example" } } as Agent["definition"];
+    await mount(({ path }) => json(path === "/v2/agents" ? { agents: [profile], next_cursor: null } : view(profile.agent_id)));
+    expect(host.textContent).toContain("Shared project learning · Codex CLI");
+    expect(host.textContent).toContain("Sessions in this project share these settings and owner corrections");
+    expect(host.querySelector('a[href="#/agents/cli-project/learning"]')).not.toBeNull();
+  });
   it("explains missing default model access in an empty Dojo and links to Model keys", async () => {
     const missing: LearningModelAccess = { location: "server", ready: false, model: "provider/learning-model", needs: "key", reason: "No model credential is configured." };
     await mount(() => json({ agents: [], next_cursor: null }), "on", missing);

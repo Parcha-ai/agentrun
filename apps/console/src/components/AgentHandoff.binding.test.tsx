@@ -64,6 +64,22 @@ function sourceEdit(prompt: string, expected: string) {
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; localStorage.clear(); if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard); else Reflect.deleteProperty(navigator, "clipboard"); vi.clearAllMocks(); });
 
 describe("rendered handoffs follow the loaded agent's execution binding", () => {
+  for (const runtime of ["codex", "claude-code"] as const) {
+    it(`keeps ${runtime} learning connections in their original CLI`, async () => {
+      const agent: Agent = { ...managed, definition: { ...managed.definition, cli_learning: { runtime, connection_id: "connection-a", project: "/workspace/project" }, learning: true } };
+      await mount(createElement(AgentPage, { v2: client(agent), agentId: agent.agent_id, go: vi.fn(), learning: "on" }));
+      expect(host.textContent).toContain("Your CLI");
+      expect(host.textContent).toContain("Reported per run");
+      expect(button("Detailed editor")).toBeUndefined();
+      const edit = await copy("Edit agent");
+      expect(edit).toContain("Edit the original CLI setup");
+      expect(edit).not.toContain("agents_revise");
+      const run = await copy("Run agent");
+      expect(run).toContain("Keep using the original CLI");
+      expect(run).toContain("Do not use the managed runs API");
+      expect(write).not.toHaveBeenCalled();
+    });
+  }
   for (const { name, agent, expected } of sourceAgents) {
     it(`AgentEditor copies original-source guidance for ${name}`, async () => {
       await mount(createElement(AgentEditor, { agent, caps, onSave: write }));
