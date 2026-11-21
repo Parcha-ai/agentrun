@@ -2,7 +2,8 @@ import claudeMark from "@/assets/coding-agents/claude-code-cli.svg";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ObservedSessionPage, ObservedSessions } from "./ObservedSessions";
+import { ObservedSessionPage } from "./ObservedSessions";
+import { Button } from "./ui";
 import { NativeConnections } from "./NativeConnections";
 import { AgentsList } from "./AgentsList";
 import { RunsList } from "./RunsList";
@@ -21,6 +22,14 @@ const read = { data, error: null, loading: false, refresh: vi.fn() };
 const render = async (element: React.ReactElement) => { const host = document.body.appendChild(document.createElement("div")); const root = createRoot(host); roots.push(root); await act(async () => { root.render(element); }); return host; };
 
 describe("existing agent observation", () => {
+  it("offers learning for existing CLI sessions without launching a replacement agent", async () => {
+    const host = await render(createElement(NativeConnections, { v2: {} as never, go: vi.fn(), initialSource: "observe" }));
+    const section = host.querySelector('section[aria-label="Learn from existing CLI sessions"]');
+    expect(section).not.toBeNull();
+    expect(section!.textContent).toContain("Keep starting Codex CLI and Claude Code normally");
+    expect(section!.querySelector('[role="group"][aria-label="Enable learning options"]')).not.toBeNull();
+    expect(section!.textContent).toContain("selected project");
+  });
   it("uses native connection and activity states without interpreting idle as a completed task", () => {
     expect(observedState(session)).toBe("Running");
     expect(observedState({ ...session, activity: "waiting_input" })).toBe("Needs input");
@@ -31,28 +40,48 @@ describe("existing agent observation", () => {
     expect(observedState({ ...session, connection_state: "disconnected" })).toBe("Disconnected");
     expect(observedState({ ...session, selection_active: false })).toBe("Not selected");
   });
-  it("shows the original harness and model on the existing agents page without executable-agent actions", async () => {
+  it("shows the original harness and model with coding-agent handoffs on the existing agents page", async () => {
     const host = await render(createElement(AgentsList, { agents: [], observations: read }));
     expect(host.querySelector<HTMLImageElement>("li a img")?.getAttribute("src")).toBe(claudeMark);
     expect(host.textContent).toContain("Existing backend");
     expect(host.textContent).toContain("Claude Code");
     expect(host.textContent).toContain("test-model");
     expect(host.textContent).not.toContain("No agents yet");
-    const card = host.querySelector('section[aria-label="Observed sessions"]')!;
+    const card = host.querySelector('a[href="#/observations/session-a"]')!.closest("li")!;
     expect(card.querySelector('a[href="#/observations/session-a"]')).toBeTruthy();
-    expect(card.textContent).not.toMatch(/Run agent|Edit agent|Learning/);
+    expect(card.querySelector('[aria-label="Run Existing backend options"]')).not.toBeNull();
+    expect(card.querySelector('[aria-label="Edit Existing backend options"]')).not.toBeNull();
+    expect(card.querySelector('a[href*="playground"]')).toBeNull();
   });
-  it("shows observed sessions on Runs without claiming the server has no activity", async () => {
+  it("links Runs to the shared agent inventory without presenting sessions as task runs", async () => {
     const host = await render(createElement(RunsList, { runs: [], agentName: (id) => id, onOpen: vi.fn(), observations: read }));
-    expect(host.querySelector('table[aria-label="Observed sessions"]')).toBeTruthy();
+    expect(host.textContent).toContain("No captured runs yet");
+    expect(host.querySelector('a[href="#/agents"]')?.textContent).toBe("Connected agents");
+    expect(host.querySelector("table")).toBeNull();
+    expect(host.textContent).not.toContain("Observed sessions");
+    expect(host.textContent).not.toContain("Existing backend");
     expect(host.textContent).not.toContain("Start your first run");
+  });
+  it.each(["loading", "failed"])("does not mistake an unavailable agent inventory for an unused server while %s", async (state) => {
+    const observations = { ...read, data: null, loading: state === "loading", error: state === "failed" ? "Connection unavailable" : null };
+    const host = await render(createElement(RunsList, { runs: [], agentName: (id) => id, onOpen: vi.fn(), observations }));
+    expect(host.textContent).toContain("No captured runs yet");
+    expect(host.querySelector('a[href="#/agents"]')).not.toBeNull();
+    expect(host.textContent).not.toContain("Start your first run");
+    if (state === "failed") expect(host.querySelector('[role="alert"]')?.textContent).toContain("Connection unavailable");
+  });
+  it.each([{ status: "failed" as const }, { archived: true }])("keeps run filters meaningful without putting source sessions in their results", async (filter) => {
+    const host = await render(createElement(RunsList, { runs: [], agentName: (id) => id, onOpen: vi.fn(), observations: read, filter }));
+    expect(host.textContent).toContain(filter.status ? "No run matches." : "No archived runs.");
+    expect(host.textContent).not.toContain("No captured runs yet");
+    expect(host.textContent).not.toContain("Existing backend");
   });
   it.each(["loading", "failed"])("keeps independently loaded observed sessions visible when registered-run data is %s", async (state) => {
     const retry = vi.fn();
-    const host = await render(createElement(MissionControl, { view: null, hasObservedSessions: true,
+    const host = await render(createElement(MissionControl, { view: null, observed: read,
       error: state === "failed" ? { title: "Registered runs could not be read.", why: "Store busy", next: "Try again." } : null,
-      onRetry: retry, observations: createElement(ObservedSessions, { read, view: "summary" }) }));
-    expect(host.querySelector('section[aria-label="Observed sessions"]')?.textContent).toContain("Existing backend");
+      onRetry: retry }));
+    expect(host.querySelector('section[aria-label="Connected agents"]')?.textContent).toContain("Existing backend");
     expect(host.querySelector('a[href="#/observations/session-a"]')).not.toBeNull();
     if (state === "failed") {
       expect(host.textContent).toContain("Registered runs could not be read.");
@@ -74,14 +103,13 @@ describe("existing agent observation", () => {
         by_harness_effort: [], by_day: [], by_source: [{ source: "live", ...group }], tools: [] },
     };
     const retry = vi.fn();
-    const props = { view, onRetry: retry, hasObservedSessions: observed,
-      observations: observed ? createElement(ObservedSessions, { read, view: "summary" }) : undefined };
+    const props = { view, onRetry: retry, observed: observed ? read : undefined };
     const host = await render(createElement(MissionControl, props));
     const root = roots.at(-1)!;
     const saved = () => {
       expect(host.querySelector('a[href="#/runs"]')?.textContent).toBe("Runs7");
       expect(host.querySelector('section[aria-label="Analytics"]')?.textContent).toContain("1,234");
-      expect(host.querySelector('a[href="#/agents/registered-agent/runs"]')?.textContent).toBe("Registered agent7");
+      expect(host.querySelector('a[href="#/agents/registered-agent/runs"]')?.textContent).toBe("Registered agent7 runs");
       expect(host.querySelector('a[href="#/runs/registered-run"]')?.textContent).toContain("Registered result");
       expect(!!host.querySelector('a[href="#/observations/session-a"]')).toBe(observed);
     };
@@ -103,31 +131,32 @@ describe("existing agent observation", () => {
     expect(!!host.querySelector('a[href="#/observations/session-a"]')).toBe(observed);
     expect(host.querySelector('[role="alert"]')).toBeNull();
   });
-  it("labels retained session tokens separately from a seven-day aggregate", async () => {
+  it("labels source detail tokens as retained session totals, preserving cache values", async () => {
     const retained = { ...data, sessions: [{ ...session, created_at: "2026-10-01T00:00:00Z", usage: { ...usage, total_tokens: 1200 } }] };
-    const host = await render(createElement(ObservedSessions, { read: { ...read, data: retained }, view: "summary", days: 7 }));
-    expect(host.textContent).toContain("Observed token usage · last 7 days");
-    expect(host.querySelector('table[aria-label="Observed sessions"] thead')?.textContent).toContain("Tokens · retained");
-    expect(host.querySelector('table[aria-label="Observed sessions"] tbody')?.textContent).toContain("1,200");
-    expect(host.textContent).toContain("Session totals cover retained reports, independently of the aggregate range.");
+    const host = await render(createElement(ObservedSessionPage, { v2: { observations: async () => retained } as never, sessionId: session.id, go: vi.fn() }));
+    const facts = host.querySelector('section[aria-label="Session token usage"]')!;
+    expect(facts.textContent).toContain("Reported token usage · retained session");
+    expect(facts.textContent).toContain("1,200");
+    expect(facts.textContent).toContain("60.0%");
+    expect(facts.textContent).toContain("Session totals cover retained reports");
+    expect(facts.textContent).toContain("Activity signals do not establish a completed task or its outcome");
+    expect(host.textContent).not.toContain("Observed token usage");
   });
-  it("keeps observed usage separate, preserves cache values and never treats unknown counters as zero", async () => {
-    const host = await render(createElement(ObservedSessions, { read, view: "summary", days: 7 }));
-    expect(host.textContent).toContain("Observed token usage · last 7 days");
-    expect(host.textContent).toContain("60.0%");
-    expect(host.textContent).toContain("Idle does not mean a task completed");
+  it("never presents unavailable source usage as zero in the shared inventory or detail", async () => {
     const unknown = { ...data, sessions: [{ ...session, usage: { ...usage, status: "unavailable" as const } }] };
-    const table = await render(createElement(ObservedSessions, { read: { ...read, data: unknown } }));
-    expect(table.querySelector('tbody tr')!.textContent).toContain("—");
+    const list = await render(createElement(AgentsList, { agents: [], observations: { ...read, data: unknown } }));
+    expect(list.textContent).toContain("— tokens reported");
+    const detail = await render(createElement(ObservedSessionPage, { v2: { observations: async () => unknown } as never, sessionId: session.id, go: vi.fn() }));
+    expect(detail.querySelector('section[aria-label="Session token usage"]')?.textContent).toContain("Token usage has not been reported");
   });
-  it("makes missing aggregate totals and ingestion capacity visible", async () => {
+  it("keeps ingestion capacity visible in the shared inventory without discarding known source totals", async () => {
     const overflow: Observations = { ...data, connectors: [{ storage_full: true }], usage: { ...data.usage, status: "unavailable", overflow: true, total_tokens: null, input_tokens: null, output_tokens: null } };
-    const host = await render(createElement(ObservedSessions, { read: { ...read, data: overflow }, view: "summary" }));
-    expect(host.textContent).toContain("Combined token totals are too large to display reliably");
+    const host = await render(createElement(AgentsList, { agents: [], observations: { ...read, data: overflow } }));
     expect(host.textContent).toContain("Telemetry needs attention");
-    expect(host.querySelector('table[aria-label="Observed sessions"]')!.textContent).toContain("120");
+    expect(host.textContent).toContain("120 tokens reported");
+    expect(host.textContent).not.toContain("Observed");
   });
-  it("polls the session detail and keeps launch, edit, and learning controls absent", async () => {
+  it("polls the agent detail and offers coding-agent run, edit and learning handoffs", async () => {
     vi.useFakeTimers();
     let answer = data;
     const observations = vi.fn(async () => answer);
@@ -135,11 +164,13 @@ describe("existing agent observation", () => {
     expect(observations).toHaveBeenCalledWith({ days: 30, sessionId: session.id }, expect.any(AbortSignal));
     expect(host.textContent).toContain("Running");
     expect(host.querySelector('[aria-label="Agent views"]')).toBeNull();
-    expect([...host.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"))).toEqual(["Back to agents", "Refresh session"]);
+    expect(host.querySelector('[role="group"][aria-label="Set up learning options"]')).not.toBeNull();
+    expect(host.querySelector('[role="group"][aria-label="Run agent options"]')).not.toBeNull();
+    expect(host.querySelector('[role="group"][aria-label="Edit agent options"]')).not.toBeNull();
     answer = { ...data, sessions: [{ ...session, connection_state: "offline" }] };
     await act(async () => { vi.advanceTimersByTime(15_000); });
     expect(host.textContent).toContain("Disconnected");
-    expect(host.textContent).toContain("backend SDK integration adds self-improvement");
+    expect(host.textContent).toContain("Learning settings apply to the source project and coding runtime");
   });
   it("surfaces a failed observation read instead of claiming the agent is offline", async () => {
     const host = await render(createElement(ObservedSessionPage, { v2: { observations: async () => { throw new Error("Store unavailable"); } } as never, sessionId: session.id, go: vi.fn() }));
@@ -153,14 +184,14 @@ describe("existing agent observation", () => {
       .mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }))
       .mockResolvedValueOnce({ ...data, sessions: [{ ...session, activity: "idle" }] });
     const host = await render(createElement(ObservedSessionPage, { v2: { observations } as never, sessionId: session.id, go: vi.fn() }));
-    await act(async () => { (host.querySelector('[aria-label="Refresh session"]') as HTMLButtonElement).click(); });
+    await act(async () => { (host.querySelector('[aria-label="Refresh agent"]') as HTMLButtonElement).click(); });
     expect(host.querySelector("h1")?.textContent).toBe("Existing backend");
     expect(host.textContent).toContain("test-model");
-    expect(host.textContent).not.toContain("Loading observed session");
+    expect(host.textContent).not.toContain("Loading connected agent");
     await act(async () => { fail(new Error("Store unavailable")); });
     expect(host.querySelector("h1")?.textContent).toBe("Existing backend");
     expect(host.querySelector('[role="alert"]')?.textContent).toContain("Store unavailable");
-    await act(async () => { (host.querySelector('[aria-label="Refresh session"]') as HTMLButtonElement).click(); });
+    await act(async () => { (host.querySelector('[aria-label="Refresh agent"]') as HTMLButtonElement).click(); });
     expect(host.textContent).toContain("Idle");
     expect(host.querySelector('[role="alert"]')).toBeNull();
   });
@@ -169,7 +200,7 @@ describe("existing agent observation", () => {
     const initialRead = vi.fn().mockRejectedValue(unsupported);
     const initial = await render(createElement(ObservedSessionPage, { v2: { observations: initialRead } as never, sessionId: session.id, go: vi.fn() }));
     expect(initialRead).toHaveBeenCalledOnce();
-    expect(initial.textContent).toContain("Observed sessions are unavailable on this server.");
+    expect(initial.textContent).toContain("Connected agent activity is unavailable on this server.");
     expect(initial.querySelector('[role="alert"]')).toBeNull();
     expect(initial.querySelector("h1")).toBeNull();
 
@@ -183,11 +214,11 @@ describe("existing agent observation", () => {
     expect(host.textContent).toContain("Running");
     expect(host.textContent).toContain("test-model");
     expect(host.querySelector('section[aria-label="Session token usage"]')).not.toBeNull();
-    const refresh = async () => { await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Refresh session"]')!.click(); }); };
+    const refresh = async () => { await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Refresh agent"]')!.click(); }); };
     for (const calls of [2, 3]) {
       await refresh();
       expect(observations).toHaveBeenCalledTimes(calls);
-      expect(host.textContent).toContain("Observed sessions are unavailable on this server.");
+      expect(host.textContent).toContain("Connected agent activity is unavailable on this server.");
       expect(host.querySelector("h1")).toBeNull();
       expect(host.textContent).not.toContain("Running");
       expect(host.textContent).not.toContain("Existing backend");
@@ -209,11 +240,14 @@ describe("existing agent observation", () => {
       .mockImplementationOnce(() => new Promise<Observations>((resolve) => { settleOld = resolve; }))
       .mockImplementationOnce(() => new Promise<Observations>((resolve) => { settleNew = resolve; }));
     type Props = Parameters<typeof useObservations>[1] & { v2: Parameters<typeof useObservations>[0] };
-    function Scope({ v2, ...options }: Props) { return createElement(ObservedSessions, { read: useObservations(v2, options) }); }
+    function Scope({ v2, ...options }: Props) {
+      const current = useObservations(v2, options);
+      return createElement("div", null, createElement(Button, { "aria-label": "Refresh agents", onClick: current.refresh }, "Refresh"), createElement(AgentsList, { agents: [], observations: current }));
+    }
     const props: Props = { v2: { observations } as never, active: true, days: 30, sessionId: session.id };
     const host = await render(createElement(Scope, props));
     const root = roots.at(-1)!;
-    await act(async () => { (host.querySelector('[aria-label="Refresh observed sessions"]') as HTMLButtonElement).click(); });
+    await act(async () => { (host.querySelector('[aria-label="Refresh agents"]') as HTMLButtonElement).click(); });
     expect(host.textContent).toContain("Existing backend");
     const next = { ...props, ...(change === "client" ? { v2: { observations: () => new Promise<Observations>((resolve) => { settleNew = resolve; }) } as never } : change === "days" ? { days: 7 as const } : change === "session" ? { sessionId: "session-b" } : { active: false }) };
     await act(async () => { root.render(createElement(Scope, next)); });

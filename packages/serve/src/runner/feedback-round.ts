@@ -151,7 +151,7 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
   const launched = await store.runs.launch(grade.run).catch(() => undefined);
   const launch = launched ? readLaunchBody(launched.body) : undefined;
   // Source sessions and application-owned SDK tasks cannot consume a managed feedback steer.
-  if (launch?.native || launch?.sdk) return null;
+  if (launch?.native || launch?.sdk || launch?.cli_learning) return null;
   const learning = launch?.learning;
   if (!learning || learning.use) return null;
   // The round is a turn of the run with no caller's model key (a grade hands none): where the server holds no key for the

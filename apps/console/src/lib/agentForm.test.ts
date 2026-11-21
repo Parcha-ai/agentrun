@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
+import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, learningOn, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
 import { WORKFLOW_STARTER } from "./workflowStarter";
 import { ClientError } from "./client";
@@ -13,6 +13,16 @@ const a = agent.body as never;
 const w = workflow.body as never;
 
 describe("editBody", () => {
+  it("retains a template's agreement fields and explicit learning settings through unrelated edits", () => {
+    for (const learning of [{ agree_on: ["next_step.action"], compile_after: 10 }, true, false] as const) {
+      const saved = { ...agent.body, definition: { ...agent.body.definition, learning } } as never;
+      expect(learningOn(learning)).toBe(learning !== false);
+      const edited = editBody(saved, { instructions: "Keep the brief concise." }, "");
+      expect(edited.definition.learning).toEqual(learning);
+      expect(edited.unchanged).toBe(false);
+    }
+  });
+
   it("is the current definition with the edited fields, as the next revision, keeping every field the form does not show", () => {
     const body = editBody(a, { instructions: "Check it twice.", harness: "codex" }, "Twice");
     expect(body.definition).toEqual({ ...agent.body.definition, instructions: "Check it twice.", harness: "codex", version: agent.body.revisions + 1 });

@@ -14,6 +14,8 @@ from websockets.sync.client import unix_connect
 from websockets.exceptions import WebSocketException
 
 from . import __version__
+from .session_labels import native_labels
+from .learning_association import session_role
 
 class Candidate(BaseModel):
     id: str
@@ -23,9 +25,15 @@ class Candidate(BaseModel):
     label: str
     activity: str = "unknown"
     native_id: str
+    usage_path: str | None = None
+    model: str | None = None
+    display_name: str | None = None
+    project_name: str | None = None
+    project_path: str | None = None
+    session_role: Literal["root", "delegated", "unknown"] = "unknown"
 
     def public(self):
-        return self.model_dump(exclude={"native_id"})
+        return self.model_dump(exclude={"native_id", "usage_path", "model", "display_name", "project_name", "project_path", "session_role"})
 
 
 def command_json(command):
@@ -59,7 +67,7 @@ def command_json(command):
             process.stdout.close()
 
 
-def codex_rows(native_ids=None, diagnostic=None, stopping=None):
+def codex_rows(native_ids=None, diagnostic=None, stopping=None, loaded_only=False):
     diagnostic = diagnostic if diagnostic is not None else {}
     diagnostic.update(status="unavailable", reason="interface_unavailable")
     rows = []
@@ -110,6 +118,29 @@ def codex_rows(native_ids=None, diagnostic=None, stopping=None):
                     except (ValueError, KeyError, TypeError):
                         continue
                 return rows
+            # Loaded threads include exec and delegated sessions. Read these first
+            # so the bounded history walk cannot hide agents currently running.
+            seen = set()
+            loaded_available = False
+            try:
+                loaded = call("thread/loaded/list", {"limit": 100})
+                if not isinstance(loaded, dict) or not isinstance(loaded.get('data'), list) or not all(isinstance(item, str) for item in loaded['data']):
+                    raise ValueError("codex_invalid_response")
+                loaded_available = True
+                for native in loaded.get("data", [])[:100]:
+                    if not isinstance(native, str): continue
+                    try:
+                        row = call("thread/read", {"threadId": native, "includeTurns": False})["thread"]
+                        if isinstance(row, dict) and row.get("id") not in seen:
+                            rows.append(row); seen.add(row.get("id"))
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                if loaded.get("nextCursor"):
+                    diagnostic.update(status="partial", reason="discovery_limit")
+            except (ValueError, KeyError, TypeError):
+                pass  # Older native daemons may not expose the loaded-list method.
+            if loaded_only and loaded_available:
+                return rows
             cursor = None
             for page in range(50):
                 remaining = deadline - time.monotonic()
@@ -117,10 +148,12 @@ def codex_rows(native_ids=None, diagnostic=None, stopping=None):
                     diagnostic.update(status="partial" if rows else "unavailable", reason="time_budget")
                     break
                 result = call("thread/list", {"limit": 20, "cursor": cursor, "useStateDbOnly": True,
-                                               "sourceKinds": ["cli", "vscode", "appServer"]}, timeout=min(5, remaining))
+                                               "sourceKinds": ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"]}, timeout=min(5, remaining))
                 if not isinstance(result, dict) or not isinstance(result.get("data"), list):
                     raise ValueError("codex_invalid_response")
-                rows.extend(result["data"][:1000 - len(rows)])
+                for row in result["data"]:
+                    if isinstance(row, dict) and row.get("id") not in seen and len(rows) < 1000:
+                        rows.append(row); seen.add(row.get("id"))
                 cursor = result.get("nextCursor")
                 if not cursor:
                     break
@@ -189,10 +222,14 @@ def candidates(state, harness, rows, *, selections=None, diagnostic=None):
                     activity = "unknown"
                 elif any(flag in {"waitingOnApproval", "waitingOnUserInput"} for flag in flags):
                     activity = "waiting_input"
+        display_name, project_name = native_labels(row, harness, identity, cwd)
         candidates.append(Candidate(id=identity, harness=harness, project_id=project,
                                     project_label=re.sub(r"[^\w .-]", "", Path(cwd).name)[:80] or "Project",
                                     label=harness.title() + " " + re.sub(r"[^A-Za-z0-9_-]", "", native)[:8],
-                                    native_id=native, activity=activity))
+                                    native_id=native, activity=activity, display_name=display_name, project_name=project_name,
+                                    project_path=cwd, session_role=session_role(harness, row),
+                                    usage_path=row.get("path") if harness == "codex" and isinstance(row.get("path"), str) else None,
+                                    model=row.get("model") if harness == "codex" and isinstance(row.get("model"), str) else None))
     return candidates
 
 
@@ -236,7 +273,7 @@ def observe(state, stopping=None):
                       if key.startswith("codex:") and value in identifiers]
         diagnostic = {"harness": "codex"}
         observed = candidates(state, "codex", codex_rows(None if any(source["mode"] != "session" for source in codex) else native_ids,
-                              diagnostic=diagnostic, stopping=stopping), selections=selections, diagnostic=diagnostic)
+                              diagnostic=diagnostic, stopping=stopping, loaded_only=any(source["mode"] != "session" for source in codex)), selections=selections, diagnostic=diagnostic)
         diagnostic["sessions"] = len(observed)
         diagnostics.append(diagnostic)
         rows.extend(observed)

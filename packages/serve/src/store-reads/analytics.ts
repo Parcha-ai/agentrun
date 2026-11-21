@@ -1,3 +1,4 @@
+import {cliLearningOf} from "../store/agent-body.js";
 // GET /v2/stats' analytics over the one store (design 2.1): the runs' metrics summed, the same StoreAnalytics the old store
 // gave, from A's run rows — each run's metrics as its end commit wrote them (the StoredMetrics JSON on the row), its cost,
 // and its revision's harness. The runs not archived (their own or their agent's), started in [from, to) and of `agent` when
@@ -14,9 +15,9 @@ export type ImportSource = "claude-code" | "codex" | "pi";
 export type PendingEnd = "completed" | "escalated" | "failed" | "stopped";
 const PENDING_ENDS: ReadonlySet<string> = new Set<PendingEnd>(["completed", "escalated", "failed", "stopped"]);
 export type AnalyticsFilter = { from?: string; to?: string; agent?: string; pending?: Readonly<Record<string, PendingEnd>> };
-/** Runs counted together: how many, how many completed (escalated included) and failed, how many have metrics, their
- *  tokens, and their cost as stats sums it (null when none ended with one; unknownCostRuns the rest). */
-export type AnalyticsGroup = { runs: number; completed: number; needsReview: number; failed: number; runsWithMetrics: number; tokens: number | null; costUsd: number | null; unknownCostRuns: number };
+/** Runs counted together: how many completed (escalated included) and failed, how many have metrics and how many
+ *  report every token counter, their known token total, and their cost (null when none ended with one). */
+export type AnalyticsGroup = { runs: number; completed: number; needsReview: number; failed: number; runsWithMetrics: number; runsWithTokenMetrics: number; tokens: number | null; costUsd: number | null; unknownCostRuns: number };
 export type StoreAnalytics = {
   totals: AnalyticsGroup & { input: number | null; cacheRead: number | null; cacheWrite: number | null; output: number | null; requests: number | null; unmetered: number | null };
   time: { endedRuns: number; wallMs: number; activeRuns: number; activeMs: number };
@@ -34,7 +35,12 @@ type StoredMetrics = {
 
 const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
 const metricsOf = (run: RunRow): StoredMetrics | null => (run.metrics !== null && typeof run.metrics === "object" && !Array.isArray(run.metrics) ? (run.metrics as StoredMetrics) : null);
-const tokensOf = (m: StoredMetrics): number => num(m.input) + num(m.cacheRead) + num(m.cacheWrite) + num(m.output);
+const TOKEN_KEYS = ["input", "cacheRead", "cacheWrite", "output"] as const;
+/** A metrics object may hold only tools or null native counters. Count coverage only when its whole total is known. */
+const tokensOf = (m: StoredMetrics): number | null => {
+  if (!TOKEN_KEYS.every((key) => typeof m[key] === "number" && Number.isSafeInteger(m[key]) && m[key]! >= 0)) return null;
+  return num(m.input) + num(m.cacheRead) + num(m.cacheWrite) + num(m.output);
+};
 
 /** One run in scope, with its group keys and, when it ended with them, its metrics. */
 type Fact = {
@@ -83,7 +89,7 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     if (toMs !== null && !(run.startedAt < toMs)) continue;
     if (!harnessOf.has(run.revisionId)) {
       const revision = await store.agents.revision(run.revisionId);
-      harnessOf.set(run.revisionId, revision?.kind === "workflow" ? "workflow" : (sdkOf(revision?.body)?.runtime ?? (revision?.body as { harness?: string } | null)?.harness ?? DEFAULT_HARNESS));
+      harnessOf.set(run.revisionId, revision?.kind === "workflow" ? "workflow" : (cliLearningOf(revision?.body) ? (cliLearningOf(revision?.body)!.runtime==="codex"?"codex-cli":"claude-code-cli") : sdkOf(revision?.body)?.runtime ?? (revision?.body as { harness?: string } | null)?.harness ?? DEFAULT_HARNESS));
     }
     const read = runReadState(run, harnessOf.get(run.revisionId) === "workflow" ? "workflow" : "agentic");
     const running = read === "running";
@@ -110,8 +116,7 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
   }
 
   const counted = (group: readonly Fact[]): AnalyticsGroup => {
-    let unknownTokens=false;
-    let runsN = 0, completed = 0, needsReview = 0, failed = 0, metered = 0, tokens = 0, costUsd = 0, known = 0, pend = 0;
+    let runsN = 0, completed = 0, needsReview = 0, failed = 0, metered = 0, tokenMetered = 0, tokens = 0, costUsd = 0, known = 0, pend = 0;
     let shadowUsd = 0;
     for (const f of group) {
       shadowUsd += f.shadowUsd;
@@ -119,11 +124,15 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
       if (f.state === "completed" || f.state === "escalated") completed += 1;
       if (f.state === "escalated") needsReview += 1;
       if (f.state === "failed") failed += 1;
-      if (f.metered) {metered += 1;tokens += tokensOf(f.metrics!);if(['input','cacheRead','cacheWrite','output'].some(key=>f.metrics?.[key as keyof StoredMetrics]===null))unknownTokens=true;}
+      if (f.metered) {
+        metered += 1;
+        const reported = tokensOf(f.metrics!);
+        if (reported !== null) { tokenMetered += 1; tokens += reported; }
+      }
       if (!f.running && !f.pending && f.costUsd !== null) (costUsd += f.costUsd, (known += 1));
       if (f.pending) pend += 1;
     }
-    return { runs: runsN, completed, needsReview, failed, runsWithMetrics: metered, tokens:unknownTokens?null:tokens, costUsd: known > 0 || shadowUsd > 0 ? costUsd + shadowUsd : null, unknownCostRuns: runsN - known - pend };
+    return { runs: runsN, completed, needsReview, failed, runsWithMetrics: metered, runsWithTokenMetrics: tokenMetered, tokens: tokenMetered > 0 || runsN === 0 ? tokens : null, costUsd: known > 0 || shadowUsd > 0 ? costUsd + shadowUsd : null, unknownCostRuns: runsN - known - pend };
   };
 
   // Totals over the whole scope: the group counts, the token sums, and the time figures.

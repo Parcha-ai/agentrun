@@ -168,15 +168,19 @@ reviewed checkout. The published observation-only CLI does not include this remo
    source CLI's secure prompt. Your native credentials stay on that machine; the worker connects outbound.
 3. **See the result.** For **History only**, open Runs and check the imported conversations and counts; no worker
    or model job is started. For a **live connection** or **Both**, open the connected agent, verify its setup, and
-   start a job. Keep a remote source worker online. Optionally turn **Self-improving** On to let completed jobs
-   propose notes and skills. Inspect what passes checking and grading in Learning Dojo, then start a fresh run to
-   use it. Reflection and grading add model usage.
+   start a job. Keep a remote source worker online. Turn **Self-improving** On to give future native runs your
+   standing corrections, which you can inspect and edit in Learning. Native connections do not compile or run
+   learned workflows; those require managed execution or a compatible backend workflow bridge.
 
 History import brings selected completed conversations into Runs without executing them or automatically training
 the agent. A live connection starts new CLI sessions; it does not attach to a desktop conversation already in
 progress. You can connect first and import history later with an explicitly approved history scope.
 
 [Connection and history guide](docs/native-agents.md) · [Remote CLI installation and commands](connector/README.md)
+
+Already use Codex CLI or Claude Code directly? [Connect its existing sessions for learning](docs/tutorials/existing-cli-learning.md)
+with project-scoped hooks that capture completed prompts and deliver explicit owner corrections. Keep starting
+the agent normally; no SDK wrapper or AgentRun task launcher is needed.
 
 Already run an agent inside your backend with an SDK? The development build can add checked learning around its
 existing call site. Your backend keeps its job queue, tools, model credentials and cancellation; AgentRun records

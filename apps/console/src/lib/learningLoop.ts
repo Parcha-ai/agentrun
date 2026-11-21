@@ -128,8 +128,8 @@ export function storyOf(input: {
   /** The lines of corrections.md: its owner's corrections, given whole to every later run. */
   corrections: number; runs: number; workflows: { name: string; status: string }[];
   cost: LearningCost | null; promotions: readonly Promotion[]; serving: readonly Serving[]; loop: LearningLoop | null;
-  /** Native runs are given the corrections alone; SDK workflows run only through their backend-owned bridge. */
-  execution?: "hosted" | "native" | "sdk";
+  /** Native and CLI runs receive owner corrections; SDK workflows need their backend-owned bridge. */
+  execution?: "hosted" | "native" | "sdk" | "cli";
   /** The completed runs its job compiles at (compileAfterOf the definition's `learning`). */
   compileAfter?: number;
 }): Stage[] {
@@ -155,8 +155,8 @@ export function storyOf(input: {
     detail: corrections ? "yours, given whole to every later run" : "none yet: grade a run with a correction, or write one here",
     state: corrections ? "done" : "now",
   });
-  if (execution === "native") {
-    stages.push({ key: "compiled", title: "Learning", value: "Corrections", detail: "Native runs are given your corrections; learned workflows are unavailable.", state: "later" });
+  if (execution === "native" || execution === "cli") {
+    stages.push({ key: "compiled", title: "Learning", value: "Corrections", detail: execution === "cli" ? "Your CLI receives your corrections on later prompts. Workflow learning needs an approved tool connection and is unavailable here." : "Native runs are given your corrections; learned workflows are unavailable.", state: "later" });
     return stages;
   }
   if (active.length || (lastCompile && lastCompile.digest)) {

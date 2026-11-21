@@ -3,6 +3,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Store } from "../store/store.js";
 import { NATIVE_OBSERVATION_HARNESSES, nativeObservationProtocol, type NativeObservationHarness } from "../native/runtimes.js";
+import { ObservationLearning, unboundLearning, type LearningAssociation, type LearningReport } from "./learning.js";
 
 const PREFIX = "observation.connector.";
 const DAY = 86_400_000;
@@ -51,7 +52,8 @@ type Event = {
   sequence: number;
   type: "session_observed";
   occurred_at: string;
-  metadata: { harness: Harness; activity: Activity };
+  metadata: { harness: Harness; activity: Activity; display_name?: string; project_name?: string; cli_learning?: LearningReport };
+  learning_association?: LearningAssociation;
   source_time?: string;
   initial_only?: boolean;
   usage?: Usage;
@@ -62,6 +64,9 @@ type Session = {
   external_session_id: string;
   harness: Harness;
   activity: Activity;
+  display_name?: string;
+  project_name?: string;
+  learning_association?: LearningAssociation;
   sequence: number;
   source_time?: string;
   ingestion_epoch?: number;
@@ -144,6 +149,14 @@ const uuid = (v: unknown): v is string =>
 const harness = (v: unknown): v is Harness => nativeObservationProtocol(v) !== undefined;
 const safeInt = (v: unknown, min = 0): v is number =>
   typeof v === "number" && Number.isSafeInteger(v) && v >= min;
+/** Explicit native titles only: no conversation previews, paths, controls or obvious credentials. */
+const sessionLabel = (v: unknown, max: number, project = false): v is string =>
+  typeof v === "string" && v.length > 0 && v.length <= max && v.trim() === v &&
+  !/[\u0000-\u001f\u007f-\u009f\u2028\u2029\p{Cf}\p{Cs}]/u.test(v) &&
+  !/\\/.test(v) && !(project && v.includes("/")) &&
+  !/(?:^|[\s"'=(])(?:\/\S|~[/\\]|[A-Za-z]:[/\\]|\\\\)/.test(v) &&
+  !/\b[a-z][a-z0-9+.-]*:\/\//i.test(v) &&
+  !/\bsk[-_]|ghp_|github_pat_|xox[baprs]-|\bBearer\s|AKIA[A-Z0-9]{12,}/i.test(v);
 const activities = new Set([
   "unknown",
   "working",
@@ -246,6 +259,8 @@ function checkMode(
 }
 export const observationCapabilities = () => ({
   version: 1,
+  session_labels: true,
+  cli_learning: { session_association: true },
   ingestion_modes: ["polling", "otlp"],
   supported_harnesses: [...NATIVE_OBSERVATION_HARNESSES],
   logs_formats: ["json"],
@@ -255,6 +270,7 @@ export const observationCapabilities = () => ({
   max_log_records: 100,
   max_payload_bytes: MAX_OTLP_PAYLOAD_BYTES,
   token_usage: {
+    polling: true,
     supported_harnesses: [...NATIVE_OBSERVATION_HARNESSES],
     model_attribute: "agentrun.model",
     count_attributes: COUNTS.map((k) => "agentrun." + k),
@@ -272,6 +288,7 @@ export class Observations {
   constructor(
     readonly store: Store,
     readonly now: () => number = Date.now,
+    private readonly learning?: ObservationLearning,
   ) {}
   private stamp() {
     return new Date(this.now()).toISOString();
@@ -575,9 +592,10 @@ export class Observations {
         "type",
         "occurred_at",
         "metadata",
+        "usage",
       ]);
       const m = obj(e.metadata);
-      exact(m, ["harness", "activity"]);
+      exact(m, ["harness", "activity", "display_name", "project_name", "cli_learning"]);
       if (
         !uuid(e.event_id) ||
         !id(e.source_id) ||
@@ -587,11 +605,48 @@ export class Observations {
         !timestamp(e.occurred_at) ||
         Date.parse(e.occurred_at) > this.now() + 300_000 ||
         !harness(m.harness) ||
-        !activities.has(m.activity)
+        !activities.has(m.activity) ||
+        (Object.hasOwn(m, "display_name") && !sessionLabel(m.display_name, 120)) ||
+        (Object.hasOwn(m, "project_name") && !sessionLabel(m.project_name, 80, true))
       )
         refuse(422, "connector_invalid");
+      if (Object.hasOwn(m, "cli_learning")) {
+        const learning = obj(m.cli_learning);
+        exact(learning, ["readiness", "connection_id", "native_session_hash", "proof"]);
+        if (!["ready", "setup_required", "unknown", "unsupported"].includes(learning.readiness)
+          || (Object.hasOwn(learning, "connection_id") && !id(learning.connection_id))
+          || (Object.hasOwn(learning, "proof") && (typeof learning.proof !== "string" || !/^[0-9a-f]{64}$/.test(learning.proof)))
+          || (Object.hasOwn(learning, "native_session_hash") && (typeof learning.native_session_hash !== "string" || !/^[0-9a-f]{64}$/.test(learning.native_session_hash)))
+          || Object.hasOwn(learning, "connection_id") !== Object.hasOwn(learning, "proof")
+          || Object.hasOwn(learning, "connection_id") !== Object.hasOwn(learning, "native_session_hash")
+          || (learning.readiness === "ready" && !learning.connection_id)) refuse(422, "connector_invalid");
+      }
+      if (Object.hasOwn(e, "usage")) {
+        const usage = obj(e.usage);
+        exact(usage, ["model", ...COUNTS]);
+        if (
+          typeof usage.model !== "string" ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,127}$/.test(usage.model) ||
+          !safeInt(usage.input_tokens) ||
+          !safeInt(usage.output_tokens) ||
+          COUNTS.some((k) => Object.hasOwn(usage, k) && !safeInt(usage[k])) ||
+          (usage.cache_read_tokens ?? 0) + (usage.cache_write_tokens ?? 0) > usage.input_tokens ||
+          !Number.isSafeInteger(usage.input_tokens + usage.output_tokens)
+        )
+          refuse(422, "connector_invalid");
+      }
       return e as Event;
     });
+    // Authenticate the observation scope before looking up any private CLI connection. A stale or forged
+    // association cannot attach a profile, but it must not stop otherwise valid activity and usage ingestion.
+    await this.authenticate(connectorId, credential);
+    for (const event of events) {
+      const report = event.metadata.cli_learning;
+      if (report) event.learning_association = this.learning
+        ? await this.learning.verify(report, { connector_id: connectorId, source_id: event.source_id,
+          external_session_id: event.external_session_id, runtime: event.metadata.harness === "claude" ? "claude-code" : "codex", sequence: event.sequence })
+        : { readiness: report.connection_id ? "unknown" : report.readiness };
+    }
     return this.ingest(
       connectorId,
       credential,
@@ -635,7 +690,8 @@ export class Observations {
           )
             refuse(403, "connector_source_denied");
           if (Date.parse(e.occurred_at) < row.receipt_floor) continue;
-          const request = fingerprint(e),
+          const { learning_association, ...reported } = e;
+          const request = fingerprint(reported),
             prior = row.receipts[e.event_id];
           if (prior) {
             if (prior.hash !== request) refuse(409, "idempotency_conflict");
@@ -680,13 +736,20 @@ export class Observations {
               ? BigInt(e.source_time!) >
                 BigInt(old?.source_time ?? String((old?.sequence ?? 0) * 1000))
               : e.sequence > (old?.sequence ?? 0));
-          if (!old || (!e.initial_only && newer))
+          if (!old || (!e.initial_only && newer)) {
+            // Older clients and OTLP activity may omit names. Keep the last accepted
+            // labels until a genuinely newer observation explicitly replaces them.
+            const display_name = e.metadata.display_name ?? old?.display_name;
+            const project_name = e.metadata.project_name ?? old?.project_name;
             row.sessions[sessionId] = {
               id: sessionId,
               source_id: e.source_id,
               external_session_id: e.external_session_id,
               harness: e.metadata.harness,
               activity: e.metadata.activity,
+              ...(display_name ? { display_name } : {}),
+              ...(project_name ? { project_name } : {}),
+              ...(learning_association ? { learning_association } : {}),
               sequence: e.sequence,
               ingestion_epoch: row.ingestion_epoch ?? 0,
               ...(e.source_time ? { source_time: e.source_time } : {}),
@@ -696,9 +759,14 @@ export class Observations {
               updated_at: at,
               usage_by_day: old?.usage_by_day ?? {},
             };
-          if (e.usage) {
+          }
+          // Polling reports durable counter deltas in sequence order. A new UUID must not
+          // make a stale sequence count twice; native OTLP requests can legitimately arrive late.
+          if (e.usage && (mode === "otlp" || newer)) {
             const session = row.sessions[sessionId]!;
-            const date = at.slice(0, 10);
+            const date = mode === "polling"
+              ? new Date(e.occurred_at).toISOString().slice(0, 10)
+              : at.slice(0, 10);
             const day = (session.usage_by_day[date] ??= {});
             const previous = Object.hasOwn(day, e.usage.model)
               ? day[e.usage.model]
@@ -939,14 +1007,14 @@ export class Observations {
           this.now();
         const terminal = ["finished", "failed", "stopped"].includes(s.activity);
         const summary = summaries.get(s.id);
-        const { usage_by_day, ingestion_epoch, ...shown } = s;
+        const { usage_by_day, ingestion_epoch, learning_association, ...shown } = s;
         sessions.push({
           ...shown,
           connector_id: row.id,
           workspace_id: "local",
           kind: "connected_session",
           state: "active",
-          display_name: `${row.display_name} · ${s.harness === "claude" ? "Claude Code" : "Codex"}`,
+          display_name: s.display_name ?? `${s.harness === "claude" ? "Claude Code" : "Codex"} · ${s.external_session_id.slice(-8)}`,
           reported_activity: s.activity,
           activity: terminal
             ? s.activity
@@ -956,6 +1024,9 @@ export class Observations {
           connection_state: connector.connection_state,
           selection_active: active,
           observation_only: true,
+          learning: this.learning
+            ? await this.learning.view(learning_association, s.harness === "claude" ? "claude-code" : "codex")
+            : unboundLearning(learning_association?.readiness),
           models: [...(summary?.models ?? [])],
           usage: {
             ...(summary?.usage ?? unavailable()),

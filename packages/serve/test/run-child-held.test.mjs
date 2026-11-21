@@ -163,12 +163,13 @@ test("a run's process reads no channel post: a webhook post, its own run's or an
   assert.ok(lines.some((line) => /asked the store for channels\.get, which a run's process may not/.test(line)), lines.join("\n"));
 });
 
-test("a run that runs no agent's code here stays in its runner: a learning run, an SDK backend run and a native run; any other run is a process of its own", () => {
+test("a run that runs no agent's code here stays in its runner: a learning run, an SDK backend run, a CLI capture and a native run; any other run is a process of its own", () => {
   assert.equal(typeof host.runsInRunner, "function", "the runner says which runs stay in it");
   assert.equal(host.runsInRunner("learning", {}), true, "a learning run");
   assert.equal(host.runsInRunner("claude-agent", { sdk: { runtime: "claude-agent-sdk", instructions: "Policy." } }), true, "an SDK backend run");
   assert.equal(host.runsInRunner("pi", { native: { runtime: "claude-code", remote: { connector_id: "c-1" } } }), true, "a native run");
-  for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(host.runsInRunner(harness, {}), false, harness);
+  assert.equal(host.runsInRunner("cli", { cli_learning: { runtime: "codex-cli", connection_id: "connection", session_id: "session", turn_id: "turn" } }), true, "a source CLI capture runs no agent code here");
+  for (const harness of ["pi", "claude-agent", "codex", "cli"]) assert.equal(host.runsInRunner(harness, {}), false, harness);
 });
 
 /** staysInRunner's deps for a run of a revision of `kind`, with Claude Code's login on this machine turned on when

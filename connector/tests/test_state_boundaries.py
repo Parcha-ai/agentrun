@@ -110,6 +110,26 @@ class StateBoundaries(unittest.TestCase):
         self.assertEqual(len(rows), 1); self.assertEqual(diagnostic['reason'], 'stopped')
         self.assertEqual(calls.count('thread/read'), 1)
 
+    def test_codex_lists_loaded_subagents_before_bounded_all_source_history(self):
+        calls = []
+        class Socket:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def send(self, message):
+                self.message = json.loads(message)
+                if 'id' in self.message: calls.append(self.message)
+            def recv(self, timeout):
+                method = self.message['method']
+                result = ({'data': ['active-child']} if method == 'thread/loaded/list' else
+                          {'thread': {'id': 'active-child', 'status': {'type': 'active'}}} if method == 'thread/read' else
+                          {'data': [{'id': 'history'}, {'id': 'active-child'}], 'nextCursor': None} if method == 'thread/list' else {})
+                return json.dumps({'id': self.message['id'], 'result': result})
+        with patch.object(adapters, 'command_json', return_value={'status': 'running', 'socketPath': '/fixture/codex.sock'}), patch.object(adapters.Path, 'is_socket', return_value=True), patch.object(adapters, 'unix_connect', return_value=Socket()):
+            rows = adapters.codex_rows()
+        self.assertEqual([row['id'] for row in rows], ['active-child', 'history'])
+        requested = next(call['params']['sourceKinds'] for call in calls if call['method'] == 'thread/list')
+        self.assertTrue({'cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentThreadSpawn', 'unknown'} <= set(requested))
+
     def test_server_mode_survives_response_validation(self):
         response = {'connector': {'id': 'connector', 'workspace_id': 'workspace', 'selections_revision': 1, 'selections': [], 'ingestion_mode': 'otlp'},
                     'credential': 'fixture-credential', 'credential_expires_at': '2099-01-01T00:00:00Z'}

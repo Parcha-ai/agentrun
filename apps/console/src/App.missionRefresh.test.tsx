@@ -34,7 +34,8 @@ async function mount(answerStats: (n: number, url: URL) => Response | Promise<Re
     if (u.pathname === "/v2/auth/session") return json({ password_set: true, signed_in: true });
     if (u.pathname === "/v2/capabilities") return json({ models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
     if (u.pathname === "/v2/health") return json({ status: "ok" });
-    if (u.pathname === "/v2/agents") return json({ agents: [], next_cursor: null });
+    // A connected agent remains visible independently of the stats/recent-run refreshes below.
+    if (u.pathname === "/v2/agents") return json({ agents: u.searchParams.get("archived") === "true" ? [] : [{ agent_id: "calc", kind: "agentic", archived_at: null, revision: "r1", revisions: 1, definition: { version: 1, name: "Calculator", instructions: "Help", tools: [], skills: [] } }], next_cursor: null });
     if (u.pathname === "/v2/stats") { statsCalls.push(u); return answerStats(statsCalls.length, u); }
     if (u.pathname === "/v2/runs" && u.searchParams.get("limit") === "10" && !u.searchParams.has("status")) { recentCalls.push(u); return answerRecent(recentCalls.length); }
     if (u.pathname === "/v2/runs") return json({ runs: [], next_cursor: null });
