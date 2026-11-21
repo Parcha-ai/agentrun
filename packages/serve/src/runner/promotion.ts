@@ -354,7 +354,7 @@ export function attemptOf(records: readonly PromotionRecord[], name: string, dig
   if (!before) return newCompileAttempt(records.filter((one) => one.digest !== digest));
   if (before.decided !== "hold") return 1;
   if (before.audit) return before.audit.stopped ? 1 : 2;
-  if (heldOnGiveBacks(before)) return before.check!.attempt;
+  if (before.check && heldOnGiveBacks(before.check)) return before.check.attempt;
   return !before.check || (before.check.attempt === 1 && !before.check.stopped) ? 2 : 1;
 }
 
@@ -658,8 +658,17 @@ type ReplayInput = { readonly run: string; readonly launch: RunLaunch };
  *  that lands starts the count again) before it holds the draft, never promoted and never stopped for good, for the next
  *  compile to revise and check afresh: five in a row say the integration cannot give a baseline now, not that it never will. */
 export const SDK_CHECK_RELEASES = 5;
-/** Whether a record is a connected agent's check held on SDK_CHECK_RELEASES give-backs in a row (releaseSdkCheck). */
-const heldOnGiveBacks = (record: PromotionRecord): boolean => record.via === "sdk" && (record.check?.released ?? 0) >= SDK_CHECK_RELEASES;
+/** Whether a hold's check is a connected agent's held on SDK_CHECK_RELEASES give-backs in a row (releaseSdkCheck): only
+ *  a connected agent's check counts give-backs. */
+const heldOnGiveBacks = (check: CheckRecord | undefined): boolean => (check?.released ?? 0) >= SDK_CHECK_RELEASES;
+
+/** Which attempt a revision compile of `held` is when its draft fails its checks (runner/learning-end.ts
+ *  recordDraftFailed): 2, the recompile, for any hold but a connected agent's on give-backs, which spends none: its
+ *  check's own attempt, until a revise of it has failed once already (the workflow's newest record that failed draft). */
+export function reviseAttemptOf(records: readonly PromotionRecord[], held: { readonly workflow: string; readonly check?: CheckRecord }): 1 | 2 {
+  if (!held.check || !heldOnGiveBacks(held.check)) return 2;
+  return newCompileAttempt(records.filter((one) => one.workflow === held.workflow)) === 2 ? 2 : held.check.attempt;
+}
 
 /** A connected agent's draft reserved on one native turn: what its start hands the caller (sdk/runs.ts receipt). */
 export type SdkWorkflowCheck = { id: string; revision: string; digest: string; workflow: LearnedWorkflow };

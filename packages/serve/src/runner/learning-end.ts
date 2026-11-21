@@ -26,7 +26,8 @@ import { CAPS, type Change, checkDraft, problemWords, type Problem, unstorable }
 import { repickSiteOf } from "../learn/check.js";
 import { repickLabelOf, repickRewrite } from "../learn/repick.js";
 import { folderAt, type FolderRead, type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
-import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
+import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, draftFailedOf, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
+import { reviseAttemptOf } from "./promotion.js";
 import { loopOf, repickOf } from "../learning-setting.js";
 import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders, draftDryRun, draftFiles, draftMcpTools, unpricedCalls, WORKFLOWS_DIR } from "../learn/workflow-draft.js";
@@ -488,12 +489,13 @@ const workflowText = (doc: unknown): string => {
  *  its reason (DRAFT_FAILED) naming the failed checks. A first compile's earns the one recompile, as a check's hold
  *  does (the agent's next due run compiles once more: learn/compile.ts newCompileAttempt); a recompile's (a revision of
  *  a held workflow, or a new one after a first compile's failed drafts) stops (compileStoppedOf, heldNamesOf): nothing
- *  compiles it again. One record per run (its digest is the run's), written once: a claim that ends the run again
+ *  compiles it again. A revision of a connected agent's hold on give-backs is no recompile (runner/promotion.ts
+ *  reviseAttemptOf). One record per run (its digest is the run's), written once: a claim that ends the run again
  *  writes none. */
 export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "log">, input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }): Promise<void> {
   try {
     const records = await promotionsOf(deps.store.settings, input.agentId);
-    const attempt = input.compile.mode === "revise" ? 2 : newCompileAttempt(records);
+    const attempt = input.compile.mode === "revise" ? reviseAttemptOf(records, input.compile.held) : newCompileAttempt(records);
     const { compile_after, agree_min, alone_min } = await loopOfRun(deps.store, input.runId);
     const workflow = input.compile.mode === "revise" ? input.compile.workflow : input.workflow;
     const digest = createHash("sha256").update(`draft-failed\n${input.runId}`).digest("hex").slice(0, 16);
@@ -626,8 +628,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   if (read.held) {
     // Once per hold: a run since it that compiled this workflow asked already, whatever came of it (its revision is on its
     // way to a replay, or its draft failed its checks), however many runs ago. Read from the agent's kept learning since
-    // the hold, never a window of its last runs; one that can't be read asks nothing.
-    const since = Date.parse(read.held.at);
+    // the hold, never a window of its last runs; one that can't be read asks nothing. A draft that failed since, not stopped
+    // (only a revise of a connected agent's hold on give-backs: reviseAttemptOf), asks once more: counted from it.
+    const failed = records.findLast((one) => one.workflow === read.held!.workflow && draftFailedOf(one) && !one.check?.stopped && !(one.at < read.held!.at));
+    const since = Date.parse(failed?.at ?? read.held.at);
     const kept = await deps.store.learning.proposals(input.agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
     if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return sayLeftOut(), undefined;
     const { workflow, digest, reason, check, audit } = read.held;
