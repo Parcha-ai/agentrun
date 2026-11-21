@@ -54,8 +54,9 @@ function postgresUnicodeRefusal(error: unknown): boolean {
 
 /** Postgres SQL for JSON text `column` with its escaped NULs and surrogates (\u0000, \ud800-\udfff) read as escaped
  *  spaces, for a read of one number or id out of a document whose other strings may hold one (0026_run_disk.sql does
- *  the same). A replaced escape stays an escape (an escaped backslash before u0000 keeps its own), so it is still JSON. */
-const postgresReadableJson = (column: string): string => `regexp_replace(${column}, '\\\\u(0000|[dD][89a-fA-F][0-9a-fA-F]{2})', '\\\\u0020', 'g')`;
+ *  the same). A replaced escape stays an escape, so it is still JSON. Only an escape is replaced: u0000 after an escaped
+ *  backslash (the text \u0000 in an id, written \\u0000) is text and is kept, so an id reads as it is. */
+const postgresReadableJson = (column: string): string => `regexp_replace(${column}, '(?<!\\\\)((?:\\\\\\\\)*)\\\\u(0000|[dD][89a-fA-F][0-9a-fA-F]{2})', '\\1\\\\u0020', 'g')`;
 
 /** Project accounting facts before crossing the database boundary. An SDK inbox can contain megabytes of replay;
  *  the raw-JSON projection preserves strings, nulls and invalid scalar shapes equally on SQLite and Postgres.
