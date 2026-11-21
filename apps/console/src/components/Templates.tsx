@@ -403,11 +403,12 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
           <p className="mb-3 text-lead">{change.said(made.revision_version)}. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-body" role="status" aria-label="Warnings">
             {made.warnings.map((w, i) => {
-              // A webhook trigger's (triggers.<i>.secret): the trigger the apply made (trigger_ids, in the template's order)
+              // A webhook trigger's (triggers.<i>.secret, <i> the package's index): the trigger the apply made of that name
+              // (apply keys triggers by name; a skipped trigger is in no list of the answer, so the index is not its place there)
               // opens from here, where its secret is shown with Rotate. One webhook_secrets speaks for gets its link there.
               const hook = /^triggers\.(\d+)\.secret$/.exec(w.field);
-              const id = hook ? made.trigger_ids[Number(hook[1])] : undefined;
               const named = hook ? t.triggers[Number(hook[1])]?.name : undefined;
+              const id = typeof named === "string" && named ? made.triggers.find((x) => x.name === named)?.trigger_id : undefined;
               if (id && made.webhook_secrets?.some((x) => x.trigger_id === id)) return <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}</li>;
               return (
                 <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}
@@ -421,9 +422,8 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
             this screen's state alone, never stored or logged), beside its URL; else the server's note and the trigger to
             rotate it from. */}
         {made.webhook_secrets?.map((x) => {
-          const index = made.trigger_ids.indexOf(x.trigger_id);
-          const named = index >= 0 ? t.triggers[index]?.name : undefined;
-          const name = typeof named === "string" && named ? named : x.trigger_id;
+          const named = made.triggers.find((one) => one.trigger_id === x.trigger_id)?.name;
+          const name = named || x.trigger_id;
           return x.signing_secret
             ? <SecretOnce key={x.trigger_id} label={`The webhook's URL and secret (${name})`} url={hookUrlOf({ id: x.trigger_id })} secret={x.signing_secret} />
             : (
