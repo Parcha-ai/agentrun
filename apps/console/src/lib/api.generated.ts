@@ -4132,6 +4132,28 @@ export interface operations {
           stopped?: true;
           released?: number;
           fresh_reads?: number;
+          turns?: {
+            n: number;
+            agreed: number;
+            alone: number;
+            of: string[];
+            outcomes: {
+              answered: number;
+              handed_back: number;
+              failed: number;
+              skipped_write: number;
+            };
+            disagreements?: {
+              run: string;
+              input: string;
+              agent: string | null;
+              draft?: string;
+              escalated?: string;
+              failed?: true;
+              differs_on?: string;
+            }[];
+            fresh_reads?: number;
+          };
         };
         runs?: string[];
         inputs?: string[];
@@ -4221,6 +4243,28 @@ export interface operations {
             stopped?: true;
             released?: number;
             fresh_reads?: number;
+            turns?: {
+              n: number;
+              agreed: number;
+              alone: number;
+              of: string[];
+              outcomes: {
+                answered: number;
+                handed_back: number;
+                failed: number;
+                skipped_write: number;
+              };
+              disagreements?: {
+                run: string;
+                input: string;
+                agent: string | null;
+                draft?: string;
+                escalated?: string;
+                failed?: true;
+                differs_on?: string;
+              }[];
+              fresh_reads?: number;
+            };
           } | null;
         } | null;
       }[];
