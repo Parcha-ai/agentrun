@@ -36,6 +36,12 @@
 //   tally: a file the takes of a `retitled` native step are counted in: a step {native, title, retitled: [t2, t3, ...]}
 //          asks with its title the first time and with the next of `retitled` each time it is taken again (the last
 //          one repeats), its input's command that title, as Cursor writes a new command after a restart.
+//   auth: {methods, home, key, leak}: initialize lists the sign-in methods `methods` (ids); session/new and
+//         session/load are refused (authRequired) until `authenticate` takes one. `home` {method, env, file}: that
+//         method reads `file` in the folder the variable `env` names, the sign-in a person's own login left there, and
+//         rewrites it as an agent refreshing its token does. `key` {method, env}: that method reads the key in the
+//         variable `env`. `leak`: at session/new, say the token or key it signed in with: "exit" on stderr, then exit 1;
+//         "answer" in the words of the error it answers, alive.
 // A script step {hang: true} is a model that never answers (until a cancel the agent heeds).
 // The step the model takes is the number it took before: its session's history (calls, native calls, answers), plus the
 // calls a recovery or context note names that its history does not hold, as a resumed model reads its conversation.
@@ -333,6 +339,32 @@ async function takeTurn(client, session, prompt, signal) {
   }
 }
 
+/** What `authenticate` signed in with (auth): the token's or the key's text; undefined before. */
+let signedIn;
+/** Refuses a session before the sign-in, where the config signs in; says it, where the config leaks it. */
+const needsSignIn = () => {
+  if (!config.auth) return;
+  if (signedIn === undefined) throw RequestError.authRequired();
+  if (config.auth.leak === "exit") {
+    process.stderr.write(`fake-acp: the vendor refused the sign-in ${signedIn}\n`);
+    process.exit(1);
+  }
+  if (config.auth.leak === "answer") throw RequestError.internalError(undefined, `the vendor refused the sign-in ${signedIn}`);
+};
+/** The sign-in `methodId` reads, or undefined when it has none. */
+const signInWith = (methodId) => {
+  const { home: login, key } = config.auth ?? {};
+  if (login && methodId === login.method) {
+    const file = process.env[login.env] ? join(process.env[login.env], login.file) : undefined;
+    if (!file || !existsSync(file)) return undefined;
+    const text = readFileSync(file, "utf8");
+    writeFileSync(file, `${text.trim()}\n`);
+    return text.trim();
+  }
+  if (key && methodId === key.method) return process.env[key.env] || undefined;
+  return undefined;
+};
+
 const app = agent({ name: "fake-acp" })
   .onRequest("initialize", () => ({
     protocolVersion: 1,
@@ -342,8 +374,17 @@ const app = agent({ name: "fake-acp" })
       ...(config.systemPrompt ? { sessionCapabilities: { systemPrompt: {} } } : {}),
     },
     agentInfo: { name: "fake-acp", version: "1.0.0" },
+    authMethods: (config.auth?.methods ?? []).map((id) => ({ id, name: id })),
   }))
+  .onRequest("authenticate", ({ params }) => {
+    const text = signInWith(params.methodId);
+    if (text === undefined) throw RequestError.authRequired({ methodId: params.methodId });
+    said({ type: "authenticate", methodId: params.methodId, sha: createHash("sha256").update(text).digest("hex") });
+    signedIn = text;
+    return {};
+  })
   .onRequest("session/new", async ({ params }) => {
+    needsSignIn();
     if (config.failNew) {
       process.stderr.write(`${config.failNew}\n`);
       process.exit(1);
@@ -362,6 +403,7 @@ const app = agent({ name: "fake-acp" })
     return {};
   })
   .onRequest("session/load", async ({ params, client }) => {
+    needsSignIn();
     const file = join(store, `${params.sessionId}.json`);
     if (!loads || !existsSync(file)) throw RequestError.resourceNotFound(params.sessionId);
     const { history } = JSON.parse(readFileSync(file, "utf8"));

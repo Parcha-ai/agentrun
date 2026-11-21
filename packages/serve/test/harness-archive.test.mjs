@@ -280,6 +280,6 @@ test("a format this installer does not unpack is refused before anything downloa
   const release = await fakeCursor(t);
   const served = await origin(t, release.bytes, "/cursor.tar.gz");
   const dir = join(await scratch(t), "harnesses", "cursor");
-  await assert.rejects(installArchive(cursorOf(served.url, release, { format: "zip" }), dir, { platform: PLATFORM }), (error) => error.code === "HARNESS_PLATFORM_UNSUPPORTED" && /tar\.bz2 and tar\.gz/.test(error.message));
+  await assert.rejects(installArchive(cursorOf(served.url, release, { format: "7z" }), dir, { platform: PLATFORM }), (error) => error.code === "HARNESS_PLATFORM_UNSUPPORTED" && /tar\.bz2, tar\.gz and zip/.test(error.message));
   assert.deepEqual(served.asked, []);
 });

@@ -29,7 +29,7 @@ import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
 import type { AdapterNeeds } from "./adapters.js";
 import { ARCHIVE_CODES, archivePlatform, digestOf } from "./harness-archive.js";
 import { installDirOf } from "./harness-install.js";
-import { AGENT_VARS, loadRecipe, pinnedDigest, type Recipe, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor } from "./harness-recipe.js";
+import { AGENT_VARS, loadRecipe, pinnedDigest, pinnedTree, type Recipe, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor } from "./harness-recipe.js";
 import { acpEntryOf } from "./harness-table.js";
 import { providerModels } from "./model.js";
 import { capModelOf } from "./runner/cli-run-spec.js";
@@ -44,6 +44,9 @@ const NO_PROXY_VARS = ["NO_PROXY", "no_proxy"];
 const SHELL_OWN = ["PWD", "OLDPWD", "SHLVL", "_"];
 
 export const CHECK_DEFAULT_CAP_USD = 0.25;
+/** A recipe that signs in with a person's own account alone (recipe.signIn, no keys): its vendor's terms allow that on
+ *  attended runs alone, and a check is not one. */
+export const HARNESS_SIGN_IN_ATTENDED = "HARNESS_SIGN_IN_ATTENDED";
 const TURN_MS = 240_000;
 
 export interface HarnessCheckOptions {
@@ -246,6 +249,11 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   const head = { recipe: { id: recipe.id, label: recipe.label, file: loaded.file, sha256: loaded.sha256 }, checkedAt } as const;
   const refuse = (code: string, message: string): HarnessCheckReport => ({ ok: false, ...head, refused: { code, message: `${code}: ${message}` }, failures: [`${code}: ${message}`] });
   say(`${recipe.label}: the recipe holds the five rules (${loaded.file})`);
+  // A person's own sign-in runs on attended runs alone, as its vendor's terms allow (HARNESS.md#vendor-terms): a check is
+  // unattended, so it runs on the recipe's keys, and a recipe with none is refused here, before anything starts.
+  if (recipe.signIn && !recipe.keys.length) {
+    return refuse(HARNESS_SIGN_IN_ATTENDED, `${recipe.label} signs in with a person's own ${recipe.signIn.method}, which its vendor's terms allow on a run its one owner started by hand and is at; harness-check is not one. Check it on a key: name one saved for this harness alone in keys (for a Gemini agent, { "name": "${recipe.id.toUpperCase().replace(/-/g, "_")}_GEMINI_API_KEY", "env": "GEMINI_API_KEY" } with keyMethod "gemini-api-key", an AI Studio key)`);
+  }
 
   // Stage 2's pins: the installed binary, the one the owner's install put there. Nothing is downloaded here.
   const platform = options.platform ?? archivePlatform();
@@ -261,6 +269,15 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
 
   const acp = acpPackage();
   if (!acp) return refuse("HARNESS_NOT_INSTALLED", `the ACP adapter (${ACP_PACKAGE}) is not installed beside this server`);
+  // Every file beside the binary (a launcher's code, a server's sidecar): the recipe's treeSha256, else the tree its
+  // install recorded. One installed before trees were recorded is installed again, so nothing in it runs unpinned.
+  const installed = installDirOf(options.data, recipe.id);
+  const treePin = pinnedTree(options.data, recipe, release, platform);
+  if (!treePin) return refuse("HARNESS_NOT_INSTALLED", `${recipe.label} ${recipe.release.version}'s files beside its binary were never recorded by its install, so they cannot be checked. Install it again with: ${line}`);
+  const treeNow = async () => acp.treeDigest(installed).catch(() => undefined);
+  const treeFound = await treeNow();
+  if (treeFound !== treePin.sha256) return refuse(ARCHIVE_CODES.binary, `${installed} has the tree sha256 ${treeFound ?? "(unreadable)"}, and ${treePin.by === "recipe" ? "the recipe pins" : "its first install recorded"} ${treePin.sha256}. Install it again with: ${line}`);
+  say(`${recipe.label}: every file beside the binary is the pinned tree (${treePin.by === "recipe" ? "the recipe's treeSha256" : "the tree its install recorded"})`);
 
   // The run's model, for a recipe billed through the proxy: named here; its key, the login refusal and its price are its
   // entry's (below), as a server's are.
@@ -321,13 +338,20 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   for (const name of NO_PROXY_VARS) childVars[name] = `${LOOPBACK},localhost`; // key-gate: loopback-rule the hosts the agent reaches without the refusing proxy: the model proxy and MCP on this machine
   // The run's model id reaches a proxy-billed agent under the variable its recipe names.
   const modelVar = recipe.model.billing === "proxy" ? recipe.model.env : undefined;
+  // The plan's model, where the recipe names one: chosen among those the agent lists (session/set_model).
+  const planModel = recipe.model.billing === "plan" ? recipe.model.id : undefined;
   const acpRecipeOf = (model?: string): AcpRecipe => ({
     id: recipe.id,
     label: recipe.label,
     command: binary,
-    args: [...recipe.args],
+    // The platform's own arguments, where its release lists them (Antigravity's linux `--uid=`), else the recipe's.
+    args: [...(release.args ?? recipe.args)],
     env: { ...childVars, ...(modelVar && model !== undefined ? { [modelVar]: model } : {}) },
     keys: [...recipe.keys],
+    // Each key under the name its agent reads (a key entry's env), and the method it signs in with on them.
+    ...(Object.keys(recipe.keyEnv).length ? { keyEnv: { ...recipe.keyEnv } } : {}),
+    ...(recipe.keyMethod ? { authMethod: recipe.keyMethod } : {}),
+    ...(planModel ? { model: planModel } : {}),
     files: { ...recipe.files },
     state: [...recipe.state],
     declares: { ...recipe.declares },
@@ -340,6 +364,8 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     const now = await digestOf(command);
     starts.push(now);
     if (now !== pin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: ${command} changed after the check began (sha256 ${now})`);
+    const tree = await treeNow();
+    if (tree !== treePin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: the files beside ${command} changed after the check began (tree sha256 ${tree ?? "(unreadable)"})`);
   };
   // A recipe starts as an ACP agent outside the built-ins does on a server (harness-table.ts acpEntryOf), on this check's
   // log and host environment. Proxy-billed: as a module's, its model and key chosen and a login refused there, its price,
@@ -364,7 +390,7 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     recipe: () => acpRecipeOf(),
     beforeStart,
   }, { log });
-  const planNeeds: AdapterNeeds = { model: { provider: recipe.id, modelId: "default" }, models: { getModel: () => undefined } };
+  const planNeeds: AdapterNeeds = { model: { provider: recipe.id, modelId: planModel ?? "default" }, models: { getModel: () => undefined } };
   const adapterFor = async (): Promise<AgentAdapter> => entry.adapter!(hostEnv, needs ?? planNeeds);
   // The first runner's adapter is made before any turn, so a model this server can't run is refused before the agent
   // starts; with it, the cap's model, priced here or refused.
@@ -445,8 +471,9 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
 
     // Stage 2: the environment is the allowlist.
     if (environ) {
-      // The recipe's keys too: the adapter hands each over by name (recipe.keys), never through childVars.
-      const expected = new Set([...Object.values(AGENT_VARS).flat(), ...Object.keys(childVars), ...(modelVar ? [modelVar] : []), ...recipe.keys, ...SHELL_OWN]);
+      // The recipe's keys too: the adapter hands each over under the name its agent reads (recipe.keyEnv, else its own),
+      // never through childVars.
+      const expected = new Set([...Object.values(AGENT_VARS).flat(), ...Object.keys(childVars), ...(modelVar ? [modelVar] : []), ...recipe.keys.map((name) => recipe.keyEnv[name] ?? name), ...SHELL_OWN]);
       const extra = Object.keys(environ).filter((name) => !expected.has(name)).sort();
       const leaked = Object.entries(environ).filter(([, value]) => hostKeys.includes(value) || value === canary).map(([name]) => name).sort();
       stage2.env_allowlist = { ok: extra.length === 0 && leaked.length === 0, names: Object.keys(environ).sort(), beyondAllowlist: extra, hostSecretsSeen: leaked };

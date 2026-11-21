@@ -55,6 +55,25 @@ export const HARNESS_INSTALL = {
   },
 };
 
+export const HARNESS_SIGN_IN = {
+  command: ["harness", "sign-in"],
+  pathParams: [],
+  summary: "Sign a recipe's agent in to your own account with the agent's own sign-in, in this terminal (Antigravity's oauth-personal), for runs you start and attend",
+  help: [
+    ["--recipe FILE", "the recipe file, whose signIn names the method; its agent installed first with agentrun harness install --recipe FILE"],
+    ["--data DIR", "the data directory the recipe's agent was installed into (default ~/.agentrun)"],
+  ],
+  options: { recipe: { type: "string" } },
+  async run({ values, env, cli }) {
+    if (values.recipe === undefined) throw cli.fail(2, "agentrun harness sign-in needs --recipe FILE.");
+    const launcher = await launcherOf(cli, "signs a harness in");
+    // The agent prints where to sign in on this terminal itself, and keeps its sign-in in its own folder: no key is
+    // needed, so none reaches it.
+    const keyless = Object.fromEntries(Object.entries(env).filter(([key]) => !KEY_NAMED.test(key)));
+    return spawnSync(launcher, ["sign-in-harness", "--recipe", resolve(values.recipe), "--data", dataOf(values, env)], { stdio: "inherit", env: keyless }).status ?? 1;
+  },
+};
+
 export const HARNESS_CHECK = {
   command: ["harness-check"],
   pathParams: [],

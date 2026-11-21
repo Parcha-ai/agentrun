@@ -12,19 +12,64 @@
 //              not tie to our tool, so its permission reaches the host's gate as the agent's own (`acp_other`);
 //   plan       billed on its vendor's plan: its model is MODEL_AGENT_VENDOR (host:port), reached through HTTPS_PROXY's
 //              CONNECT on its own key MODEL_AGENT_API_KEY, as a plan-billed agent reaches its vendor beyond loopback;
-//   leak-key   at each prompt, says on stderr that its vendor refused its key, the key MODEL_AGENT_API_KEY written out,
+//   leak-key   at each prompt, says on stderr that its vendor refused its key, its key (vendorKey) written out,
 //              and exits 1: a vendor CLI that echoes its key on an auth failure. MODEL_AGENT_LEAK_AFTER: that many
 //              characters more after it on the line (diagnostics), so a cut of the last words lands inside the key.
 // Its model is MODEL_AGENT_MODEL; the proxy's address is ANTHROPIC_HOST, else ANTHROPIC_BASE_URL (the recipe's hostEnv).
+// Beside the mode:
+//   MODEL_AGENT_WANT_ARG  an argument it must be started with (a registry's per-platform args): without it, it exits 2.
+//   MODEL_AGENT_MODELS    model ids, comma-separated: session/new lists them (the first current), session/set_model
+//                         picks one, and its vendor requests name the one picked.
+//   MODEL_AGENT_AUTH      set: it signs in as Antigravity does, answering session/new and session/load only after
+//                         `authenticate` with one of the two methods it lists. `model-agent-api-key`: its key
+//                         MODEL_AGENT_API_KEY. `model-agent-login`: a person's own sign-in, kept in token.json in the
+//                         folder MODEL_AGENT_HOME names, whose text it then sends as its vendor key; with none there, it
+//                         signs in as Google's installed-app flow does: it listens on loopback, says on stderr the URL to
+//                         open (whose redirect_uri is that listener), and writes the file once the browser's redirect
+//                         lands there with a code.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { request as httpRequest } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { agent, ndJsonStream, RequestError } from "@agentclientprotocol/sdk";
 
 const mode = process.env.MODEL_AGENT_MODE ?? "good";
 const loads = mode !== "no-load";
+const wantArg = process.env.MODEL_AGENT_WANT_ARG;
+if (wantArg && !process.argv.slice(2).includes(wantArg)) {
+  process.stderr.write(`model-agent: started without ${wantArg}\n`);
+  process.exit(2);
+}
+const listed = (process.env.MODEL_AGENT_MODELS ?? "").split(",").filter(Boolean);
+const auth = Boolean(process.env.MODEL_AGENT_AUTH);
+/** The variable it reads its own key from: MODEL_AGENT_READS names another (GEMINI_API_KEY, as Antigravity reads). */
+const keyEnv = process.env.MODEL_AGENT_READS ?? "MODEL_AGENT_API_KEY";
+const signInFile = process.env.MODEL_AGENT_HOME ? join(process.env.MODEL_AGENT_HOME, "token.json") : undefined;
+/** The method `authenticate` took, where it signs in at all. */
+let signedIn;
+/** The vendor key: the person's sign-in's text when it signed in with one, else its own key. */
+const vendorKey = () => (signedIn === "model-agent-login" ? readFileSync(signInFile, "utf8").trim() : process.env[keyEnv] ?? "");
+
+/** Signs in as an installed-app OAuth flow does on a machine with no browser: a listener on loopback, the URL to open
+ *  said on stderr, and the code the browser's redirect brings written to the sign-in file. */
+const signIn = () => new Promise((resolve, reject) => {
+  const listener = createServer((req, res) => {
+    const code = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("code");
+    if (!code) return void (res.writeHead(400), res.end("no code"));
+    mkdirSync(dirname(signInFile), { recursive: true });
+    writeFileSync(signInFile, `signed-${code}\n`, { mode: 0o600 });
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end("The authentication flow has completed. You may close this window.");
+    listener.close();
+    resolve();
+  });
+  listener.on("error", reject);
+  listener.listen(0, "127.0.0.1", () => {
+    const redirect = `http://127.0.0.1:${listener.address().port}/`;
+    process.stderr.write(`Please visit this URL to authorize this application: https://accounts.example.invalid/o/oauth2/auth?client_id=model-agent&redirect_uri=${encodeURIComponent(redirect)}\n`);
+  });
+});
 const store = join(process.env.HOME ?? "/nonexistent", ".model-agent", "sessions");
 const sessions = new Map();
 const save = (session) => {
@@ -56,7 +101,7 @@ const vendorPost = (body) => new Promise((resolve, reject) => {
   tunnel.on("connect", (res, socket) => {
     if (res.statusCode !== 200) return (socket.destroy(), refused(res.statusCode));
     const at = vendor.lastIndexOf(":");
-    const headers = { "content-type": "application/json", "x-api-key": process.env.MODEL_AGENT_API_KEY ?? "", "anthropic-version": "2023-06-01", connection: "close" };
+    const headers = { "content-type": "application/json", "x-api-key": vendorKey(), "anthropic-version": "2023-06-01", connection: "close" };
     const req = httpRequest({ host: vendor.slice(0, at), port: Number(vendor.slice(at + 1)), method: "POST", path: "/v1/messages", createConnection: () => socket, headers });
     req.on("error", reject);
     req.on("response", (answer) => {
@@ -104,7 +149,7 @@ async function openSession(id, params, messages) {
 async function ask(session) {
   const offered = session.tools.map((t) => ({ name: `agentrun__${t.name}`, description: t.description ?? "", input_schema: t.inputSchema ?? { type: "object" } }));
   if (mode === "own-tools") offered.push({ name: "shell", description: "Run a shell command.", input_schema: { type: "object", properties: { command: { type: "string" } } } });
-  const body = JSON.stringify({ model: process.env.MODEL_AGENT_MODEL, max_tokens: 1024, stream: true, messages: session.messages, tools: offered });
+  const body = JSON.stringify({ model: session.model ?? process.env.MODEL_AGENT_MODEL, max_tokens: 1024, stream: true, messages: session.messages, tools: offered });
   const response = mode === "plan"
     ? await vendorPost(body)
     : await fetch(`${process.env.ANTHROPIC_HOST ?? process.env.ANTHROPIC_BASE_URL}/v1/messages`, {
@@ -175,14 +220,44 @@ async function takeTurn(client, session, prompt) {
 
 if (mode === "side") await phoneHome();
 
+/** Refuses a session before the agent signed in, where it signs in at all. */
+const needsSignIn = () => {
+  if (auth && !signedIn) throw RequestError.authRequired();
+};
+
 const app = agent({ name: "model-agent" })
-  .onRequest("initialize", () => ({ protocolVersion: 1, agentCapabilities: { loadSession: loads, mcpCapabilities: { http: true, sse: false } }, agentInfo: { name: "model-agent", version: "1.0.0" } }))
+  .onRequest("initialize", () => ({
+    protocolVersion: 1,
+    agentCapabilities: { loadSession: loads, mcpCapabilities: { http: true, sse: false } },
+    agentInfo: { name: "model-agent", version: "1.0.0" },
+    authMethods: auth ? [{ id: "model-agent-login", name: "Sign in with Model Agent" }, { id: "model-agent-api-key", name: "Model Agent API key" }] : [],
+  }))
+  .onRequest("authenticate", async ({ params }) => {
+    if (!auth) throw RequestError.invalidParams({ methodId: params.methodId });
+    if (params.methodId === "model-agent-api-key") {
+      if (!process.env[keyEnv]) throw RequestError.authRequired({ methodId: params.methodId });
+    } else if (params.methodId === "model-agent-login") {
+      if (!signInFile) throw RequestError.authRequired({ methodId: params.methodId });
+      if (!existsSync(signInFile)) await signIn();
+    } else throw RequestError.invalidParams({ methodId: params.methodId });
+    signedIn = params.methodId;
+    return {};
+  })
   .onRequest("session/new", async ({ params }) => {
+    needsSignIn();
     const session = await openSession(`sess_${randomUUID()}`, params, []);
     save(session);
-    return { sessionId: session.id };
+    return { sessionId: session.id, ...(listed.length ? { models: { availableModels: listed.map((modelId) => ({ modelId, name: modelId })), currentModelId: listed[0] } } : {}) };
+  })
+  // Not in the SDK's stable methods (Cursor's unstable one): its params are taken as they come.
+  .onRequest("session/set_model", (params) => params ?? {}, ({ params }) => {
+    const session = sessions.get(params.sessionId);
+    if (!session || !listed.includes(params.modelId)) throw RequestError.invalidParams({ modelId: params.modelId });
+    session.model = params.modelId;
+    return {};
   })
   .onRequest("session/load", async ({ params }) => {
+    needsSignIn();
     const file = join(store, `${params.sessionId}.json`);
     if (!loads || !existsSync(file)) throw RequestError.resourceNotFound(params.sessionId);
     await openSession(params.sessionId, params, JSON.parse(readFileSync(file, "utf8")).messages);
@@ -193,7 +268,7 @@ const app = agent({ name: "model-agent" })
     if (!session) throw RequestError.resourceNotFound(params.sessionId);
     if (mode === "leak-key") {
       const after = Number(process.env.MODEL_AGENT_LEAK_AFTER ?? 0);
-      process.stderr.write(`model-agent: the vendor refused the key ${process.env.MODEL_AGENT_API_KEY ?? ""} (401)${after > 0 ? ` ${".".repeat(after)}` : ""}\n`);
+      process.stderr.write(`model-agent: the vendor refused the key ${vendorKey()} (401)${after > 0 ? ` ${".".repeat(after)}` : ""}\n`);
       process.exit(1);
     }
     return takeTurn(client, session, params.prompt);
