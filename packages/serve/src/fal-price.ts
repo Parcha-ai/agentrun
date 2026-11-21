@@ -234,20 +234,21 @@ const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").
  *  from two runs (a model makes the same key for the same task) would bind the second run's request to the first's and be
  *  refused. Each key leaves as the agent's key and `.<16 hex of the run>`: the same run's key leaves the same each time,
  *  so a retry is deduped, and another run's never matches it. A key too long for KEY_MAX with that suffix keeps its start
- *  and a hash of the whole key in its place, never cut into another key. `back` reads each scoped key in a reply as the
- *  agent's: by the keys this gateway sent, else by taking the suffix off. */
+ *  and a hash of the whole key in its place, never cut into another key, and ends `:<16 hex of the run>` instead: its
+ *  shortened start is itself a valid key, and the different mark keeps an agent key that spells it from leaving as the
+ *  same key. `back` reads each scoped key in a reply as the agent's: by the keys this gateway sent, else by taking the
+ *  suffix off. */
 export function falKeys(run: string): McpKeys {
-  const tail = `.${hex16(`agentrun fal submission_key\0${run}`)}`;
+  const mark = hex16(`agentrun fal submission_key\0${run}`);
+  const tail = mark.length + 1;
   const own = new Map<string, string>();
   const scoped = (key: unknown): unknown => {
     if (typeof key !== "string" || !key) return key;
-    const fits = key.length + tail.length <= KEY_MAX ? key : `${key.slice(0, KEY_MAX - tail.length - 17)}.${hex16(key)}`;
-    const sent = `${fits}${tail}`;
+    const sent = key.length + tail <= KEY_MAX ? `${key}.${mark}` : `${key.slice(0, KEY_MAX - tail - 17)}.${hex16(key)}:${mark}`;
     own.set(sent, key);
     return sent;
   };
-  const anyScoped = new RegExp(`[A-Za-z0-9._:-]+${tail.replace(".", "\\.")}(?![A-Za-z0-9._:-])`, "g");
-  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const anyScoped = new RegExp(`[A-Za-z0-9._:-]+[.:]${mark}(?![A-Za-z0-9._:-])`, "g");
   return {
     out(tool, args) {
       if (!KEYED.has(tool)) return args;
@@ -256,10 +257,13 @@ export function falKeys(run: string): McpKeys {
       return sent;
     },
     back(text) {
-      if (!text.includes(tail)) return text;
+      if (!text.includes(mark)) return text;
+      // One pass: a key read back once is never read again, so an agent's key that ends like a scoped one stays as it is.
       const known = [...own.keys()].sort((a, b) => b.length - a.length);
-      const exact = known.length ? text.replace(new RegExp(known.map(escape).join("|"), "g"), (sent) => own.get(sent)!) : text;
-      return exact.replace(anyScoped, (sent) => sent.slice(0, -tail.length));
+      return text.replace(anyScoped, (token) => {
+        const sent = known.find((key) => token.endsWith(key));
+        return sent ? `${token.slice(0, -sent.length)}${own.get(sent)}` : token.slice(0, -tail);
+      });
     },
   };
 }
