@@ -279,6 +279,29 @@ for (const [scenario, turn] of Object.entries(releases)) test(`a turn that canno
   assert.deepEqual(champion?.check.of, [next.run_id]);
 });
 
+test('a cancelled turn is given back uncounted: cancels never stop the check', async t => {
+  const server = await setup(t);
+  const { settleSdkCheck } = await import('../dist/sdk/check.js');
+  for (let at = 1; at <= RELEASES + 1; at++) {
+    const receipt = await server.start(`cancel-${at}`);
+    assert.equal(receipt.learning.check?.digest, DIGEST, `cancel ${at} is reserved`);
+    if (at % 2) await finish(server, receipt, report(receipt), { status: 'cancelled' });
+    else {
+      // The run stopped before the backend completed its turn.
+      const deps = await settleDeps(server, receipt);
+      await settleSdkCheck({ ...deps, inbox: { ...deps.inbox, completion: undefined, closed: 'cancelled' } });
+      await cancel(server, receipt);
+    }
+    const waiting = await server.latest(flow.name);
+    assert.equal(waiting.decided, 'replaying', `cancel ${at} leaves it waiting: ${waiting.reason}`);
+    assert.equal(waiting.check.released, undefined, 'a cancel is not a give-back');
+    assert.doesNotMatch(waiting.reason, /of 5 before the check stops/);
+  }
+  const landed = await server.start('lands');
+  await finish(server, landed, report(landed));
+  assert.equal(championOf(await server.records(), flow.name)?.digest, DIGEST);
+});
+
 test(`${RELEASES} given-back turns stop the check with nothing checked and no recompile`, async t => {
   const server = await setup(t);
   for (let at = 1; at <= RELEASES; at++) {
