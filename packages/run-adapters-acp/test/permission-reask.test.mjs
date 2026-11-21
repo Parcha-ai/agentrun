@@ -25,11 +25,12 @@ const PARK = { park: true };
 const REASK_LIMIT = acp.REASK_LIMIT ?? 3;
 const REASK_CODE = acp.ACP_CODES.reaskLimit ?? 'ACP_REASK_LIMIT';
 
-/** A Cursor-style fake whose shell step asks `Run ls` first and another command each time it is taken again. */
-function reasking(dir, load) {
+/** A Cursor-style fake whose shell step asks `Run ls` first and another command each time it is taken again; `after`,
+ *  steps it takes next. */
+function reasking(dir, load, after = []) {
   const nativeLog = join(dir, 'native.log');
   const step = { native: 'execute', title: 'Run ls', input: { command: 'ls' }, retitled: ['Run ls -la', 'Run ls -la /', 'Run pwd', 'Run pwd -P', 'Run id'] };
-  const recipe = fakeRecipe(dir, { script: [step, { sayLastResult: true }], style: 'cursor', load, http: load, nativeLog, tally: join(dir, 'tally') });
+  const recipe = fakeRecipe(dir, { script: [step, ...after, { sayLastResult: true }], style: 'cursor', load, http: load, nativeLog, tally: join(dir, 'tally') });
   return { recipe, nativeLog };
 }
 
@@ -157,4 +158,46 @@ test(`an agent that asks for another command instead of the approved one ${REASK
   assert.deepEqual(lines(nativeLog), [], 'no command ran on another command\'s approval');
   const refused = fakeEvents(recipe).filter((e) => e.type === 'permission' && e.outcome === 'selected' && e.kind === 'reject_once');
   assert.equal(refused.length, 1, 'the last one is refused at the protocol');
+});
+
+for (const load of [true, false]) {
+  test(`other commands the tool's setting allows without parking never count toward ${REASK_LIMIT} (${load ? 'with' : 'without'} session/load)`, async (t) => {
+    const dir = scratch();
+    const after = [{ native: 'execute', title: 'Run cat a', input: { command: 'cat a' } }, { native: 'execute', title: 'Run cat b', input: { command: 'cat b' } }];
+    const { recipe, nativeLog } = reasking(dir, load, after);
+    const store = memorySessionStore();
+    const asked = [];
+    await parkFirst(t, recipe, store, asked);
+    // The person allowed the parked `ls`; the tool is set to allow, so every other command is allowed with no park.
+    const second = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), 'allow') });
+    await second.session.recover();
+    const end = await second.session.turnEnd();
+    assert.notEqual(end.status, 'failed', `a working turn is not cut: ${end.error}`);
+    assert.doesNotMatch(end.error ?? '', new RegExp(REASK_CODE));
+    assert.deepEqual(lines(nativeLog), ['Run ls -la', 'Run cat a', 'Run cat b'], 'each command allowed by the setting ran');
+  });
+}
+
+test('an allow-once is used once: the same request from a later agent process asks the gate again', async (t) => {
+  const dir = scratch();
+  const nativeLog = join(dir, 'native.log');
+  const recipe = fakeRecipe(dir, { script: [{ native: 'execute', title: 'Run ls', input: { command: 'ls' } }, { hang: true }], style: 'cursor', load: false, http: false, nativeLog });
+  const store = memorySessionStore();
+  const asked = [];
+  // The person allows `ls` once; it runs; the runner is lost mid-turn.
+  const first = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), 'allow') });
+  await first.session.send('list the folder');
+  await until(() => lines(nativeLog).length === 1 && fakeEvents(recipe).some((e) => e.type === 'hang'), 'ls to run and the model to hang');
+  first.stop(new Error('the runner was lost'));
+  await first.session.turnEnd().catch(() => undefined);
+
+  // The next process's agent, started without its session, asks for `ls` again: a new card, not the old allow.
+  const second = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), PARK) });
+  second.session.recover().catch(() => undefined);
+  await until(() => asked.length === 2 || lines(nativeLog).length === 2, 'the gate to be asked again, or ls to run again');
+  second.stop(new Error('the run parked'));
+  await second.session.turnEnd().catch(() => undefined);
+  assert.deepEqual(lines(nativeLog), ['Run ls'], 'ls ran once, on its one allow');
+  assert.equal(asked.length, 2, 'the gate was asked about the second ls');
+  assert.notEqual(asked[1].callId, asked[0].callId, 'under a call of its own');
 });

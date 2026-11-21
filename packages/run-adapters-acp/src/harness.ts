@@ -39,9 +39,10 @@ export const PROMPT_STREAM = "acp.prompt";
 export const CALL_STREAM = "acp.call";
 /** The permission requests for the agent's own tools: `asked` before the gate is, `answered` with what it said. */
 export const PERMISSION_STREAM = "acp.permission";
-/** How many times, in one turn, the agent may ask for another call of its own tools while a call the person allowed on a
- *  resume is still not asked for again. At the limit the request is refused and the turn ends ACP_REASK_LIMIT: an agent
- *  that writes a new command after each restart (Cursor) never gets to the approved one, and each ask parks the run. */
+/** How many of the agent's own calls, in one turn, may park on the person while a call the person allowed on a resume is
+ *  still not asked for again. At the limit the request is refused and the turn ends ACP_REASK_LIMIT: an agent that writes
+ *  a new command after each restart (Cursor) never gets to the approved one. A call the gate answers without parking (a
+ *  tool set to allow or to deny) is never counted. */
 export const REASK_LIMIT = 3;
 /** One record per tool call the agent announced (or MCP call it made unannounced): the calls a plan-billed run counts. */
 export const TOOLS_STREAM = "acp.tools";
@@ -148,9 +149,10 @@ interface Runtime {
 }
 
 type CallRecord = { type: "seen" | "answered"; callId: string; tool?: string; args?: unknown; text?: string; isError?: boolean; refused?: boolean };
-/** `asked` and `answered` as the stream's doc says; an answer taken on a resume, before the agent started again, is
- *  `settled` in its turn (`turn`, the open turn's id); `given`: the agent, asking again, got a settled answer; `reasked`:
- *  the agent asked for another call (`callId`) while an allow the person gave (`instead`) was still not asked for. */
+/** `asked` and `answered` as the stream's doc says, an answer taken on a resume before the agent started again being
+ *  `settled` in its turn (`turn`, the open turn's id); `given`: the answer was handed to the agent, which uses it up (a
+ *  later ask of the same request is a call of its own); `reasked`: another call (`callId`) parked on the person while
+ *  an allow they gave (`instead`) was still not asked for. */
 type PermissionRecord = { type: "asked" | "answered" | "given" | "reasked"; callId: string; toolCallId?: string; title?: string; kind?: string; input?: unknown; answer?: "allow" | "deny"; words?: string; settled?: true; turn?: string; instead?: string };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -428,18 +430,20 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const input = call.rawInput ?? null;
     // The request's id is the open turn's: the turn, what it asks, and which of the turn's requests that ask the same it
     // is. The records hold the ids the turn's requests took (another runner's agent process asked some of them): this
-    // process's request takes, of those it has not taken itself, the first one still waiting for its answer (the one a
-    // swap left parked), else the first one answered (the agent asking again for what it was answered), else a new one.
+    // process's request takes, of those it has not taken itself and whose answer no agent was handed (`given`: an
+    // allow-once is used once), the first one still waiting for its answer, else the first one answered (an answer a
+    // resume took, the agent asking again for it), else a new one.
     const opened = openTurn(cur.ctx.state());
     const turnId = opened?.placed[0] ?? "";
     const all = cur.journal.records<PermissionRecord>(PERMISSION_STREAM).map((r) => r.data);
     const askedIds = new Set(all.filter((r) => r?.type === "asked").map((r) => r.callId));
     const answeredIds = new Set(all.filter((r) => r?.type === "answered").map((r) => r.callId));
+    const givenIds = new Set(all.filter((r) => r?.type === "given").map((r) => r.callId));
     let callId: string | undefined;
     let firstAnswered: string | undefined;
     for (let nth = 0; callId === undefined; nth++) {
       const id = permissionCallId(turnId, { title, kind, rawInput: input }, nth);
-      if (rt.claimed.has(id)) continue;
+      if (rt.claimed.has(id) || givenIds.has(id)) continue;
       if (!askedIds.has(id)) callId = firstAnswered ?? id;
       else if (!answeredIds.has(id)) callId = id;
       else firstAnswered ??= id;
@@ -448,45 +452,57 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const records = all.filter((r) => r?.callId === callId);
     const answered = records.find((r) => r.type === "answered");
     if (answered) {
-      // An answer a resume took (settled) reaches the agent here: it asked again for the same call.
-      if (answered.settled && !records.some((r) => r.type === "given")) {
-        cur.journal.append(PERMISSION_STREAM, { type: "given", callId, turn: turnId } satisfies PermissionRecord);
-        await cur.journal.flush();
-      }
+      // An answer a resume took (settled) reaches the agent here: it asked again for the same call, and uses it up.
+      cur.journal.append(PERMISSION_STREAM, { type: "given", callId, turn: turnId } satisfies PermissionRecord);
+      await cur.journal.flush();
       return choose(answered.answer === "allow" ? "allow_once" : "reject_once");
     }
-    if (!records.some((r) => r.type === "asked")) {
-      // A new call while an allow the person gave on a resume is still not asked for: the agent asked for something else
-      // instead (Cursor writes a new command after a restart). Each such ask parks the run on the person again; past
-      // REASK_LIMIT of them in the turn, it is refused and the turn ends, saying so.
-      const given = new Set(all.filter((r) => r?.type === "given").map((r) => r.callId));
-      const unasked = all.find((r) => r?.type === "answered" && r.settled && r.turn === turnId && r.answer === "allow" && !given.has(r.callId));
-      if (unasked) {
-        const reasks = all.filter((r) => r?.type === "reasked" && r.turn === turnId).length + 1;
-        cur.journal.append(PERMISSION_STREAM, { type: "reasked", callId, turn: turnId, instead: unasked.callId } satisfies PermissionRecord);
-        await cur.journal.flush();
-        if (reasks >= REASK_LIMIT) {
-          const approved = all.find((r) => r?.type === "asked" && r.callId === unasked.callId);
-          turn.limitHit = `${ACP_CODES.reaskLimit}: the agent asked ${reasks} times for another command instead of the one the person allowed (${approved?.kind ?? "other"} ${JSON.stringify(clip(approved?.title ?? "", 300))}), so this request is refused and the turn was cancelled; nothing more of the plan is spent on it`;
-          log("acp: the agent kept asking for other calls instead of the allowed one", { limit: REASK_LIMIT });
-          turn.stop.abort();
-          void rt.agent.connection.agent.notify("session/cancel", { sessionId: rt.sessionId }).catch(() => {});
-          return choose("reject_once");
-        }
-      }
+    const fresh = !records.some((r) => r.type === "asked");
+    if (fresh) {
       cur.journal.append(PERMISSION_STREAM, { type: "asked", callId, toolCallId: call.toolCallId, title, kind, input } satisfies PermissionRecord);
       await cur.journal.flush();
     }
+    // A new call that parks on the person while an allow they gave on a resume is still not asked for: the agent asked
+    // for something else instead (Cursor writes a new command after a restart). Past REASK_LIMIT of those parks in the
+    // turn, it is refused and the turn ends, saying so. A call the gate answers at once (a tool set to allow) is the turn
+    // going on, never counted.
+    const reaskStop = async (): Promise<string | undefined> => {
+      const unasked = all.find((r) => r?.type === "answered" && r.settled && r.turn === turnId && r.answer === "allow" && !givenIds.has(r.callId));
+      if (!unasked) return undefined;
+      const reasks = all.filter((r) => r?.type === "reasked" && r.turn === turnId).length + 1;
+      cur.journal.append(PERMISSION_STREAM, { type: "reasked", callId, turn: turnId, instead: unasked.callId } satisfies PermissionRecord);
+      await cur.journal.flush();
+      if (reasks < REASK_LIMIT) return undefined;
+      const approved = all.find((r) => r?.type === "asked" && r.callId === unasked.callId);
+      return `${ACP_CODES.reaskLimit}: the agent asked ${reasks} times for another command instead of the one the person allowed (${approved?.kind ?? "other"} ${JSON.stringify(clip(approved?.title ?? "", 300))}), each waiting for the person, so this request is refused and the turn was cancelled; nothing more of the plan is spent on it`;
+    };
     let refused: { deny: string } | undefined;
-    if (options.gate) {
+    let limitHit: string | undefined;
+    const gate = options.gate;
+    if (gate) {
+      const counted = async (asking: GateCall): Promise<GateAnswer> => {
+        const answer = await gate(asking);
+        if (!fresh || answer === "allow" || "deny" in answer) return answer;
+        limitHit = await reaskStop();
+        return limitHit ? { deny: limitHit } : answer;
+      };
       try {
-        refused = await askGate(options.gate, permissionGateCall(callId, kind, title, input), AbortSignal.any([cur.signal, connection, turn.stop.signal]));
+        refused = await askGate(counted, permissionGateCall(callId, kind, title, input), AbortSignal.any([cur.signal, connection, turn.stop.signal]));
       } catch {
         // Parked, and the session let go (or the turn was cancelled): nothing is answered, nothing recorded.
         return cancelled;
       }
     }
+    if (limitHit) {
+      turn.limitHit = limitHit;
+      log("acp: the agent kept asking for other calls instead of the allowed one", { limit: REASK_LIMIT });
+      turn.stop.abort();
+      void rt.agent.connection.agent.notify("session/cancel", { sessionId: rt.sessionId }).catch(() => {});
+      return choose("reject_once");
+    }
+    // Answered and handed to the agent at once: given with it, so a later ask of the same request is a call of its own.
     cur.journal.append(PERMISSION_STREAM, { type: "answered", callId, answer: refused ? "deny" : "allow", ...(refused ? { words: refused.deny } : {}) } satisfies PermissionRecord);
+    cur.journal.append(PERMISSION_STREAM, { type: "given", callId, turn: turnId } satisfies PermissionRecord);
     await cur.journal.flush();
     return choose(refused ? "reject_once" : "allow_once");
   };
