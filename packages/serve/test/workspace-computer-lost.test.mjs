@@ -48,22 +48,19 @@ function memorySettings() {
 /** Where a synced claim's run folder is on its fake disk. */
 const SYNCED = runKey("acme", "r1");
 
-/** How many execs the synced sandboxes ran: each writes one byte more than the last. */
-let execs = 0;
-
 /** A fake sandbox over a folder of its own, reading back a synced folder under epoch 3: a push into it is extracted for
- *  real, its mtimes fresh as computerd's extraction sets them, and its exec writes out.txt, longer each time. The same
- *  bytes written again in the millisecond of the push that brought them would keep its size and mtime, which no sync
- *  sees (sync-folder.ts's known miss), so a test of where the exec ran never depends on the clock. */
+ *  real, each file at its header's mtime as computerd's extraction keeps it (PUSHED_MTIME), and its exec writes
+ *  out.txt, the same bytes each time. Written again in the millisecond of the push that brought them, they keep its
+ *  size, and the write still moves its mtime off PUSHED_MTIME, so the next sync sees it. */
 function syncedComputer() {
   const root = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-lost-synced-")));
   dirs.push(root);
-  const computer = fakeComputer(root, { readBack: { kind: "sync", epoch: 3 }, exec: () => (writeFileSync(join(root, "out.txt"), `made by the exec${"!".repeat((execs += 1))}\n`), undefined) });
+  const computer = fakeComputer(root, { readBack: { kind: "sync", epoch: 3 }, exec: () => (writeFileSync(join(root, "out.txt"), "made by the exec\n"), undefined) });
   const tar = [];
   computer.overrides["tar.push.begin"] = () => ({ id: "push-1" });
   computer.overrides["tar.push.write"] = ({ data }) => (tar.push(Buffer.from(data, "base64")), {});
   computer.overrides["tar.push.end"] = () => {
-    const extracted = spawnSync("tar", ["-x", "-m", "-C", root], { input: Buffer.concat(tar.splice(0)) });
+    const extracted = spawnSync("tar", ["-x", "-C", root], { input: Buffer.concat(tar.splice(0)) });
     if (extracted.status !== 0) throw new Error(`tar: ${extracted.stderr}`);
     return { entries: readdirSync(root).length };
   };
