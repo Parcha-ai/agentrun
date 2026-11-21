@@ -215,14 +215,16 @@ export async function forgetRunText(ws: Workspace, runId: string): Promise<{ com
   }
   let commit: string | undefined;
   if (lines.length) {
+    // Lands once (the folder's ref for the run's scrub): a call that stopped after it finds it landed and takes no line
+    // again, so another run's same line stays.
     const done = await writeLearning<string | undefined>(ws, async ({ snapshot, body }) => {
       if (!snapshot?.corrections) return { result: undefined };
       const before = await body(CORRECTIONS_FILE, snapshot.corrections.oid);
       const after = withoutLines(before, lines);
       if (after === before) return { result: undefined };
       const write = after ? { writes: [{ path: CORRECTIONS_FILE, text: after }] } : { writes: [], deletes: [CORRECTIONS_FILE] };
-      return { result: snapshot.corrections.oid, change: { by: { host: "a purged run's corrections removed" }, ...write } };
-    });
+      return { result: snapshot.corrections.oid, change: { by: { host: "a purged run's corrections removed" }, purged: runId, ...write } };
+    }).catch((error: unknown) => (error instanceof FolderMerged ? { result: undefined, main: undefined } : Promise.reject(error)));
     if (done.result !== undefined) {
       forgetBody(done.result);
       commit = done.main;

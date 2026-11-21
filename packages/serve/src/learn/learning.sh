@@ -11,7 +11,8 @@
 #      `update-ref refs/heads/main <new> <old>`, the compare and swap. A lost race exits 3 and writes nothing. A run's
 #      merge also creates `refs/agentrun/runs/<run>` in the same ref transaction, so a run (and round) merges once: a
 #      second merge of it, however it raced the first, exits 6 and writes nothing but the first one's diff file when a
-#      stop left it none;
+#      stop left it none. The host's scrub of a purged run creates `refs/agentrun/purged/<run>` the same way, so it
+#      lands once too (a second exits 6 with the first's commit);
 #   2. for a run's merge, `.agentrun/diffs/<run>.json`: each path's patch, parent against merge, as git diffs it;
 #   3. the working tree brought in line with the new main (read-tree -u --reset);
 #   4. `.agentrun/snapshot.json`, written to a temporary name and moved into place, LAST.
@@ -37,9 +38,10 @@
 #   seed <commit>        (a run's merge) the commit the run was seeded from, which the repository held as its end began
 #                        and must hold still (else 4: "seed <commit>" on stdout): a reset since merges nothing, a
 #                        correction alone included
+#   purged <run>         (the host's scrub of a purged run) <run>'s scrub, which lands once
 # Exit: 0 done (the new main on stdout), 3 stale (main as it is on stdout), 4 a precondition failed, 5 main moved but
-# the files could not be brought in line (the new main on stdout; no snapshot written), 6 the run merged already (its
-# merge on stdout), else git's error on stderr.
+# the files could not be brought in line (the new main on stdout; no snapshot written), 6 the run merged already, or
+# the purged run's scrub landed already (that commit on stdout), else git's error on stderr.
 set -u
 set -f
 
@@ -265,6 +267,10 @@ commit() {
   case $ref in
     *[!0-9a-z/-]*) die "the import ref is not one this script takes" ;;
   esac
+  purged=$(sed -n 's/^purged //p' "$tmp/head")
+  case $purged in
+    *[!A-Za-z0-9._-]*) die "a purged run's id is letters, digits, dots, dashes and underscores" ;;
+  esac
   cur=$(main_now)
   if [ "$cur" != "$old" ]; then
     printf '%s\n' "$cur"
@@ -284,10 +290,15 @@ commit() {
   # there), both or neither.
   printf 'update refs/heads/main %s %s\n' "$new" "${old:-$ZERO}" > "$tmp/refs"
   [ -n "$run" ] && printf 'create refs/agentrun/runs/%s %s\n' "$run" "$new" >> "$tmp/refs"
+  [ -n "$purged" ] && printf 'create refs/agentrun/purged/%s %s\n' "$purged" "$new" >> "$tmp/refs"
   if ! g update-ref -m learning --stdin < "$tmp/refs" 2> "$tmp/cas"; then
     if [ -n "$run" ] && merged=$(g rev-parse -q --verify "refs/agentrun/runs/$run^{commit}" 2> /dev/null); then
       diff_of_ref "$run" "$merged"
       printf '%s\n' "$merged"
+      exit 6
+    fi
+    if [ -n "$purged" ] && scrubbed=$(g rev-parse -q --verify "refs/agentrun/purged/$purged^{commit}" 2> /dev/null); then
+      printf '%s\n' "$scrubbed"
       exit 6
     fi
     cur=$(main_now)
