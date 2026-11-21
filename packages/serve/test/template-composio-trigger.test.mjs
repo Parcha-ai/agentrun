@@ -88,8 +88,8 @@ async function withSaved(t, names, { manifest, publicUrl = PUBLIC } = {}) {
 /** The apply's one trigger, as GET /triggers/{id} reads it. */
 async function madeTrigger(api, applied) {
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  assert.equal(applied.body.trigger_ids.length, 1, JSON.stringify(applied.body));
-  const read = await api("GET", `/triggers/${applied.body.trigger_ids[0]}`);
+  assert.equal(applied.body.triggers.length, 1, JSON.stringify(applied.body));
+  const read = await api("GET", `/triggers/${applied.body.triggers[0].trigger_id}`);
   assert.equal(read.status, 200, JSON.stringify(read.body));
   return read.body;
 }
@@ -118,7 +118,7 @@ test("an apply on a server that can't set up a composio trigger yet (no public U
   const { api, composio } = await withSaved(t, ["work-github"], { publicUrl: null });
   const applied = await api("POST", "/templates/issues/apply", { parameters: {} });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  assert.deepEqual(applied.body.trigger_ids, [], "no trigger made");
+  assert.deepEqual(applied.body.triggers, [], "no trigger made");
   assert.equal(composio.instances.size, 0, "nothing made on Composio");
   const warning = applied.body.warnings.find((w) => w.field === "triggers.0");
   assert.equal(warning?.reason, "not_set_up_here", JSON.stringify(applied.body.warnings));
