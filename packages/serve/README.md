@@ -4256,10 +4256,18 @@ what each request still in flight is held at, plus the most this request can cos
 request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). The cap is a hard stop for everything but
 the charge of a monid call priced by usage, which can pass the estimate it was held at: when it does, the run stops at
 once ([monid](#monid)). An MCP tool counts only at the price saved for it (its server's `prices`); one with none is
-not metered and bills its own account outside the cap. fal's generations are such calls: they bill your fal account at
-fal's price for the model and the output, the fal presets save no price, and the cap does not count them. A template
-that uses fal caps its fal spend itself, with an input such as `max_fal_usd` that it prices its plan against before the
-first paid call. A request costs its input, plus the output it
+not metered and bills its own account outside the cap. fal is counted: a job sent to a fal server (one saved with the
+toolkit `fal`, or at `mcp.fal.ai`) through `run_model`, `submit_job` or `submit_jobs` is priced before it is sent, at
+fal's unit price for its endpoint (the server's own `get_pricing`, read with the run's credential and kept five
+minutes) times the units the job's input states: its images, their megapixels, its text's characters, the seconds it
+names, or the length of the audio or video it is given, read from the file first. That price is held under the cap, a
+job the cap can't take is refused before it is submitted, and the job is booked as the run's tool cost, charged by the
+server, with the price and the count it came from. It is an estimate at fal's list price, not fal's invoice: fal
+reports no cost for a job, and a minimum charge, a discount or a rate that depends on a setting `get_pricing` does not
+list are not in it. A job whose units can't be known before it runs (one billed by compute time or tokens, one that
+names no size or length, media whose length can't be read, an endpoint with no listed price) is refused under a cap,
+in words that say why; with no cap it runs, booked as an unknown charge. A price saved for a fal tool takes the place
+of this. A request costs its input, plus the output it
 is sent with at the output price, plus any fee its tokens do not show (below). Its input is priced at its worst case:
 every input token at the higher of the input and cache-write prices, since the provider may bill any of it as a cache
 write and a cache can miss at any request. So no request passes the cap, a cache miss included: a request costs at most

@@ -2815,7 +2815,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       pin: () => {
         if (!granted.length) return undefined;
         try {
-          return mcpPinOf(granted, { server: (name) => { const kept = carried.get(name); if (kept) return kept; const listing = listings.get(name); return listing && { url: listing.url, tools: listing.tools.map(boundTool), prices: listing.prices }; } });
+          return mcpPinOf(granted, { server: (name) => { const kept = carried.get(name); if (kept) return kept; const listing = listings.get(name); return listing && { url: listing.url, tools: listing.tools.map(boundTool), prices: listing.prices, toolkit: listing.toolkit }; } });
         } catch (error) {
           throw invalid([{ field: "definition.tools", reason: "not_an_option", message: (error as Error).message }]);
         }
