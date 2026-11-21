@@ -9,6 +9,8 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
 
+const { RunsMadeFromLeft } = await import("../dist/store/index.js");
+
 /** An escaped NUL and a lone surrogate, as JSON.stringify writes each (\u0000, \ud800). */
 const ESCAPES = [["nul", "\u0000"], ["surrogate", "\ud800"]];
 const LAUNCH = { title: "t", place: { mode: "runner" } };
@@ -25,11 +27,18 @@ async function ended(store, id) {
   await store.runs.update(await store.claim(id, "runner-a", { leaseMs: 30_000 }), { state: "ended", outcome: "completed", summary: "done", endedAt: T0 + 10 });
 }
 
-test("an agent's learning starts read past an escaped NUL or a lone surrogate in a run's input", async (t) => {
+test("an agent's learning starts read past an escaped NUL or a lone surrogate in a run's input, and its notes come back as written", async (t) => {
   const { store } = await storeOn(t);
-  for (const [name, escaped] of ESCAPES) await launched(store, `run-${name}`, { input: { content: `Task ${escaped}.` }, learning: { seed: "s", section: "Learned." } });
-  const starts = (await store.runs.learningStarts("agent-1")).sort((a, b) => a.runId.localeCompare(b.runId));
-  assert.deepEqual(starts, ESCAPES.map(([name]) => ({ runId: `run-${name}`, learning: { seed: "s", section: "Learned." } })));
+  // Each odd run's notes hold the same escape as its input: read whole, never blanked. A plain run beside them reads as ever.
+  for (const [name, escaped] of ESCAPES) await launched(store, `run-${name}`, { input: { content: `Task ${escaped}.` }, learning: { seed: "s", section: `Learned ${escaped}.` } });
+  await launched(store, "run-plain", { learning: { seed: "s", section: "Learned." } });
+  await launched(store, "run-none");
+  const byRun = (a, b) => a.runId.localeCompare(b.runId);
+  assert.deepEqual((await store.runs.learningStarts("agent-1")).sort(byRun), [
+    ...ESCAPES.map(([name, escaped]) => ({ runId: `run-${name}`, learning: { seed: "s", section: `Learned ${escaped}.` } })),
+    { runId: "run-none", learning: undefined },
+    { runId: "run-plain", learning: { seed: "s", section: "Learned." } },
+  ].sort(byRun));
 });
 
 test("a run whose input holds an escaped NUL or a lone surrogate reopens with the next message", async (t) => {
@@ -53,6 +62,19 @@ test("the runs made from a run, and a run's purge, read past another launch's es
   await ended(store, "plain");
   await store.runs.purge("plain", KEPT);
   assert.notEqual((await store.runs.get("plain")).purgedAt, null, "purged");
+});
+
+test("a run whose id holds a backslash and u0000 as text keeps its replay, beside another launch's escaped NUL", async (t) => {
+  const { store } = await storeOn(t);
+  // The six characters \u0000 in an id, JSON-encoded as \\u0000: an escaped backslash, then text, never an escape.
+  const source = "src\\u0000";
+  for (const [name, escaped] of ESCAPES) await launched(store, `odd-${name}`, { input: { content: `Task ${escaped}.` } });
+  await launched(store, source);
+  await ended(store, source);
+  await launched(store, "replay", { replay: { of: source } });
+  assert.deepEqual(await store.runs.madeFrom(source), ["replay"]);
+  await assert.rejects(store.runs.purge(source, KEPT), (e) => e instanceof RunsMadeFromLeft && e.runs.join() === "replay", "the replay holds a copy of its input");
+  assert.equal((await store.runs.get(source)).purgedAt, null, "not purged");
 });
 
 test("a parked run with a person's waiting message that holds an escaped NUL or a lone surrogate is claimed", async (t) => {
