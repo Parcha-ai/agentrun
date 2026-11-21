@@ -30,7 +30,6 @@ import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isWebHostTool } from "../tool-list.js";
-import { ASKED_BECAUSE } from "../refusal-words.js";
 import { type ArgumentsOf, deniedText, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom, type ToolEffect } from "../tool-gate.js";
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
@@ -407,7 +406,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     // can approve, refused in those words. No tool's name is read here: the reason is the tool's.
     const asksOf = decision === "allow" && host && options.ran ? toolOf(call.tool)?.asks : undefined;
     const because = asksOf ? await askedOne(call, asksOf, host!, options.ran!) : undefined;
-    if (because !== undefined) return approvers ? { ask: { [ASKED_BECAUSE]: because } } : { deny: noApproverText(gate.askedAs(call.tool, call.args), options.replayed ? "unknown" : "no", because) };
+    if (because !== undefined) return approvers ? { ask: {}, because } : { deny: noApproverText(gate.askedAs(call.tool, call.args), options.replayed ? "unknown" : "no", because) };
     // A learned workflow's MCP nodes are the run's own MCP calls, held to the same settings: one set to deny refuses the
     // whole call in the gate's words before any node runs, nothing sent; the actions set to ask are put to a person on the
     // call's one card, up front, each with its arguments' shape (learnedAskShown), and the person's allow passes the

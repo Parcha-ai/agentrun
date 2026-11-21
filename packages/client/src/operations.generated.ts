@@ -4490,7 +4490,6 @@ export type ApplyTemplateResponse = {
   revision_version: number;
   agent_change: "made" | "updated" | "unchanged";
   servers: Record<string, string | null>;
-  trigger_ids: Array<string>;
   triggers: Array<{
     trigger_id: string;
     name: string;

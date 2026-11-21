@@ -14,7 +14,7 @@ import { Input, Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { ClientError, type FieldIssue } from "@/lib/client";
-import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, inputOf } from "@/lib/inputForm";
+import { agentInputOf, clearsContentIssue, contentIssueOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, inputOf } from "@/lib/inputForm";
 import { curlFor, exampleHint, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { type ParameterText, paramHelp } from "@/lib/templatePackages";
 import { SpendCapMinimum } from "@/lib/spendCap";
@@ -126,7 +126,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   useEffect(() => { setFixed(new Set()); }, [result]);
   const setField = (key: string, f: FieldSpec, value: string) => {
     setValues((was) => ({ ...was, [key]: value }));
-    setFixed((was) => { const n = new Set(was); if (fieldValid(f, value)) n.add(key); else n.delete(key); if (value && !form?.contentRequired) n.add("input.content"); return n; });
+    // The message's issue goes where this value stands in for the message (clearsContentIssue), as the Run bar's does.
+    setFixed((was) => { const n = new Set(was); if (fieldValid(f, value)) n.add(key); else n.delete(key); if (form && clearsContentIssue(form, f, value)) n.add("input.content"); return n; });
   };
   const typeText = (value: string) => {
     setText(value);
@@ -135,7 +136,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const issuesAt = (key: string) => (fixed.has(key) ? [] : (refusal?.issues ?? []).filter((i) => atField(i.field) === key));
   // With typed fields the message may be optional: the server's issue at it (an input giving neither the message nor a
   // field) is said at the message, until the message or a field is filled.
-  const contentIssue = form && !fixed.has("input.content") ? refusal?.issues.find((i) => i.field === "input.content")?.message : undefined;
+  const contentIssue = fixed.has("input.content") ? undefined : contentIssueOf(form, refusal?.issues)?.message;
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
   // Files picked here are sent at once; the request names each once the server has it, and waits for the rest.

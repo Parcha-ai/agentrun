@@ -68,6 +68,19 @@ describe("Playground, an agent with typed input", () => {
     expect(message.parentElement!.querySelector('[role="alert"]')).toBeNull();
   });
 
+  it("keeps the message's issue while an optional field holds a value the server would refuse; a valid one clears it, as the Run bar does", () => {
+    const OPTIONAL = { type: "object", properties: { pr_number: { type: "integer" } } };
+    const refusal = Object.assign(new ClientError(422, "input_invalid", "The run's input is not valid."), { fields: [{ field: "input.content", reason: "missing", message: "input.content is required, or one of input.pr_number" }] });
+    const m = mount(OPTIONAL, startFailure(refusal, 5));
+    const message = m.host.querySelector<HTMLTextAreaElement>("#playground-input")!;
+    const pr = m.at("pr_number").querySelector("input")!;
+    // An integer field given a fraction: the server refuses it, so it stands in for no message.
+    m.set(pr, "3.5");
+    expect(message.parentElement!.querySelector('[role="alert"]')?.textContent, "an invalid value stands in for nothing").toBe("input.content is required, or one of input.pr_number");
+    m.set(pr, "3318");
+    expect(message.parentElement!.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("keeps the server's issue at a required message when another field is filled: only the message clears it", () => {
     const REQUIRED = { ...SCHEMA, properties: { content: { type: "string" }, ...SCHEMA.properties }, required: ["content", "company"] };
     const refusal = Object.assign(new ClientError(422, "input_invalid", "The run's input is not valid."), { fields: [{ field: "input.content", reason: "too_long", message: "input.content is longer than 20 characters" }] });

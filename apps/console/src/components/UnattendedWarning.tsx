@@ -43,6 +43,19 @@ export function UnattendedBanner({ tools, outcome = "waits", skips = false, busy
   );
 }
 
+/** Whether a call that asks waits or is refused on this server, read from its session (accounts off: refused) once
+ *  `active` (something asks, so there is something to say); a read that fails says it waits, the server's default. */
+export function useAskOutcome(v2: Client, active: boolean): AskOutcome {
+  const [outcome, setOutcome] = useState<AskOutcome>("waits");
+  useEffect(() => {
+    if (!active) return;
+    let live = true;
+    v2.session().then((r) => { if (live) setOutcome(noAccounts(r) ? "refused" : "waits"); }, () => {});
+    return () => { live = false; };
+  }, [v2, active]);
+  return outcome;
+}
+
 /** The warning for the agent a trigger starts (`agentId`, none while none is picked): the agent read with its tools
  *  (GET /v2/agents/{id}), and the warning shown while one of them asks. `skips`: the trigger skips later firings while a
  *  run is active (a schedule). Whether a call that asks waits or is refused comes from the server's session read (accounts
@@ -51,7 +64,6 @@ export function UnattendedBanner({ tools, outcome = "waits", skips = false, busy
  *  agent that fails shows nothing: the warning is advice, and the page works without it. */
 export function UnattendedWarning({ v2, agentId, skips = false, className }: { v2: Client; agentId: string | null | undefined; skips?: boolean; className?: string }) {
   const [agent, setAgent] = useState<Agent | null>(null);
-  const [outcome, setOutcome] = useState<AskOutcome>("waits");
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const toast = useToast();
@@ -64,13 +76,7 @@ export function UnattendedWarning({ v2, agentId, skips = false, className }: { v
   }, [v2, agentId]);
   const tools = askingTools(agent);
   const shown = !!agent && agent.agent_id === agentId && tools.length > 0;
-  // Read once the warning has something to say: a server with accounts off refuses an ask rather than parking it.
-  useEffect(() => {
-    if (!shown) return;
-    let live = true;
-    v2.session().then((r) => { if (live) setOutcome(noAccounts(r) ? "refused" : "waits"); }, () => {});
-    return () => { live = false; };
-  }, [v2, shown]);
+  const outcome = useAskOutcome(v2, shown);
   if (!shown) return null;
   const fix = async () => {
     setBusy(true); setFailed(null);
@@ -98,7 +104,6 @@ export function UnattendedWarning({ v2, agentId, skips = false, className }: { v
  *  read fails or has nothing that asks is left out: the cue is advice, and the list works without it. */
 export function useAskingTools(v2: Client, agentIds: readonly string[]): { asks: Record<string, string[]>; outcome: AskOutcome } {
   const [asks, setAsks] = useState<Record<string, string[]>>({});
-  const [outcome, setOutcome] = useState<AskOutcome>("waits");
   const asked = useRef(new Set<string>());
   const live = useRef(true);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
@@ -113,13 +118,7 @@ export function useAskingTools(v2: Client, agentIds: readonly string[]): { asks:
       }, () => {});
     }
   }, [v2, key]);
-  const any = Object.keys(asks).length > 0;
-  useEffect(() => {
-    if (!any) return;
-    let on = true;
-    v2.session().then((r) => { if (on) setOutcome(noAccounts(r) ? "refused" : "waits"); }, () => {});
-    return () => { on = false; };
-  }, [v2, any]);
+  const outcome = useAskOutcome(v2, Object.keys(asks).length > 0);
   return { asks, outcome };
 }
 

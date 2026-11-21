@@ -25,8 +25,7 @@ import type { CostParts } from "@parcha/agentrun-kernel";
  *  pointer) and `forgotten` (its tombstoned ones), over the store (sign-ins-store.ts signInReads). */
 export type SignInReader = ReturnType<typeof signInReads>;
 import { KINDS } from "./runner/journal-kinds.js";
-import { ASKED_BECAUSE, ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
-import { isObject } from "./validate.js";
+import { ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -142,7 +141,7 @@ export type State = "working" | "waiting" | "idle";
 
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
-/** `asks_because`: why the gate asked a call its setting allows (its card's ASKED_BECAUSE), kept out of `args_json`. */
+/** `asks_because`: why the gate asked a call its setting allows (its ask's own `because`, never one of the call's arguments). */
 export type Approval = { id: string; tool: string; call_id: string; args_json: string; asks_because?: string; requested_at: string; price?: ApprovalPrice; destructive?: true; resolved?: true };
 /** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
 /** `by`: "message", a deny a person's message gave while the call waited (Runs.message); "setting", the allow or deny the tool's setting gave an ask that waited (the tool set to allow or deny since it asked). */
@@ -160,7 +159,7 @@ export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decisio
 // command names the call), so the card's id is the call's id. ---
 
 /** An `agentrun.ask` entry's data: the tool call the gate parked for a person, as the runner wrote it. */
-type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: ApprovalPrice | null; destructive?: true };
+type AskEntry = { callId: string; tool: string; args: unknown; because?: string; requestedAt: string; price?: ApprovalPrice | null; destructive?: true };
 /** An ask's price as its card shows it (tool-gate.ts ApprovalPrice); undefined for none, or one of no known shape. */
 const priceOfAsk = (price: unknown): ApprovalPrice | undefined => (typeof price === "number" || price === "not metered" || price === "priced by usage" ? price : undefined);
 /** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
@@ -183,15 +182,12 @@ export function asksOf(entries: readonly JournalEntry[]): Map<string, Approval> 
     const d = dataOf<AskEntry>(entry);
     if (typeof d?.callId !== "string" || map.has(d.callId)) continue;
     const price = priceOfAsk(d.price);
-    // The card's reason for asking a call its setting allows is the gate's, never one of the call's arguments.
-    const raw: unknown = d.args ?? {};
-    const { [ASKED_BECAUSE]: because, ...args } = isObject(raw) ? raw : {};
     map.set(d.callId, {
       id: d.callId,
       tool: d.tool,
       call_id: d.callId,
-      args_json: JSON.stringify(isObject(raw) ? args : raw) ?? "{}",
-      ...(typeof because === "string" ? { asks_because: because } : {}),
+      args_json: JSON.stringify(d.args ?? {}) ?? "{}",
+      ...(typeof d.because === "string" ? { asks_because: d.because } : {}),
       requested_at: d.requestedAt,
       ...(price !== undefined ? { price } : {}),
       ...(d.destructive === true ? { destructive: true as const } : {}),
