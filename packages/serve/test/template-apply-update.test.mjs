@@ -147,10 +147,13 @@ test("an apply with agent_id writes a new revision of that agent: the same id, i
   assert.equal(run.status, 202, JSON.stringify(run.body));
   assert.equal((await api("GET", `/agents/${first.agent_id}`)).body.revisions, 1);
 
+  assert.equal(first.revision_version, 1, "a fresh apply names the revision it wrote: the agent's first");
   const again = await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "an apply with agent_id updates that agent in place");
   assert.equal(again.agent_id, first.agent_id, "the same agent");
   const read = (await api("GET", `/agents/${first.agent_id}`)).body;
   assert.equal(read.revisions, 2, "a new revision of it");
+  assert.equal(again.revision_version, read.definition.version, "the update names the revision it wrote, the agent's current one");
+  assert.equal(again.revision_version, 2);
   assert.match(read.definition.instructions, /dogs/, "the new revision is the package with the new parameters");
   assert.equal(read.template?.id, "digest");
   assert.deepEqual((await api("GET", "/agents")).body.agents.map((one) => one.agent_id), [first.agent_id], "no second agent");

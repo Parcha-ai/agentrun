@@ -230,8 +230,8 @@ const installHash = (source: string) => `#/templates/install?src=${encodeURIComp
  *  show first: a schedule with when it runs and its next run, as the Triggers page says them. */
 /** How long the Apply page waits on one of its new triggers' read-back before it leaves that trigger out. */
 export const TRIGGER_READ_MS = 3_000;
-/** What an Update says it did: the revision it wrote when that was read back ("Updated: rev 2"), else "Updated". */
-const updatedWords = (rev: number | null) => (rev === null ? "Updated" : `Updated: rev ${rev}`);
+/** What an Update says it did: the revision it wrote, as its answer names it ("Updated: rev 2"). */
+const updatedWords = (rev: number) => `Updated: rev ${rev}`;
 /** `promise`'s answer, or undefined once `ms` have passed without one. */
 function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -261,9 +261,9 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   // The refusal's own words beside Apply; `withIssues` when it came with issues, so it goes once the last of them does.
   const [said, setSaid] = useState<{ text: string; withIssues: boolean } | null>(null);
   const [made, setMade] = useState<TemplateApplied | null>(null);
-  // An Update's (agent_id sent): the agent was updated, not made. `rev` is its revision as read back (GET /agents/{id}),
-  // null until read, or when it can't be read within TRIGGER_READ_MS. Null for an Apply, which made a new agent.
-  const [updated, setUpdated] = useState<{ rev: number | null } | null>(null);
+  // An Update's (agent_id sent): the agent was updated, not made, to the revision its answer names (revision_version).
+  // Null for an Apply, which made a new agent.
+  const [updated, setUpdated] = useState<{ rev: number } | null>(null);
   // The schedules the apply made, each read back (GET /triggers/{id}) for its next run.
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   // The parameters an apply sent: what its "applied" title names, whatever was typed while it was under way.
@@ -355,19 +355,12 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
         const read = await Promise.all(done.trigger_ids.map((id) => bounded(v2.getTrigger(id), TRIGGER_READ_MS).catch(() => null)));
         return read.filter((x): x is Schedule => x !== null && x !== undefined && isScheduleTrigger(x));
       };
-      // An Update says the revision it wrote, read back; never "made". A slow or failed read says "Updated" alone.
-      const updating = () => {
-        if (!onto) { setUpdated(null); return; }
-        setUpdated({ rev: null });
-        void bounded(v2.getAgent(done.agent_id), TRIGGER_READ_MS).then((r) => {
-          const rev = r?.agent.definition?.version;
-          if (shown.current && typeof rev === "number") setUpdated({ rev });
-        }, () => {});
-      };
+      // An Update says the revision it wrote, as its answer names it; never "made".
+      const updated = onto ? { rev: done.revision_version } : null;
       // A warning or a webhook's once-shown secret is shown at once; its schedules are added as they are read.
       if (done.warnings.length || done.webhook_secrets?.length) {
         setSentValues(sending);
-        updating();
+        setUpdated(updated);
         setMade(done);
         void schedulesOf().then(setSchedules, () => {});
         return;
@@ -378,7 +371,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
       if (!scheduled.length) { go(agentHash(done.agent_id)); return; }
       setSentValues(sending);
       setSchedules(scheduled);
-      updating();
+      setUpdated(updated);
       setMade(done);
     } catch (e) {
       if (e instanceof ClientError && e.fields?.length) {
