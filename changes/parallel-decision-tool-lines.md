@@ -1,7 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: feature
----
-A workflow decision Parallel answered on its own API (the `parallel` provider on the server's `PARALLEL_API_KEY`, booked at Parallel's list price, $0.001 a request) now counts as a paid call Parallel charged, beside `web_search` and `web_fetch`: it is in the run's `cost.tools_usd` (`toolsusd/2`), on the `parallel` `tools` line of `GET /v2/runs/{run_id}/usage` (`charged_by` and `provider` `parallel`, one call each, `basis` `estimate`), and on the `tools` meter of `GET /v2/usage`. It used to be on a `tokens` line under its model (`parallel-fast`). It moves; it is not added: `total` is still the run's `cost.usd`, and `cost.usd` does not change. A `parallel` decision sent through OpenRouter (no `PARALLEL_API_KEY`, on the OpenRouter key) is OpenRouter's to charge, at the cost OpenRouter reported, and stays a `tokens` line, as Jev's and other decision models' do.
-
-A Parallel search is now priced by its `mode`, from [Parallel's pricing page](https://docs.parallel.ai/resources/pricing) (read 2026-11-20): `turbo` or `fast` $0.001 a request, `basic` or `advanced` $0.005, each with 10 results included, and $0.001 for each result past them. `web_search` always searches `fast`, so what it books does not change. A search body in a mode with no price here, or naming none, is never sent, as a request to an endpoint with no price is not: it is never booked at $0 or at `fast`'s price.
