@@ -266,6 +266,28 @@ const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json
  *  disk/agents/<agent>/runs/<run>/run.sqlite), its settings files (EARLIER_ROOT_FILES) and its homes' sign-ins
  *  (homes/<home>/sign-ins/sign-ins.json). Read only: nothing is opened for writing or made. The store is read before
  *  this server holds its owner lock, so it waits `busyTimeoutMs` for another process's lock on it (isThisVersionsStore). */
+/** The columns a runner of this build needs that an earlier build of this same version may not have: the server adds each
+ *  at its start (openSqliteStore), and a runner on a file without one waits for that server (StoreAwaitsServer, in `why`'s
+ *  words; exit 3). store-schema reads the same list, so its report says "waits" where the runner would. */
+export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly columns: readonly string[]; readonly why: string }[] = [
+  { table: "revisions", columns: ["mcp_pin", "monid_pin"], why: "install MCP and Monid revision metadata" },
+  { table: "settings", columns: ["connector_id"], why: "add native command ownership metadata" },
+  { table: "runs", columns: ["cost_upper_bound"], why: "add the bound beside each run's cost" },
+  { table: "runs", columns: ["labels"], why: "add each run's labels" },
+  { table: "triggers", columns: ["template_id"], why: "add each trigger's package mark" },
+  { table: "runners", columns: ["host"], why: "keep each runner's word that it is there and its relay in one table (runners)" },
+];
+
+/** What a runner of this build waits for on a file of this version (SQLITE_RUNNER_NEEDS' first missing column's `why`),
+ *  or undefined when it opens; `columnsOf` reads a table's columns. */
+export async function runnerWaitsFor(columnsOf: (table: string) => Promise<ReadonlySet<string>> | ReadonlySet<string>): Promise<string | undefined> {
+  for (const need of SQLITE_RUNNER_NEEDS) {
+    const present = await columnsOf(need.table);
+    if (need.columns.some((column) => !present.has(column))) return need.why;
+  }
+  return undefined;
+}
+
 export function earlierVersionIn(dataDir: string, busyTimeoutMs: number): string[] {
   if (!existsSync(dataDir)) return [];
   const found: string[] = [];
@@ -369,6 +391,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if (upgrading && role === "runner") throw new StoreAwaitsServer(`bring this store from version ${found} to ${SCHEMA_VERSION}`);
     if (found !== SCHEMA_VERSION && !upgrading) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
+    // Every column a runner of this build needs that an earlier build of this version may lack (SQLITE_RUNNER_NEEDS), read
+    // at once: the same list store-schema reports from. Each check below says the same, where the server adds it.
+    if (role === "runner") {
+      const waits = await runnerWaitsFor(async (table) => new Set((await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).map((column) => column.name)));
+      if (waits !== undefined) throw new StoreAwaitsServer(waits);
+    }
     if (role === "runner" && (!columns.has("mcp_pin") || !columns.has("monid_pin"))) throw new StoreAwaitsServer("install MCP and Monid revision metadata");
     const nativeOwners=(await connection.all<{name:string}>("PRAGMA table_info(settings)")).some(column=>column.name==='connector_id');
     if(!nativeOwners){

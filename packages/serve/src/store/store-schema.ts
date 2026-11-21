@@ -21,7 +21,7 @@ import { migrationsIn, runnerFloorOf, runnerOn, type SchemaState } from "./postg
 import { STORE_CONNECT_TIMEOUT_MS } from "./postgres/connection.js";
 import { storePlace, storeTarget, type StoreTarget } from "./open.js";
 import { SCHEMA_VERSION } from "./schema.js";
-import { earlierVersionIn, STORE_FILE } from "./sqlite/store.js";
+import { earlierVersionIn, runnerWaitsFor, STORE_FILE } from "./sqlite/store.js";
 
 /** The line `agentrun-serve store-schema` prints. */
 export interface StoreSchemaReport {
@@ -39,30 +39,32 @@ export interface StoreSchemaReport {
 const SQLITE_UPGRADES = new Set([11, 12, 13]);
 
 /** What a build that knows `build` does with a store at `state`, on `kind`. `earlier`: the data directory holds an earlier
- *  version's files (SQLite only), which this build's server refuses to start beside (StoreFromEarlierVersion). On SQLite
- *  it reads the version alone: a file at this build's version whose server has not yet added a column this build's runner
- *  needs (sqlite/store.ts openSqliteStore, each StoreAwaitsServer) still says "opens", and the runner waits for that server
- *  (exit 3). Server and runner on SQLite share one host and image, so a deploy's skew check is Postgres's. */
-export function storeSchemaReport(target: StoreTarget, state: SchemaState, build: number, earlier = false): StoreSchemaReport {
+ *  version's files (SQLite only), which this build's server refuses to start beside (StoreFromEarlierVersion). `awaits`:
+ *  on SQLite at this build's version, a column this build's runner needs that the file lacks (SQLITE_RUNNER_NEEDS), which
+ *  its server adds at its start: the runner waits for it, as openSqliteStore makes it. */
+export function storeSchemaReport(target: StoreTarget, state: SchemaState, build: number, earlier = false, awaits = false): StoreSchemaReport {
   const { version } = state;
   const server: StoreSchemaReport["server"] = earlier
     ? "refuses"
     : version === null ? "sets up" : version === build ? "opens" : version > build ? "refuses" : target.kind === "postgres" || SQLITE_UPGRADES.has(version) ? "migrates" : "refuses";
   // A SQLite runner opens only its own version: its floor is the version (sqlite/store.ts schemaState).
-  const runner = runnerOn(target.kind === "sqlite" ? { version, runnerFloor: version } : state, build);
+  const runner = awaits && version === build ? "waits" : runnerOn(target.kind === "sqlite" ? { version, runnerFloor: version } : state, build);
   return { store: target.kind, where: storePlace(target), schema: version, runnerFloor: state.runnerFloor, build, server, runner };
 }
 
-/** The SQLite store's version in `dataDir`, read-only: null when there is no file, or no schema in it. */
-function sqliteState(dataDir: string): SchemaState {
+/** The SQLite store's version in `dataDir`, read-only: null when there is no file, or no schema in it; and whether a
+ *  runner of this build would wait for its server to add a column (SQLITE_RUNNER_NEEDS). */
+async function sqliteState(dataDir: string): Promise<SchemaState & { readonly awaits: boolean }> {
   const file = join(dataDir, STORE_FILE);
-  if (!existsSync(file)) return { version: null, runnerFloor: null };
+  if (!existsSync(file)) return { version: null, runnerFloor: null, awaits: false };
   const db = new DatabaseSync(file, { readOnly: true, timeout: 5_000 });
   try {
     const table = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'store_meta'").get();
     const row = table ? (db.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get() as { schema_version?: number } | undefined) : undefined;
     const version = row?.schema_version ?? null;
-    return { version, runnerFloor: version };
+    const columnsOf = (name: string) => new Set((db.prepare("SELECT name FROM pragma_table_info(?)").all(name) as { name: string }[]).map((column) => column.name));
+    const awaits = version !== null && (await runnerWaitsFor(columnsOf)) !== undefined;
+    return { version, runnerFloor: version, awaits };
   } finally {
     db.close();
   }
@@ -98,7 +100,10 @@ async function postgresState(url: string, schema: string): Promise<SchemaState> 
 /** Reads the store `dataDir` and `env` name (and the URL, this process's AGENTRUN_STORE_URL secret unless given). */
 export async function readStoreSchema(dataDir: string, env: NodeJS.ProcessEnv = process.env, url?: string): Promise<StoreSchemaReport> {
   const target = url === undefined ? storeTarget(dataDir, env) : storeTarget(dataDir, env, url);
-  if (target.kind === "sqlite") return storeSchemaReport(target, sqliteState(dataDir), SCHEMA_VERSION, earlierVersionIn(dataDir, 5_000).length > 0);
+  if (target.kind === "sqlite") {
+    const { awaits, ...state } = await sqliteState(dataDir);
+    return storeSchemaReport(target, state, SCHEMA_VERSION, earlierVersionIn(dataDir, 5_000).length > 0, awaits);
+  }
   return storeSchemaReport(target, await postgresState(target.url, target.schema), migrationsIn().at(-1)!.version);
 }
 
