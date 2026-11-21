@@ -6,12 +6,12 @@
 // twice, and git, main, the working tree and snapshot.json agree at the end.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { parseRead, readSnapshot, SCRIPT_FILE, snapshotOfRead } from "../dist/learn/folder.js";
+import { commitChange, folderTestHooks, learningInit, parseRead, readSnapshot, SCRIPT_FILE, snapshotAt, snapshotOfRead } from "../dist/learn/folder.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 
 const WRITER = fileURLToPath(new URL("./fixtures/learning-writer.mjs", import.meta.url));
@@ -102,4 +102,34 @@ test("three processes merging runs on one agent's learning folder at once, from 
     const diff = JSON.parse(readFileSync(join(root, ".agentrun", "diffs", `${run}.json`), "utf8"));
     assert.equal(diff.merge, result.commit, `${run}: its diff file is its merge's`);
   }
+});
+
+test("a writer whose commit is older never leaves its tree and snapshot over a newer commit's: once both are done the folder is at main", async () => {
+  const root = folder();
+  const ws = localWorkspace(root);
+  await learningInit(ws);
+  const edited = (text) => ({ by: { person: "edited", file: "corrections.md" }, writes: [{ path: "corrections.md", text }] });
+  // The older writer stops after its commit, before it brings the folder in line (learning.sh test_pause).
+  const gate = join(dirname(root), "gate");
+  folderTestHooks.env = { AGENTRUN_LEARNING_PAUSE: gate };
+  let older;
+  try {
+    older = commitChange(ws, await readSnapshot(ws), edited("- One.\n"));
+    for (let waited = 0; !existsSync(`${gate}.at`); waited += 20) {
+      assert.ok(waited < 30_000, "the older writer reached its pause");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  } finally {
+    folderTestHooks.env = undefined;
+  }
+  // The newer writer commits on the older one's main and finishes whole, then the older one goes on.
+  const first = git(root, ["rev-parse", "refs/heads/main"]);
+  const newer = await commitChange(ws, await snapshotAt(ws, first), edited("- One.\n- Two.\n"));
+  assert.equal(newer.landed, true, JSON.stringify(newer));
+  writeFileSync(gate, "");
+  const done = await older;
+  assert.equal(done.main, first, JSON.stringify(done));
+  const snapshot = await whole(root);
+  assert.equal(snapshot.main, newer.main, "the snapshot is the newer commit's, which is main");
+  assert.equal(readFileSync(join(root, "corrections.md"), "utf8"), "- One.\n- Two.\n", "and so is the working tree");
 });

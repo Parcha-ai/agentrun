@@ -88,6 +88,14 @@ pause() {
   sleep 0.05 2> /dev/null || sleep 1
 }
 
+# A test's pause (AGENTRUN_LEARNING_PAUSE, a file's path): before the folder is brought in line with a new main,
+# "<file>.at" is written and the script waits until <file> is there.
+test_pause() {
+  [ -n "${AGENTRUN_LEARNING_PAUSE:-}" ] || return 0
+  : > "$AGENTRUN_LEARNING_PAUSE.at"
+  while [ ! -e "$AGENTRUN_LEARNING_PAUSE" ]; do pause; done
+}
+
 tmp=$(mktemp -d) || die "no temporary folder"
 trap 'rm -rf "$tmp"' EXIT
 trap 'exit 130' HUP INT TERM
@@ -321,6 +329,7 @@ commit() {
   [ "${AGENTRUN_LEARNING_FAIL:-}" = before-diff ] && die "failed before the diff, as the test asked"
   # The diff before the working tree: a merge whose files could not be brought in line (exit 5) keeps its diff.
   [ -n "$run" ] && write_diff "$run"
+  test_pause
   if ! check_out "$new"; then
     cat "$tmp/checkout" >&2
     printf '%s\n' "$new"
