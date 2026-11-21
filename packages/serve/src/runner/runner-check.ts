@@ -21,6 +21,8 @@ import { ARCHIL_SETTINGS_ENV } from "../archil-settings.js";
 import { BOX_ALLOW_ENV } from "../box-settings.js";
 import { TOOL_KEY_ROWS } from "../key-words.js";
 import { PRIVATE_HOSTS_ENV } from "../mcp-private-hosts.js";
+import { GATEWAY_IDS_ENV } from "../model-gateway.js";
+import { MCP_ALLOW_LOOPBACK_ENV } from "../start-switches.js";
 import { bootSealKey } from "../seal-key.js";
 import { SECRET_NAMES } from "../secrets.js";
 import type { Settings, Store } from "../store/store.js";
@@ -54,6 +56,10 @@ const FIXED: ReadonlySet<string> = new Set([
   "AGENT_MODEL_STRONG",
   BOX_ALLOW_ENV,
   PRIVATE_HOSTS_ENV,
+  // How a gateway is sent a model id (model-gateway.ts), and whether runs may reach an MCP server on loopback: each read
+  // from the environment of the process that runs the run.
+  GATEWAY_IDS_ENV,
+  MCP_ALLOW_LOOPBACK_ENV,
 ].filter((name) => !NOT_RUN_FACING.has(name)));
 
 /** Whether `name` is one a run's claim reads from its runner's environment (FIXED, or an upstream's address). */

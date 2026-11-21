@@ -303,12 +303,14 @@ settings), each run's folder is on the server's disk, which such a runner can't 
 on its log and to the server:
 
 ```
-agentrun-serve runner: Runner runner-1 claims nothing: this runner's data directory is not the server's, and the server keeps each run's folder on its own disk (Mode 1: no Archil settings are saved), which this runner can't reach. Save the Archil settings so runs' folders are on Archil (Mode 2), or start the runner on the server's data directory.
+agentrun-serve runner: Runner runner-1 claims nothing: this runner's data directory is not the server's, and the server keeps each run's folder on its own disk (Mode 1: the server holds no Archil settings, saved or in its environment), which this runner can't reach. Save the Archil settings so runs' folders are on Archil (Mode 2), or start the runner on the server's data directory.
 ```
 
 It never fails a run for that. Runs wait for a runner on the server's data directory; while every runner there refuses,
 the server refuses a new run (`503 runner_refused`, in the runner's words) and fails the runs still queued, as it does for
-any runner that can't serve. The runner checks again every 5 s, and claims again once the Archil settings are saved. A
+any runner that can't serve. The runner checks again every 5 s, and claims again once the Archil settings are saved. The
+mode is the server's, never the runner's: Archil settings in a runner's environment alone do not let it claim, and a
+runner that lacks them while the server has them in its own environment claims nothing and says to hand them over. A
 store whose server is older than this release has said no data root, and every runner is taken as sharing its disk, as
 before. Not on a disk of its own yet: a run's uploads (`file_ids`), which the server holds on its own disk (such a run
 fails at its claim, saying its files were not copied), and screen recordings, which the runner writes on its own disk
@@ -326,7 +328,7 @@ opens the store with one connection and closes it.
 | `AGENTRUN_STORE_URL` | The store opens, at a schema this runner knows. Unset, a SQLite store in `--data` (the server's) counts. |
 | `AGENTRUN_SEAL_KEY` | It is the key the store's secrets are sealed under. Unset, the key file in `--data` counts. |
 | `AGENTRUN_STORE_POOL_SIZE` | Only when set: a whole number from 1 to the store's most, as the runner's start takes it. The check itself opens one connection. |
-| Every run-facing name the server holds | The server says the names (never the values) of its run-facing environment in the store at each start: model, tool and box keys, each box provider's settings (`DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, ...), the Archil settings, the tiers' models (`AGENT_MODEL`, `AGENT_MODEL_FAST`, `AGENT_MODEL_STRONG`), `AGENTRUN_BOX_ALLOW`, the operator's bound on owners' private hosts (`AGENTRUN_PRIVATE_HOSTS`), and every upstream address (`*_BASE_URL`, `*_API_URL`). The runner must hold each one: a run's claim reads it from the runner's environment. A server older than this release says none, and this part is `skipped`. |
+| Every run-facing name the server holds | The server says the names (never the values) of its run-facing environment in the store at each start: model, tool and box keys, each box provider's settings (`DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, ...), the Archil settings, the tiers' models (`AGENT_MODEL`, `AGENT_MODEL_FAST`, `AGENT_MODEL_STRONG`), `AGENTRUN_BOX_ALLOW`, the operator's bound on owners' private hosts (`AGENTRUN_PRIVATE_HOSTS`), how a gateway is sent a model id (`AGENT_MODEL_GATEWAY_IDS`), whether runs may reach an MCP server on loopback (`AGENTRUN_MCP_ALLOW_LOOPBACK`), and every upstream address (`*_BASE_URL`, `*_API_URL`). The runner must hold each one: a run's claim reads it from the runner's environment. A server older than this release says none, and this part is `skipped`. |
 | Each `*_BASE_URL` / `*_API_URL` on loopback | Something answers a TCP connect there within 2 s: the forwarder beside the runner that the upstream names. |
 | `AGENTRUN_TOKEN`, `AGENTRUN_TOKENS`, `AGENTRUN_API_KEY` | `warn` when set: the server's own secrets, which a runner never needs. Fails nothing. |
 
