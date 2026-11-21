@@ -218,18 +218,21 @@ test("a CLI feedback round whose runner died mid end-of-run turn: the next claim
     await second?.close();
   });
   const once = await ended(opened.server);
-  // A grade's correction round: the run opens again on its words, and the claim goes to its end-of-run step alone.
+  // A grade's correction round: the run opens again on its words, and the claim goes to its end-of-run step alone. Its
+  // steer keeps the end the run had, as the grade route writes it (feedback-round.ts openFeedbackRound).
   round = 2;
-  await opened.server.runs.reopen("run-1", { kind: "steer", body: { text: "Wrong: the answer is 41.", feedback: { round: "correction", correct: false } } });
+  const kept = { state: once.state, ...(once.summary !== null ? { summary: once.summary } : {}), ...(once.outcome !== null ? { outcome: once.outcome } : {}), endedAt: once.endedAt };
+  await opened.server.runs.reopen("run-1", { kind: "steer", body: { text: "Wrong: the answer is 41.", feedback: { round: "correction", correct: false, kept } } }, { endedAt: once.endedAt });
   await until(async () => log.sent.some((text) => /graded/.test(text)), "the round's end-of-run turn was sent", 10_000);
   first.kill();
   // The first claim's lease runs out for the next runner at once.
   opened.clock.skewMs += TIMING.leaseMs * 2;
   second = startRunner({ store: opened.runners[1], createLoop, name: "runner-b", ...TIMING });
-  await until(async () => {
+  const again = await until(async () => {
     const now = await opened.server.runs.get("run-1");
-    return now.state === "ended" && now.runner === null && now.endedAt > once.endedAt && now;
+    return now.state === "ended" && now.runner === null && now.epoch > once.epoch && now;
   }, "the round ended and released", 10_000);
+  assert.equal(again.endedAt, once.endedAt, "the round keeps the run's end");
   const looks = log.sent.filter((text) => /graded/.test(text));
   assert.equal(looks.length, 2, `the look-back was sent once on each claim, never twice on one: ${JSON.stringify(log.sent)}`);
   assert.deepEqual(log.recovered, [], "the cut look-back is never recovered as the job's turn");

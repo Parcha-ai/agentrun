@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,12 @@ type fakeSys struct {
 	status  func(f *fakeSys) string
 	kills   []error
 	live    []int
+
+	// own's
+	realUID  int
+	root     bool
+	onlyCaps *uint64
+	owners   func(int) bool
 
 	// state the exec snapshot checks
 	groups     []int
@@ -117,6 +124,10 @@ func statusFor(f *fakeSys) string {
 	if f.capsZero {
 		caps = "0000000000000000"
 	}
+	if f.onlyCaps != nil {
+		caps = fmt.Sprintf("%016x", *f.onlyCaps)
+		return fmt.Sprintf("Uid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nGroups:\t1000 \nNoNewPrivs:\t0\nCapInh:\t%s\nCapPrm:\t%s\nCapEff:\t%s\nCapBnd:\t000001ffffffffff\nCapAmb:\t%s\n", "0000000000000000", caps, caps, "0000000000000000")
+	}
 	nnp := 0
 	if f.noNewPrivs {
 		nnp = 1
@@ -168,6 +179,26 @@ func (f *fakeSys) LiveProcs(uid int) (int, error) {
 }
 
 func (f *fakeSys) Sleep(d time.Duration) { f.calls = append(f.calls, "sleep") }
+
+func (f *fakeSys) CapsetOnly(mask uint64) error {
+	if err := f.step("capset_only", fmt.Sprintf("%#x", mask)); err != nil {
+		return err
+	}
+	f.onlyCaps = &mask
+	return nil
+}
+
+func (f *fakeSys) Getuid() int {
+	if f.realUID == 0 && !f.root {
+		return 1000
+	}
+	return f.realUID
+}
+
+func (f *fakeSys) Own(dir string, owned func(int) bool, runner, uid, gid int, stderr io.Writer) bool {
+	f.owners = owned
+	return f.step("own", fmt.Sprint(dir, " runner=", runner, " uid=", uid, " gid=", gid)) == nil
+}
 
 func sampleStatus(uid, gid int, groups, caps string, nnp int) string {
 	return fmt.Sprintf(`Name:	true
@@ -292,7 +323,7 @@ func TestSlotsMapOnlyIntoRange(t *testing.T) {
 			t.Errorf("checkIDs(%d) accepted", id)
 		}
 	}
-	for _, g := range []int{999, 1257, 65534} {
+	for _, g := range []int{999, 1000, 1257, 65534} {
 		if err := checkGroup(g); err == nil {
 			t.Errorf("checkGroup(%d) accepted", g)
 		}
@@ -305,9 +336,11 @@ func TestOutOfRangeSlotsTouchNothing(t *testing.T) {
 		{"run", "-1", "--", "/bin/true"},
 		{"reap", "256"},
 		{"reap", "1e3", "--sweep", "/tmp"},
-		{"reown", "0", "256", "/tmp/x"},
-		{"reown", "256", "0", "/tmp/x"},
-		{"reown", "3", "3", "/tmp/x"},
+		{"own", "256", "/tmp/x"},
+		{"own", "-1", "/tmp/x"},
+		{"own", "runners", "/tmp/x"},
+		{"own", "3", "tmp/x"},
+		{"own", "runner", "/tmp/x", "x"},
 	}
 	for _, args := range cases {
 		f := newFake(40)
@@ -332,23 +365,77 @@ func TestEveryRunSlotSetsOnlyItsID(t *testing.T) {
 	}
 }
 
-func TestReownAndReapIDsComeFromSlots(t *testing.T) {
-	dir := t.TempDir()
+func TestReapIDsComeFromSlots(t *testing.T) {
 	f := newFake(1)
-	if code, stderr := run(t, f, "reown", "4", "9", dir); code != 0 {
-		t.Fatalf("reown: %d %s", code, stderr)
-	}
-	want := dropSeq(1005, []int{1005, 1010}, 1)
-	if got := f.calls[:len(want)]; fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("reown calls %v, want prefix %v", f.calls, want)
-	}
-	f = newFake(1)
-	if code, stderr := run(t, f, "reap", "9", "--fix", dir); code != 0 {
+	if code, stderr := run(t, f, "reap", "9", "--sweep", "/tmp"); code != 0 {
 		t.Fatalf("reap: %d %s", code, stderr)
 	}
-	want = dropSeq(1010, []int{1010, serverGID}, 1)
+	want := dropSeq(1010, []int{1010}, 1)
 	if got := f.calls[:len(want)]; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("reap calls %v, want prefix %v", f.calls, want)
+	}
+	// The reap never takes the runner's group, and no longer takes --fix.
+	f = newFake(1)
+	if code, _ := run(t, f, "reap", "9", "--fix", "/tmp"); code != exitUsage || len(f.calls) != 0 {
+		t.Errorf("reap --fix: code %d calls %v", code, f.calls)
+	}
+}
+
+// own: keeps CAP_CHOWN alone, checks it, then gives each DIR; a slot's uid
+// comes from the slot, the runner's from the helper's real uid.
+
+func TestOwnSequence(t *testing.T) {
+	f := newFake(40)
+	code, stderr := run(t, f, "own", "4", "/data/a", "/data/b")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code %d stderr %q", code, stderr)
+	}
+	want := []string{"capset_only 0x1", "read_status", "own /data/a runner=1000 uid=1005 gid=1000", "own /data/b runner=1000 uid=1005 gid=1000"}
+	if fmt.Sprint(f.calls) != fmt.Sprint(want) {
+		t.Fatalf("calls\n got %v\nwant %v", f.calls, want)
+	}
+	for uid, want := range map[int]bool{0: false, 999: false, 1000: true, 1001: true, 1256: true, 1257: false, 65534: false} {
+		if f.owners(uid) != want {
+			t.Errorf("owned(%d) = %v, want %v", uid, !want, want)
+		}
+	}
+	f = newFake(40)
+	if code, stderr := run(t, f, "own", "runner", "/data/a"); code != 0 || fmt.Sprint(f.calls) != fmt.Sprint([]string{"capset_only 0x1", "read_status", "own /data/a runner=1000 uid=1000 gid=1000"}) {
+		t.Fatalf("own runner: code %d stderr %q calls %v", code, stderr, f.calls)
+	}
+}
+
+func TestOwnRefusesRootOrASlotAsTheRunner(t *testing.T) {
+	for _, uid := range []int{0, 1001, 1256} {
+		f := newFake(40)
+		f.realUID, f.root = uid, uid == 0
+		if code, stderr := run(t, f, "own", "runner", "/data/a"); code != exitRefused || len(f.calls) != 0 {
+			t.Errorf("uid %d: code %d calls %v stderr %q", uid, code, f.calls, stderr)
+		}
+	}
+}
+
+func TestOwnGivesNothingAfterAFailedNarrowing(t *testing.T) {
+	for _, step := range []string{"capset_only", "read_status"} {
+		f := newFake(40)
+		f.failAt = step
+		if code, _ := run(t, f, "own", "2", "/data/a"); code != exitRefused || has(f.calls, "own") {
+			t.Errorf("fail at %s: code %d calls %v", step, code, f.calls)
+		}
+	}
+	// A status that still shows another capability is refused too.
+	f := newFake(40)
+	f.status = func(*fakeSys) string { return sampleStatus(1000, 1000, "1000", "00000000000000c1", 0) }
+	if code, _ := run(t, f, "own", "2", "/data/a"); code != exitRefused || has(f.calls, "own") {
+		t.Errorf("verify: code %d calls %v", code, f.calls)
+	}
+}
+
+func TestOwnSaysWhenADirWasNotGiven(t *testing.T) {
+	f := newFake(40)
+	f.failAt = "own /data/b runner=1000 uid=1003 gid=1000"
+	if code, _ := run(t, f, "own", "2", "/data/a", "/data/b", "/data/c"); code != 1 || !has(f.calls, "own /data/c") {
+		t.Errorf("code %d calls %v", code, f.calls)
 	}
 }
 
@@ -423,7 +510,9 @@ func TestRunRefusesBadArguments(t *testing.T) {
 		{[]string{"check", "x"}, exitUsage},
 		{[]string{"reap", "0", "--sweep"}, exitUsage},
 		{[]string{"reap", "0", "--sweep", "tmp"}, exitRefused},
-		{[]string{"reown", "0", "1"}, exitUsage},
+		{[]string{"reown", "0", "1", "/x"}, exitUsage},
+		{[]string{"own", "0"}, exitUsage},
+		{[]string{"own"}, exitUsage},
 	} {
 		f := newFake(40)
 		code, stderr := run(t, f, c.args...)
@@ -481,7 +570,7 @@ func TestReapNeverKillsAfterAFailedDrop(t *testing.T) {
 	steps := []string{"setgroups", "setresgid", "setresuid", "cap_last_cap", "capbset_drop",
 		"capbset_drop 5", "ambient_clear", "capset_zero", "no_new_privs", "read_status"}
 	for _, step := range steps {
-		for _, args := range [][]string{{"reap", "0"}, {"reown", "0", "1", "/nonexistent"}} {
+		for _, args := range [][]string{{"reap", "0"}} {
 			f := newFake(5)
 			f.failAt = step
 			code, stderr := run(t, f, args...)
@@ -579,12 +668,12 @@ func TestVerifyStatus(t *testing.T) {
 }
 
 func TestMissingCaps(t *testing.T) {
-	all := sampleStatus(1000, 1000, "1000", "00000000000001c0", 0)
+	all := sampleStatus(1000, 1000, "1000", "00000000000001c1", 0)
 	if m, err := missingCaps(all); err != nil || len(m) != 0 {
 		t.Errorf("all held: %v %v", m, err)
 	}
 	none := sampleStatus(1000, 1000, "1000", "0000000000000000", 0)
-	if m, _ := missingCaps(none); strings.Join(m, ",") != "CAP_SETUID,CAP_SETGID,CAP_SETPCAP" {
+	if m, _ := missingCaps(none); strings.Join(m, ",") != "CAP_CHOWN,CAP_SETUID,CAP_SETGID,CAP_SETPCAP" {
 		t.Errorf("none held: %v", m)
 	}
 	f := newFake(0)
@@ -693,34 +782,47 @@ func TestSweepRemovesOwnedAndKeepsLinkTargets(t *testing.T) {
 	}
 }
 
-func TestFixDirAppliesFixModeAndSkipsLinks(t *testing.T) {
+func TestOwnDirFixesModesThroughTheTreeAndSkipsLinksAndOthers(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "work")
 	outside := filepath.Join(root, "outside")
-	must(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o755))
-	must(t, os.WriteFile(filepath.Join(dir, "sub", "f"), []byte("x"), 0o644))
+	must(t, os.MkdirAll(filepath.Join(dir, "sub", "deep"), 0o755))
+	must(t, os.WriteFile(filepath.Join(dir, "sub", "deep", "f"), []byte("x"), 0o600))
 	must(t, os.WriteFile(outside, []byte("x"), 0o604))
 	must(t, os.Chmod(outside, 0o604))
 	must(t, os.Symlink(outside, filepath.Join(dir, "link")))
+	// A folder its writer shut (0o000) is opened up to the runner's group.
+	must(t, os.Chmod(filepath.Join(dir, "sub", "deep"), 0o000))
 	must(t, os.Chmod(filepath.Join(dir, "sub"), 0o700))
-	must(t, os.Chmod(filepath.Join(dir, "sub", "f"), 0o644))
 
+	me, gid := os.Getuid(), os.Getgid()
 	var errb bytes.Buffer
-	if !fixDir(dir, os.Getuid(), &errb) {
-		t.Fatalf("fix failed: %s", errb.String())
+	if !ownDir(dir, func(uid int) bool { return uid == me }, me, me, gid, &errb) {
+		t.Fatalf("own failed: %s", errb.String())
 	}
+	checkMode(t, dir, 0o2770)
 	checkMode(t, filepath.Join(dir, "sub"), 0o2770)
-	checkMode(t, filepath.Join(dir, "sub", "f"), 0o660)
+	checkMode(t, filepath.Join(dir, "sub", "deep"), 0o2770)
+	checkMode(t, filepath.Join(dir, "sub", "deep", "f"), 0o660)
 	checkMode(t, outside, 0o604)
-	if !fixDir(filepath.Join(root, "missing"), os.Getuid(), &errb) {
-		t.Error("missing dir failed")
+	if !ownDir(filepath.Join(root, "missing"), func(int) bool { return true }, me, me, gid, &errb) {
+		t.Error("a missing dir failed")
 	}
-	// entries of another uid are left alone
-	must(t, os.Chmod(filepath.Join(dir, "sub", "f"), 0o644))
-	if !fixDir(dir, os.Getuid()+1, &errb) {
-		t.Fatal("fix of nothing failed")
+	// An entry of a uid owned() refuses is left as it is, and so is all below it.
+	must(t, os.Chmod(filepath.Join(dir, "sub", "deep", "f"), 0o644))
+	must(t, os.Chmod(filepath.Join(dir, "sub"), 0o755))
+	if !ownDir(dir, func(int) bool { return false }, me, me, gid, &errb) {
+		t.Fatal("own of nothing failed")
 	}
-	checkMode(t, filepath.Join(dir, "sub", "f"), 0o644)
+	checkMode(t, filepath.Join(dir, "sub"), 0o755)
+	checkMode(t, filepath.Join(dir, "sub", "deep", "f"), 0o644)
+	// A DIR that is itself a symlink is never followed.
+	link := filepath.Join(root, "dirlink")
+	must(t, os.Symlink(dir, link))
+	if !ownDir(link, func(uid int) bool { return uid == me }, me, me, gid, &errb) {
+		t.Fatalf("own of a link failed: %s", errb.String())
+	}
+	checkMode(t, filepath.Join(dir, "sub"), 0o755)
 }
 
 func must(t *testing.T, err error) {
