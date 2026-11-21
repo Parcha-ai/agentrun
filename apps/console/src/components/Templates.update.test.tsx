@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TemplatesPage, TRIGGER_READ_MS } from "./Templates";
+import { TemplatesPage } from "./Templates";
 import { agentHash } from "./AgentPage";
 import type { TemplateView, Trigger } from "@/lib/v2";
 
@@ -20,7 +20,7 @@ const base: TemplateView = {
 };
 const agentOf = (id: string, name: string, template: string | null) => ({ agent_id: id, definition: { name }, template: template ? { id: template, version: "1.0.0", sha: null } : null });
 
-const applyTemplate = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ agent_id: body.agent_id ?? "made-1", trigger_ids: [], warnings: [] }));
+const applyTemplate = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ agent_id: body.agent_id ?? "made-1", revision_version: body.agent_id ? 2 : 1, trigger_ids: [], warnings: [] }));
 const go = vi.fn();
 const client = (agents: ReturnType<typeof agentOf>[]) =>
   ({ listTemplates: async () => ({ templates: [base] }), listMcpServers: async () => ({ servers: [] }), listAgents: async (_q?: { cursor?: string | null }) => ({ agents, next_cursor: null as string | null }), applyTemplate });
@@ -60,42 +60,19 @@ describe("a template that already made an agent here", () => {
     expect(listAgents).toHaveBeenCalledTimes(pages);
   });
 
-  // An apply with warnings shows its result. The words say what it did: an Update updated the agent (its revision read
-  // back), never "made"; only an Apply, which made a new agent, says made.
-  const warned = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ agent_id: body.agent_id ?? "made-1", trigger_ids: [], warnings: [{ field: "computer", message: "No shell here." }] }));
+  // An apply with warnings shows its result. The words say what it did: an Update updated the agent to the revision its
+  // answer names (revision_version), never "made"; only an Apply, which made a new agent, says made.
+  const warned = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ agent_id: body.agent_id ?? "made-1", revision_version: body.agent_id ? 2 : 1, trigger_ids: [], warnings: [{ field: "computer", message: "No shell here." }] }));
   const result = (host: HTMLElement) => host.querySelector('section[aria-label="Applied"]')?.textContent ?? "";
-  it("an Update with warnings says it updated the agent and the revision it wrote, never that the agent is made", async () => {
-    const getAgent = vi.fn(async (id: string) => ({ agent: { agent_id: id, definition: { name: "Morning notes", version: 2 } }, etag: null }));
+  it("an Update with warnings says it updated the agent and the revision it wrote, from its answer, never that the agent is made", async () => {
+    const getAgent = vi.fn();
     const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: warned, getAgent } as never);
     await act(async () => button(host, "Update Morning notes")!.click());
-    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    expect(getAgent).toHaveBeenCalledWith("notes-1");
     expect(host.querySelector("h1")?.textContent).toContain("Daily notes updated");
-    expect(result(host)).toContain("Updated: rev 2. The server says:");
+    expect(result(host)).toContain("rev 2");
     expect(result(host)).not.toContain("made");
     expect(result(host)).not.toContain("applied");
-  });
-  it("an Update whose agent can't be read back says Updated alone", async () => {
-    const getAgent = vi.fn(async () => { throw new Error("down"); });
-    const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: warned, getAgent } as never);
-    await act(async () => button(host, "Update Morning notes")!.click());
-    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    expect(result(host)).toContain("Updated. The server says:");
-    expect(result(host)).not.toContain("made");
-  });
-  it("an Update whose read-back outlasts TRIGGER_READ_MS says Updated alone, and its late answer changes nothing", async () => {
-    let answer!: (agent: unknown) => void;
-    const getAgent = vi.fn(() => new Promise((resolve) => { answer = resolve; }));
-    const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: warned, getAgent } as never);
-    vi.useFakeTimers();
-    try {
-      await act(async () => button(host, "Update Morning notes")!.click());
-      expect(result(host)).toContain("Updated. The server says:");
-      await act(async () => { await vi.advanceTimersByTimeAsync(TRIGGER_READ_MS + 1); });
-      await act(async () => { answer({ agent: { agent_id: "notes-1", definition: { name: "Morning notes", version: 2 } }, etag: null }); await vi.advanceTimersByTimeAsync(0); });
-      expect(result(host)).toContain("Updated. The server says:");
-      expect(result(host)).not.toContain("rev 2");
-    } finally { vi.useRealTimers(); }
+    expect(getAgent).not.toHaveBeenCalled();
   });
   it("an Update with no warnings but a schedule to show says Updated with its revision above the schedule", async () => {
     const schedule: Trigger = {
@@ -104,9 +81,8 @@ describe("a template that already made an agent here", () => {
       catchup_window_s: 0, max_active_runs: 1, failures_in_a_row: 0, disabled: null, last_run_id: null,
       created_at: "2026-11-11T00:00:00Z", updated_at: "2026-11-11T00:00:00Z", next_at: "2026-11-12T09:00:00Z", last_firing: null,
     };
-    const scheduled = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ agent_id: body.agent_id ?? "made-1", trigger_ids: ["trg_d"], warnings: [] }));
-    const getAgent = vi.fn(async (id: string) => ({ agent: { agent_id: id, definition: { name: "Morning notes", version: 3 } }, etag: null }));
-    const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: scheduled, getAgent, getTrigger: async () => schedule } as never);
+    const scheduled = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ agent_id: body.agent_id ?? "made-1", revision_version: 3, trigger_ids: ["trg_d"], warnings: [] }));
+    const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: scheduled, getTrigger: async () => schedule } as never);
     await act(async () => button(host, "Update Morning notes")!.click());
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(go).not.toHaveBeenCalled();
