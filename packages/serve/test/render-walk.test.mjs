@@ -197,8 +197,9 @@ globalThis.fetch = async (url, init = {}) => {
 };
 `);
   const report = join(dir, "report.md");
-  const walk = new URL("deploy/render/walk.mjs", ROOT).pathname;
-  const child = spawn(process.execPath, ["--import", stub, walk, "--owner", "Walks"], { env: { ...process.env, RENDER_API_KEY: "render-test", OPENROUTER_API_KEY: "or-test", REPORT: report }, stdio: "ignore" });
+  const { fileURLToPath } = await import("node:url");
+  const walk = fileURLToPath(new URL("deploy/render/walk.mjs", ROOT));
+  const child = spawn(process.execPath, ["--import", stub, walk, "--owner", "Walks"], { env: { ...process.env, RENDER_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "fake-test-key", REPORT: report }, stdio: "ignore" });
   const code = await new Promise((resolve) => child.on("exit", resolve));
   assert.equal(code, 1);
   const sent = (await read(log, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
