@@ -168,6 +168,27 @@ test("no key is handed as, and no env sets, a variable that changes what the age
   for (const name of ['GEMINI_API_KEY', 'GEMINI_HOME', 'MY_ENV', 'NODEJS_HOME', 'PATHS']) assert.equal(launchEnv(name), false, `${name} is not`);
 });
 
+test("a sign-in whose agent answers initialize with an error says its JSON-RPC code alone, none of its words", async () => {
+  const { signInAgent } = await import('@parcha/agentrun-harness-acp');
+  const dir = scratch();
+  const agent = join(dir, 'refuses-initialize.mjs');
+  writeFileSync(agent, [
+    "import { createInterface } from 'node:readline';",
+    'for await (const line of createInterface({ input: process.stdin })) {',
+    '  const { id } = JSON.parse(line);',
+    `  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32603, message: 'refused, signed in as ${TOKEN}' } }) + '\\n');`,
+    '}',
+  ].join('\n'));
+  const home = join(dir, 'home');
+  mkdirSync(home);
+  await assert.rejects(signInAgent({ command: process.execPath, args: [agent], method: LOGIN, homeEnv: 'FAKE_LOGIN_HOME', home }), (error) => {
+    assert.equal(error.message.includes(TOKEN), false, error.message);
+    assert.equal(error.message.includes('signed in as'), false, error.message);
+    assert.match(error.message, new RegExp(`^${ACP_CODES.authFailed}: [^\\n]*initialize[^\\n]*-32603`));
+    return true;
+  });
+});
+
 test("a sign-in never points the agent's folder variable at one that changes what it loads or runs, nor one the adapter sets: refused before it starts", async () => {
   const { signInAgent } = await import('@parcha/agentrun-harness-acp');
   const dir = scratch();

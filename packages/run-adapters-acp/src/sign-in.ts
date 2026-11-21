@@ -63,8 +63,8 @@ export async function signInAgent(options: SignInOptions): Promise<void> {
     onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
   });
   const ended = () => new Error(`${ACP_CODES.agentExited}: the agent ended before its sign-in answered (${agent.ended() ?? "its end is not known yet"})`);
-  /** `what`, refused when the agent ends or the time runs out first. */
-  const ask = async <T>(what: Promise<T>, ms: number): Promise<T> => {
+  /** `what` (the request `asked`), refused when the agent ends or the time runs out first. */
+  const ask = async <T>(asked: "initialize" | "sign-in", what: Promise<T>, ms: number): Promise<T> => {
     let timer: NodeJS.Timeout | undefined;
     try {
       return await Promise.race([
@@ -73,9 +73,13 @@ export async function signInAgent(options: SignInOptions): Promise<void> {
         new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`${ACP_CODES.authFailed}: no sign-in within ${Math.round(ms / 60_000)} minutes`)), ms))),
       ]);
     } catch (error) {
+      // An error the agent answered (a JSON-RPC code): its own words are on the person's terminal already, ours say the
+      // request and the code alone.
+      const code = (error as { code?: unknown }).code;
+      if (typeof code === "number") throw new Error(`${ACP_CODES.authFailed}: the agent refused its ${asked} (error ${code})`);
       // A request the agent did not answer (no JSON-RPC code) failed as its pipe closed: say how the agent ended, once
       // its exit is in.
-      if (typeof (error as { code?: unknown }).code !== "number" && !(error as Error).message?.startsWith("ACP_")) {
+      if (!(error as Error).message?.startsWith("ACP_")) {
         let wait: NodeJS.Timeout | undefined;
         const gone = await Promise.race([agent.exited.then(() => true), new Promise<boolean>((done) => (wait = setTimeout(() => done(false), 2_000)))]);
         clearTimeout(wait);
@@ -87,17 +91,10 @@ export async function signInAgent(options: SignInOptions): Promise<void> {
     }
   };
   try {
-    const init = await ask(agent.connection.agent.request("initialize", { protocolVersion: PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "agentrun", version: "1" } }), 60_000);
+    const init = await ask("initialize", agent.connection.agent.request("initialize", { protocolVersion: PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "agentrun", version: "1" } }), 60_000);
     const methods = (init.authMethods ?? []).map((method) => method.id);
     if (!methods.includes(options.method)) throw new Error(`${ACP_CODES.authUnlisted}: the agent's initialize does not list the sign-in method ${options.method} (it lists ${methods.join(", ") || "none"})`);
-    try {
-      await ask(agent.connection.agent.request("authenticate", { methodId: options.method }), options.timeoutMs ?? SIGN_IN_MS);
-    } catch (error) {
-      const code = (error as { code?: unknown }).code;
-      // Its own words are on the person's terminal already; ours say the code alone.
-      if (typeof code === "number") throw new Error(`${ACP_CODES.authFailed}: the agent refused the sign-in (error ${code})`);
-      throw error;
-    }
+    await ask("sign-in", agent.connection.agent.request("authenticate", { methodId: options.method }), options.timeoutMs ?? SIGN_IN_MS);
   } finally {
     stopped.abort();
     agent.kill();

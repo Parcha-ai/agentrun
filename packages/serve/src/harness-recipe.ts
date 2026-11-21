@@ -217,7 +217,11 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
   if (!entries) say(RECIPE_CODES.keys, 'keys is a list of the key names saved for this harness alone, each a name or { "name": its saved name, "env": the variable the agent reads it from }');
   else {
     const handed = new Set<string>();
+    const saved = new Set<string>();
     for (const { name, env } of entries) {
+      // One saved key reaches the agent under one name: the adapter maps each saved name to a single variable.
+      if (saved.has(name)) say(RECIPE_CODES.keys, `the key ${name} is named twice: a saved key is handed under one name`);
+      saved.add(name);
       if (!ENV_NAME.test(name)) say(RECIPE_CODES.keys, `the key ${JSON.stringify(name)} is not a variable name`);
       else if (serverKey(name)) say(RECIPE_CODES.keys, `${name} is a key this server holds for something else; a recipe names only keys saved for its own harness (save it under a name of its own, and hand it as ${name} with { "name", "env" })`);
       else if (SET_BY_ADAPTER.has(name)) say(RECIPE_CODES.env, `${name} is set by the adapter or the proxy, never by a key`);
