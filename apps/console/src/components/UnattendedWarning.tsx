@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Banner, Button, useToast } from "@/components/ui";
 import { type Agent, editBody } from "@/lib/agentForm";
 import { noAccounts } from "@/lib/auth";
@@ -91,3 +91,37 @@ export function UnattendedWarning({ v2, agentId, skips = false, className }: { v
   };
   return <UnattendedBanner tools={tools} outcome={outcome} skips={skips} busy={busy} failed={failed} onFix={() => void fix()} className={className} />;
 }
+
+/** For a list of triggers: the tools that ask of each agent in `agentIds`, each agent read once while the list is open
+ *  (GET /v2/agents/{id}, as the warning reads it), however many of its rows start it, and an agent first named by a later
+ *  read of the list read then; and whether a call that asks waits or is refused, read once when one asks. An agent whose
+ *  read fails or has nothing that asks is left out: the cue is advice, and the list works without it. */
+export function useAskingTools(v2: Client, agentIds: readonly string[]): { asks: Record<string, string[]>; outcome: AskOutcome } {
+  const [asks, setAsks] = useState<Record<string, string[]>>({});
+  const [outcome, setOutcome] = useState<AskOutcome>("waits");
+  const asked = useRef(new Set<string>());
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  const key = [...new Set(agentIds)].sort().join("\n");
+  useEffect(() => {
+    for (const id of key ? key.split("\n") : []) {
+      if (asked.current.has(id)) continue;
+      asked.current.add(id);
+      v2.getAgent(id).then((r) => {
+        const tools = askingTools(r.agent);
+        if (live.current && tools.length) setAsks((was) => ({ ...was, [id]: tools }));
+      }, () => {});
+    }
+  }, [v2, key]);
+  const any = Object.keys(asks).length > 0;
+  useEffect(() => {
+    if (!any) return;
+    let on = true;
+    v2.session().then((r) => { if (on) setOutcome(noAccounts(r) ? "refused" : "waits"); }, () => {});
+    return () => { on = false; };
+  }, [v2, any]);
+  return { asks, outcome };
+}
+
+/** The cue on a trigger list's row whose agent has tools that ask: the warning's title, naming them. */
+export const askCue = (tools: readonly string[], outcome: AskOutcome = "waits") => `${ASK_TITLE[outcome]}: ${listWords(tools)}`;

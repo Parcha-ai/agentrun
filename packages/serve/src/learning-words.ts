@@ -60,7 +60,7 @@ export const STOPPED = {
   notCopied: "what the agent learned could not be handed to the run, so the run started without it",
   noSeed: "the run started without what the agent learned",
   cancelled: "the run was cancelled",
-  cancelledLooking: "the run was cancelled while it wrote what it learned",
+  cancelledLooking: "a stop or cancel cut it while it wrote what it learned",
   crashed: "the run's process ended before it could keep what it learned",
   failed: "writing what it learned ended on an error",
   unanswered: "the turn that writes its workflow ended before it answered",

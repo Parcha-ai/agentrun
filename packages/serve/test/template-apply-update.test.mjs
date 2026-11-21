@@ -147,10 +147,13 @@ test("an apply with agent_id writes a new revision of that agent: the same id, i
   assert.equal(run.status, 202, JSON.stringify(run.body));
   assert.equal((await api("GET", `/agents/${first.agent_id}`)).body.revisions, 1);
 
+  assert.equal(first.revision_version, 1, "a fresh apply names the revision it wrote: the agent's first");
   const again = await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "an apply with agent_id updates that agent in place");
   assert.equal(again.agent_id, first.agent_id, "the same agent");
   const read = (await api("GET", `/agents/${first.agent_id}`)).body;
   assert.equal(read.revisions, 2, "a new revision of it");
+  assert.equal(again.revision_version, read.definition.version, "the update names the revision it wrote, the agent's current one");
+  assert.equal(again.revision_version, 2);
   assert.match(read.definition.instructions, /dogs/, "the new revision is the package with the new parameters");
   assert.equal(read.template?.id, "digest");
   assert.deepEqual((await api("GET", "/agents")).body.agents.map((one) => one.agent_id), [first.agent_id], "no second agent");
@@ -229,6 +232,18 @@ test("an update keeps the agent's learned corrections", { timeout: 60_000 }, asy
   assert.equal(put.status, 200, JSON.stringify(put.body));
   await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "an update keeps the agent, and so its corrections");
   assert.equal((await api("GET", `/agents/${first.agent_id}/learning/corrections`)).body.text, text, "the owner's corrections are kept");
+});
+
+test("each apply answer says what it did to the agent: made (rev 1), updated (rev 2), and an update that changes nothing unchanged at the same rev 2, no revision written", { timeout: 60_000 }, async (t) => {
+  const { api } = await served(t);
+  const first = await applied(api, "digest", { parameters: { topic: "cats" } });
+  assert.deepEqual([first.agent_change, first.revision_version], ["made", 1]);
+  const again = await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "an update that changes the parameters");
+  assert.deepEqual([again.agent_change, again.revision_version], ["updated", 2]);
+  const same = await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "the same update again");
+  assert.deepEqual([same.agent_change, same.revision_version], ["unchanged", 2], `nothing to update: ${JSON.stringify(same)}`);
+  const read = (await api("GET", `/agents/${first.agent_id}`)).body;
+  assert.deepEqual([read.revisions, read.definition.version], [2, 2], "no revision written");
 });
 
 test("a fresh apply of a template whose same parameters already made a live agent still makes one, with a warning naming the agent there", { timeout: 60_000 }, async (t) => {

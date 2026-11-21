@@ -252,12 +252,13 @@ const literal = (text: string) => `{${Buffer.byteLength(text, "utf8")}}${CRLF}${
 
 /** Starts the fake account's two servers on loopback. `layout`: the folders it has (default a plain account's); the Gmail
  *  layout's server says X-GM-EXT-1. `now`: its clock. `slowInReplyTo`: a search by HEADER In-Reply-To is never answered,
- *  as Gmail's on a large mailbox (it indexes Message-ID and References, not In-Reply-To). */
-export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: "standard" | "gmail"; now?: () => Date; slowInReplyTo?: boolean } = {}): Promise<EmailFaux> {
+ *  as Gmail's on a large mailbox (it indexes Message-ID and References, not In-Reply-To). `password`: the one it signs in
+ *  with (default a fresh random one). */
+export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: "standard" | "gmail"; now?: () => Date; slowInReplyTo?: boolean; password?: string } = {}): Promise<EmailFaux> {
   // Its clock: a seeded message's default date and an appended one's arrival (a template eval case's `now`, else the real one).
   const now = options.now ?? (() => new Date());
   const user = "agent@faux.example";
-  const password = `faux-${randomBytes(9).toString("hex")}`;
+  const password = options.password ?? `faux-${randomBytes(9).toString("hex")}`;
   let refusing = false;
   const commandLog: string[] = [];
   const holds: { pattern: RegExp; gate: Promise<void> }[] = [];

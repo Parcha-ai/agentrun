@@ -28,6 +28,7 @@ __all__ = [
     "ApplyTemplateBody",
     "ApplyTemplateBodyOverrides",
     "ApplyTemplateResponse",
+    "ApplyTemplateResponseTriggersItem",
     "ApplyTemplateResponseWebhookSecretsItem",
     "ArchiveAgentResponse",
     "ArchiveRunResponse",
@@ -2719,6 +2720,7 @@ class _RunSummaryPending2Required(TypedDict):
 
 class RunSummaryPending2(_RunSummaryPending2Required, total=False):
     summary: str
+    asks_because: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -5267,6 +5269,7 @@ class _RunPending2Required(TypedDict):
 
 class RunPending2(_RunPending2Required, total=False):
     summary: str
+    asks_because: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -6807,13 +6810,23 @@ class _ApplyTemplateResponseRequired(TypedDict):
     template: str
     version: str
     agent_id: str
+    revision_version: int
+    agent_change: Literal["made", "updated", "unchanged"]
     servers: dict[str, str | None]
     trigger_ids: list[str]
+    triggers: list[ApplyTemplateResponseTriggersItem]
     warnings: list[InputIssue]
 
 
 class ApplyTemplateResponse(_ApplyTemplateResponseRequired, total=False):
     webhook_secrets: list[ApplyTemplateResponseWebhookSecretsItem]
+
+
+class ApplyTemplateResponseTriggersItem(TypedDict):
+    trigger_id: str
+    name: str
+    kind: Literal["schedule", "webhook", "github", "composio", "email", "feed"]
+    enabled: bool
 
 
 class _ApplyTemplateResponseWebhookSecretsItemRequired(TypedDict):

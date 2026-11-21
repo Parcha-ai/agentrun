@@ -2829,7 +2829,9 @@ account's app password (Gmail, iCloud and Fastmail each make one in the account'
 sign-in password is refused by most providers), at most 1,024 characters. It is sealed under the server's seal key
 (`AGENTRUN_SEAL_KEY`) and is in no answer, event or log line. Every connection is TLS: 993 and 465 from the start, any
 other port with STARTTLS required. Only `127.0.0.1` is reached in the clear. `POST /v2/settings/email/test` signs in to
-both servers and sends nothing; `DELETE` forgets the account.
+both servers and sends nothing. A save signs in the same way first: an account either server refuses, or one a server
+can't be reached for, is 424 `upstream_failed` in the test's words (`details.imap` and `details.smtp`), with nothing
+saved and any account saved before kept as it was. `DELETE` forgets the account.
 
 **The trigger.** `{kind: "email", mailbox?: "INBOX", every_s?: 60, accept?}` reads the mailbox every `every_s` seconds
 and starts a run for each new message its `accept` takes (a rule's `where` reads `/from`, `/to`, `/subject`, `/text`).
@@ -2857,7 +2859,8 @@ after asks, saying "this run has sent 5 emails" (the count is the run's own reco
 stops two auto-responders answering each other. On a run an email started whose `email_read` is thread-scoped (no
 `scope: "mailbox"`), a send to anyone outside the thread's people
 (the account's own address and every From, To and Cc of the thread's messages) asks too, naming them ("eve@example.com
-is outside this email's thread"). The approval's `summary` ends "Asks because ...". With accounts off, where no one can
+is outside this email's thread"). The pending approval carries the reason as `asks_because`, which the console's card
+says above the call's arguments ("Asks because ..."). With accounts off, where no one can
 approve, such a send is refused in those words.
 
 ## Templates
@@ -3369,16 +3372,18 @@ stays in every total.
 - On disk. On both stores the purge deletes or blanks the rows above; what the database files keep differs.
   - **SQLite:** every store connection writes with `secure_delete` on, which zeroes the bytes a write frees, and a run's
     or an agent's purge checkpoints the WAL once it commits. So the purged content is in neither `store.sqlite` nor
-    its `-wal` after the `DELETE`. A checkpoint another connection holds back is retried once, then logged, and the
-    next purge's checkpoint or the server's stop clears it. Copies outside the file are out of scope: backups,
-    snapshots, the filesystem's own journal.
+    its `-wal` after the `DELETE`. A checkpoint another connection holds back leaves the store's scrub marker
+    (`store.sqlite.scrub`), and the next start's scrub truncates the log before it serves, a crash in between
+    included. Copies outside the file are out of scope: backups, snapshots, the filesystem's own journal.
   - **PostgreSQL** (not closed): a purged row's old version stays in its table as a dead tuple. `VACUUM` (or
     autovacuum, on its schedule) only marks its space reusable; the bytes stay in the data file until a later write
     overwrites them. `VACUUM FULL` rewrites the table into a new file (under an exclusive lock), and the old file's
     blocks go back to the filesystem unwiped. Postgres's own WAL and its archived WAL keep the old values until they are
     recycled or expire, and backups keep them for their retention.
-- Its agent's other runs and what the agent learned are kept: a promotion record and the learning folder's history
-  may still name the run's id.
+- Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id. The
+  agent's learning folder keeps what the run taught it: its merge's diff (`.agentrun/diffs/<run>.json`, with its
+  patches) and any feedback line it added to `corrections.md`, in the folder's history too. The run's purge removes
+  neither; the agent's purge (below) removes the whole folder.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`.
 
