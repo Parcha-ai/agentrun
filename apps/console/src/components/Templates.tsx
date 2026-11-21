@@ -15,7 +15,7 @@ import { runTemplatePrompt } from "@/lib/codingAgentPrompts";
 import { allPages, type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { cn } from "@/lib/utils";
-import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
+import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine, TRIGGER_KINDS } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
 import { type FieldSpec, fieldIssueWords, fieldKind, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, schemaFields } from "@/lib/inputForm";
@@ -237,15 +237,6 @@ const CHANGE_WORDS: Record<TemplateApplied["agent_change"], { title: string; sai
   updated: { title: "updated", said: (rev) => `Updated: rev ${rev}` },
   unchanged: { title: "unchanged", said: (rev) => `Nothing to update: rev ${rev} is current` },
 };
-/** What starts a run of each kind of trigger, in plain words: an apply's result says it of each trigger it made. */
-const TRIGGER_WORDS: Record<TemplateApplied["triggers"][number]["kind"], string> = {
-  schedule: "A schedule: it starts a run at its times.",
-  email: "Email: it starts a run on each new mail.",
-  webhook: "A webhook: it starts a run on each signed request to its URL.",
-  github: "GitHub: it starts a run on each GitHub event it takes.",
-  composio: "An app's events: it starts a run on each event the app sends.",
-  feed: "A feed: it starts a run on each new item in its feeds.",
-};
 /** `promise`'s answer, or undefined once `ms` have passed without one. */
 function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -447,7 +438,8 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
                     <a href={`#/triggers/${encodeURIComponent(x.trigger_id)}`} className="break-words text-prose font-semibold hover:underline">{x.name}</a>
                     <Chip tone={x.enabled ? "success" : "plain"}>{x.enabled ? "on" : "off"}</Chip>
                   </div>
-                  <p className="mt-1 break-words text-body">{TRIGGER_WORDS[x.kind]}{x.enabled ? "" : " It is off: it starts nothing until it is turned on."}</p>
+                  {/* Its kind and what starts a run of it, as the Triggers page says each kind. */}
+                  <p className="mt-1 break-words text-body">{TRIGGER_KINDS[x.kind].label} · {TRIGGER_KINDS[x.kind].what}{x.enabled ? "" : " It is off: it starts nothing until it is turned on."}</p>
                   {s && <p className="mt-1 break-words font-mono text-small text-muted-foreground">{scheduleLine(s.source, s.next_at)}</p>}
                 </li>
               );

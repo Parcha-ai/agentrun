@@ -969,7 +969,7 @@ describe("applying a template", () => {
     expect(t.went).toEqual([]);
     const row = t.host.querySelector('[aria-label="Triggers"] [data-trigger="trg_gone"]')!;
     expect(row.textContent).toContain("nightly");
-    expect(row.textContent).toContain("A schedule: it starts a run at its times.");
+    expect(row.textContent).toContain("Schedule · At the times you set");
     expect(row.querySelector("p.font-mono")).toBeNull();
   });
 
@@ -995,7 +995,7 @@ describe("applying a template", () => {
     const rows = [...t.host.querySelectorAll('section[aria-label="Applied"] [aria-label="Triggers"] [data-trigger]')];
     expect(rows.map((r) => r.querySelector("a")!.textContent)).toEqual(["new-mail", "evening-digest", "monday-brief"]);
     expect(rows.map((r) => r.querySelector("a")!.getAttribute("href"))).toEqual(["#/triggers/trg_mail", "#/triggers/trg_d", "#/triggers/trg_w"]);
-    expect(rows[0]!.textContent).toContain("Email: it starts a run on each new mail.");
+    expect(rows[0]!.textContent).toContain("Email · On each new message in a mailbox");
     expect(rows.map((r) => r.querySelector("span.caps")?.textContent)).toEqual(["on", "on", "off"]);
     expect(rows[1]!.querySelector("p.font-mono")!.textContent).toContain("next ");
     expect(rows[2]!.textContent).toContain("It is off: it starts nothing until it is turned on.");

@@ -207,6 +207,17 @@ export { acceptWords };
 export const hookWhen = (source: HookSource): string =>
   source.accept?.length ? `Only signed requests for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : "On each signed request";
 
+/** Each kind of trigger in words: its short label (a list row's chip, an apply's result) and what starts a run of it (the
+ *  first-trigger panel's card, an apply's result). A new kind adds its row here and every place that names a kind says it. */
+export const TRIGGER_KINDS: Record<TriggerSource["kind"], { label: string; what: string }> = {
+  schedule: { label: "Schedule", what: "At the times you set: every day or week at a time, every few minutes or hours, or once." },
+  webhook: { label: "Webhook", what: "On each signed request another system sends to its URL." },
+  github: { label: "GitHub", what: "On the events you pick from this server's GitHub App." },
+  composio: { label: "App", what: "On an event in an app a saved Composio server connects, such as a new issue in a GitHub repository." },
+  feed: { label: "Feed", what: "On each new item in the feeds you name, read every few minutes: a status page's incidents, a blog, or an API's JSON list such as a repository's pull requests." },
+  email: { label: "Email", what: "On each new message in a mailbox of this server's email account." },
+};
+
 /** A firing's cause, in words: its schedule, a Run now, or a signed request to a webhook. */
 export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request", github: "On a GitHub event", composio: "On an app event", email: "On an email", feed: "On a feed item" };
 

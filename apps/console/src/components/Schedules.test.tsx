@@ -213,10 +213,10 @@ describe("the schedules list", () => {
     expect(actions.map((b) => /\bbg-primary\/10\b/.test(b.className))).toEqual([false, false, false, false, false, true]);
   });
 
-  it("offers the six kinds as peers, unframed, when there is none: no main action among them", async () => {
+  it("offers each kind as a peer, unframed, when there is none: no main action among them", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
     const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
-    // No frame around the panel: the six cards are its only boxes, and it starts at the page's own left edge.
+    // No frame around the panel: its cards are its only boxes, and it starts at the page's own left edge.
     expect(panel.className).not.toMatch(/primary|border|\bp-\d/);
     expect(panel.parentElement!.className.split(" ")).toContain("px-5");
     for (const b of panel.querySelectorAll("li button")) expect(b.className, b.textContent ?? "").not.toMatch(/bg-primary/);

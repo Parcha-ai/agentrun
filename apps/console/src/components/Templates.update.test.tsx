@@ -112,7 +112,7 @@ describe("a template that already made an agent here", () => {
     const rows = [...host.querySelectorAll('[aria-label="Triggers"] [data-trigger]')];
     expect(rows.map((r) => r.getAttribute("data-trigger"))).toEqual(["trg_mail", "trg_d", "trg_w"]);
     expect(rows[0]!.textContent).toContain("new-mail");
-    expect(rows[0]!.textContent).toContain("starts a run on each new mail");
+    expect(rows[0]!.textContent).toContain("Email · On each new message in a mailbox");
     expect(rows[1]!.textContent).toContain("next ");
     expect(rows[2]!.textContent).toMatch(/It is off/);
     expect(getTrigger).not.toHaveBeenCalledWith("trg_mail");

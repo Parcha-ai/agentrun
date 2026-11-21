@@ -22,7 +22,7 @@ import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
 import { ACCEPT_LIMITS, acceptFields, emptyRule, type RuleDraft, ruleDraftOf } from "@/lib/accept";
-import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, type EmailTrigger, isEmailTrigger, type EmailDraft, emptyEmail, emailBodyOf, EMAIL_FIELDS, MAX_FEEDS, span } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, type EmailTrigger, isEmailTrigger, type EmailDraft, emptyEmail, emailBodyOf, EMAIL_FIELDS, MAX_FEEDS, span, TRIGGER_KINDS } from "@/lib/schedules";
 import type { ComposioEvent, ComposioTriggers, Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 import type { McpServer } from "@/lib/mcp";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
@@ -115,7 +115,7 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
     <section className="flex min-h-full flex-col" aria-label="Triggers">
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
         <h1 className={pageTitleClass}><CalendarClock className="size-4" aria-hidden />Triggers</h1>
-        {/* With no trigger yet the panel below offers the six, each with what it is for: the page says each once. */}
+        {/* With no trigger yet the panel below offers each kind, with what it is for: the page says each once. */}
         {!(triggers && !triggers.length) && (
           <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
             <Button size="sm" disabled={noAddress} onClick={() => go("#/triggers/new-composio")}><Blocks aria-hidden /> New app trigger</Button>
@@ -140,7 +140,7 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <a href={hashOf(t.id)} className="min-w-0 break-words text-prose font-semibold hover:underline">{t.name}</a>
-                    <Chip>{KIND_WORDS[t.source.kind]}</Chip>
+                    <Chip>{TRIGGER_KINDS[t.source.kind].label}</Chip>
                     {!t.enabled && !onceState(t, now()) && <OffChip trigger={t} />}
                   </div>
                   <p className="mt-1 break-words font-mono text-small text-muted-foreground" title={cronOf(t)}>{whatWords(t, agentName, now())}</p>
@@ -162,20 +162,22 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
 }
 
 
-/** A server with no trigger yet: what a trigger is, and the six things that can start a run, each with its own way
- *  in. These stand in for the page's six buttons, which show once there is a trigger. */
+/** A server with no trigger yet: what a trigger is, and each kind of thing that can start a run, with its own way in.
+ *  These stand in for the page's buttons, which show once there is a trigger. A card says what its kind does
+ *  (TRIGGER_KINDS) and, where one is needed, what to save first. */
 function FirstTrigger({ go, noAddress }: { go: (hash: string) => void; noAddress: boolean }) {
+  const card = (kind: Trigger["source"]["kind"], first = "") => `${TRIGGER_KINDS[kind].what}${first ? ` ${first}` : ""}`;
   const kinds = [
-    { Icon: CalendarClock, name: "Schedule", what: "At the times you set: every day or week at a time, every few minutes or hours, or once.", action: "New schedule", to: "#/triggers/new" },
-    { Icon: Webhook, name: "Webhook", what: "On each signed request another system sends to its URL.", action: "New webhook", to: "#/triggers/new-webhook" },
-    { Icon: GitPullRequest, name: "GitHub", what: "On the events you pick from this server's GitHub App. Connect GitHub in Settings first.", action: "New GitHub trigger", to: "#/triggers/new-github" },
-    { Icon: Blocks, name: "From an app", what: "On an event in an app a saved Composio server connects, such as a new issue in a GitHub repository. Save the server in Settings first.", action: "New app trigger", to: "#/triggers/new-composio" },
-    { Icon: Rss, name: "Feed", what: "On each new item in the feeds you name, read every few minutes: a status page's incidents, a blog, or an API's JSON list such as a repository's pull requests.", action: "New feed trigger", to: "#/triggers/new-feed" },
-    { Icon: Mail, name: "Email", what: "On each new message in a mailbox of this server's email account. Save the account in Settings → Email first.", action: "New email trigger", to: "#/triggers/new-email" },
+    { Icon: CalendarClock, name: "Schedule", what: card("schedule"), action: "New schedule", to: "#/triggers/new" },
+    { Icon: Webhook, name: "Webhook", what: card("webhook"), action: "New webhook", to: "#/triggers/new-webhook" },
+    { Icon: GitPullRequest, name: "GitHub", what: card("github", "Connect GitHub in Settings first."), action: "New GitHub trigger", to: "#/triggers/new-github" },
+    { Icon: Blocks, name: "From an app", what: card("composio", "Save the server in Settings first."), action: "New app trigger", to: "#/triggers/new-composio" },
+    { Icon: Rss, name: "Feed", what: card("feed"), action: "New feed trigger", to: "#/triggers/new-feed" },
+    { Icon: Mail, name: "Email", what: card("email", "Save the account in Settings → Email first."), action: "New email trigger", to: "#/triggers/new-email" },
   ];
   return (
-    // No frame of its own: its words start at the page's left edge, under the header's, and the six cards are its only
-    // boxes. The six are peers, so none is the main action: each button is the default one.
+    // No frame of its own: its words start at the page's left edge, under the header's, and its cards are its only
+    // boxes. Each kind is a peer, so none is the main action: each button is the default one.
     <section aria-labelledby="first-trigger">
       <p className="caps text-label text-muted-foreground">No triggers yet</p>
       <h2 id="first-trigger" className="mt-2 text-xl font-semibold">Start runs without being here</h2>
@@ -193,10 +195,6 @@ function FirstTrigger({ go, noAddress }: { go: (hash: string) => void; noAddress
     </section>
   );
 }
-
-/** A trigger's when and what, in one line: a schedule's times or a webhook's signed requests, then the agent it starts or
- *  the run it messages. */
-const KIND_WORDS: Record<Trigger["source"]["kind"], string> = { schedule: "Schedule", webhook: "Webhook", github: "GitHub", composio: "App", email: "Email", feed: "Feed" };
 
 /** A schedule's raw cron line, the tooltip on its words; none for any other trigger. */
 const cronOf = (t: Trigger): string | undefined => (t.source.kind === "schedule" && "cron" in t.source ? t.source.cron : undefined);
