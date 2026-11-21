@@ -294,8 +294,13 @@ const COST_WORDS = {
   unpriced: { type: "integer", minimum: 0, description: "Beside `so_far_usd`: how many of its charges have no known figure, or count at their hold." },
   upper_bound: { const: true, description: "`usd` counts a request a crash or a stop cut at the hold its cap kept for it: the most it can have cost." },
 };
+/** Which attempt at a turn a part of a run's usage was made in (store run_attempts), and whether it is billable. */
+const ATTEMPT_FIELDS = {
+  attempt: { type: ["integer", "null"], minimum: 1, description: "The attempt at its turn this was made in: 1 the turn's first, 2 its first redo, and so on. A turn is redone when the claim working it was cut (its runner drained for a deploy, crashed or lost its lease, or the turn was tried again) and another claim worked it again. Null for a run whose claims kept no attempt (one from before this server kept them).", "x-agentrun-serve": "runusage/5" },
+  billable: { type: "boolean", description: "False for model requests an attempt sent and never finished (cut in flight, or cut off by a crash) when a later attempt worked its turn again: that attempt sends them again, so their cost is the infrastructure's (the run's `infra_usd`), not the task's. True for every other part: an answered request, a paid call, browser and computer time, which the attempt that takes a turn over reuses, and every part of a run whose claims kept no attempt. Data only: `usd`, `total` and the run's `cost.usd` hold it either way, and nothing is charged differently by it.", "x-agentrun-serve": "runusage/5" },
+};
 const RUN_USAGE_LINE = {
-  type: "object", additionalProperties: false, required: ["meter", "model", "provider", "charged_by", "quantity", "unit", "basis", "usd"],
+  type: "object", additionalProperties: false, required: ["meter", "model", "provider", "charged_by", "quantity", "unit", "basis", "attempt", "billable", "usd"],
   properties: {
     meter: { enum: ["tokens", "tools", "browser_time", "compute_time"], description: "`tokens`: model requests, by model. `tools`: paid tool calls, by who charged for them; a workflow decision Parallel answered on its own API (this server's PARALLEL_API_KEY) is one, on the `parallel` line, never on `tokens`. `browser_time`: browser session time, by browser provider. `compute_time`: the time of the computers the run made, by provider and resource (`resource`, a GPU's `gpu_type`), priced by the operator's per-resource settings; sum a provider's lines for its compute figure.", "x-agentrun-serve": "runusage/5" },
     model: { type: ["string", "null"], description: "On `tokens`: the model the requests were sent on, as the run's booking names it (a workflow decision's model too, but for a decision Parallel charged, which is on the `parallel` `tools` line). One line per model and route: the same model reached two ways is two lines. Null on the other meters, and when the record names none." },
@@ -304,6 +309,7 @@ const RUN_USAGE_LINE = {
     quantity: { type: ["number", "null"], minimum: 0, description: "In `unit`, as measured: never rounded to a billing increment, never topped up to a minimum. On `tokens`, the requests' input, cache read, cache write and output tokens as each reported them (a workflow decision's as its receipt does; a request that reported none is in `unmetered_requests`, in no token); on `tools`, the charges booked, one per paid call (a decision Parallel charged is one); on `browser_time`, the seconds this server's clock charged the provider's sessions for, its minimum per session included as the browser charged it; on `compute_time`, every second of every such computer of the run's times its figure (vCPUs, GiB of memory, GPUs, or GB of disk over a 730-hour month), a computer still open counted up to `measured_to`. Null when nothing measured it, or when a computer's figure is unknown (its provider said none and its create asked none)." },
     unit: { enum: ["token", "call", "second", "vcpu_second", "gib_second", "gpu_second", "gb_month"] },
     basis: { enum: ["reported", "estimate", "unpriced"], description: "How `usd` was reached. On `tokens`, as the run's `cost.basis` is, over the line's requests alone: `reported` when every request priced had its gateway's or provider's own figure, `estimate` when any was priced from a price table, `unpriced` when none was priced. On `tools`, `reported` when every charge with a figure is the provider's own (monid's answer says what it charged), `estimate` when any is a price this server holds (an MCP tool's saved price, Parallel's, a Parallel decision's list price), `unpriced` when none has a figure. On `browser_time`, `estimate` when any charge has a figure (the provider's price per hour on this server's clock, never its invoice), else `unpriced`. On `compute_time`, `estimate` when the run's ledger booked any of it at the operator's price (or its provider bills nothing, at $0), else `unpriced` (no price set for the resource, or its figure unknown): its time ran outside the run's cap, and `usd` is null." },
+    ...ATTEMPT_FIELDS,
     usd: { type: ["number", "null"], minimum: 0, description: "The line's cost on this server, as booked, joined by the rule `cost.usd` is (float noise rounded off at 1e-12). Null when a charge of it is unknown: never $0 for unknown." },
     ...COST_WORDS,
     requests: { type: "integer", minimum: 0, description: "On `tokens`: the model requests booked." },
@@ -320,7 +326,7 @@ const RUN_USAGE_LINE = {
 /** One browser session on GET /runs/{run_id}/usage (browser-sessions.ts). */
 const BROWSER_SESSION = {
   type: "object", additionalProperties: false,
-  required: ["provider", "tag", "provider_session_id", "started_at", "ended_at", "release_reason", "charged_seconds", "provider_record", "provider_record_status"],
+  required: ["provider", "tag", "provider_session_id", "started_at", "ended_at", "release_reason", "charged_seconds", "provider_record", "provider_record_status", "attempt", "billable"],
   properties: {
     provider: { type: "string", description: "The browser provider, as the `browser_time` line's `provider` names it." },
     tag: { type: "string", description: "The run's own name for the session, the same on every read." },
@@ -339,12 +345,13 @@ const BROWSER_SESSION = {
       },
     },
     provider_record_status: { enum: ["read", "not_offered", "not_found", "failed", "no_session", null], description: "What came of reading the provider's record: `read`; `not_offered`, the provider keeps none this server reads; `not_found`, the provider did not know the session; `failed`, the read failed or timed out; `no_session`, none was made. Null while the session's end is not recorded." },
+    ...ATTEMPT_FIELDS,
   },
 };
 /** One computer a run made on GET /runs/{run_id}/usage (run-usage.ts computerIntervalsOf, store computer_intervals). */
 const COMPUTER_INTERVAL = {
   type: "object", additionalProperties: false,
-  required: ["provider", "provider_id", "kind", "gpu", "cpus", "memory_mb", "disk_gb", "started_at", "ended_at", "kept", "booked_seconds"],
+  required: ["provider", "provider_id", "kind", "gpu", "cpus", "memory_mb", "disk_gb", "started_at", "ended_at", "kept", "booked_seconds", "attempt", "billable"],
   properties: {
     provider: { type: "string", description: "The computer provider, as this server's registry names it (the agent's computer setting's `provider`: `docker`, `e2b`, `daytona`, ...)." },
     provider_id: { type: "string", description: "The provider's own id for the computer, by which its console, its API and its invoice find it." },
@@ -361,10 +368,11 @@ const COMPUTER_INTERVAL = {
     ended_at: { type: ["string", "null"], format: "date-time", description: "When the provider's delete of the computer answered ok, on this server's clock. Null while none did: the computer may still be running (a run that ended with one open left it behind), or its delete failed or its answer is unknown. Never a guessed end." },
     kept: { type: "boolean", description: "The run's park kept the computer past its claim, for the person's answer (it is deleted once its keep's time passes, or at the run's end)." },
     booked_seconds: { type: "number", minimum: 0, description: "How much of the computer's time a claim of the run held and booked on the run's ledger. The rest of its life is time no claim held (`unheld_quantity` on its `compute_time` lines). 0 for one whose provider has no price set, or that bills nothing.", "x-agentrun-serve": "runusage/4" },
+    ...ATTEMPT_FIELDS,
   },
 };
 const RUN_USAGE = {
-  type: "object", additionalProperties: false, required: ["run_id", "ended_at", "currency", "total", "lines", "browser_sessions", "computer_intervals", "reason"],
+  type: "object", additionalProperties: false, required: ["run_id", "ended_at", "currency", "total", "lines", "browser_sessions", "computer_intervals", "infra_usd", "reason"],
   properties: {
     run_id: ref("schemas/Id"),
     ended_at: { type: ["string", "null"], format: "date-time", description: "When the run ended: the moment the lines cover. Null while it is at work. The lines change only while the run works, and a follow-up can open an ended run again (a trigger's often does); its next end is a later one. Keep `ended_at` beside the lines: a later read with another `ended_at`, or null, means the run moved since. `run.ended` fires at each end." },
@@ -376,6 +384,7 @@ const RUN_USAGE = {
     lines: { type: ["array", "null"], items: RUN_USAGE_LINE, description: "`tokens` lines first, then `tools`, then `browser_time`, then `compute_time`, each by its model, charger or provider (`compute_time` then by resource). A meter the run used nothing of has no line. Null when the server can't split the run (`reason`)." },
     browser_sessions: { type: ["array", "null"], items: BROWSER_SESSION, description: "One record per browser session the run opened, in the order it opened them, for matching `browser_time` to the provider's own records and invoice by its session id. Empty for a run that opened none. Null exactly when `lines` is. Its words are cut of this server's secrets and the run's sign-ins, as the lines' names are.", "x-agentrun-serve": "runusage/2" },
     computer_intervals: { type: ["array", "null"], items: COMPUTER_INTERVAL, description: "One record per computer the run made through its provider (a sandbox, a desktop, a phone), by when each was made: how long each lived for the run, one left running after it (`ended_at` null), and the provider's own id to match its invoice by. Not the agent's own persistent computer, a paired computer, or a browser's sessions (those are `browser_sessions`). Their time is on the `compute_time` lines. Empty for a run that made none (or one made before this server kept them). Null exactly when `lines` is. Its words are cut of this server's secrets and the run's sign-ins, as the lines' names are.", "x-agentrun-serve": "runusage/3" },
+    infra_usd: { type: ["number", "null"], minimum: 0, description: "What the infrastructure's own redo cost: the sum of the lines that are not `billable` (requests a cut attempt never finished and a later attempt sent again, after a deploy's drain, a crash, a lost lease or a retry). 0 for a run none of whose attempts left one. A request cut in flight has no known cost, so a run that has one reads null here: never a guess. Inside `total` and `cost.usd`, never beside them: data to compare, nothing charged differently. Null exactly when `lines` is, and when one such line's cost is unknown.", "x-agentrun-serve": "runusage/5" },
     reason: { enum: ["running", "not_booked", "reopened", null], description: "Why `lines` is null: `running`, the run is at work and its booking still moves; `not_booked`, its figure is not its booking's (an imported run's, a native or SDK run's harness figure, a CLI run whose model requests went past its model proxy); `reopened`, a learning run a follow-up opened again, whose `cost.usd` is its first round's and whose booking can't be split by round. Null with lines." },
   },
 };
