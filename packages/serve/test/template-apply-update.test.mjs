@@ -213,7 +213,7 @@ test("an update reconciles triggers by name: the same name changed in place (a f
   assert.equal(after["new-pr"].id, before["new-pr"].id, "new-pr is the same trigger, changed in place");
   assert.equal(after["new-pr"].target.input.content, "Say who opened it, and what it changes.", "new-pr has 0.2.0's input");
   assert.equal((await second.api("GET", `/triggers/${before.daily.id}`)).status, 404, "daily is gone");
-  assert.deepEqual(again.trigger_ids, [after["new-pr"].id, after.weekly.id], "the answer lists its triggers in the package's order");
+  assert.deepEqual(again.triggers.map((one) => one.trigger_id), [after["new-pr"].id, after.weekly.id], "the answer lists its triggers in the package's order");
   // Its source unchanged, the update leaves its next poll where it was (never one at once): at that time, its seen items
   // held, the one new pull request fires, and there is no second "watching from now".
   assert.equal(after["new-pr"].next_at, before["new-pr"].next_at, "new-pr's next poll as it was");
@@ -535,7 +535,7 @@ test("a trigger moved to another agent while an update holds its read of the age
 test("a feed trigger an apply skipped (its feeds left empty) is no trigger of the package's: one the owner then makes by that name outlives the next update", { timeout: 90_000 }, async (t) => {
   const server = await served(t, { templates: await templates(t, V1, { extra: { watch: WATCH } }) });
   const made = await applied(server.api, "watch", {});
-  assert.deepEqual(made.trigger_ids, [], "status, its feeds left empty, was skipped");
+  assert.deepEqual(made.triggers, [], "status, its feeds left empty, was skipped");
   const mine = await server.api("POST", "/triggers", ownerTrigger("status", made.agent_id));
   assert.equal(mine.status, 201, JSON.stringify(mine.body));
   await updated(server.api, "watch", { agent_id: made.agent_id }, "watch again, its feeds still empty");

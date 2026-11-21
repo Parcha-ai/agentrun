@@ -3146,8 +3146,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // (catchup_window_s and max_active_runs the package leaves out back to their defaults, as a fresh apply makes them); a new name is made; one the package
     // marked and no longer lists is removed (`removing`). Each trigger the apply makes or keeps is marked as the package's; each write to one the agent had is made only while it
     // is still the agent's: one a PATCH moved away meanwhile is neither changed nor removed, and its name is made anew.
-    // Each trigger it made or kept, in the package's order, as it stands after its write: the answer's trigger_ids and
-    // triggers (its name, its kind, and whether it is on).
+    // Each trigger it made or kept, in the package's order, as it stands after its write: the answer's triggers (its id,
+    // its name, its kind, and whether it is on).
     const answered: { trigger_id: string; name: string; kind: string; enabled: boolean }[] = [];
     const list = (view: { id: string; name: string; enabled: boolean; source: { kind: string } }) => answered.push({ trigger_id: view.id, name: view.name, kind: view.source.kind, enabled: view.enabled });
     // The triggers this apply made (never one it changed in place): what a refusal's undo removes.
@@ -3259,7 +3259,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // What the apply did to the agent: made it, wrote a new revision, or wrote none (an update whose package and
     // parameters the current revision already holds: commitAgent keeps that revision).
     const agentChange = !onto ? "made" : entry.revision?.id === onto.revision?.id ? "unchanged" : "updated";
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_version: entry.version, agent_change: agentChange, servers: used, trigger_ids: answered.map((one) => one.trigger_id), triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
     return { applied, minted, updated: onto !== undefined };
   }
 
