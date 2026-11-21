@@ -251,7 +251,6 @@ const releases = {
   'incomplete evidence': first => [report(first), { evidence_complete: false }],
   'failed check': first => [report(first, { outcome: 'failed', answer: undefined, reason: 'No trustworthy input binding.' })],
   'missing check': () => [undefined],
-  'cancelled task': first => [report(first), { status: 'cancelled' }],
   'workflow-assisted turn': first => [report(first), {}, assisted],
   'skipped write': first => [report(first, { outcome: 'skipped_write', answer: undefined, skipped: { tool: tool.name }, reason: 'This exact call was absent from the native recording.' })],
   'redacted answer': (first, server) => [report(first, { answer: first.token }), { answer: server.token }],
@@ -304,11 +303,7 @@ test('a cancelled turn is given back uncounted: cancels never stop the check', a
 
 test(`${RELEASES} given-back turns stop the check with nothing checked and no recompile`, async t => {
   const server = await setup(t);
-  for (let at = 1; at <= RELEASES; at++) {
-    const receipt = await server.start(`cancel-${at}`);
-    assert.ok(receipt.learning.check, `turn ${at} is reserved`);
-    await finish(server, receipt, report(receipt), { status: 'cancelled' });
-  }
+  for (let at = 1; at <= RELEASES; at++) await giveBack(server, `failed-${at}`);
   const stopped = await server.latest(flow.name);
   assert.equal(stopped.decided, 'hold');
   assert.equal(stopped.check.stopped, true);
@@ -374,7 +369,7 @@ test('a turn closed before the backend completed it gives its check back; an exp
   await settleSdkCheck({ ...deps, inbox: { ...deps.inbox, closed: 'cancelled' } });
   const waiting = await server.latest(flow.name);
   assert.equal(waiting.decided, 'replaying');
-  assert.equal(waiting.check.released, 1);
+  assert.equal(waiting.check.released, undefined, 'a stopped run is a cancel, not a give-back');
   assert.match(waiting.reason, /stopped before the backend completed it/);
   const second = await server.start('expires');
   const later = await settleDeps(server, second);

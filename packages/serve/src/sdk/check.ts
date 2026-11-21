@@ -51,13 +51,14 @@ export async function settleSdkCheck(deps: { store: Store; agentId: string; laun
   const completion = inbox.completion;
   if (!completion) {
     if (inbox.closed === "expired") return sdkCheckDeadline(deps, record);
-    if (inbox.closed) return releaseSdkCheck(deps, record, inbox.closed === "cancelled" ? "its native turn was stopped before the backend completed it" : "its native turn ended before the backend completed it");
+    // A cancel is a person's choice, not the integration failing to give a baseline: given back uncounted.
+    if (inbox.closed) return releaseSdkCheck(deps, record, inbox.closed === "cancelled" ? "its native turn was stopped before the backend completed it" : "its native turn ended before the backend completed it", inbox.closed !== "cancelled");
     return;
   }
   const reported = inbox.batches.flatMap((batch) => batch.events)
     .find((event): event is SdkWorkflowCheckEvent => event.type === "workflow_check" && event.id === check.id && event.digest === check.digest);
   const cause = notBaseline({ ...inbox, completion }, reported);
-  if (cause !== undefined || !reported) return releaseSdkCheck(deps, record, cause ?? "the connected agent reported no shadow check");
+  if (cause !== undefined || !reported) return releaseSdkCheck(deps, record, cause ?? "the connected agent reported no shadow check", completion.status !== "cancelled");
   return sdkCheckTurn(deps, { ...record, check: record.check }, {
     of: inbox.run_id, input: sdkInputText(deps.launch), agent: completion.answer, outcome: reported.outcome,
     answer: reported.outcome === "answered" ? reported.answer ?? null : null,

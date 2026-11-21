@@ -770,8 +770,9 @@ export async function sdkCheckDeadline(deps: DecideDeps, pending: PromotionRecor
 
 /** Gives back a connected agent's reserved native turn that cannot be its check's baseline (`cause`): the check waits for
  *  the next turn the draft takes, nothing decided or promoted, and the turn counts toward SDK_CHECK_RELEASES, whose last
- *  stops it, never promoted (stopUnchecked: no recompile), the turns it checked kept on the record. `counted` false: no
- *  turn ran (its start was not admitted). Kept only while the record is still this reservation. */
+ *  stops it, never promoted (stopUnchecked: no recompile), the turns it checked kept on the record. `counted` false: a
+ *  cancelled turn (a person's choice, not the integration failing) or one that never ran (its start was not admitted).
+ *  Kept only while the record is still this reservation. */
 export async function releaseSdkCheck(deps: DecideDeps, record: PromotionRecord, cause: string, counted = true) {
   if (!record.check) return;
   if (overtaken(await promotionsOf(deps.store.settings, deps.agentId), record)) {
