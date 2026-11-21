@@ -128,6 +128,8 @@ import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGatewa
 import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
+import { recordDataRoot } from "./runner/disk-free.js";
+import { recordRunEnv, runFacingNames } from "./runner/runner-check.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { type CostBasis, joinedBasis } from "./runner/metrics.js";
@@ -1248,6 +1250,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // there is no keeping one in the clear.
   const seal = await bootSealKey(store, data);
   stops.push(async () => seal.release());
+  // What a runner apart reads to tell its disk from this server's, and its environment's gaps (runner/disk-free.ts,
+  // runner/runner-check.ts): this data root's id, and the names (never the values) of the run-facing environment this
+  // server holds, each said in the store at every start, replacing the last start's.
+  await recordDataRoot(store, data);
+  await recordRunEnv(store, runFacingNames((name) => secret(name) ?? (base as NodeJS.ProcessEnv)[name], Object.keys(base)));
   // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
   // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled. A hosted machine a runner in a
   // process of its own made is relayed to that runner's attach listener the same way (dial-relay.ts).
