@@ -900,6 +900,26 @@ test("held: a compile of it since the hold, past the last 4 runs, asks no revisi
   assert.ok(asksRevision(before.gateway), "a compile before the hold was not this hold's ask");
 });
 
+// #3390 review: a connected agent's hold on give-backs spends no recompile, so its revise whose draft failed its checks
+// at the held attempt (recordDraftFailed: not stopped) is asked once more. The failed compile's own kept learning lands
+// after its record (the run ends after its compile turn) and is not the once-more ask; another run's compile since is.
+test("held on give-backs: a revise whose draft failed at the held attempt is asked once more, once", async (t) => {
+  const at = Date.now() - 60_000;
+  const { createHash } = await import("node:crypto");
+  // A failed draft's record is keyed by the run that compiled it (recordDraftFailed).
+  const draftFailedDigest = (runId) => createHash("sha256").update(`draft-failed\n${runId}`).digest("hex").slice(0, 16);
+  const bar = { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 0, agreed: 0, alone: 0, of: [] };
+  const held = { workflow: "answer", digest: DIGEST, at: new Date(at).toISOString(), decided: "hold", via: "sdk", reason: "the connected agent gave back 5 reserved native turns in a row", check: { ...bar, released: 5 } };
+  const failed = { workflow: "answer", digest: draftFailedDigest("past-5"), at: new Date(at + 1_000).toISOString(), decided: "hold", reason: "its draft failed its checks: workflow: no root. It is not promoted; the next due run compiles it once more", check: bar };
+  const past = pastRuns({ served: 0, byHand: 6 });
+  const compiledBy = (runId, createdAt) => ({ runId, agentId: "agent-1", turn: null, createdAt, proposal: { state: "dropped", reason: "checker", detail: "d", compiled: { workflow: "answer", attempts: [{ ok: false, errors: ["workflow: no root"] }] }, draft_errors: ["workflow: no root"] } });
+  const asksRevision = (gateway) => gateway.requests.some((request) => /One more turn: revise your learned workflow `answer`/.test(textOf(request.body)));
+  const again = await piRun(t, { promotions: [held, failed], past, keptBefore: [compiledBy("past-5", at + 2_000)] });
+  assert.ok(asksRevision(again.gateway), "the failed revise's own learning, kept after its record, is not the once-more ask");
+  const asked = await piRun(t, { promotions: [held, failed], past, keptBefore: [compiledBy("past-4", at + 3_000), compiledBy("past-5", at + 2_000)] });
+  assert.ok(!asksRevision(asked.gateway), "another run compiled it since the failure: asked once more already");
+});
+
 // #2641 review (P1 security): every text the compile turn's facts gather passes the check the run's start makes
 // (learning.ts holdsSecret, as chooseWorkflows reads a workflow). A held workflow whose text holds a value saved as a
 // secret after it landed is never sent to the model: the start left it out, and so does its compile turn. It is logged by

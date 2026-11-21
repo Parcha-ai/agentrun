@@ -4,7 +4,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
-import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
+import { freeRequestLimitOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { secretsShown } from "../learning.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { RunLaunch } from "../run-launch.js";
@@ -376,7 +376,7 @@ export function createSdkLoop(
                         const cap = {
                           capUsd: capNowOf(launch.maxCostUsd, recorded),
                           beside: async () => capSpendOf(host.store, claim.runId, (await journalEntries(journal, ctx)).filter((entry) => Number(entry.conversationId) === Number(ROOT)).map(({ kind, conversationId, data }) => ({ kind, conversationId, data }))),
-                          freeRequests: freeModelRequestsOf(host.env ?? process.env),
+                          freeRequests: freeRequestLimitOf(host.env ?? process.env, ((await host.store.agents.revision(source.revisionId))?.body as { maxRequests?: unknown } | undefined)?.maxRequests),
                         };
                         const answer = await bookedAsk(await route(claim), cap)(
                           {

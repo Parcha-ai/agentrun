@@ -992,8 +992,9 @@ export interface Runs {
    *  purged first, and Runs.create, under the same row lock, makes none once it is purged. A run with no row, or one
    *  purged already, is no write. On SQLite, once it commits, a WAL checkpoint (TRUNCATE): with secure_delete on in every
    *  connection, neither the file nor its WAL keeps the purged bytes after it. A checkpoint another connection holds back
-   *  is retried once, then told to the store's `warn`; it never fails the purge. Postgres: the old row versions are the
-   *  database's until its VACUUM. */
+   *  leaves the scrub's marker, for the next start's scrub; a marker that cannot be written throws, the purge committed,
+   *  and the retried DELETE arranges it again (Store.purgeScrub). Postgres: the old row versions are the database's until
+   *  its VACUUM. */
   purge(runId: string, kept: PurgeKept): Promise<void>;
   /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
    *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,
@@ -1765,6 +1766,12 @@ export interface Store {
    *  done; `left` says why it was kept, for the next start to finish. Postgres: `work` alone (a replaced row version is
    *  the database's until its vacuum). */
   secureRewrite?(work: () => Promise<number>, options?: SecureRewriteOptions): Promise<SecureRewrite>;
+  /** A DELETE of a run or agent already purged (agent-delete.ts): a purge can commit and then fail to write the scrub's
+   *  marker (Runs.purge), and its retry finds the row purged. SQLite with a file, when no marker is there: the purge's
+   *  WAL checkpoint again, and the marker when another connection still holds the log back; with the marker there, no
+   *  write, but the marker is the purge's too, so a rewrite under way that wrote it removes it only after a checkpoint
+   *  that truncates the log. Postgres and a store with no file: nothing. */
+  purgeScrub(): Promise<void>;
   /** Reads the store's schema version and its runner floor now, without a lock or a write: a runner reads it at each
    *  renewal (runner/main.ts), and stops once the floor is above the version its build knows. */
   schemaState?(): Promise<StoreSchemaState>;

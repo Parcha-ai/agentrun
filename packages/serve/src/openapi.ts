@@ -1439,10 +1439,9 @@ const TEMPLATE_APPLIED = closedWith({
   agent_id: { type: "string", description: "The agent made, or the one updated (GET /agents/{agent_id})." },
   revision_version: { type: "integer", minimum: 1, description: "The number of the agent's revision this apply wrote, its current one now (its `definition.version`): 1 for an agent it made; on an update with agent_id, the new revision's; on one that changed nothing (`agent_change` unchanged), the current revision it kept." },
   agent_change: { enum: ["made", "updated", "unchanged"], description: "What the apply did to the agent: `made` it (201); `updated` it, a new revision written (an update with agent_id); or left it `unchanged`: an update whose package and parameters its current revision already holds writes no revision, and `revision_version` is that current one. Its triggers are reconciled either way (`triggers`)." },  servers: { type: "object", additionalProperties: { type: ["string", "null"] }, description: "The saved MCP server each of the package's toolkits runs on, by toolkit; null: none here matches it (said under `mcp.<toolkit>`)." },
-  trigger_ids: { type: "array", items: { type: "string" }, description: "Its triggers, in the package's order (GET /triggers/{trigger_id})." },
   triggers: {
     type: "array",
-    description: "The same triggers, in the same order, each as the apply left it: every one it made or kept, of any kind. A trigger the apply skipped (said in `warnings`) is not here.",
+    description: "Its triggers, in the package's order, each as the apply left it (GET /triggers/{trigger_id}): every one it made or kept, of any kind. A trigger the apply skipped (said in `warnings`) is not here, so a package trigger is found by its `name`, never by its index in the package.",
     items: closed({
       trigger_id: { type: "string" },
       name: { type: "string", description: "Its name: the package's name for it." },
@@ -1455,7 +1454,7 @@ const TEMPLATE_APPLIED = closedWith({
 }, {
   webhook_secrets: {
     type: "array",
-    description: "Each webhook trigger it made, in trigger_ids' order; absent when it made none. Each carries its secret's metadata (`secret`) and, in the first answer to the owner's signed-in session alone, its `signing_secret`, shown this once as POST /triggers shows it; to the API token, or on a replay under the same Idempotency-Key, `secret_set` and `note` in its place.",
+    description: "Each webhook trigger it made, in `triggers`' order; absent when it made none. Each carries its secret's metadata (`secret`) and, in the first answer to the owner's signed-in session alone, its `signing_secret`, shown this once as POST /triggers shows it; to the API token, or on a replay under the same Idempotency-Key, `secret_set` and `note` in its place.",
     items: closedWith({ trigger_id: { type: "string" }, secret: { ...ref("schemas/SecretMeta"), description: "Its signing secret's metadata, named `trigger:<id>`. Never the value." } }, {
       signing_secret: { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "Its signing secret, shown this once: in the apply's first answer to the owner's signed-in session alone." },
       secret_set: { const: true },
@@ -1652,7 +1651,7 @@ const PROMOTION_CHECK = closedWith({
   skipped_tools: SKIPPED_TOOLS,
   disagreements: { type: "array", items: CHECK_DISAGREEMENT, description: "On a hold: each input it did not agree on, which the agent's next run reads as data in its one recompile." },
   stopped: { const: true, description: "The recompile's check held it too, or there was nothing to check it on (no input of the agent's it takes, or every input skipped at a write: `n` 0, `reason` starting \"nothing to check it on\", which asks no recompile): nothing compiles again until a hold or its owner acts; the agent keeps the runs." },
-  released: { type: "integer", minimum: 1, description: "A connected agent's check (`via` sdk): how many of its reserved native turns could not be its baseline (cancelled or failed, a learned workflow in the turn, redacted evidence, no shadow report, or a shadow that did not answer) and were given back to wait for the next turn the draft takes. The fifth stops it, never promoted. Left out when none." },
+  released: { type: "integer", minimum: 1, description: "A connected agent's check (`via` sdk): how many of its reserved native turns in a row since the last one checked could not be its baseline (failed, a learned workflow in the turn, redacted evidence, no shadow report, or a shadow that did not answer; a cancel never counts) and were given back to wait for the next turn the draft takes. The fifth holds it, never promoted, and the next compile's revision is checked afresh. Left out when none." },
   fresh_reads: { type: "integer", minimum: 1, description: "A connected agent's check (`via` sdk): how many fresh read-only calls its shadow made where the native turn's recording had no result (the host's opt-in `shadowReadFallback`). Left out when every call was answered from the recording." },
   turns: { ...closedWith({
     n: { ...COUNT, description: "The native turns checked so far: each whose shadow answered or handed back, and each the backend never completed within an hour (`failed`)." },

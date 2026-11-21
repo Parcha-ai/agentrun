@@ -26,7 +26,8 @@ import { type DefinitionBody, type Json, skillIssues, skillNames } from "./valid
 let mintedMs = -1;
 let mintedInMs = 0;
 
-/** A UUIDv7: time-ordered, so a listing by (created_at, id) is stable, and unique per revision and per minted agent. Two
+/** A UUIDv7: time-ordered, so a listing by (created_at, id) is stable, and unique per revision, per minted agent and per
+ *  upload (uploads.ts lists files by id, newest first). Two
  *  minted in one millisecond keep their order: the 12 bits after the time count them up (RFC 9562's monotonic counter),
  *  and a clock that steps back keeps the last millisecond, so each id sorts after the one before it. Without that, two
  *  edits in one millisecond tie on created_at and their random ids could number the newer revision first. */
@@ -76,11 +77,15 @@ function storeError(error: unknown): never {
   throw error;
 }
 
+/** Whether another system owns `agent`: an inline run with `external` made it (its `externalRef` set), so the system that
+ *  sent it sends its deletes, the agent's whole (DELETE /agents/{id}) and, on an API-only server, a run's purge. */
+export const ownedElsewhere = (agent: AgentRow): boolean => agent.externalRef !== null;
+
 /** Refuses a write to an externally owned agent: one that mirrors an agent in another system (its `externalRef` set) is
  *  read-only here — its source is the truth, which writes a new version by running it. Edits, set-current and archive are
  *  refused (403 forbidden); reads work as for any agent. */
 export function refuseExternal(agent: AgentRow): void {
-  if (agent.externalRef !== null) throw new ApiError("forbidden", `The agent ${agent.id} is managed by its source and is read-only here; change it there and run it again.`);
+  if (ownedElsewhere(agent)) throw new ApiError("forbidden", `The agent ${agent.id} is managed by its source and is read-only here; change it there and run it again.`);
 }
 
 /** An externally owned agent's reference in its source, as POST /runs names it: its source system, the kind of thing it

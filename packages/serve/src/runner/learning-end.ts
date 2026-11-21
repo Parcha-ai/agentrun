@@ -28,7 +28,8 @@ import { CAPS, type Change, checkDraft, problemWords, type Problem, unstorable }
 import { repickSiteOf } from "../learn/check.js";
 import { repickLabelOf, repickRewrite } from "../learn/repick.js";
 import { folderAt, type FolderRead, holdsCommit, type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
-import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, sinceReset, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
+import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, sinceReset, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, draftFailedOf, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
+import { reviseAttemptOf } from "./promotion.js";
 import { loopOf, repickOf } from "../learning-setting.js";
 import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, resetAtOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders, draftDryRun, draftFiles, draftMcpTools, unpricedCalls, WORKFLOWS_DIR } from "../learn/workflow-draft.js";
@@ -492,20 +493,24 @@ const workflowText = (doc: unknown): string => {
   return Buffer.byteLength(text) <= CAPS.file ? text : `${JSON.stringify(doc)}\n`;
 };
 
+/** The digest of the failed-draft record run `runId`'s compile keeps (recordDraftFailed): one per run. */
+const draftFailedDigest = (runId: string): string => createHash("sha256").update(`draft-failed\n${runId}`).digest("hex").slice(0, 16);
+
 /** Compile once: run `runId`'s compile turn whose drafts all failed their checks is the compile's attempt, kept as a
  *  promotion record of the shape a check's stop has (runner/promotion.ts stopUnchecked): a hold with nothing checked,
  *  its reason (DRAFT_FAILED) naming the failed checks. A first compile's earns the one recompile, as a check's hold
  *  does (the agent's next due run compiles once more: learn/compile.ts newCompileAttempt); a recompile's (a revision of
  *  a held workflow, or a new one after a first compile's failed drafts) stops (compileStoppedOf, heldNamesOf): nothing
- *  compiles it again. One record per run (its digest is the run's), written once: a claim that ends the run again
+ *  compiles it again. A revision of a connected agent's hold on give-backs is no recompile (runner/promotion.ts
+ *  reviseAttemptOf). One record per run (its digest is the run's), written once: a claim that ends the run again
  *  writes none. */
 export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "log">, input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }): Promise<void> {
   try {
     const records = await promotionsOf(deps.store.settings, input.agentId);
-    const attempt = input.compile.mode === "revise" ? 2 : newCompileAttempt(records);
+    const attempt = input.compile.mode === "revise" ? reviseAttemptOf(records, input.compile.held) : newCompileAttempt(records);
     const { compile_after, agree_min, alone_min } = await loopOfRun(deps.store, input.runId);
     const workflow = input.compile.mode === "revise" ? input.compile.workflow : input.workflow;
-    const digest = createHash("sha256").update(`draft-failed\n${input.runId}`).digest("hex").slice(0, 16);
+    const digest = draftFailedDigest(input.runId);
     const failed = input.errors.join("; ").slice(0, CHECK_TEXT_MAX) || "no draft passed";
     const reason = `${DRAFT_FAILED}: ${failed}. ${attempt === 2 ? "It was the recompile, so it stops: nothing compiles again until its owner acts" : "It is not promoted; the next due run compiles it once more"}`;
     const check = { compile_after, agree_min, alone_min, attempt, n: 0, agreed: 0, alone: 0, of: [], ...(attempt === 2 ? { stopped: true as const } : {}) };
@@ -639,10 +644,14 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   if (read.held) {
     // Once per hold: a run since it that compiled this workflow asked already, whatever came of it (its revision is on its
     // way to a replay, or its draft failed its checks), however many runs ago. Read from the agent's kept learning since
-    // the hold, never a window of its last runs; one that can't be read asks nothing.
-    const since = Date.parse(read.held.at);
+    // the hold, never a window of its last runs; one that can't be read asks nothing. A draft that failed since, not stopped
+    // (only a revise of a connected agent's hold on give-backs: reviseAttemptOf), asks once more: counted from it, its own
+    // run's kept learning (written after its record, at the run's end) not counted.
+    const failed = records.findLast((one) => one.workflow === read.held!.workflow && draftFailedOf(one) && !one.check?.stopped && !(one.at < read.held!.at));
+    const since = Date.parse(failed?.at ?? read.held.at);
     const kept = await deps.store.learning.proposals(agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
-    if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return sayLeftOut(), undefined;
+    const asked = (one: LearningProposal) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow && draftFailedDigest(one.runId) !== failed?.digest;
+    if (!kept || kept.some(asked)) return sayLeftOut(), undefined;
     const { workflow, digest, reason, check, audit } = read.held;
     // A check's or an audit's disagreements are the agent's own inputs and answers: cut of the run's secrets as a trace is
     // (traceFrom).

@@ -172,9 +172,9 @@ export type CheckRecord = CheckBar & {
   readonly skipped_tools?: readonly SkippedTool[];
   readonly disagreements?: readonly CheckDisagreement[];
   readonly stopped?: true;
-  /** A connected agent's check: how many of its reserved native turns gave no answer to check the draft against (a
-   *  cancelled or refused turn, a subagent, redacted evidence, no shadow report) and were given back to wait for the
-   *  next one (runner/promotion.ts SDK_CHECK_RELEASES stops it). Absent: none. */
+  /** A connected agent's check: how many of its reserved native turns in a row gave no answer to check the draft against
+   *  (a refused turn, a subagent, redacted evidence, no shadow report; never a cancel) and were given back to wait for
+   *  the next one (runner/promotion.ts SDK_CHECK_RELEASES holds it for the next compile). Absent: none. */
   readonly released?: number;
   /** A connected agent's check: how many fresh read-only calls its shadow made where the native turn's recording had
    *  no result (the client's opt-in shadowReadFallback). Absent: none, every call was answered from the recording. */

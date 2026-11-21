@@ -222,13 +222,35 @@ test('a turn lands once: a deadline, a give-back or a second settle that read th
   assert.equal(after.check.released, undefined);
 });
 
+/** A reserved turn that fails, so it cannot be the check's baseline: given back, and counted. */
+async function giveBack(server, key) {
+  const receipt = await server.start(key);
+  assert.equal(receipt.learning.check?.digest, DIGEST, `${key} is reserved`);
+  await finish(server, receipt, report(receipt), { status: 'failed' });
+}
+
+test('only give-backs in a row stop the check: a turn that lands starts the count again', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  for (let at = 1; at < RELEASES; at++) await giveBack(server, `before-${at}`);
+  assert.equal((await server.latest(flow.name)).check.released, RELEASES - 1);
+  await checkTurn(server, 'turn-1');
+  assert.equal(stillChecking(await server.records(), 1).check.released, undefined, 'the landed turn starts the count again');
+  for (let at = 1; at < RELEASES; at++) await giveBack(server, `between-${at}`);
+  assert.equal((await server.latest(flow.name)).check.released, RELEASES - 1, `${2 * (RELEASES - 1)} give-backs, never ${RELEASES} in a row`);
+  await checkTurn(server, 'turn-2');
+  const third = await checkTurn(server, 'turn-3');
+  const champion = championOf(await server.records(), flow.name);
+  assert.equal(champion?.digest, DIGEST, 'the third turn decides it');
+  assert.deepEqual([champion.check.n, champion.check.agreed, champion.check.of[0]], [3, 3, third.run_id]);
+  assert.equal(champion.check.released, undefined, 'no turn was given back since the last one landed');
+});
+
 // A turn that cannot be the check's baseline gives the reservation back: nothing is decided, and the next turn the draft
 // takes is reserved in its place.
 const releases = {
   'incomplete evidence': first => [report(first), { evidence_complete: false }],
   'failed check': first => [report(first, { outcome: 'failed', answer: undefined, reason: 'No trustworthy input binding.' })],
   'missing check': () => [undefined],
-  'cancelled task': first => [report(first), { status: 'cancelled' }],
   'workflow-assisted turn': first => [report(first), {}, assisted],
   'skipped write': first => [report(first, { outcome: 'skipped_write', answer: undefined, skipped: { tool: tool.name }, reason: 'This exact call was absent from the native recording.' })],
   'redacted answer': (first, server) => [report(first, { answer: first.token }), { answer: server.token }],
@@ -252,27 +274,76 @@ for (const [scenario, turn] of Object.entries(releases)) test(`a turn that canno
   assert.deepEqual((await server.latest(flow.name)).runs, [next.run_id]);
   await finish(server, next, report(next));
   const champion = championOf(await server.records(), flow.name);
-  assert.equal(champion?.check.released, 1, 'the promotion says how many turns were given back');
+  assert.equal(champion?.check.released, undefined, 'the turn that landed started the give-back count again');
   assert.deepEqual(champion?.check.of, [next.run_id]);
 });
 
-test(`${RELEASES} given-back turns stop the check with nothing checked and no recompile`, async t => {
+test('a cancelled turn is given back uncounted: cancels never stop the check', async t => {
   const server = await setup(t);
-  for (let at = 1; at <= RELEASES; at++) {
+  const { settleSdkCheck } = await import('../dist/sdk/check.js');
+  for (let at = 1; at <= RELEASES + 1; at++) {
     const receipt = await server.start(`cancel-${at}`);
-    assert.ok(receipt.learning.check, `turn ${at} is reserved`);
-    await finish(server, receipt, report(receipt), { status: 'cancelled' });
+    assert.equal(receipt.learning.check?.digest, DIGEST, `cancel ${at} is reserved`);
+    if (at % 2) await finish(server, receipt, report(receipt), { status: 'cancelled' });
+    else {
+      // The run stopped before the backend completed its turn.
+      const deps = await settleDeps(server, receipt);
+      await settleSdkCheck({ ...deps, inbox: { ...deps.inbox, completion: undefined, closed: 'cancelled' } });
+      await cancel(server, receipt);
+    }
+    const waiting = await server.latest(flow.name);
+    assert.equal(waiting.decided, 'replaying', `cancel ${at} leaves it waiting: ${waiting.reason}`);
+    assert.equal(waiting.check.released, undefined, 'a cancel is not a give-back');
+    assert.doesNotMatch(waiting.reason, /of 5/);
   }
-  const stopped = await server.latest(flow.name);
-  assert.equal(stopped.decided, 'hold');
-  assert.equal(stopped.check.stopped, true);
-  assert.equal(stopped.check.released, RELEASES);
-  assert.equal(stopped.check.n, 0);
-  assert.match(stopped.reason, /^nothing to check it on: the connected agent gave back 5 reserved native turns/);
-  assert.ok(!heldNamesOf(await server.records()).has(flow.name), 'a stop with nothing checked asks no recompile');
-  const after = await server.start('after-stop');
-  assert.equal(after.learning.check, undefined);
+  const landed = await server.start('lands');
+  await finish(server, landed, report(landed));
+  assert.equal(championOf(await server.records(), flow.name)?.digest, DIGEST);
+});
+
+test(`${RELEASES} give-backs in a row hold the check, never for good: the next compile's revision is checked afresh`, async t => {
+  const server = await setup(t);
+  for (let at = 1; at <= RELEASES; at++) await giveBack(server, `failed-${at}`);
+  const held = await server.latest(flow.name);
+  assert.equal(held.decided, 'hold');
+  assert.equal(held.check.stopped, undefined, 'give-backs never stop it for good');
+  assert.equal(held.check.released, RELEASES);
+  assert.equal(held.check.n, 0);
+  assert.match(held.reason, /the connected agent gave back 5 reserved native turns in a row/);
+  assert.ok(heldNamesOf(await server.records()).has(flow.name), 'its hold asks the next compile for a revision');
+  const after = await server.start('after-hold');
+  assert.equal(after.learning.check, undefined, 'the held digest is not checked again');
   await cancel(server, after);
+  await land(server);
+  const next = await server.start('recompiled');
+  const digest = workflowDigest({ workflow: JSON.stringify(nextFlow.workflow) });
+  assert.equal(next.learning.check?.digest, digest, 'the revision reserves a turn');
+  const fresh = await server.latest(flow.name);
+  assert.equal(fresh.check.released, undefined, 'its give-back count starts at 0');
+  assert.equal(fresh.check.attempt, 1, 'give-backs spend no recompile');
+  await finish(server, next, report(next));
+  assert.equal(championOf(await server.records(), flow.name)?.digest, digest, 'and it can promote');
+});
+
+// #3390 review: the revise a give-back hold asks is no recompile either. Its draft failing its checks is that attempt's
+// failed draft (asked once more), and only a second failed revise is the recompile's, which stops.
+test('a revise of a give-back hold whose draft fails is asked once more; a second failure stops', async t => {
+  const server = await setup(t);
+  for (let at = 1; at <= RELEASES; at++) await giveBack(server, `failed-${at}`);
+  const held = await server.latest(flow.name);
+  const { recordDraftFailed } = await import('../dist/runner/learning-end.js');
+  const runId = held.runs[0];
+  const compile = { mode: 'revise', workflow: flow.name, held: { workflow: flow.name, digest: held.digest, reason: held.reason, check: held.check }, reference: '', traces: [], tools: [], judges: false };
+  await recordDraftFailed({ store: server.store, log() {} }, { runId, agentId: server.id, compile, workflow: flow.name, errors: ['workflow: no root'] });
+  const first = await server.latest(flow.name);
+  assert.deepEqual([first.check.attempt, first.check.stopped], [1, undefined], 'the held attempt, not the recompile');
+  assert.match(first.reason, /compiles it once more/);
+  assert.ok(heldNamesOf(await server.records()).has(flow.name), 'still asks a revision');
+  const later = await server.start('compiles-again');
+  await cancel(server, later);
+  await recordDraftFailed({ store: server.store, log() {} }, { runId: later.run_id, agentId: server.id, compile, workflow: flow.name, errors: ['workflow: no root'] });
+  const second = await server.latest(flow.name);
+  assert.deepEqual([second.check.attempt, second.check.stopped], [2, true], 'the second failed revise is the recompile, and it stops');
 });
 
 test('a JSON task the draft does not take, and a protected start, reserve no check', async t => {
@@ -328,7 +399,7 @@ test('a turn closed before the backend completed it gives its check back; an exp
   await settleSdkCheck({ ...deps, inbox: { ...deps.inbox, closed: 'cancelled' } });
   const waiting = await server.latest(flow.name);
   assert.equal(waiting.decided, 'replaying');
-  assert.equal(waiting.check.released, 1);
+  assert.equal(waiting.check.released, undefined, 'a stopped run is a cancel, not a give-back');
   assert.match(waiting.reason, /stopped before the backend completed it/);
   const second = await server.start('expires');
   const later = await settleDeps(server, second);

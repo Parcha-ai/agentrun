@@ -188,12 +188,20 @@ export async function purgeAgent(host: AgentDeleteHost, agentId: string): Promis
 /** The setting that marks agent `agentId`'s purge begun and not finished (purgeAgent). */
 export const purgingKey = (agentId: string): string => `agent.purging.${agentId}`;
 
+/** A DELETE of a run, or of agent `agentId`, already purged: 204 with no purge, but what a purge that committed and then
+ *  threw left undone (its scrub's marker not written, sqlite/store.ts #purged): the scrub arranged again (store
+ *  purgeScrub), and the agent's purge mark dropped (purgeAgent removes it only after its store purge returns). */
+export async function purgedAgain(host: AgentDeleteHost, agentId?: string): Promise<void> {
+  await host.store.purgeScrub();
+  if (agentId !== undefined) await host.store.settings.remove(purgingKey(agentId));
+}
+
 /** Purges run `runId` with every run made from it, as the header says. 404 not_found when it is not there; 409
  *  run_not_final, nothing purged, while it or a run made from it is live. A purged run is no work. */
 export async function purgeRun(host: AgentDeleteHost, runId: string): Promise<void> {
   const run = await host.store.runs.get(runId);
   if (!run) throw new ApiError("not_found", `no run ${runId}`);
-  if (run.purgedAt !== null) return;
+  if (run.purgedAt !== null) return purgedAgain(host);
   const made = await madeFromAll(host, runId);
   const live = await liveOf(host, [run, ...made]);
   if (live.length) throw notFinal(runId, live);
@@ -222,7 +230,7 @@ async function purgeOneOrRefuse(host: AgentDeleteHost, agentId: string, runId: s
     // Its answer and input as this process last served them, dropped whatever the purge answered: every route of it is 410
     // once it committed, so none is read again. A purge can commit and still throw (its checkpoint held back and the
     // scrub's marker not written, sqlite/store.ts #purged), and no later DELETE comes back here (purgeRun: a purged run is
-    // no work). One that did not commit loses a cache its next read fills again.
+    // only purgedAgain). One that did not commit loses a cache its next read fills again.
     forgetServed(host.store, runId);
   }
 }
