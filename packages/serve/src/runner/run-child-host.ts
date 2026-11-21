@@ -45,7 +45,7 @@ import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { LEARNING_SCRIPT, learningWorkspace } from "../learn/folder.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
-import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
+import { archilClaim, claimOptionsOf } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { keptKeyOf } from "../workspace/computer-kept.js";
@@ -654,7 +654,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     (archil ??= (async () => {
       const settings = await loadArchilSettings(store, deps.env);
       if (settings === undefined) return undefined;
-      const made = await archilClaim({ settings, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS }, ...(deps.mountControl ? { control: deps.mountControl } : {}), run: { agentId: run.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+      const made = await archilClaim(claimOptionsOf(deps, settings, claim, run.agentId, launch, new AbortController().signal));
       releases.push(() => made.release());
       return made;
     })());

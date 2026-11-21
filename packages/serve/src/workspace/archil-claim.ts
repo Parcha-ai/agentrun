@@ -93,6 +93,32 @@ const RELEASED = "the run's Archil keys were released (its loop ended or its cla
 /** How long a revoke waits to read the users list again for a mint it never heard of: past Archil's list lag (mint-4). */
 const LOST_MINT_REREAD_MS = 2_000;
 
+/** What a runner's claim of run `claim.runId` of agent `agentId` hands archilClaim, the same at every claim site: the run's
+ *  mount credential named for the run and this claim's epoch, its ttl MOUNT_TTL_MS; the run's disk (its launch record's,
+ *  else its agent's); and a test's control plane (mountControl) and disk maker (makeArchilDisk). */
+export function claimOptionsOf(
+  deps: {
+    readonly store: RunDiskOptions["store"] & { readonly sealedKeys: ArchilClaimOptions["keys"] };
+    readonly sealKey: Buffer | undefined;
+    readonly env: KeyEnv;
+    readonly mountControl?: ArchilClaimOptions["control"];
+    readonly makeArchilDisk?: ArchilClaimOptions["makeDisk"];
+  },
+  settings: ArchilSettings,
+  claim: { readonly runId: string; readonly epoch: number },
+  agentId: string,
+  launch: { readonly archilDisk?: LaunchDisk },
+  signal: AbortSignal,
+): ArchilClaimOptions {
+  return {
+    settings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal, env: deps.env,
+    mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS },
+    ...(deps.mountControl ? { control: deps.mountControl } : {}),
+    run: { agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store: deps.store },
+    ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}),
+  };
+}
+
 /** The Archil step of a claim: its disk made, its API key opened; the run's mount credential minted when a mount asks. */
 /** The run's folder on its disk where its runner opened it (held.ts archil), by the claim that stands for it in a run's own
  *  process: openRunWorkspace opens this Workspace for it. */

@@ -80,7 +80,7 @@ import { AUDIT_PARKED, withAudit } from "./audit.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
-import { archilClaim, archilWhereHeld, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
+import { archilWhereHeld, type ArchilClaimOptions, claimOptionsOf } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
 import { type claimComputer, type ComputerDeps, computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
@@ -484,7 +484,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // test reaches the real control plane. MOUNT_TTL_MS is the credential's safety net (its computer's 24 h bound), not its lifetime.
     // The disk is the run's (run-disk.ts): its launch record's, else its agent's, made on its first run that needs one,
     // and read at Archil at every claim.
-    : await archilWhereHeld({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS }, ...(deps.mountControl ? { control: deps.mountControl } : {}), run: { agentId: runRow.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store: deps.store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    : await archilWhereHeld(claimOptionsOf(deps, archilSettings, claim, runRow.agentId, launch, run.signal ?? new AbortController().signal));
   // Each resource is held the moment it exists (spec-holds.ts): a throw after it lets it go.
   holds.hold({ archil });
   // The run's Workspace at the claim: Mode 1 the run's local folder (made here, the server's start made it before); Mode 2

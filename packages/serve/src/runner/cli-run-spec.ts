@@ -46,7 +46,7 @@ import { recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.j
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
-import { archilWhereHeld, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
+import { archilWhereHeld, claimOptionsOf } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
@@ -360,7 +360,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // computerForClaim (a mounting computer only), with the ttl the run's lifetime bound (not this fixed figure). As pi does.
     // The disk is the run's (run-disk.ts): its launch record's, else its agent's, made on its first run that needs one,
     // and read at Archil at every claim.
-    : await archilWhereHeld({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS }, ...(deps.mountControl ? { control: deps.mountControl } : {}), run: { agentId: runRow.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store: deps.store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    : await archilWhereHeld(claimOptionsOf(deps, archilSettings, claim, runRow.agentId, launch, run.signal ?? new AbortController().signal));
   // Each resource is held the moment it exists (spec-holds.ts): a throw after it lets it go. The claim's Archil keys go
   // from memory last, once nothing more reads the disk.
   holds.hold({ archil, keys: archil });
