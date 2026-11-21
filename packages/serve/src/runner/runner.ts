@@ -644,7 +644,9 @@ export function startRunner(options: RunnerOptions): Runner {
     // Running, said: a stop that reached the loop while it parked (its ask landed with the run parked, under this claim)
     // leaves the row parked, and a release with no state keeps it so; the store's parked rule admits an untaken stop
     // whatever its backoff (a person's stop never waits on a failed resume's), so the run would be claimed again at once.
-    await release(claim, { state: "running", backoffUntil: now() + wait, cut: "retry" });
+    // No cut: the next claim only retries the end (endRetried), never the turn, so it redoes no request or paid call, and
+    // the work before the stop stays billable (run-usage.ts attemptTags reads a redo only after a cut).
+    await release(claim, { state: "running", backoffUntil: now() + wait });
     emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "interrupted" });
   };
 

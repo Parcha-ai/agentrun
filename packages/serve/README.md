@@ -4058,7 +4058,7 @@ row holds the claim's turn and attempt, and `cause`, which says why the attempt 
 | `drain` | Its runner closed (SIGTERM) and handed the run back. |
 | `crash` | Its lease ran out and nobody said why (its runner died). |
 | `lease_lapse` | Its runner was still there but could not renew the claim in time. |
-| `retry` | Its loop ended interrupted on its own, or its end was refused, and the run was released to be tried again. |
+| `retry` | Its loop ended interrupted on its own, and the run was released to be tried again. A stopped run whose end was refused is no cut: the claim that retries the end runs no turn, so it starts a new one and redoes nothing. |
 
 A turn is the work one claim starts afresh: the run's first, a follow-up's, or a resume after a park. Each part of the
 usage is matched to its claim this way:
