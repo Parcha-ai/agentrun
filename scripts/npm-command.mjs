@@ -41,3 +41,14 @@ export function npmExecFile(args, options = {}) {
   const c = npmCommand(args, { env: options.env ?? process.env });
   return execFileAsync(c.command, c.args, options);
 }
+
+/** child_process.spawn of a command given as argv: npm through its own CLI script when argv[0] is `npm`, else as
+ *  written. */
+export function spawnArgv([command, ...args], options = {}) {
+  return command === 'npm' ? npmSpawn(args, options) : spawn(command, args, options);
+}
+
+/** child_process.spawnSync of a command given as argv, as spawnArgv. */
+export function spawnArgvSync([command, ...args], options = {}) {
+  return command === 'npm' ? npmSpawnSync(args, options) : spawnSync(command, args, options);
+}
