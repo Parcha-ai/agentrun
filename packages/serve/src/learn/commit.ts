@@ -197,12 +197,13 @@ export async function putCorrections(ws: Workspace, input: { text: string; ifMat
 }
 
 /**
- * Run `runId`'s text taken off the folder's current files, at its purge (agent-delete.ts purgeRun): each line its merges
- * added to corrections.md, as its diff files keep them, dropped from main in one host commit (a line a person edited
- * since is theirs and stays); each other merge's diff that shows such a line as context written without it; then the
- * run's diff files deleted, last, so a call stopped part way finds what it has left to do. Its merges stay in the
- * folder's git history until a learning reset or its agent's purge deletes the folder. Idempotent: nothing left to drop
- * makes no commit, and a run with no diff file here is no work. `commit`: the host's commit, when one was made.
+ * Run `runId`'s text taken off the folder's current files, at its purge (agent-delete.ts purgeRun): the lines each of
+ * its merges added to corrections.md, as its diff file keeps them, dropped from main in one host commit per merge (a
+ * line a person edited since is theirs and stays); each other merge's diff that shows such a line as context written
+ * without it; then the run's diff files deleted, last, so a call stopped part way finds what it has left to do. Its
+ * merges stay in the folder's git history until a learning reset or its agent's purge deletes the folder. Idempotent:
+ * each merge's scrub lands once, nothing left to drop makes no commit, and a run with no diff file here is no work.
+ * `commit`: the host's last commit, when one was made.
  */
 export async function forgetRunText(ws: Workspace, runId: string): Promise<{ commit?: string }> {
   const names = await diffNames(ws);
@@ -210,25 +211,28 @@ export async function forgetRunText(ws: Workspace, runId: string): Promise<{ com
   const mine = names.filter((name) => own.test(name));
   if (!mine.length) return {};
   const lines: string[] = [];
-  for (const name of mine.filter(isDiffFile)) {
-    for (const file of (await diffOrNone(ws, name))?.files ?? []) if (file.path === CORRECTIONS_FILE && "patch" in file) lines.push(...addedLines(file.patch));
-  }
   let commit: string | undefined;
-  if (lines.length) {
-    // Lands once (the folder's ref for the run's scrub): a call that stopped after it finds it landed and takes no line
-    // again, so another run's same line stays.
+  for (const name of mine.filter(isDiffFile)) {
+    const added = ((await diffOrNone(ws, name))?.files ?? []).flatMap((file) => (file.path === CORRECTIONS_FILE && "patch" in file ? addedLines(file.patch) : []));
+    if (!added.length) continue;
+    lines.push(...added);
+    // Lands once, by the merge's diff key (the folder's ref for its scrub): a call that stopped after it finds it landed
+    // and takes no line again, so another run's same line stays; a merge of the run made since (a purge that stopped
+    // before the run's tombstone left it open to a grade) is a key of its own, scrubbed in its turn.
     const done = await writeLearning<string | undefined>(ws, async ({ snapshot, body }) => {
       if (!snapshot?.corrections) return { result: undefined };
       const before = await body(CORRECTIONS_FILE, snapshot.corrections.oid);
-      const after = withoutLines(before, lines);
+      const after = withoutLines(before, added);
       if (after === before) return { result: undefined };
       const write = after ? { writes: [{ path: CORRECTIONS_FILE, text: after }] } : { writes: [], deletes: [CORRECTIONS_FILE] };
-      return { result: snapshot.corrections.oid, change: { by: { host: "a purged run's corrections removed" }, purged: runId, ...write } };
+      return { result: snapshot.corrections.oid, change: { by: { host: "a purged run's corrections removed" }, purged: name.slice(0, -".json".length), ...write } };
     }).catch((error: unknown) => (error instanceof FolderMerged ? { result: undefined, main: undefined } : Promise.reject(error)));
     if (done.result !== undefined) {
       forgetBody(done.result);
       commit = done.main;
     }
+  }
+  if (lines.length) {
     const gone = new Set(lines);
     for (const name of names.filter((one) => isDiffFile(one) && !own.test(one))) {
       const diff = await diffOrNone(ws, name);

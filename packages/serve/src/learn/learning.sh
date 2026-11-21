@@ -11,8 +11,9 @@
 #      `update-ref refs/heads/main <new> <old>`, the compare and swap. A lost race exits 3 and writes nothing. A run's
 #      merge also creates `refs/agentrun/runs/<run>` in the same ref transaction, so a run (and round) merges once: a
 #      second merge of it, however it raced the first, exits 6 and writes nothing but the first one's diff file when a
-#      stop left it none. The host's scrub of a purged run creates `refs/agentrun/purged/<run>` the same way, so it
-#      lands once too (a second exits 6 with the first's commit);
+#      stop left it none. The host's scrub of a purged run's merge creates `refs/agentrun/purged/<run>` (its
+#      round's key, as its diff file is named) the same way, so it lands once too (a second exits 6 with the first's
+#      commit);
 #   2. for a run's merge, `.agentrun/diffs/<run>.json`: each path's patch, parent against merge, as git diffs it;
 #   3. the working tree brought in line with the new main (read-tree -u --reset);
 #   4. `.agentrun/snapshot.json`, written to a temporary name and moved into place, LAST.
@@ -38,7 +39,7 @@
 #   seed <commit>        (a run's merge) the commit the run was seeded from, which the repository held as its end began
 #                        and must hold still (else 4: "seed <commit>" on stdout): a reset since merges nothing, a
 #                        correction alone included
-#   purged <run>         (the host's scrub of a purged run) <run>'s scrub, which lands once
+#   purged <run>         (the host's scrub of a purged run's merge, <run> its round's key) that scrub, which lands once
 # Exit: 0 done (the new main on stdout), 3 stale (main as it is on stdout), 4 a precondition failed, 5 main moved but
 # the files could not be brought in line (the new main on stdout; no snapshot written), 6 the run merged already, or
 # the purged run's scrub landed already (that commit on stdout), else git's error on stderr.
@@ -269,7 +270,7 @@ commit() {
   esac
   purged=$(sed -n 's/^purged //p' "$tmp/head")
   case $purged in
-    *[!A-Za-z0-9._-]*) die "a purged run's id is letters, digits, dots, dashes and underscores" ;;
+    *[!A-Za-z0-9._-]*) die "a purged run's key is letters, digits, dots, dashes and underscores" ;;
   esac
   cur=$(main_now)
   if [ "$cur" != "$old" ]; then

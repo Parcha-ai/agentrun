@@ -305,8 +305,8 @@ export type FolderChange = {
    *  correction alone included), named only when this folder held it as the run's end began (commit.ts mustHold): one a
    *  reset of the agent's learning removed refuses the merge. */
   seed?: string;
-  /** The host's scrub of a purged run (commit.ts forgetRunText), by its id: lands once, as a run's merge does (a second
-   *  is FolderMerged, naming the first). */
+  /** The host's scrub of one merge of a purged run (commit.ts forgetRunText), by its diff key (runDiffKey): lands once,
+   *  as a run's merge does (a second is FolderMerged, naming the first). */
   purged?: string;
 };
 

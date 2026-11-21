@@ -715,6 +715,14 @@ test("a run's purge takes its feedback line off main once: a DELETE again after 
   assert.equal(existsSync(diff), false, "the DELETE again removes the diff file left");
   assert.equal(git(folder, ["show", "main:corrections.md"]), "- Answer in words.", "the other run's same line stays");
   assert.equal(Number(git(folder, ["rev-list", "--count", "main"])), commits, "and commits nothing");
+
+  // A merge of the run made since its scrub (a purge that stopped before its tombstone left the run open to a grade): the
+  // next DELETE takes that line off too, in a commit of its own.
+  await learned(data, "calc", (ws) => appendCorrection(ws, { runId: gone, round: 2, text: "Count in words too." }));
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.equal(git(folder, ["show", "main:corrections.md"]), "- Answer in words.", "a later round's line leaves main too");
+  assert.equal(existsSync(join(folder, ".agentrun", "diffs", `${gone}.r2.json`)), false, "with its diff file");
+  assert.equal(Number(git(folder, ["rev-list", "--count", "main"])), commits + 2, "in its merge's commit and its scrub's");
 });
 
 test("a run's purge scrubs its text from its agent's learning folder: its diff files and its feedback line leave the current files in one host commit, and the folder's history reads (the log, a workflow's revisions, a champion read by its digest) serve none of its merges; a DELETE again commits nothing", { timeout: 180_000 }, async (t) => {
