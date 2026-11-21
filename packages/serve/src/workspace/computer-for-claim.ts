@@ -44,6 +44,7 @@ import { type RecordInput, type Recording, type RecordWatch, startRecording } fr
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions, settingOptions } from "../computer-keys.js";
 import { LOST_RECREATES, lostEnd, lostInCallWords, lostRecreatedWords } from "../computer-lost.js";
+import { missingNeeds, needsWords } from "../computer-needs.js";
 import { inToolCall, stopRun } from "../paid-calls.js";
 import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
@@ -1129,6 +1130,19 @@ export async function computerForClaim(
     throw error;
   }
   const computer = started.computer;
+  // What the agent needs its sandbox to have (computer.needs): asked of the box it started, before anything of the run
+  // reaches a model. A box that lacks one, or that could not be asked, is let go and the run ends in words: never a run on
+  // a box without what its work needs.
+  const needs = setting?.needs;
+  if (computer?.kind === "sandbox" && needs?.length) {
+    const answer = await missingNeeds(computer.computer.client, needs, deps.signal);
+    if ("unchecked" in answer || answer.missing.length > 0) {
+      await started.release().catch(() => undefined);
+      await meter?.stopAll().catch(() => undefined);
+      await revoke().catch(() => undefined);
+      throw unavailable(needsWords(answer, needs, kinds.PROVIDERS.find((one) => one.id === resolved.provider)));
+    }
+  }
   // A desktop's or a phone's: its hold, parking the run's ports while a person holds it, and its live view, proxy-only (no
   // vendor's URL reaches a person), opened under this claim. A fenced open is a lost claim. The release ends the hold.
   let endHold: () => void = () => {};

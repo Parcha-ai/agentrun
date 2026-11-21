@@ -105,6 +105,7 @@
   "files": [
     "dist",
     "box",
+    "media",
     "README.md",
     "LICENSE",
     "NOTICE"
