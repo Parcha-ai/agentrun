@@ -3739,6 +3739,10 @@ export interface operations {
         groups: string[];
         tools: string[];
         settings: string[];
+        record: {
+          available: boolean;
+          why?: string;
+        };
         providers: {
           id: string;
           name: string;
