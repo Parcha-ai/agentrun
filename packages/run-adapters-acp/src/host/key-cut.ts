@@ -17,10 +17,12 @@ export interface KeyEdges {
   readonly tail?: boolean;
 }
 
-/** `text` with no piece of `keys` (keysToCut): each whole key becomes KEY_CUT, and a piece of one at an edge named in
- *  `edges` is dropped. Every piece is found in `text` as written before any is cut, so keys that overlap, or one that
- *  holds another's start or end, can't hide each other. A run of marked text that reaches into an edge piece is dropped
- *  whole; any other run becomes one KEY_CUT. */
+/** `text` with each whole key of `keys` (keysToCut), as written, made KEY_CUT, and a piece of one at an edge named in
+ *  `edges` dropped. A piece inside the text stays, as does a key spelled another way (a host's redactor cuts the
+ *  spellings it knows, whole).
+ *  Every key is found in `text` as written before any is cut, so keys that overlap, or one that holds another's start
+ *  or end, can't hide each other. A run of marked text that reaches into an edge piece is dropped whole; any other run
+ *  becomes one KEY_CUT. */
 export function cutKeys(text: string, keys: readonly string[], edges: KeyEdges = {}): string {
   const WHOLE = 1;
   const EDGE = 2;
