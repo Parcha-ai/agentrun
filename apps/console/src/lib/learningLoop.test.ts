@@ -131,6 +131,14 @@ describe("the story", () => {
     expect(stages.map((s) => [s.key, s.state])).toEqual([["corrections", "now"], ["compiled", "later"], ["took_over", "later"], ["cheaper", "later"]]);
     expect(stages[1]!.detail).toBe("0 of 20 completed runs: a workflow compiles at 20, then is checked once on those runs' inputs against the agent's own answers");
   });
+  it("a paused learning (its disk couldn't run the folder script) says so at the compile stage, in the loop read's words, over a failed draft or a count", () => {
+    const words = "learning paused: the disk can't run the folder script (the Archil exec failed: Exec is not enabled); the next run tries again";
+    const failed = { run_id: "r1", round: 1, at: at(1), workflow: "sort-invoice", attempts: [{ ok: false, errors: ["root: no node"] }], digest: null, promoted: null, draft_errors: ["root: no node"], withheld: false };
+    const loop = (paused: string | null, compiles: LearningLoop["compiles"] = []): LearningLoop => ({ agent: "a", completed_runs: 3, compiles, paused });
+    expect(storyOf({ ...base, runs: 3, loop: loop(words) })[1]).toMatchObject({ key: "compiled", title: "Compile", value: "Paused", detail: words, state: "warn" });
+    expect(storyOf({ ...base, runs: 3, loop: loop(words, [failed]) })[1]).toMatchObject({ value: "Paused", detail: words });
+    expect(storyOf({ ...base, runs: 3, loop: loop(null, [failed]) })[1]).toMatchObject({ value: "Draft failed" });
+  });
   it("the compile stage counts to the definition's compile_after: corrections alone never bring it closer", () => {
     const stages = storyOf({ ...base, corrections: 7, runs: 3, compileAfter: compileAfterOf({ compile_after: 5 }) });
     expect([stages[1]!.state, stages[1]!.detail]).toEqual(["now", "3 of 5 completed runs: a workflow compiles at 5, then is checked once on those runs' inputs against the agent's own answers"]);

@@ -88,12 +88,25 @@ test("each round of a run lists its own compile: a follow-up's round that only k
   assert.deepEqual(compiles.map((one) => [one.run_id, one.round, one.digest]), [["r1", 3, D2], ["r2", 1, null], ["r1", 1, D1]], "newest first by when each round kept it");
 });
 
+test("learning is paused while the agent's newest learning end was paused (its disk couldn't run the folder script), in that end's words; any later end clears it", async () => {
+  const runs = [runOf("r1", 1, { path: "agent" }), runOf("r2", 2, { path: "agent" })];
+  const words = "learning paused: the disk can't run the folder script (the Archil exec failed: Exec is not enabled); the next run tries again";
+  const paused = { state: "dropped", reason: "paused", detail: words };
+  const compiled = { state: "merged", compiled: { workflow: "sort-invoice", attempts: [{ ok: true, errors: [] }], digest: D1 } };
+  const read = async (kept) => (await agentLoopOverStore(storeOf({ runs, kept }), "sorter")).paused;
+  assert.equal(await read({}), null, "no end yet");
+  assert.equal(await read({ r1: [{ at: T0 + 10, row: paused }] }), words);
+  assert.equal(await read({ r1: [{ at: T0 + 10, row: compiled }], r2: [{ at: T0 + 20, row: paused }] }), words, "the newest end paused");
+  assert.equal(await read({ r1: [{ at: T0 + 10, row: paused }], r2: [{ at: T0 + 20, row: compiled }] }), null, "a later end that merged");
+  assert.equal(await read({ r1: [{ at: T0 + 10, row: paused }, { at: T0 + 30, row: { state: "dropped", reason: "empty" } }], r2: [{ at: T0 + 20, row: paused }] }), null, "a later round of an earlier run");
+});
+
 test("GET /agents/{id}/learning/loop: empty before any compile, in the schema's shape; 404 for an agent that is not there", async (t) => {
   const { api, baseUrl } = await serve(t);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   assert.equal((await api("POST", "/agents", agent("sorter"))).status, 201);
   const read = await api("GET", "/agents/sorter/learning/loop");
-  assert.deepEqual([read.status, read.body], [200, { agent: "sorter", completed_runs: 0, compiles: [] }]);
+  assert.deepEqual([read.status, read.body], [200, { agent: "sorter", completed_runs: 0, compiles: [], paused: null }]);
   assert.deepEqual(schemaProblems(doc, doc.paths["/agents/{agent_id}/learning/loop"].get.responses["200"].content["application/json"].schema, read.body), []);
   assert.equal((await api("GET", "/agents/nobody/learning/loop")).status, 404);
 });
