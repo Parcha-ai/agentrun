@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"syscall"
 )
 
@@ -90,59 +91,123 @@ func openUp(p string, id int) {
 	})
 }
 
-// walkOwned calls act for every entry under dir (dir included) owned by
-// id, never following symlinks. It descends into others' directories it
-// can read; one it cannot read is said and counted as a failure.
-func walkOwned(dir string, id int, what string, stderr io.Writer, act func(string, *syscall.Stat_t) error) bool {
-	if _, err := lstatOwner(dir); errors.Is(err, fs.ErrNotExist) {
+// O_PATH and AT_EMPTY_PATH, which package syscall does not name.
+const (
+	oPath       = 0x200000
+	atEmptyPath = 0x1000
+)
+
+// ownDir gives every entry under dir (dir included) that owned() accepts to
+// uid, group gid, its mode fixed (fixMode) on the way, and says whether
+// every one was. It works on the inodes it checked: each entry is opened
+// O_PATH|O_NOFOLLOW at its parent's descriptor, its owner read from that
+// descriptor, and its owner and mode changed through it, so a name swapped
+// for a symlink or another file between the check and the change changes
+// nothing else. An entry owned() refuses (root's, a uid outside the
+// runner's and the slots') is left as it is and never descended into. A
+// symlink is given (never followed); its mode is not touched.
+//
+// Each entry passes through the runner's own hands: chowned to runner
+// (CAP_CHOWN), its mode set as its owner, then, when uid is not the
+// runner's, chowned on to uid. The helper so never needs CAP_FOWNER. A
+// directory keeps its setgid bit across a chown; a file has none to keep.
+func ownDir(dir string, owned func(int) bool, runner, uid, gid int, stderr io.Writer) bool {
+	fd, err := openRetry(dir, oPath|syscall.O_NOFOLLOW|syscall.O_CLOEXEC)
+	if errors.Is(err, syscall.ENOENT) {
 		return true
 	}
+	if err != nil {
+		say(stderr, "own %s: %v", dir, err)
+		return false
+	}
+	defer syscall.Close(fd)
+	return ownAt(fd, dir, owned, runner, uid, gid, stderr)
+}
+
+func ownAt(fd int, path string, owned func(int) bool, runner, uid, gid int, stderr io.Writer) bool {
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); err != nil {
+		say(stderr, "own %s: %v", path, err)
+		return false
+	}
+	if !owned(int(st.Uid)) {
+		return true
+	}
+	fail := func(err error) bool {
+		say(stderr, "own %s: %v", path, err)
+		return false
+	}
+	if err := syscall.Fchownat(fd, "", runner, gid, atEmptyPath); err != nil {
+		return fail(err)
+	}
 	ok := true
-	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			say(stderr, "%s %s: %v", what, p, err)
-			ok = false
-			return nil
+	if !isLink(&st) {
+		// The descriptor's own inode, through /proc: fchmod refuses an O_PATH one.
+		if err := syscall.Chmod(fdPath(fd), fixMode(st.Mode, isDir(&st))); err != nil {
+			return fail(err)
 		}
-		st, err := lstatOwner(p)
-		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				say(stderr, "%s %s: %v", what, p, err)
-				ok = false
-			}
-			return nil
+	}
+	if isDir(&st) {
+		ok = ownChildren(fd, path, owned, runner, uid, gid, stderr)
+	}
+	if uid != runner {
+		if err := syscall.Fchownat(fd, "", uid, gid, atEmptyPath); err != nil {
+			return fail(err)
 		}
-		if int(st.Uid) != id {
-			return nil
-		}
-		if err := act(p, st); err != nil {
-			say(stderr, "%s %s: %v", what, p, err)
-			ok = false
-		}
-		return nil
-	})
+	}
 	return ok
 }
 
-// fixDir makes what id left under dir readable and removable by its group.
-func fixDir(dir string, id int, stderr io.Writer) bool {
-	return walkOwned(dir, id, "fix", stderr, func(p string, st *syscall.Stat_t) error {
-		if isLink(st) {
-			return nil // chmod would follow it
+func fdPath(fd int) string { return "/proc/self/fd/" + strconv.Itoa(fd) }
+
+// ownChildren gives each entry of the directory fd (an O_PATH one, the
+// runner's while this runs) as ownAt gives it.
+func ownChildren(fd int, path string, owned func(int) bool, runner, uid, gid int, stderr io.Writer) bool {
+	dir, err := openRetry(fdPath(fd), syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC)
+	if err != nil {
+		say(stderr, "own %s: %v", path, err)
+		return false
+	}
+	defer syscall.Close(dir)
+	names, err := readNames(dir)
+	if err != nil {
+		say(stderr, "own %s: %v", path, err)
+		return false
+	}
+	ok := true
+	for _, name := range names {
+		child, err := syscall.Openat(dir, name, oPath|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		if errors.Is(err, syscall.ENOENT) {
+			continue
 		}
-		return syscall.Chmod(p, fixMode(st.Mode, isDir(st)))
-	})
+		if err != nil {
+			say(stderr, "own %s: %v", filepath.Join(path, name), err)
+			ok = false
+			continue
+		}
+		if !ownAt(child, filepath.Join(path, name), owned, runner, uid, gid, stderr) {
+			ok = false
+		}
+		syscall.Close(child)
+	}
+	return ok
 }
 
-// reownDir moves what fromID owns under dir to toID's group.
-func reownDir(dir string, fromID, toID int, stderr io.Writer) bool {
-	return walkOwned(dir, fromID, "reown", stderr, func(p string, st *syscall.Stat_t) error {
-		if err := syscall.Lchown(p, -1, toID); err != nil {
-			return err
+// readNames lists a directory descriptor's entries, . and .. left out.
+func readNames(dir int) ([]string, error) {
+	buf := make([]byte, 8192)
+	var names []string
+	for {
+		n, err := syscall.ReadDirent(dir, buf)
+		if err == syscall.EINTR {
+			continue
 		}
-		if isLink(st) {
-			return nil
+		if err != nil {
+			return nil, err
 		}
-		return syscall.Chmod(p, fixMode(st.Mode, isDir(st)))
-	})
+		if n <= 0 {
+			return names, nil
+		}
+		_, _, names = syscall.ParseDirent(buf[:n], -1, names)
+	}
 }

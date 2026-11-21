@@ -39,6 +39,21 @@ const formOf = (a: EmailAccount | null): Form => ({
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 /** A refusal's field issues by field (`address`, `imap.host`, ...), when it names any. */
 const fieldsOf = (e: unknown): Record<string, string> => Object.fromEntries((e instanceof ClientError ? e.fields ?? [] : []).map((f) => [f.field, f.message]));
+type Check = EmailTest["imap"];
+const isCheck = (x: unknown): x is Check => typeof x === "object" && x !== null && typeof (x as Check).ok === "boolean" && typeof (x as Check).message === "string";
+/** What IMAP and SMTP each said of a sign-in, a test's or a refused save's: one line each. */
+const halves = (said: Pick<EmailTest, "imap" | "smtp">) => (["imap", "smtp"] as const).map((side) => (
+  <p key={side} className="flex flex-wrap items-center gap-2">
+    <Chip tone={said[side].ok ? "success" : "error"}>{side === "imap" ? "IMAP" : "SMTP"}</Chip>
+    <span className={said[side].ok ? "" : "text-destructive-text"}>{said[side].message}</span>
+  </p>
+));
+/** A save the servers refused (PUT's 424 upstream_failed): what IMAP and SMTP each said, as a test says it. */
+function signInRefusal(e: unknown): Pick<EmailTest, "imap" | "smtp"> | null {
+  if (!(e instanceof ClientError) || e.code !== "upstream_failed") return null;
+  const { imap, smtp } = e.details ?? {};
+  return isCheck(imap) && isCheck(smtp) ? { imap, smtp } : null;
+}
 
 /** Settings → Email (GET, PUT and DELETE /v2/settings/email, POST .../test): the server's one mail account, which the
  *  agents' email tools and email triggers sign in as. A preset fills the servers (gmail, fastmail, icloud), or Other takes
@@ -54,6 +69,8 @@ export function EmailPage({ v2, writable, whyNot = "sign_in" }: { v2: Client; wr
   const [problem, setProblem] = useState<{ title: string; error: ApiError } | null>(null);
   const [refused, setRefused] = useState<Record<string, string>>({});
   const [tested, setTested] = useState<EmailTest | null>(null);
+  // A save the servers refused (424 upstream_failed): what IMAP and SMTP each said, shown beside the form as a test's are.
+  const [notSaved, setNotSaved] = useState<Pick<EmailTest, "imap" | "smtp"> | null>(null);
   const [removing, setRemoving] = useState(false);
   const [busy, setBusy] = useState(false);
   const asked = useRef(0);
@@ -63,8 +80,8 @@ export function EmailPage({ v2, writable, whyNot = "sign_in" }: { v2: Client; wr
     v2.emailAccount().then((a) => { if (n === asked.current) { shown(a); setLoadError(null); } }).catch((e) => { if (n === asked.current) setLoadError(apiError(e)); });
   };
   useEffect(() => { if (writable) load(); }, [v2, writable]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Any edit makes the last test's answer about another account, so it goes.
-  const edit = (change: (f: Form) => Form) => { setForm(change); setTested(null); };
+  // Any edit makes the last test's answer, or a refused save's, about another account, so it goes.
+  const edit = (change: (f: Form) => Form) => { setForm(change); setTested(null); setNotSaved(null); };
   const set = (field: keyof Form) => (e: { target: { value: string } }) => edit((f) => ({ ...f, [field]: e.target.value }));
   /** The account as typed, the password only when one is typed. Other sends the servers typed; a preset kept as saved
    *  sends the servers it was saved with (an account saved through the API may name its own), so a new password or a
@@ -78,15 +95,20 @@ export function EmailPage({ v2, writable, whyNot = "sign_in" }: { v2: Client; wr
     };
   };
   const act = async (title: string, work: () => Promise<void>) => {
-    setProblem(null); setRefused({}); setBusy(true);
-    try { await work(); } catch (e) { const fields = fieldsOf(e); if (Object.keys(fields).length) setRefused(fields); else setProblem({ title, error: apiError(e) }); } finally { setBusy(false); }
+    setProblem(null); setRefused({}); setNotSaved(null); setBusy(true);
+    try { await work(); } catch (e) {
+      const fields = fieldsOf(e);
+      const said = signInRefusal(e);
+      if (Object.keys(fields).length) setRefused(fields); else if (said) setNotSaved(said); else setProblem({ title, error: apiError(e) });
+    } finally { setBusy(false); }
   };
   const save = (e: FormEvent) => {
     e.preventDefault();
     void act("The account was not saved", async () => {
+      setTested(null);
       shown(await v2.saveEmailAccount(body() as EmailAccountBody));
       // Sealed on the server now: the page keeps no copy.
-      setPassword(""); setTested(null);
+      setPassword("");
     });
   };
   const test = () => act("The account was not tested", async () => { setTested(null); setTested(await v2.testEmailAccount(body())); });
@@ -155,7 +177,7 @@ export function EmailPage({ v2, writable, whyNot = "sign_in" }: { v2: Client; wr
           <Field label="Sign-in name" optional note="When the server's sign-in isn't the address." error={refused.user}><Input name="user" spellCheck={false} autoCapitalize="off" value={form.user} onChange={set("user")} /></Field>
           <Field label={passwordLabel(form.preset)} error={refused.password}>
             <Input name="password" type="password" autoComplete="new-password" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true"
-              placeholder={account.configured ? "Sealed on this server: type it again to save a change" : ""} value={password} onChange={(e) => { setPassword(e.target.value); setTested(null); }} />
+              placeholder={account.configured ? "Sealed on this server: type it again to save a change" : ""} value={password} onChange={(e) => { setPassword(e.target.value); setTested(null); setNotSaved(null); }} />
           </Field>
           {other && hostField("imap", "IMAP", "imap.example.com")}
           {other && hostField("smtp", "SMTP", "smtp.example.com")}
@@ -174,13 +196,16 @@ export function EmailPage({ v2, writable, whyNot = "sign_in" }: { v2: Client; wr
           )}
           {tested && (
             <div aria-label="Test" className="space-y-1 font-mono text-body">
-              {(["imap", "smtp"] as const).map((side) => (
-                <p key={side} className="flex flex-wrap items-center gap-2">
-                  <Chip tone={tested[side].ok ? "success" : "error"}>{side === "imap" ? "IMAP" : "SMTP"}</Chip>
-                  <span className={tested[side].ok ? "" : "text-destructive-text"}>{tested[side].message}</span>
-                </p>
-              ))}
+              {halves(tested)}
               <p className="text-small text-muted-foreground">{tested.ok ? "Both signed in. Nothing was sent, and nothing was saved by the test." : "Nothing was sent, and nothing was saved by the test."}</p>
+            </div>
+          )}
+          {/* A save is kept only once it signs in: one the servers refused is said here, each half in the test's words. */}
+          {notSaved && (
+            <div aria-label="Not saved" role="alert" className="space-y-1 font-mono text-body">
+              <p className="text-destructive-text">Not saved: the account didn't sign in.</p>
+              {halves(notSaved)}
+              <p className="text-small text-muted-foreground">{saved ? "Nothing was sent. The account saved before is as it was." : "Nothing was sent, and nothing is saved."}</p>
             </div>
           )}
         </form>

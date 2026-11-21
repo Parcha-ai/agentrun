@@ -211,6 +211,39 @@ describe("EmailPage", () => {
     expect(page.input("address")!.value).toBe("not-an-address");
   });
 
+  it("shows a save the servers refused beside the form, in the test's words, and never says saved for it", async () => {
+    const said = { imap: { ok: false, message: "imap.gmail.com refused the sign-in." }, smtp: { ok: false, message: "smtp.gmail.com refused the sign-in." } };
+    const signInRefused = () => json(424, { error: { code: "upstream_failed", message: "The account was not saved: it did not sign in.", retryable: false, details: said } });
+    const { v2, state } = server({ account: NONE }, { put: signInRefused });
+    const page = await open(v2);
+    await page.type("address", "you@example.com");
+    await page.type("password", PASSWORD);
+    await page.click(/^Save$/);
+    const form = page.host.querySelector('form[aria-label="Account"]')!;
+    const refusal = form.querySelector('[aria-label="Not saved"]');
+    expect(refusal?.textContent).toContain("imap.gmail.com refused the sign-in.");
+    expect(refusal?.textContent).toContain("smtp.gmail.com refused the sign-in.");
+    expect(refusal?.textContent).toMatch(/not saved/i);
+    expect(page.host.textContent).toContain("No email account is saved");
+    expect([...page.host.querySelectorAll("span")].some((s) => s.textContent === "saved")).toBe(false);
+    expect(page.input("address")!.value).toBe("you@example.com");
+    expect(state.account).toBe(NONE);
+
+    // An account saved before stays shown as it was: the refusal says the new one was not saved.
+    const before = server({ account: GMAIL }, { put: signInRefused });
+    act(() => root?.unmount());
+    const again = await open(before.v2);
+    await again.type("address", "new@example.com");
+    await again.type("password", PASSWORD);
+    await again.click(/^Save$/);
+    expect(again.host.querySelector('form[aria-label="Account"] [aria-label="Not saved"]')?.textContent).toMatch(/saved before is as it was/i);
+    expect(again.host.querySelector('[aria-label="Email account"]')!.textContent).toContain("you@example.com");
+    expect(again.host.querySelector('[aria-label="Email account"]')!.textContent).not.toContain("new@example.com");
+    // An edit drops the refusal: it spoke for what was typed then.
+    await again.type("address", "newer@example.com");
+    expect(again.host.querySelector('[aria-label="Not saved"]')).toBeNull();
+  });
+
   it("removes the account after asking, and says so", async () => {
     const { v2, calls } = server({ account: GMAIL });
     const page = await open(v2);

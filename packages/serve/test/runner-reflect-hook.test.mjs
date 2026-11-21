@@ -74,6 +74,9 @@ test("a run cut before its end-of-run step (a person's stop, or a fault) keeps i
   }
   const { hook, input } = hookWith({ facts: { learns: false } });
   assert.equal(await hook({ ...input("failed"), cut: "stopped" }), undefined, "a run that does not learn keeps nothing, cut or not");
+  // A stop or cancel that cuts the look-back leaves the run on its job's end (completed): its learning never says the run
+  // was cancelled.
+  assert.equal(said.stopped(STOPPED.cancelledLooking), "Not kept: learning stopped (a stop or cancel cut it while it wrote what it learned).");
 });
 
 test("a run stopped during its compile turn (an earlier claim asked it) keeps the job's saved figures and the compile's spend, known or null: its cost is the job's own, the rest is learning's", async () => {
