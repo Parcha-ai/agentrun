@@ -1744,6 +1744,32 @@ export type VerifyNativeResponse = {
   };
 };
 
+/** The runs waiting and held, the live runners and the recent hand-backs (GET /capacity). */
+export interface GetCapacityParams {
+  window?: number;
+}
+export type GetCapacityResponse = {
+  at: string;
+  runs: {
+    queued: number;
+    executing: number;
+  };
+  runners: Array<{
+    id: string;
+    version: string | null;
+    slots: number | null;
+    executing: number;
+    free_slots: number | null;
+    refused: boolean;
+    seen_at: string;
+  }>;
+  free_slots: number;
+  hand_backs: {
+    window_minutes: number;
+    count: number;
+  };
+};
+
 /** Complete a source command once under its valid lease (POST /connectors/{connector_id}/commands/{command_id}/complete). */
 export type CompleteRemoteCommandBody = {
   lease_token: string;
@@ -5723,6 +5749,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   updateDefinition: {"method":"PUT","path":"/agents/{agent_id}/definition","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   verifyNative: {"method":"POST","path":"/agents/{agent_id}/native/verify","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getCapacity: {"method":"GET","path":"/capacity","pathParams":[],"multiSegment":[],"query":["window"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeRemoteCommand: {"method":"POST","path":"/connectors/{connector_id}/commands/{command_id}/complete","pathParams":["connector_id","command_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   enrollRemoteConnector: {"method":"POST","path":"/connectors/enrollment","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   importRemoteHistory: {"method":"POST","path":"/connectors/{connector_id}/targets/{target_id}/history","pathParams":["connector_id","target_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5917,6 +5944,10 @@ export function resources(call: Call) {
       update: (agentId: string, body: UpdateDefinitionBody, params?: UpdateDefinitionParams, options?: RequestOptions): Promise<Tagged<UpdateDefinitionResponse>> => call("updateDefinition", [agentId], body, params, options),
       /** Check native CLI and sign-in without a paid model call (POST /agents/{agent_id}/native/verify). */
       verifyNative: (agentId: string, options?: RequestOptions): Promise<VerifyNativeResponse> => call("verifyNative", [agentId], undefined, undefined, options),
+    },
+    capabilities: {
+      /** The runs waiting and held, the live runners and the recent hand-backs (GET /capacity). */
+      getCapacity: (params?: GetCapacityParams, options?: RequestOptions): Promise<GetCapacityResponse> => call("getCapacity", [], undefined, params, options),
     },
     connectors: {
       /** Complete a source command once under its valid lease (POST /connectors/{connector_id}/commands/{command_id}/complete). */
