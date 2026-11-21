@@ -8,17 +8,17 @@ import { NOT_SET_UP } from "./runnable.js";
 import type { Route } from "./server.js";
 import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
 
-/** The routes (server.ts ROUTES, by name) an API-only server serves. Past a run's own, why each group is here:
+/** The routes (server.ts ROUTES, by name) an API-only server serves, and why each group is here:
+ *  - a run's own routes, its files and the uploads it takes are the run API the backend calls;
  *  - a run's hosted machine fetches computerd with the token its create minted, not the server's;
  *  - the computers list and the Archil settings are read before a launch, naming keys, never a value;
  *  - an agent its inline runs made has its disk, its delete and its runs' purges sent by the backend that made it (a run
  *    of an agent made here is refused by the purge's route itself, server.ts deleteRun, in this profile's words);
  *  - a run's computer, take-over, hand-back and viewer link go to the backend, which has no owner's session here;
- *  - a backend reads what its agents learned (loop, promotions, cost per run, a run's learning), cut as the console's,
- *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
- *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
- *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart;
- *  - a backend reads the saved MCP servers' names (listMcpServerNames), never a URL or a credential;
+ *  - a backend reads what its agents learned, cut as the console's reads are, and resets it (the agent and its runs kept);
+ *  - a run's usage lines are a read of that run alone, cut as the run's read is;
+ *  - an operator or a scaler reads capabilities, health, usage and the runners' capacity from a server whose runners run apart;
+ *  - a backend reads the saved MCP servers' names, never a URL or a credential;
  *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
  *    words, template-import.ts), which an apply then makes into its agent;
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
@@ -33,7 +33,7 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    (mcp-secret-writes.ts tokenWriteOverRefused), and never writes a secret (secret-writes.ts). A Composio server names
  *    its key by api_key_env (COMPOSIO_API_KEY, on the launcher's list of secrets, read at each use through secrets.ts
  *    secret, sent to Composio's origin alone: composio-made.ts composioEnvKey), and its body names no address or headers.
- *    There is no list or read of the servers here (listMcpServerNames above is the listing), and no generic save (saveMcpServer), so the
+ *    There is no list or read of the servers here (the names read above is the listing), and no generic save (saveMcpServer), so the
  *    token saves no server at an address or with headers of its own. Previews, refreshes, sign-ins and Composio's
  *    triggers stay refused. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([

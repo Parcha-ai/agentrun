@@ -3316,74 +3316,57 @@ item (`["/number", "/title", "/html_url", "/user/login"]`): `item` then keeps on
 ### API only
 
 `AGENTRUN_API_ONLY=1` is for a server that runs behind its caller's backend and is never opened in a browser. It
-serves these routes alone:
+serves the run API (a run's launch, reads, messages, stop, cancel, kill (`501` here, as above), cap raise, grade, files,
+usage lines and [uploads](#uploads)) and the few routes a backend needs around the runs it launches: reads that name a
+key but never its value (the computer and Archil settings, the saved MCP servers' names), what its agents learned and
+its reset, the delete of [an agent another system owns](#deleting-an-agent-another-system-owns), of its Archil disk and
+the [purge](#purging-a-run-or-an-agent-made-here) of its runs (a run of an agent made here is refused), computerd for a
+run's hosted machine, the server's capabilities, health, usage and capacity, a deploy's routes and a Composio server's
+save and delete (both below), and a run's live view (below). `API_ONLY_ROUTES` in `src/api-only.ts` is the list, with
+why each group is on it; a test pins it to the server's routes.
 
-- a run's launch (`POST /agents/{id}/runs`, `POST /runs`), read (`GET /runs/{id}`), lists (`GET /agents/{id}/runs`,
-  `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above), cap raise (`PATCH /runs/{id}`) and grade
-  (`PUT /runs/{id}/grade`);
-- a run's usage lines (`GET /runs/{id}/usage`): what its `cost.usd` joins, by meter, cut of the host's secrets as the
-  run's read is;
-- its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
-- an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
-- the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
-  the backend whose inline runs made it;
-- the [purge of a run](#purging-a-run-or-an-agent-made-here) (`DELETE /runs/{id}`) of such an agent, for that
-  backend: it erases one user's runs where deleting the agent, which every user's runs share, would take them all. A
-  run of an agent made here is refused, as every address not listed here is;
-- the computer settings' two reads, for a backend to check before it launches: `GET /computers` (each provider, its
-  key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
-  on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
-  are the console's, refused here;
-- what an agent learned, for the backend whose runs it learned from: the loop's compile turns
-  (`GET /agents/{id}/learning/loop`), each learned workflow's promotion and what serves
-  (`GET /agents/{id}/learning/promotions`), the cost per run (`GET /agents/{id}/learning/cost`) and a run's learning
-  (`GET /runs/{id}/learning`), each cut of the host's secrets as the console's reads are; and its reset
-  (`DELETE /agents/{id}/learning`, the agent and its runs kept), its one learning write served here;
-- a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
-  minted;
-- `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
-- the names of the MCP servers saved here (`GET /settings/mcp-server-names`, `{names}`), never a URL or a credential:
-  a backend that builds runs from saved servers holds back a job whose server isn't saved, before its launch is refused;
-- a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
-  its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
-  (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
-  is what its delete (`DELETE /agents/{id}`) needs first. With the [launch hook](#launch-hook) set, the apply makes the
-  package's schedule and feed triggers, and every firing that starts a run goes to the backend, which starts it through
-  the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
-  them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set the hook,
-  or start those runs through the API), and a trigger the agent already had stays as it was: an enabled one still fires
-  here, on this server's keys, until the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
-  or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
-  under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
-- a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
-  backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
-  - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
-    `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
-    value, and reads the value it and each runner were started with at each use: the save's calls to Composio, each
-    run's connection and the delete's. A new value takes effect once they start again with it. `COMPOSIO_API_KEY` is
-    the one name taken (`422 invalid` for any other), and it must be set when the server is saved (`422 missing`). A
-    run of a server whose variable is unset is refused before it starts (`409 agent_not_runnable`), naming it; it never
-    runs without the server's tools. `toolkit`, `tools`, `auth_config_id`, `price_usd` and `user_id: "per_run"` work as
-    they do on the full server;
-  - `COMPOSIO_API_KEY` is a secret, so give it to the server and to each runner. The launcher hands it to each over a
-    pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP
-    header of a Composio server the run is granted a tool of, and a run granted none gets nothing of it;
-  - the body names no address and no headers (`url` or `headers` is `422 not_allowed`): Composio answers the server's
-    address, and the key read from the variable is only ever sent to Composio's own origin, fixed in code. A server
-    whose saved address is anywhere else is refused by name wherever that key would be read (a refresh, a run's start),
-    and nothing is sent;
-  - a save over a saved name and a delete (`DELETE /settings/mcp-servers/{name}`) take only a server the token saved.
-    One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
-    nothing is sent to Composio. An owner's save over a server the token saved makes it the owner's once it lands (one
-    refused with `412` leaves it the token's), and one that lands while the token's is under way wins: the token's is
-    `412`.
+A deploy, for a backend that deploys agents here, is a template's apply (`POST /templates/{id}/apply`, a redeploy with
+its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
+(`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
+is what its delete (`DELETE /agents/{id}`) needs first. With the [launch hook](#launch-hook) set, the apply makes the
+package's schedule and feed triggers, and every firing that starts a run goes to the backend, which starts it through
+the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
+them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set the hook,
+or start those runs through the API), and a trigger the agent already had stays as it was: an enabled one still fires
+here, on this server's keys, until the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio
+or email trigger is never made here, hook or not, since this profile refuses the hook or setting each needs
+(`not_an_option`). Each skipped trigger is a warning under `warnings` (`triggers.<i>`), and the dry run
+(`dry_run: true`) plans it as `skip` in the same words.
 
-  The names route above is the listing: there is no list or read of a server's address, auth or tools here, and no
-  generic save (`PUT /settings/mcp-servers/{name}`), so the token saves no server at an address or with headers of its
-  own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
-  server the token's `api_key_env` is `403`, as `api_key` is: the owner's session saves a Composio server there either
-  way;
-- a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
+A Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved are for a
+backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
+
+- a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
+  `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
+  value, and reads the value it and each runner were started with at each use: the save's calls to Composio, each
+  run's connection and the delete's. A new value takes effect once they start again with it. `COMPOSIO_API_KEY` is
+  the one name taken (`422 invalid` for any other), and it must be set when the server is saved (`422 missing`). A
+  run of a server whose variable is unset is refused before it starts (`409 agent_not_runnable`), naming it; it never
+  runs without the server's tools. `toolkit`, `tools`, `auth_config_id`, `price_usd` and `user_id: "per_run"` work as
+  they do on the full server;
+- `COMPOSIO_API_KEY` is a secret, so give it to the server and to each runner. The launcher hands it to each over a
+  pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP
+  header of a Composio server the run is granted a tool of, and a run granted none gets nothing of it;
+- the body names no address and no headers (`url` or `headers` is `422 not_allowed`): Composio answers the server's
+  address, and the key read from the variable is only ever sent to Composio's own origin, fixed in code. A server
+  whose saved address is anywhere else is refused by name wherever that key would be read (a refresh, a run's start),
+  and nothing is sent;
+- a save over a saved name and a delete (`DELETE /settings/mcp-servers/{name}`) take only a server the token saved.
+  One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
+  nothing is sent to Composio. An owner's save over a server the token saved makes it the owner's once it lands (one
+  refused with `412` leaves it the token's), and one that lands while the token's is under way wins: the token's is
+  `412`.
+
+The names route (`GET /settings/mcp-server-names`, `{names}`) is the listing: there is no list or read of a server's
+address, auth or tools here, and no generic save (`PUT /settings/mcp-servers/{name}`), so the token saves no server at
+an address or with headers of its own. The preview, refresh, sign-in, Composio tool listing and every other MCP
+settings route stay refused. On the full server the token's `api_key_env` is `403`, as `api_key` is: the owner's
+session saves a Composio server there either way.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
 `AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
