@@ -120,8 +120,9 @@ export const said = {
   unknownCost: "Skipped: this run's spend is unknown, so its budget can't cover writing what it learned.",
   stopped: (cause: string) => `Not kept: learning stopped (${cause}).`,
   /** The agent's learning folder's backend can't answer (learn/folder.ts folderPaused: an exec of its script, or a
-   *  read, failed UNAVAILABLE; `why` its words): nothing is counted or stopped, and the next run tries again. */
-  paused: (why: string) => `learning paused: the disk can't run the folder script (${why}); the next run tries again`,
+   *  read, failed UNAVAILABLE; `why` its words), or the script's exec timed out on it (`timedOut`): nothing is counted
+   *  or stopped, and the next run tries again. */
+  paused: (why: string, timedOut = false) => `learning paused: ${timedOut ? "the folder script timed out on the disk" : "the disk can't run the folder script"} (${why}); the next run tries again`,
   /** A run whose learning seed predates a reset of its agent's learning (runner/learning-end.ts, reason `reset`). */
   reset: "Dropped: its learning seed predates a reset of the agent's learning.",
 };

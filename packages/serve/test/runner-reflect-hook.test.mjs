@@ -279,7 +279,7 @@ test("a merge that could not be written drops the learning: unavailable as faile
 // workflow's next run asks its revision again.
 test("a merge whose folder's disk can't run its script pauses learning and keeps no compile", async () => {
   const why = "the Archil exec failed: Exec is not enabled";
-  const { hook, input, calls } = hookWith({ compile: NEW, commit: () => ({ ok: false, reason: "unavailable", problems: [], paused: why }) });
+  const { hook, input, calls } = hookWith({ compile: NEW, commit: () => ({ ok: false, reason: "unavailable", problems: [], paused: said.paused(why) }) });
   const out = kept(await hook(input()));
   assert.deepEqual([out.state, out.reason, out.detail], ["dropped", "paused", said.paused(why)]);
   assert.equal(out.compiled, undefined, JSON.stringify(out));

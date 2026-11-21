@@ -35,7 +35,7 @@ export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | 
   try {
     seed = await seedAt(folder.workspace, lay.seed);
   } catch (error) {
-    lay.log(`the run starts with no learned workflow: ${folderPaused(error) ? said.paused(error.why) : message(error)}`);
+    lay.log(`the run starts with no learned workflow: ${folderPaused(error) ? said.paused(error.why, error.timedOut) : message(error)}`);
     return undefined;
   } finally {
     await folder.end().catch(() => undefined);

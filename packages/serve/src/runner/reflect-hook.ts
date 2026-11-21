@@ -31,8 +31,8 @@ export type DraftCommit = {
 };
 
 /** What a merge landed: the commit (and the correction it left out beside its draft, learn/commit.ts
- *  LearningCommitResult `refusedCorrection`), or why it did not: `paused`, the folder's backend can't answer, in its
- *  words. */
+ *  LearningCommitResult `refusedCorrection`), or why it did not: `paused`, the folder's backend can't answer or its
+ *  script timed out, in learning's words (said.paused). */
 export type Committed =
   | { readonly ok: true; readonly commit: string; readonly refusedCorrection?: readonly Problem[] }
   | { readonly ok: false; readonly reason: "conflict" | "refused" | "unavailable"; readonly problems: readonly Problem[]; readonly paused?: string };
@@ -150,8 +150,9 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       // since), and it is the revised workflow's conflict base in every check of the turn.
       let revised = compile.mode === "revise" && compile.base ? { workflow: compile.workflow, base: compile.base } : undefined;
       let capped = false;
-      // A draft's check whose learning folder's disk can't run its script (learn/folder.ts folderPaused) pauses learning:
-      // the turn is not asked again, no compile attempt is recorded, and the next run tries again.
+      // A draft's check whose learning folder's disk can't run its script, or on which the script timed out (learn/folder.ts
+      // folderPaused), pauses learning: the turn is not asked again, no compile attempt is recorded, and the next run
+      // tries again.
       let paused = "";
       const result = await compileTurn<DraftCommit>({
         ask: async (prompt, attempt, left) => {
@@ -172,10 +173,10 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         stop: folderPaused,
       }).catch((error: unknown) => {
         if (!folderPaused(error)) throw error;
-        paused = error.why;
+        paused = said.paused(error.why, error.timedOut);
         return undefined;
       });
-      if (!result) return close(dropped("paused", said.paused(paused)));
+      if (!result) return close(dropped("paused", paused));
       if (capped && !result.kept) {
         if (!taken) return close(dropped("no_budget", said.noBudget));
       } else if (result.kept) {
@@ -209,7 +210,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       }
       // A paused merge keeps no compile marker: a held workflow's next run asks its revision again (compileAskOf reads a
       // compile since the hold as asked already).
-      if (done.paused !== undefined) return close(dropped("paused", said.paused(done.paused)));
+      if (done.paused !== undefined) return close(dropped("paused", done.paused));
       if (done.reason === "unavailable") return close(dropped("reflect_failed", said.stopped(STOPPED.failed), compiledFields));
       return close(dropped("checker", correctionWords(done.problems), { problems: [...done.problems], ...compiledFields }));
     }

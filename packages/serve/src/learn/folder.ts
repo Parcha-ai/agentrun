@@ -427,17 +427,20 @@ export class FolderUnreadable extends Error {
   readonly link: boolean;
   /** The backend's own words (its WorkspaceError's), or the message. */
   readonly why: string;
-  constructor(link: boolean, message: string, why = message) {
+  /** The folder script's exec timed out on the disk (runScript): it never answered, or ran past its time. */
+  readonly timedOut: boolean;
+  constructor(link: boolean, message: string, why = message, timedOut = false) {
     super(message);
     this.name = "FolderUnreadable";
     this.link = link;
     this.why = why;
+    this.timedOut = timedOut;
   }
 }
 
 /** Whether `error` pauses the agent's learning rather than failing it: the folder's backend can't answer (an
- *  UNAVAILABLE exec or read, e.g. an Archil account with exec off), never a link in it. Learning tries again on the next
- *  run; nothing is counted against it. */
+ *  UNAVAILABLE exec or read, e.g. an Archil account with exec off) or the folder script's exec timed out on it, never a
+ *  link in it. Learning tries again on the next run; nothing is counted against it. */
 export const folderPaused = (error: unknown): error is FolderUnreadable => error instanceof FolderUnreadable && !error.link;
 
 /** A workspace failure as the folder's: ESCAPE (a link below the root, Local) or a read of a link (Archil's file API:
@@ -618,10 +621,19 @@ async function runScript(ws: Workspace, args: readonly string[], stdin?: Uint8Ar
   await ensureScript(ws);
   const argv = ["sh", SCRIPT_FILE, ...args];
   folderTestHooks.exec?.(argv);
-  const raw = await ws.exec(argv, { env: scriptEnv(), timeoutMs: SCRIPT_TIMEOUT_MS, ...(stdin ? { stdin } : {}) }).catch((error: unknown) => { throw folderFailure(error); });
+  // An exec that never answered (TIMEOUT) or a script that ran past its time timed out on the disk: the folder can't be
+  // read or written right now (folderPaused), never a refusal of what the call carried.
+  const raw = await ws.exec(argv, { env: scriptEnv(), timeoutMs: SCRIPT_TIMEOUT_MS, ...(stdin ? { stdin } : {}) }).catch((error: unknown) => {
+    if (isWorkspaceError(error, "TIMEOUT")) throw new FolderUnreadable(false, `the learning script's ${args[0]} did not answer: ${error.message}`, error.message, true);
+    throw folderFailure(error);
+  });
   // The port's ExecResult, in one line (code is renamed exitCode).
   const result = { code: raw.code, stdout: raw.stdout, stderr: raw.stderr, timedOut: raw.timedOut, truncated: raw.truncated };
-  if (result.timedOut || result.code === null) throw new Error(`the learning script's ${args[0]} did not finish${result.timedOut ? ` in ${SCRIPT_TIMEOUT_MS / 1000} s` : ""}: ${result.stderr.trim().slice(0, 500)}`);
+  if (result.timedOut) {
+    const why = `the learning script's ${args[0]} did not finish in ${SCRIPT_TIMEOUT_MS / 1000} s`;
+    throw new FolderUnreadable(false, `${why}: ${result.stderr.trim().slice(0, 500)}`, why, true);
+  }
+  if (result.code === null) throw new Error(`the learning script's ${args[0]} did not finish${result.timedOut ? ` in ${SCRIPT_TIMEOUT_MS / 1000} s` : ""}: ${result.stderr.trim().slice(0, 500)}`);
   // A cut stdout is never parsed: the folder is unavailable for this call.
   if (result.truncated) throw new FolderUnreadable(false, `the learning script's ${args[0]} said more than this server reads`);
   return { code: result.code, stdout: Buffer.from(result.stdout), stderr: result.stderr };
