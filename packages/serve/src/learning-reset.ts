@@ -93,15 +93,17 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
     // seed is read in this queue, so one read before this moment never holds a later time). A seed read after the reset
     // in the same millisecond counts as before it: its run learns nothing (reason reset) and an SDK start is refused, to
     // start again, never a run given what the reset deleted. Set first, so no moment has the folder gone and the old runs
-    // still read; a delete that fails puts the earlier one back, its learning left as it was.
+    // still read. A delete refused before it removed anything (LearningInFlight) puts the earlier one back, its learning
+    // left as it was; one that failed on the way (a disk, a file, a record) may have removed some of it, so the watermark
+    // stays and the next call finishes the reset: the old runs never feed a compile into a folder emptied part way.
     const earlier = await resetAtOf(host.store.settings, agentId);
     const at = Date.now();
     await keepResetAt(host.store.settings, agentId, at);
     try {
       await host.deleteLearning(host.store, agentId, { keepResetLedger: true, agentDisk: true });
     } catch (error) {
-      await (earlier === undefined ? host.store.settings.remove(resetAtKey(agentId)) : keepResetAt(host.store.settings, agentId, earlier));
       if (!(error instanceof LearningInFlight)) throw error;
+      await (earlier === undefined ? host.store.settings.remove(resetAtKey(agentId)) : keepResetAt(host.store.settings, agentId, earlier));
       throw busy(agentId, error.runs, "its learning work is in flight");
     }
   });
