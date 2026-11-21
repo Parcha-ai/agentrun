@@ -509,6 +509,7 @@ export interface components {
       repick_max_chars?: number;
     };
     checkout?: "pull_request" | "none";
+    max_requests?: number;
   };
   Effort: "low" | "medium" | "high";
   Error: {
@@ -3810,6 +3811,7 @@ export interface operations {
         secrets: string[];
         budget: {
           per_run_usd: number;
+          max_requests?: number;
         } | null;
         learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
@@ -4467,6 +4469,7 @@ export interface operations {
         secrets: string[];
         budget: {
           per_run_usd: number;
+          max_requests?: number;
         } | null;
         learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";

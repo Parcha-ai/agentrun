@@ -1200,6 +1200,7 @@ class Definition(_DefinitionRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: bool | DefinitionLearning
     checkout: Literal["pull_request", "none"]
+    max_requests: int
 
 
 JsonObject: TypeAlias = "dict[str, Any]"
@@ -1702,6 +1703,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: bool | DefinitionInputLearning
     checkout: Literal["pull_request", "none"]
+    max_requests: int
 
 
 class DefinitionInputCliLearning(TypedDict):
@@ -7448,8 +7450,12 @@ class ImportTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
 
 
-class ImportTemplateResponseTemplateBudget(TypedDict):
+class _ImportTemplateResponseTemplateBudgetRequired(TypedDict):
     per_run_usd: float
+
+
+class ImportTemplateResponseTemplateBudget(_ImportTemplateResponseTemplateBudgetRequired, total=False):
+    max_requests: int
 
 
 class ListTemplatesResponse(TypedDict):
@@ -7569,8 +7575,12 @@ class ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
 
 
-class ListTemplatesResponseTemplatesItemBudget(TypedDict):
+class _ListTemplatesResponseTemplatesItemBudgetRequired(TypedDict):
     per_run_usd: float
+
+
+class ListTemplatesResponseTemplatesItemBudget(_ListTemplatesResponseTemplatesItemBudgetRequired, total=False):
+    max_requests: int
 
 
 class ListToolKeysResponse(TypedDict):
