@@ -26,7 +26,7 @@ import { dockerPathsForRuns } from "../box-paths.js";
 import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
 import { claimInstallsStopped } from "../harness-install.js";
-import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessModulesEnv, harnessModulesOf, harnessTable } from "../harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_TABLE_ENV, harnessModulesEnv, harnessModulesOf, harnessTable } from "../harness-table.js";
 import { DEFAULT_PORT, maxRunsOf } from "../host.js";
 import { FAUX_ENV, FAUX_PREFIX, withoutFaux } from "../model.js";
 import { durationMs, runLine } from "../print.js";
@@ -503,7 +503,7 @@ export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: 
   if (heartbeatOnly && !check) throw new RunnerRefused("--heartbeat goes with --check: runner --check --heartbeat --data D [--name N]");
   if (heartbeatOnly && envOnly) throw new RunnerRefused("--check takes --env (its environment alone) or --heartbeat (its heartbeat alone), not both: give neither to check both");
   // `--check --env` checks the environment alone, which needs no data directory where the store is AGENTRUN_STORE_URL's.
-  if (envOnly) return { dataDir: dataDir ?? "", check: true, envOnly: true, ...(name === undefined ? {} : { name }) };
+  if (envOnly) return { dataDir: dataDir ?? "", check: true, envOnly: true, ...(harnessModules.length ? { harnessModules } : {}), ...(name === undefined ? {} : { name }) };
   if (!dataDir) throw new RunnerRefused("a runner needs its data directory: --data D");
   if (heartbeatOnly) return { dataDir, check: true, heartbeatOnly: true, ...(name === undefined ? {} : { name }) };
   if (fauxBrowser !== undefined && faux === undefined) throw new RunnerRefused("--faux-browser goes with --faux");
@@ -707,7 +707,11 @@ async function runnerCheck(args: ReturnType<typeof runnerArgs>, env: NodeJS.Proc
     console.error("agentrun-serve runner: --check needs the runner's name: --name N or AGENTRUN_RUNNER_NAME (or --check --env, for its environment alone)");
     return 2;
   }
-  const rows: CheckRow[] = args.heartbeatOnly ? [] : await checkRunnerEnv({ ...(args.dataDir ? { dataDir: args.dataDir } : {}), env, read: (one) => secret(one) ?? env[one] });
+  // Harness modules given as --harness-module hold what AGENTRUN_SERVE_HARNESS_MODULES would (harness-table.ts
+  // harnessModulesOf): a runner started with the flag is checked with it.
+  const flagged = "harnessModules" in args && args.harnessModules?.length ? args.harnessModules.join(",") : undefined;
+  const read = (one: string) => (one === HARNESS_MODULES_SETTING && flagged !== undefined ? flagged : (secret(one) ?? env[one]));
+  const rows: CheckRow[] = args.heartbeatOnly ? [] : await checkRunnerEnv({ ...(args.dataDir ? { dataDir: args.dataDir } : {}), env, read });
   if (!args.envOnly && name) {
     const checked = checkRunner({ dataDir: args.dataDir, name });
     rows.push(checked.ok ? { state: "ok", name: "heartbeat", why: `Runner ${name} is alive` } : { state: "bad", name: "heartbeat", why: checked.why });

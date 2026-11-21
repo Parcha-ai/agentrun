@@ -8,6 +8,7 @@
 //   - no value it was given is ever printed: the store URL's password, the seal key, a tool key.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -143,6 +144,29 @@ test("on Postgres: every run-facing name the server holds must be the runner's, 
   assert.equal(tokened.code, 0, tokened.out);
   assert.equal(stateOf(tokened.out, "AGENTRUN_TOKEN"), "warn", tokened.out);
   assert.ok(!tokened.out.includes(TOKEN), "nor the token");
+
+  // Harness modules the server says it loads (AGENTRUN_SERVE_HARNESS_MODULES; its start loads them, so they are said here
+  // straight into its names): a runner with none is missing them; one given --harness-module holds them.
+  const { openPostgresStore } = await import("../dist/store/index.js");
+  const said = await openPostgresStore({ url: PG_URL, schema, role: "runner" });
+  const names = (await said.settings.get(RUN_ENV_KEY)).names;
+  await said.settings.put(RUN_ENV_KEY, { v: 1, names: [...names, "AGENTRUN_SERVE_HARNESS_MODULES"] });
+  const complete = { AGENTRUN_SEAL_KEY: SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream, AGENT_MODEL_FAST: "faux-fast", ...SWITCHES };
+  const noModules = await check(complete);
+  assert.equal(noModules.code, 1, noModules.out);
+  assert.equal(stateOf(noModules.out, "AGENTRUN_SERVE_HARNESS_MODULES"), "missing", noModules.out);
+  // A module the runner loads (its start and its check load each one): one harness, its runner pi's.
+  const module = join(root, "own-harness.mjs");
+  const runnerIndex = new URL("../dist/runner/adapters/index.js", import.meta.url).href;
+  writeFileSync(module, `import { RUNNER_HARNESSES } from ${JSON.stringify(runnerIndex)};
+export const entries = (builtins) => ({ own: { label: "Own", steer: false, runMib: 64, oneAlwaysFits: false, runs: () => true, onWire: () => false,
+  model: (env, ref, available) => builtins.pi.model(env, ref, available), priceModel: (_env, model) => model, refusal: async () => undefined,
+  runner: { adapter: (launch, extra) => RUNNER_HARNESSES.pi.adapter(launch, extra) } } });\n`);
+  const flagged = await run(["runner", "--check", "--env", "--data", join(root, "runner"), "--harness-module", module], { ...baseEnv(root), ...store, ...complete });
+  assert.equal(flagged.code, 0, flagged.out + flagged.err);
+  assert.equal(stateOf(flagged.out, "AGENTRUN_SERVE_HARNESS_MODULES"), "ok", flagged.out);
+  await said.settings.put(RUN_ENV_KEY, { v: 1, names });
+  await said.close();
 
   // Another seal key: bad. A forwarder that does not answer: bad.
   const otherKey = await check({ AGENTRUN_SEAL_KEY: OTHER_SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream, AGENT_MODEL_FAST: "faux-fast", ...SWITCHES });
