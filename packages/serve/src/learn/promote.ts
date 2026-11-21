@@ -7,6 +7,7 @@
 // its workflows' promotion records), over the settings table; the orchestration is runner/promotion.ts. Grades are what
 // a person or an eval said of a run (PUT /runs/{id}/grade).
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { RunPath } from "../learning-cost.js";
 import type { FeedbackRound, OpenedRound } from "../runner/feedback-round.js";
 import type { Settings } from "../store/store.js";
@@ -450,9 +451,16 @@ export function shownDeep(value: unknown, shown: { readonly text: (text: string)
  *  only when it won the write: the loser reads the winner's record, never its turn to act. */
 export type Recorded = { readonly record: PromotionRecord | undefined; readonly won: boolean };
 
+/** The runs whose copies `record`'s check has blanked (forgetRunIn): each disagreement, decided or of a turn collected,
+ *  left as blankCheck leaves it. */
+const blankedRuns = (record: PromotionRecord | undefined): string[] =>
+  [...(record?.check?.disagreements ?? []), ...(record?.check?.turns?.disagreements ?? [])].filter((one) => isDeepStrictEqual(one, blankCheck(one))).map((one) => one.run);
+
 /** Keeps `record` as the newest of its workflow at its digest, when `still` holds of the one there now (none: undefined)
  *  and of every record kept (`items`: a check across revisions, one at a time, in the same guarded write): so of two
- *  claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). */
+ *  claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). What the one
+ *  there now has blanked is blanked in `record` too (forgetRunIn): a record built on a copy read before a run's purge
+ *  (a connected agent's next turn, release or decision carries its turns on) never writes that run's text back. */
 export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean): Promise<Recorded> {
   let out: Recorded = { record, won: true };
   await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
@@ -462,8 +470,9 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
       out = { record: now, won: false };
       return items;
     }
-    out = { record, won: true };
-    return trimPromotions([...items, record]);
+    const kept = blankedRuns(now).reduce(forgetRunIn, record);
+    out = { record: kept, won: true };
+    return trimPromotions([...items, kept]);
   });
   return out;
 }

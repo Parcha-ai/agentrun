@@ -200,6 +200,28 @@ test('a turn past its deadline is one failed row of the turns collected, not a d
   await cancel(server, swept);
 });
 
+test('a turn lands once: a deadline, a give-back or a second settle that read the same reservation finds it gone', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  const receipt = await server.start('settled');
+  const reserved = promotionOf(await server.records(), flow.name, DIGEST);
+  assert.deepEqual(reserved.runs, [receipt.run_id]);
+  await finish(server, receipt, report(receipt));
+  const collected = stillChecking(await server.records(), 1);
+  // Each read the reservation before the completion's row landed, as a deadline sweep and a settle can at once.
+  const { releaseSdkCheck, sdkCheckDeadline, sdkCheckTurn } = await import('../dist/runner/promotion.js');
+  const deps = { store: server.store, agentId: server.id, shown: async () => secretsShown([]), log() {} };
+  const late = [
+    await sdkCheckDeadline(deps, reserved),
+    await releaseSdkCheck(deps, reserved, 'its native turn ended before the backend completed it'),
+    await sdkCheckTurn(deps, reserved, { of: receipt.run_id, input: TASK, agent: '{"ready":true}', outcome: 'answered', answer: '{"ready":false}' }, was => was?.replay_id === reserved.replay_id),
+  ];
+  assert.deepEqual(late.map(one => one?.won), [false, false, false], 'none of them lands');
+  const after = promotionOf(await server.records(), flow.name, DIGEST);
+  assert.deepEqual(after, collected, 'the completion\'s row stands: no failed row, no release, no second row');
+  assert.deepEqual(after.check.turns.outcomes, { answered: 1, handed_back: 0, failed: 0, skipped_write: 0 });
+  assert.equal(after.check.released, undefined);
+});
+
 // A turn that cannot be the check's baseline gives the reservation back: nothing is decided, and the next turn the draft
 // takes is reserved in its place.
 const releases = {

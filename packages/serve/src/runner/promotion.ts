@@ -735,8 +735,11 @@ const sdkTurnsWords = (check: CheckRecord): string =>
 export async function sdkCheckTurn(deps: DecideDeps, record: PromotionRecord & { readonly check: CheckRecord }, row: CheckRow, still: Parameters<typeof recordPromotion>[3], read: { exactMismatchReason?: string; fresh_reads?: number } = {}) {
   const { turns: before, ...bar } = record.check;
   const outcomes = { ...NO_OUTCOMES, [row.outcome]: 1 };
+  // The turn lands once: its completion and its deadline can both read the reservation, and the first to write takes
+  // the turn off it, so the second finds it gone (heldTurn) and never adds the turn twice or replaces the first's row.
+  const turnStill: typeof still = (was, current) => still(was, current) && heldTurn(was, record);
   if ((before?.n ?? 0) + 1 >= bar.compile_after)
-    return decideCheck(deps, record.workflow, record.digest, bar, { rows: [row], cost: null, outcomes, unstarted: 0, ...read, ...(before ? { before } : {}) }, still, sdkExtra(record));
+    return decideCheck(deps, record.workflow, record.digest, bar, { rows: [row], cost: null, outcomes, unstarted: 0, ...read, ...(before ? { before } : {}) }, turnStill, sdkExtra(record));
   if (overtaken(await promotionsOf(deps.store.settings, deps.agentId), record)) {
     deps.log(`workflow-first: ${record.workflow} at ${record.digest} checked a native turn; a newer revision has a record since, so it is left as it is`);
     return;
@@ -749,7 +752,7 @@ export async function sdkCheckTurn(deps: DecideDeps, record: PromotionRecord & {
   const kept = await recordPromotion(deps.store.settings, deps.agentId, {
     ...rest, at: iso((deps.now ?? Date.now)()), check,
     reason: `Waiting for the next native turn of the connected agent that it takes: ${sdkTurnsWords(check)}. Nothing was promoted.`,
-  }, (was, current) => still(was, current) && !overtaken(current, was!));
+  }, (was, current) => turnStill(was, current) && !overtaken(current, was!));
   if (kept.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest}: ${sdkTurnsWords(check)}`);
   return kept;
 }
@@ -780,7 +783,7 @@ export async function releaseSdkCheck(deps: DecideDeps, record: PromotionRecord,
   const released = (record.check.released ?? 0) + (counted ? 1 : 0);
   const why = excerptShown(cause, await deps.shown(), CHECK_TEXT_MAX);
   // Overtaken is read again inside the write: a newer revision's record can land while the cause is being cut.
-  const still = (was: PromotionRecord | undefined, current: readonly PromotionRecord[]) => sameReplay(was, record) && !overtaken(current, was!);
+  const still = (was: PromotionRecord | undefined, current: readonly PromotionRecord[]) => sameReplay(was, record) && heldTurn(was, record) && !overtaken(current, was!);
   const bar = { ...record.check, ...(released ? { released } : {}) };
   if (released >= SDK_CHECK_RELEASES) return stopUnchecked(deps, record.workflow, record.digest, bar, `the connected agent gave back ${plural(released, "reserved native turn")} with no answer to check it against (the last: ${why})`, still, {}, sdkExtra(record));
   const { runs: _runs, inputs: _inputs, ...rest } = record;
@@ -833,6 +836,10 @@ function replayLaunchOf(deps: PromotionDeps): ReplayLaunch {
  *  id. A replay settled meanwhile, and a newer replay of the same revision its owner started since (a held revision may
  *  be replayed again), are not: an older replay's late decision never lands over a newer one. */
 const sameReplay = (was: PromotionRecord | undefined, record: PromotionRecord): boolean => was?.decided === "replaying" && was.replay_id === record.replay_id;
+/** Whether `was` still reserves `record`'s native turn (a connected agent's check: one turn reserved at a time, its run
+ *  first in `runs`). A turn's row (sdkCheckTurn) and its give-back (releaseSdkCheck) each take the turn off the record, so
+ *  a second writer that read the same reservation finds it gone. */
+const heldTurn = (was: PromotionRecord | undefined, record: PromotionRecord): boolean => record.runs?.[0] !== undefined && was?.runs?.[0] === record.runs[0];
 
 /** Cancels each of `record`'s replay runs not ended, as a person's cancel is (an in-flight one stops, what it spent booked
  *  on its row): once its check is decided with runs still at work (past its deadline). How many were sent their cancel. The
