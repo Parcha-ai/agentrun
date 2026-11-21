@@ -54,8 +54,9 @@ import { routeOf } from "./model-route.js";
 import { RUN_PROCESS_MIB, runnerMemory } from "./memory-claim.js";
 import { childLoops, isolationLoops, type RunIsolation, RunIsolationRefused, runIsolationOf } from "./run-child-host.js";
 import { sweepEndedScratch } from "./scratch-sweep.js";
-import { RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
+import { RUNNER_LOOPS, RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
 import { keepPresence, type Presence } from "./presence.js";
+import { metricLine, startRunnerGauge } from "./runner-metrics.js";
 
 export { RUNNER_RENEW_EVERY_MS } from "./runner.js";
 
@@ -300,7 +301,8 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // One incarnation for this process: its word in the store that it is there (presence.ts) and its relay's minted
     // tokens and proofs name the same one, so the server's "restarted since" and the runner's row speak of one process.
     // The presence first, then the relay says where it answers on the presence's row.
-    presence = keepPresence(store.runners, name, null, { warn, incarnation: randomUUID() });
+    // Its row says this build's version and the most runs it holds (its loops), for the server's capacity read.
+    presence = keepPresence(store.runners, name, null, { warn, incarnation: randomUUID(), slots: options.loops ?? RUNNER_LOOPS });
     // Its relay (dial-relay.ts), where its environment names the server's public address: a machine that dials the
     // server lands in this runner's hub, through the server. Its log lines are the runner's warnings.
     relay = await startRunnerRelay({ store, sealKey: seal.key, runner: name, presence, env, log: warn });
@@ -656,6 +658,9 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
         if (event.type === "error") return void console.error(troubleLine(runnerOf, event));
         const line = said(runnerOf, event);
         if (line) console.log(line);
+        // Its metric line beside it (runner-metrics.ts): claims, hand-backs by cause, the drain.
+        const metric = metricLine(runnerOf, event);
+        if (metric) console.log(metric);
       },
     });
   } catch (error) {
@@ -671,15 +676,21 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
     await started.close();
     return 0;
   }
+  // Its gauge (runner-metrics.ts): the runs it holds of its loops, and its process's memory, every minute until its stop.
+  const gauge = startRunnerGauge({ runner: started.runner.name, held: () => started.runner.held().length, slots: holds.loops, write: (line) => console.log(line) });
   // Ready is said once SIGTERM and SIGINT are handled, so a stop sent on reading it always closes the runner.
   // Then its memory budget, a line of its own (the ready line's shape is read by deploy checks): what a container's limit
   // gave it is seen where it runs.
-  const outdated = await runUntilSignalled(started, RUNNER_SIGNALS, () => {
-    console.log(`Runner ${started.runner.name} ready: store ${started.store.kind} schema v${started.store.schema}, ${holds.loops} loops`);
-    console.log(`Runner ${started.runner.name} memory: ${started.memoryMib} MiB for runs, each weighed by its harness`);
-  }, (why) => console.error(`agentrun-serve runner: Runner ${started.runner.name} stops claiming and hands its runs back: ${why}. Run a runner of the server's release.`));
-  // Past the floor: non-zero, so its platform starts a runner of the new release in its place.
-  return outdated === undefined ? 0 : 3;
+  try {
+    const outdated = await runUntilSignalled(started, RUNNER_SIGNALS, () => {
+      console.log(`Runner ${started.runner.name} ready: store ${started.store.kind} schema v${started.store.schema}, ${holds.loops} loops`);
+      console.log(`Runner ${started.runner.name} memory: ${started.memoryMib} MiB for runs, each weighed by its harness`);
+    }, (why) => console.error(`agentrun-serve runner: Runner ${started.runner.name} stops claiming and hands its runs back: ${why}. Run a runner of the server's release.`));
+    // Past the floor: non-zero, so its platform starts a runner of the new release in its place.
+    return outdated === undefined ? 0 : 3;
+  } finally {
+    gauge.stop();
+  }
 }
 
 /** The signals that stop a runner process. */
