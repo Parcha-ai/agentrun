@@ -591,6 +591,7 @@ __all__ = [
     "ListComputersResponseKindsItemProvidersItemGpuPerGpu",
     "ListComputersResponseKindsItemProvidersItemPersistent",
     "ListComputersResponseKindsItemProvidersItemSecretsItem",
+    "ListComputersResponseKindsItemRecord",
     "ListComputersResponsePairedItem",
     "ListComputersResponsePairedItemDevice",
     "ListComputersResponsePairedItemFeaturesValue",
@@ -4255,6 +4256,7 @@ class _ListComputersResponseKindsItemRequired(TypedDict):
     groups: list[str]
     tools: list[str]
     settings: list[str]
+    record: ListComputersResponseKindsItemRecord
     providers: list[ListComputersResponseKindsItemProvidersItem]
 
 
@@ -4263,6 +4265,14 @@ class ListComputersResponseKindsItem(_ListComputersResponseKindsItemRequired, to
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
     shell_note: str
+
+
+class _ListComputersResponseKindsItemRecordRequired(TypedDict):
+    available: bool
+
+
+class ListComputersResponseKindsItemRecord(_ListComputersResponseKindsItemRecordRequired, total=False):
+    why: str
 
 
 class _ListComputersResponseKindsItemProvidersItemRequired(TypedDict):

@@ -95,6 +95,21 @@ const OPTIONAL: Readonly<Record<string, { readonly kinds?: readonly ComputerKind
 export const kindSettings = (kind: ComputerKind): string[] =>
   kind === "none" ? [] : Object.entries(OPTIONAL).filter(([, { kinds }]) => kinds === undefined || kinds.includes(kind)).map(([key]) => key);
 
+/** Whether a run of a kind can record its screen on this server (GET /v2/computers' `record`), and why not, in words. */
+export type RecordView = { available: boolean; why?: string };
+
+/** Whether a run of `kind` can record its screen here: the kind takes record (OPTIONAL's record.kinds) and ffmpeg is on
+ *  `path` (recorderMissing, the server's PATH now when absent), as a save of record: true is checked. */
+export function recordOf(kind: ComputerKind, path: string | undefined = process.env.PATH): RecordView {
+  const kinds = OPTIONAL.record!.kinds!;
+  if (!kinds.includes(kind)) {
+    const recorders = kinds.map((one) => `a ${one}`);
+    return { available: false, why: kind === "none" ? "with no computer, there is no screen to record" : `a ${kind} has no screen to record (${recorders.slice(0, -1).join(", ")} or ${recorders.at(-1)} does)` };
+  }
+  const missing = recorderMissing(path);
+  return missing ? { available: false, why: missing } : { available: true };
+}
+
 /** A place as the v2 API names it. */
 export type PlaceView = { mode: "runner" } | { mode: "sandbox"; box: string };
 

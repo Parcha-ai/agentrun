@@ -1110,6 +1110,13 @@ const COMPUTERS_VIEW = closed({
       groups: { type: "array", items: { type: "string" }, description: "The capability groups the kind needs, then those it brings when a provider declares them." },
       tools: { type: "array", items: { type: "string" }, description: "The model's tools the kind brings, by name." },
       settings: { type: "array", items: { type: "string" }, description: "The fields an agent's computer of this kind may set beside its kind and provider; none for kind none. Whether a provider offers a value is its own (images, persistent, gpu)." },
+      record: {
+        ...closedWith(
+          { available: { type: "boolean", description: "Whether an agent's computer of this kind may set `record: true` here: the kind records (a desktop, a phone or a browser) and this server has ffmpeg on its PATH, read at each call." } },
+          { why: { type: "string", description: "Why not, in plain words: the kind has no screen to record, or this server has no ffmpeg. Absent when `available`." } },
+        ),
+        description: "Whether a run of this kind can record a video of its screen on this server (an agent's `computer.record`), and why not.",
+      },
       providers: { type: "array", items: COMPUTER_PROVIDER, description: "The providers that serve the kind." },
     }, {
       why: { type: "string", description: "Why it is not offered." },
