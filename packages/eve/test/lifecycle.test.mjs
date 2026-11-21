@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import mountExtension from '../dist/extension/extension.mjs';
 import { beginTurn, learningInstructions, submitTurn } from '../dist/extension/lib/lifecycle.mjs';
 
 function service({ definition, check } = {}) {
@@ -73,6 +74,15 @@ test('new agents keep configured loop numbers with or without workflow bindings;
       'A mount must never replace the owner setting with its initial-registration defaults.');
     assert.deepEqual(server.requests.find(row => row.path.endsWith('/sdk-runs')).body.workflow_tools.map(tool => tool.name), ['mcp:release/status']);
   }
+});
+
+test('the mounted learning setting carries agree_on into the agent the client registers', async () => {
+  const learning = { compile_after: 5, agree_on: ['mcc'] };
+  mountExtension({ baseUrl: 'https://agentrun.example/v2', apiKey: 'fake-test-key', agentId: 'eve-support', instructions: 'Keep existing tool permissions.', learning });
+  assert.deepEqual(mountExtension.config.learning, learning);
+  const server = service();
+  await beginTurn({ ...mountExtension.config, fetch: server.fetch, maxRetries: 0 }, source);
+  assert.deepEqual(server.requests.find(row => row.path === '/v2/agents').body.definition.learning, learning);
 });
 
 test('Learning Off never renders owner corrections', () => {
