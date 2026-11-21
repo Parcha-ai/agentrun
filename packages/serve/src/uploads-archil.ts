@@ -295,7 +295,7 @@ export const runKeepsUploads = (store: { runs: { get(runId: string): Promise<{ r
  *  uses uploads.ts. */
 export function archilUploads(options: ArchilUploadsOptions) {
   const { store, sealKey, env = {} } = options;
-  /** The uploads disk's id by the settings it was found under (its region and S3 URL), once found or made. */
+  /** The uploads disk's id by the settings it was found under (its region, S3 URL and account key), once found or made. */
   const disks = new Map<string, string>();
   /** Each uploads disk's per-file turns (WorkspaceUploads commits), by its id: one map for every request on it. */
   const turns = new Map<string, Map<string, Promise<unknown>>>();
@@ -328,7 +328,9 @@ export function archilUploads(options: ArchilUploadsOptions) {
   /** The uploads disk's id: found by its name, or made when `make` (the first upload); undefined when it is not there and
    *  not to be made. Archil's refusal is 424 in its words, the key scrubbed. */
   async function uploadsDiskId(settings: ArchilSettings, key: string, control: ArchilControlOptions, make: boolean): Promise<string | undefined> {
-    const at = `${settings.region} ${settings.s3Url}`;
+    // By the account too (a hash of its key, never the key): a key of another account in the same region has its own
+    // uploads disk, which is looked up again, never the old account's id.
+    const at = `${settings.region} ${settings.s3Url} ${createHash("sha256").update(key).digest("hex").slice(0, 16)}`;
     const known = disks.get(at);
     if (known !== undefined) return known;
     const name = uploadsDiskName(await serverIdOf(store));

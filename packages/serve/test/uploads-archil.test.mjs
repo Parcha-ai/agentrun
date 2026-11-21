@@ -21,6 +21,7 @@ import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const HOUR = 60 * 60_000;
 /** A fake Archil account key: the fake control plane takes any. */
+const OTHER_ARCHIL = "fake-test-key-archil-unit-02";
 const FAKE_ARCHIL = "fake-test-key-archil-unit-01";
 const DAY = 24 * HOUR;
 
@@ -149,8 +150,9 @@ async function mode2(t, { wrap = (disk) => disk, placeTimeoutMs } = {}) {
     return disks.get(id);
   };
   const control = archilControlFetch({ region: "aws-us-east-1" });
-  const files = archilUploads({ store, sealKey: undefined, env: { ARCHIL_API_KEY: FAKE_ARCHIL }, control: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: ({ disk }) => wrap(diskOf(disk)) }, ...(placeTimeoutMs ? { placeTimeoutMs } : {}) });
-  return { files, disks, store };
+  const env = { ARCHIL_API_KEY: FAKE_ARCHIL };
+  const files = archilUploads({ store, sealKey: undefined, env, control: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: ({ disk }) => wrap(diskOf(disk)) }, ...(placeTimeoutMs ? { placeTimeoutMs } : {}) });
+  return { files, disks, store, env, control };
 }
 
 test("two PUTs of one file in two requests take turns on the uploads disk: one makes it ready, the other's different bytes are a 422", async (t) => {
@@ -218,4 +220,16 @@ test("a copy that fails waits for every file already started before it answers",
   assert.ok(slowDone, "the slow file had settled before the copy answered");
   assert.ok(disk.files.has("run/work/inputs/slow.txt"), "its write landed before the answer, so a cleanup after sees it");
   assert.ok(!disk.files.has("run/work/inputs/never.txt"), "no file was started after the failure");
+});
+
+test("a key of another Archil account in the same region finds that account's uploads disk again, never the old account's cached one", async (t) => {
+  const { files, env, control } = await mode2(t);
+  await files.here(true);
+  const lookups = (key) => control.requests.filter((one) => one.method === "GET" && one.path === "/api/disks" && one.authorization === `Bearer ${key}`).length;
+  assert.equal(lookups(FAKE_ARCHIL), 1, "the first upload looked the disk up with the key it had");
+  await files.here(false);
+  assert.equal(lookups(FAKE_ARCHIL), 1, "the same key reads the disk it found");
+  env.ARCHIL_API_KEY = OTHER_ARCHIL;
+  await files.here(true);
+  assert.equal(lookups(OTHER_ARCHIL), 1, "the other account's key looks its own uploads disk up");
 });
