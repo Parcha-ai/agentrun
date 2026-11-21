@@ -10,5 +10,8 @@ credentials stay at the source, and unsupported capabilities remain named prereq
 [source sync](../docs/source-sync.md) for compatibility and recovery behavior. Automatic notes and learned skills
 remain retired; authored source skills retain their files and modes.
 
+MCP-connected setups remain blocked from Move even after account binding. Live acceptance covers supported
+no-MCP configurations and project continuity across a harness switch, not general native-tool portability.
+
 Unknown source storage-write outcomes retain receipts and block deletion until independently resolved; restarting
 or acknowledging a run checkpoint does not clear a source write receipt.

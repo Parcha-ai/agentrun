@@ -70,7 +70,12 @@ claims the run, before changing file ownership. Separate Archil project storage 
 step, but still requires its own verified placement and capture capabilities.
 
 Source OAuth credentials remain at the source. HTTP tool accounts require explicit destination binding; a stdio
-tool needs a verified destination equivalent. Aliased or unresolved models are not guessed. Authored skills include
+tool needs a verified destination equivalent. Currently, MCP-connected Codex and Claude Code setups cannot complete
+Move even after account binding: native MCP resource and tool-selection behavior still needs a verified equivalent.
+Live acceptance covers explicit no-MCP configurations, including saved project continuity after a harness switch;
+it does not establish general native-tool portability or live Archil compatibility.
+
+Aliased or unresolved models are not guessed. Authored skills include
 their actual scripts, binary assets and executable modes; automatically learned notes and skills remain retired.
 Owner corrections and checked workflows follow the current learning model. Auxiliary audit/replay runs that need
 their own moved-project placement are refused until that placement is supported. New audit/replay promotion checks
