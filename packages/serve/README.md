@@ -3389,16 +3389,18 @@ stays in every total.
 - On disk. On both stores the purge deletes or blanks the rows above; what the database files keep differs.
   - **SQLite:** every store connection writes with `secure_delete` on, which zeroes the bytes a write frees, and a run's
     or an agent's purge checkpoints the WAL once it commits. So the purged content is in neither `store.sqlite` nor
-    its `-wal` after the `DELETE`. A checkpoint another connection holds back is retried once, then logged, and the
-    next purge's checkpoint or the server's stop clears it. Copies outside the file are out of scope: backups,
-    snapshots, the filesystem's own journal.
+    its `-wal` after the `DELETE`. A checkpoint another connection holds back leaves the store's scrub marker
+    (`store.sqlite.scrub`), and the next start's scrub truncates the log before it serves, a crash in between
+    included. Copies outside the file are out of scope: backups, snapshots, the filesystem's own journal.
   - **PostgreSQL** (not closed): a purged row's old version stays in its table as a dead tuple. `VACUUM` (or
     autovacuum, on its schedule) only marks its space reusable; the bytes stay in the data file until a later write
     overwrites them. `VACUUM FULL` rewrites the table into a new file (under an exclusive lock), and the old file's
     blocks go back to the filesystem unwiped. Postgres's own WAL and its archived WAL keep the old values until they are
     recycled or expire, and backups keep them for their retention.
-- Its agent's other runs and what the agent learned are kept: a promotion record and the learning folder's history
-  may still name the run's id.
+- Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id. The
+  agent's learning folder keeps what the run taught it: its merge's diff (`.agentrun/diffs/<run>.json`, with its
+  patches) and any feedback line it added to `corrections.md`, in the folder's history too. The run's purge removes
+  neither; the agent's purge (below) removes the whole folder.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`.
 

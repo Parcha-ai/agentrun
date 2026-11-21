@@ -6840,6 +6840,7 @@ class _ApplyTemplateResponseRequired(TypedDict):
     template: str
     version: str
     agent_id: str
+    revision_version: int
     servers: dict[str, str | None]
     trigger_ids: list[str]
     warnings: list[InputIssue]

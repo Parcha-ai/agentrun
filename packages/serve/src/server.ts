@@ -433,6 +433,10 @@ export type ServeOptions = {
   /** A test's seam: awaited at each step's point of DELETE /agents/{id} and DELETE /runs/{id} (agent-delete.ts
    *  AgentDeleteStep), with the agent's id or the run's, so a throw there stops the delete as a crash would. */
   agentDeleteAt?: (step: AgentDeleteStep, id: string) => void | Promise<void>;
+  /** A test's seam: told each time a request waits in an agent's delete turn behind another (agent-delete.ts oneAtATime),
+   *  with the agent's id and how many of its requests wait there now, so a test knows a write sent while a DELETE is
+   *  held is queued behind it before it lets the DELETE go. */
+  deleteTurnQueued?: (agentId: string, waiting: number) => void;
   /** A test's seam: awaited with a request's path and answer once its work under an Idempotency-Key is done, before the
    *  answer is kept, so a test can hold a request there while a DELETE /agents/{id} runs. */
   beforeKeep?: (path: string, answer: unknown) => void | Promise<void>;
@@ -605,7 +609,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs$/, name: "createInlineRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },
   { method: "PATCH", pattern: /^\/runs\/([^/]+)$/, name: "raiseRunCap" },
-  // A final run deleted whole, with the runs made from it (agent-delete.ts deleteRun).
+  // A run purged, its cost kept, with the runs made from it (agent-delete.ts purgeRun).
   { method: "DELETE", pattern: /^\/runs\/([^/]+)$/, name: "deleteRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/timeline$/, name: "getTimeline" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/messages$/, name: "sendMessage" },
@@ -2424,7 +2428,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (const [slot, one] of idempotency) if (namesForgotten(kind, id, slot.slice(0, slot.indexOf("\n")), one.answer?.body)) idempotency.delete(slot);
     await keep();
   };
-  const deleteInTurn = oneAtATime();
+  const deleteInTurn = oneAtATime(options.deleteTurnQueued);
   /** `work`, a write to agent `id`'s home or learning (files a delete removes with the agent's folders, settings it leaves
    *  to deleteLearning, answers kept under its path), done in the agent's delete turn, the agent read there: a write sent
    *  while a DELETE runs waits for it, then finds the agent gone (404) or still being deleted (409 agent_not_runnable),
@@ -3219,7 +3223,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
     // Which saved server each MCP need runs on (null: none here, said under mcp.<toolkit>).
     const used = Object.fromEntries(mapped.map(({ need, server }) => [need.toolkit, server]));
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_version: entry.version, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
     return { applied, minted, updated: onto !== undefined };
   }
 
