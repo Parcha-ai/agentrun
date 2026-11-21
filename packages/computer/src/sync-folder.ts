@@ -4,10 +4,12 @@
 // bytes that changed. Directories, modes and links come from the listing alone, with no bytes.
 //
 // Known miss: a write that leaves a file's size and mtime both as they were (`touch -d`, `cp -p` onto a file of the same
-// size) is not seen. A same-size rewrite within the same millisecond is, by the racy rule (git's): a file whose mtime is
-// within 1 s of the newest in its listing is pulled again at the first sync at least 1 s later. Bytes read that are the
-// ones last put there (that re-read, a touch) are not put again. While a directory the computer's user can't read hides
-// what the sink holds under it (files.list lists one without what it holds), a sync writes nothing and fails in words.
+// size, a pushed file among them) is not seen. A same-size rewrite in the push's own clock tick is: the push gives every
+// file PUSHED_MTIME, a time no clock gives a later write, so any write moves it. A same-size rewrite within the same
+// millisecond as a sync's listing is too, by the racy rule (git's): a file whose mtime is within 1 s of the newest in its
+// listing is pulled again at the first sync at least 1 s later. Bytes read that are the ones last put there (that
+// re-read, a touch) are not put again. While a directory the computer's user can't read hides what the sink holds under
+// it (files.list lists one without what it holds), a sync writes nothing and fails in words.
 import { createHash } from "node:crypto";
 import { pullTarStream } from "./files.js";
 import { WORKSPACE } from "./mount.js";
@@ -23,6 +25,13 @@ export const SYNC_MAX_BYTES = 2 * 1024 ** 3;
 const IN_FLIGHT = 8;
 /** A file whose mtime is within this of the newest in its listing may be rewritten unseen in the same millisecond. */
 const RACY_MS = 1000;
+/**
+ * The mtime (whole seconds) a push into a synced folder gives each file, in its tar header, which computerd's extraction
+ * keeps: 2000-01-01T00:00:00Z. Older than any reading of the computer's clock, so a write after the push, even in its
+ * own clock tick, never leaves a file at it, and the newest mtime in a listing that holds such a write is still one of
+ * the computer's clock, as the racy rule needs. Not 1970: a zip of the folder can't hold a time before 1980.
+ */
+export const PUSHED_MTIME = 946_684_800;
 const TOO_MANY = `the run's folder holds more than ${SYNC_MAX_ENTRIES} entries, the most a synced folder holds`;
 const FILE_MODE = 0o644;
 const DIR_MODE = 0o755;
@@ -165,8 +174,9 @@ export class FolderSync {
 	}
 
 	/**
-	 * The manifest of a folder just pushed from the sink, read, never guessed (extraction sets no mtime): what it lists is
-	 * what the sink holds, so nothing is pulled. Over a cap, it fails, kind limit.
+	 * The manifest of a folder just pushed from the sink, each file at PUSHED_MTIME, read, never guessed: what it lists is
+	 * what the sink holds, so nothing is pulled, and a later write moves a file's mtime off the one it lists. Over a cap,
+	 * it fails, kind limit.
 	 */
 	async baseline(options: { signal?: AbortSignal } = {}): Promise<Result<void>> {
 		const listed = await this.#list(options.signal);

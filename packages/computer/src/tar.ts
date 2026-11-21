@@ -8,6 +8,8 @@ export interface TarEntry {
 	mode: number;
 	body?: Uint8Array;
 	link?: string;
+	/** The mtime its header carries, in whole seconds since the epoch; now where none is given. untar leaves it out. */
+	mtime?: number;
 }
 
 const BLOCK = 512;
@@ -15,7 +17,7 @@ const END = Buffer.alloc(2 * BLOCK);
 const TYPE_FLAG = { file: "0", dir: "5", symlink: "2", other: "0" } as const;
 const pad = (length: number) => Buffer.alloc((BLOCK - (length % BLOCK)) % BLOCK);
 
-function header(name: string, type: string, mode: number, size: number, link: string): Buffer {
+function header(name: string, type: string, mode: number, size: number, link: string, mtime = Math.floor(Date.now() / 1000)): Buffer {
 	const block = Buffer.alloc(BLOCK);
 	const field = (at: number, length: number, value: string) => block.write(value, at, length, "utf8");
 	const octal = (value: number, width: number) => `${value.toString(8).padStart(width - 1, "0")}\0`;
@@ -24,7 +26,7 @@ function header(name: string, type: string, mode: number, size: number, link: st
 	field(108, 8, octal(0, 8));
 	field(116, 8, octal(0, 8));
 	field(124, 12, octal(size, 12));
-	field(136, 12, octal(Math.floor(Date.now() / 1000), 12));
+	field(136, 12, octal(mtime, 12));
 	field(148, 8, "        ");
 	field(156, 1, type);
 	field(157, 100, link);
@@ -54,7 +56,7 @@ export function tarEntry(entry: TarEntry): Buffer[] {
 		const pax = Buffer.from(records);
 		blocks.push(header("././@PaxHeader", "x", 0o644, pax.length, ""), pax, pad(pax.length));
 	}
-	blocks.push(header(entry.name, TYPE_FLAG[entry.type], entry.mode, body.length, link), body, pad(body.length));
+	blocks.push(header(entry.name, TYPE_FLAG[entry.type], entry.mode, body.length, link, entry.mtime), body, pad(body.length));
 	return blocks;
 }
 
