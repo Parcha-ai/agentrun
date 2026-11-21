@@ -48,9 +48,10 @@ test("a run's fal job: a Tool cost row, tools_usd and a /usage tools line at fal
 });
 
 /** A run whose one script sends a flux/schnell job asked at 1000x1000 (1 megapixel at $0.50, its hold) that states a
- *  1008x1008 image (2 megapixels, $1), then a call that costs nothing, under a cap of `cap`. */
-async function overHold(t, cap) {
-  const { api } = await serve(t, { faux: FAUX });
+ *  1008x1008 image (2 megapixels, $1), then a call that costs nothing, under a cap of `cap`. `childRuns`: the run in a
+ *  process of its own, its MCP the runner's (run-child-host.ts heldFor), as the CLI's start runs it. */
+async function overHold(t, cap, { childRuns } = {}) {
+  const { api } = await serve(t, { faux: FAUX, ...(childRuns ? { childRuns } : {}) });
   const fake = await startFakeMcp({});
   t.after(() => fake.close());
   fake.tools.get_pricing = { description: "fal's price for an endpoint.", input: { type: "object", properties: { endpoint_id: { type: "string" } }, required: ["endpoint_id"], additionalProperties: false }, run: ({ endpoint_id }) => ({ content: [{ type: "text", text: JSON.stringify({ prices: [{ endpoint_id, unit_price: 0.5, unit: "megapixels", currency: "USD" }], next_cursor: null, has_more: false }) }] }) };
@@ -76,6 +77,14 @@ test("a fal job whose output states more than its input asked is booked at what 
   assert.equal(called("get_model_schema"), 0, "nothing ran after the job that passed the cap");
   const costs = rows.filter((row) => row.kind === "phase" && /^Tool cost:/.test(row.summary ?? ""));
   assert.deepEqual(costs.map((row) => row.usage?.usd), [1], "booked at the 2 megapixels its output states, never the 1 it was held at");
+  assert.equal(view.cost.tools_usd, 1);
+  assert.deepEqual([view.status, view.error?.code, view.error?.message], ["failed", "spend_cap_reached", "The run cost $1, $0.01 over its cap of $1."], "ended in the cap's words");
+});
+
+test("in a run's own process, a fal job its runner sends and settles past the run's cap stops the run at once too", { timeout: 120_000 }, async (t) => {
+  const { view, called } = await overHold(t, 1, { childRuns: {} });
+  assert.equal(called("run_model"), 1, "the job was sent once");
+  assert.equal(called("get_model_schema"), 0, "nothing ran after the job that passed the cap");
   assert.equal(view.cost.tools_usd, 1);
   assert.deepEqual([view.status, view.error?.code, view.error?.message], ["failed", "spend_cap_reached", "The run cost $1, $0.01 over its cap of $1."], "ended in the cap's words");
 });
