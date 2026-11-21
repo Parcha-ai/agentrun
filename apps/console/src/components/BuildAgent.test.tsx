@@ -119,6 +119,13 @@ describe("Build agent page", () => {
     });
     searchFor("CUSTOM");
     expect(host.querySelectorAll("article")).toHaveLength(2);
+    // Each word typed, in any order, as the console's other filters match.
+    const titles = () => [...host.querySelectorAll("article")].map((a) => a.textContent);
+    searchFor("custom agent");
+    const phrase = titles();
+    expect(phrase.length).toBeGreaterThan(0);
+    searchFor("agent custom");
+    expect(titles()).toEqual(phrase);
     searchFor("No such template");
     expect(host.textContent).toContain("No templates match");
     searchFor("");

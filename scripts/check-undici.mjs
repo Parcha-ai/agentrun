@@ -3,10 +3,10 @@
 // or 8.12.2, nothing before 6, and any 9 or later. The disk SDK before 1.12.0 and @earendil-works/pi-coding-agent before
 // 1.5.0 pinned undici 8.10.2 exactly; neither does now, but a lock refresh or a package arriving under another parent
 // could bring a pinned copy back unseen (verify-packages audits a clean consumer, not this install). Exits 1 naming each such copy by its path. On a Node too old to tell it is the command, it refuses (is-main.mjs).
-import { spawnSync } from 'node:child_process';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
+import { npmSpawnSync } from './npm-command.mjs';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -36,7 +36,7 @@ export function staleUndici(tree) {
 }
 
 if (isMain(import.meta)) {
-  const ls = spawnSync('npm', ['ls', 'undici', '--all', '--json'], { cwd: repo, encoding: 'utf8', maxBuffer: 64 << 20 });
+  const ls = npmSpawnSync(['ls', 'undici', '--all', '--json'], { cwd: repo, encoding: 'utf8', maxBuffer: 64 << 20 });
   if (!ls.stdout) {
     console.error(`npm ls printed no tree (exit ${ls.status}): ${ls.stderr || ls.error}`);
     process.exit(1);

@@ -426,13 +426,15 @@ test("an agent's stored Archil disk with Archil off keeps the delete from finish
   assert.equal(await store.settings.get(agentDiskKey(agentId)), undefined);
 });
 
-/** Run `runId`'s launch record naming disk `diskId` as the caller's, as POST /runs with `archil_disk` records it
- *  (run-launch.ts: archil_disk { disk_id, kind: "launch" }), written into the store's file. */
+/** Run `runId`'s launch record naming disk `diskId` as the caller's, and the run's disk with it, as POST /runs with
+ *  `archil_disk` records them (run-launch.ts: archil_disk { disk_id, kind: "launch" }; runs.disk), written into the
+ *  store's file. */
 function launchOnDisk(data, runId, diskId) {
   const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
   try {
     const changed = db.prepare("UPDATE run_launch SET body = json_set(body, '$.archil_disk', json(?)) WHERE run_id = ?").run(JSON.stringify({ disk_id: diskId, kind: "launch" }), runId);
     assert.equal(Number(changed.changes), 1, "the run's launch record names the disk");
+    assert.equal(Number(db.prepare("UPDATE runs SET disk = ? WHERE id = ?").run(diskId, runId).changes), 1, "and the run its disk");
   } finally {
     db.close();
   }
@@ -453,8 +455,9 @@ test("a run's folder on the Archil disk its launch named (the caller's) is delet
   // What the run wrote there (its work folder and its exec spill folder, runKey's and spillFolderOf's), beside what is the
   // caller's own and another agent's run.
   const own = `agents/${agentDir(agentId)}`;
-  const its = [`${own}/runs/${runId}/work/notes.md`, `${own}/runs/${runId}/work/deep/out.json`, `${own}/runs/${runId}/exec-out/spill.txt`];
-  const theirs = ["shared/customers.csv", `agents/${agentDir("another-agent")}/runs/run-other/work/kept.md`];
+  // Its learning folder there too (learningKey): a Mode 2 run's end writes the agent's learning on the run's disk.
+  const its = [`${own}/runs/${runId}/work/notes.md`, `${own}/runs/${runId}/work/deep/out.json`, `${own}/runs/${runId}/exec-out/spill.txt`, `${own}/learning/corrections.md`, `${own}/learning/.git/HEAD`];
+  const theirs = ["shared/customers.csv", `agents/${agentDir("another-agent")}/runs/run-other/work/kept.md`, `agents/${agentDir("another-agent")}/learning/corrections.md`];
   for (const key of [...its, ...theirs]) await disk.putObject(key, Buffer.from("bytes"));
 
   // A computer still holds the run's work folder (Archil's write delegation): its files can't be deleted there yet.

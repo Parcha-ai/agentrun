@@ -128,7 +128,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   // pin's arguments sorted) so two revisions that say the same are one body. The store never reimplements it.
   const set = toolSettingsOf(definition.tool_settings);
   const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...set };
-  const capped = typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {};
+  const capped = { ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}), ...(typeof definition.max_requests === "number" && definition.max_requests > 0 ? { maxRequests: definition.max_requests } : {}) };
   // A workflow keeps its approvals too ("never": it runs unattended), so its call nodes are checked with them (runnable.ts,
   // permissionOf with the revision's approvals): a call node on a tool set to ask runs under never, as on main.
   if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...(definition.approvals === "never" ? { approvals: "never" as const } : {}), ...common, ...capped };
@@ -380,6 +380,8 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals),
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
+        // So does its limit on each run's free-model requests (0 clears it): leaving a field out never removes a limit.
+        ...(definition.max_requests === undefined && currentBody.maxRequests !== undefined ? { max_requests: currentBody.maxRequests } : {}),
         // Its input's and its structured answer's schemas are the agent's contract with its callers: an edit that leaves
         // one out keeps it.
         ...(definition.input_schema === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).inputSchema !== undefined ? { input_schema: (currentBody as AgenticBody).inputSchema } : {}),
@@ -428,7 +430,7 @@ export const etagOf = (entry: AgentEntry) => `"${entry.revision?.id ?? "none"}"`
 /** A revision as a definition, as POST /agents takes one, numbered. */
 export function definitionOf(agent: AgentRow, revision: RevisionRow, version: number): Json {
   const body = revision.body as Body;
-  const common = body.maxCostUsd !== undefined ? { max_cost_usd: body.maxCostUsd } : {};
+  const common = { ...(body.maxCostUsd !== undefined ? { max_cost_usd: body.maxCostUsd } : {}), ...(body.maxRequests !== undefined ? { max_requests: body.maxRequests } : {}) };
   const kindBody = revision.kind === "agentic"
     ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...(learningSettingForBody(body) !== undefined ? { learning: learningSettingForBody(body) } : {}), ...((body as AgenticBody).inputSchema !== undefined ? { input_schema: (body as AgenticBody).inputSchema } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };

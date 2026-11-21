@@ -24,7 +24,7 @@ export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "input_schema", "output_schema", "checkout", "native", "sdk", "cli_learning"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "max_requests", "input_schema", "output_schema", "checkout", "native", "sdk", "cli_learning"];
 /** What an agentic definition may ask the server to check out in each run's folder before its first turn
  *  (runner/pr-checkout.ts): `pull_request`, the pull request the run's GitHub event names, at its head, read-only, in
  *  `repo/`; `none` clears it on an edit. */
@@ -150,6 +150,9 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.max_cost_usd !== undefined) {
     if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd >= 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number of at least 0, in US dollars: above 0 sets the agent's default cap, 0 clears it`));
   }
+  // The agent's own limit on each run's requests on free models, under the server's (AGENTRUN_FREE_MODEL_REQUESTS, which
+  // wins when lower): above 0 sets it, 0 clears it, and an edit that leaves it out keeps the agent's (agents-store.ts).
+  if (d.max_requests !== undefined && !(typeof d.max_requests === "number" && Number.isSafeInteger(d.max_requests) && d.max_requests >= 0)) out.push(issue(`${at}.max_requests`, "wrong_type", `${at}.max_requests is a whole number of at least 0: above 0 sets the most requests on free models each run makes (the server's own limit holds when it is lower), 0 clears it`));
   // The server's checkout before each run's first turn: kept by an edit that leaves it out, cleared by `none`.
   if (d.checkout !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.checkout`, "not_allowed", "A workflow revision keeps no checkout: only an agentic run starts in a checkout.", `Remove ${at}.checkout.`));

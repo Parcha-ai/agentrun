@@ -15,7 +15,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { stopRunWith } from "../paid-calls.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
-import { type CapModel, type CapRefused, checkRaise, followUpOf, freeModelRequestsOf, parkOf, planCapModel } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapModel, type CapRefused, checkRaise, followUpOf, freeRequestLimitOf, parkOf, planCapModel } from "@parcha/agentrun-kernel/kernel/cap";
 import { inspectWorkflow, type Workflow } from "@parcha/agentrun-dsl";
 import type { AdapterFacts, BeforeRequest, HostTool, NestedCalls, Refusal, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import { factsOf } from "../harness-table.js";
@@ -318,6 +318,8 @@ type RevisionBody = {
   readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>;
   /** The JSON Schema its final answer's last json block meets (definition.output_schema), absent for none. */
   readonly outputSchema?: unknown;
+  /** The agent's own limit on the run's requests on free models (definition.max_requests), under the server's. */
+  readonly maxRequests?: number;
   /** The agent's computer setting, or its place (computer-setting.ts settingOfDefinition): the run's computer kind. */
   readonly computer?: unknown;
   readonly place?: unknown;
@@ -702,8 +704,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     },
     // What its audit's shadow took beside it, read by every gate with its own sessions (none: it starts none).
     ...(besideOf ? { beside: besideOf } : {}),
-    // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
-    freeRequests: freeModelRequestsOf(deps.env),
+    // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS, or the agent's lower max_requests).
+    freeRequests: freeRequestLimitOf(deps.env, body.maxRequests),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
   // has a cap. A park names the cap the loop holds the run to then (a raise's, else this one).

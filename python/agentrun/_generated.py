@@ -591,6 +591,7 @@ __all__ = [
     "ListComputersResponseKindsItemProvidersItemGpuPerGpu",
     "ListComputersResponseKindsItemProvidersItemPersistent",
     "ListComputersResponseKindsItemProvidersItemSecretsItem",
+    "ListComputersResponseKindsItemRecord",
     "ListComputersResponsePairedItem",
     "ListComputersResponsePairedItemDevice",
     "ListComputersResponsePairedItemFeaturesValue",
@@ -1199,6 +1200,7 @@ class Definition(_DefinitionRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: bool | DefinitionLearning
     checkout: Literal["pull_request", "none"]
+    max_requests: int
 
 
 JsonObject: TypeAlias = "dict[str, Any]"
@@ -1701,6 +1703,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: bool | DefinitionInputLearning
     checkout: Literal["pull_request", "none"]
+    max_requests: int
 
 
 class DefinitionInputCliLearning(TypedDict):
@@ -2829,7 +2832,7 @@ class RunErrorDetails(TypedDict):
 
 class _RunSummaryLearningRequired(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
 
 
@@ -4255,6 +4258,7 @@ class _ListComputersResponseKindsItemRequired(TypedDict):
     groups: list[str]
     tools: list[str]
     settings: list[str]
+    record: ListComputersResponseKindsItemRecord
     providers: list[ListComputersResponseKindsItemProvidersItem]
 
 
@@ -4263,6 +4267,14 @@ class ListComputersResponseKindsItem(_ListComputersResponseKindsItemRequired, to
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
     shell_note: str
+
+
+class _ListComputersResponseKindsItemRecordRequired(TypedDict):
+    available: bool
+
+
+class ListComputersResponseKindsItemRecord(_ListComputersResponseKindsItemRecordRequired, total=False):
+    why: str
 
 
 class _ListComputersResponseKindsItemProvidersItemRequired(TypedDict):
@@ -5648,7 +5660,7 @@ class RunComputerHeld(_RunComputerHeldRequired, total=False):
 
 class _RunLearningRequired(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
     at: str
 
@@ -5917,7 +5929,7 @@ GetRunLearningResponse: TypeAlias = "GetRunLearningResponseObject | None"
 class _GetRunLearningResponseObjectRequired(TypedDict):
     run: str
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
     at: str
     seed: str | None
@@ -6260,7 +6272,7 @@ class TimelineRowComputerCallsItemStepsItemOn(_TimelineRowComputerCallsItemSteps
 
 class TimelineRowLearning(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
 
 
@@ -7438,8 +7450,12 @@ class ImportTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
 
 
-class ImportTemplateResponseTemplateBudget(TypedDict):
+class _ImportTemplateResponseTemplateBudgetRequired(TypedDict):
     per_run_usd: float
+
+
+class ImportTemplateResponseTemplateBudget(_ImportTemplateResponseTemplateBudgetRequired, total=False):
+    max_requests: int
 
 
 class ListTemplatesResponse(TypedDict):
@@ -7559,8 +7575,12 @@ class ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
 
 
-class ListTemplatesResponseTemplatesItemBudget(TypedDict):
+class _ListTemplatesResponseTemplatesItemBudgetRequired(TypedDict):
     per_run_usd: float
+
+
+class ListTemplatesResponseTemplatesItemBudget(_ListTemplatesResponseTemplatesItemBudgetRequired, total=False):
+    max_requests: int
 
 
 class ListToolKeysResponse(TypedDict):
@@ -9681,6 +9701,7 @@ OPERATIONS: dict[str, Operation] = {
     "listLearningLog": Operation(method="GET", path="/agents/{agent_id}/learning/log", path_params=("agent_id",), multi_segment=(), query=("cursor", "limit"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "readLearningFile": Operation(method="GET", path="/agents/{agent_id}/learning/files/{file}", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=(), body=None, answer="json+text", secret=False, public_fields=(), tagged=True),
     "getLearnedWorkflowReplay": Operation(method="GET", path="/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}", path_params=("agent_id", "name", "digest", "replay_id"), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteAgentLearning": Operation(method="DELETE", path="/agents/{agent_id}/learning", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "retireLearningFile": Operation(method="POST", path="/agents/{agent_id}/learning/files/{file}/retire", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=("If-Match",), body=None, answer="text", secret=False, public_fields=(), tagged=True),
     "listLearnedWorkflowRevisions": Operation(method="GET", path="/agents/{agent_id}/learning/workflows/{name}/revisions", path_params=("agent_id", "name"), multi_segment=(), query=("limit",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putLearningCorrections": Operation(method="PUT", path="/agents/{agent_id}/learning/corrections", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="json", secret=False, public_fields=(), tagged=True),
@@ -10044,6 +10065,10 @@ class LearningResource(Group):
     def replay(self, agent_id: str, name: str, digest: str, replay_id: str, *, timeout: float | None = None) -> GetLearnedWorkflowReplayResponse:
         """Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
         return self._call("getLearnedWorkflowReplay", (agent_id, name, digest, replay_id), None, None, timeout=timeout)
+
+    def reset(self, agent_id: str, *, timeout: float | None = None) -> None:
+        """Reset the agent's learning: everything it learned deleted, the agent and its runs kept (DELETE /agents/{agent_id}/learning)."""
+        return self._call("deleteAgentLearning", (agent_id,), None, None, timeout=timeout)
 
     def retire(self, agent_id: str, file: str, *, if_match: str | None = None, timeout: float | None = None) -> Tagged[str]:
         """Retire a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire)."""
