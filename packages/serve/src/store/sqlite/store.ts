@@ -629,7 +629,7 @@ class SqliteStore implements Store {
   readonly #released = new Map<string, number>();
   /** secureRewrite's marker (SCRUB_SUFFIX): set on a SQLite store with a file, never on a snapshot. */
   readonly #scrubMarker: string | undefined;
-  /** How many times a purge left the marker (#purged). The marker has two owners: secureRewrite removes it only when no
+  /** How many times a purge left the marker (#purged), or a retried purge found it there (purgeScrub). The marker has two owners: secureRewrite removes it only when no
    *  purge left it since the step that covers that purge's log (its own start, or the checkpoint it asked), so a marker a
    *  purge left is never removed without a checkpoint that truncated the purge's frames. */
   #purgeMarks = 0;
@@ -2260,7 +2260,8 @@ class SqliteStore implements Store {
    *  request of the store's one connection queues behind it (the purge already committed). One it held back (or that
    *  failed) leaves secureRewrite's marker, so the next start's scrub truncates the log, a crash between included. A marker
    *  that cannot be written (a full disk) throws, the purge committed: its caller answers it as the fault it is (a 500 the
-   *  server logs), and drops what it served of the purged run all the same (agent-delete.ts purgeOneOrRefuse). */
+   *  server logs), and drops what it served of the purged run all the same (agent-delete.ts purgeOneOrRefuse); the
+   *  client's retry finds the row purged and runs this again through purgeScrub. */
   async #purged(): Promise<void> {
     const marker = this.#scrubMarker;
     const db = this.#db;
@@ -2273,6 +2274,15 @@ class SqliteStore implements Store {
     } catch (error) {
       throw new Error(`The purge committed, but its WAL checkpoint was held back and the scrub's marker could not be written (${(error as Error).message}): the log may keep the purged bytes until a later checkpoint truncates it.`, { cause: error });
     }
+  }
+
+  async purgeScrub(): Promise<void> {
+    const marker = this.#scrubMarker;
+    if (marker === undefined) return;
+    // A marker there may be a rewrite's, under way (secureRewrite): counted as one a purge left, so that rewrite keeps it
+    // unless a checkpoint asked after this truncates the log.
+    if (existsSync(marker)) return void this.#purgeMarks++;
+    await this.#purged();
   }
 
   async secureRewrite(work: () => Promise<number>, options: SecureRewriteOptions = {}): Promise<SecureRewrite> {
