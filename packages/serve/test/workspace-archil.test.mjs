@@ -814,7 +814,7 @@ test("archil-disk: a disk Archil does not have fails every SDK call naming the d
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
     const disk = archilDisk({ disk: "dsk-00000000000000aa", region: "aws-us-east-1", key: () => "loopback-dummy", baseUrl: base, s3BaseUrl: `${base}/` });
-    const missing = (error) => error.name === "ArchilDiskMissing" && error.status === undefined && /^the Archil disk dsk-00000000000000aa is not there in region aws-us-east-1: .*Disk not found/.test(error.message);
+    const missing = (error) => error.name === "ArchilDiskMissing" && error.status === undefined && error.disk === "dsk-00000000000000aa" && error.region === "aws-us-east-1" && error.message.includes("Disk not found");
     await assert.rejects(disk.listPage("agents/a/", { recursive: false }), missing);
     await assert.rejects(disk.putObject("agents/a/x", new Uint8Array(1)), missing);
     await assert.rejects(disk.appendObject("agents/a/x", new Uint8Array(1)), missing);
@@ -860,7 +860,7 @@ test("archil-disk: a disk removed at Archil after the seam's first call fails th
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
     const disk = archilDisk({ disk: id, region: "aws-us-east-1", key: () => "loopback-dummy", baseUrl: base, s3BaseUrl: `${base}/` });
-    const missing = (error) => error.name === "ArchilDiskMissing" && error.status === undefined && error.message.startsWith(`the Archil disk ${id} is not there in region aws-us-east-1: `) && error.message.includes("Disk not found");
+    const missing = (error) => error.name === "ArchilDiskMissing" && error.status === undefined && error.disk === id && error.region === "aws-us-east-1" && error.message.includes("Disk not found");
     const missingKey = (error) => error.name !== "ArchilDiskMissing" && error.status === 404;
     const lookups = () => seen.filter((call) => call === `GET /api/disks/${id}`).length;
     await disk.putObject("agents/a/x.txt", new Uint8Array(2));
@@ -892,7 +892,7 @@ test("ArchilWorkspace: a disk gone at Archil is UNAVAILABLE in its words on ever
   const disk = new FakeArchilDisk();
   disk.gone = { region: "aws-us-east-1", words: "Disk not found" };
   const workspace = archilWorkspace(disk, ROOT);
-  const gone = (error) => error.code === "UNAVAILABLE" && error.message.includes(`the Archil disk ${disk.id} is not there in region aws-us-east-1: Disk not found`);
+  const gone = (error) => error.code === "UNAVAILABLE" && error.message.includes(disk.id) && error.message.includes("aws-us-east-1") && error.message.includes("Disk not found");
   await assert.rejects(layOwnSkills(workspace, { "triage/SKILL.md": "# triage\n" }), gone);
   await assert.rejects(workspace.list(".agents/skills"), gone);
   await assert.rejects(workspace.mkdir("notes"), gone);
@@ -938,7 +938,7 @@ test("ArchilWorkspace: a folder Archil still will not make names the call that f
     if (key === `${ROOT}/.agents/`) throw Object.assign(new Error("404 NoSuchKey: no such key"), { status: 404 });
     return putObject(key, body);
   };
-  await assert.rejects(workspace.mkdir(".agents/skills"), (error) => error.code === "NOT_FOUND" && /^"\.agents" is not there \(mkdir; Archil: 404 NoSuchKey: no such key\)/.test(error.message));
+  await assert.rejects(workspace.mkdir(".agents/skills"), (error) => error.code === "NOT_FOUND" && error.path === ".agents" && /\bmkdir\b/.test(error.message) && error.message.includes("Archil: ") && error.message.includes("NoSuchKey"));
 });
 
 test("ArchilWorkspace: an append refused for a missing folder that then can't be made says none of it landed, never that it may have", async () => {
@@ -955,7 +955,9 @@ test("ArchilWorkspace: an append refused for a missing folder that then can't be
     await assert.rejects(workspace.append("logs/out.txt", bytes), (error) => {
       assert.equal(error.code, "NOT_FOUND");
       assert.doesNotMatch(error.message, /may also have landed|unknown/);
-      assert.match(error.message, /"logs" is not there \(mkdir; Archil: 404 NoSuchKey: no such key\)/);
+      // One call fails as the folder; an append of several is told by its own path, the folder named in the words.
+      assert.equal(error.path, bytes.length > APPEND_MAX ? "logs/out.txt" : "logs");
+      for (const marker of [/"logs"/, /\bmkdir\b/, /Archil: /, /NoSuchKey/]) assert.match(error.message, marker);
       if (bytes.length > APPEND_MAX) assert.match(error.message, /0 of \d+ bytes were appended/);
       return true;
     });
