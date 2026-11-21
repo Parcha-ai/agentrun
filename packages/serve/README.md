@@ -2989,6 +2989,8 @@ serves these routes alone:
 - a run's launch (`POST /agents/{id}/runs`, `POST /runs`), read (`GET /runs/{id}`), lists (`GET /agents/{id}/runs`,
   `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above), cap raise (`PATCH /runs/{id}`) and grade
   (`PUT /runs/{id}/grade`);
+- a run's usage lines (`GET /runs/{id}/usage`): what its `cost.usd` joins, by meter, cut of the host's secrets as the
+  run's read is;
 - its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
 - an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
