@@ -540,6 +540,33 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "capabilities",
+      "get-capacity"
+    ],
+    "operationId": "getCapacity",
+    "method": "GET",
+    "path": "/capacity",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [
+      {
+        "name": "window",
+        "type": "integer",
+        "required": false,
+        "description": "The hand-back window in minutes, from 1 to 1440. Default 15."
+      }
+    ],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The runs waiting and held, the live runners and the recent hand-backs"
+  },
+  {
+    "command": [
       "connectors",
       "complete-remote-command"
     ],
