@@ -281,6 +281,10 @@ export interface RunRow {
   readonly signInHanded: readonly string[] | null;
   /** The caller's labels, given at its start (RunLabels): opaque to the server, kept as given, {} when none. */
   readonly labels: RunLabels;
+  /** The disk the run's launch named as its own (a customer's Archil disk: the launch body's `archil_disk` of kind "launch"),
+   *  by its id, written once with the queued run; null for a run on the default disk (its launch named none, or its agent's
+   *  own). A run on a named disk learns nothing, so learning reads only runs with none (learn/learning-of.ts). */
+  readonly disk: string | null;
   readonly startedAt: number;
   readonly endedAt: number | null;
   /** When the run was purged (Runs.purge): its row is then a tombstone, its cost and times kept, everything else of it
@@ -918,11 +922,16 @@ export interface Runs {
    *  run, its learning view) needs of its runs at once, never a read a run. Only that member is read: no run's input, no
    *  sealed bytes. A run with no launch row has no entry. */
   learningStarts(agentId: string): Promise<{ runId: string; learning: unknown }[]>;
+  /** The ids of agent `agentId`'s runs started after `at` whose learning seed was read at or before it (the launch body's
+   *  `learning.seededAt`): a reset's watermark (learn/compile.ts sinceReset). Reads that one number of the runs started
+   *  after `at` alone. */
+  seededBefore(agentId: string, at: number): Promise<string[]>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
    *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value.
+   *  `disk`: only the runs on that disk (RunRow.disk), null for the default disk's; not given, every disk's.
    *  A purged run (Runs.purge) only with `purged`: the readers of money and counts (usage, stats, analytics) and an
    *  import's read of the sessions it holds, never a reader of a run's content. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number; purged?: boolean }): Promise<RunRow[]>;
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number; purged?: boolean }): Promise<RunRow[]>;
   /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
    *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
    *  behind, and its agent's archive time. `archived` filters on the run's archive or its agent's (true: either; false:
@@ -963,9 +972,10 @@ export interface Runs {
   costUnknown(options: { limit: number; after?: string }): Promise<string[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
-  /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs included (which list leaves
-   *  out): what deleting the agent stops and removes, with the runner that holds each (null: none) and its purge time. */
-  every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null }[]>;
+  /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs and purged runs included
+   *  (which list leaves out): what deleting the agent stops and removes, with the runner that holds each (null: none),
+   *  its purge time and its disk (RunRow.disk: where a learning folder of the agent may be, learn/learning-of.ts namedDisksOf). */
+  every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null; disk: string | null }[]>;
   /** The runs made from run `runId` that hold what it was given or did, by id: each run whose launch replays its input
    *  (the launch body's `replay.of`) or audits it (`audit.of`: its audit's shadow run), and each learning run its kept
    *  learning names (learning_proposals' learning_run_id). What purging the run purges with it. */

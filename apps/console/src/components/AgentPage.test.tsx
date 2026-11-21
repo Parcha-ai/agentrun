@@ -203,12 +203,16 @@ describe("AgentPage overview and run workspace", () => {
     const base = runsOf("invoice-checker")[0];
     const page = await open(agentFixture("invoice-checker"), { runs: [{ ...base, title: "Invoice one" }, { ...base, run_id: "two", title: "Customer two" }] });
     const input = page.host.querySelector('input[aria-label="Search this agent\'s runs"]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "customer");
+    const search = (q: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, q);
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    await search("customer");
     expect(page.rows()).toHaveLength(1);
     expect(page.rows()[0].textContent).toContain("Customer two");
+    // Each word typed, in any order, as the console's other filters match.
+    await search("two customer");
+    expect(page.rows().map((r) => r.textContent)).toEqual([expect.stringContaining("Customer two")]);
     expect(page.asked).toHaveLength(2);
   });
 

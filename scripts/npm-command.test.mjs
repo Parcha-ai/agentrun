@@ -6,7 +6,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { cmdQuote, npmCommand, npmSpawnSync } from './npm-command.mjs';
+import { npmCommand, npmSpawnSync } from './npm-command.mjs';
 
 const SCRIPTS = fileURLToPath(new URL('.', import.meta.url));
 
@@ -35,20 +35,19 @@ test("npm is this node running npm's own script: the one that ran this script, e
   // Under `npm run` (npm_execpath), on any platform: no shell, the arguments as they are.
   for (const platform of ['linux', 'darwin', 'win32']) {
     assert.deepEqual(npmCommand(['run', 'build', '-w', 'a b'], { env: { npm_execpath: cli }, platform, execPath: '/opt/node/bin/node', exists: at(cli) }),
-      { command: '/opt/node/bin/node', args: [cli, 'run', 'build', '-w', 'a b'], shell: false }, platform);
+      { command: '/opt/node/bin/node', args: [cli, 'run', 'build', '-w', 'a b'] }, platform);
   }
   // npm_execpath that is gone, or not a script, is not used.
   assert.equal(npmCommand(['-v'], { env: { npm_execpath: cli }, platform: 'linux', execPath: '/x/bin/node', exists: at() }).command, 'npm');
   assert.equal(npmCommand(['-v'], { env: { npm_execpath: '/x/npm.cmd' }, platform: 'win32', execPath: 'C:\\node\\node.exe', exists: () => true }).command, 'C:\\node\\node.exe');
   // Run with node directly: the npm installed with this node, POSIX (<prefix>/lib) and Windows (beside node.exe).
-  assert.deepEqual(npmCommand(['ls'], { env: {}, platform: 'linux', execPath: '/opt/node/bin/node', exists: at(cli) }), { command: '/opt/node/bin/node', args: [cli, 'ls'], shell: false });
+  assert.deepEqual(npmCommand(['ls'], { env: {}, platform: 'linux', execPath: '/opt/node/bin/node', exists: at(cli) }), { command: '/opt/node/bin/node', args: [cli, 'ls'] });
   const win = 'C:\\node\\node_modules\\npm\\bin\\npm-cli.js';
-  assert.deepEqual(npmCommand(['ls'], { env: {}, platform: 'win32', execPath: 'C:\\node\\node.exe', exists: at(win) }), { command: 'C:\\node\\node.exe', args: [win, 'ls'], shell: false });
-  // Neither: npm on PATH. On Windows that is npm.cmd, which Node spawns only through a shell: one command line, quoted.
-  assert.deepEqual(npmCommand(['ls'], { env: {}, platform: 'linux', execPath: '/x/bin/node', exists: at() }), { command: 'npm', args: ['ls'], shell: false });
+  assert.deepEqual(npmCommand(['ls'], { env: {}, platform: 'win32', execPath: 'C:\\node\\node.exe', exists: at(win) }), { command: 'C:\\node\\node.exe', args: [win, 'ls'] });
+  // Neither: npm by name from PATH, on every platform, never through a shell, so no argument is rewritten.
+  assert.deepEqual(npmCommand(['ls'], { env: {}, platform: 'linux', execPath: '/x/bin/node', exists: at() }), { command: 'npm', args: ['ls'] });
   assert.deepEqual(npmCommand(['exec', '-c', 'node --test "a b"', '100%'], { env: {}, platform: 'win32', execPath: 'C:\\x\\node.exe', exists: at() }),
-    { command: 'npm.cmd exec -c "node --test ""a b""" "100%%"', args: [], shell: true });
-  assert.equal(cmdQuote('@parcha/agentrun-serve'), '@parcha/agentrun-serve');
+    { command: 'npm', args: ['exec', '-c', 'node --test "a b"', '100%'] });
 });
 
 test('npmSpawnSync runs the npm this test runs under', () => {

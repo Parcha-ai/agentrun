@@ -172,6 +172,9 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     },
     beforeCall: step.beforeCall,
     work: options.work,
+    // fal's submission keys are scoped to the run (fal-price.ts falKeys): the same on every claim of it, so a retry after
+    // a resume still dedupes.
+    run: options.claim.runId,
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.callBounds ? { bounds: options.callBounds } : {}),

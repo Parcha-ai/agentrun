@@ -32,7 +32,11 @@
 #   snapshot <json>      snapshot.json, one line, where a \001M\001 stands for the new main
 #   path <path>          (a merge) a path its diff covers
 #   absent <path>        <path> must not be on <old>, any mode, any type (else 4: "absent <path>" on stdout)
-#   same <commit> <path> <path> must be the same on <commit> as on <old> (else 4: "same <path>" on stdout)
+#   same <commit> <path> <path> must be the same on <commit> as on <old> (else 4: "same <path>" on stdout); a
+#                        <commit> the repository does not hold fails it (the folder was reset since it was read)
+#   seed <commit>        (a run's merge) the commit the run was seeded from, which the repository held as its end began
+#                        and must hold still (else 4: "seed <commit>" on stdout): a reset since merges nothing, a
+#                        correction alone included
 # Exit: 0 done (the new main on stdout), 3 stale (main as it is on stdout), 4 a precondition failed, 5 main moved but
 # the files could not be brought in line (the new main on stdout; no snapshot written), 6 the run merged already (its
 # merge on stdout), else git's error on stderr.
@@ -187,10 +191,19 @@ preconditions() {
   done < "$tmp/absent"
   sed -n 's/^same //p' "$tmp/head" > "$tmp/same"
   while read -r c p; do
+    # A commit this repository does not hold (the agent's learning reset after the run read it) is no ground to merge on.
+    if ! g cat-file -e "$c^{commit}" 2>/dev/null; then
+      printf 'same %s\n' "$p" >> "$tmp/failed"
+      continue
+    fi
     a=$(g rev-parse -q --verify "$c:$p" 2>/dev/null || true)
     b=$(g rev-parse -q --verify "$old:$p" 2>/dev/null || true)
     [ "$a" = "$b" ] || printf 'same %s\n' "$p" >> "$tmp/failed"
   done < "$tmp/same"
+  sed -n 's/^seed //p' "$tmp/head" > "$tmp/seed"
+  while read -r c; do
+    g cat-file -e "$c^{commit}" 2>/dev/null || printf 'seed %s\n' "$c" >> "$tmp/failed"
+  done < "$tmp/seed"
   if [ -s "$tmp/failed" ]; then
     cat "$tmp/failed"
     exit 4

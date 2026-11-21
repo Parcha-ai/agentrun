@@ -83,3 +83,11 @@ export function freeModelRequestsOf(env: Record<string, string | undefined>): nu
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${FREE_MODEL_REQUESTS_ENV} is a whole number of requests above 0, not ${given}`);
   return value;
 }
+
+/** A run's limit on its requests on free models: the server's (freeModelRequestsOf), or the agent's own when it is lower
+ *  (definition.max_requests, its revision's `maxRequests`, a whole number above 0). The server's always holds: an agent's
+ *  higher one gets the server's. */
+export function freeRequestLimitOf(env: Record<string, string | undefined>, maxRequests?: unknown): number {
+  const server = freeModelRequestsOf(env);
+  return typeof maxRequests === "number" && Number.isSafeInteger(maxRequests) && maxRequests >= 1 ? Math.min(maxRequests, server) : server;
+}

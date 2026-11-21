@@ -17,7 +17,8 @@
 //    tool with no price runs, marked "not metered" on the run's root (TOOL_UNMETERED), outside the run's cost.
 //  - A server with a meter (McpMeter; fal's, fal-price.ts) prices each billed call itself before it leaves: held and
 //    booked the same way, at the meter's quote. A call it cannot price is refused unsent under a spend cap, and with
-//    none runs booked as an unknown charge.
+//    none runs booked as an unknown charge. A meter's keys (McpMeter.keys; fal's submission keys on fal's own host) are
+//    scoped to the run on every call of its server as it leaves, and read back as the agent's own in what the model reads.
 import { randomUUID } from "node:crypto";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool } from "@parcha/agentrun-kernel";
@@ -54,9 +55,14 @@ export interface McpServerSource {
  *  (`unpriceable`, in words; the hold then covers only what could be), and what it charged, by the server's reply
  *  (none: no reply came back). Null: unknown. */
 export type McpQuote = { holdUsd: number; basis: string; unpriceable?: string; chargeOf(reply: Record<string, unknown> | undefined): number | null };
+/** A server's keys scoped to the run (fal's submission keys, fal-price.ts falKeys): `out`, a call's arguments as they
+ *  leave; `back`, the text of its answer or error as the model reads it, each scoped key read as the agent's own. */
+export type McpKeys = { out(tool: string, args: Record<string, unknown>): Record<string, unknown>; back(text: string): string };
 /** A server that prices its own calls. `ask` calls one of the server's tools with the run's credential, unbooked and
- *  unrecorded, and answers its raw result (none: it failed). */
+ *  unrecorded, and answers its raw result (none: it failed). `keys`: the keys it scopes to the run, on every call of
+ *  the server, billed or not. */
 export interface McpMeter {
+  keys?: McpKeys;
   bills(tool: string): boolean;
   quote(tool: string, args: Record<string, unknown>, ask: (tool: string, args: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>, signal: AbortSignal): Promise<McpQuote>;
 }
@@ -221,6 +227,8 @@ export interface McpGatewayOptions {
   media?: MediaReader;
   /** For tests: the clock a meter's prices are kept by. */
   now?: () => number;
+  /** The run's id: what a meter scopes a server's keys to (McpMeter.keys). None: no key is scoped. */
+  run?: string;
 }
 
 /** A run's journal commit. */
@@ -242,7 +250,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
    *  another account connects again, so no session made as one account carries another's calls. */
   const clients = new Map<string, { query: string; upstream: Promise<Upstream> }>();
   const pins = new Map(Object.entries(options.pin));
-  const meters = new Map([...pins].map(([server, pinned]) => [server, meterFor(pinned, { media: options.media, now: options.now })] as const));
+  const meters = new Map([...pins].map(([server, pinned]) => [server, meterFor(pinned, { media: options.media, now: options.now, run: options.run })] as const));
   const credentials: Pick<Map<string, McpCredentials[string]>, "get"> = { get: (server) => (Object.hasOwn(options.credentials, server) ? options.credentials[server] : undefined) };
   /** Each server's last HTTP status, which tells a refused credential from another failure. (An address refusal is never
    *  kept here: it is read from each call's own error, since calls to one server run at once.) */
@@ -361,11 +369,13 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   /** `sending`, when given, runs once the server is connected and right before the call leaves: its refusal (a text)
    *  keeps the call from leaving. A call that never got that far (a failed connect, a stop) never ran it. `outcome`
    *  takes the server's raw result, when one came back. */
-  const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>, outcome: { unsent?: true; raw?: Record<string, unknown>; quiet?: true } = {}): Promise<McpCallResult> => {
+  const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>, outcome: { unsent?: true; raw?: Record<string, unknown>; quiet?: true } = {}, back?: McpKeys["back"]): Promise<McpCallResult> => {
     let connected = false;
     // Read at each use: a token refreshed while the call is out, and sent, is scrubbed with the one it took.
     const held = callSet(server);
-    const clean = scrubberOf(server, hold(server, headers), held.values);
+    const scrubbed = scrubberOf(server, hold(server, headers), held.values);
+    // Every text the model reads of the call (its answer, a filed one, an error), its keys read as the agent's own.
+    const clean = back ? (text: string) => back(scrubbed(text)) : scrubbed;
     hold(server, queryOf(server));
     try {
       const upstream = await until(connect(server, url, headers), signal);
@@ -443,13 +453,16 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // Whether the call left for the server: only then is it booked, at its price or as not metered.
     let went = false;
     let raw: Record<string, unknown> | undefined;
+    // The server's keys scoped to the run as the call leaves (fal's submission keys): its price is read from the call as
+    // the agent made it.
+    const keys = meters.get(server)?.keys;
     const call = async (mark: () => Promise<string | undefined> = async () => undefined) => {
       const outcome: { unsent?: true; raw?: Record<string, unknown> } = {};
-      const result = await forward(server, url, credentials.get(server)?.headers ?? {}, listed, args, signal, async () => {
+      const result = await forward(server, url, credentials.get(server)?.headers ?? {}, listed, keys ? keys.out(tool, args) : args, signal, async () => {
         const refused = await mark();
         went = refused === undefined;
         return refused;
-      }, outcome);
+      }, outcome, keys?.back);
       // The request's own address check refused it after the mark: it never left, so nothing is booked.
       if (outcome.unsent) went = false;
       raw = outcome.raw;

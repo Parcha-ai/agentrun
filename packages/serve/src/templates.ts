@@ -208,7 +208,7 @@ export type Package = {
   inputSchema?: Json;
   secrets: string[];
   /** Each run's limit: its spend cap (the agent's max_cost_usd). */
-  budget?: { per_run_usd: number };
+  budget?: { per_run_usd: number; max_requests?: number };
   /** The agent's `learning`, as a definition takes it: true, false, or the loop's settings (agree_on, each path a required
    *  field of the output schema). */
   learning?: LearningSetting;
@@ -726,9 +726,11 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   const inputSchema = fieldsSchema(f.inputs, "inputs", (message) => bad(MANIFEST, message));
   const secrets = list(f.secrets, "secrets", (secret) => /^[A-Z][A-Z0-9_]{0,127}$/.test(secret));
   for (const secret of secrets.filter((name) => !PACKAGE_SECRETS.includes(name))) bad(MANIFEST, `secrets names ${secret}, a key this server cannot hold: a package needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
-  // Each run's limit: its spend cap (per_run_usd, the agent's max_cost_usd), required once a budget is given.
+  // Each run's limits: its spend cap (per_run_usd, the agent's max_cost_usd), required once a budget is given, and the most
+  // requests on free models it makes (max_requests, the agent's max_requests), which a dollar cap cannot bound.
   const perRun = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0;
-  if (f.budget !== undefined && !(isObject(f.budget) && !unknownFields(f.budget, ["per_run_usd"]).length && perRun(f.budget.per_run_usd))) bad(MANIFEST, "budget is {per_run_usd: a number above 0}");
+  const requests = (value: unknown) => value === undefined || (typeof value === "number" && Number.isSafeInteger(value) && value >= 1);
+  if (f.budget !== undefined && !(isObject(f.budget) && !unknownFields(f.budget, ["per_run_usd", "max_requests"]).length && perRun(f.budget.per_run_usd) && requests(f.budget.max_requests))) bad(MANIFEST, "budget is {per_run_usd: a number above 0, max_requests: a whole number of free-model requests above 0, when given}");
   const learningIssue = f.learning === undefined ? undefined : learningSettingIssue(f.learning, "learning");
   if (learningIssue) bad(MANIFEST, learningIssue);
   if (f.approvals !== undefined && f.approvals !== "ask" && f.approvals !== "never") bad(MANIFEST, "approvals is ask (the agent asks its person before a tool runs) or never (it runs unattended; deny and pins still hold)");
@@ -933,7 +935,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags,
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: { ...(f.model as NonNullable<Package["model"]>), ...(choices ? { choices } : {}) } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
+    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number, ...(f.budget.max_requests !== undefined ? { max_requests: f.budget.max_requests as number } : {}) } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -1274,7 +1276,7 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),
     ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(chosen.modelTiers && Object.keys(chosen.modelTiers).length ? { model_tiers: chosen.modelTiers } : {}), ...(p.effort ? { thinking: p.effort } : {}),
     ...(pick ? { computer: pick.computer } : {}), ...(tools ? { tools } : {}), ...(Object.keys(settings).length ? { tool_settings: settings } : {}),
-    ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget?.per_run_usd ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
+    ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget?.per_run_usd ? { max_cost_usd: p.budget.per_run_usd } : {}), ...(p.budget?.max_requests ? { max_requests: p.budget.max_requests } : {}), skills,
     // The apply's choice: unattended only when it says never (none given: the agent asks).
     ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
     // The package's typed input (manifest `inputs`): what each run's input is checked against, and how the model reads it.

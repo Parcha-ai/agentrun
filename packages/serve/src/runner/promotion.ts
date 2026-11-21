@@ -56,7 +56,7 @@ import type { McpPin } from "../mcp-gateway.js";
 import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
-import { agentRun, lastOwnRuns, newCompileAttempt } from "../learn/compile.js";
+import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset } from "../learn/compile.js";
 import { type CheckBar, type CheckDisagreement, type CheckRecord, type CheckTurns, checkPasses, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
@@ -378,16 +378,19 @@ const checkable = (deps: Pick<PromotionDeps, "runId">, row: RunRow): boolean =>
  *  never push them out of the read. And `audited`: an audit hold's disagreeing shadow runs (auditInputsOf), each ended.
  *  Of those, the ones whose input `workflow` takes (fits), each with its launch read back; one with an uploaded file is
  *  never an input. With how many of the agent's runs it looked at (`looked`) and why each it looked at is no input
- *  (`unfit`, `files`). */
+ *  (`unfit`, `files`). Every one of them a run on no named disk (one on a named disk learns nothing, learn/learning-of.ts)
+ *  since the agent's learning's reset (sinceReset), the named and audited ones included. */
 async function checkInputs(deps: Pick<PromotionDeps, "store" | "agentId" | "runId">, workflow: LearnedWorkflow, pick: { readonly of: readonly string[]; readonly n: number }, audited: readonly string[] = []): Promise<{ inputs: ReplayInput[]; looked: number; unfit: number; files: number }> {
   const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
-  const named = (await Promise.all(pick.of.map((id) => deps.store.runs.get(id)))).filter((row): row is RunRow => row !== undefined && checkable(deps, row));
+  const since = await sinceReset(deps.store, deps.agentId);
+  const learns = (row: RunRow) => (row.disk ?? null) === null && since(row);
+  const named = (await Promise.all(pick.of.map((id) => deps.store.runs.get(id)))).filter((row): row is RunRow => row !== undefined && checkable(deps, row) && learns(row));
   const last = pick.n ? await lastOwnRuns(deps.store, deps.agentId, pick.n + pick.of.length, deps.runId) : [];
   const own = [...named, ...last.filter((row) => !pick.of.includes(row.id)).slice(0, pick.n)];
   // And an audit hold's disagreeing shadow runs: the agent's answers the recompile must say too.
   for (const id of audited) {
     const row = await deps.store.runs.get(id);
-    if (row && row.state === "ended" && !own.some((one) => one.id === id)) own.push(row);
+    if (row && row.state === "ended" && learns(row) && !own.some((one) => one.id === id)) own.push(row);
   }
   const out: ReplayInput[] = [];
   let files = 0;
