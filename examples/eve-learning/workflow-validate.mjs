@@ -17,6 +17,12 @@ const DEMO_LEARNING = { compile_after: 5 };
 const summarize = run => ({ runId: run.run_id, runtime: run.sdk?.runtime, sessionId: run.sdk?.session_id,
   status: run.status, revision: run.sdk?.learning_revision ?? null, learningState: run.learning?.state ?? null });
 
+/** Saves `value` as the checkpoint at `path`; with `replace` false, a file already there is refused (EEXIST). `write` is
+ *  a test's. */
+export async function saveCheckpoint(path, value, { replace, write = writeFile }) {
+  await write(path, JSON.stringify(value, null, 2) + '\n', { flag: replace ? 'w' : 'wx', mode: 0o600 });
+}
+
 /** The journal is test-fixture data, independent of the model's claim that it ran a workflow. */
 export function assertOriginalChain(result, rows, run, service, observations = new Set(), source) {
   const scoped = rows.filter(row => row.source === 'native' ? row.sessionId === result.sessionId : row.runId === run.run_id);
@@ -283,7 +289,7 @@ if (import.meta.main) {
   let created = output === resumePath && Boolean(resumePath);
   try {
     const result = await demonstrateWorkflows({ resume, checkpoint: async value => {
-      await writeFile(output, JSON.stringify(value, null, 2) + '\n', { flag: created ? 'w' : 'wx', mode: 0o600 }); created = true;
+      await saveCheckpoint(output, value, { replace: created }); created = true;
     } });
     console.log(JSON.stringify(result, null, 2));
   } catch (error) { console.error(`Workflow proof stopped (${error.name}). Inspect the checkpoint; no paid task was automatically retried.`); process.exitCode = 1; }

@@ -1,11 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readReleaseStatus, formatReleaseBrief, readWorkflowAudit, releaseWorkflowTools } from './agent/lib/release-tools.ts';
 import { assertCompiledOrigin, assertExecutableReuse, assertOriginalChain, demonstrateWorkflows, workflowTask } from './workflow-validate.mjs';
+
+test('a checkpoint save cut short after its file is opened leaves the last checkpoint whole for --resume, in both proofs', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'eve-checkpoint-test-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  // A crash mid-save: the file is opened (made, or emptied), then nothing is written.
+  const crash = async (file, data, options) => { await writeFile(file, '', options); throw new Error('cut short mid-save'); };
+  for (const name of ['validate.mjs', 'workflow-validate.mjs']) {
+    const { saveCheckpoint } = await import(`./${name}`);
+    const path = join(dir, `${name}.json`);
+    await saveCheckpoint(path, { stage: 'first' }, { replace: false });
+    await assert.rejects(saveCheckpoint(path, { stage: 'other' }, { replace: false }), { code: 'EEXIST' }, `${name}: a first save never overwrites a file there`);
+    await assert.rejects(saveCheckpoint(path, { stage: 'second' }, { replace: true, write: crash }), /cut short/);
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { stage: 'first' }, `${name}: the last checkpoint is whole`);
+    await saveCheckpoint(path, { stage: 'second' }, { replace: true });
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { stage: 'second' });
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    assert.deepEqual((await readdir(dir)).filter(file => file.includes(name)), [`${name}.json`], `${name}: no file left beside it`);
+  }
+});
 
 async function journal(t) {
   const dir = await mkdtemp(join(tmpdir(), 'eve-workflow-test-'));

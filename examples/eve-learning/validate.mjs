@@ -10,6 +10,12 @@ const VISIBLE_PREFIX = /^(?:Launch note:|\*\*Launch note:\*\*)/i;
 const task = service => `Read release status for ${service} and report its service, version, test result and readiness.`;
 export const CORRECTION = `Begin every release status report with the exact prefix "${PREFIX}" and use one concise sentence.`;
 const POLL_MS = 180_000;
+
+/** Saves `value` as the checkpoint at `path`; with `replace` false, a file already there is refused (EEXIST). `write` is
+ *  a test's. */
+export async function saveCheckpoint(path, value, { replace, write = writeFile }) {
+  await write(path, `${JSON.stringify(value, null, 2)}\n`, { flag: replace ? 'w' : 'wx', mode: 0o600 });
+}
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 
 // Only safe summary metadata: never admission tokens, keys, or arbitrary server error payloads.
@@ -213,7 +219,7 @@ if (import.meta.main) {
   try {
     const evidence = await demonstrate({ resume, checkpoint: async value => {
       if (output) {
-        await writeFile(output, `${JSON.stringify(value, null, 2)}\n`, { flag: created ? 'w' : 'wx', mode: 0o600 });
+        await saveCheckpoint(output, value, { replace: created });
         created = true;
       }
     } });
