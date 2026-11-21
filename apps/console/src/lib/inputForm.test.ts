@@ -35,11 +35,13 @@ describe("agentInputOf", () => {
     expect(fields.topics).toMatchObject({ type: "string", array: true, required: false });
   });
 
-  it("requires the message when the schema lists it, or when it requires no other field", () => {
+  it("requires the message only when the schema lists it: with its own fields all optional, one of them does instead (the server refuses neither)", () => {
     const listed = agentInputOf({ ...RESEARCH, required: ["company", "content"] });
     expect(listed.kind === "fields" && listed.form.contentRequired).toBe(true);
     const none = agentInputOf({ ...RESEARCH, required: [] });
-    expect(none.kind === "fields" && none.form.contentRequired).toBe(true);
+    expect(none.kind === "fields" && none.form.contentRequired).toBe(false);
+    const unsaid = agentInputOf({ type: "object", properties: { pr_number: { type: "integer" } } });
+    expect(unsaid.kind === "fields" && unsaid.form.contentRequired).toBe(false);
   });
 
   it("types a schema it can't show as fields as JSON, whole, starting from its required fields' shape", () => {

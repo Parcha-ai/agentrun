@@ -310,8 +310,9 @@ class ArchilWorkspace implements Workspace {
     try {
       answer = await this.#disk.getRange(this.#key(rel), `bytes=${offset}-${last}`);
     } catch (error) {
-      // A ranged read is no SDK call, so a disk that is not there answers it 404 as a missing file would: the look at what
-      // is there (an SDK call) is what tells them apart, and its ArchilDiskMissing is the read's failure.
+      // The seam looks the disk up again after a ranged read's 404, so a disk gone at Archil, at the start or mid-run, is
+      // its ArchilDiskMissing (no status). A 404 left is a file that is not there, or a folder: the look at what is there
+      // tells them apart, and a disk removed in between still fails the read as gone.
       const kind = statusOf(error) === 404
         ? await this.#kind(rel).catch((lookup: unknown) => {
             if (lookup instanceof ArchilDiskMissing) throw failed(lookup, rel, "read");
