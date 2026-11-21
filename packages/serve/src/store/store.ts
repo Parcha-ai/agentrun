@@ -980,20 +980,16 @@ export interface Runs {
    *  (the launch body's `replay.of`) or audits it (`audit.of`: its audit's shadow run), and each learning run its kept
    *  learning names (learning_proposals' learning_run_id). What purging the run purges with it. */
   madeFrom(runId: string): Promise<string[]>;
-  /** A run purged, in one transaction under its row's lock (DELETE /runs/{id}, agent-delete.ts): its journal, commands,
-   *  origin, launch, live view and viewers, its channel posts with their tries and what each channel was told of it, a
-   *  trigger's conversation that names it and its changes in the run-change feed gone; a trigger's last run, a firing's run
-   *  or wait and a machine's token that name it let go (null); its kept learning's content blanked, each row kept with its
-   *  proposal's state alone, as the learning meter and the list of learning runs read it; its row's content blanked
-   *  (summary, labels, handed sign-ins, listing) with `kept` folded into its metrics (`purged`), and its purge time set
-   *  last. Its id, agent, revision, state, outcome, times, cost and metrics stay: a tombstone, which every total sums as
-   *  before. Only a run that is final and that no runner holds: one that is not is refused (StoreConstraint), nothing
-   *  written; so is one a run made from it (madeFrom's replays and shadow) not purged names (RunsMadeFromLeft): each is
-   *  purged first, and Runs.create, under the same row lock, makes none once it is purged. A run with no row, or one
-   *  purged already, is no write. On SQLite, once it commits, a WAL checkpoint (TRUNCATE): with secure_delete on in every
-   *  connection, neither the file nor its WAL keeps the purged bytes after it. A checkpoint another connection holds back
-   *  is retried once, then told to the store's `warn`; it never fails the purge. Postgres: the old row versions are the
-   *  database's until its VACUUM. */
+  /** A run purged, in one transaction under its row's lock (DELETE /runs/{id}, agent-delete.ts): every row of its content
+   *  gone or blanked, what names it let go, and its kept learning's rows kept with their proposal's state alone. Its row
+   *  stays as a tombstone (id, agent, revision, state, outcome, times, cost, metrics with `kept` folded in), its purge
+   *  time set last, which every total sums as before. Refused (StoreConstraint), nothing written, while it is not final
+   *  or a runner holds it, and while a run made from it is not purged (RunsMadeFromLeft); Runs.create makes none under
+   *  the same lock once it is purged. A run with no row, or purged already, is no write. On SQLite a WAL checkpoint
+   *  (TRUNCATE) follows the commit, so with secure_delete neither the file nor its WAL keeps the bytes; one held back is
+   *  retried once, then told to `warn`, never failing the purge. Postgres keeps old row versions until its VACUUM. The
+   *  run's text in its agent's learning folder is the server's to take off (agent-delete.ts forgetCopies), and the
+   *  purge time set here is what the folder's history reads skip its merges by. */
   purge(runId: string, kept: PurgeKept): Promise<void>;
   /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
    *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,

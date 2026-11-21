@@ -3492,10 +3492,14 @@ stays in every total.
     overwrites them. `VACUUM FULL` rewrites the table into a new file (under an exclusive lock), and the old file's
     blocks go back to the filesystem unwiped. Postgres's own WAL and its archived WAL keep the old values until they are
     recycled or expire, and backups keep them for their retention.
-- Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id. The
-  agent's learning folder keeps what the run taught it: its merge's diff (`.agentrun/diffs/<run>.json`, with its
-  patches) and any feedback line it added to `corrections.md`, in the folder's history too. The run's purge removes
-  neither; the agent's purge (below) removes the whole folder.
+- Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id and the
+  commits it names. A run's purge removes its diff file and its feedback line from the folder's current files, and the
+  folder's history no longer serves its merge; the bytes stay in the folder's `.git` until a learning reset
+  (`DELETE /v2/agents/{id}/learning`) or the agent's purge, which delete the folder whole. The feedback line goes in one
+  commit by the host (none when nothing is left to remove), a line a person edited since stays, and another merge's
+  diff that shows the line as context is written without it. The log, a workflow's revisions and a champion read by
+  its digest leave out its merges, known by the run the log names for each (its newest 200 changes). A second
+  `DELETE` does this again.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`. An [API-only](#api-only) server purges a run of
   an agent another system owns alone; a run of an agent made here is its profile's `404` there.

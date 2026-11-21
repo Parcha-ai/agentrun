@@ -493,6 +493,14 @@ export function forgetBodies(): void {
   bodyBytes = 0;
 }
 
+/** Blob `oid`'s body forgotten, when it was kept: a text a purge took off main is held in this process no longer. */
+export function forgetBody(oid: string): void {
+  const held = bodies.get(oid);
+  if (held === undefined) return;
+  bodies.delete(oid);
+  bodyBytes -= held.length;
+}
+
 /** File `path`'s bytes, which must be blob `oid` (else Mismatch): through the file API, never git. */
 async function bytesOf(ws: Workspace, path: string, oid: string): Promise<Buffer> {
   let bytes: Uint8Array;

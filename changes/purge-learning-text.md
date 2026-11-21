@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A run's purge (`DELETE /v2/runs/{run_id}`) now takes the run's text off its agent's learning folder's current files: its diff files go, and the feedback lines its merges added to `corrections.md` leave main in one commit by the host (none when nothing is left to take off; a line a person edited since stays). Another merge's diff that shows such a line as context is written without it. The folder's history reads (`GET /v2/agents/{agent_id}/learning`, its `/log`, a workflow's `/revisions`, and a champion read by its digest in `/promotions`) no longer serve the purged run's merges; a champion whose only revision was one reads as one no commit holds. The bytes stay in the folder's `.git` until a learning reset (`DELETE /v2/agents/{agent_id}/learning`) or the agent's purge, which delete the folder whole; a promotion record keeps its commit ids. A second `DELETE` of a purged run does this again, so a run purged before this release loses its text the same way; it is `204` with no body as before, and `503 unavailable` while the learning folder can't be written.
