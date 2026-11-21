@@ -186,6 +186,26 @@ test("a key at fal's length limit is scoped within it, without two keys collidin
   assert.equal(again, one, "and stay the same each time");
 });
 
+test("a shortened long key never reaches fal as a shorter key the agent could send itself", async (t) => {
+  const account = falAccount();
+  const a = await runOn(t, account, { run: RUN_A });
+  const long = `k${"y".repeat(127)}`;
+  await a.call("submit_job", { endpoint_id: IDEOGRAM, input: { prompt: "long", num_images: 1 }, submission_key: long });
+  const [sentLong] = account.sent("submit_job");
+  // Every start of the key fal received for the long one, sent as the agent's own key with its own request: any of them
+  // that left as the same key would be replayed as, or refused against, the long key's job.
+  const twins = [...sentLong].map((_, i) => sentLong.slice(0, i + 1)).filter((key) => KEY_SHAPE.test(key));
+  for (const [i, key] of twins.entries()) {
+    const reply = await a.call("submit_job", { endpoint_id: IDEOGRAM, input: { prompt: `twin ${i}`, num_images: 1 }, submission_key: key });
+    assert.equal(reply.isError, undefined, `${key} is its own job: ${textOf(reply)}`);
+    assert.equal(JSON.parse(textOf(reply)).submission_key, key, "the agent reads its own key back");
+  }
+  const sent = account.sent("submit_job");
+  assert.equal(new Set(sent).size, sent.length, "every agent key reached fal as its own key");
+  const found = JSON.parse(textOf(await a.call("get_submission", { submission_key: long })));
+  assert.deepEqual([found.status, found.submission_key, found.request_id], ["found", long, "r1"], "the long key still reads its own job");
+});
+
 test("a server that is not fal's, and an eval's fake fal on loopback, receive the agent's own key", async (t) => {
   const account = falAccount();
   // Another server with a tool that happens to take a submission_key.
