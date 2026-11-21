@@ -13,7 +13,8 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *  - a run's computer, take-over, hand-back and viewer link go to the backend, which has no owner's session here;
  *  - a backend reads what its agents learned (loop, promotions, cost per run, a run's learning), cut as the console's,
  *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
- *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is. */
+ *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
+ *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
@@ -24,7 +25,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
   "listRunFiles", "readRunFile",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
-  "getCapabilities", "getHealth", "getUsage",
+  "getCapabilities", "getHealth", "getUsage", "getCapacity",
 ]);
 
 /** Whether `env` turns the profile on: `1` or `true` on; unset, empty, `0` or `false` off. Any other value is refused in

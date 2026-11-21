@@ -2286,6 +2286,30 @@ export interface operations {
     body: never;
     answer: components["Capabilities"];
   };
+  getCapacity: {
+    body: never;
+    answer: {
+      at: string;
+      runs: {
+        queued: number;
+        executing: number;
+      };
+      runners: {
+        id: string;
+        version: string | null;
+        slots: number | null;
+        executing: number;
+        free_slots: number | null;
+        refused: boolean;
+        seen_at: string;
+      }[];
+      free_slots: number;
+      hand_backs: {
+        window_minutes: number;
+        count: number;
+      };
+    };
+  };
   getChatGPTSignIn: {
     body: never;
     answer: {
