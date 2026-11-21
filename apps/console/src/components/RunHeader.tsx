@@ -1,3 +1,4 @@
+import { cliRunOf, cliRunLabel } from "@/lib/cliLearning";
 import { Archive, ArchiveRestore, ArrowLeft, Ban, CircleDollarSign, Square } from "lucide-react";
 import { useState } from "react";
 import { agentHash } from "@/components/AgentPage";
@@ -45,9 +46,10 @@ const TOKENS_TITLE = "The run's model requests' tokens, as the provider or gatew
 export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }: { run: Run; agentName: string; actions?: RunActions; costText?: string; raiseBelow?: () => void }) {
   // Where it ran, as its start resolved it.
   const sdk = backendSdkOf(run);
-  const ranIn = sdk ? "your backend" : runPlaceWords(run.place);
+  const cli = cliRunOf(run);
+  const ranIn = cli ? "your CLI" : sdk ? "your backend" : runPlaceWords(run.place);
   const state = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review, run.computer);
-  const view = sdk ? { ...state, canStop: false, canCancel: false } : state;
+  const view = sdk || cli ? { ...state, canStop: false, canCancel: false } : state;
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
   // A capped run that has not ended, agentic or workflow, takes a raise here too, so a working one is raised before it pauses.
@@ -55,7 +57,7 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }
   // A run that waits on the person for something other than its cap (its served `pending`: an approval, a question, its
   // browser or computer) is not held by its cap: a raise changes nothing it waits on, so none is offered there.
   const waitsOnOther = !!run.pending && run.pending.kind !== "budget" && run.pending.kind !== "stopped";
-  const raisable = !sdk && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
+  const raisable = !sdk && !cli && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   const onPlan = !!planOf(run.cost);
@@ -87,6 +89,7 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }
             {archived && <Chip tone="muted">Archived</Chip>}
             {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
             <span className="font-mono"><RunKind run={run} named /> · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
+            {cli && <span className="font-mono">{cliRunLabel(cli.runtime)} · {cli.model ?? "Model not reported"}</span>}
             {sdk && <span className="font-mono">{backendSdkLabel(sdk)} · {run.sdk?.model ?? "Model not reported"}</span>}
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's

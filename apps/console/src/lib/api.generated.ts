@@ -319,6 +319,11 @@ export interface components {
     output_schema?: components["JsonObject"];
     workflow?: components["JsonObject"];
     max_cost_usd?: number;
+    cli_learning?: {
+      runtime: "codex" | "claude-code";
+      connection_id: string;
+      project: string;
+    };
     sdk?: {
       runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
     } | {
@@ -857,6 +862,23 @@ export interface components {
         cost_usd?: number | null;
       } | null;
     };
+    cli_learning?: {
+      runtime: "codex-cli" | "claude-code-cli";
+      session_id: string;
+      turn_id: string;
+      model: string | null;
+      learning_revision: string | null;
+      seed_observed: boolean;
+      policy_complete: boolean;
+      evidence_complete: boolean;
+      usage: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      } | null;
+    };
     native?: {
       runtime: string;
       project: string;
@@ -1108,6 +1130,23 @@ export interface components {
       model: string | null;
       session_id: string | null;
       learning_revision: string | null;
+      usage: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      } | null;
+    };
+    cli_learning?: {
+      runtime: "codex-cli" | "claude-code-cli";
+      session_id: string;
+      turn_id: string;
+      model: string | null;
+      learning_revision: string | null;
+      seed_observed: boolean;
+      policy_complete: boolean;
+      evidence_complete: boolean;
       usage: {
         input_tokens?: number | null;
         output_tokens?: number | null;
@@ -1477,6 +1516,71 @@ export interface operations {
   cancelRun: {
     body: never;
     answer: components["CancelResult"];
+  };
+  cliLearningEvents: {
+    body: {
+      sequence: number;
+      events: ({
+        type: "message";
+        role: "user" | "assistant";
+        text: string;
+      } | {
+        type: "text";
+        text: string;
+      } | {
+        type: "session";
+        session_id: string;
+      } | {
+        type: "workflow_check";
+        id: string;
+        digest: string;
+        outcome: "answered" | "handed_back" | "failed" | "skipped_write";
+        answer?: string;
+        reason?: string;
+        skipped?: {
+          tool: string;
+          unmarked?: true;
+        };
+        fresh_reads?: number;
+      } | {
+        type: "tool";
+        id: string;
+        name: string;
+        status: "started" | "completed" | "failed";
+        input?: unknown;
+        output?: unknown;
+        parent_tool_use_id?: string;
+      })[];
+    };
+    answer: {
+      accepted: true;
+    };
+  };
+  completeCliLearningRun: {
+    body: {
+      status: "completed" | "failed" | "cancelled";
+      answer: string;
+      error?: string;
+      model?: string;
+      session_id?: string;
+      usage?: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      };
+      evidence_complete?: boolean;
+      seed_observed?: boolean;
+      seed_revision?: string;
+      source_policy?: {
+        instructions: string;
+        complete: boolean;
+      };
+    };
+    answer: {
+      accepted: true;
+    };
   };
   completeRemoteCommand: {
     body: {
@@ -2112,6 +2216,23 @@ export interface operations {
       }[];
     };
   };
+  enrollCliLearning: {
+    body: {
+      runtime: "codex" | "claude-code";
+      project: string;
+      name?: string;
+    };
+    answer: {
+      connection_id: string;
+      agent_id: string;
+      runtime: "codex" | "claude-code";
+      project: string;
+      active: boolean;
+      last_hook_at?: string;
+      last_run_id?: string;
+      token: string;
+    };
+  };
   enrollRemoteConnector: {
     body: {
       label?: string;
@@ -2336,6 +2457,15 @@ export interface operations {
         organization?: string;
         plan?: string;
       };
+    };
+  };
+  getCliLearningRun: {
+    body: never;
+    answer: {
+      run_id: string;
+      state: "running" | "processing" | "completed" | "failed" | "cancelled";
+      learning_run_id?: string;
+      learning: unknown;
     };
   };
   getComputerDaemon: {
@@ -2691,6 +2821,7 @@ export interface operations {
         updated_at: string;
         sequence: number;
         display_name: string;
+        project_name?: string;
         models: string[];
         usage: {
           input_tokens: number;
@@ -2703,6 +2834,13 @@ export interface operations {
           status: "reported" | "unavailable";
         };
         observation_only: true;
+        learning: {
+          state: "on" | "off" | "setup_required" | "unknown" | "unsupported";
+          reason: "ready" | "source_setup_required" | "source_unknown" | "delegated_session" | "connection_unavailable" | "server_disabled" | "agent_disabled" | "awaiting_activation";
+          agent_id?: string;
+          connection_id?: string;
+          mode?: "off" | "notes" | "corrections" | "workflows";
+        };
       }[];
       usage: {
         input_tokens: number | null;
@@ -3097,6 +3235,27 @@ export interface operations {
         runs: number;
       };
       analytics: {
+        usage: {
+          tokens: number | null;
+          input: number | null;
+          output: number | null;
+          cache_read: number | null;
+          cache_write: number | null;
+          known_runs: number;
+          unknown_runs: number;
+          observed_sessions: number;
+          unknown_sessions: number;
+          partial_days: number;
+          retention_limited: boolean;
+          by_day: {
+            day: string;
+            tokens: number | null;
+          }[];
+          by_harness: {
+            harness: string;
+            tokens: number | null;
+          }[];
+        };
         filter: {
           from: string | null;
           to: string | null;
@@ -3108,6 +3267,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
+          runs_with_token_metrics: number;
           tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
@@ -3132,6 +3292,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
+          runs_with_token_metrics: number;
           tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
@@ -3143,6 +3304,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
+          runs_with_token_metrics: number;
           tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
@@ -3154,6 +3316,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
+          runs_with_token_metrics: number;
           tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
@@ -3669,6 +3832,20 @@ export interface operations {
   listAllRuns: {
     body: never;
     answer: components["RunList"];
+  };
+  listCliLearning: {
+    body: never;
+    answer: {
+      connections: {
+        connection_id: string;
+        agent_id: string;
+        runtime: "codex" | "claude-code";
+        project: string;
+        active: boolean;
+        last_hook_at?: string;
+        last_run_id?: string;
+      }[];
+    };
   };
   listComposioEvents: {
     body: never;
@@ -5058,6 +5235,18 @@ export interface operations {
     body: never;
     answer: never;
   };
+  revokeCliLearning: {
+    body: never;
+    answer: {
+      connection_id: string;
+      agent_id: string;
+      runtime: "codex" | "claude-code";
+      project: string;
+      active: boolean;
+      last_hook_at?: string;
+      last_run_id?: string;
+    };
+  };
   revokeRemoteConnector: {
     body: never;
     answer: {
@@ -5481,6 +5670,42 @@ export interface operations {
         email?: string;
         organization?: string;
         plan?: string;
+      };
+    };
+  };
+  startCliLearningRun: {
+    body: {
+      session_id: string;
+      turn_id: string;
+      input: string;
+      instructions: string;
+      policy_complete: boolean;
+      model?: string;
+    };
+    answer: {
+      run_id: string;
+      agent_id: string;
+      console_url: string;
+      token: string;
+      learning: {
+        enabled: boolean;
+        revision: string | null;
+        context: string;
+        workflows: {
+          name: string;
+          workflow: string;
+          description: string;
+        }[];
+        check?: {
+          id: string;
+          revision: string;
+          digest: string;
+          workflow: {
+            name: string;
+            workflow: string;
+            description: string;
+          };
+        };
       };
     };
   };

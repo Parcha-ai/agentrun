@@ -921,9 +921,10 @@ export const childArgv = (): string[] => [process.execPath, "--import", new URL(
  *  A built-in learning run (its launch names harness "learning"): its grade is one ask through the runner's model route,
  *  and its one write is the merge into the agent's learning folder, which no run's process may write. An SDK backend
  *  run (launch.sdk): its agent runs in the caller's application, and its loop here reads the evidence it posts and closes
- *  its inbox. A native run (launch.native): its agent is the source machine's own sign-in, reached through the server's
+ *  its inbox. A CLI capture (launch.cli_learning) likewise only receives source evidence and serves owner corrections.
+ *  A native run (launch.native): its agent is the source machine's own sign-in, reached through the server's
  *  connectors, whose rows are the server's. */
-export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "native">): boolean => harness === "learning" || Boolean(launch.sdk) || Boolean(launch.native);
+export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "native" | "cli_learning">): boolean => harness === "learning" || Boolean(launch.sdk) || Boolean(launch.native) || Boolean(launch.cli_learning);
 
 /** The words a run on Claude Code's login on this machine is refused in where each run is a user of its own. */
 export const LOGIN_NEEDS_SERVER_USER = `A run on Claude Code's login on this machine needs runs under the server's own user, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same, or give the run a model_key.`;
