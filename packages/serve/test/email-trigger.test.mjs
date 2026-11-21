@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { schemaProblems } from "./schema-support.mjs";
 import { follow, serve } from "./support.mjs";
 import { fakeClock, firings, keyOf, made, until } from "./trigger-support.mjs";
-import { ADDRESS, checked, emailTrigger, firedInput, launchText, mailbox, saved } from "./email-support.mjs";
+import { ADDRESS, checked, emailTrigger, firedInput, launchText, mailbox, saved, savedThenGone } from "./email-support.mjs";
 
 const T0 = "2026-06-01T00:00:30Z";
 /** The grid's minute `n` after T0's: every_s 60 runs on whole minutes from the epoch. */
@@ -215,11 +215,8 @@ test("an unreachable server is said on the trigger as its last check and never t
   const { api, baseUrl } = await serve(t, { triggerClock: clock, runner: false });
   const faux = await mailbox(t);
   await made(api, "mail");
-  // A port nothing listens on: the account saved there can't be reached.
-  const closed = await mailbox(t);
-  const unreachable = { host: "127.0.0.1", port: closed.imap.port };
-  await closed.close();
-  await saved(api, faux, { imap: unreachable });
+  // An account that signed in when saved, on servers since closed: it can't be reached.
+  await savedThenGone(t, api);
   const { id } = await trigger(api, emailTrigger("mail", { every_s: 60 }));
   for (const n of [1, 2, 3, 4]) {
     clock.to(minute(n));

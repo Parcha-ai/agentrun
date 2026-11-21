@@ -415,12 +415,19 @@ jobs:
         with:
           go-version-file: packages/serve/runas/go.mod
           cache: false
-      - name: The run helper's vet and tests (packages/serve/runas)
+      - name: The run helper's vet and tests (packages/serve/runas, unprivileged)
         if: steps.paths.outputs.run == 'true'
         working-directory: packages/serve/runas
         env:
           CGO_ENABLED: '0'
         run: go vet ./... && go test ./...
+      # The real helper on real files, started as the runner (uid 1000) with the image's capabilities: a run as one slot
+      # reaches neither another slot's folder nor, after its give-back, its own last run's (privileged_test.go). Root
+      # starts it with those capabilities, so this step runs under sudo; the step above skips these tests.
+      - name: The run helper's privileged tests (packages/serve/runas, as root)
+        if: steps.paths.outputs.run == 'true'
+        working-directory: packages/serve/runas
+        run: sudo env "PATH=$PATH" CGO_ENABLED=0 GOCACHE="$RUNNER_TEMP/go-root-cache" GOFLAGS=-buildvcs=false go test -count=1 -v -run Privileged ./...
       - name: The image, built once
         id: image
         if: steps.paths.outputs.run == 'true'

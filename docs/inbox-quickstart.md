@@ -79,7 +79,8 @@ revoke without changing your own. Your normal password doesn't work with Gmail, 
 The three presets fill in the servers: you enter your address and the app password. **Other** takes your server's
 IMAP and SMTP hosts and ports, and a sign-in name when it isn't your address. Ports 993 and 465 use TLS from the
 start, any other port must offer STARTTLS, and AgentRun never sends your password unencrypted. **Test** signs in to
-both servers without saving or sending anything.
+both servers without saving or sending anything. **Save** signs in the same way before it keeps the account: a wrong
+password, or a server it can't reach, is said beside the form and nothing is saved.
 
 Outlook isn't offered. Microsoft turned off app-password sign-in for Outlook.com's IMAP and SMTP, so it needs
 Microsoft sign-in, which AgentRun doesn't do yet.

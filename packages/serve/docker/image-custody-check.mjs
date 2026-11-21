@@ -118,6 +118,13 @@ for (const [who, seen] of [["the run's process", report.run], ["a program the ru
 // connects to it, a run's process must not.
 const socketGid = Number(process.env.SOCKET_GID);
 if (!process.getgroups().includes(socketGid)) fail(`the server's user is not in group ${socketGid}, the socket's: the container was not given it, so the socket check proves nothing`);
+// The server's user holds a handful of groups at most (its own, and what the container gives it), and no slot's: a
+// platform that reads a user's groups at start (Northflank's environment injector refused 257) sees a short list, and the
+// runner reads a run's folders through its own group alone.
+const ownGroups = [...new Set(process.getgroups())];
+if (ownGroups.length > 4) fail(`the server's user is in ${ownGroups.length} groups (${ownGroups.slice(0, 8).join(" ")}…): at most 4 (its own and the container's)`);
+const slotGroups = ownGroups.filter((gid) => gid >= FIRST_RUN_ID && gid < FIRST_RUN_ID + SLOTS);
+if (slotGroups.length) fail(`the server's user is in slot groups ${slotGroups.join(" ")}: a run's folders are reached through the runner's own group, never a slot's`);
 rmSync(SOCKET, { force: true });
 const server = createServer((socket) => socket.destroy());
 await new Promise((resolve, reject) => server.once("error", reject).listen(SOCKET, resolve));
@@ -134,7 +141,8 @@ for (let i = 0; !beacon; i++) {
     await sleep(100);
   }
 }
-// The server's user reads the beacon's folder through its slot's group: the file is there to be reached for.
+// The server's user reads the beacon's folder through its own group (the folder is the beacon slot's uid's and that
+// group's): the file is there to be reached for.
 try {
   readFileSync(join(beacon.tmp, "beacon"));
 } catch (error) {
@@ -335,4 +343,4 @@ for (const pid of pids) {
 await api("POST", `/runs/${run.run_id}/cancel`);
 for (const why of failed) console.error(`image custody: FAIL ${why}`);
 if (failed.length) process.exit(1);
-console.log(`image custody: PASS no secret in ${checked} processes; PID 1 ${pid1Pipe ? "holds the launcher's pipe, read empty" : "holds no launcher pipe"}; the run's process was handed its model key alone, runs as uid ${report.run.uid} with its group alone, no capability and no_new_privs, and neither it nor a program it starts reaches the data directory or the server's memory; two live runs (uids ${beacon.uid} and ${reached.run.uid}) reach neither the other's folder, environment, memory nor descriptors, nor the socket of the server's group ${socketGid}; a slot's uid lists and reads nothing of ${entries.length} entries of the data directory; the ended run's processes (one in a session of its own) and its file in /tmp are gone, and its slot's next run reaches nothing it left; a run reads its upload, and its next message writes beside the server's user's folders deep in its work folder`);
+console.log(`image custody: PASS the server's user is in ${ownGroups.length} groups (${ownGroups.join(" ")}), no slot's; no secret in ${checked} processes; PID 1 ${pid1Pipe ? "holds the launcher's pipe, read empty" : "holds no launcher pipe"}; the run's process was handed its model key alone, runs as uid ${report.run.uid} with its group alone, no capability and no_new_privs, and neither it nor a program it starts reaches the data directory or the server's memory; two live runs (uids ${beacon.uid} and ${reached.run.uid}) reach neither the other's folder, environment, memory nor descriptors, nor the socket of the server's group ${socketGid}; a slot's uid lists and reads nothing of ${entries.length} entries of the data directory; the ended run's processes (one in a session of its own) and its file in /tmp are gone, and its slot's next run reaches nothing it left; a run reads its upload, and its next message writes beside the server's user's folders deep in its work folder`);

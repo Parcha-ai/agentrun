@@ -60,6 +60,7 @@ export function ApprovalCard({ pending, onAnswer, compact = false, heading }: Ap
       {heading}
       <p className={cn("caps flex items-center gap-2 text-label text-warning-text", heading && "mt-2")}><ShieldQuestion className="size-3.5" aria-hidden /> Approval required</p>
       <p className="mt-2 text-prose leading-snug">The agent wants to run <span className="break-all font-mono text-lead">{pending.tool}</span>.{destructive && <> <Chip tone="error" title="Its server marks this tool destructive: it may delete or overwrite.">Destructive</Chip></>}</p>
+      {pending.asks_because && <p className="mt-2 text-prose leading-snug">Asks because {pending.asks_because}.</p>}
       <pre aria-label={`${pending.tool} arguments`} title={pending.args_preview} className={cn("mt-2 overflow-auto whitespace-pre-wrap break-all border bg-card p-3 font-mono text-small leading-[1.6]", compact ? "max-h-28" : "max-h-64")}>{argsShown(pending.args_preview)}</pre>
       {price && <p className="mt-2 font-mono text-small text-muted-foreground">{price}</p>}
       {said ? (

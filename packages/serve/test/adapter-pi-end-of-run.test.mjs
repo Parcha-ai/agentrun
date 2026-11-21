@@ -67,9 +67,11 @@ async function setup(t, timing = STEADY) {
   const endEntries = () => entriesOf("agentrun.end");
   /** Each end entry of the run, its data. */
   const endsOf = () => read("SELECT json_extract(record, '$.data') AS data FROM pi_entries WHERE run_id = ? AND json_extract(record, '$.kind') = 'agentrun.end'", "run-1").map((row) => JSON.parse(row.data));
+  /** The job's ends kept for the run's look-back (KINDS.jobEnd), oldest first. */
+  const jobEndsOf = () => read("SELECT json_extract(record, '$.data') AS data FROM pi_entries WHERE run_id = ? AND json_extract(record, '$.kind') = 'agentrun.end-of-run.job'", "run-1").map((row) => JSON.parse(row.data));
   /** The run's command rows: kind, taken or not, and why refused. */
   const commandsOf = () => read("SELECT kind, taken_at IS NOT NULL AS taken, refused FROM commands WHERE run_id = ? ORDER BY id", "run-1");
-  return { server, start, until, toldRows, endEntries, entriesOf, endsOf, commandsOf };
+  return { server, start, until, toldRows, endEntries, entriesOf, endsOf, jobEndsOf, commandsOf };
 }
 
 /** The adapter loop on `spec`, its spec naming the run's agent and carrying `extra` (endPatch, harnessReady), its deps
@@ -397,7 +399,7 @@ test("pi through the adapter: a person's stop during the job: the stopped end ca
 // The job's end is kept before the end-of-run turn looks back (keepJobEnd), and every reader serves it from then on: a
 // cancel that reaches the runner then cuts only the look-back, and the run ends with its job's end, at its time.
 test("pi through the adapter: a cancel that reaches the runner during the end-of-run turn cuts only the look-back: the run ends with its job's end, the cut step's rows with it", async (t) => {
-  const { server, start, until, toldRows, commandsOf, endsOf } = await setup(t);
+  const { server, start, until, toldRows, commandsOf, endsOf, jobEndsOf } = await setup(t);
   const calls = [];
   const endOfRun = async (input) => {
     calls.push(input.cut ?? "asked");
@@ -409,13 +411,16 @@ test("pi through the adapter: a cancel that reaches the runner during the end-of
   const { tool, running } = heldTool();
   await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { call: "slow" }, { say: "a note" }], tools: { slow: tool }, hooks: quiet }), {}, { endOfRun }), "runner-a");
   await running;
-  const sent = Date.now();
+  // The job's end, kept before the end-of-run turn asked (keepJobEnd), so before the cancel below.
+  const [kept] = jobEndsOf();
+  assert.ok(kept?.endedAt, `the job's end is kept with its time: ${JSON.stringify(jobEndsOf())}`);
   await server.command("run-1", { kind: "cancel" });
   const row = await until((r) => r.state !== "running" && r.runner === null, "the run did not end");
   assert.equal(row.state, "ended", `the job's end: ${JSON.stringify(row)}`);
   assert.notEqual(row.summary, "cancelled", "never a cancel's end");
-  assert.ok(row.endedAt < sent, `at its job's end, kept before the cancel: ${row.endedAt} vs ${sent}`);
-  assert.deepEqual(endsOf().map((end) => end.state), ["ended"], "one end, the job's");
+  assert.equal(row.endedAt, kept.endedAt, "at its job's end, kept before the cancel");
+  assert.deepEqual(jobEndsOf(), [kept], "kept once");
+  assert.deepEqual(endsOf().map((end) => end.state), [kept.end.state], "one end, the job's");
   assert.deepEqual(commandsOf().map((each) => [each.kind, each.taken]), [["cancel", 1]], "the cancel is taken by the end");
   assert.deepEqual(calls, ["asked", "stopped-looking"], "asked once, then told the run was cut while it looked back");
   assert.deepEqual(toldRows().map((each) => each.marker), ["cut:stopped-looking"], "the cut step's rows stored with the job's end");
