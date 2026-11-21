@@ -32,7 +32,7 @@ for (const [style, kind, title] of [['cursor', 'execute', 'agentrun: lookup'], [
     assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the native call never ran');
     assert.equal(ran, 0, 'our tool never ran either');
     const journaled = await streamRecords(store, 'acp.permission');
-    assert.deepEqual(journaled.map((r) => [r.type, r.callId === asked[0].callId]), [['asked', true], ['answered', true]]);
+    assert.deepEqual(journaled.map((r) => [r.type, r.callId === asked[0].callId]), [['asked', true], ['answered', true], ['given', true]], 'asked, answered, and handed to the agent (used up)');
     assert.equal(journaled[1].answer, 'deny');
   });
 }

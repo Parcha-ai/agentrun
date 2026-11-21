@@ -180,7 +180,8 @@ import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendo
 import { wakeAnsweredBySetting } from "./settings-wake.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
-import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
+import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR, type UploadStore } from "./uploads.js";
+import { archilUploads, runKeepsUploads, UPLOAD_RETENTION_ENV, UPLOAD_SWEEP_EVERY_MS, uploadRetentionMs } from "./uploads-archil.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { recordingsOf, recordingsWorkspace } from "./run-recordings.js";
 import { recordingsFolder } from "./workspace/paths.js";
@@ -316,6 +317,9 @@ export type ServeOptions = {
    *  test's fakes, for the server's own Archil calls (a launch's disk read, the settings' test, an agent's disk removed,
    *  a deleted agent's run folder removed from a disk its launch named). */
   archilControl?: ArchilRoutesOptions["control"];
+  /** How long an uploaded file no run names is kept on the uploads disk in Mode 2 (uploads-archil.ts): a duration such
+   *  as 7d, or "off". Default AGENTRUN_UPLOAD_RETENTION, else 7d. */
+  uploadRetention?: string;
   /** Another Composio than the real one, and its fetch: a test's fake, for the Composio preset's calls (composio-preset.ts). */
   composioControl?: ComposioControl;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
@@ -1670,6 +1674,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const row = await store.runs.get(runId);
     if (!row || FINAL_STATES.includes(row.state)) await uploads.release(runId);
   }
+  // Mode 2 (uploads-archil.ts): the uploads on this server's own Archil disk, and each run's placed in its folder at its
+  // start, so its runner reads no upload. Mode 1 keeps them in this data directory (uploads above), as before.
+  const archilFiles = archilUploads({ store, sealKey, env: withSecrets(process.env, "own"), ...(options.archilControl ? { control: options.archilControl } : {}) });
+  /** Where the files routes find uploads now: the uploads disk in Mode 2, else this data directory. `make`: an upload,
+   *  which makes the uploads disk when there is none. */
+  const uploadsHere = async (make = false): Promise<UploadStore> => (await archilFiles.here(make)) ?? uploads;
+  const uploadRetention = uploadRetentionMs(options.uploadRetention ?? process.env[UPLOAD_RETENTION_ENV]);
+  if (uploadRetention !== undefined) {
+    // An uploaded file no run names, older than the retention, is deleted from the uploads disk (Mode 2 only): once an
+    // hour, each sweep after the last one ends.
+    let sweeping: Promise<void> = Promise.resolve();
+    const sweepUploads = () => {
+      sweeping = sweeping.then(async () => {
+        const removed = await archilFiles.sweep(uploadRetention, runKeepsUploads(store));
+        if (removed.length) log?.(logLine("uploads_expired", { removed: removed.length }));
+      }).catch((error: Error) => void log?.(logLine("uploads_sweep_failed", { why: String(error?.message ?? error).slice(0, 300) })));
+    };
+    const uploadsTimer = setInterval(sweepUploads, UPLOAD_SWEEP_EVERY_MS);
+    uploadsTimer.unref();
+    stops.push(async () => {
+      clearInterval(uploadsTimer);
+      await sweeping;
+    });
+  }
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
   // The CLI harnesses, each installed on first use into the data's harnesses directory (harness-install.ts): one install
@@ -1753,8 +1781,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     told: (error) => told(error),
     runnable,
     pinFirst: (revision) => pinFirst(revision),
-    readyFiles: (ids) => uploads.readyFiles(ids as string[]),
-    files: { hold: (runId, ids) => uploads.hold(runId, ids), release: (runId) => uploads.release(runId) },
+    readyFiles: async (ids) => (await uploadsHere()).readyFiles(ids as string[]),
+    files: { hold: (runId, ids) => uploads.hold(runId, ids), release: (runId) => uploads.release(runId), place: (runId, agentId, launch) => archilFiles.place(runId, agentId, launch) },
     fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
     // The run's Archil disk for its launch record (run-launch.ts archilDisk): the body's, else its agent's when it has one.
     // A disk the body names is read at Archil once, before the run is made (archil-routes.ts checkLaunchDisk): one that is
@@ -1834,7 +1862,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (liveViewerLink, the one the runner's browser tool wrote under its claim), opened with the server's seal key. The
   // timeline route keeps its own stub (store-reads journal + SSE) until E2c's timeline lands.
   const runReadsDeps: RunReadsDeps = {
-    runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey, env: withSecrets(process.env, "own") }),
+    runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey, env: withSecrets(process.env, "own"), ...(options.archilControl?.makeDisk ? { makeDisk: options.archilControl.makeDisk } : {}) }),
     recordings: async (_store, runId) => {
       const run = await store.runs.get(runId);
       return run ? recordingsWorkspace(recordingsFolder(data, run.agentId, runId)) : null;
@@ -4760,8 +4788,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "createFile": {
         // A `path` in the query, or a body that is not JSON: the file sent in one call, its bytes the body. Else the
         // contract's JSON reservation, its bytes sent after with PUT /files/{file_id}.
+        const kept = await uploadsHere(true);
         if (url.searchParams.has("path") || !isJson(req)) {
-          const received = await uploads.take(url.searchParams, req.headers["content-type"], req);
+          const received = await kept.take(url.searchParams, req.headers["content-type"], req);
           try {
             const answer = await idempotent(req, "/files", received.fingerprint, async () => ({ status: 201, body: await received.commit() }));
             return send(res, answer.status, answer.body, answer.headers);
@@ -4770,26 +4799,27 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           }
         }
         const body = await bodyOf(req);
-        const answer = await idempotent(req, "/files", body, async () => ({ status: 201, body: await uploads.reserve(body) }));
+        const answer = await idempotent(req, "/files", body, async () => ({ status: 201, body: await kept.reserve(body) }));
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "uploadFile":
-        return send(res, 200, await uploads.receive(id, req));
+        return send(res, 200, await (await uploadsHere()).receive(id, req));
       case "listFiles": {
+        const kept = await uploadsHere();
         // This server's own: its uploads, newest first, a page at a time, so an id is never lost with the answer that gave it.
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
-        const ids = await uploads.ids();
-        const files = (await Promise.all(ids.slice(offset, offset + limit).map((fileId) => uploads.get(fileId)))).filter((file) => file !== null);
+        const ids = await kept.ids();
+        const files = (await Promise.all(ids.slice(offset, offset + limit).map((fileId) => kept.get(fileId)))).filter((file) => file !== null);
         return send(res, 200, { files, next_cursor: nextCursor(offset + limit, ids.length) });
       }
       case "getFile": {
-        const file = await uploads.get(id);
+        const file = await (await uploadsHere()).get(id);
         if (!file) throw new ApiError("not_found", `no file ${id}: GET /v2/files lists the files this server keeps`);
         return send(res, 200, file);
       }
       case "deleteFile":
-        await uploads.remove(id);
+        await (await uploadsHere()).remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getUsage":
         return send(res, 200, await usage(url));
