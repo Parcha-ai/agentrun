@@ -857,7 +857,7 @@ const LEARNING_REASON = {
     "`empty`: the compile turn kept no workflow and the owner gave no correction, or the run was not asked its compile turn because its only tool work was its learned workflows, each answering, with nothing said after its first message (its `detail` says so). `checker`: the checks (or the workflow's dry run) refused it, or the owner's correction would pass corrections.md's cap, and nothing was written to git.",
     "`use`: the run was started with `learning: \"use\"`: it started from what its agent learned and keeps nothing, so it was never asked its end-of-run turn.",
     "`reset`: the run read what its agent learned before a reset of the agent's learning (DELETE /v2/agents/{agent_id}/learning), so nothing it learned is kept and it was never asked its end-of-run turn.",
-    "`paused`: the learning folder's disk could not run the folder script (an Archil account with serverless exec off, say), so nothing was checked or written; no compile attempt is counted, nothing stops, and the next run tries again (its `detail` says so, and GET /v2/agents/{agent_id}/learning/loop `paused`).",
+    "`paused`: the learning folder's disk could not run the folder script (an Archil account with serverless exec off, say), or the script timed out on it, so nothing was checked or written; no compile attempt is counted, nothing stops, and the next run tries again (its `detail` says so, and GET /v2/agents/{agent_id}/learning/loop `paused`).",
   ].join(" "),
 };
 // ---- learning/1: what a person sees and controls of an agent's learning (learning-routes.ts) ---------------------------
@@ -1765,7 +1765,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
           draft_errors: { type: "array", items: { type: "string" }, description: "A draft that never passed: its last errors. A draft its check had nothing to run on (its promotion `check.stopped` with `n` 0): its record's reason, starting \"nothing to check it on\". Empty otherwise." },
           withheld: { type: "boolean", description: "The run's handed values can't be read here: its error texts are left out (the counts stand)." },
         }), description: "Newest first." },
-        paused: { ...NULL_STRING, description: "Set while the agent's learning is paused: its newest learning end could not run the folder script on the learning folder's disk (an Archil account with serverless exec off, say), so that run's learning was dropped `paused`, in its words (\"learning paused: the disk can't run the folder script (…)\"). A paused end counts no compile attempt and stops nothing; the next run tries again, and any later end clears it. Null otherwise." },
+        paused: { ...NULL_STRING, description: "Set while the agent's learning is paused: its newest learning end could not run the folder script on the learning folder's disk (an Archil account with serverless exec off, say) or the script timed out on it, so that run's learning was dropped `paused`, in its words (\"learning paused: the disk can't run the folder script (…)\", or \"learning paused: the folder script timed out on the disk (…)\"). A paused end counts no compile attempt and stops nothing; the next run tries again, and any later end clears it. Null otherwise." },
       }), "The loop's compile turns."), ...errors(401, 403, 404, 429, 500) },
       "x-agentrun-serve": "learningloop/1",
     },
