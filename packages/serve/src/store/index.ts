@@ -1,10 +1,10 @@
 // The one store (design 2.1), for the cutover: nothing on main imports it until then.
-export { AgentArchived, AgentDeleting, AgentPurged, AnswerTaken, CommandTaken, endedReason, ExternalBodyConflict, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RevisionMoved, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, SignInHandedTo, SignInMissing, StoreAwaitsServer, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, STORE_WRITE_DEADLINE_MS, stoppedByPerson, TriggerFull, TriggersLeft } from "./store.js";
+export { AgentArchived, AgentDeleting, AgentPurged, AnswerTaken, CommandTaken, endedReason, ExternalBodyConflict, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RevisionMoved, RunFinal, RunPurged, RunnerBelowFloor, RunsMadeFromLeft, SchemaVersionUnknown, SignInHandedTo, SignInMissing, StoreAwaitsServer, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, STORE_WRITE_DEADLINE_MS, stoppedByPerson, TriggerFull, TriggersLeft } from "./store.js";
 export type {
   ConstraintRule,
   AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, ComputerIntervalRow, ComputerIntervals, ComputerLedger, ComputerLedgerRow, Firing, FiringChange, FiringRow, FiringStatus, FiringStreak, Journal, Live, LiveRow, Mcp, McpCredentialMark, McpRemoved, McpOauth, McpOauthPendingRow, McpPinRow,
   McpServerRow, McpServerStamp, McpServerWrite, MintedTokenRow, MintedTokens, NewFiring, NewPairedComputer, NewRevision, NewTrigger, PairedComputerRow, PairedComputers, ReleasedState, RevisionRow, RunnerRow, Runners, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SealedPlane, SealedSecretRow, SealedSecrets, SettingRow, Settings, Staged,
-  StagedTake, Store, StoreRole, TemplatePackage, Templates, TriggerDef, TriggerPatch, TriggerRow, Triggers, TriggerScope, TriggerSettingRow,
+  StagedTake, Store, StoreRole, StoreSchemaState, TemplatePackage, Templates, TriggerDef, TriggerPatch, TriggerRow, Triggers, TriggerScope, TriggerSettingRow,
   TriggerSettings, Channels, ChannelAttemptRow, ChannelPostRow, ChannelToldRow, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunLabels, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, LaunchSealed, LaunchSealedWrite, Learning,
   LearningProposal, LiveViewerRow, LiveViewers, PurgeKept, SignIns, SignInRow, SignInTombstoneRow, UpdatedRun, ViewerKind,
 } from "./store.js";
@@ -23,6 +23,6 @@ export { cleanText, type Dialect, SQLITE } from "./dialect.js";
 export { DEFAULT_STORE_POOL_SIZE, MAX_STORE_POOL_SIZE, openStore, type OpenStoreOptions, storePlace, storePoolSize, storeTarget, type StoreTarget } from "./open.js";
 export { CLOCK_WARN_MS, DEFAULT_SCHEMA, openPostgresStore, type PostgresStoreOptions, postgresWhere } from "./postgres/store.js";
 export { LEASE_DEADLINE_MS, OWNER_WAIT_MS, PgConnection, SCHEMA_NAME, STORE_CONNECT_TIMEOUT_MS, Unanswered } from "./postgres/connection.js";
-export { dropPostgresSchema, migrate, migrationsIn, versionOf as postgresVersionOf } from "./postgres/migrate.js";
+export { dropPostgresSchema, LAST_UNMARKED, marksBreaking, migrate, type Migration, migrationsIn, runnerFloorOf, runnerOn, RUNNERS_BREAKING, type SchemaState, versionOf as postgresVersionOf } from "./postgres/migrate.js";
 export { applyRunPatch, RUN_COLUMNS, runOf, type RunRecord } from "./sqlite/run-patch.js";
 export { readLaunch, writeLaunch } from "./sqlite/run-launch.js";

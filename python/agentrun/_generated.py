@@ -58,6 +58,7 @@ __all__ = [
     "CapabilitiesResource",
     "CapabilitiesSecrets",
     "CapabilitiesServer",
+    "CapabilitiesStoreSchema",
     "CapabilitiesSwitchesValue",
     "CapabilitiesToolsItem",
     "CapabilitiesToolsItemResolves",
@@ -6192,6 +6193,7 @@ class _CapabilitiesRequired(TypedDict):
 
 
 class Capabilities(_CapabilitiesRequired, total=False):
+    store_schema: CapabilitiesStoreSchema
     workflows: CapabilitiesWorkflows
     links: CapabilitiesLinks
     home: CapabilitiesHome
@@ -6407,6 +6409,12 @@ class CapabilitiesLearningModel(TypedDict):
     model: str | None
     needs: Literal["key", "model"] | None
     reason: str | None
+
+
+class CapabilitiesStoreSchema(TypedDict):
+    version: int | None
+    runner_floor: int | None
+    known: int
 
 
 class _CapabilitiesLearningRequired(TypedDict):

@@ -4010,7 +4010,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // runner_refused: why no runner here can take a run, in their words, while every runner there refused to claim
       // (runner/presence.ts); null while one can, or none is there yet.
       const runnerRefused = (await refusedNow().catch(() => undefined)) ?? null;
-      return send(res, 200, { ...answer, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) } } });
+      // store_schema: the store's version and runner floor now, beside this build's (Store.schemaState), for a deploy's
+      // skew check; left out when the store cannot say (a read that failed).
+      const state = await store.schemaState?.().catch(() => undefined);
+      const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
+      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
