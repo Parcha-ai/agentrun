@@ -44,7 +44,7 @@ import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
-import { readLaunch, readLearningStarts, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
+import { postgresReadableJson, postgresUnicodeRefusal, readableJson, readLaunch, readLearningStarts, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
 
@@ -144,7 +144,7 @@ const claimableIn = (d: Dialect, n: StoreNow): { sql: string; params: SqliteValu
     (wake_at IS NOT NULL AND wake_at <= ${n.sql})
     OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind IN ('stop', 'cancel'))
     OR ((backoff_until IS NULL OR backoff_until <= ${n.sql}) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL
-      AND ${d.jsonNotFalse("commands.body", ["answers"])})))))`,
+      AND ${d.jsonNotFalse(readableJson(d, "commands.body"), ["answers"])})))))`,
   params: [...n.params, ...n.params, ...n.params, ...n.params, ...n.params],
 });
 /** What a claim sets: the next epoch, the runner and its lease (from `n`, the deadlines' clock, plus a lease in ms), running,
@@ -760,10 +760,11 @@ class SqliteStore implements Store {
       if (agent?.archived_at != null && agent.external_ref != null) throw new AgentDeleting(agentId);
     };
     /** The runs whose launch is made from run `runId` (madeOf: a replay of its input, an audit's shadow), by id. Every
-     *  launch is read (no index names its source): a purge's read, never a hot path. */
-    const launchedFrom = async (ex: Pick<SqliteExecutor, "all">, runId: string): Promise<string[]> =>
+     *  launch is read (no index names its source): a purge's read, never a hot path. `body`: the body column as read
+     *  (readableJson's copy inside a transaction). */
+    const launchedFrom = async (ex: Pick<SqliteExecutor, "all">, runId: string, body = "body"): Promise<string[]> =>
       (await ex.all<{ id: string }>(
-        `SELECT run_id AS id FROM run_launch WHERE (${d.jsonText("body", ["replay", "of"])} = ? OR ${d.jsonText("body", ["audit", "of"])} = ?) AND run_id <> ? ORDER BY run_id`,
+        `SELECT run_id AS id FROM run_launch WHERE (${d.jsonText(body, ["replay", "of"])} = ? OR ${d.jsonText(body, ["audit", "of"])} = ?) AND run_id <> ? ORDER BY run_id`,
         runId, runId, runId,
       )).map((row) => row.id);
     /** Inserts the trigger, or (on its name for the agent) changes it in place, keeping its id; then its scope rows, only
@@ -1104,7 +1105,7 @@ class SqliteStore implements Store {
           const firing = await tx.get<{ status: string }>("SELECT status FROM trigger_firings WHERE trigger_id = ? AND key = ?", triggerId, key);
           if (!firing || firing.status !== "due") return undefined;
           const waiting = (await tx.get<{ n: number }>(
-            `SELECT COUNT(*) AS n FROM commands WHERE run_id = ? AND taken_at IS NULL AND ${d.jsonText("body", ["origin", "trigger_id"])} = ?`, runId, triggerId,
+            `SELECT COUNT(*) AS n FROM commands WHERE run_id = ? AND taken_at IS NULL AND ${d.jsonText(readableJson(d, "body"), ["origin", "trigger_id"])} = ?`, runId, triggerId,
           ))!.n;
           const clear = "retry_at = NULL, waits_on = NULL, payload = NULL, attrs = NULL, attempts = 0";
           if (waiting >= bound.max) {
@@ -1381,14 +1382,23 @@ class SqliteStore implements Store {
       // itself (turnCostOf over each turn's data), which no column holds.
       costUnknown: async ({ limit, after }) => {
         const agentic = "COALESCE((SELECT kind FROM revisions WHERE revisions.id = runs.revision_id), 'agentic') = 'agentic'";
-        const rows = await db.all<{ id: string }>(
+        const read = (readable: (column: string) => string) => db.all<{ id: string }>(
           `SELECT id FROM runs WHERE ${COST_UNKNOWN}
             AND NOT (state = 'stopped' AND COALESCE(outcome, '') = 'stopped' AND ${agentic})
-            AND NOT (${agentic} AND EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${db.dialect.jsonText("run_launch.body", ["native"])} IS NOT NULL))
-            AND EXISTS (SELECT 1 FROM ${PI_TABLE.entries} AS entry WHERE entry.run_id = runs.id AND ${db.dialect.jsonText("entry.record", ["kind"])} = ?)
+            AND NOT (${agentic} AND EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText(readable("run_launch.body"), ["native"])} IS NOT NULL))
+            AND EXISTS (SELECT 1 FROM ${PI_TABLE.entries} AS entry WHERE entry.run_id = runs.id AND ${d.jsonText(readable("entry.record"), ["kind"])} = ?)
             ${after === undefined ? "" : "AND id > ? "}ORDER BY id LIMIT ?`,
           RUNNER_RECORDS.turn, ...(after === undefined ? [] : [after]), limit,
         );
+        let rows: { id: string }[];
+        try {
+          rows = await read((column) => column);
+        } catch (error) {
+          // A run's input or journal holding an escaped NUL or a lone surrogate makes Postgres refuse the read: read again
+          // from copies with those escapes blanked (whether `native` is there, a record's kind), never a run's text.
+          if (d.name !== "postgres" || !postgresUnicodeRefusal(error)) throw error;
+          rows = await read(postgresReadableJson);
+        }
         return rows.map((row) => row.id);
       },
       relist: async ({ flags, agentId }) => {
@@ -1430,7 +1440,16 @@ class SqliteStore implements Store {
           "SELECT DISTINCT learning_run_id AS id FROM learning_proposals WHERE run_id = ? AND learning_run_id IS NOT NULL AND learning_run_id <> ?",
           runId, runId,
         )).map((row) => row.id);
-        return [...new Set([...(await launchedFrom(db, runId)), ...learning])].sort();
+        let launched: string[];
+        try {
+          launched = await launchedFrom(db, runId);
+        } catch (error) {
+          // Another run's body holding an escaped NUL or a lone surrogate (its input) makes Postgres refuse the read: the
+          // ids are read again from copies with those escapes blanked, outside any transaction.
+          if (d.name !== "postgres" || !postgresUnicodeRefusal(error)) throw error;
+          launched = await launchedFrom(db, runId, postgresReadableJson("body"));
+        }
+        return [...new Set([...launched, ...learning])].sort();
       },
       purge: async (runId, kept) => {
         const purged = await db.transaction(async (tx) => {
@@ -1442,7 +1461,7 @@ class SqliteStore implements Store {
           // A replay or shadow made from it after its purge read them (runs.create, under this row's lock) holds a copy of
           // its input: each is purged first.
           const left: string[] = [];
-          for (const id of await launchedFrom(tx, runId)) {
+          for (const id of await launchedFrom(tx, runId, readableJson(d, "body"))) {
             if ((await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM runs WHERE id = ?", id))?.purged_at === null) left.push(id);
           }
           if (left.length) throw new RunsMadeFromLeft(runId, left);

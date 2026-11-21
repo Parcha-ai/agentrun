@@ -10,6 +10,15 @@ type RunLaunchRecord = { run_id: string; body: string; sealed: Uint8Array | null
 const RUN_LAUNCH_COLUMNS = "run_id, body, sealed, created_at";
 const runLaunchOf = (r: RunLaunchRecord): RunLaunchRow => ({ runId: r.run_id, body: JSON.parse(r.body), sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), createdAt: r.created_at });
 
+// For the store's other reads of a run's JSON (a launch body, a command's body, a journal record): one id or flag out of
+// a document whose strings may hold an escaped NUL or a lone surrogate.
+export { postgresReadableJson, postgresUnicodeRefusal };
+
+/** JSON text `column` as a read of one id or flag out of it inside a transaction takes it, where a refused statement
+ *  aborts the transaction and can't be read again: on Postgres its copy with those escapes blanked (postgresReadableJson),
+ *  on SQLite (whose json functions read them) the column itself. */
+export const readableJson = (dialect: Dialect, column: string): string => (dialect.name === "postgres" ? postgresReadableJson(column) : column);
+
 /** Writes a run's launch row inside `tx` (the same transaction as the queued run it belongs to): the run path and the
  *  trigger path both call it, so the row lands with its run or not at all. */
 export function writeLaunch(tx: Pick<SqliteExecutor, "run">, runId: string, launch: RunLaunchInput, at: number): Promise<void> {
@@ -35,6 +44,19 @@ export async function readLaunch(executor: Pick<SqliteExecutor, "get">, runId: s
   return runLaunchOf(row);
 }
 
+/** Whether `error` (or a cause of it, six deep) is Postgres refusing a JSON document for an escaped NUL or a lone
+ *  surrogate in it: the text type keeps them, but every json function decodes the whole document's strings. */
+function postgresUnicodeRefusal(error: unknown): boolean {
+  for (let cause: any = error, depth = 0; cause && depth < 6; cause = cause.cause, depth++)
+    if (cause.code === "22P05" || (cause.code === "22P02" && cause.reason === "json_surrogate")) return true;
+  return false;
+}
+
+/** Postgres SQL for JSON text `column` with its escaped NULs and surrogates (\u0000, \ud800-\udfff) read as escaped
+ *  spaces, for a read of one number or id out of a document whose other strings may hold one (0026_run_disk.sql does
+ *  the same). A replaced escape stays an escape (an escaped backslash before u0000 keeps its own), so it is still JSON. */
+const postgresReadableJson = (column: string): string => `regexp_replace(${column}, '\\\\u(0000|[dD][89a-fA-F][0-9a-fA-F]{2})', '\\\\u0020', 'g')`;
+
 /** Project accounting facts before crossing the database boundary. An SDK inbox can contain megabytes of replay;
  *  the raw-JSON projection preserves strings, nulls and invalid scalar shapes equally on SQLite and Postgres.
  *  Uses an ordinary store connection: a PostgreSQL Unicode refusal is retried outside a failed transaction. */
@@ -58,10 +80,7 @@ export async function readUsageMetadata(
     // PostgreSQL accepts escaped NUL/lone-surrogate strings in JSON TEXT but cannot extract ANY member of
     // such a document. Only its exact Unicode refusal permits the former JS read/parse cost for that row.
     // Never sanitize native identities or silently lose known counters to an unrelated replay string.
-    let unicode = false;
-    for (let cause: any = error, depth = 0; cause && depth < 6; cause = cause.cause, depth++)
-      if (cause.code === "22P05" || (cause.code === "22P02" && cause.reason === "json_surrogate")) unicode = true;
-    if (executor.dialect.name !== "postgres" || !unicode) throw error;
+    if (executor.dialect.name !== "postgres" || !postgresUnicodeRefusal(error)) throw error;
     const raw = await executor.get<{ body: string | null; inbox?: string | null }>(
       `SELECT l.body${completion ? ", s.value AS inbox" : ""} ${from}`, ...params,
     );
@@ -83,6 +102,24 @@ export async function readUsageMetadata(
  *  and never the sealed bytes, so an agent with thousands of runs reads kilobytes a run, not each run's input. `learning`
  *  is the member's JSON text, null when the run's body names none. */
 export async function readLearningStarts(executor: Pick<SqliteExecutor, "all"> & { readonly dialect: Dialect }, agentId: string, where: string): Promise<{ runId: string; learning: unknown }[]> {
-  const rows = await executor.all<{ run_id: string; learning: string | null }>(`SELECT run_id, ${executor.dialect.jsonText("body", ["learning"])} AS learning FROM run_launch WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ? AND ${where})`, agentId);
-  return rows.map((row) => ({ runId: row.run_id, learning: row.learning === null ? undefined : JSON.parse(row.learning) }));
+  const learning = executor.dialect.jsonText("body", ["learning"]);
+  const runs = `run_id IN (SELECT id FROM runs WHERE agent_id = ? AND ${where})`;
+  let rows: { run_id: string; learning: string | null; body?: string | null }[];
+  try {
+    rows = await executor.all(`SELECT run_id, ${learning} AS learning FROM run_launch WHERE ${runs}`, agentId);
+  } catch (error) {
+    // A body holding an escaped NUL or a lone surrogate anywhere (a run's input) makes Postgres refuse the whole read. Read
+    // again: `learning` out of each body that holds none, and each body that does whole, parsed here, so a run's notes
+    // come back as written, never blanked. On an ordinary store connection, as readUsageMetadata's, so the read again is
+    // outside a failed transaction.
+    if (executor.dialect.name !== "postgres" || !postgresUnicodeRefusal(error)) throw error;
+    rows = await executor.all(
+      `SELECT run_id, CASE WHEN odd THEN NULL ELSE ${learning} END AS learning, CASE WHEN odd THEN body END AS body
+        FROM (SELECT run_id, body, ${postgresReadableJson("body")} <> body AS odd FROM run_launch WHERE ${runs}) AS launch`, agentId,
+    );
+  }
+  return rows.map((row) => ({
+    runId: row.run_id,
+    learning: row.body != null ? ((JSON.parse(row.body) as { learning?: unknown } | null)?.learning ?? undefined) : row.learning === null ? undefined : JSON.parse(row.learning),
+  }));
 }

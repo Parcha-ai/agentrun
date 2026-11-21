@@ -7,7 +7,7 @@ import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type Impor
 import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
-import { writeLaunch } from "./run-launch.js";
+import { readableJson, writeLaunch } from "./run-launch.js";
 
 /** A WHERE condition on `runs`: the run is no built-in learning run (one a kept learning names, queued with it), which no
  *  list of runs names. */
@@ -122,7 +122,7 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
 export const REOPEN_SET = "state = 'running', runner = NULL, claimed_until = NULL, wake_at = NULL, backoff_until = NULL, ended_at = NULL, summary = NULL, outcome = NULL";
 export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (state = 'stopped' AND outcome = 'stopped')) AND imported_from IS NULL AND purged_at IS NULL
   AND EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'agentic')
-  AND NOT EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText("run_launch.body", ["harness"])} = 'learning')`;
+  AND NOT EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText(readableJson(d, "run_launch.body"), ["harness"])} = 'learning')`;
 
 /** After a write that made the run final has taken its own rows: every command row of the run still untaken is refused
  *  with the end's reason, in that same transaction. The store takes no new row on a final run (RunFinal), so a row the
