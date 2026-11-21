@@ -26,7 +26,8 @@ import { type DefinitionBody, type Json, skillIssues, skillNames } from "./valid
 let mintedMs = -1;
 let mintedInMs = 0;
 
-/** A UUIDv7: time-ordered, so a listing by (created_at, id) is stable, and unique per revision and per minted agent. Two
+/** A UUIDv7: time-ordered, so a listing by (created_at, id) is stable, and unique per revision, per minted agent and per
+ *  upload (uploads.ts lists files by id, newest first). Two
  *  minted in one millisecond keep their order: the 12 bits after the time count them up (RFC 9562's monotonic counter),
  *  and a clock that steps back keeps the last millisecond, so each id sorts after the one before it. Without that, two
  *  edits in one millisecond tie on created_at and their random ids could number the newer revision first. */
