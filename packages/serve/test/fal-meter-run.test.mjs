@@ -17,18 +17,21 @@ test("a run's fal job: a Tool cost row, tools_usd and a /usage tools line at fal
   t.after(() => fake.close());
   // fal's price for ideogram/v3 (get_pricing, read 2026-11-20): $0.03 an image.
   fake.tools.get_pricing = { description: "fal's price for an endpoint.", input: { type: "object", properties: { endpoint_id: { type: "string" } }, required: ["endpoint_id"], additionalProperties: false }, run: ({ endpoint_id }) => ({ content: [{ type: "text", text: JSON.stringify({ prices: [{ endpoint_id, unit_price: 0.03, unit: "images", currency: "USD" }], next_cursor: null, has_more: false }) }] }) };
-  fake.tools.run_model = { description: "Run a fal model.", input: { type: "object", properties: {} }, run: (args) => ({ content: [{ type: "text", text: JSON.stringify({ status: "completed", submission_replayed: false, endpoint_id: args.endpoint_id, request_id: "r1", result: { images: [{ url: "https://v3.fal.media/1.png" }, { url: "https://v3.fal.media/2.png" }] }, has_result: true }) }] }) };
+  // The keys the fake received: a server marked fal off fal's host (an eval's fake) receives the agent's own.
+  const keys = [];
+  fake.tools.run_model = { description: "Run a fal model.", input: { type: "object", properties: {} }, run: (args) => (keys.push(args.submission_key), { content: [{ type: "text", text: JSON.stringify({ status: "completed", submission_replayed: false, endpoint_id: args.endpoint_id, request_id: "r1", result: { images: [{ url: "https://v3.fal.media/1.png" }, { url: "https://v3.fal.media/2.png" }] }, has_result: true }) }] }) };
   const saved = await api("PUT", "/settings/mcp-servers/fal", { url: fake.url, auth: { type: "none" }, toolkit: "fal" });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const made = await api("POST", "/agents", agent("card", { tools: [RUN_MODEL], tool_settings: { [RUN_MODEL]: { permission: "allow" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   // The run has a cap, so the job is held under it before it is sent.
-  const run = await api("POST", "/agents/card/runs", { input: { content: 'Call mcp__fal__run_model with {"endpoint_id":"fal-ai/ideogram/v3","input":{"prompt":"a share card","num_images":2}}' }, max_cost_usd: 1 });
+  const run = await api("POST", "/agents/card/runs", { input: { content: 'Call mcp__fal__run_model with {"endpoint_id":"fal-ai/ideogram/v3","input":{"prompt":"a share card","num_images":2},"submission_key":"card-20261120-1"}' }, max_cost_usd: 1 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.equal(view.status, "completed", JSON.stringify(view.error));
   assert.equal(fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === "run_model").length, 1, "the job was sent once");
+  assert.deepEqual(keys, ["card-20261120-1"], "a fal server off fal's host receives the agent's own submission_key");
 
   const costs = rows.filter((row) => row.kind === "phase" && /^Tool cost:/.test(row.summary ?? ""));
   assert.deepEqual(costs.map((row) => [row.summary, row.tool_name, row.usage?.usd]), [["Tool cost: fal charged $0.0600 for mcp:fal/run_model", RUN_MODEL, 0.06]], "one row: 2 images at $0.03");
