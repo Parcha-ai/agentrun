@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.1.0-beta.52 (2026-11-21)
+
+- `GET /v2/computers` says per kind whether a run of it can record its screen on this server, and the console's Recording switch reads that alone. <!-- changes/computers-say-record.md -->
+  - Public API addition: each of `kinds[]` carries `record`, `{available: true}` or `{available: false, why}`. A desktop, a phone or a browser is available when this server has `ffmpeg` on its PATH (read at each call, as a save of `computer.record: true` checks it); without it, each says "ffmpeg isn't installed on this server (no ffmpeg command on PATH)". A sandbox and no computer are never available, in their own words. The TypeScript and Python clients' `ListComputersResponse` gain it.
+  - The agent editor's Computer step shows the Recording switch for every kind but no computer, from the kind's `record`: where a run can't record here, the switch is off and disabled with the server's words for why (a saved `record: true` can still be turned off). It used to show the switch only for a kind whose `settings` list `record`, and offered it on a server with no ffmpeg until the save was refused. A switch of kind or provider drops `record: true` where the new kind can't record, in the same words.
+- Eve's `learning` setting takes `agree_on`, the answer fields a connected check compares; without it a check compares the whole answer exactly. <!-- changes/eve-agree-on.md -->
+- A synced folder now sees a file rewritten to the same size in the push's own clock tick (a command that lands tens of milliseconds after the claim's push, on a filesystem whose timestamps come from the kernel's coarse clock). Before, such a file kept the size and mtime the baseline listing recorded, and the runner's copy kept the old bytes for good. The claim's push now gives every file `PUSHED_MTIME` (2000-01-01T00:00:00Z) in its tar header, so any later write moves its mtime, and nothing is read back after the push. <!-- changes/sync-sees-push-tick-rewrite.md -->
+  computerd's `tar.push` now gives each file its tar header's mtime, as tar and the macOS computerd already did, instead of the time of the extraction. `TarEntry` takes an optional `mtime` for the header, whole seconds from 0 to `MAX_TAR_MTIME` (ustar's 11 octal digits; any other value throws a `RangeError` before the entry is written); without one it is the time the entry is written, as before.
+- `npm run build` works on Windows. The repository's scripts no longer spawn `npm` by name, which Node on Windows refuses for `npm.cmd` without a shell and can't find as plain `npm`. They run npm's own CLI script with the current Node instead: the npm that ran the script, else the one installed with that Node (`scripts/npm-command.mjs`). This also drops `npm ci`'s DEP0190 warning on Windows. <!-- changes/windows-npm-spawn.md -->
+- The daily Render walk first asks GHCR, as an anonymous pull, whether `render.yaml`'s image tag is published. When it is not (a release moves the pin before its image is published), the walk makes no service and its report says the tag is missing, instead of paying for a service whose deploy fails at the pull. The Deploy to Render button fails the same way until the image is published. <!-- changes/render-walk-image-published.md -->
+
 ## 0.1.0-beta.51 (2026-11-21)
 
 This release fixes two ways a run on an Archil disk failed as a missing file, lets a person's answer reach an ACP agent that asks for another command, and tidies email, templates and approvals. A pending approval says why it asks in a field of its own, `asks_because`, and no longer among the call's arguments (breaking for a client that read `args_preview.asked_because`). Settings → Email's Save signs in before it keeps the account, an email trigger has its own page and form in the console, and a template's apply answer says what it did to the agent (`agent_change`) and lists every trigger it made or kept. A runner shared by many customers keeps per-run users with the server's user in one group, and its operator can bound the private hosts an owner may allow. On Postgres the store moves to migration 0024, which beta.50 does not open, so back up the Postgres schema before you upgrade; a SQLite store stays at version 14. The box image is beta.50's.
@@ -57,6 +68,67 @@ Also in this release
   - `agentrun-serve store-schema [--data DIR]` prints the store's schema version and runner floor beside this build's version, and what this build's server and runner do on that store, as one line of JSON. It reads only: no lock, no migration. `--build` prints the build's own versions with no store. `GET /v2/capabilities` carries the same live values in `store_schema` (`version`, `runner_floor`, `known`), for a deploy check that refuses a build older than its store.
   - A Postgres migration that drops or renames anything, changes a column's type, makes a column NOT NULL, or adds a NOT NULL column with no default must carry the `-- runners: breaking` header. A test fails one that does not. Migrations up to 0022 predate the rule and count as breaking; 0023, the first the lint reads, is additive. A SQLite runner still opens only its own schema version.
 - With Archil on (Mode 2), uploads live on Archil and the server places a run's files in its folder at the run's start, so a runner reads no upload and needs no disk of the server's. `POST` and `PUT /v2/files` keep each file on the server's own uploads disk, `agentrun-<server id>-files` (made by the first upload), at `files/<file_id>/`, and listing, reading and deleting read it there. A run started with `file_ids` has each file copied into its folder at `work/inputs/<path>` before it is queued (2 files at a time across every start on the server, at most 45 s). Its launch records `files_placed` and the disk it used, and its claim copies nothing. A copy that fails refuses the start with `424 upstream_failed` in words, and no run is made (#3348). <!-- changes/uploads-on-archil.md -->
+- Connect independently started Codex CLI and Claude Code sessions with `learning connect`, without <!-- changes/existing-cli-learning.md -->
+  an SDK wrapper or replacing the source task launcher. Hooks record completed prompt windows and
+  reported usage; later prompts receive pinned owner corrections from AgentRun. Source task dialogue
+  never becomes a standing correction automatically. Source hooks do not expose a workflow execution
+  bridge or launch extra native reflection sessions. Retired automatic notes and skills stay on disk
+  but are not served or converted to owner corrections. Existing CLI profiles with a stored
+  `learning: "notes"` setting read as enabled under the current learning model; new definitions use
+  its boolean or loop settings.
+
+  Connection credentials are scoped, installation preserves unrelated hooks, and disconnect removes
+  only its own hooks. Incomplete evidence and cancellations stay explicit. The console offers capture
+  and correction delivery enrollment for existing applications while execution and editing stay in
+  their original setup. Initial enrollment requires a local AgentRun server and the selected CLI's
+  sign-in; metadata observation alone does not enable it.
+
+  Private pending capture journals are bound to their destination and credential generation. A reconnect
+  starts a fresh journal; prior or unbound records remain on disk and are not automatically migrated,
+  uploaded or deleted. `learning retry` reports `blocked_journals` and exits with status 1 when those
+  records need review.
+
+  Disconnect disables local capture before removing hooks or contacting the server. If server revocation is
+  pending, loaded hooks and retries stay disabled until disconnect completes; status exposes `capture_enabled`.
+  Retries advance across retained sessions, queued hooks and unfinished turns so older entries cannot indefinitely
+  hide later uploads. Interrupted connection commands recover an abandoned lock while a live owner keeps it.
+  Recovery also recognizes a proven previous kernel boot on the same host. A different namespace from the
+  same boot, or an unknown boot identity, stays protected until its owner's death can be established.
+  Project installer and shared Codex hook locks now keep private owner records and recover after a proven
+  owner death. Legacy empty or malformed installer locks stay protected regardless of age; the error names
+  the lock and requires stopping and verifying all relevant installers before manually removing that lock.
+- Observe token usage from already-running Codex sessions without restarting their native processes. Polling subscriptions follow loaded interactive, exec and delegated sessions; explicitly selected historical sessions remain available. Input, output and reported cache counters use native model metadata and source UTC dates, with cumulative baselines, atomic local checkpoints and sequence deduplication preventing duplicate accounting. <!-- changes/existing-codex-polling-usage.md -->
+
+  Polling usage requires the receiver’s advertised capability. Existing lifetime totals are not backfilled; missing counters, tail gaps and queue drops remain partial coverage. Conversation content stays local, existing learning consent is unchanged, and OTLP ingestion keeps its existing behavior.
+
+  Selected failed sessions remain eligible for bounded usage polling, so counters flushed after Codex reports a system error are retained. Acknowledged counters are not counted again after another poll or a connector restart.
+- Keep agent cards focused on status and Run/Edit actions. Learning setup, verification and settings <!-- changes/agent-card-learning-status.md -->
+  remain on the agent detail page; cards show a compact learning status without an Enable button.
+- The CLI capture API uses `agentrun cli-learning enroll|list|revoke|start|get|events|complete`. <!-- changes/cli-capture-command-routing.md -->
+  Its earlier generated `CLI learning` group was one word internally and did not accept the documented
+  invocations. The generated TypeScript resource is `cliLearning` with the same verbs, and Python uses
+  `cli_learning`; API paths and operation IDs are unchanged. The local `learning connect`, `status`,
+  `disconnect`, `retry` and `hook` commands and the existing learning API commands keep their routes.
+- Show connected coding agents in the same searchable inventory and count as registered agents, with <!-- changes/connected-agent-inventory.md -->
+  project, session, model, activity and token details. Preserve loaded cards when another source is
+  loading or unavailable, and exclude nonarchivable connections from the archived view.
+
+  Identify coding sessions by their native title, project basename or delegated task name, with a stable
+  ID suffix for unnamed sessions. Names refresh even while idle. The observer sends bounded labels only
+  to receivers advertising support; prompts, conversation previews, full paths and obvious credentials
+  are excluded. Token accounting and selection scopes stay unchanged.
+  Unicode labels respect queue and delivery byte limits so long multilingual names cannot stall delivery.
+- Give connected coding sessions the same card layout and coding-agent Run/Edit handoffs as other <!-- changes/connected-agent-learning-controls.md -->
+  agents, with learning status and setup or settings actions. Project learning connections remain
+  available in Learning Dojo but no longer appear as duplicate agents in the active inventory.
+
+  The connector can associate a session with an existing project/runtime learning connection using
+  its installed hook receipt and a scoped proof. Learning is shown as on only after that exact session
+  has reported a hook window and the server and project settings allow learning. Missing setup,
+  unverified activation and unsupported delegated sessions remain explicit. Revoked or invalid proofs
+  do not grant access or prevent ordinary activity and token reports. This does not install hooks,
+  enroll additional projects, import conversations or change how coding sessions are started.
+- Template packages such as Inbound Lead and KYB accept and retain their `learning.agree_on` settings through import, apply and later edits. A learned workflow's promotion check and shadow audit compare the declared answer fields, with each dotted path required in the template's output schema; a missing path disagrees. Without `agree_on`, the existing whole-answer comparison remains. The console and API describe which fields the check compared. <!-- changes/template-learning-compat.md -->
 
 ## 0.1.0-beta.50 (2026-11-20)
 

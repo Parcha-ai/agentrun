@@ -2,11 +2,32 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.52 (2026-11-21)
+
+- An agent can limit its own runs' requests on free models: `definition.max_requests`, a whole number, under the server's limit (`AGENTRUN_FREE_MODEL_REQUESTS`, 60 by default), so a run stops at the lower of the two. A dollar cap can't stop a free model, so before, the server's limit was the only bound, for every run on the server alike, and one run looping on a free model could spend a person's whole daily free quota under it. The run that reaches the agent's limit ends `failed` with `spend_cap_reached` in the server limit's words, naming the number it stopped at ("Not sent: this run reached its 20-request limit for free models."). It counts what the server's limit counts, and a paid request never counts. Above 0 sets it, 0 clears it, and an edit that leaves it out keeps it. A template sets it with `budget: { per_run_usd, max_requests }`: the manifest refuses 0 or a fraction, the template list shows it, and the console's template card says "Free-model requests: at most N a run". <!-- changes/agent-max-requests.md -->
+- `GET /v2/computers` says per kind whether a run of it can record its screen on this server, and the console's Recording switch reads that alone. <!-- changes/computers-say-record.md -->
+  - Public API addition: each of `kinds[]` carries `record`, `{available: true}` or `{available: false, why}`. A desktop, a phone or a browser is available when this server has `ffmpeg` on its PATH (read at each call, as a save of `computer.record: true` checks it); without it, each says "ffmpeg isn't installed on this server (no ffmpeg command on PATH)". A sandbox and no computer are never available, in their own words. The TypeScript and Python clients' `ListComputersResponse` gain it.
+  - The agent editor's Computer step shows the Recording switch for every kind but no computer, from the kind's `record`: where a run can't record here, the switch is off and disabled with the server's words for why (a saved `record: true` can still be turned off). It used to show the switch only for a kind whose `settings` list `record`, and offered it on a server with no ffmpeg until the save was refused. A switch of kind or provider drops `record: true` where the new kind can't record, in the same words.
+- The console filters Composio's actions, the agent editor's Tools step and an app trigger's events by name, slug or description; events list A to Z with their Markdown descriptions rendered; a new trigger marks Agent, Each run is asked and (with no agent default) the cost cap with *. Every list search in the console (agents and connected coding agents, an agent's runs, templates, a run's trace) now keeps a row holding each word typed, in any order. <!-- changes/console-list-filters.md -->
+- A run counts fal's jobs: `run_model`, `submit_job` and `submit_jobs` on a fal MCP server (toolkit `fal`, or `mcp.fal.ai`) are priced before they are sent, at fal's `get_pricing` unit price times the units the job's input states (images, megapixels, characters, seconds, or the length of its input media), held under the run's spend cap and booked as tool cost. A job the cap can't take is refused unsent, as is one whose price can't be known beforehand; with no cap that one runs, booked as an unknown charge. The figure is an estimate at fal's list price. Agents saved before this are metered when their server is at `mcp.fal.ai`; save an agent again to pin a fal server at another address as metered. <!-- changes/fal-spend-metered.md -->
+- `GET /v2/runs/{run_id}/usage` (`runusage/5`) now says which charges were the infrastructure's own redo. A turn is worked again when the claim working it is cut: its runner drained for a deploy (SIGTERM), its runner died, it lost its lease, or the turn was tried again. Each line, browser session and computer interval carries `attempt` (1 for a turn's first, 2 for its first redo, and so on) and `billable`. A turn's charges are split into one line per attempt. `billable` is false only for the model requests a cut attempt sent and never finished, which the attempt that takes the turn over sends again. Answered requests, paid calls, browser and computer time stay billable: the next attempt reuses them. The run also reports `infra_usd`, the sum of the lines that are not billable: 0 for a run with no such request, and null when one has no known cost, which a request cut in flight never does. This is data only: `total` and `cost.usd` still hold every line, and nothing is charged differently. A run from before this read keeps `attempt: null` and `billable: true` on every line. <!-- changes/run-attempts.md -->
+
+  Each claim writes its turn and attempt in its own transaction to the store's new `run_attempts` table. Postgres gets it from migration `0025_run_attempts.sql`, which is additive (a runner of the earlier version never reads it). A SQLite store gets it at the server's open, and a runner waits for that server. Each row holds `cause`, why the attempt before it was cut: `drain`, `crash`, `lease_lapse` or `retry`. A runner's release writes the cut attempt's own word for `drain` and `retry`. A runner that loses its lease writes `lease_lapse` while it can still reach the store. A lapse with no word reads as `crash`. A claim's `turn` and `attempt` are on `Claim`.
+
+  Each model request a claim sends to the server's model gateway carries the run, turn and attempt as LiteLLM's spend-logs metadata, in the header `x-litellm-spend-logs-metadata` (`{"agentrun_run_id":…,"agentrun_turn":…,"agentrun_attempt":…}`). That lets a gateway's spend logs be matched to the run's lines call by call. "The server's model gateway" means `AGENT_MODEL_BASE_URL`, or `ANTHROPIC_BASE_URL` on its origin. The header is sent on pi's routes and Claude Code's, never to a vendor's own endpoint. Codex's adapter takes no extra headers, so its requests carry none yet.
+- `web_save` answers a saved audio or video file's length in seconds as `duration_s` (to the millisecond), read from the file's own bytes: mp3, wav, mp4 and m4a. An agent can then fit a cut to a voiceover, or price a job billed by its input's length, without another tool. Any other file, or media whose length its bytes don't give (ogg, webm, a file with no header), answers no `duration_s`. <!-- changes/web-save-duration.md -->
+- A connected SDK agent's learned workflow is promoted only after compile_after checked turns, like a managed agent's, not after one. Each reserved native turn is one row of the check: the agent answers it, the caller's shadow runs the draft, and the server keeps the compared turn on the promotion record (`check.turns`) and waits for the next turn the draft takes. The turn that makes `learning.compile_after` decides once on every turn collected, on the same `agree_min` and `alone_min` bar; a disagreement no longer holds the draft on its own turn, and a turn the backend never completes within an hour is one failed row of the check instead of its decision. <!-- changes/sdk-check-evidence-bar.md -->
+- A synced folder now sees a file rewritten to the same size in the push's own clock tick (a command that lands tens of milliseconds after the claim's push, on a filesystem whose timestamps come from the kernel's coarse clock). Before, such a file kept the size and mtime the baseline listing recorded, and the runner's copy kept the old bytes for good. The claim's push now gives every file `PUSHED_MTIME` (2000-01-01T00:00:00Z) in its tar header, so any later write moves its mtime, and nothing is read back after the push. <!-- changes/sync-sees-push-tick-rewrite.md -->
+  computerd's `tar.push` now gives each file its tar header's mtime, as tar and the macOS computerd already did, instead of the time of the extraction. `TarEntry` takes an optional `mtime` for the header, whole seconds from 0 to `MAX_TAR_MTIME` (ustar's 11 octal digits; any other value throws a `RangeError` before the entry is written); without one it is the time the entry is written, as before.
+- In the console, a webhook trigger's once-shown signing secret after a template apply that skipped a trigger (a feed given no feeds, a GitHub or Composio trigger not set up here) is labelled with its own trigger's name, and its warning opens that trigger. Before, the console matched the package's trigger index against the answer's list, which a skipped trigger shifts: the secret carried the skipped trigger's name, and the warning's "Open … (Rotate)" link went to another trigger or to none. The console now finds each trigger by its name. <!-- changes/webhook-secret-name.md -->
+
 ## 0.1.0-beta.51 (2026-11-21)
 
 **Breaking:**
 
 - A pending approval says why a call its setting allows asks in a field of its own, `asks_because` (on `pending` of GET /runs/{run_id} and the run list), and no longer among the call's arguments: `args_preview` is the model's arguments alone, with no `asked_because` key, and `summary` no longer ends "Asks because ...". A client that read the reason from `args_preview`'s `asked_because` (or from the end of `summary`) breaks: read `asks_because` instead, absent on a call that asks by its setting. The console's approval card, on the run page and on Mission Control, says "Asks because <why>." above the arguments' box. <!-- changes/approval-asks-because.md -->
+- A runner can run on a disk of its own, and `runner --check` checks its environment by name. A runner with `AGENTRUN_STORE_URL`, `AGENTRUN_SEAL_KEY` and a local `--data` never reads the server's data directory: in Mode 2 (Archil settings saved) it runs every run; while the server is in Mode 1 it claims nothing and says why, on its log and to the server, which refuses a new run in those words (`503 runner_refused`) while no runner on its own data directory is there. The mode is the server's (its saved settings, or the Archil settings in its own environment), never the runner's. The runner never fails the run itself. The server tells the disks apart by an id it keeps in `/data/data-root.id` and says in the store at each start, beside the names (never the values) of its run-facing environment. <!-- changes/disk-free-runner.md -->
+  What breaks: `runner --check --data D --name N` now also checks the runner's environment (the store opens, the seal key is the store's, the runner holds every run-facing name the server holds, an upstream on loopback answers) and fails on any gap. A health check run with an empty environment (compose's `env -i`) now fails: run it with the container's environment (the check prints names, never values), or use `runner --check --heartbeat --data D --name N` for the heartbeat alone. `runner --check --env [--data D]` checks the environment alone, before a runner starts. Not yet on a disk of its own: screen recordings. See deploy/README.md, "A runner on a disk of its own".
 
 **Changes:**
 
@@ -40,6 +61,112 @@
   - A Postgres migration that drops or renames anything, changes a column's type, makes a column NOT NULL, or adds a NOT NULL column with no default must carry the `-- runners: breaking` header. A test fails one that does not. Migrations up to 0022 predate the rule and count as breaking; 0023, the first the lint reads, is additive. A SQLite runner still opens only its own schema version.
 - With Archil on (Mode 2), uploads live on Archil and the server places a run's files in its folder at the run's start, so a runner reads no upload and needs no disk of the server's. `POST` and `PUT /v2/files` keep each file on the server's own uploads disk, `agentrun-<server id>-files` (made by the first upload), at `files/<file_id>/`, and listing, reading and deleting read it there. A run started with `file_ids` has each file copied into its folder at `work/inputs/<path>` before it is queued (2 files at a time across every start on the server, at most 45 s). Its launch records `files_placed` and the disk it used, and its claim copies nothing. A copy that fails refuses the start with `424 upstream_failed` in words, and no run is made. <!-- changes/uploads-on-archil.md -->
   In Mode 2, an uploaded file that no run names is deleted after `AGENTRUN_UPLOAD_RETENTION` (default `7d`, or `off`), swept hourly (`event=uploads_expired`). Mode 1 is unchanged: uploads stay in `DIR/files/`, are copied in at the claim, and are never deleted. Files uploaded under one mode are not seen under the other.
+- Connect independently started Codex CLI and Claude Code sessions with `learning connect`, without <!-- changes/existing-cli-learning.md -->
+  an SDK wrapper or replacing the source task launcher. Hooks record completed prompt windows and
+  reported usage; later prompts receive pinned owner corrections from AgentRun. Source task dialogue
+  never becomes a standing correction automatically. Source hooks do not expose a workflow execution
+  bridge or launch extra native reflection sessions. Retired automatic notes and skills stay on disk
+  but are not served or converted to owner corrections. Existing CLI profiles with a stored
+  `learning: "notes"` setting read as enabled under the current learning model; new definitions use
+  its boolean or loop settings.
+
+  Connection credentials are scoped, installation preserves unrelated hooks, and disconnect removes
+  only its own hooks. Incomplete evidence and cancellations stay explicit. The console offers capture
+  and correction delivery enrollment for existing applications while execution and editing stay in
+  their original setup. Initial enrollment requires a local AgentRun server and the selected CLI's
+  sign-in; metadata observation alone does not enable it.
+
+  Private pending capture journals are bound to their destination and credential generation. A reconnect
+  starts a fresh journal; prior or unbound records remain on disk and are not automatically migrated,
+  uploaded or deleted. `learning retry` reports `blocked_journals` and exits with status 1 when those
+  records need review.
+
+  Disconnect disables local capture before removing hooks or contacting the server. If server revocation is
+  pending, loaded hooks and retries stay disabled until disconnect completes; status exposes `capture_enabled`.
+  Retries advance across retained sessions, queued hooks and unfinished turns so older entries cannot indefinitely
+  hide later uploads. Interrupted connection commands recover an abandoned lock while a live owner keeps it.
+  Recovery also recognizes a proven previous kernel boot on the same host. A different namespace from the
+  same boot, or an unknown boot identity, stays protected until its owner's death can be established.
+  Project installer and shared Codex hook locks now keep private owner records and recover after a proven
+  owner death. Legacy empty or malformed installer locks stay protected regardless of age; the error names
+  the lock and requires stopping and verifying all relevant installers before manually removing that lock.
+- Observe token usage from already-running Codex sessions without restarting their native processes. Polling subscriptions follow loaded interactive, exec and delegated sessions; explicitly selected historical sessions remain available. Input, output and reported cache counters use native model metadata and source UTC dates, with cumulative baselines, atomic local checkpoints and sequence deduplication preventing duplicate accounting. <!-- changes/existing-codex-polling-usage.md -->
+
+  Polling usage requires the receiver’s advertised capability. Existing lifetime totals are not backfilled; missing counters, tail gaps and queue drops remain partial coverage. Conversation content stays local, existing learning consent is unchanged, and OTLP ingestion keeps its existing behavior.
+
+  Selected failed sessions remain eligible for bounded usage polling, so counters flushed after Codex reports a system error are retained. Acknowledged counters are not counted again after another poll or a connector restart.
+- The CLI capture API uses `agentrun cli-learning enroll|list|revoke|start|get|events|complete`. <!-- changes/cli-capture-command-routing.md -->
+  Its earlier generated `CLI learning` group was one word internally and did not accept the documented
+  invocations. The generated TypeScript resource is `cliLearning` with the same verbs, and Python uses
+  `cli_learning`; API paths and operation IDs are unchanged. The local `learning connect`, `status`,
+  `disconnect`, `retry` and `hook` commands and the existing learning API commands keep their routes.
+- Keep delayed CLI hook retries in source order. An older queued submit or session ending cannot <!-- changes/cli-capture-retry-boundaries.md -->
+  interrupt a newer prompt. When earlier dialogue cannot be ordered safely, retain it privately and
+  mark the capture incomplete instead of presenting it as prior context.
+
+  Bound newly captured prompts, answers and dialogue to the server's text and event limits, including
+  after secret redaction. Truncated evidence remains explicitly incomplete and can be uploaded instead
+  of retrying an oversized request indefinitely. Already frozen historical requests remain unchanged
+  because an uncertain earlier upload may have committed their immutable payloads.
+
+  Serialize session journals with the existing token-fenced ownership lock. Concurrent recovery of a
+  dead owner cannot remove a new owner's lock. Legacy empty or PID-only locks remain pending rather
+  than being removed on age alone; remove such a lock only after confirming no hook or retry process
+  still owns that journal.
+
+  A pending local disconnect no longer advertises learning as ready while hook removal or remote
+  revocation is blocked. The connector withholds its readiness proof until the connection is active.
+- Install Codex learning hooks in linked worktrees through the main-checkout `hooks.json` that native <!-- changes/cli-learning-worktree-hooks.md -->
+  Codex actually loads. Reconnecting migrates unchanged owned hooks without changing the learning
+  connection or credential. Shared-file locking and stable hook group positions preserve other enrolled
+  projects and their native trust keys; worktree-local TOML stays untouched. Observation readiness checks
+  the derived shared configuration and does not mark ignored local hooks ready. Modified configuration,
+  invalid Git ownership and size overflow fail without replacement; interrupted migrations retain both
+  ownership records for safe disconnect. Loaded Codex project configuration requires a new or reopened
+  session before hooks activate. A nested linked worktree cannot also learn through its enclosing checkout.
+- Capture reported token usage for new Codex and Claude Code CLI learning prompts, deduplicating native response records within each prompt. The dashboard's unified `analytics.usage` includes retained source observations and recorded runs, using verified session identity to group potentially overlapping usage. When exact overlap is unavailable, the total keeps the larger coherent source or recorded view as a lower bound, with incomplete coverage explicit. A stale or zero source report cannot erase a larger completed prompt total; distinct immutable CLI turns can sum, while upload dates alone do not prove separate native execution. Range and session filters apply to the combined total; unavailable cache breakdowns, partial boundary days, missing reports and the 90-day source retention limit stay explicit. Unbound observation identities cannot be matched to separately recorded runs. Missing, ambiguous or incomplete prompt usage remains unknown; existing run completions are not rewritten. An enabled CLI learning profile with no recorded prompts explains that its next source prompt starts capture and that earlier conversations are not imported automatically. <!-- changes/cli-prompt-usage-coverage.md -->
+
+  The dashboard and Agents page share one connected-agent inventory. Source sessions and AgentRun agents appear together, including profiles awaiting their first captured prompt, and the separate observed-session sections are removed. Selecting a source session filters its reported usage without treating the session as a completed run or requesting a server-agent run endpoint.
+
+  Ordinary analytics reads project the saved accounting and identity fields instead of transferring full CLI policies and SDK replay records. Historical identity still selects the right source usage across date ranges. PostgreSQL records containing unsupported Unicode escapes retain the earlier JavaScript parsing path for that record, preserving their counters and exact native identity. Unexpected accounting read failures are surfaced by the usage endpoint.
+- Show connected coding agents in the same searchable inventory and count as registered agents, with <!-- changes/connected-agent-inventory.md -->
+  project, session, model, activity and token details. Preserve loaded cards when another source is
+  loading or unavailable, and exclude nonarchivable connections from the archived view.
+
+  Identify coding sessions by their native title, project basename or delegated task name, with a stable
+  ID suffix for unnamed sessions. Names refresh even while idle. The observer sends bounded labels only
+  to receivers advertising support; prompts, conversation previews, full paths and obvious credentials
+  are excluded. Token accounting and selection scopes stay unchanged.
+  Unicode labels respect queue and delivery byte limits so long multilingual names cannot stall delivery.
+- Give connected coding sessions the same card layout and coding-agent Run/Edit handoffs as other <!-- changes/connected-agent-learning-controls.md -->
+  agents, with learning status and setup or settings actions. Project learning connections remain
+  available in Learning Dojo but no longer appear as duplicate agents in the active inventory.
+
+  The connector can associate a session with an existing project/runtime learning connection using
+  its installed hook receipt and a scoped proof. Learning is shown as on only after that exact session
+  has reported a hook window and the server and project settings allow learning. Missing setup,
+  unverified activation and unsupported delegated sessions remain explicit. Revoked or invalid proofs
+  do not grant access or prevent ordinary activity and token reports. This does not install hooks,
+  enroll additional projects, import conversations or change how coding sessions are started.
+- Dashboard and agent analytics show exact, comma-separated token totals, input and output counts whenever they fit. Counts adapt to the actual column width and font, using compact notation only when needed. The full number remains available on hover and to screen readers when abbreviated. <!-- changes/console-exact-token-counts.md -->
+- The dashboard and agent analytics show Input and Output counts beneath the token total. Input includes cached tokens, including when a connected source reports total and output usage without a cache breakdown. Missing counts display a dash, and genuine zero counts remain zero. The token card no longer shows cache percentages or model-request diagnostics; incomplete coverage and history limits remain visible. <!-- changes/console-token-breakdown.md -->
+- Show Mission Control's activity and token-usage charts directly below the main agent and run counts, <!-- changes/mission-analytics-placement.md -->
+  before the observed-session summary.
+- Keep verified session identity privately beside retained observation usage, independently of current <!-- changes/observation-usage-identity.md -->
+  learning readiness. Disconnecting, replacing credentials, or receiving an older client's activity
+  no longer counts observed tokens separately from the same session's captured runs. Existing verified
+  associations migrate when another observation arrives; the accounting identity grants no learning
+  authorization and is removed with the retained session.
+
+  If an earlier disconnect already discarded the verified identity, it cannot be reconstructed. Where
+  unidentified observations may overlap recorded native runs, usage compares the complete native view
+  with each collector's complete observation view and reports a conservative total with incomplete
+  coverage. It does not add possibly overlapping collectors or infer an identity from unverified fields.
+
+  A verified report that tries to assign a different native identity to an already identified observed
+  session is refused with `409 connector_session_identity_conflict`. The entire batch remains uncommitted,
+  including its usage and receipts; distinct native sessions must use distinct external session IDs.
+- Template packages such as Inbound Lead and KYB accept and retain their `learning.agree_on` settings through import, apply and later edits. A learned workflow's promotion check and shadow audit compare the declared answer fields, with each dotted path required in the template's output schema; a missing path disagrees. Without `agree_on`, the existing whole-answer comparison remains. The console and API describe which fields the check compared. <!-- changes/template-learning-compat.md -->
 
 ## 0.1.0-beta.50 (2026-11-20)
 
