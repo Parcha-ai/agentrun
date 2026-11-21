@@ -20,7 +20,8 @@ const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { saveArchilSettings } = await import("../dist/archil-settings.js");
 
 const REGION = "aws-us-east-1";
-const KEYS = { ARCHIL_API_KEY: "fake-test-key-archil-m2-skills-0001" };
+const FAKE_ARCHIL = "fake-test-key-archil-m2-skills-0001";
+const KEYS = { ARCHIL_API_KEY: FAKE_ARCHIL };
 const UNSET = ["AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE", "AGENTRUN_SEAL_KEY"];
 const SKILL = "---\nname: expert-acme\ndescription: How the acme expert researches a company.\n---\n# Acme expert\n\nPrimary sources first.\n";
 
