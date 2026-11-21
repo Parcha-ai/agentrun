@@ -31,6 +31,10 @@ describe("existing agent observation", () => {
     expect(observedState({ ...session, connection_state: "disconnected" })).toBe("Disconnected");
     expect(observedState({ ...session, selection_active: false })).toBe("Not selected");
   });
+  it("finds a session by each word typed, in any order, as the console's other filters do", async () => {
+    const host = await render(createElement(ObservedSessions, { read, query: "test-model backend" }));
+    expect(host.querySelector('a[href="#/observations/session-a"]')).not.toBeNull();
+  });
   it("shows the original harness and model on the existing agents page without executable-agent actions", async () => {
     const host = await render(createElement(AgentsList, { agents: [], observations: read }));
     expect(host.querySelector<HTMLImageElement>("li a img")?.getAttribute("src")).toBe(claudeMark);
