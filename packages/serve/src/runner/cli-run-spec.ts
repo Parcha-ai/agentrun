@@ -18,7 +18,7 @@ import { stopRunWith } from "../paid-calls.js";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { type CapModel, type CapRefused, checkRaise, followUpOf, freeModelRequestsOf, parkOf, planCapModel } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapModel, type CapRefused, checkRaise, followUpOf, freeRequestLimitOf, parkOf, planCapModel } from "@parcha/agentrun-kernel/kernel/cap";
 import { type AdapterFacts, type HarnessWire, type HostTool, PLAN_LIMIT_WORDS, type Refusal, type SessionSpec } from "@parcha/agentrun-kernel";
 import { modelWire } from "../wires.js";
 import type { AdapterNeeds } from "../adapters.js";
@@ -112,6 +112,8 @@ type RevisionBody = {
   readonly checkout?: Checkout;
   /** The JSON Schema its final answer's last json block meets (definition.output_schema), absent for none. */
   readonly outputSchema?: unknown;
+  /** The agent's own limit on the run's requests on free models (definition.max_requests), under the server's. */
+  readonly maxRequests?: number;
   /** The agent's computer setting, or its place (computer-setting.ts settingOfDefinition): the run's computer kind. */
   readonly computer?: unknown;
   readonly place?: unknown;
@@ -555,8 +557,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     },
     // What its audit's shadow took beside it, read by every gate with its own sessions (none: it starts none).
     ...(besideOf ? { beside: besideOf } : {}),
-    // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
-    freeRequests: freeModelRequestsOf(deps.env),
+    // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS, or the agent's lower max_requests).
+    freeRequests: freeRequestLimitOf(deps.env, body.maxRequests),
   };
   const cap = capUsd === undefined
     ? undefined

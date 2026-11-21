@@ -287,6 +287,7 @@ export type DefinitionInput = {
     repick_max_chars?: number;
   };
   checkout?: "pull_request" | "none";
+  max_requests?: number;
 };
 
 export type JsonObject = Record<string, unknown>;
@@ -4533,6 +4534,7 @@ export type ImportTemplateResponse = {
     secrets: Array<string>;
     budget: {
       per_run_usd: number;
+      max_requests?: number;
     } | null;
     learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";
@@ -4625,6 +4627,7 @@ export type ListTemplatesResponse = {
     secrets: Array<string>;
     budget: {
       per_run_usd: number;
+      max_requests?: number;
     } | null;
     learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";
