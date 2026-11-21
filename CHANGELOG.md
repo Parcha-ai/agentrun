@@ -4,12 +4,47 @@
 
 ## 0.1.0-beta.51 (2026-11-21)
 
-- Settings → Email's Save signs in before it keeps the account, a template's Apply lists every trigger it made, and an email trigger's page and its Triggers → New form open with their approval warning. <!-- changes/email-save-signs-in.md -->
-  - Behavior change: `PUT /v2/settings/email` now signs in to IMAP and SMTP as `POST /v2/settings/email/test` does, sending nothing, before it saves. A password either server refuses, or a server it can't reach, is 424 `upstream_failed` in the test's words (`details.imap` and `details.smtp`, each `{ok, message}`), with nothing saved and any account saved before kept as it was. It used to save any password and answer 200; only Test refused it. A body that doesn't read is still 422 by field, before any sign-in. The console's Save shows the refusal beside the form and never says saved for it.
-  - Public API addition: the apply answer (`POST /v2/templates/{template}/apply`, Apply and Update) carries `triggers`, every trigger the apply made or kept, in the package's order, each `{trigger_id, name, kind, enabled}`; `trigger_ids` is unchanged. The TypeScript and Python clients' `ApplyTemplateResponse` gain it. The console's Apply and Update result lists each one by its name and kind in words, on or off, an email trigger beside its schedules (a schedule keeps its line and next time); it used to list the schedules alone.
-  - An email trigger's page opens in the console: the account and mailbox it watches, how often, its last check, its filter, its agent and its firings, with Pause, Run now and Delete. It carries the same "Waits for your approval" warning the other triggers' pages do when its agent has a tool that asks (refused, with accounts off), and Run unattended. It used to say the page didn't open it yet.
-  - Triggers → New makes an email trigger (`#/triggers/new-email`), beside the schedule, webhook, GitHub, app and feed forms: its agent, mailbox (INBOX unless changed), how often it reads, what each run is asked, its cost cap and whether it is on, with the same approval warning and Run unattended. With no account saved it says so and links to Settings → Email. An email trigger used to be made through the API or a template alone.
-  - Triggers names each trigger's agent when the agent was made after the console opened (a template applied from a URL makes one with its triggers): the agents' names are read again each time Triggers opens, as Runs and Mission Control read them. It used to show the agent's id.
+This release fixes two ways a run on an Archil disk failed as a missing file, lets a person's answer reach an ACP agent that asks for another command, and tidies email, templates and approvals. A pending approval says why it asks in a field of its own, `asks_because`, and no longer among the call's arguments (breaking for a client that read `args_preview.asked_because`). Settings → Email's Save signs in before it keeps the account, an email trigger has its own page and form in the console, and a template's apply answer says what it did to the agent (`agent_change`) and lists every trigger it made or kept. The store does not move, and the box image is beta.50's.
+
+**Upgrading and going back:**
+
+- No store change: a SQLite store stays at version 14 and a Postgres store at migration `0023_computer_interval_resources.sql`, as beta.50 left them, so this release opens a store beta.50 used as it is, and going back to beta.50 is its image or package. An approval this release left pending shows in beta.50 without why it asks. From beta.49 or older, read beta.50's notes first: it moves a Postgres store to migration 0023, which beta.49 does not open.
+- The box image's recipe did not move since beta.50 (hash `ed5aee54d3ea`), so a Daytona snapshot or a relay set up for beta.50 holds.
+- `PUT /v2/settings/email` now signs in to IMAP and SMTP before it saves, as `POST /v2/settings/email/test` does. A password either server refuses, or a server it can't reach, is `424 upstream_failed` with nothing saved; it used to save any password and answer 200 (#3357).
+
+**Breaking:**
+
+- A pending approval says why a call its setting allows asks in a field of its own, `asks_because` (on `pending` of `GET /v2/runs/{run_id}` and the run list), and no longer among the call's arguments: `args_preview` is the model's arguments alone, with no `asked_because` key, and `summary` no longer ends "Asks because ...". A client that read the reason from `args_preview`'s `asked_because` (or from the end of `summary`) breaks: read `asks_because` instead, absent on a call that asks by its setting. The console's approval card, on the run page and on Mission Control, says "Asks because <why>." above the arguments' box (#3357). <!-- changes/approval-asks-because.md -->
+
+**Known issues:**
+
+- Under the image's default command, no run can use a paired computer, a paired Linux sandbox included. Start the image with the server's options alone for one.
+- A learned workflow refused for a host setting (a tool gated, denied or missing) still reads `serving`, while every run it is given hands back to the agent. A workflow this release's DSL refuses is held.
+- For up to about 10 minutes after the release is published, an install can fail while npm shows the new packages one by one. Try again a few minutes later.
+- An API token's `GET /v2/settings/calendar` is refused 403 in the words for saving a secret. Reading the calendar's settings takes the owner's signed-in session in the console, as saving them does.
+- On Postgres a purge does not reach the database's bytes: `VACUUM` only makes a purged row's space reusable, `VACUUM FULL` rewrites the table, and Postgres's WAL, archived WAL and backups keep the old values for their own lifetimes.
+- On SQLite, when a purge's scrub marker cannot be written (a full disk), the purge has still committed and its `DELETE` answers `500 internal`; a retried `DELETE` of that run answers `204` but does not write the marker again, so the next start does not scrub the log for that purge. beta.50 has this too.
+
+**Changes:**
+
+Runs and the server
+
+- A run whose revision ships skills no longer fails at its claim on a fresh Archil folder with `".agents/skills" is not there` when it runs in its own process: a `WorkspaceError` crosses the run's channel as a `WorkspaceError` with its `code`, as the other run errors do. Runs in the runner's process were not affected (#3354). <!-- changes/run-process-workspace-error.md -->
+- A disk removed at Archil while a run is on it now fails that run's next disk call as the disk being gone (`UNAVAILABLE`, in Archil's words), not as a missing file (#3363). <!-- changes/archil-disk-gone-midrun.md -->
+- A person's answer to an ACP agent's own tool call (Cursor's shell) reaches the run when the agent, started again, asks for another command instead: the adapter asks about each request the turn left waiting before it starts the agent, and with no answer yet the run parks again with no prompt sent. Before, the answer was never taken and the run restarted the agent every few seconds, each time with a new approval, until the plan's turn limit. An agent that asks for another command three times instead of the one the person allowed ends its turn with `ACP_REASK_LIMIT` (#3356). <!-- changes/acp-parked-permission-settled.md -->
+
+Templates, triggers and email
+
+- `POST /v2/templates/{template}/apply` answers what it did to the agent: `agent_change` (`made`, `updated`, or `unchanged` for an update with `agent_id` whose package and parameters the current revision already holds, no revision written), with `revision_version` the agent's current revision once it is done, and `triggers`, every trigger the apply made or kept, each `{trigger_id, name, kind, enabled}` (`trigger_ids` is unchanged). The TypeScript and Python clients carry the new fields, and the console's apply result says it from the answer ("Nothing to update: rev 2 is current.") and lists each trigger by its name and kind (#3357). <!-- changes/lookback-tidy.md -->
+- Settings → Email's Save signs in before it keeps the account (see Upgrading), and the console shows the refusal beside the form. An email trigger's page opens in the console (the account and mailbox it watches, how often, its last check, its filter, its agent and its firings, with Pause, Run now and Delete), and Triggers → New makes an email trigger; both carry the approval warning the other triggers' pages do. Triggers names an agent made after the console opened (#3357). <!-- changes/email-save-signs-in.md -->
+
+Learning
+
+- A look-back cut by a stop or cancel is said as "a stop or cancel cut it while it wrote what it learned", and the learning state's `reflecting` description names the run's end it reads (#3357).
+
+Console
+
+- The console takes a run with only a field for an agent whose `input_schema` fields are all optional, as the server does, offers the Grade form on an ended run whose learning reads `reflecting` (saying a `409 run_learning` in the server's words), and says on a template's install page and on each Triggers row which tools wait for your approval (#3357).
 
 ## 0.1.0-beta.50 (2026-11-20)
 
