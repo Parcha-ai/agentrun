@@ -23,7 +23,8 @@ import { TOOL_KEY_ROWS } from "../key-words.js";
 import { PRIVATE_HOSTS_ENV } from "../mcp-private-hosts.js";
 import { HARNESS_MODULES_SETTING } from "../harness-table.js";
 import { GATEWAY_IDS_ENV } from "../model-gateway.js";
-import { MCP_ALLOW_LOOPBACK_ENV } from "../start-switches.js";
+import { BOX_CPUS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV, MCP_ALLOW_LOOPBACK_ENV } from "../start-switches.js";
+import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import { bootSealKey } from "../seal-key.js";
 import { SECRET_NAMES } from "../secrets.js";
 import type { Settings, Store } from "../store/store.js";
@@ -64,6 +65,12 @@ const FIXED: ReadonlySet<string> = new Set([
   // The harness modules a server loads (harness-table.ts): a runner without them claims their runs and has no harness to
   // run them on.
   HARNESS_MODULES_SETTING,
+  // A Docker computer's image and size (box-image.ts, workspace/computer-deps.ts dockerLimitsOf): read where the run's
+  // computer starts, the runner.
+  DOCKER_IMAGE_ENV,
+  BOX_CPUS_ENV,
+  BOX_MEMORY_ENV,
+  BOX_PIDS_ENV,
 ].filter((name) => !NOT_RUN_FACING.has(name)));
 
 /** Whether `name` is one a run's claim reads from its runner's environment (FIXED, or an upstream's address). */

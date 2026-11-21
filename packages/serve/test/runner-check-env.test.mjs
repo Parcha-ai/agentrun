@@ -23,7 +23,7 @@ const SEAL = Buffer.alloc(32, 11).toString("base64");
 const OTHER_SEAL = Buffer.alloc(32, 12).toString("base64");
 const MONID = `planted-monid-${"m4".repeat(12)}`;
 /** Switches a run reads from its runner's environment: how a gateway is sent a model id, and MCP servers on loopback. */
-const SWITCHES = { AGENT_MODEL_GATEWAY_IDS: "bare", AGENTRUN_MCP_ALLOW_LOOPBACK: "1" };
+const SWITCHES = { AGENT_MODEL_GATEWAY_IDS: "bare", AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_BOX_CPUS: "2", AGENTRUN_BOX_MEMORY: "4g" };
 
 /** `node dist/cli.js ...args` on `env`, run to its exit: its code, stdout and stderr. */
 function run(args, env) {
@@ -211,8 +211,8 @@ export const entries = (builtins) => ({ own: { label: "Own", steer: false, runMi
 });
 
 test("the names a server says: its run-facing ones alone, never its own secrets, its store or its seal key", () => {
-  const env = { MONID_API_KEY: "x", ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", DAYTONA_TARGET: "us", AGENTRUN_ARCHIL_REGION: "r", AGENT_MODEL: "m", AGENT_MODEL_FAST: "f", AGENT_MODEL_STRONG: "s", AGENTRUN_PRIVATE_HOSTS: "none", AGENT_MODEL_GATEWAY_IDS: "bare", AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_SERVE_HARNESS_MODULES: "@acme/harness", AGENTRUN_TOKEN: "t", AGENTRUN_STORE_URL: "postgres://x", AGENTRUN_SEAL_KEY: "k", AGENTRUN_BASE_URL: "http://a", UNRELATED: "u", EMPTY_API_URL: "" };
-  assert.deepEqual(runFacingNames((name) => env[name], Object.keys(env)), ["AGENTRUN_ARCHIL_REGION", "AGENTRUN_MCP_ALLOW_LOOPBACK", "AGENTRUN_PRIVATE_HOSTS", "AGENTRUN_SERVE_HARNESS_MODULES", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL_STRONG", "ANTHROPIC_BASE_URL", "DAYTONA_TARGET", "MONID_API_KEY"]);
+  const env = { MONID_API_KEY: "x", ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", DAYTONA_TARGET: "us", AGENTRUN_ARCHIL_REGION: "r", AGENT_MODEL: "m", AGENT_MODEL_FAST: "f", AGENT_MODEL_STRONG: "s", AGENTRUN_PRIVATE_HOSTS: "none", AGENT_MODEL_GATEWAY_IDS: "bare", AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_SERVE_HARNESS_MODULES: "@acme/harness", AGENTRUN_DOCKER_IMAGE: "img", AGENTRUN_BOX_CPUS: "2", AGENTRUN_BOX_MEMORY: "4g", AGENTRUN_BOX_PIDS: "512", AGENTRUN_TOKEN: "t", AGENTRUN_STORE_URL: "postgres://x", AGENTRUN_SEAL_KEY: "k", AGENTRUN_BASE_URL: "http://a", UNRELATED: "u", EMPTY_API_URL: "" };
+  assert.deepEqual(runFacingNames((name) => env[name], Object.keys(env)), ["AGENTRUN_ARCHIL_REGION", "AGENTRUN_BOX_CPUS", "AGENTRUN_BOX_MEMORY", "AGENTRUN_BOX_PIDS", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_MCP_ALLOW_LOOPBACK", "AGENTRUN_PRIVATE_HOSTS", "AGENTRUN_SERVE_HARNESS_MODULES", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL_STRONG", "ANTHROPIC_BASE_URL", "DAYTONA_TARGET", "MONID_API_KEY"]);
   assert.equal(runFacing("AGENTRUN_TOKEN"), false);
   assert.equal(RUN_ENV_KEY, "server.run_env");
   assert.deepEqual(loopbackTarget("http://localhost:4000/v1"), { host: "localhost", port: 4000 });
