@@ -294,7 +294,7 @@ test('a cancelled turn is given back uncounted: cancels never stop the check', a
     const waiting = await server.latest(flow.name);
     assert.equal(waiting.decided, 'replaying', `cancel ${at} leaves it waiting: ${waiting.reason}`);
     assert.equal(waiting.check.released, undefined, 'a cancel is not a give-back');
-    assert.doesNotMatch(waiting.reason, /of 5 before the check stops/);
+    assert.doesNotMatch(waiting.reason, /of 5/);
   }
   const landed = await server.start('lands');
   await finish(server, landed, report(landed));
