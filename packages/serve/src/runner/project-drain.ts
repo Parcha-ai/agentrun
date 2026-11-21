@@ -11,14 +11,8 @@ export class ProjectDrain {
   }
   async close(signal: AbortSignal): Promise<void> {
     this.#closed = true;
-    signal.throwIfAborted();
-    let abort: (() => void) | undefined;
-    try {
-      await Promise.race([Promise.allSettled([...this.#active]), new Promise<never>((_resolve, reject) => {
-        abort = () => reject(signal.reason); signal.addEventListener("abort", abort, { once: true });
-        if (signal.aborted) abort();
-      })]);
-    } finally { if (abort) signal.removeEventListener("abort", abort); }
+    // Cancellation requests a stop; it is never evidence that an already dispatched write actually stopped.
+    await Promise.allSettled([...this.#active]);
     signal.throwIfAborted();
   }
 }

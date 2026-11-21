@@ -5,6 +5,9 @@ skills and their assets, supported settings, tool requirements, project files an
 copy native sign-in credentials or import past conversations. The connection command describes the scope before
 export; `--no-sync` connects without exporting setup.
 
+Git transfer covers the checked-out commit and its ancestry, its branch name and the working files. Other branch
+and tag references, remotes and Git configuration are not migrated.
+
 The source and server must use matching development builds. This feature does not change the published
 observation-only connector.
 
@@ -60,6 +63,12 @@ Claude Code 2.1.322 with explicit supported configurations. Account-provided too
 permission behavior without a verified managed equivalent produce named prerequisites. Default native setups can
 therefore sync successfully while Move still needs attention.
 
+Local project storage with a separate Unix user for each run is currently unsupported: its ownership helper changes
+authored file modes. Move reports this as a prerequisite rather than rewriting those modes. The server's preparation
+checks its own destination; a different runner, or a runner whose configuration changed, repeats the check when it
+claims the run, before changing file ownership. Separate Archil project storage does not use that local ownership
+step, but still requires its own verified placement and capture capabilities.
+
 Source OAuth credentials remain at the source. HTTP tool accounts require explicit destination binding; a stdio
 tool needs a verified destination equivalent. Aliased or unresolved models are not guessed. Authored skills include
 their actual scripts, binary assets and executable modes; automatically learned notes and skills remain retired.
@@ -68,8 +77,8 @@ their own moved-project placement are refused until that placement is supported.
 do not run for moved agents; owner learning settings, corrections and existing checked workflows are retained.
 
 Snapshot limits, unsupported Git staging/submodules/filters, links, missing instruction layers, unsupported native
-hooks, secret-containing content and a project changing during capture remain explicit blockers. Nothing is
-silently dropped to make a snapshot complete. Successfully captured project bytes are held privately in the agent's
+hooks, secret-containing content and a project changing during capture remain explicit blockers. Required agent
+capabilities are not dropped to make a snapshot complete. Successfully captured project bytes are held privately in the agent's
 workspace storage; execution uses the run's pinned disk.
 
 An upload or project-placement write whose outcome cannot be verified retains a private durable write receipt.

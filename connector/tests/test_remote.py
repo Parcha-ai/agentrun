@@ -241,7 +241,7 @@ class RemoteBoundary(unittest.TestCase):
         first = self.cli('enable-sync', '--state-dir', str(self.state), '--credential-file', str(self.credential), '--yes', '--no-start')
         self.assertEqual(first.returncode, 1)
         pending = json.loads((self.state / 'config.json').read_text())['sync_registration']
-        self.credential.write_text(json.dumps({'origin': self.peer.origin, 'api_key': 'fresh-owner-fixture'}))
+        self.credential.write_text(json.dumps({'origin': self.peer.origin, 'api_key': 'not-a-secret'}))
         self.peer.on_request = None
         retried = self.cli('enable-sync', '--state-dir', str(self.state), '--credential-file', str(self.credential), '--yes', '--no-start')
         self.assertEqual(retried.returncode, 0, retried.stdout + retried.stderr)
@@ -249,7 +249,7 @@ class RemoteBoundary(unittest.TestCase):
         self.assertEqual(saved['sync_registration_history'], [pending])
         self.assertNotEqual(self.peer.requests[-1][2]['operation_id'], pending['operation_id'])
         self.assertEqual(saved['targets'], state['targets']); self.assertEqual(saved['agent_id'], state['agent_id'])
-        self.assertNotIn('fresh-owner-fixture', json.dumps(saved))
+        self.assertNotIn('not-a-secret', json.dumps(saved))
 
     def test_enable_sync_does_not_rotate_a_running_worker_or_choose_another_connector(self):
         from agentrun_cli.remote import lock_worker

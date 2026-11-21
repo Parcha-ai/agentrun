@@ -8,10 +8,13 @@ import { projectBaseline, projectCandidate, type ProjectCheckpoint, type Project
 import { commitSourceSnapshot, readSourceSnapshot } from "../source-sync/snapshots.js";
 import { captureManagedProject, sourceSnapshotReader, sourceWorkspace, type SourceWorkspaceOptions } from "../source-sync/workspace.js";
 import { withSourceIO } from "../source-sync/io.js";
+import { held } from "./held.js";
 
 export function runProjectCheckpoint(input: {
-  store: Store; agentId: string; claim: Claim; launch: RunLaunch; tools: RunTools; computer: ClaimComputer;
+  store: Store; agentId: string; claim: Claim; launch: RunLaunch; tools: Pick<RunTools, "workspace" | "settleProject">; computer: ClaimComputer;
   workspace: SourceWorkspaceOptions; secrets(): Promise<readonly string[]>;
+  /** Trusted host capability already holds durable ownership through its remote-call drain and this capture. */
+  ioHeld?: true;
 }) {
   const { store, agentId, claim, launch, tools, computer } = input;
   let stage: NonNullable<ProjectUncertain["stage"]> = "drain";
@@ -35,7 +38,7 @@ export function runProjectCheckpoint(input: {
       signal.throwIfAborted();
       // A later claim can finish this run while an old claim's backend request is still pending. The run's live row
       // therefore cannot protect these writes from deletion: keep independent durable ownership through cleanup.
-      return withSourceIO(store, agentId, "snapshot", async () => {
+      const capture = async () => {
         stage = "settle";
         const logs = await tools.settleProject();
         signal.throwIfAborted();
@@ -59,7 +62,19 @@ export function runProjectCheckpoint(input: {
           signal.throwIfAborted();
           return projectCandidate({ sourceId: baseline.sourceId, runId: claim.runId, epoch: claim.epoch, baselineRevision: baseline.revision, baselineDigest: baseline.digest, digest });
         } finally { try { await cache.end(); } catch (error) { stage = "cleanup"; throw error; } }
-      });
+      };
+      return input.ioHeld ? capture() : withSourceIO(store, agentId, "snapshot", capture);
     },
+  };
+}
+
+/** The isolated child asks only for its host-bound checkpoint; it receives no store/cache/credential capability. */
+export function projectCheckpointForRun(input: Parameters<typeof runProjectCheckpoint>[0], dispatched: () => void) {
+  const host = input.workspace.sealKey === undefined ? held() : undefined;
+  if (!host) return runProjectCheckpoint(input);
+  return {
+    capture: (signal: AbortSignal) => { dispatched(); return host.projectCheckpoint(signal); },
+    uncertain: (): ProjectUncertain => ({ version: 1, status: "uncertain", sourceId: input.launch.sourceProject!.sourceId,
+      runId: input.claim.runId, epoch: input.claim.epoch, reason: "project_not_settled", stage: "drain" }),
   };
 }

@@ -73,13 +73,36 @@ for (const capability of ['planning', 'context_management', 'feedback']) test(`n
 
 test('an exact source model outside the picker uses the registered route and actual catalog', async () => {
   const { destinationPreparation } = await import('../dist/source-sync/destination.js');
-  const deps = destinationPreparation({}, 'source-agent', { env: () => ({ OPENAI_API_KEY: 'fixture-openai-key' }), boxes: () => boxes, check: async () => ({ warnings: [], stamp: {} }) });
+  const deps = destinationPreparation({}, 'source-agent', { env: () => ({ OPENAI_API_KEY: 'fake-test-key' }), boxes: () => boxes,
+    projectExecution: async () => ({ storage: 'local', isolation: 'process' }), check: async () => ({ warnings: [], stamp: {} }) });
   const source = snapshot(); source.configuration.model = 'gpt-5.5';
   const result = await deps.model(source);
   assert.equal(result.blockers, undefined, JSON.stringify(result));
   assert.equal(result.model, 'openai/gpt-5.5'); assert.equal(result.sourceModel, 'gpt-5.5');
   source.configuration.model = 'gpt-nonexistent-fixture';
   assert.ok((await deps.model(source)).blockers?.length, 'ordinary catalog still refuses unknown exact IDs');
+});
+
+test('Move refuses local project mode rewriting before destination preparation', async () => {
+  const { destinationPreparation } = await import('../dist/source-sync/destination.js');
+  let execution = { storage: 'local', isolation: 'uid' }, checked = 0;
+  const deps = destinationPreparation({}, 'source-agent', { env: () => ({}), boxes: () => boxes,
+    projectExecution: async () => { checked++; return execution; }, check: async () => ({ warnings: [], stamp: {} }) });
+  assert.equal((await deps.policy(snapshot(), [])).blockers?.[0]?.code, 'project_mode_fidelity');
+  execution = { storage: 'local', isolation: 'process' };
+  assert.equal((await deps.policy(snapshot(), [])).blockers, undefined);
+  execution = { storage: 'archil', isolation: 'uid' };
+  assert.equal((await deps.policy(snapshot(), [])).blockers, undefined, 'the separate Archil project is outside local run-folder ownership changes');
+  assert.equal(checked, 3, 'each preparation checks its current destination rather than caching a permissive answer');
+});
+
+test('a failed isolation probe is a named prerequisite, never a permissive display fallback', async () => {
+  const { destinationPreparation } = await import('../dist/source-sync/destination.js');
+  const deps = destinationPreparation({}, 'source-agent', { env: () => ({}), boxes: () => boxes,
+    projectExecution: async () => { throw new Error('private probe diagnostic'); }, check: async () => ({ warnings: [], stamp: {} }) });
+  const result = await deps.policy(snapshot(), []);
+  assert.equal(result.blockers?.[0]?.code, 'project_mode_fidelity');
+  assert.equal(JSON.stringify(result).includes('private probe diagnostic'), false);
 });
 
 for (const runtime of ['codex', 'claude-code']) test(`${runtime} shell family keeps its permission through the ordinary tool-settings validator`, async () => {

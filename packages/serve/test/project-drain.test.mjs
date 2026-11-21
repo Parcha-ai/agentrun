@@ -13,8 +13,9 @@ test('checkpoint drain waits for the actual admitted write, and refuses a later 
 test('an effect that ignores abort leaves the drain uncertain and is never re-dispatched', async () => {
   const { ProjectDrain } = await load(), gate = new ProjectDrain(), finish = Promise.withResolvers(), abort = new AbortController(); let calls = 0;
   const active = gate.run(async () => { calls++; await finish.promise; });
-  const closing = gate.close(abort.signal); abort.abort(new Error('fixture deadline'));
-  await assert.rejects(closing, /fixture deadline/); assert.equal(calls, 1);
+  let closed = false; const closing = gate.close(abort.signal).finally(() => { closed = true; }); closing.catch(() => {});
+  abort.abort(new Error('fixture deadline'));
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(closed, false); assert.equal(calls, 1);
   await assert.rejects(gate.run(async () => { calls++; }), /closed/);
-  finish.resolve(); await active; assert.equal(calls, 1);
+  finish.resolve(); await active; await assert.rejects(closing, /fixture deadline/); assert.equal(calls, 1);
 });

@@ -49,7 +49,7 @@ test("Mode 2 keeps snapshot bytes only on the selected agent disk and respects a
   await saveArchilSettings(p.store, { region: "aws-us-east-1", s3Url: "https://s3.us-east-1.aws.archil.com" });
   await storeAgentDisk(p.store, "agent-one", { diskId: current });
   const control = archilControlFetch({ strict: true, disks: [{ id: current }, { id: pinned }] }), disks = new Map(), made = [];
-  const options = { ...p, env: { ARCHIL_API_KEY: "fake-test-key-archil-source" }, control: { ...control, makeDisk: options => {
+  const options = { ...p, env: { ARCHIL_API_KEY: "fake-test-key" }, control: { ...control, makeDisk: options => {
     made.push(options); const disk = new FakeArchilDisk(); disks.set(options.disk, disk); return disk;
   } } };
   const opened = await sourceWorkspace(p.store, "agent-one", options, { runId: "run-one", launch: { archilDisk: { diskId: pinned, kind: "launch" } } });
@@ -72,7 +72,7 @@ test("a source-cache reader cannot allocate a missing or purged Mode 2 disk", as
   const p = await fixture(t);
   await saveArchilSettings(p.store, { region: "aws-us-east-1", s3Url: "https://s3.us-east-1.aws.archil.com" });
   const control = archilControlFetch({ strict: true }); let made = 0;
-  const options = { ...p, env: { ARCHIL_API_KEY: "fake-test-key-archil-source" }, control: { ...control, makeDisk: () => { made++; return new FakeArchilDisk(); } } };
+  const options = { ...p, env: { ARCHIL_API_KEY: "fake-test-key" }, control: { ...control, makeDisk: () => { made++; return new FakeArchilDisk(); } } };
   await assert.rejects(sourceWorkspace(p.store, "agent-one", options, { readOnly: true }), error => error.code === "prerequisite");
   assert.equal(control.requests.length, 0); assert.equal(made, 0);
   assert.equal(await agentDiskOf(p.store, "agent-one"), undefined);
@@ -83,7 +83,7 @@ test("source-cache reads preserve pending metadata and never write or sweep a re
   const p = await fixture(t), diskId = "dsk-4444444444444444", disk = new FakeArchilDisk();
   await saveArchilSettings(p.store, { region: "aws-us-east-1", s3Url: "https://s3.us-east-1.aws.archil.com" });
   const control = archilControlFetch({ strict: true, disks: [{ id: diskId }] });
-  const options = { ...p, env: { ARCHIL_API_KEY: "fake-test-key-archil-source" }, control: { ...control, makeDisk: () => disk } };
+  const options = { ...p, env: { ARCHIL_API_KEY: "fake-test-key" }, control: { ...control, makeDisk: () => disk } };
   for (const mark of [{ pending: true }, { removing: true }]) {
     await storeAgentDisk(p.store, "agent-one", { diskId, ...mark });
     await assert.rejects(sourceWorkspace(p.store, "agent-one", options, { readOnly: true }), error => error.code === "prerequisite");
@@ -179,7 +179,7 @@ test("Archil preparation refuses a backend that loses executable modes between e
   await saveArchilSettings(p.store, { region: "aws-us-east-1", s3Url: "https://s3.us-east-1.aws.archil.com" });
   const control = archilControlFetch({ strict: true, disks: [{ id: diskId }] });
   const destination = await openRunPlacement(p.store, { agentId: "agent-one", runId: "run-one", launch: { archilDisk: { diskId, kind: "launch" } } },
-    { ...p, env: { ARCHIL_API_KEY: "fake-test-key-archil-source" }, control: { ...control, makeDisk: () => disk } });
+    { ...p, env: { ARCHIL_API_KEY: "fake-test-key" }, control: { ...control, makeDisk: () => disk } });
   await destination.workspace.write("script.sh", "#!/bin/sh\nprintf checked\n");
   // This fixture persists bytes but deliberately has no mode persistence. A successful chmod in one exec cannot
   // establish that a later run will retain its mode: the independent verification must refuse this backend.

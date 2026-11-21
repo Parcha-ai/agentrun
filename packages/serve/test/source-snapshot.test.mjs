@@ -481,9 +481,9 @@ test('Claude explicit builtin allowlist cannot silently grant every configured M
 
 test('source environment model overrides are captured without exporting provider secrets', async t => {
   const f = await fixture(t, 'claude-code');
-  const snapshot = await f.snapshot({ environment: { ANTHROPIC_MODEL: 'fixture-exact-env-model', ANTHROPIC_API_KEY: 'fixture-held-secret' }, secretValues: ['fixture-held-secret'] });
+  const snapshot = await f.snapshot({ environment: { ANTHROPIC_MODEL: 'fixture-exact-env-model', ANTHROPIC_API_KEY: 'fake-test-key' }, secretValues: ['fake-test-key'] });
   assert.equal(snapshot.configuration.model, 'fixture-exact-env-model');
-  assert.equal(JSON.stringify(snapshot).includes('fixture-held-secret'), false);
+  assert.equal(JSON.stringify(snapshot).includes('fake-test-key'), false);
 });
 
 test('an inherited source Git executable is never run from the exported project', async t => {

@@ -220,7 +220,7 @@ import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
-import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKept, runDiskKey } from "./archil-settings.js";
+import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, loadArchilSettings, runDiskKept, runDiskKey } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
@@ -1823,6 +1823,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const sources = sourceService(store, sourceWorkspaces, async (entry, snapshot) => {
     const prepared = await prepareSource(snapshot, destinationPreparation(store, entry.agent.id, {
       env: () => env, boxes: () => boxOffers, check: revision => saveable(revision),
+      // Readiness needs a successful probe, not capabilities' display fallback after a failed helper check.
+      // A different runner repeats this prerequisite at claim, before its ownership helper changes any bytes/modes.
+      projectExecution: async () => ({ isolation: runIsolationName(await runIsolationOf(base, 1, () => {})),
+        storage: await loadArchilSettings(store, sourceWorkspaces.env) ? "archil" : "local" }),
     }));
     const prior = entry.revision?.body as AgenticBody | undefined;
     // Main's corrections/workflow setting remains the owner's choice across the ownership cutover.

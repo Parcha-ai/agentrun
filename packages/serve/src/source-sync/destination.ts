@@ -103,6 +103,9 @@ export function sourcePolicy(snapshot: SourceSnapshot, boxes: readonly BoxOffer[
 
 export function destinationPreparation(store: Store, agentId: string, options: {
   env: () => NodeJS.ProcessEnv; boxes: () => readonly BoxOffer[]; check: SourcePreparationDeps["check"];
+  /** Successful probes of this server's destination only. Another or later runner must enforce the same
+   * prerequisite at claim: a server-local probe cannot establish a remote runner's isolation policy. */
+  projectExecution(): Promise<{ readonly storage: "local" | "archil"; readonly isolation: "uid" | "process" }>;
 }): SourcePreparationDeps {
   const authenticated = new Set<string>();
   return {
@@ -134,7 +137,16 @@ export function destinationPreparation(store: Store, agentId: string, options: {
       source.credentials.forEach(name => authenticated.add(name));
       return { source, tools: names, mcpGuards: [{ name: row.name, url: row.url, auth: row.auth, credentialChangedAt: row.credentialChangedAt, tools: row.tools, sealed: row.sealed }], guards: [{ key, fields: { requirement: binding.requirement, server: binding.server, stamp: binding.stamp } }] };
     },
-    policy: async (snapshot, external) => sourcePolicy(snapshot, options.boxes(), external),
+    policy: async (snapshot, external) => {
+      let execution: Awaited<ReturnType<typeof options.projectExecution>>;
+      try { execution = await options.projectExecution(); }
+      catch { return refused("project_mode_fidelity", "Verify a destination that preserves project file permissions before Move."); }
+      // The per-user helper recursively replaces permission bits, not merely ownership. The source's
+      // exact local modes cannot survive that transform; the separate Archil project is untouched.
+      if (execution.storage === "local" && execution.isolation === "uid") return refused("project_mode_fidelity",
+        "This runner rewrites local project file permissions for per-user isolation. A moved project needs a destination that preserves its original permissions.");
+      return sourcePolicy(snapshot, options.boxes(), external);
+    },
     credentials: async names => names.every(name => authenticated.has(name)) ? { resolved: [...names] }
       : refused("credentials_missing", "Set up the destination credentials required by this source's tools and model."),
     check: options.check,
