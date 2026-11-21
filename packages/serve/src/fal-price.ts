@@ -8,8 +8,11 @@
 //  - fal's reply states no cost, so the charge is this estimate (chargeOfJob).
 // fal can bill what get_pricing does not expose (a minimum, a discount, a rate that depends on a setting such as
 // resolution): a booked figure is fal's list price for the job, not its invoice.
+// fal's hosted server also keeps one submission_key journal per fal account, which refuses a key it has seen with another
+// request: a server at fal's own host scopes each key to the run before it leaves (falKeys).
+import { createHash } from "node:crypto";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
-import type { McpMeter, McpQuote } from "./mcp-gateway.js";
+import type { McpKeys, McpMeter, McpQuote } from "./mcp-gateway.js";
 import { mediaSeconds } from "./media-duration.js";
 import { SAVE_MAX_BYTES, type SaveSlots, SERVER_SLOTS } from "./web-save.js";
 
@@ -221,9 +224,50 @@ function chargeOfJob(quote: Priced | Unpriced, item: unknown): number | null {
   return after === undefined ? quote.holdUsd : usd(quote.unitPrice * after);
 }
 
+/** fal's tools that take a submission_key: the three that submit jobs, and get_submission, which reads one back. */
+const KEYED = new Set(["run_model", "submit_job", "submit_jobs", "get_submission"]);
+/** fal's longest submission_key: its tools declare `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`. */
+export const KEY_MAX = 128;
+const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
+
+/** The submission keys of one run on fal's hosted server (McpMeter.keys). fal's journal is per account, so the same key
+ *  from two runs (a model makes the same key for the same task) would bind the second run's request to the first's and be
+ *  refused. Each key leaves as the agent's key and `.<16 hex of the run>`: the same run's key leaves the same each time,
+ *  so a retry is deduped, and another run's never matches it. A key too long for KEY_MAX with that suffix keeps its start
+ *  and a hash of the whole key in its place, never cut into another key. `back` reads each scoped key in a reply as the
+ *  agent's: by the keys this gateway sent, else by taking the suffix off. */
+export function falKeys(run: string): McpKeys {
+  const tail = `.${hex16(`agentrun fal submission_key\0${run}`)}`;
+  const own = new Map<string, string>();
+  const scoped = (key: unknown): unknown => {
+    if (typeof key !== "string" || !key) return key;
+    const fits = key.length + tail.length <= KEY_MAX ? key : `${key.slice(0, KEY_MAX - tail.length - 17)}.${hex16(key)}`;
+    const sent = `${fits}${tail}`;
+    own.set(sent, key);
+    return sent;
+  };
+  const anyScoped = new RegExp(`[A-Za-z0-9._:-]+${tail.replace(".", "\\.")}(?![A-Za-z0-9._:-])`, "g");
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return {
+    out(tool, args) {
+      if (!KEYED.has(tool)) return args;
+      let sent = Object.hasOwn(args, "submission_key") ? { ...args, submission_key: scoped(args.submission_key) } : args;
+      if (tool === "submit_jobs" && Array.isArray(args.requests)) sent = { ...sent, requests: args.requests.map((one: unknown) => (isObject(one) && Object.hasOwn(one, "submission_key") ? { ...one, submission_key: scoped(one.submission_key) } : one)) };
+      return sent;
+    },
+    back(text) {
+      if (!text.includes(tail)) return text;
+      const known = [...own.keys()].sort((a, b) => b.length - a.length);
+      const exact = known.length ? text.replace(new RegExp(known.map(escape).join("|"), "g"), (sent) => own.get(sent)!) : text;
+      return exact.replace(anyScoped, (sent) => sent.slice(0, -tail.length));
+    },
+  };
+}
+
 /** A fal server's meter: fal's unit prices read through the gateway's `ask`, kept per endpoint for PRICE_TTL_MS.
- *  `media` reads an input media file (none: such a job is unpriceable); `now`, the clock. */
-export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?: () => number } = {}): McpMeter {
+ *  `media` reads an input media file (none: such a job is unpriceable); `now`, the clock; `run`, the run whose
+ *  submission keys it scopes (falKeys; none: they leave as the agent sent them). */
+export function falMeter({ media, now = Date.now, run }: { media?: MediaReader; now?: () => number; run?: string } = {}): McpMeter {
   const prices = new Map<string, { unitPrice: number; unit: string; at: number }>();
   const unitPrice = async (endpoint: string, ask: Parameters<McpMeter["quote"]>[2]): Promise<{ unitPrice: number; unit: string; at: number } | { why: string }> => {
     const kept = prices.get(endpoint);
@@ -263,6 +307,7 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
     return { job, holdUsd: usd(price.unitPrice * units.units), unitPrice: price.unitPrice, unit: price.unit, at: price.at, words: `fal's price for ${job.endpoint}: $${price.unitPrice} per ${oneOf(price.unit)} × ${shown(units.units)} (${units.from})` };
   };
   return {
+    ...(run ? { keys: falKeys(run) } : {}),
     bills: (tool) => falJobsOf(tool, {}) !== undefined,
     async quote(tool, args, ask, signal): Promise<McpQuote> {
       const quotes: (Priced | Unpriced)[] = [];
@@ -299,5 +344,11 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
 }
 
 /** The meter of a pinned server (mcp-gateway.ts McpPin entry): fal's for one marked `fal` at its save, or, for a pin made
- *  before servers were marked, one whose URL is on fal's MCP host. */
-export const meterFor = (pinned: { url: string; meter?: string }, deps?: Parameters<typeof falMeter>[0]): McpMeter | undefined => (falServer(pinned.url, pinned.meter) ? falMeter(deps) : undefined);
+ *  before servers were marked, one whose URL is on fal's MCP host. Only a server at fal's host scopes its submission keys
+ *  to `deps.run`: the journal they collide in is that server's, and a server marked `fal` elsewhere (a template eval's
+ *  fake, whose answers and log graders read by the agent's own key) receives them as the agent sent them. */
+export const meterFor = (pinned: { url: string; meter?: string }, deps?: Parameters<typeof falMeter>[0]): McpMeter | undefined => {
+  if (!falServer(pinned.url, pinned.meter)) return undefined;
+  const { run, ...rest } = deps ?? {};
+  return falMeter({ ...rest, ...(run && URL.parse(pinned.url)?.hostname === FAL_MCP_HOST ? { run } : {}) });
+};
