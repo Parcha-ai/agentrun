@@ -71,6 +71,7 @@ export function SourceSyncPanel({ agent, v2, onAgent }: { agent: Agent; v2: Clie
   return <section className="space-y-3 border bg-card p-4" aria-label="Source sync">
     <div className="flex flex-wrap items-center gap-2"><h2 className="mr-auto text-body font-semibold">{label}</h2>{status?.moved && <Chip tone="success">Durable</Chip>}</div>
     <p className="text-small text-muted-foreground">{status?.moved ? "Your runs, tools and project live on AgentRun. Source updates sync while your connection is on." : "Keep your setup in sync, then move this agent here with its tools, settings and project."}</p>
+    <Banner>Moved agents keep existing corrections and workflows. Learning new workflows and automatic workflow checks are currently unavailable.</Banner>
     {status && status.state !== "needs_connection" && <div className="flex items-center gap-3"><span id={`source-sync-${id}`} className="flex-1 text-body">Keep source in sync</span><Switch labelledBy={`source-sync-${id}`} checked={status.enabled} disabled={busy || !!agent.archived_at} busy={busy} onChange={() => void enable()} /></div>}
     {status?.files !== undefined && <p className="text-small text-muted-foreground">{status.files.toLocaleString()} files · {status.skills ?? 0} skills · {status.tools ?? 0} tool connections</p>}
     {!!status?.blockers.length && <Banner tone="warning"><ul className="space-y-2">{status.blockers.map((item, i) => <li key={`${item.code}-${i}`}>{item.message}</li>)}</ul></Banner>}

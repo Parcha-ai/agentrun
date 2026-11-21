@@ -63,11 +63,14 @@ it('an old status read cannot overwrite a successful move', async () => {
     if (method === 'GET' && ++reads === 2) return new Promise(resolve => { resolveOld = resolve; });
     return moved ? current : ready;
   });
+  const learningNotice = 'Moved agents keep existing corrections and workflows. Learning new workflows and automatic workflow checks are currently unavailable.';
+  expect(x.host.textContent).toContain(learningNotice);
   await act(async () => window.dispatchEvent(new Event('focus')));
   await act(async () => [...x.host.querySelectorAll('button')].find(button => button.textContent === 'Move to AgentRun')!.click());
   await act(async () => resolveOld(ready));
   expect(x.host.textContent).toContain('Runs on AgentRun');
   expect(x.host.textContent).not.toContain('Ready to move');
+  expect(x.host.textContent).toContain(learningNotice);
 });
 
 it('requires an explicit choice before replacing managed files and pins the reviewed versions', async () => {
