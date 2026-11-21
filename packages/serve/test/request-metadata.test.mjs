@@ -43,6 +43,14 @@ test("serve's gateway gets the metadata header on either wire and from a CLI's A
   assert.equal(providerFor("anthropic-messages", elsewhere, { provider: "anthropic", modelId: "claude-sonnet-5-5" }, "claude-agent").headers, undefined, "an endpoint off the gateway's origin");
 });
 
+test("pi naming an Anthropic model: on serve's gateway its requests carry the metadata; with no gateway set (ANTHROPIC_BASE_URL alone, any proxy or Anthropic itself) none", async () => {
+  const onGateway = claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "claude-sonnet-5-5", ANTHROPIC_BASE_URL: GW, ANTHROPIC_API_KEY: KEY }, {}, undefined, CLAIM);
+  const named = await routeOf("anthropic/claude-sonnet-5-5", onGateway, "default", PI_WIRES);
+  assert.deepEqual([named.provider.api, named.provider.headers], ["anthropic-messages", { [SPEND_LOGS_METADATA_HEADER]: SAID }]);
+  const alone = await routeOf(undefined, claimModelEnv({ ANTHROPIC_BASE_URL: GW, ANTHROPIC_API_KEY: KEY, AGENT_MODEL: "anthropic/claude-sonnet-5-5" }, {}, undefined, CLAIM), "default", PI_WIRES);
+  assert.deepEqual([alone.provider.api, alone.provider.origin, alone.provider.headers], ["anthropic-messages", GW, undefined], "not serve's gateway: no header");
+});
+
 test("a replay's or audit's grader route, made for a claim, names the claim's run, turn and attempt too; made with no claim, none", async () => {
   const { graderRouteOf } = await import("../dist/runner/adapter-run-spec.js");
   const { heldRedactor } = await import("../dist/runner/redact.js");

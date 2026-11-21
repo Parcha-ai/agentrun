@@ -87,6 +87,12 @@ export function modelGatewayBase(value: string): string {
 
 /** Whether `base` (a gatewayBase answer) is on the origin of serve's own gateway (AGENT_MODEL_BASE_URL): there a run's own
  *  model key (run-model-key.ts) is sent, so the endpoint needs no standing key of the server's. */
+/** The headers a request to `origin` carries for serve's gateway (gatewayHeadersOf), when `origin` is that gateway's own
+ *  (AGENT_MODEL_BASE_URL's origin): none to any other origin, a vendor's own included. */
+export function gatewayHeadersAt(env: NodeJS.ProcessEnv, origin: string): Readonly<Record<string, string>> | undefined {
+  return onServeGateway(env, origin) ? gatewayHeadersOf(env) : undefined;
+}
+
 function onServeGateway(env: NodeJS.ProcessEnv, base: string): boolean {
   if (!env.AGENT_MODEL_BASE_URL) return false;
   try {
