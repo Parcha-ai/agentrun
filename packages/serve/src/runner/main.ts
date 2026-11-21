@@ -712,16 +712,19 @@ async function runnerCheck(args: ReturnType<typeof runnerArgs>, env: NodeJS.Proc
   const flagged = "harnessModules" in args && args.harnessModules?.length ? args.harnessModules.join(",") : undefined;
   const read = (one: string) => (one === HARNESS_MODULES_SETTING && flagged !== undefined ? flagged : (secret(one) ?? env[one]));
   const rows: CheckRow[] = args.heartbeatOnly ? [] : await checkRunnerEnv({ ...(args.dataDir ? { dataDir: args.dataDir } : {}), env, read });
-  // What the runner's start refuses before it claims (runnerMain): its run slots, drain and free-model requests, and the
-  // Archil settings it is given, checked the same way, so a runner whose start would stop never passes this check.
+  // What the runner's start refuses before it claims (runnerMain): its run slots, drain and free-model requests, the
+  // Archil settings it is given, and its runs' isolation (the user each run runs as, and the image's helper that switches
+  // to it), checked the same way, so a runner whose start would stop or claim nothing never passes this check.
   if (!args.heartbeatOnly) {
     try {
       // The flags the runner is started with win over the environment there (--loops, --drain-timeout), and here.
-      runnerHolds({ ...("loops" in args && args.loops !== undefined ? { loops: args.loops } : {}), ...("drainMs" in args && args.drainMs !== undefined ? { drainMs: args.drainMs } : {}) }, env);
+      const loops = "loops" in args ? args.loops : undefined;
+      const holds = runnerHolds({ ...(loops !== undefined ? { loops } : {}), ...("drainMs" in args && args.drainMs !== undefined ? { drainMs: args.drainMs } : {}) }, env);
       archilSettingsFromEnv(env);
-      rows.push({ state: "ok", name: "start", why: "the runner's start takes its settings: run slots, drain, free-model requests, Archil" });
+      await runIsolationOf(env, loops !== undefined || Boolean(env.AGENTRUN_MAX_RUNS) ? holds.loops : undefined, () => {});
+      rows.push({ state: "ok", name: "start", why: "the runner's start takes its settings: run slots, drain, free-model requests, Archil, run isolation" });
     } catch (error) {
-      if (!(error instanceof RunnerRefused) && !(error instanceof ArchilSettingsEnvInvalid)) throw error;
+      if (!(error instanceof RunnerRefused) && !(error instanceof ArchilSettingsEnvInvalid) && !(error instanceof RunIsolationRefused)) throw error;
       rows.push({ state: "bad", name: "start", why: `the runner's start refuses its environment: ${error.message}` });
     }
   }

@@ -75,6 +75,7 @@ test("runner --check --env with settings the runner's start refuses (Archil's S3
     [{ AGENTRUN_ARCHIL_REGION: "r", AGENTRUN_ARCHIL_S3_URL: "http://example.com" }, /AGENTRUN_ARCHIL_S3_URL is the region's S3 endpoint, an https URL/],
     [{ AGENTRUN_ARCHIL_REGION: "r" }, /set AGENTRUN_ARCHIL_REGION and AGENTRUN_ARCHIL_S3_URL together/],
     [{ AGENTRUN_MAX_RUNS: "0" }, /max runs is a positive integer/],
+    [{ AGENTRUN_RUN_USER: "everyone" }, /AGENTRUN_RUN_USER=everyone is not a setting this runner knows/],
   ]) {
     const { code, out, err } = await run(["runner", "--check", "--env", "--data", root], { ...baseEnv(root), ...given });
     assert.equal(code, 1, out + err);
