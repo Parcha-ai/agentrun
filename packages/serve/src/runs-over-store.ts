@@ -627,15 +627,21 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   let tentative = tentativeAgents.get(ref);
   if (!tentative) tentativeAgents.set(ref, (tentative = { id: uuidv7(), starts: 0 }));
   tentative.starts += 1;
+  let written = false;
   try {
-    return await startInlineOnce(store, deps, inline, body, options, tentative.id);
+    const row = await startInlineOnce(store, deps, inline, body, options, tentative.id);
+    written = true;
+    return row;
   } finally {
     tentative.starts -= 1;
-    if (tentative.starts === 0 && tentativeAgents.get(ref) === tentative) tentativeAgents.delete(ref);
+    // A first start that failed keeps the id for its reference: what it made under it (in Mode 2, the agent's disk, made
+    // before the agent is written) is found again by the next start, never made anew. Once a start is written, the
+    // reference maps to its agent and the id is let go.
+    if (tentative.starts === 0 && written && tentativeAgents.get(ref) === tentative) tentativeAgents.delete(ref);
   }
 }
 
-/** The agent id each reference's first starts in progress share (startInline). */
+/** The agent id each reference's first starts in progress share, and a failed first start's kept (startInline). */
 const tentativeAgents = new Map<string, { readonly id: string; starts: number }>();
 
 async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin, sealed }: Pick<StartOptions, "origin" | "sealed">, newAgentId: string): Promise<RunRow> {

@@ -267,3 +267,31 @@ test("Mode 2 retention: a run deleted (its tombstone kept) no longer keeps its u
   const removed = await sweeper.sweep(1, keeps, Date.now() + MARK_GRACE_MS + 60_000);
   assert.deepEqual(removed, [gone.file_id]);
 });
+
+test("Mode 2: an inline agent's first start whose copy fails keeps its agent id for the reference, so the retry places under the same disk and makes no second one", { timeout: 120_000 }, async (t) => {
+  const { api, control, store, upload } = await split(t);
+  const a = await upload("a.txt", Buffer.from("again"));
+  const originalPut = FakeArchilDisk.prototype.putObject;
+  let refuse = true;
+  FakeArchilDisk.prototype.putObject = async function (key, body) {
+    if (refuse && key.includes("/work/inputs/")) {
+      const error = new Error("Archil refused the write (a test's)");
+      error.status = 500;
+      throw error;
+    }
+    return originalPut.call(this, key, body);
+  };
+  t.after(() => void (FakeArchilDisk.prototype.putObject = originalPut));
+  const body = { external: { source: "host", kind: "expert", id: "inline-retry", version: 1 }, definition: { name: "Retry", description: "Answers.", instructions: "Answer.", skills: [], tools: ["read"] }, input: { content: "Go." }, file_ids: [a.file_id] };
+  const agentDisks = () => control.requests.filter((one) => one.method === "POST" && one.path === "/api/disks" && /-i-/.test(one.body?.name ?? "")).map((one) => one.body.name);
+  const refused = await api("POST", "/runs", body);
+  assert.equal(refused.status, 424, JSON.stringify(refused.body));
+  assert.equal(agentDisks().length, 1, "the failed first start made its agent's disk");
+  refuse = false;
+  const started = await whenFree(() => api("POST", "/runs", body));
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.deepEqual(agentDisks(), [agentDisks()[0]], "the retry made no second disk");
+  const row = await store.runs.get(started.body.run_id);
+  assert.ok(agentDisks()[0].endsWith(`-i-${row.agentId}`), `the agent is written with the id its disk was made for: ${agentDisks()[0]} / ${row.agentId}`);
+  await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
+});
