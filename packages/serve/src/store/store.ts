@@ -66,6 +66,9 @@ export interface AgentRow {
   /** The reference of the agent this one mirrors in another system ("<source>:<kind>:<id>"), or null for one made here. An
    *  agent with a reference is read-only from here: it is written on the first run that names it and never edited. */
   readonly externalRef: string | null;
+  /** When the agent was purged (Agents.purge): its row is then a tombstone, its name and description blanked; null when it
+   *  was not. */
+  readonly purgedAt: number | null;
 }
 
 /** The template package an agent was applied from, kept on the revision the apply made (its first): the package's id
@@ -236,6 +239,38 @@ export interface RunRow {
   readonly labels: RunLabels;
   readonly startedAt: number;
   readonly endedAt: number | null;
+  /** When the run was purged (Runs.purge): its row is then a tombstone, its cost and times kept, everything else of it
+   *  gone; null when it was not. */
+  readonly purgedAt: number | null;
+}
+
+/** What a purge keeps of a run on its tombstone's metrics (`purged`), read from its journal before that goes: the reads of
+ *  its spend that read the journal answer from it after (store-reads/cap.ts). `meters`: /usage's meter figures
+ *  (metersOverStore); `spend`: what it spent as a run that reads running reads it (spendOverStore); `learning`: how its
+ *  learning ended as GET /stats counts it (store-reads/learning.ts learningCountsOverStore), its state and reason alone,
+ *  null for none. */
+export interface PurgeKept {
+  readonly meters: unknown;
+  readonly spend: { readonly usd: number | null; readonly basis?: string };
+  readonly learning: { readonly state: string; readonly reason: string | null } | null;
+}
+
+/** A run's metrics as its tombstone keeps them (Runs.purge): what the totals and the analytics read of them, never a
+ *  call's arguments or results, a prompt, a URL or a grader's words. Each number (or an unknown one's null) at the top;
+ *  each tool's calls and errors by its name (GET /stats' top tools); the effort (its analytics group) and the cost basis
+ *  (metrics.ts storedBasisOf), each a code; and `purged`, `kept`. Everything else goes: its models, a grader's verdict, an
+ *  audit's or a replay's link, a learned loop's nodes, the path it took (no reader of a tombstone reads it). */
+export function tombstoneMetrics(metrics: unknown, kept: PurgeKept): Record<string, unknown> {
+  const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+  const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  const from = isObject(metrics) ? metrics : {};
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(from)) if (value === null || (typeof value === "number" && Number.isFinite(value))) out[key] = value;
+  if (isObject(from.tools)) out.tools = Object.fromEntries(Object.entries(from.tools).map(([name, each]) => [name, { calls: count(isObject(each) ? each.calls : 0), errors: count(isObject(each) ? each.errors : 0) }]));
+  // A code is a word with no space (an effort level, a cost basis).
+  for (const key of ["effort", "costBasis"]) if (typeof from[key] === "string" && /^[\w-]{1,64}$/.test(from[key])) out[key] = from[key];
+  out.purged = kept;
+  return out;
 }
 
 /** What a runner may change on its run's row, under its claim. A final state with no `endedAt` is stamped now. */
@@ -253,6 +288,10 @@ export interface RunPatch {
    *  fence); null clears them. While the run runs, a sign-in hashing to one of these cannot be forgotten (sign-ins-store.ts). */
   readonly signInHanded?: readonly string[] | null;
   readonly endedAt?: number | null;
+  /** A final patch that writes the end the run's job kept before its look-back (feedback-round.ts KeptEnd): a stop or a
+   *  cancel waiting at its commit cut the look-back, never the job's end, and is refused (refuseLeftovers), unless a
+   *  person's message waits too: that message's run is the one they stop or cancel. */
+  readonly keepsEnd?: boolean;
 }
 
 /** The row runs.update answers. When the patch wrote `signInHanded` (the runner's bind at its claim), `save` rides with it:
@@ -648,6 +687,17 @@ export class AgentDeleting extends Error {
   }
 }
 
+/** A write to a purged agent (Agents.purge): a revision, its current revision moved, its name or description, its archive,
+ *  a run or a trigger of it. Refused, nothing written: its purge time is read under the agent row's lock, in the
+ *  transaction that would write, so of a purge and such a write one commits first and the other sees it (the purge blanks
+ *  what the write wrote, or the write is refused). A purged agent's row is its tombstone: nothing of it is written again. */
+export class AgentPurged extends Error {
+  override name = "AgentPurged";
+  constructor(readonly agentId: string, readonly archivedAt: number | null, readonly purgedAt: number) {
+    super(`the agent ${agentId} is purged`);
+  }
+}
+
 /** An agent's removal refused while a trigger of it is left (Agents.remove): a trigger keeps things outside its row (its
  *  registration upstream, its adapter settings) that only the trigger engine removes, so its row never goes with the
  *  agent's. Nothing written. */
@@ -667,6 +717,8 @@ export class ExternalBodyConflict extends Error {
   }
 }
 
+/** An agent's rows. Every write to an agent that exists (put, archive, addRevision, setCurrent; templates.upgrade; a run
+ *  or a trigger of it) is refused once it is purged (AgentPurged), nothing written, and pinOnce writes no pin then. */
 export interface Agents {
   /** Creates the agent, or renames it (name, description) when it exists. */
   put(agent: { id: string; name: string; description?: string | null }): Promise<void>;
@@ -680,7 +732,8 @@ export interface Agents {
   hasExternalVersion(agentId: string, version: string): Promise<boolean>;
   /** The revision that maps `version` of its owning system, or undefined before that version's first run. */
   externalRevision(agentId: string, version: string): Promise<RevisionRow | undefined>;
-  list(options?: { archived?: boolean }): Promise<AgentRow[]>;
+  /** The agents, by `archived` (default false). A purged agent (Agents.purge) only with `purged`: what a total counts. */
+  list(options?: { archived?: boolean; purged?: boolean }): Promise<AgentRow[]>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
    *  run of the agent (triggers.fire refuses it, AgentArchived), and none of its triggers is made on or turned on.
@@ -698,13 +751,21 @@ export interface Agents {
   revisions(agentId: string): Promise<RevisionRow[]>;
   /** Pins a revision saved with no MCP pin (before pins were made at save) at its first run: `pin` is written only while
    *  the revision still has none, and the pin it has then is the answer, so two first runs at once agree on one. Null when
-   *  there is no such revision. */
+   *  there is no such revision, or its agent is purged (nothing written). */
   pinOnce(revisionId: string, pin: unknown): Promise<unknown>;
   /** The agent's own rows gone, in one transaction (the last write of DELETE /agents/{id}, agent-delete.ts): its learning
    *  rows and kept proposals, its sign-ins and their tombstones, its revisions and the agent. Only once it has no run and
    *  no trigger left (runs.remove and the trigger engine's remove each first): refused while a run is (StoreConstraint)
    *  or a trigger is (TriggersLeft), read under the agent row's lock, nothing written. An agent with no row is no write. */
   remove(agentId: string): Promise<void>;
+  /** The last write of DELETE /agents/{id} for an archived agent made here (agent-delete.ts purgeAgent), in one
+   *  transaction under the agent row's lock: its learning rows, its sign-ins and their tombstones, the answer a template
+   *  apply kept naming it, its revisions' content (body, skills, package, note, pins) and its own name and description
+   *  blanked, and its purge time set last. Only once each of its runs is purged (Runs.purge) and no trigger is left:
+   *  refused while a run is not (StoreConstraint) or a trigger is (TriggersLeft), nothing written. Its row and its
+   *  revisions' ids stay, so its runs' tombstones and every total over them read as before. An agent with no row, or one
+   *  purged already, is no write. On SQLite, once it commits, a WAL checkpoint (Runs.purge). */
+  purge(agentId: string): Promise<void>;
 }
 
 export interface Templates {
@@ -781,8 +842,9 @@ export interface Runs {
   /** A queued run of `revisionId`, its row's only writer until a runner claims it. With `origin`, the origin row is written
    *  in the same transaction, so a retry under the same key finds this run (runOfOrigin); a key already used is refused
    *  (StoreConstraint), and nothing is written. With `launch`, its launch row is written in the same transaction too (all
-   *  or nothing). */
-  create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels }, launch?: RunLaunchInput): Promise<RunRow>;
+   *  or nothing). A launch made from another run (its body's `replay.of`, `audit.of`) takes that run's row lock and
+   *  reads it in the same transaction: made from a purged run, it is refused (RunPurged), nothing written. */
+  create(run:{ id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
@@ -805,8 +867,10 @@ export interface Runs {
    *  sealed bytes. A run with no launch row has no entry. */
   learningStarts(agentId: string): Promise<{ runId: string; learning: unknown }[]>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
-   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number }): Promise<RunRow[]>;
+   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value.
+   *  A purged run (Runs.purge) only with `purged`: the readers of money and counts (usage, stats, analytics) and an
+   *  import's read of the sessions it holds, never a reader of a run's content. */
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number; purged?: boolean }): Promise<RunRow[]>;
   /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
    *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
    *  behind, and its agent's archive time. `archived` filters on the run's archive or its agent's (true: either; false:
@@ -834,19 +898,41 @@ export interface Runs {
   /** Moves the mark of every run whose listing read something outside the run (`flags`, RUN_LISTING_COLUMNS' listing_flags),
    *  of agent `agentId` when given: the server's keys changed, or an agent's learning folder did. The number of runs moved. */
   relist(options: { flags: number; agentId?: string }): Promise<number>;
-  /** Writes `usd`, an exact figure its booking gives, as ended run `runId`'s stored cost, only while that cost is still
-   *  unknown (null, no bound) and the run is the end it was read at (`epoch`, `endedAt`): one conditional write, so a
+  /** Writes `cost`, what its booking gives by the end's own rule (metrics.ts endCostOf: a figure, the most the run can
+   *  have cost when `costUpperBound`), as ended run `runId`'s stored cost, as its end would have, only while that cost is
+   *  still unknown (null, no bound) and the run is the end it was read at (`epoch`, `endedAt`): one conditional write, so a
    *  stored figure is never overwritten, a run reopened or ended again since keeps what its end wrote, and a second heal
    *  writes nothing. True when it was written. */
-  healCost(runId: string, at: { readonly epoch: number; readonly endedAt: number }, usd: number): Promise<boolean>;
+  healCost(runId: string, at: { readonly epoch: number; readonly endedAt: number }, cost: { readonly costUsd: number; readonly costUpperBound: boolean }): Promise<boolean>;
   /** Ended runs, not imported, whose stored cost is unknown (null, no bound), by id after `after`, at most `limit`: what
-   *  the server's start sweep reads to heal (cost-heal.ts). */
+   *  the server's start sweep reads to heal (cost-heal.ts). Left out are those the heal's rule refuses by what the store
+   *  holds alone: a person's stop of an agentic run, a native run, a run with no booked answer (sqlite/store.ts says
+   *  which are kept, and why). */
   costUnknown(options: { limit: number; after?: string }): Promise<string[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
   /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs included (which list leaves
-   *  out): what deleting the agent stops and removes. */
-  every(agentId: string): Promise<{ id: string; state: RunState }[]>;
+   *  out): what deleting the agent stops and removes, with the runner that holds each (null: none) and its purge time. */
+  every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null }[]>;
+  /** The runs made from run `runId` that hold what it was given or did, by id: each run whose launch replays its input
+   *  (the launch body's `replay.of`) or audits it (`audit.of`: its audit's shadow run), and each learning run its kept
+   *  learning names (learning_proposals' learning_run_id). What purging the run purges with it. */
+  madeFrom(runId: string): Promise<string[]>;
+  /** A run purged, in one transaction under its row's lock (DELETE /runs/{id}, agent-delete.ts): its journal, commands,
+   *  origin, launch, live view and viewers, its channel posts with their tries and what each channel was told of it, a
+   *  trigger's conversation that names it and its changes in the run-change feed gone; a trigger's last run, a firing's run
+   *  or wait and a machine's token that name it let go (null); its kept learning's content blanked, each row kept with its
+   *  proposal's state alone, as the learning meter and the list of learning runs read it; its row's content blanked
+   *  (summary, labels, handed sign-ins, listing) with `kept` folded into its metrics (`purged`), and its purge time set
+   *  last. Its id, agent, revision, state, outcome, times, cost and metrics stay: a tombstone, which every total sums as
+   *  before. Only a run that is final and that no runner holds: one that is not is refused (StoreConstraint), nothing
+   *  written; so is one a run made from it (madeFrom's replays and shadow) not purged names (RunsMadeFromLeft): each is
+   *  purged first, and Runs.create, under the same row lock, makes none once it is purged. A run with no row, or one
+   *  purged already, is no write. On SQLite, once it commits, a WAL checkpoint (TRUNCATE): with secure_delete on in every
+   *  connection, neither the file nor its WAL keeps the purged bytes after it. A checkpoint another connection holds back
+   *  is retried once, then told to the store's `warn`; it never fails the purge. Postgres: the old row versions are the
+   *  database's until its VACUUM. */
+  purge(runId: string, kept: PurgeKept): Promise<void>;
   /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
    *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,
    *  a trigger's conversation that names it, and the run (a firing or trigger that names it keeps no run: ON DELETE SET
@@ -860,8 +946,9 @@ export interface Runs {
    *  so its next turn is booked on top of what it spent), and `command` (the follow-up's steer) is written untaken for it.
    *  Only an agentic run that ended completed (state 'ended') or that a person stopped (state 'stopped', outcome
    *  'stopped'), not imported and not a learning run, reopens: a workflow, a failed or cancelled run, any other, or none
-   *  is RunFinal, and nothing is written. */
-  reopen(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
+   *  is RunFinal, and nothing is written. With `endedAt`, only the run whose end is at that time (a grade's round opens
+   *  the end it read, never a later one): any other is RunFinal too. */
+  reopen(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite & { readonly endedAt?: number }): Promise<Command>;
   /** Wakes a parked run: its wake_at set to now on the deadlines' clock, so a runner claims it at its next poll (the
    *  claimable rule's wake branch) and its loop reads what it waits on again. True when the run was parked; a run in any
    *  other state (or none) is left as it is, false. Its claim, if one holds it while it parks, is let go as before: the
@@ -1156,6 +1243,48 @@ export interface ComputerLedgerRow {
   readonly updatedAt: number;
 }
 
+/** One computer a run's claim made through its provider (store schema `computer_intervals`): by the provider's own id
+ *  for it (`providerId`), what its create asked for (null where it asked none), when it was made, whether the run's park
+ *  kept it past its claim, and when the provider's delete of it answered ok (`endedAt`; null while none did). */
+export interface ComputerIntervalRow {
+  readonly runId: string;
+  /** The provider's id in this server's registry (its setting's provider: "docker", "e2b", ...). */
+  readonly provider: string;
+  /** The provider's own id for the computer: what its invoice and console name it by. */
+  readonly providerId: string;
+  /** sandbox, desktop or phone; null when not known. */
+  readonly kind: string | null;
+  readonly gpuType: string | null;
+  readonly gpuCount: number | null;
+  readonly cpus: number | null;
+  readonly memoryMb: number | null;
+  /** Its disk in GB, where its provider said it; null else. */
+  readonly diskGb: number | null;
+  readonly startedAt: number;
+  readonly kept: boolean;
+  readonly endedAt: number | null;
+  /** How much of its time a claim of its run booked on the run's ledger (compute-cost.ts), in ms; 0 for none. */
+  readonly bookedMs: number;
+}
+
+/** Each computer a run made, from its create to its proven delete: how long it lived for its run, and one left running
+ *  after its run (no `endedAt`). Every write is idempotent. */
+export interface ComputerIntervals {
+  /** The computer's row, made: a second call for the same provider and id changes nothing (a retried create answers the
+   *  computer it made). */
+  opened(row: Omit<ComputerIntervalRow, "kept" | "endedAt" | "bookedMs">): Promise<void>;
+  /** The computer was kept past its claim (the run's park). */
+  kept(provider: string, providerId: string): Promise<void>;
+  /** The provider's delete of the computer answered ok at `at`: its end, written only while none is (a later delete of
+   *  one already ended never moves it). A computer with no row is left without one. */
+  ended(provider: string, providerId: string, at: number): Promise<void>;
+  /** A claim booked `ms` more of the computer's time on its run's ledger: added to its booked time (a figure that is not
+   *  a whole number of ms above 0 adds nothing). A computer with no row is left without one. */
+  booked(provider: string, providerId: string, ms: number): Promise<void>;
+  /** The run's computers, by when each was made. */
+  forRun(runId: string): Promise<ComputerIntervalRow[]>;
+}
+
 /** The labels of the sessions a provider runs with none of its own (a phone provider's), so its list, an attach by
  *  labels and the janitor outlive a restart. */
 export interface ComputerLedger {
@@ -1282,6 +1411,24 @@ export interface RunnerRow {
   readonly host: string | null;
   readonly port: number | null;
   readonly seenAt: number;
+  /** The runner's build (the serve package's version), and the most runs it holds at once (its loops): each null on a
+   *  row a runner of an earlier build wrote, or one that said neither (a refusing runner says no slots). */
+  readonly version: string | null;
+  readonly slots: number | null;
+}
+
+/** The store's runs and hand-backs as the capacity read counts them (GET /v2/capacity, capacity.ts), on the deadlines'
+ *  clock (fence.ts storeNow), read once for the whole answer. Counts and runner names only. */
+export interface RunCapacity {
+  /** The deadlines' clock when it was read. */
+  readonly at: number;
+  /** Runs a runner may claim now, by the claim's own rule (queued; handed back or its claim run out, past any backoff; a
+   *  parked run something wakes). */
+  readonly queued: number;
+  /** Runs a claim holds now (its lease not run out), by the runner that holds them. */
+  readonly held: ReadonlyMap<string, number>;
+  /** The hand-backs (hand_backs) within the window asked for. */
+  readonly handBacks: number;
 }
 
 /** How long a runner's row is kept once it stopped saying it is there (a runner that died without its close): its next
@@ -1291,17 +1438,14 @@ export const RUNNER_ROWS_KEPT_MS = 24 * 60 * 60_000;
 /** Every runner's word that it is there (runner/presence.ts). */
 export interface Runners {
   /** Keeps `row` for its runner, replacing any earlier incarnation's, seen now; rows no runner renewed for
-   *  RUNNER_ROWS_KEPT_MS go in the same write. Its host and port go together: both absent (or null) for no relay. */
-  put(row: Omit<RunnerRow, "seenAt" | "host" | "port"> & { readonly host?: string | null; readonly port?: number | null }): Promise<void>;
-  /** Keeps `row` for its runner unless another incarnation's row of the same name was seen within `staleMs`: a process's
-   *  put again of a row that went (pruned, a store restored) never takes back a later process's live one. False when
-   *  such a row is there and nothing was written. */
-  putUnlessLive(row: Omit<RunnerRow, "seenAt" | "host" | "port"> & { readonly host?: string | null; readonly port?: number | null }, staleMs: number): Promise<boolean>;
-  /** Says on the runner's row where its relay answers (`at`, or null for nowhere), seen now, while the row is still this
-   *  incarnation's. False when it is not (or there is none), and nothing was written. */
-  relayAt(runner: string, incarnation: string, at: { readonly host: string; readonly port: number } | null): Promise<boolean>;
-  /** Marks the runner's row seen now, while it is still this incarnation's. False when it is not (or there is none). */
-  seen(runner: string, incarnation: string): Promise<boolean>;
+   *  RUNNER_ROWS_KEPT_MS go in the same write. Its host and port go together: both absent (or null) for no relay. With
+   *  `unlessLiveMs`, not over another incarnation's row of the same name seen within that: a process's put again of a row
+   *  that went (pruned, a store restored) never takes back a later process's live one. False when such a row is there and
+   *  nothing was written. */
+  put(row: Omit<RunnerRow, "seenAt" | "host" | "port" | "version" | "slots"> & { readonly host?: string | null; readonly port?: number | null; readonly version?: string | null; readonly slots?: number | null }, options?: { readonly unlessLiveMs?: number }): Promise<boolean>;
+  /** Marks the runner's row seen now and says on it where its relay answers (`at`, or null for nowhere), while the row is
+   *  still this incarnation's. False when it is not (or there is none), and nothing was written. */
+  renew(runner: string, incarnation: string, at: { readonly host: string; readonly port: number } | null): Promise<boolean>;
   /** Every runner's row, by name. */
   list(): Promise<RunnerRow[]>;
   /** The rows seen within `staleMs`, by name. Every row's time (a put's, a seen's) and this "now" are the deadlines'
@@ -1309,6 +1453,8 @@ export interface Runners {
   live(staleMs: number): Promise<RunnerRow[]>;
   /** The runner's row gone, while it is still this incarnation's. */
   remove(runner: string, incarnation: string): Promise<void>;
+  /** The runs waiting for a runner and held by one, and the hand-backs within the last `windowMs` (RunCapacity). */
+  capacity(windowMs: number): Promise<RunCapacity>;
 }
 
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
@@ -1526,6 +1672,8 @@ export interface Store {
   readonly sealedKeys: SealedKeys;
   /** The labels of the sessions a provider runs with none of its own (a phone provider's). */
   readonly computerLedger: ComputerLedger;
+  /** Each computer a run made, from its create to its proven delete. */
+  readonly computerIntervals: ComputerIntervals;
   /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
   readonly pairedComputers: PairedComputers;
   /** The tokens minted for hosted machines that dial this server, each kept as its SHA-256. */
@@ -1547,12 +1695,15 @@ export interface Store {
   readonly sealedSecrets: SealedSecrets;
   /** Runs `work`, writes that replace a secret the store kept in the clear (it answers how many rows it rewrote), so the
    *  bytes they replace are not left in the store's files. SQLite: a marker file beside the database is written first;
-   *  secure_delete is on while `work` runs (a rewritten row's old bytes zeroed in its page); then, when a row was rewritten
-   *  or an earlier start left the marker, a VACUUM (no free page or free block keeps a copy an earlier, ordinary update
-   *  left) and a WAL checkpoint (TRUNCATE: the log keeps no older frame). The marker is removed once the checkpoint is
+   *  secure_delete is on in every connection from its open, so a rewritten row's old bytes are zeroed in its page; then,
+   *  when a row was rewritten or an earlier start left the marker, a VACUUM (no free page or free block keeps a copy an
+   *  update left before secure_delete was on) and a WAL checkpoint (TRUNCATE: the log keeps no older frame). The marker is removed once the checkpoint is
    *  done; `left` says why it was kept, for the next start to finish. Postgres: `work` alone (a replaced row version is
    *  the database's until its vacuum). */
   secureRewrite?(work: () => Promise<number>, options?: SecureRewriteOptions): Promise<SecureRewrite>;
+  /** Reads the store's schema version and its runner floor now, without a lock or a write: a runner reads it at each
+   *  renewal (runner/main.ts), and stops once the floor is above the version its build knows. */
+  schemaState?(): Promise<StoreSchemaState>;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
@@ -1738,6 +1889,31 @@ export class SchemaVersionUnknown extends Error {
   }
 }
 
+/** A store a later build migrated past what this runner can run beside: its schema is ahead of the version this build
+ *  knows, and its runner floor (a breaking migration's version) is above it. Run a runner of the server's release. A
+ *  SchemaVersionUnknown, so every caller that refuses an unknown schema refuses this one the same way (a runner's exit 3). */
+export class RunnerBelowFloor extends SchemaVersionUnknown {
+  readonly floor: number;
+  constructor(place: string, found: number, known: number, floor: number) {
+    super(place, found, known);
+    const store = place.startsWith("the ") ? place : `the store at ${place}`;
+    this.message = `${store} is schema version ${found}, and a runner on it must know version ${floor} or later (its runner floor: a later release changed the schema in a way an earlier runner cannot run beside); this runner knows ${known}. Run a runner of the server's release.`;
+    this.name = "RunnerBelowFloor";
+    this.floor = floor;
+  }
+}
+
+/** A store's schema version and its runner floor (Store.schemaState). */
+export interface StoreSchemaState {
+  /** The store's schema version; null when none is set up. */
+  readonly version: number | null;
+  /** The oldest schema version a runner's build must know to run on this store: a runner whose build knows less stops
+   *  claiming, hands its runs back and exits. On SQLite the version itself (a SQLite runner opens only its own version). */
+  readonly runnerFloor: number | null;
+  /** The version this build knows (its newest migration on Postgres, SCHEMA_VERSION on SQLite). */
+  readonly known: number;
+}
+
 /** A command for a run that is final, or that does not exist. */
 export class RunFinal extends Error {
   readonly runId: string;
@@ -1788,6 +1964,25 @@ export class AnswerTaken extends StoreConstraint {
   constructor(message: string, index: string) {
     super(message, { rule: "unique", index });
     this.name = "AnswerTaken";
+  }
+}
+
+/** A run's purge refused while a run made from it (a replay of its input, its audit's shadow run: Runs.madeFrom) is not
+ *  purged: one was made after the purge read them (a claim that read the run's launch before). `runs`: those runs. A
+ *  StoreConstraint, so the caller answers it as a run not final; nothing written. */
+export class RunsMadeFromLeft extends StoreConstraint {
+  constructor(readonly runId: string, readonly runs: readonly string[]) {
+    super(`run ${runId} has runs made from it not purged (${runs.join(", ")}): each is purged first`);
+    this.name = "RunsMadeFromLeft";
+  }
+}
+
+/** A run made from a purged run (its launch's `replay.of` or `audit.of` names it): refused, nothing written. Its source's
+ *  input is gone, and a copy of it is never made again (Runs.create). `runId`: the purged run. */
+export class RunPurged extends Error {
+  constructor(readonly runId: string, readonly made: string) {
+    super(`run ${made} is made from run ${runId}, which is purged: it is not started`);
+    this.name = "RunPurged";
   }
 }
 

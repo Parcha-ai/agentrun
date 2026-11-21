@@ -18,7 +18,9 @@
 // The template packages imported from GitHub (imported_templates) are a table of their own that nothing
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
 // (IMPORTED_TEMPLATES), as it does the one-answer index. A hosted machine's minted token (minted_tokens, MINTED_TOKENS) is
-// added the same way, and so is each runner's word that it is there and whether it refused to claim (runners, RUNNERS).
+// added the same way, and so is each runner's word that it is there and whether it refused to claim (runners, RUNNERS),
+// and each computer a run made, from its create to its proven delete (computer_intervals, COMPUTER_INTERVALS). Each runner's
+// version and slots (runners.version, .slots: RUNNERS_ADDED) and each hand-back (hand_backs, HAND_BACKS) are added the same way.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -33,8 +35,11 @@
 // Version 12 keeps each run's listing on its row (RUN_LISTING_COLUMNS): what a runs list shows of it, so a list reads rows
 // alone. Version 13 names the runner in a process of its own that minted a hosted machine's token (minted_tokens.runner,
 // .incarnation), the run the machine works for (.run), why the server refused to relay its dial (.refused), and where each
-// such runner takes the dials the server relays to it (runners.host and .port, dial-relay.ts). The server upgrades these two in place at its open (listingUpgrade from 11, then relayUpgrade from 12); a runner waits for it.
-export const SCHEMA_VERSION = 13;
+// such runner takes the dials the server relays to it (runners.host and .port, dial-relay.ts). Version 14 keeps when a run or
+// an agent was purged (runs.purged_at, agents.purged_at; DELETE /runs/{id} and /agents/{id}, agent-delete.ts): its row is
+// then a tombstone, its content gone and its cost kept. The server upgrades these in place at its open (listingUpgrade from
+// 11, relayUpgrade from 12, then purgeUpgrade from 13); a runner waits for it.
+export const SCHEMA_VERSION = 14;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -108,6 +113,41 @@ export const MINTED_TOKENS = `CREATE TABLE IF NOT EXISTS minted_tokens (
     refused TEXT
   ) STRICT`;
 
+/** Each computer a run's claim made through its provider (a sandbox, a desktop, a phone), by the provider's own id for it:
+ *  so an operator can see how long each lived for its run, find one left running after its run, and match the provider's
+ *  invoice by its id. `kind`, and what it was made with (`gpu_type` and `gpu_count`, `cpus`, `memory_mb`, `disk_gb`): the
+ *  provider's own figures where its answer gave them (CreatedComputer.resources), else what its create asked, null where
+ *  neither says (a hosted vendor that sizes its own machines and says nothing): never a guess. `booked_ms`: how much of
+ *  its time a claim of its run booked on the run's ledger (compute-cost.ts), the rest being time no claim held. `kept`: 1 once
+ *  the run's park kept it past the claim (computer-kept.ts). `ended_at`: written once, only when the provider's delete of
+ *  it answered ok; null while none did (still running, or its delete failed or was never asked), never a guessed end. Not
+ *  the agent's own computer (it outlives every run), a paired one or --faux's. In STORE_DDL, and added at a server open to
+ *  a store an earlier build of this version made, as MINTED_TOKENS is. */
+export const COMPUTER_INTERVALS = `CREATE TABLE IF NOT EXISTS computer_intervals (
+    provider TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    kind TEXT,
+    gpu_type TEXT,
+    gpu_count INTEGER,
+    cpus REAL,
+    memory_mb INTEGER,
+    disk_gb REAL,
+    started_at INTEGER NOT NULL,
+    kept INTEGER NOT NULL DEFAULT 0 CHECK (kept IN (0, 1)),
+    ended_at INTEGER,
+    booked_ms INTEGER NOT NULL DEFAULT 0 CHECK (booked_ms >= 0),
+    PRIMARY KEY (provider, provider_id)
+  ) STRICT`;
+/** The columns a computer_intervals an earlier build of this version made lacks (its disk and its booked time), each
+ *  added at a server open where missing (sqlite/store.ts). */
+export const COMPUTER_INTERVALS_ADDED: Readonly<Record<string, string>> = {
+  disk_gb: "ALTER TABLE computer_intervals ADD COLUMN disk_gb REAL",
+  booked_ms: "ALTER TABLE computer_intervals ADD COLUMN booked_ms INTEGER NOT NULL DEFAULT 0 CHECK (booked_ms >= 0)",
+};
+/** A run's computers, read by its run (store.computerIntervals.forRun). */
+export const COMPUTER_INTERVALS_RUN = "CREATE INDEX IF NOT EXISTS computer_intervals_run ON computer_intervals (run_id, started_at)";
+
 /** Each runner's word that it is there (runner/presence.ts), every runner's, beside a server or in a process of its own:
  *  its name, its incarnation (its process since its start, the one its relay's minted tokens and proofs name), why it
  *  refused to claim any run (`refused`, its words; null for one that claims), where its relay's attach listener takes the
@@ -123,8 +163,45 @@ export const RUNNERS = `CREATE TABLE IF NOT EXISTS runners (
     refused TEXT,
     host TEXT,
     port INTEGER,
-    seen_at INTEGER NOT NULL
+    seen_at INTEGER NOT NULL,
+    version TEXT,
+    slots INTEGER
   ) STRICT`;
+/** What a runner says of itself for the server's capacity read (GET /v2/capacity, capacity.ts): its build's version
+ *  (`version`) and the most runs it holds at once (`slots`), each null on a row an earlier build wrote. In RUNNERS, and
+ *  added where missing at a server open to a runners table an earlier build of this version made, as
+ *  COMPUTER_INTERVALS_ADDED is: nullable, so nothing is copied and no row is refused. */
+export const RUNNERS_ADDED: Readonly<Record<string, string>> = {
+  version: "ALTER TABLE runners ADD COLUMN version TEXT",
+  slots: "ALTER TABLE runners ADD COLUMN slots INTEGER",
+};
+/** Each hand-back (store.release that leaves its run running: a runner's drain, a loop that closed itself, a claim given
+ *  back): the run, the runner that let it go, the epoch it let go of and when, on the deadlines' clock. Counts and ids
+ *  only; the capacity read (capacity.ts) counts the rows within its window. A release's own write keeps it, in the same
+ *  transaction, and removes the rows older than HAND_BACKS_KEPT_MS. In STORE_DDL, and made at a server open on a store an
+ *  earlier build of this version made. */
+export const HAND_BACKS = `CREATE TABLE IF NOT EXISTS hand_backs (
+    run_id TEXT NOT NULL,
+    runner TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    at INTEGER NOT NULL
+  ) STRICT`;
+/** The hand-backs by time, for the capacity read's window and the release's prune. */
+export const HAND_BACKS_AT = "CREATE INDEX IF NOT EXISTS hand_backs_at ON hand_backs (at)";
+/** A run's hand-backs, for its purge and its delete (dropRunContent), so neither scans every hand-back kept. */
+export const HAND_BACKS_RUN = "CREATE INDEX IF NOT EXISTS hand_backs_run ON hand_backs (run_id)";
+/** How long a hand-back's row is kept: the longest window the capacity read takes. */
+export const HAND_BACKS_KEPT_MS = 24 * 60 * 60_000;
+
+/** Version 13 → 14 on SQLite (the server's open, sqlite/store.ts), given the runs' and the agents' columns now: when each
+ *  run and each agent was purged (null: none was), and the version, in one durable write. */
+export function purgeUpgrade(runColumns: ReadonlySet<string>, agentColumns: ReadonlySet<string>): readonly string[] {
+  return [
+    ...(runColumns.has("purged_at") ? [] : ["ALTER TABLE runs ADD COLUMN purged_at INTEGER"]),
+    ...(agentColumns.has("purged_at") ? [] : ["ALTER TABLE agents ADD COLUMN purged_at INTEGER"]),
+    "UPDATE store_meta SET schema_version = 14 WHERE singleton = 1",
+  ];
+}
 
 /** Version 12 → 13 on SQLite (the server's open, sqlite/store.ts), given minted_tokens' columns now: the minting runner,
  *  its incarnation, the machine's run and a refused relay's words on each token's row (none of the rows there has one: the
@@ -247,7 +324,10 @@ export const STORE_DDL: readonly string[] = [
     current_revision TEXT,
     created_at INTEGER NOT NULL,
     archived_at INTEGER,
-    external_ref TEXT
+    external_ref TEXT,
+    -- When the agent was purged (DELETE /agents/{id} of an archived agent made here): its row is then a tombstone, its
+    -- name, description and revisions' content blanked, kept for its runs' tombstones and their cost. Null: not purged.
+    purged_at INTEGER
   ) STRICT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS agents_external ON agents (external_ref) WHERE external_ref IS NOT NULL`,
   // A revision's skills (the P4 fold of the old agent store's skill table): the revision's own skill files, a JSON object
@@ -321,7 +401,10 @@ export const STORE_DDL: readonly string[] = [
     started_at INTEGER NOT NULL,
     ended_at INTEGER,
     -- The run's listing (RUN_LISTING_COLUMNS): what a runs list shows of it, kept on its row so a list reads rows alone.
-    ${RUN_LISTING_COLUMNS.join(",\n    ")}
+    ${RUN_LISTING_COLUMNS.join(",\n    ")},
+    -- When the run was purged (DELETE /runs/{id}, Runs.purge): its row is then a tombstone, every record of what it was
+    -- given or did gone and its cost kept, which no list shows and every total still sums. Null: not purged.
+    purged_at INTEGER
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS runs_by_agent ON runs (agent_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_by_revision ON runs (revision_id, started_at)`,
@@ -571,6 +654,11 @@ export const STORE_DDL: readonly string[] = [
   IMPORTED_TEMPLATES,
   MINTED_TOKENS,
   RUNNERS,
+  HAND_BACKS,
+  HAND_BACKS_AT,
+  HAND_BACKS_RUN,
+  COMPUTER_INTERVALS,
+  COMPUTER_INTERVALS_RUN,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD

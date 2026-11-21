@@ -3,12 +3,17 @@
 // the console read the answer there instead of parsing the message. No schema, no block, or a block the schema refuses:
 // result.output is null, as before. The runner tells the model the schema in its instructions, and asks once more when
 // the answer misses it; one that still misses says why (result.output_error). And a triggered run is handed its trigger's previous result (#2144): a scheduled run
-// of the same trigger reads what its last completed run answered, so a weekly digest can leave out what it reported.
+// of the same trigger reads what its last completed run answered, so a weekly digest can leave out what it reported. A
+// result over the limit is handed as the fields its run's output schema names in `x-carried` alone; how they are cut to
+// fit is trigger-targets.test.mjs's.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { agent, flowAgent, follow, serve, withEnv } from "./support.mjs";
 import { fakeClock, schedule } from "./trigger-support.mjs";
+
+const { previousCarriedWords, previousResultTooLarge } = await import("../dist/trigger-targets.js");
+const { carriedFields } = await import("../dist/answer-json.js");
 
 /** A digest's schema: what a market monitor's answer holds, cut down. */
 const DIGEST = {
@@ -157,4 +162,85 @@ test("a triggered run is handed its trigger's last completed result after its me
   assert.ok(second.handed.includes(JSON.stringify(MET, null, 2)), `the previous result is handed whole: ${second.handed}`);
   const elsewhere = await fire(other, "other-1");
   assert.ok(!elsewhere.handed?.includes(PREVIOUS), `another trigger's runs are never handed this trigger's result: ${elsewhere.handed}`);
+});
+
+/** A schema that carries `carried` (its x-carried) over `seen` (what a watch reads back), `noise` (what fills a result
+ *  past the limit) and `tag` (a small field a newer revision carries instead). */
+const carrying = (carried) => ({
+  type: "object",
+  ...(carried ? { "x-carried": carried } : {}),
+  required: ["seen"],
+  properties: { seen: { type: "array", items: { type: "string" } }, noise: { type: "string" }, tag: { type: "string" } },
+});
+const SEEN = ["https://jobs.example.com/1", "https://jobs.example.com/2"];
+/** An answer whose whole result is over PREVIOUS_RESULT_MAX_BYTES (32 KiB as 2-space JSON); its `seen` is small. Its
+ *  noise is words, not one 33 KiB run of letters, which a run's cut takes for a key and redacts. */
+const BIG = { seen: SEEN, noise: "word ".repeat(7 * 1024).trim(), tag: "newer" };
+
+/** A scheduled trigger on a new agent `id` with output schema `schema`, whose runs answer `json`, fired twice: the first
+ *  run's id and end, and what the second was handed (the faux model quotes it back as "Handed: ..."). `between` runs
+ *  after the first firing (an edit of the agent). */
+async function firedTwice(api, id, schema, json, between) {
+  assert.equal((await api("POST", "/agents", agent(id, { output_schema: schema }))).status, 201);
+  const input = { content: `Answer with this json: ${JSON.stringify(json)}` };
+  const trigger = (await api("POST", "/triggers", { ...schedule(id, { cron: "0 9 * * 1", timezone: "UTC" }, { enabled: false }), name: id, target: { kind: "start_run", agent_id: id, input, max_cost_usd: 0.5 } })).body;
+  const fire = async (press) => {
+    const fired = await api("POST", `/triggers/${trigger.id}/fire`, undefined, { "idempotency-key": press });
+    assert.equal(fired.status, 202, JSON.stringify(fired.body));
+    await follow(api, fired.body.run_id, ["completed"]);
+    const run = (await api("GET", `/runs/${fired.body.run_id}`)).body;
+    assert.deepEqual(run.result.output, json, `${id}: its own answer is its result`);
+    return { runId: fired.body.run_id, endedAt: run.ended_at, handed: /\n\nHanded: ([\s\S]*)\n\n```json\n[^\n]*\n```$/.exec(run.result.final_answer)?.[1] ?? "" };
+  };
+  const first = await fire(`${id}-1`);
+  if (between) await between();
+  return { first, handed: (await fire(`${id}-2`)).handed };
+}
+/** The JSON block of a handed text (its last fenced json block), parsed; null for none. */
+const blockOf = (handed) => JSON.parse(/```json\n([\s\S]*?)\n```\s*$/.exec(handed)?.[1] ?? "null");
+
+test("a previous result over the limit whose run's output schema names x-carried is handed as those fields alone, said so with its whole size", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
+  const carried = await firedTwice(api, "carried", carrying(["seen"]), BIG);
+  assert.ok(!carried.handed.includes(previousResultTooLarge(carried.first.runId).trim()), `a result over the limit whose schema carries fields is not refused whole: ${carried.handed.slice(0, 300)}`);
+  const words = previousCarriedWords(carried.first.runId, carried.first.endedAt, ["seen"], Buffer.byteLength(JSON.stringify(BIG, null, 2)), JSON.stringify({ seen: SEEN }, null, 2), []);
+  assert.ok(carried.handed.endsWith(words.trim()), `only the carried fields, named, with the whole result's size: ${carried.handed.slice(0, 600)}`);
+  assert.ok(!carried.handed.includes("word word") && !carried.handed.includes('"tag"'), "nothing of the fields it does not carry");
+});
+
+test("the carried fields are read from the schema the completed run was checked against (its revision), never the agent's newer one", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
+  // An edit after the first run carries `tag` instead: the second run is still handed the first run's `seen`.
+  const pinned = await firedTwice(api, "pinned", carrying(["seen"]), BIG, async () => {
+    const current = await api("GET", "/agents/pinned");
+    const edited = await api("PUT", "/agents/pinned/definition", { definition: { name: "pinned", instructions: "Answer again.", skills: [], tools: [], output_schema: carrying(["tag"]) } }, { "if-match": current.headers.get("etag") });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  });
+  assert.deepEqual((await api("GET", "/agents/pinned")).body.definition.output_schema["x-carried"], ["tag"], "the agent's current schema carries tag");
+  assert.deepEqual(blockOf(pinned.handed), { seen: SEEN }, `the first run's revision's x-carried, never the newer one's: ${pinned.handed.slice(0, 300)}`);
+});
+
+test("an output_schema's x-carried is a list of unique names of its root's properties: anything else is refused by field", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t);
+  const made = await api("POST", "/agents", agent("watch", { output_schema: carrying(["seen", "tag"]) }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual((await api("GET", "/agents/watch")).body.definition.output_schema["x-carried"], ["seen", "tag"], "it reads back as saved");
+  const refusals = [];
+  for (const [name, carried] of [["not-a-list", "seen"], ["not-strings", ["seen", 3]], ["repeated", ["seen", "seen"]], ["no-such-property", ["seen", "unknown"]], ["empty-name", [""]]]) {
+    const refused = await api("POST", "/agents", agent(name, { output_schema: { ...carrying(undefined), "x-carried": carried } }));
+    refusals.push([name, refused.status, refused.body.error?.fields?.map((f) => [f.field, f.reason])]);
+  }
+  const field = [["definition.output_schema.x-carried", "bad_format"]];
+  assert.deepEqual(refusals, [["not-a-list", 422, field], ["not-strings", 422, field], ["repeated", 422, field], ["no-such-property", 422, field], ["empty-name", 422, field]]);
+  const noProperties = await api("POST", "/agents", agent("bare", { output_schema: { type: "object", "x-carried": ["seen"] } }));
+  assert.deepEqual([noProperties.status, noProperties.body.error?.fields?.map((f) => [f.field, f.reason])], [422, field], "a schema with no properties carries none");
+});
+
+test("a stored x-carried the save would refuse is read as none, so its run gets the too-large line; one the save takes is read as written", () => {
+  assert.deepEqual(carriedFields(carrying(["seen", "tag"])), ["seen", "tag"]);
+  const read = [["not-a-list", "seen"], ["not-strings", ["seen", 3]], ["repeated", ["seen", "seen"]], ["no-such-property", ["seen", "unknown"]], ["empty-name", [""]]]
+    .map(([name, carried]) => [name, carriedFields({ ...carrying(undefined), "x-carried": carried })]);
+  assert.deepEqual(read, [["not-a-list", undefined], ["not-strings", undefined], ["repeated", undefined], ["no-such-property", undefined], ["empty-name", undefined]], "the save's rule, one reader");
+  assert.equal(carriedFields(carrying(undefined)), undefined);
+  assert.equal(carriedFields("not a schema"), undefined);
 });

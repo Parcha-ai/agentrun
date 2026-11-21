@@ -25,8 +25,8 @@ import { type LearningDiff, type RunLearningResultData, learningSteps } from "@/
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
-import { latest, NO_ANSWER, pendingQuestion } from "@/lib/viewing";
-import type { ComputerHoldAnswer, Computers, GradeAnswer, GradeBody, HandBackOutcome, Run, RunComputer, RunFile, RunLearningRead, RunTrace as RunTraceData, TimelineRow } from "@/lib/v2";
+import { isMedia, latest, NO_ANSWER, pendingQuestion, viewKind } from "@/lib/viewing";
+import type { ComputerHoldAnswer, Computers, GradeAnswer, GradeBody, HandBackOutcome, Run, RunComputer, RunFile, RunLearningRead, RunTrace as RunTraceData, RunUsage, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
   run: Run;
@@ -78,6 +78,8 @@ export type RunDetailProps = {
   readLearningResult?: () => Promise<RunLearningResultData | null>;
   /** Reads the run's trace (GET /v2/runs/{id}/trace): the Dev tools tab, offered when given and read only while it is open. */
   readTrace?: () => Promise<RunTraceData>;
+  /** Reads the run's cost line by line (GET /v2/runs/{id}/usage), beside its trace, for the Dev tools tab's cost. */
+  readUsage?: () => Promise<RunUsage>;
   /** How the Dev tools tab opens, for a story or a test: its clock (a span still going is drawn to it), the span open and
    *  the view shown. */
   traceAt?: { now?: number; open?: string; view?: "calls" | "breakdown" };
@@ -121,7 +123,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, outputSchema, readFile, fileUrl, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers, onGrade, readTrace, traceAt }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, outputSchema, readFile, fileUrl, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers, onGrade, readTrace, readUsage, traceAt }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const native = run.native;
   const sdk = backendSdkOf(run);
@@ -158,6 +160,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const reads = useRef(latest()).current;
   const show = async (file: RunFile) => {
     const token = reads.begin();
+    // An image, a video or a sound shows from its file URL: it is never read as text.
+    if (fileUrl && isMedia(viewKind(file))) return setOpen({ file, text: "" });
     setOpen({ file, text: null });
     if (!readFile) return;
     const text = await readFile(file);
@@ -261,7 +265,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       <Tabs id="run-views" label="Run views" value={tab} onChange={(value) => setTab(value as Tab)} tabs={tabs.map(([id, label]) => ({ id, label }))} />
       {tab === "graph" ? <div {...tabPanelProps("run-views", tab)} className="min-h-0 flex-1 short:min-h-96">{graphView}</div>
         // The Dev tools tab is a page of data: it fills the width and scrolls in its own panes.
-        : tab === "trace" && readTrace ? <RunTrace run={run} read={readTrace} version={`${moved.current.times}:${run.status}:${run.ended_at ?? ""}`} live={view.live} panel={tabPanelProps("run-views", tab)} {...traceAt} />
+        : tab === "trace" && readTrace ? <RunTrace run={run} read={readTrace} readUsage={readUsage} version={`${moved.current.times}:${run.status}:${run.ended_at ?? ""}`} live={view.live} panel={tabPanelProps("run-views", tab)} {...traceAt} />
         : <div {...tabPanelProps("run-views", tab)} data-scroll-pane className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
           {native && <NativeRun native={native} agentId={run.agent_id} />}
@@ -299,12 +303,12 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
         </div>
       </div>}
       {native && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">Native sessions cannot receive steering or follow-up messages. <a href={`#/playground?agent=${encodeURIComponent(run.agent_id)}`} className="underline underline-offset-2">Start a new native run</a> for another task.</p>}
-      {sdk && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">{backendSdkLabel(sdk.runtime)} runs in your backend. Start, stop and follow up through that application's controls. AgentRun records the result and checked learning.</p>}
+      {sdk && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">{backendSdkLabel(sdk)} runs in your backend. Start, stop and follow up through that application's controls. AgentRun records the result and checked learning.</p>}
       {/* While a call waits on an approval, a message declines it, as its reason: the box says so. */}
       {view.canMessage && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : ask && askMode ? NOT_THE_ASK[askMode] : undefined} /></div></div>
       )}
-      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} files={files} onOpen={show} />}
+      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} files={files} onOpen={show} src={fileUrl?.(open.file.path)} />}
     </div>
   );
 }

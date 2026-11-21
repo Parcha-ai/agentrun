@@ -18,7 +18,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { client, FAUX, startServe, withEnv } from "./support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { runCostOf } = await import("../dist/runner/metrics.js");
+const { endCostOf, runCostOf } = await import("../dist/runner/metrics.js");
 const { runEntries, runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { listRuns } = await import("../dist/store-reads/runs.js");
@@ -34,7 +34,8 @@ const answer = (usd) => ["pi.assistant", undefined, [{ role: "assistant", provid
 /** A pi run's journal, step by step: `["answered", usd]` a request marked, answered and booked; `["compacted", own, summary]`
  *  a turn's request and a compaction's summary request leaving together, both booked, pi's one answer carrying both costs,
  *  then its compaction entry; `["cut"]` a request marked and sent, cut with no answer, no usage and no hold (booked `cut`,
- *  at no known cost). */
+ *  at no known cost); `["held", hold]` a request cut with no answer, booked at its cap's hold (cutathold/1: the cost is
+ *  at most). */
 function journalOf(steps) {
   const root = [["pi.user", undefined, [{ role: "user", content: "Classify this merchant." }]]];
   const records = [];
@@ -51,6 +52,10 @@ function journalOf(steps) {
       records.push(["runner.request", { turn, model: MODEL, heldUsd: 0.75 }], ["runner.response", { turn }], booked(a));
       turn += 1;
       records.push(["runner.request", { turn, model: MODEL, heldUsd: 0.75 }], ["runner.response", { turn }], booked(b));
+    } else if (kind === "held") {
+      turn += 1;
+      root.push([REQUEST_STARTED, {}]);
+      records.push(["runner.request", { turn, model: MODEL, heldUsd: a }], ["runner.turn", { turn, usd: null, cut: true, bookedUsd: a, rule: "cut", atMost: true }]);
     } else {
       turn += 1;
       root.push([REQUEST_STARTED, {}]);
@@ -83,10 +88,12 @@ async function endedRun(t, steps, { endRead = "read", stored, read: reads = true
   await commitWrites(journal, writes, ctx);
   // `failed`: the end's read of the booking failed within its bound, so the end stores the cost unknown (adapter-loop.ts
   // endPatchOf), whatever the booking says.
-  const costUsd = stored !== undefined ? stored : endRead === "failed" ? null : runCostOf(await runEntries(store, "run-1", ctx)).usd;
-  await commitWrites(journal, [{ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.end", data: { state: "ended", costUsd } } }], ctx);
+  // `read`: the end stores what its booking gives by the end's own rule (endCostOf: a cut request's hold counted in it
+  // makes the figure a bound).
+  const { costUsd, costUpperBound } = stored !== undefined ? { costUsd: stored, costUpperBound: false } : endRead === "failed" ? { costUsd: null, costUpperBound: false } : endCostOf(runCostOf(await runEntries(store, "run-1", ctx)));
+  await commitWrites(journal, [{ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.end", data: { state: "ended", costUsd, ...(costUpperBound ? { costUpperBound } : {}) } } }], ctx);
   assert.equal((await viewOverStore(store, "run-1", { origin: "", serverSecrets: () => [] })).status, "working", "no completed read before the store's end");
-  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "done", costUsd, metrics: { path: "agent", workflow: null }, endedAt: Date.now() });
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "done", costUsd, costUpperBound, metrics: { path: "agent", workflow: null }, endedAt: Date.now() });
   const row = await store.runs.get("run-1");
   const usageRow = (await runTimeline(store, "run-1", ctx, { settled: true })).findLast((one) => one.kind === "usage")?.usage;
   if (keep) {
@@ -194,7 +201,7 @@ test("the store heals on a read: once the run read reads its priced booking, the
   assert.ok(near(bill.runs[0]?.cost_usd, 0.23) && bill.unknown_cost_runs === 0 && bill.bill.unattributed_usd === 0, `the learning cost and its bill: ${JSON.stringify(bill)}`);
   // A second read writes nothing: the figure is there.
   const row = await store.runs.get("run-1");
-  assert.equal(await store.runs.healCost("run-1", { epoch: row.epoch, endedAt: row.endedAt }, 0.5), false, "never over a stored figure");
+  assert.equal(await store.runs.healCost("run-1", { epoch: row.epoch, endedAt: row.endedAt }, { costUsd: 0.5, costUpperBound: false }), false, "never over a stored figure");
   assert.ok(near((await store.runs.get("run-1")).costUsd, 0.23));
 });
 
@@ -208,6 +215,24 @@ test("the store heals at the server's start: a run nobody reads again gets its b
   assert.ok(near(run.usd, 0.23) && near(run.all_in_usd, 0.23), JSON.stringify(run));
 });
 
+test("a held charge heals as a bound: the store keeps the booked figure as at most, as an end that read the booking stores it, and every reader agrees with the run read", { timeout: 60_000 }, async (t) => {
+  const held = [["answered", 0.05], ["held", 0.75]];
+  // The end that read its booking: its figure is a bound (endCostOf), $0.80 at most.
+  const ended = await endedRun(t, held, { read: false });
+  const endRead = (await ended.api("GET", "/runs/run-1")).body.cost;
+  assert.ok(near(endRead.usd, 0.8) && endRead.upper_bound === true, `the end's bound on the run: ${JSON.stringify(endRead)}`);
+  const endReaders = await readersOf(ended.api);
+  // The end that could not read it: the sweep heals it to the same bound, and every reader reads what the end's would.
+  const { api, lines } = await endedRun(t, held, { endRead: "failed", read: false });
+  assert.match(await swept(lines), /^at=\S+ event=cost_heal read=1 healed=1 failed=0$/);
+  const healed = (await api("GET", "/runs/run-1")).body.cost;
+  assert.deepEqual(healed, endRead, "the run read");
+  const readers = await readersOf(api);
+  const { said: _endSaid, ...endFigures } = endReaders;
+  const { said, ...figures } = readers;
+  assert.deepEqual(figures, endFigures, `every reader, as the end's: ${said}`);
+});
+
 test("a stored figure is never written over: an end that stored $0.30 keeps it on every reader, whatever its booking sums to", { timeout: 60_000 }, async (t) => {
   // The sweep never lists it (store-heal-cost.test.mjs: costUnknown), and its run read finds nothing to heal.
   const { api } = await endedRun(t, priced, { stored: 0.3, read: false });
@@ -216,11 +241,19 @@ test("a stored figure is never written over: an end that stored $0.30 keeps it o
   assert.ok(readers.stats === 0.3 && readers.usage === 0.3 && readers.bill === 0.3, readers.said);
 });
 
-test("a run whose booking cannot be read keeps its null in the store: the sweep reads it, heals nothing, says so even quiet, and every reader counts it unknown", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENTRUN_LOG: "quiet" });
-  const { api, lines } = await endedRun(t, [], { endRead: "failed", read: false });
-  assert.match(await swept(lines), /^at=\S+ event=cost_heal read=1 healed=0 failed=0$/);
+test("a run whose booking has no request to read keeps its null in the store, and every reader counts it unknown", { timeout: 60_000 }, async (t) => {
+  // The sweep never lists it (store-heal-cost.test.mjs: costUnknown leaves out a run with no booked request), so it is
+  // not read again at each start.
+  const { api } = await endedRun(t, [], { endRead: "failed", read: false });
   assert.equal((await api("GET", "/runs/run-1")).body.cost.unknown, "booking_unread");
   const readers = await readersOf(api);
   assert.ok(readers.stats === null && readers.usage === 0 && readers.usageUnpriced === 1 && readers.bill === null && readers.billUnknown === 1 && readers.unattributed === null, readers.said);
+});
+
+test("a run whose booking holds a charge of no known cost keeps its null: the sweep reads it, heals nothing, and says so even quiet", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_LOG: "quiet" });
+  const { api, lines } = await endedRun(t, [["answered", 0.05], ["cut"]], { endRead: "failed", read: false });
+  assert.match(await swept(lines), /^at=\S+ event=cost_heal read=1 healed=0 failed=0$/);
+  const cost = (await api("GET", "/runs/run-1")).body.cost;
+  assert.ok(cost.usd === null && cost.unpriced === 1, JSON.stringify(cost));
 });

@@ -36,7 +36,7 @@ COPY agentrun-archil /tmp/agentrun-box/agentrun-archil
 RUN sh /tmp/agentrun-box/install.sh && rm -rf /tmp/agentrun-box
 
 USER root
-# A computer's first process is its provider's own (Daytona's runs this when a snapshot names no entrypoint; Modal's and
-# E2B's are their own): never the base image's python. A machine whose create set AGENTRUN_ATTACH_URL dials the server
-# instead (install.sh's agentrun-dial).
+# A computer's first process is its provider's own (Daytona's toolbox, Modal's and E2B's own), never the base image's
+# python. Daytona never runs an image's CMD, only a snapshot's entrypoint, so box/build-daytona.py names this CMD as
+# the snapshot's. A machine whose create set AGENTRUN_ATTACH_URL dials the server instead (install.sh's agentrun-dial).
 CMD ["sh", "-c", "[ -z \"${AGENTRUN_ATTACH_URL-}\" ] || exec agentrun-dial; exec sleep infinity"]

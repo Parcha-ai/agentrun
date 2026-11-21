@@ -1,7 +1,7 @@
 // Backend SDK calls remain in their application. This inbox only records their evidence and immutable completion;
 // the ordinary fenced runner owns journals, reflection, checking and learning commits.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { inspectWorkflow } from "@parcha/agentrun-dsl";
+import { inspectWorkflow, resolveSchemaForWorkflow } from "@parcha/agentrun-dsl";
 import { ApiError } from "../errors.js";
 import { canonical, isObject, type AgenticBody } from "../store/agent-body.js";
 import type { Claim, RunOrigin, Store } from "../store/store.js";
@@ -11,16 +11,19 @@ import { launchBody, type RunLaunch } from "../run-launch.js";
 import { learningStartFor, type StartDeps } from "../runs-over-store.js";
 import { chooseWorkflows, type LearnedWorkflow, learningFolderOf, seedAt, secretsShown } from "../learning.js";
 import { INSTRUCTION_EVIDENCE_BYTES } from "../native/instructions.js";
+import { refuseWhileNoRunner } from "../runner/presence.js";
 import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
-import { reserveSdkCheck, type SdkWorkflowCheck, type SdkWorkflowCheckEvent } from "./check.js";
-import { championOf, promotionsOf, recordPromotion } from "../learn/promote.js";
-import { workflowDigest } from "../runner/workflow-first.js";
+import type { SdkWorkflowCheckEvent } from "./check.js";
+import { promotionOf, promotionsOf } from "../learn/promote.js";
+import { championTextOf, releaseSdkCheck, reserveSdkCheck, type SdkWorkflowCheck } from "../runner/promotion.js";
+import { fits, workflowDigest } from "../runner/workflow-first.js";
 
-export type SdkRuntime = "claude-agent-sdk" | "codex-sdk" | "eve";
+import { SDK_WORKFLOW_RUNTIMES, sdkBindingOf, type SdkBinding } from "./runtimes.js";
+export { SDK_RUNTIMES, isSdkRuntime, type SdkRuntime } from "./runtimes.js";
 export type SdkUsage = {
   input_tokens: number | null;
   output_tokens: number | null;
@@ -101,10 +104,7 @@ const usageOf = (value: unknown): SdkUsage | undefined => {
   }
   return result;
 };
-export const sdkOf = (body: unknown): { runtime: SdkRuntime } | undefined =>
-  isObject(body) && isObject(body.sdk) && (body.sdk.runtime === "claude-agent-sdk" || body.sdk.runtime === "codex-sdk" || body.sdk.runtime === "eve")
-    ? { runtime: body.sdk.runtime }
-    : undefined;
+export const sdkOf = (body: unknown): SdkBinding | undefined => isObject(body) ? sdkBindingOf(body.sdk) : undefined;
 export async function sdkInbox(store: Pick<Store, "settings">, runId: string): Promise<SdkInbox> {
   const row = await store.settings.get(keyOf(runId));
   if (!isObject(row)) throw new ApiError("not_found", "No backend SDK run with that id.");
@@ -208,7 +208,10 @@ export class SdkRuns {
     compile: { readonly model?: string; check(model: string): Promise<void> },
     consoleOrigin: string,
   ) {
-    only(body, ["runtime", "input", "instructions", "model", "workflow_tools", "workflow_adapters"]);
+    only(body, ["runtime", "platform", "input", "instructions", "model", "workflow_tools", "workflow_adapters"]);
+    const source = sdkBindingOf(body) ?? refuse("The SDK source needs a supported runtime; external requires a platform label of 1–80 characters without surrounding whitespace, controls or lone surrogates. Other runtimes do not take platform.");
+    if (!SDK_WORKFLOW_RUNTIMES.includes(source.runtime) && (body.workflow_tools !== undefined || body.workflow_adapters !== undefined))
+      refuse("External runs receive owner corrections; workflow_tools and workflow_adapters require a backend workflow bridge.");
     const workflow = sdkWorkflowManifest(body.workflow_tools, body.workflow_adapters);
     if (workflow && canonical(this.clean(workflow)) !== canonical(workflow))
       refuse("The workflow manifest contains a protected value; keep credentials in the backend.");
@@ -216,7 +219,7 @@ export class SdkRuns {
     if (!binding || !entry.revision)
       throw new ApiError("agent_not_runnable", "This agent is not registered as a backend SDK agent.");
     if (entry.agent.archivedAt !== null) throw new ApiError("agent_archived", "This SDK agent is archived.");
-    if (body.runtime !== binding.runtime) refuse("The SDK runtime must match the registered agent.");
+    if (source.runtime !== binding.runtime || source.platform !== binding.platform) refuse("The SDK runtime and platform must match the registered agent.");
     const input = text(body.input, "input"),
       instructions = text(body.instructions, "instructions");
     const model = body.model === undefined ? undefined : text(body.model, "model", 256);
@@ -239,8 +242,7 @@ export class SdkRuns {
       );
     // A runner keeps an SDK run's evidence and ends it: while every runner here refused to claim, the start is refused in
     // their words, as any start is (prepareLaunch), before the caller holds a receipt it would run on.
-    const refused = await deps.runnersRefused?.();
-    if (refused !== undefined) throw new ApiError("runner_refused", refused);
+    await refuseWhileNoRunner(this.store.runners);
     const learning = await learningStartFor(deps, entry, pinned.revision, revisionBody as never, {
       noWorkflows: !workflow,
       ...(compile.model ? { model: compile.model } : {}),
@@ -265,7 +267,16 @@ export class SdkRuns {
     const selected = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : { workflows: [], candidates: [] };
     const cleaned = this.clean({ instructions, ...(model ? { model } : {}) });
     const runId = uuidv7();
-    const check = learning ? await reserveSdkCheck(this.store, entry.agent.id, runId, learning.seed, revisionBody.learning, selected.candidates) : undefined;
+    const redacted = cleanedInput !== input || cleaned.instructions !== instructions;
+    let task: unknown;
+    try { task = JSON.parse(input); } catch { /* A prose task: the client resolves the draft's input from the turn. */ }
+    // A turn is a check only when it can be one's baseline: no protected value in its task or policy, and an input the
+    // draft takes. A JSON object task is the input, so it must fit (the managed check's own rule); a prose task's input
+    // is resolved by the client from the turn's recorded tool inputs or the host's resolveCheckInput, and a turn it
+    // cannot resolve is given back (releaseSdkCheck), never counted.
+    const takes = (flow: LearnedWorkflow) => !redacted && (!isObject(task) || fits(flow, task, resolveSchemaForWorkflow as never));
+    const checkDeps = { store: this.store, agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }) };
+    const check = learning ? await reserveSdkCheck(checkDeps, { runId, revision: learning.seed, learning: revisionBody.learning, flows: selected.candidates, takes }) : undefined;
     // A shadow check needs the original agent's own answer, not an answer produced by its existing champion.
     const workflows = check ? [] : selected.workflows;
     const launch: RunLaunch = {
@@ -274,7 +285,7 @@ export class SdkRuns {
       place: { mode: "runner" },
       harness: "sdk",
       sdk: {
-        runtime: binding.runtime,
+        ...binding,
         ...workflow,
         instructions: cleaned.instructions,
         ...(cleaned.model ? { model: cleaned.model } : {}),
@@ -290,7 +301,7 @@ export class SdkRuns {
         batches: [],
         learning_workflows: workflows,
         ...(check ? { learning_check: check } : {}),
-        ...(cleanedInput !== input || cleaned.instructions !== instructions ? { check_redacted: true } : {}),
+        ...(redacted ? { check_redacted: true } : {}),
       } satisfies SdkInbox);
       await this.store.runs.create(
         { id: runId, agentId: entry.agent.id, revisionId: entry.revision.id, ...(origin ? { origin } : {}) },
@@ -298,11 +309,12 @@ export class SdkRuns {
       );
     } catch (error) {
       await this.store.settings.remove(keyOf(runId));
-      if (check) await recordPromotion(this.store.settings, entry.agent.id, {
-        workflow: check.workflow.name, digest: check.digest, at: new Date().toISOString(), decided: "hold",
-        reason: "The connected agent check could not be admitted. No native turn was compared and nothing was promoted.",
-        replay_id: check.id, commit: check.revision,
-      }, was => was?.decided === "replaying" && was.replay_id === check.id).catch(() => undefined);
+      // The reservation comes first because the launch it is created with withholds the champion from a check's turn.
+      // No turn ran, so the check waits for the next one, the release uncounted: never a hold of a draft never compared.
+      if (check) {
+        const record = promotionOf(await promotionsOf(this.store.settings, entry.agent.id).catch(() => []), check.workflow.name, check.digest);
+        if (record?.decided === "replaying" && record.replay_id === check.id) await releaseSdkCheck(checkDeps, record, "its start could not be admitted", false).catch(() => undefined);
+      }
       throw error;
     }
     return this.receipt(runId, consoleOrigin);
@@ -355,15 +367,10 @@ export class SdkRuns {
         return true;
       };
       const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [];
+      const atCommit = async (name: string, commit: string) =>
+        chooseWorkflows(await seedAt(folder.workspace, commit), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
       for (const flow of flows) {
-        const champion = championOf(records, flow.name);
-        let serving: LearnedWorkflow | undefined;
-        if (champion?.digest === workflowDigest(flow)) serving = flow;
-        else if (champion?.commit) {
-          const older = await seedAt(folder.workspace, champion.commit);
-          const chosen = chooseWorkflows(older, secretsShown(this.secrets(), { local: true })).flows.find(one => one.name === flow.name);
-          if (chosen && workflowDigest(chosen) === champion.digest) serving = chosen;
-        }
+        const { text: serving } = await championTextOf(records, flow, atCommit);
         if (serving && compatible(serving)) workflows.push(serving);
         if ((!serving || workflowDigest(serving) !== workflowDigest(flow)) && compatible(flow)) candidates.push(flow);
       }
@@ -410,7 +417,9 @@ export class SdkRuns {
         return { type: "session", session_id: text(value.session_id, "session_id", 256) };
       }
       if (value.type === "workflow_check") {
-        only(value, ["type", "id", "digest", "outcome", "answer", "reason", "skipped"]);
+        only(value, ["type", "id", "digest", "outcome", "answer", "reason", "skipped", "fresh_reads"]);
+        if (value.fresh_reads !== undefined && (!Number.isSafeInteger(value.fresh_reads) || (value.fresh_reads as number) < 1 || (value.fresh_reads as number) > 256))
+          refuse("fresh_reads must be an integer from 1 to 256 when supplied.");
         if (!["answered", "handed_back", "failed", "skipped_write"].includes(String(value.outcome))) refuse("Invalid workflow check outcome.");
         if (value.outcome === "answered" && typeof value.answer !== "string") refuse("An answered workflow check needs its answer.");
         if (value.skipped !== undefined) {
@@ -424,6 +433,7 @@ export class SdkRuns {
           ...(value.answer !== undefined ? { answer: text(value.answer, "answer") } : {}),
           ...(value.reason !== undefined ? { reason: text(value.reason, "reason", 8000) } : {}),
           ...(value.skipped !== undefined ? { skipped: value.skipped as SdkWorkflowCheckEvent["skipped"] } : {}),
+          ...(value.fresh_reads !== undefined ? { fresh_reads: value.fresh_reads as number } : {}),
         };
       }
       if (value.type === "tool") {

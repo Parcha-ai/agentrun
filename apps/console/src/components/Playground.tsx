@@ -118,7 +118,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     const issues = Array.isArray(error.fields) ? error.fields.filter((f): f is FieldIssue => !!f && typeof f.field === "string" && typeof f.message === "string") : [];
     // A 422 names its fields: each one whose message says more than the refusal's is listed under it, as the Run bar does;
     // one at a typed field is said there instead.
-    const more = issues.filter((f) => f.message !== error.message && atField(f.field) === null);
+    const more = issues.filter((f) => f.message !== error.message && atField(f.field) === null && !(form && f.field === "input.content"));
     return { message: error.message, more, issues, box: typeof error.details?.box === "string" ? error.details.box : undefined, details: error.code === "agent_not_runnable" ? error.details : undefined };
   }, [result, schemaKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // The fields edited to a value the server takes since the last answer: their issues go.
@@ -126,9 +126,16 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   useEffect(() => { setFixed(new Set()); }, [result]);
   const setField = (key: string, f: FieldSpec, value: string) => {
     setValues((was) => ({ ...was, [key]: value }));
-    setFixed((was) => { const n = new Set(was); if (fieldValid(f, value)) n.add(key); else n.delete(key); return n; });
+    setFixed((was) => { const n = new Set(was); if (fieldValid(f, value)) n.add(key); else n.delete(key); if (value && !form?.contentRequired) n.add("input.content"); return n; });
+  };
+  const typeText = (value: string) => {
+    setText(value);
+    if (value.trim()) setFixed((was) => new Set(was).add("input.content"));
   };
   const issuesAt = (key: string) => (fixed.has(key) ? [] : (refusal?.issues ?? []).filter((i) => atField(i.field) === key));
+  // With typed fields the message may be optional: the server's issue at it (an input giving neither the message nor a
+  // field) is said at the message, until the message or a field is filled.
+  const contentIssue = form && !fixed.has("input.content") ? refusal?.issues.find((i) => i.field === "input.content")?.message : undefined;
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
   // Files picked here are sent at once; the request names each once the server has it, and waits for the rest.
@@ -159,7 +166,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
             options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
         </div>
-        {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk.runtime)} · Your backend</span> : <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
+        {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk)} · Your backend</span> : <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
       </div>
       {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width.
           With the code panel folded, one column at any size. Where the two stood side by side, the button that shows
@@ -169,7 +176,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
       {sdk ? <section className="space-y-4 p-5 md:p-8">
         <h2 className="text-lg font-semibold">Run through your backend</h2>
         <p className="text-body text-muted-foreground">This agent keeps its existing SDK, tools and job entrypoint. Your coding agent can run it there; AgentRun records its progress and learning.</p>
-        <CodingAgentAction variant="primary" label="Run agent" prompt={runAgentPrompt(origin, agentId, sdk.runtime)} />
+        <CodingAgentAction variant="primary" label="Run agent" prompt={runAgentPrompt(origin, agentId, sdk)} />
       </section> : <div className={cn("relative grid min-h-0 flex-1 grid-cols-1", showCode ? "lg:[@media(min-height:501px)]:grid-cols-2" : "grid-rows-[minmax(0,1fr)_auto]")}>
         <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b", showCode ? "lg:border-b-0 lg:border-r short:hidden" : "lg:[@media(min-height:501px)]:border-b-0 short:border-b-0")}>
           <header className={cn(BAR, "justify-between border-b", !showCode && "lg:[@media(min-height:501px)]:pr-80 short:pr-72")}>
@@ -190,8 +197,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               </>
             ) : (
               <>
-                <Label htmlFor="playground-input" name={json ? "input" : "input.content"} required={!form || form.contentRequired} optional={!!form && !form.contentRequired} error={!built.ok && built.field === "input" && text ? built.message : undefined}>
-                  <Textarea id="playground-input" value={text} onChange={(e) => setText(e.target.value)} rows={json ? 7 : 4} placeholder={placeholder} className={field} />
+                <Label htmlFor="playground-input" name={json ? "input" : "input.content"} required={!form || form.contentRequired} optional={!!form && !form.contentRequired} error={!built.ok && built.field === "input" && text ? built.message : contentIssue}>
+                  <Textarea id="playground-input" value={text} onChange={(e) => typeText(e.target.value)} aria-invalid={contentIssue ? true : undefined} rows={json ? 7 : 4} placeholder={placeholder} className={field} />
                   {example && (
                     <p className="mt-1 font-mono text-label text-muted-foreground">
                       {exampleHint(example, "start", kind === "workflow" ? "workflow" : "agent")}

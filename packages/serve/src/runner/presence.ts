@@ -10,12 +10,18 @@
 // runs still queued (server.ts). With no runner there at all (a server with --no-runner and its runner not started yet),
 // it refuses nothing: runs queue for the runner to come, as before.
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { ApiError } from "../errors.js";
 import type { Runners } from "../store/store.js";
 
 /** How often a runner says again that it is there. */
 export const PRESENCE_RENEW_MS = 10_000;
 /** How old a runner's word can be and still count: three renewals missed. */
 export const PRESENCE_STALE_MS = 3 * PRESENCE_RENEW_MS;
+
+/** This build's version (the serve package's), which every runner says on its row (runners.version) for the server's
+ *  capacity read (GET /v2/capacity). */
+export const RUNNER_VERSION: string = (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
 /** Where a runner's relay takes the dials the server relays to it (dial-relay.ts). */
 export interface RelayAt {
@@ -36,12 +42,13 @@ export interface Presence {
   stop(): void;
 }
 
-/** Keeps `runner`'s row in `runners` (refused: its words, or null for a runner that claims), renewed every `renewMs`; put
+/** Keeps `runner`'s row in `runners` (refused: its words, or null for a runner that claims), with this build's version
+ *  (RUNNER_VERSION) and `slots`, the most runs it holds at once (none for a refusing runner), renewed every `renewMs`; put
  *  again when it went (a row pruned, a store restored), never over a later process's of the same name while that one is
  *  live; its relay's place is written on its own row only. A write that
  *  fails is tried again at the next renewal: it never stops the runner, and `warn` hears it once. `incarnation` is the
  *  runner process's one (runner/main.ts hands its relay the same), a new one by default. */
-export function keepPresence(runners: Runners, runner: string, refused: string | null, { renewMs = PRESENCE_RENEW_MS, warn = (_line: string) => {}, incarnation = randomUUID() }: { renewMs?: number; warn?: (line: string) => void; incarnation?: string } = {}): Presence {
+export function keepPresence(runners: Runners, runner: string, refused: string | null, { renewMs = PRESENCE_RENEW_MS, warn = (_line: string) => {}, incarnation = randomUUID(), slots = null }: { renewMs?: number; warn?: (line: string) => void; incarnation?: string; slots?: number | null } = {}): Presence {
   let warned = false;
   const failed = (error: unknown) => {
     if (warned) return;
@@ -49,16 +56,18 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
     warn(`could not say in the store that runner ${runner} is there: ${error instanceof Error ? error.message : String(error)}`);
   };
   let at: RelayAt | null = null;
-  const row = () => ({ runner, incarnation, refused, host: at?.host ?? null, port: at?.port ?? null });
-  // Its first put takes the name over from an earlier process's row. Every write after it (a renewal's put again, the
-  // relay's place) touches its own row only, or puts one where no other process of the name is live (Runners
-  // putUnlessLive): an older process overlapping a restart never takes the later one's row back, nor clears its relay.
-  const again = () => runners.putUnlessLive(row(), PRESENCE_STALE_MS);
+  const row = () => ({ runner, incarnation, refused, host: at?.host ?? null, port: at?.port ?? null, version: RUNNER_VERSION, slots });
+  // Its first put takes the name over from an earlier process's row. Every write after it (a renewal, the relay's place:
+  // one Runners.renew, with the place it holds now) touches its own row only, or puts one where no other process of the
+  // name is live (Runners.put unlessLiveMs): an older process overlapping a restart never takes the later one's row back,
+  // nor clears its relay.
+  const again = () => runners.put(row(), { unlessLiveMs: PRESENCE_STALE_MS });
+  const renew = async () => {
+    if (!(await runners.renew(runner, incarnation, at))) await again();
+  };
   let writing: Promise<unknown> = runners.put(row()).catch(failed);
   const timer = setInterval(() => {
-    writing = writing.then(async () => {
-      if (!(await runners.seen(runner, incarnation))) await again();
-    }).catch(failed);
+    writing = writing.then(renew).catch(failed);
   }, renewMs);
   timer.unref();
   let stopped = false;
@@ -69,9 +78,7 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
       // Once closed or stopped it writes nothing more: a relay's close after its presence's never puts the row back.
       if (stopped) return Promise.resolve();
       // After any write in flight, so a renewal's put never lands over it with the place before.
-      const wrote = writing.then(async () => {
-        if (!(await runners.relayAt(runner, incarnation, next))) await again();
-      });
+      const wrote = writing.then(renew);
       writing = wrote.catch(failed);
       return wrote;
     },
@@ -96,6 +103,13 @@ export async function runnersRefused(runners: Pick<Runners, "live">, staleMs = P
   if (live.length === 0 || live.some((row) => row.refused === null)) return undefined;
   const reasons = [...new Set(live.map((row) => row.refused as string))];
   return `No runner of this server can take a run: ${reasons.join(" ")}`;
+}
+
+/** Refuses a run no runner here can take (runner_refused, in the runners' words: runnersRefused), before anything is made
+ *  for it; nothing while one can, or none is there yet. Every refusal of a start or a message is this one throw. */
+export async function refuseWhileNoRunner(runners: Pick<Runners, "live">): Promise<void> {
+  const refused = await runnersRefused(runners);
+  if (refused !== undefined) throw new ApiError(RUNNER_REFUSED_CODE, refused);
 }
 
 /** The code a run fails with when no runner here could take it (its error's code, and a launch's refusal's). */

@@ -65,10 +65,8 @@ starts the service. When it's live, open its `onrender.com` address and paste `A
 Environment tab as the setup code. Set your password, then Continue with ChatGPT or add a model key in the console.
 
 `render.yaml` sets `AGENTRUN_RUN_USER=same`: Render hasn't been shown to keep the image helper's file capabilities, so
-each run runs as the server's own user, still a process of its own. Keep it. Without it, where the helper can't switch
-users, the runner refuses to claim: the console and the API then refuse every run with `runner_refused` in the
-runner's words, `GET /v2/capabilities` says why in `runner_refused`, and `GET /v2/health` answers 200 `degraded` with
-its `runner` check `refused` (never 503, so Render does not restart the service over a setting).
+each run runs as the server's own user, still a process of its own. Keep `AGENTRUN_RUN_USER=same`; without it the
+runner refuses to claim and every run answers `runner_refused` (packages/serve/README.md).
 
 ### Railway
 
@@ -90,8 +88,8 @@ model key in the console.
 
 Railway mounts the volume as root. The service starts as root only to give the volume to the server's own user, then
 runs the server as that user. The template sets `AGENTRUN_RUN_USER=same`, as `render.yaml` does and for the same reason:
-each run runs as the server's own user, still a process of its own. Keep it; without it a runner that can't switch users
-refuses to claim, and the server refuses every run with `runner_refused` (see Render above).
+each run runs as the server's own user, still a process of its own. Keep `AGENTRUN_RUN_USER=same`; without it the
+runner refuses to claim and every run answers `runner_refused` (packages/serve/README.md).
 `railway/publish-and-walk.sh` publishes the template from `template.json` and walks it.
 Railway's API makes a template only by copying a project, and the copy drops plain values, optional flags and some
 deploy settings. So `template.json` holds only what survives: `PORT` and `RAILWAY_RUN_UID` are written as one-character
@@ -296,8 +294,21 @@ A runner exits with:
 | --- | --- |
 | 0 | It was stopped (SIGTERM or SIGINT) and handed its runs back. |
 | 2 | Bad arguments. |
-| 3 | The store's schema is one it does not know, or the store is not set up yet. Start the server first; run a runner of the server's release. |
+| 3 | It can't run on the store's schema. The store isn't set up yet, or the server hasn't migrated it to this runner's version yet (start the server first), or the store's runner floor is above this runner's version (run a runner of the server's release). A runner checks the floor at its start and every 10 s after. When the floor rises while it runs, it first claims nothing more, drains and hands its runs back. |
 | 1 | Anything else. |
+
+**Upgrading on Postgres.** Deploy the server first: it migrates the store under the running runners, then roll the
+runners. A runner opens a store a later server migrated as long as the store's runner floor is at most this runner's
+schema version. Additive migrations leave the floor where it was, so the earlier runners keep running. A migration marked
+breaking raises the floor, and each earlier runner then stops as above and exits 3. It notices at its next floor read,
+up to 10 s after the migration commits, and keeps claiming until then; its drain and its hand-back then run its own
+release's statements on the new schema. That is safe when the breaking migration is the cleanup a release later, which
+removes only what the runners of the release before it no longer use (CONTRIBUTING.md). A hand-back that fails leaves
+its runs to the claim's lease, which another runner takes when it lapses. To check a store before a deploy,
+`agentrun-serve store-schema` prints its schema version and runner floor beside the version this build knows, as one
+line of JSON, and changes nothing. A running server reports the same values in `GET /v2/capabilities` (`store_schema`).
+`agentrun-serve store-schema --build` prints only the build's own versions, with no store. Never deploy a server whose
+build is older than the store: it refuses the store.
 
 On SIGTERM a runner claims nothing more and lets each busy run finish its turn for up to `--drain-timeout` (default 6 s),
 so a model request in flight is not cut and sent again; then it stops the loops left where they can resume and hands

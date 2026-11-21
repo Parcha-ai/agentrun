@@ -153,6 +153,9 @@ export async function sweepKept(deps: {
   readonly now: number;
   readonly providerOf: (id: string) => Promise<ComputerProvider | undefined>;
   readonly deleteMs?: number;
+  /** Told of each kept computer whose delete answered ok, by its provider and id (its interval's end,
+   *  computer-intervals.ts). Never throws. */
+  readonly deleted?: (provider: string, id: string) => Promise<void>;
 }): Promise<KeptSweep> {
   const ended: string[] = [];
   const failed: string[] = [];
@@ -186,7 +189,10 @@ export async function sweepKept(deps: {
         failed.push(`${kept.name} of run ${runId}: this server can't reach ${kept.provider} to end it`);
         continue;
       }
-      const deleted = await endKept(deps.settings, runId, kept, () => bounded(deps.deleteMs ?? KEPT_DELETE_MS, deleteKept(provider, kept)));
+      const proven = () => deleteKept(provider, kept).then(async (ok) => {
+        if (ok) await deps.deleted?.(kept.provider, kept.id);
+      });
+      const deleted = await endKept(deps.settings, runId, kept, () => bounded(deps.deleteMs ?? KEPT_DELETE_MS, proven()));
       if (deleted) ended.push(kept.name);
       if (deleted && over) await deps.settings.removeIf(row.key, rowOf(kept, "ended"));
     } catch (error) {
@@ -197,10 +203,13 @@ export async function sweepKept(deps: {
 }
 
 /** Deletes the kept computer through its provider; one already gone (its run's end let it go, run-end-computers.ts, or
- *  its vendor ended it) is as good as deleted. Throws the provider's words on any other failure. */
-export async function deleteKept(provider: Pick<ComputerProvider, "release">, kept: Pick<Kept, "id" | "name">): Promise<void> {
+ *  its vendor ended it) is as good as deleted. Throws the provider's words on any other failure. True when the
+ *  provider's delete answered ok, the one answer that proves its end now (its interval's, computer-intervals.ts); false
+ *  for one already gone, whose end is not known. */
+export async function deleteKept(provider: Pick<ComputerProvider, "release">, kept: Pick<Kept, "id" | "name">): Promise<boolean> {
   const released = await provider.release({ id: kept.id, name: kept.name }, "delete");
   if (!released.ok && released.error.code !== "not_found" && released.error.code !== "gone") throw new Error(released.error.message);
+  return released.ok;
 }
 
 /** `work`, or its timeout in words after `ms`: a delete that hangs is left to finish on its own. */

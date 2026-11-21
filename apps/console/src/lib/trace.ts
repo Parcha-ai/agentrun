@@ -1,7 +1,7 @@
 // A run's trace (GET /v2/runs/{id}/trace) as the Dev tools tab reads it: where each span sits on the time axis, what the
 // run's requests and calls add up to, and the same broken down by tool and by model. Every figure here is a sum, a share
 // or a rank of what the server sent; a figure the trace does not carry stays unknown (null), never 0.
-import type { RunTrace, TraceSpan } from "./v2";
+import type { RunTrace, RunUsage, TraceSpan, UsageLine } from "./v2";
 
 export type SpanKind = "all" | "model" | "tool" | "failed";
 export type SpanSort = "started" | "duration" | "cost" | "tokens";
@@ -259,6 +259,58 @@ export function costSplit(spans: readonly TraceSpan[]): { parts: { name: string;
   const parts = [...[...models].map(([name, usd]) => ({ name, kind: "model" as const, usd })).sort((a, b) => b.usd - a.usd), ...(tools > 0 ? [{ name: "Tool charges", kind: "tool" as const, usd: tools }] : [])];
   const total = parts.reduce((all, part) => all + part.usd, 0);
   return known ? { parts, total } : null;
+}
+
+/** A computer resource in words, a GPU by its type. */
+const RESOURCE_WORDS = { vcpu: "vCPU", memory: "memory", gpu: "GPU", disk: "disk" } as const;
+
+/** A usage line's name: its model; the vendor that charged for a tool; the provider of browser time; or the provider and
+ *  resource of computer time. */
+export function lineName(line: UsageLine): string {
+  if (line.meter === "tokens") return line.model ?? "A model with no name";
+  if (line.meter === "tools") return `${line.charged_by ?? "An unnamed vendor"} · tools`;
+  if (line.meter === "compute_time") {
+    const resource = line.resource === "gpu" && line.gpu_type ? `${line.gpu_type} GPU` : RESOURCE_WORDS[line.resource ?? "vcpu"];
+    return `${line.provider ?? "An unnamed provider"} · ${resource}`;
+  }
+  return `${line.provider ?? "An unnamed provider"} · browser time`;
+}
+
+/** A cost from the run's booking in words, never $0 for what is not known: "$0.0120", "at most $0.0120" (a bound),
+ *  "Unknown, $0.0040 known" (some of it known), "Unknown". */
+export function bookedWords(cost: Pick<NonNullable<RunUsage["total"]>, "usd" | "so_far_usd" | "upper_bound">): string {
+  if (cost.usd !== null) return cost.upper_bound ? `at most ${usd(cost.usd)}` : usd(cost.usd);
+  return cost.so_far_usd !== undefined ? `Unknown, ${usd(cost.so_far_usd)} known` : "Unknown";
+}
+
+const UNITS = {
+  token: ["token", "tokens"],
+  call: ["call", "calls"],
+  second: ["second", "seconds"],
+  vcpu_second: ["vCPU-second", "vCPU-seconds"],
+  gib_second: ["GiB-second", "GiB-seconds"],
+  gpu_second: ["GPU-second", "GPU-seconds"],
+  gb_month: ["GB-month", "GB-months"],
+} as const;
+/** A usage line's quantity with its unit ("12,400 tokens", "3 calls", "84.5 seconds", "0.000064 GB-months"); null when it
+ *  was not measured. A month of disk is a small figure for a run, so it keeps more places. */
+export function quantityWords(line: Pick<UsageLine, "quantity" | "unit">, quantity: number | null = line.quantity): string | null {
+  if (quantity === null) return null;
+  const [one, many] = UNITS[line.unit];
+  return `${quantity.toLocaleString("en-US", { maximumFractionDigits: line.unit === "gb_month" ? 6 : 1 })} ${quantity === 1 ? one : many}`;
+}
+
+/** How a line's dollars were reached, in words. */
+export const BASIS_WORDS: Record<UsageLine["basis"], string> = { reported: "Reported", estimate: "Estimate", unpriced: "No price" };
+
+/** What a line's figures leave out, in words: calls of a tool with no price set, requests that reported no tokens. */
+export function lineNotes(line: UsageLine): string[] {
+  const notes: string[] = [];
+  if (line.not_metered_calls) notes.push(`${line.not_metered_calls} call${line.not_metered_calls === 1 ? "" : "s"} not metered: no price is set, so ${line.not_metered_calls === 1 ? "it is" : "they are"} outside the cost`);
+  if (line.unmetered_requests) notes.push(`${line.unmetered_requests} request${line.unmetered_requests === 1 ? "" : "s"} reported no tokens`);
+  if (line.unheld_quantity) notes.push(`${quantityWords(line, line.unheld_quantity)} no claim held: outside the cost`);
+  if (line.open_computers) notes.push(`${line.open_computers} computer${line.open_computers === 1 ? "" : "s"} still running when read`);
+  return notes;
 }
 
 /** Reads a span's conversation off a trace: the call that started it ("" for the run's own), from the request the span

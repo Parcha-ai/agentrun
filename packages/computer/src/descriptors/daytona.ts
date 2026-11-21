@@ -2,13 +2,16 @@
 // the operator gives an Archil egress relay (a self-hosted Daytona target), never on Daytona's hosted cloud.
 import { defineProvider } from "../descriptor.js";
 import type { GpuCapability } from "../provider.js";
-import { SANDBOX } from "./shared.js";
-
-/** Why Daytona gives no desktop (measured 11-19): PROVIDERS.md, Machines that dial in. The descriptor's unserved desktop. */
-export const DAYTONA_NO_DESKTOP = "its sandboxes run under AppArmor's restrict_unprivileged_userns, so the tool user can't make the user and network namespaces the window manager runs in";
+import { LINUX_DESKTOP, SANDBOX } from "./shared.js";
 
 /** The key that turns on a Daytona computer's Archil mount: the operator's Archil egress relay (archilEgress). */
 export const DAYTONA_ARCHIL_EGRESS = "DAYTONA_ARCHIL_EGRESS";
+
+/**
+ * The key that sends a Daytona machine that dials through the operator's relay, `<IPv4 relay>:<port>` (attachEgress):
+ * for a self-hosted target whose sandboxes reach only the addresses its runners allow.
+ */
+export const DAYTONA_ATTACH_EGRESS = "DAYTONA_ATTACH_EGRESS";
 
 /** Why a Daytona computer made with no Archil egress takes no Archil mount: check() refuses one in these words. */
 export const DAYTONA_NO_ARCHIL = `Archil mounts don't work on Daytona's hosted cloud, where Archil's client hangs on its sandboxes; a self-hosted Daytona target takes one once its operator sets ${DAYTONA_ARCHIL_EGRESS}`;
@@ -95,6 +98,7 @@ export const DAYTONA = defineProvider({
 		{ name: "DAYTONA_API_URL", option: "apiUrl", required: false },
 		{ name: "DAYTONA_TARGET", option: "target", required: false },
 		{ name: DAYTONA_ARCHIL_EGRESS, option: "archilEgress", required: false },
+		{ name: DAYTONA_ATTACH_EGRESS, option: "attachEgress", required: false },
 	],
 	// How the server reaches its machines: exec (the provider's default, when the server's settings name none), a session
 	// command through the toolbox per connection, or dial, the machine dials the server (a snapshot of box/Dockerfile).
@@ -114,9 +118,12 @@ export const DAYTONA = defineProvider({
 	// its programs' one way out is init's egress proxy, which reaches the public internet alone, and with a list its hosts
 	// alone (hosted/network.ts).
 	network: ["none", "open", "allow"],
-	// A linux computer, with GPUs when asked. No desktop, on any connect (DAYTONA_NO_DESKTOP).
-	capabilities: [{ ...SANDBOX, gpu: DAYTONA_GPU }],
-	unserved: { desktop: DAYTONA_NO_DESKTOP },
+	// A linux computer, with GPUs when asked; or, on connect dial alone, a desktop with none: a snapshot of box/Dockerfile's
+	// X server, started through computerd over the socket the sandbox dialed, and xfwm4, which computerd starts itself
+	// (init --window-manager), at the snapshot's 2 CPUs and 4 GiB (box/build-daytona.py). The desktop's configuration
+	// selects dial itself, whatever daytonaConnect says: a provider on connect exec refuses kind desktop when it is made
+	// (kindRefusal; the why is PROVIDERS.md's Daytona bullet).
+	capabilities: [{ ...SANDBOX, gpu: DAYTONA_GPU }, { ...LINUX_DESKTOP, options: { kind: "desktop", connect: "dial" } }],
 	defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
 	// The operator's own snapshot for every Daytona computer, named here; the default snapshot stands while unset. A
 	// computer with an Archil mount needs a snapshot of box/Dockerfile (box/build-daytona.py prints its name).

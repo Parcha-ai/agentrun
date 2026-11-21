@@ -400,10 +400,12 @@ export interface EndData {
 }
 
 /** How a run's job's own turn ended (KINDS.jobEnd): the end it gives the run (its summary cut of every secret the runner
- *  holds), and a CLI's error answer the end writes as its error row (`failedWith`). */
+ *  holds), a CLI's error answer the end writes as its error row (`failedWith`), and the end's time (`endedAt`): the run
+ *  reads that end while it looks back, and its end is written at that time (feedback-round.ts KeptEnd). */
 export interface JobEndData {
   readonly end: EndData;
   readonly failedWith?: string;
+  readonly endedAt: number;
 }
 
 /** An escalated workflow run's review as its end keeps it: the escalation's kind, the escalate node's label (else the node

@@ -31,7 +31,7 @@ import { type LaunchDisk, launchBody, type RunLaunch } from "./run-launch.js";
 import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
-import { runnersRefused } from "./runner/presence.js";
+import { refuseWhileNoRunner } from "./runner/presence.js";
 import { AgentDeleting, AnswerTaken, ExternalBodyConflict, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
 import { canonical } from "./store/agent-body.js";
 import { toolingOf } from "./tools.js";
@@ -97,13 +97,14 @@ export async function archiveRun(store: RunsStore, runId: string, archived: bool
 
 /** Stops the run: one stop command row, which the run's runner reads and applies (it aborts the turn in flight, withdraws a
  *  tool call waiting for approval, and ends the run stopped). A stop always lands — one command, no second path. An imported
- *  or already-ended run has none to stop: `false`, nothing written (store.command refuses a final run, RunFinal). */
-export async function stop(store: RunsStore, runId: string): Promise<boolean> {
-  const row = await store.runs.get(runId);
-  if (!row || row.importedFrom) return false;
-  await refuseSdkStop(store,runId);
+ *  run, or one that reads ended (`moment.terminal`: one looking back after its job's end among them, whose end its
+ *  look-back never undoes), has none to stop: `false`, nothing written (and store.command refuses a final run, RunFinal). */
+export async function stop(store: RunsStore, moment: RunMoment): Promise<boolean> {
+  if (moment.importedSource !== undefined) return false;
+  await refuseSdkStop(store, moment.id);
+  if (moment.terminal) return false;
   try {
-    await sendCommand(store, runId, { kind: "stop", body: {} });
+    await sendCommand(store, moment.id, { kind: "stop", body: {} });
     return true;
   } catch (error) {
     if (error instanceof RunFinal) return false;
@@ -182,8 +183,7 @@ export async function message(
   content: string,
   { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: LaunchSealed; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
-  const refused = await runnersRefused(store.runners);
-  if (refused !== undefined) throw new ApiError("runner_refused", refused);
+  await refuseWhileNoRunner(store.runners);
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   const launchBody = await controlLaunchBody(store, moment.id);
   if (isObject(launchBody) && launchBody.sdk) throw new ApiError("not_continuable", "Backend SDK runs are single-task sessions. Start a new SDK call for another task.");
@@ -420,7 +420,8 @@ export interface StartDeps {
   /** A new run id; defaults to a UUIDv7. */
   readonly newRunId?: () => string;
   /** Why no runner here can take a run, in their words, while every runner there refused to claim (runner/presence.ts
-   *  runnersRefused); undefined while one can, or none is there yet. A start is refused with it (runner_refused). */
+   *  runnersRefused); undefined while one can, or none is there yet. prepareLaunch, which holds no store, refuses a start
+   *  with it (runner_refused); a reader that holds the store calls refuseWhileNoRunner on its runners instead. */
   runnersRefused?(): Promise<string | undefined>;
   /** The create body's field issues, before the agent is read (server.ts runBodyIssues). */
   runBodyIssues(body: Json): InputIssue[];
@@ -614,7 +615,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   const entry: AgentEntry = stored
     ? firstOfVersion ? { ...stored, agent: { ...stored.agent, name: inline.name, description: inline.description } } : stored
     : {
-        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref },
+        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref, purgedAt: null },
         revision: null, version: 0, revisions: 0, sizes: new Map(),
       };
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands

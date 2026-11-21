@@ -7,7 +7,7 @@
 // image's start) runs each run in a process of its own. image-custody.sh shows the same as the image's users.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -127,6 +127,37 @@ test("a slot whose reap does not end every process of its user is retired before
   assert.match(asked[0], /^reap 0 /, asked[0]);
   assert.ok(!asked[0].includes("--fix"), `reaped before the run's folders were laid: ${asked[0]}`);
   assert.notEqual((await server.api("GET", `/runs/${runId}`)).body.state, "completed");
+});
+
+test("a claim that finds the run's folders shut by its last slot (a runner that ended before giving them back) takes them back before it lays anything, and the run completes", { timeout: 90_000 }, async (t) => {
+  const { FAUX, startInProcessRunner } = await import("./support.mjs");
+  const { runTops } = await import("../dist/runner/run-child-host.js");
+  const dir = scratchDir(t, "runas-resume-");
+  const helper = join(dir, "agentrun-runas");
+  // The image's helper, stood in for: every call logged; `own runner` reopens what it is given (the server's user owns
+  // it again), `run` becomes the run's process, the rest succeed.
+  writeFileSync(helper, `#!/bin/sh\necho "$*" >> "$(dirname "$0")/log"\ncase "$1" in\nown) [ "$2" = runner ] && { shift 2; chmod -R u+rwx "$@" 2>/dev/null; }; exit 0 ;;\nrun) shift 2; while [ "$1" != -- ]; do shift; done; shift; exec "$@" ;;\nesac\nexit 0\n`);
+  chmodSync(helper, 0o755);
+  const server = await serve(t, { runner: false });
+  const runId = await started(server.api, "resumed", {}, { input: { content: "Hello." } });
+  // What a runner that died mid-run leaves: the run's folder its last slot's, shut (a run's own chmod 700, to this
+  // test's user: no access at all).
+  const [top] = runTops(server.data, "resumed", runId);
+  mkdirSync(join(top, "work"), { recursive: true });
+  chmodSync(top, 0o000);
+  const lines = [];
+  // The runner stopped and the folder opened again here, before serve()'s own teardown (its after-hook runs first).
+  const close = await startInProcessRunner(server.data, { faux: FAUX, mcpOwn: server.own, childRuns: { isolation: { kind: "uid", helper, first: 0, slots: 1 }, log: (line) => void lines.push(line) } });
+  try {
+    const { last } = await follow(server.api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
+    assert.equal(last.status, "completed", `${JSON.stringify((await server.api("GET", `/runs/${runId}`)).body.error)}\n${lines.join("\n")}`);
+  } finally {
+    await close();
+    chmodSync(top, 0o700);
+  }
+  const asked = readFileSync(join(dir, "log"), "utf8").trim().split("\n").map((line) => line.split(" ").slice(0, 2).join(" "));
+  assert.deepEqual(asked.slice(0, 4), ["reap 0", "own runner", "own 0", "run 0"], "taken back before the slot is given its folders and run");
+  assert.deepEqual(asked.slice(-2), ["reap 0", "own runner"], "given back at the run's end");
 });
 
 test("where runs have users of their own, a claude-agent run on Claude Code's login on this machine with no model_key of its own fails at its claim in words naming the login and AGENTRUN_RUN_USER=same: never run, never a hang", { timeout: 90_000 }, async (t) => {

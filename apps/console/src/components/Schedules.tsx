@@ -1,7 +1,8 @@
 import { agentHash } from "@/components/AgentPage";
-import { ArrowLeft, Blocks, CalendarClock, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Rss, Trash2, Webhook, Zap } from "lucide-react";
+import { ArrowLeft, Blocks, CalendarClock, GitPullRequest, KeyRound, Mail, Pause, Pencil, Play, Plus, Rss, Trash2, Webhook, Zap } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { AcceptEditor, ConditionList, EVENT_HINTS, Said } from "@/components/AcceptEditor";
+import { ListFilter, matchesFilter } from "@/components/ListFilter";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
@@ -12,16 +13,16 @@ import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { Picker } from "@/components/ui/picker";
 import { ScheduleWhen } from "@/components/ScheduleWhen";
-import { UnattendedWarning } from "@/components/UnattendedWarning";
+import { askCue, UnattendedWarning, useAskingTools } from "@/components/UnattendedWarning";
 import { ZonePicker } from "@/components/ZonePicker";
 import { type Client, ClientError } from "@/lib/client";
 import { httpHref } from "@/lib/safeUrl";
-import { runLabel, when } from "@/lib/format";
+import { markdown, runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
 import { ACCEPT_LIMITS, acceptFields, emptyRule, type RuleDraft, ruleDraftOf } from "@/lib/accept";
-import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, MAX_FEEDS, span } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, type EmailTrigger, isEmailTrigger, type EmailDraft, emptyEmail, emailBodyOf, EMAIL_FIELDS, MAX_FEEDS, span } from "@/lib/schedules";
 import type { ComposioEvent, ComposioTriggers, Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 import type { McpServer } from "@/lib/mcp";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
@@ -29,7 +30,7 @@ import { cn } from "@/lib/utils";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or its editor
  *  (`edit`: a schedule's whole, a webhook's or GitHub trigger's filter, a feed trigger's feeds). */
-export type ScheduleView = { trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed"; edit?: boolean };
+export type ScheduleView = { trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; edit?: boolean };
 type PageProps = { v2: Client; go: (hash: string) => void; agentName: (id: string) => string };
 /** `minEvery`: the shortest interval the server takes (capabilities' features.triggers.min_every_s), when it says. */
 /** `now`: the page's clock, for whether a one-time schedule's picked time is still ahead. */
@@ -48,7 +49,7 @@ export function SchedulesPage({ v2, view, go, agentName, minEvery, failuresToPau
   // stays in sight but off, with the line that says how to give one. Unknown (an older server) leaves it on.
   const noAddress = publicUrl === false;
   if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} now={now} failuresToPause={failuresToPause} noAddress={noAddress} />;
-  if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : view.kind === "composio" ? <ComposioForm v2={v2} go={go} noAddress={noAddress} /> : view.kind === "feed" ? <FeedForm v2={v2} go={go} minEvery={minEvery} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} now={now} />;
+  if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : view.kind === "composio" ? <ComposioForm v2={v2} go={go} noAddress={noAddress} /> : view.kind === "feed" ? <FeedForm v2={v2} go={go} minEvery={minEvery} /> : view.kind === "email" ? <EmailForm v2={v2} go={go} minEvery={minEvery} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} now={now} />;
   if (view.edit) return <ScheduleEdit key={view.trigger} v2={v2} go={go} id={view.trigger} minEvery={minEvery} now={now} />;
   return <ScheduleDetail key={view.trigger} v2={v2} go={go} agentName={agentName} id={view.trigger} every={refreshMs} now={now} failuresToPause={failuresToPause} />;
 }
@@ -105,19 +106,23 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
   };
   useEffect(read, [v2, tries]); // eslint-disable-line react-hooks/exhaustive-deps
   useRereads(read, every, [v2]);
+  // Each row's agent, read once, for the tools of it that ask: such a row says so, as its trigger's page does.
+  const startsOf = (t: Trigger) => (t.target.kind === "start_run" ? t.target.agent_id : null);
+  const { asks, outcome } = useAskingTools(v2, (triggers ?? []).flatMap((t) => startsOf(t) ?? []));
   return (
     // The page's frame is every list page's (Connected agents, Runs): a header bar with the place's icon and name in caps
     // and its actions at the right, the main one last, then the content.
     <section className="flex min-h-full flex-col" aria-label="Triggers">
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
         <h1 className={pageTitleClass}><CalendarClock className="size-4" aria-hidden />Triggers</h1>
-        {/* With no trigger yet the panel below offers the five, each with what it is for: the page says each once. */}
+        {/* With no trigger yet the panel below offers the six, each with what it is for: the page says each once. */}
         {!(triggers && !triggers.length) && (
           <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
             <Button size="sm" disabled={noAddress} onClick={() => go("#/triggers/new-composio")}><Blocks aria-hidden /> New app trigger</Button>
             <Button size="sm" onClick={() => go("#/triggers/new-github")}><GitPullRequest aria-hidden /> New GitHub trigger</Button>
             <Button size="sm" onClick={() => go("#/triggers/new-webhook")}><Webhook aria-hidden /> New webhook</Button>
             <Button size="sm" onClick={() => go("#/triggers/new-feed")}><Rss aria-hidden /> New feed trigger</Button>
+            <Button size="sm" onClick={() => go("#/triggers/new-email")}><Mail aria-hidden /> New email trigger</Button>
             <Button size="sm" variant="primary" onClick={() => go("#/triggers/new")}><Plus aria-hidden /> New schedule</Button>
           </div>
         )}
@@ -140,6 +145,7 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
                   </div>
                   <p className="mt-1 break-words font-mono text-small text-muted-foreground" title={cronOf(t)}>{whatWords(t, agentName, now())}</p>
                   {disabledWords(t, failuresToPause) && <p className="mt-1 break-words text-small text-warning-text">{disabledWords(t, failuresToPause)}</p>}
+                  {asks[startsOf(t) ?? ""] && <p data-asks="" className="mt-1 break-words text-small text-warning-text">{askCue(asks[startsOf(t)!]!, outcome)}</p>}
                 </div>
                 <div className="min-w-0 font-mono text-small text-muted-foreground md:text-right">
                   <p className="break-words">{lastWords(t)}</p>
@@ -156,8 +162,8 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
 }
 
 
-/** A server with no trigger yet: what a trigger is, and the five things that can start a run, each with its own way
- *  in. These stand in for the page's five buttons, which show once there is a trigger. */
+/** A server with no trigger yet: what a trigger is, and the six things that can start a run, each with its own way
+ *  in. These stand in for the page's six buttons, which show once there is a trigger. */
 function FirstTrigger({ go, noAddress }: { go: (hash: string) => void; noAddress: boolean }) {
   const kinds = [
     { Icon: CalendarClock, name: "Schedule", what: "At the times you set: every day or week at a time, every few minutes or hours, or once.", action: "New schedule", to: "#/triggers/new" },
@@ -165,10 +171,11 @@ function FirstTrigger({ go, noAddress }: { go: (hash: string) => void; noAddress
     { Icon: GitPullRequest, name: "GitHub", what: "On the events you pick from this server's GitHub App. Connect GitHub in Settings first.", action: "New GitHub trigger", to: "#/triggers/new-github" },
     { Icon: Blocks, name: "From an app", what: "On an event in an app a saved Composio server connects, such as a new issue in a GitHub repository. Save the server in Settings first.", action: "New app trigger", to: "#/triggers/new-composio" },
     { Icon: Rss, name: "Feed", what: "On each new item in the feeds you name, read every few minutes: a status page's incidents, a blog, or an API's JSON list such as a repository's pull requests.", action: "New feed trigger", to: "#/triggers/new-feed" },
+    { Icon: Mail, name: "Email", what: "On each new message in a mailbox of this server's email account. Save the account in Settings → Email first.", action: "New email trigger", to: "#/triggers/new-email" },
   ];
   return (
-    // No frame of its own: its words start at the page's left edge, under the header's, and the five cards are its only
-    // boxes. The five are peers, so none is the main action: each button is the default one.
+    // No frame of its own: its words start at the page's left edge, under the header's, and the six cards are its only
+    // boxes. The six are peers, so none is the main action: each button is the default one.
     <section aria-labelledby="first-trigger">
       <p className="caps text-label text-muted-foreground">No triggers yet</p>
       <h2 id="first-trigger" className="mt-2 text-xl font-semibold">Start runs without being here</h2>
@@ -203,6 +210,8 @@ function whatWords(t: Trigger, agentName: (id: string) => string, now: number): 
 
 /** Whether Composio has a trigger from an app's instance on, in words. */
 type OnComposio = ComposioTriggers["triggers"][number]["on_composio"];
+/** An app event as the New app trigger list says it: its name, else its slug. */
+const eventLabel = (e: Pick<ComposioEvent, "name" | "slug">) => e.name || e.slug;
 const ON_COMPOSIO: Record<OnComposio, string> = {
   on: "On", off: "Off", missing: "Composio no longer has it: delete this trigger and make it again.", unknown: "Composio didn't say",
 };
@@ -272,6 +281,16 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
     v2.composioTriggers(appServer).then((r) => { if (live) setAtComposio(r.triggers.find((x) => x.id === id)?.on_composio ?? "unknown"); }, () => { if (live) setAtComposio(null); });
     return () => { live = false; };
   }, [v2, appServer, id, trigger?.enabled]);
+  // An email trigger watches the server's one email account (Settings → Email): its address, read to say which (null:
+  // none saved; undefined: not read, as with a token, which can't read it).
+  const [mailAddress, setMailAddress] = useState<string | null | undefined>(undefined);
+  const watchesMail = trigger?.source.kind === "email";
+  useEffect(() => {
+    if (!watchesMail) return;
+    let live = true;
+    v2.emailAccount().then((a) => { if (live) setMailAddress(a.configured ? a.address : null); }, () => {});
+    return () => { live = false; };
+  }, [v2, watchesMail]);
   // Deleted here, with what Composio could not follow: said until the person leaves.
   if (gone !== null) {
     return (
@@ -293,8 +312,10 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
   // A feed trigger: its feeds, how often they are read, its last check (with the note of a first check's start), its
   // pointers and filter.
   const feed = isFeedTrigger(trigger) ? trigger : null;
-  if (!hook && !gh && !app && !feed && !isScheduleTrigger(trigger)) return <NotASchedule />;
-  const runs = trigger as Schedule | WebhookTrigger | GitHubTrigger | ComposioTrigger | FeedTrigger;
+  // An email trigger: the account and mailbox it watches, how often, its last check, its filter; no editor here.
+  const mail = isEmailTrigger(trigger) ? trigger : null;
+  if (!hook && !gh && !app && !feed && !mail && !isScheduleTrigger(trigger)) return <NotASchedule />;
+  const runs = trigger as Schedule | WebhookTrigger | GitHubTrigger | ComposioTrigger | FeedTrigger | EmailTrigger;
   // A one-time schedule whose time has passed: Done with when it ran (a started firing of its own time, the server's word:
   // nothing to resume), or that its time passed. Resume stays unless the server says it ran: the browser's clock alone
   // may run ahead of the server's.
@@ -345,11 +366,11 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
           <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && !done && <OffChip trigger={trigger} />}</h1>
-          <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : app ? `App · ${composioWhen(app.source)}` : feed ? `Feed · ${feedWhen(feed.source)}` : <span title={cronOf(trigger)}>{scheduleLine(runs.source as Schedule["source"], trigger.next_at, { instead: onceWords(done), now: now() })}</span>}</p>
+          <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : app ? `App · ${composioWhen(app.source)}` : feed ? `Feed · ${feedWhen(feed.source)}` : mail ? `Email · ${emailWhen(mail.source)}` : <span title={cronOf(trigger)}>{scheduleLine(runs.source as Schedule["source"], trigger.next_at, { instead: onceWords(done), now: now() })}</span>}</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 self-stretch sm:self-auto">
           {!(done && "ran" in done) && <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>}
-          <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> {hook || gh || app ? "Edit filter" : feed ? "Edit feed" : "Edit"}</Button>
+          {!mail && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> {hook || gh || app ? "Edit filter" : feed ? "Edit feed" : "Edit"}</Button>}
           {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
             <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-small" role="alertdialog" aria-label="Make a new secret?">
               <span>The old secret stops signing at once.</span>
@@ -378,7 +399,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
       {trigger.target.kind === "start_run" && <UnattendedWarning v2={v2} agentId={trigger.target.agent_id} skips={trigger.source.kind === "schedule"} className="mt-4" />}
       {composioNote && <p role="status" data-composio-note className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-body text-warning-text">{composioNote}</p>}
       {hook && fresh && <SecretOnce label="The webhook's new secret" secret={fresh} />}
-      {feed && <LastCheck check={feed.last_check ?? null} newest={firings[0]} />}
+      {(feed || mail) && <LastCheck check={trigger.last_check ?? null} newest={firings[0]} />}
       <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-body sm:grid-cols-[max-content_minmax(0,1fr)]">
         <dt className="caps text-label text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={agentHash(runs.target.agent_id)} className="hover:underline">{agentName(runs.target.agent_id) || runs.target.agent_id}</a></dd>
         <dt className="caps text-label text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(runs.target.input)}</dd>
@@ -410,6 +431,13 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
           </>}
           <dt className="caps text-label text-muted-foreground">Accepts</dt>
           <dd className="min-w-0 break-words">{feed.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{feed.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every new or updated item"}</dd>
+        </> : mail ? <>
+          <dt className="caps text-label text-muted-foreground">Account</dt>
+          <dd className="min-w-0 break-words" data-mail-account>{mailAddress ? <span className="font-mono">{mailAddress}</span> : mailAddress === null ? <span className="text-warning-text">None saved</span> : "This server's email account"}<span className="text-small text-muted-foreground"> · <a href="#/settings/email" className="hover:underline">Settings → Email</a></span></dd>
+          <dt className="caps text-label text-muted-foreground">Mailbox</dt><dd className="min-w-0 break-words font-mono">{mail.source.mailbox}</dd>
+          <dt className="caps text-label text-muted-foreground">Read</dt><dd>Every {span(mail.source.every_s)}</dd>
+          <dt className="caps text-label text-muted-foreground">Accepts</dt>
+          <dd className="min-w-0 break-words">{mail.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{mail.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every new message"}</dd>
         </> : <>
           <dt className="caps text-label text-muted-foreground">While a run is going</dt><dd>The next time is skipped.</dd>
         </>}
@@ -448,9 +476,10 @@ function ScheduleEdit({ v2, go, id, minEvery, now }: FormProps & { id: string })
   return <ScheduleForm v2={v2} go={go} trigger={trigger} minEvery={minEvery} now={now} />;
 }
 
-/** One input with its label, its hint, and the issue under it (`data-issue`: the field the server names). */
-function Field({ label, field, issue, hint, children }: { label: string; field: string; issue?: string; hint?: string; children: ReactNode }) {
-  return <UiField className="min-w-0" label={label} hint={hint} error={issue ? <span data-issue={field}>{issue}</span> : undefined}>{children}</UiField>;
+/** One input with its label (marked * when the save refuses it empty), its hint, and the issue under it (`data-issue`: the
+ *  field the server names). */
+function Field({ label, field, issue, hint, required, children }: { label: string; field: string; issue?: string; hint?: string; required?: boolean; children: ReactNode }) {
+  return <UiField className="min-w-0" label={label} required={required} hint={hint} error={issue ? <span data-issue={field}>{issue}</span> : undefined}>{children}</UiField>;
 }
 
 /** An empty cap field's placeholder: the picked agent's own default cap as served (definition.max_cost_usd), which an
@@ -575,15 +604,15 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
           </div>
           {restarts && <p className="mt-3 text-small text-warning-text" role="note">Changing when restarts the schedule from now.</p>}
         </fieldset>
-        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]} required>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` })),
               ...(draft.agentId && agents && !live.some((a) => a.agent_id === draft.agentId) ? [{ value: draft.agentId, label: draft.agentId }] : [])]} />
         </Field>
         <UnattendedWarning v2={v2} agentId={draft.agentId} skips />
-        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
-        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} required><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]} required={!capOptional}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : capOptional ? "Uses the agent's default if empty." : "Required: each run this schedule starts stops at this spend."}>
           <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
@@ -620,6 +649,93 @@ function Copyable({ title, text, label, hint }: { title: string; text: string; l
       <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all border bg-muted/40 px-2 py-1 font-mono text-small">{text}</code><CopyButton text={text} label={label} /></div>
       {hint && <p className="mt-1 text-small text-muted-foreground">{hint}</p>}
     </div>
+  );
+}
+
+/** A new email trigger: each new message in a mailbox of the server's email account (Settings → Email) starts a capped
+ *  run of the agent. The account is read to say when none is saved (the server refuses the create then, naming Settings
+ *  → Email); a read that fails (a token can't read it) says nothing. A create lands on the trigger's page, where its first
+ *  check says what it watches from. */
+function EmailForm({ v2, go, minEvery }: FormProps) {
+  const [draft, setDraft] = useState<EmailDraft>(emptyEmail);
+  const [agents, setAgents] = useState<Agent[] | null>(null);
+  const [noAccount, setNoAccount] = useState(false);
+  const [issues, setIssues] = useState<Record<string, string>>({});
+  const [rest, setRest] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  // A create sent again unchanged reuses its Idempotency-Key; an edited one gets a new key.
+  const keys = useRef(keeper()).current;
+  const open = useRef(true);
+  useEffect(() => { open.current = true; return () => { open.current = false; }; }, []);
+  useEffect(() => { allAgents(v2).then(setAgents, () => setAgents([])); }, [v2]);
+  useEffect(() => { v2.emailAccount().then((a) => { if (open.current) setNoAccount(!a.configured); }, () => {}); }, [v2]);
+  const set = <K extends keyof EmailDraft>(k: K) => (value: EmailDraft[K]) => setDraft((d) => ({ ...d, [k]: value }));
+  const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
+  const agentCap = typeof agentCapRaw === "number" && agentCapRaw > 0 ? agentCapRaw : undefined;
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const { body, issues: missing } = emailBodyOf(draft, minEvery, agentCap !== undefined);
+    setRest([]);
+    if (!body) { setIssues(missing ?? {}); return; }
+    setIssues({}); setSaving(true);
+    try {
+      const made = await v2.createTrigger(body, keys.keyFor("createTrigger", body));
+      if (open.current) go(hashOf(made.id));
+    } catch (err) {
+      if (!open.current) return;
+      const found = issuesOf(err);
+      setIssues(Object.fromEntries(Object.entries(found.fields).filter(([k]) => EMAIL_FIELDS.has(k))));
+      setRest([...found.rest, ...Object.entries(found.fields).filter(([k]) => !EMAIL_FIELDS.has(k)).map(([, v]) => v)]);
+      setSaving(false);
+    }
+  };
+  const live = agentsByName((agents ?? []).filter((a) => !a.archived_at));
+  return (
+    <form onSubmit={(e) => void save(e)} className="p-5 md:p-8" noValidate>
+      <a href="#/triggers" className="caps -my-1 inline-flex items-center gap-2 py-1 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
+      <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Mail className="size-5 text-primary-text" aria-hidden />New email trigger</h1>
+      <p className="mt-2 text-body text-muted-foreground">Each new message in the mailbox starts a capped run of the agent. The messages already there when it is made start none: its first check, on its page once it is made, says how many.</p>
+      {noAccount && (
+        <p role="status" data-no-email-account className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-body text-warning-text">
+          No email account is saved: an email trigger reads this server's account. Save one in <a href="#/settings/email" className="underline underline-offset-2">Settings → Email</a> first.
+        </p>
+      )}
+      {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-body text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
+      <div className={`mt-5 ${formColumnsClass}`}>
+        <Field label="Name" field="name" issue={issues.name}><Input name="name" value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="new mail" /></Field>
+        <Field label="Mailbox" field="source.mailbox" issue={issues["source.mailbox"]} hint="A folder of the account in Settings → Email, by its name on the server.">
+          <Input name="mailbox" value={draft.mailbox} onChange={(e) => set("mailbox")(e.target.value)} placeholder="INBOX" autoComplete="off" spellCheck={false} />
+        </Field>
+        <Field label="Check every" field="source.every_s" issue={issues["source.every_s"]} hint={minEvery ? atLeast(minEvery) : undefined}>
+          <span className="flex gap-2">
+            <Input name="every" inputMode="decimal" value={draft.every} onChange={(e) => set("every")(e.target.value)} placeholder="1" />
+            <Picker id="email-every-unit" name="everyUnit" label="Unit" className="w-32 shrink-0" value={draft.everyUnit} onChange={(v) => set("everyUnit")(v as EmailDraft["everyUnit"])}
+              options={(["seconds", "minutes", "hours"] as const).map((u) => ({ value: u, label: u }))} />
+          </span>
+        </Field>
+        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+          <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
+            options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
+              ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
+        </Field>
+        <UnattendedWarning v2={v2} agentId={draft.agentId} />
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The message comes with it: its sender, subject and text.">
+          <Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} />
+        </Field>
+        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+          hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
+          <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
+        </Field>
+        <div>
+          <label className="flex items-center gap-2 text-body"><input type="checkbox" name="enabled" checked={draft.enabled} onChange={(e) => set("enabled")(e.target.checked)} className="accent-primary" /> On from now (off: made paused)</label>
+          {issues.enabled && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="enabled">{issues.enabled}</p>}
+        </div>
+      </div>
+      <div className="mt-6 flex flex-wrap gap-2">
+        <Button type="submit" size="lg" variant="solid" disabled={saving}>{saving ? "Creating" : "Create email trigger"}</Button>
+        <Button type="button" size="lg" variant="ghost" onClick={() => go("#/triggers")}>Cancel</Button>
+      </div>
+    </form>
   );
 }
 
@@ -698,14 +814,14 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
         </fieldset>
         <p className="text-small text-muted-foreground">Events from an app Composio connects start runs through an app trigger instead: <a href="#/triggers/new-composio" className="underline underline-offset-2">New app trigger</a></p>
         <WebhookFilter signature={draft.signature} rules={draft.accept} onChange={set("accept")} issues={issues} cap={null} />
-        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]} required>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
         </Field>
         <UnattendedWarning v2={v2} agentId={draft.agentId} />
-        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
-        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} required><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]} required={agentCap === undefined}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this webhook starts stops at this spend."}>
           <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
@@ -791,14 +907,14 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       <div className={`mt-5 ${formColumnsClass}`}>
         <Field label="Name" field="name" issue={issues.name}><Input name="name" value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="review PRs" /></Field>
         <GitHubEvents picks={draft} onChange={(picks) => setDraft((d) => ({ ...d, ...picks }))} issues={issues} />
-        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]} required>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
         </Field>
         <UnattendedWarning v2={v2} agentId={draft.agentId} />
-        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The event's payload comes with it."><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
-        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} required hint="The event's payload comes with it."><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]} required={agentCap === undefined}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
           <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
@@ -821,6 +937,8 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
   const [readError, setReadError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
   const [events, setEvents] = useState<{ server: string; events: ComposioEvent[] } | null>(null);
+  // The filter box over the server's events: another server starts it empty.
+  const [eventQuery, setEventQuery] = useState("");
   const [eventsError, setEventsError] = useState<Problem | null>(null);
   const [eventTries, setEventTries] = useState(0);
   const [draft, setDraft] = useState<ComposioDraft>(emptyComposio);
@@ -863,9 +981,14 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
   const edit = (next: (d: ComposioDraft) => ComposioDraft) => { setElsewhere(null); setDraft(next); };
   const set = <K extends keyof ComposioDraft>(k: K) => (value: ComposioDraft[K]) => edit((d) => ({ ...d, [k]: value }));
   // Another server or event starts its config and filter afresh.
-  const pickServer = (server: string) => edit((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] }));
+  const pickServer = (server: string) => { if (server !== draft.server) setEventQuery(""); edit((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] })); };
   const pickEvent = (event: string) => { edit((d) => (d.event === event ? d : { ...d, event, config: {}, where: [] })); setIssues({}); };
   const event = events?.server === draft.server ? events.events.find((e) => e.slug === draft.event) : undefined;
+  // The server's events A to Z by the words the list shows (Composio sends them in no order a person reads by), and those
+  // the filter box keeps; the picked one stays in the list, so the field still says it while a query hides it.
+  const listedEvents = events?.server === draft.server ? [...events.events].sort((a, b) => eventLabel(a).localeCompare(eventLabel(b), undefined, { sensitivity: "base" })) : [];
+  const matchedEvents = listedEvents.filter((e) => matchesFilter(eventQuery, e.name, e.slug, e.description));
+  const keptEvents = listedEvents.filter((e) => e.slug === draft.event || matchedEvents.includes(e));
   const fields: ConfigField[] = configFieldsOf(event?.config, event?.sealed);
   const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
   const agentCap = typeof agentCapRaw === "number" && agentCapRaw > 0 ? agentCapRaw : undefined;
@@ -937,15 +1060,21 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
             options={[{ value: "", label: "Pick a server" }, ...servers.map((x) => ({ value: x.name, label: x.toolkit ? `${x.name} (${x.toolkit})` : x.name }))]} />
         </Field>
         {draft.server && (eventsError ? <ProblemCard problem={eventsError} onRetry={() => setEventTries((n) => n + 1)} className="" /> : (
-          <Field label="Event" field="source.event" issue={issues["source.event"]} hint={event?.description}>
-            <Picker name="event" label="Event" className="w-full" value={draft.event} onChange={pickEvent} disabled={!events}
-              options={[{ value: "", label: events ? (events.events.length ? "Pick an event" : "Composio offers no event for this toolkit") : "Loading the events" }, ...(events?.events ?? []).map((x) => ({ value: x.slug, label: x.name || x.slug }))]} />
-          </Field>
+          <div className="space-y-2">
+            {listedEvents.length > 0 && <ListFilter value={eventQuery} onChange={setEventQuery} label="Filter events" placeholder="Filter by name, slug or description" shown={matchedEvents.length} total={listedEvents.length} />}
+            <Field label="Event" field="source.event" issue={issues["source.event"]}>
+              <Picker name="event" label="Event" className="w-full" value={draft.event} onChange={pickEvent} disabled={!events}
+                options={[{ value: "", label: !events ? "Loading the events" : !listedEvents.length ? "Composio offers no event for this toolkit" : matchedEvents.length ? "Pick an event" : `No event matches “${eventQuery.trim()}”` }, ...keptEvents.map((x) => ({ value: x.slug, label: eventLabel(x) }))]} />
+            </Field>
+            {/* Composio writes an event's description in Markdown (lists, ``code``): rendered, never shown as its marks. */}
+            {event?.description && <div data-event-description className="report report-sm text-muted-foreground" dangerouslySetInnerHTML={{ __html: markdown(event.description) }} />}
+          </div>
         ))}
         {event && (
           <>
             {event.polled && <p className="text-small text-muted-foreground" role="note">Composio checks for it every few minutes, so a run starts some minutes after the event.</p>}
-            {event.instructions && <p className="whitespace-pre-wrap text-small text-muted-foreground">{event.instructions}</p>}
+            {/* Its instructions are Composio's Markdown as its description is: rendered (sanitized), never shown as marks. */}
+            {event.instructions && <div data-event-instructions className="report report-sm text-muted-foreground" dangerouslySetInnerHTML={{ __html: markdown(event.instructions) }} />}
             <fieldset className="min-w-0">
               <legend className="caps text-label text-muted-foreground">Config</legend>
               <p className="mb-2 mt-1 text-small text-muted-foreground">What Composio watches for <span className="font-mono">{event.slug}</span>.</p>
@@ -959,14 +1088,14 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
             <AppFilter where={draft.where} onChange={set("where")} issues={issues} />
           </>
         )}
-        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]} required>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
         </Field>
         <UnattendedWarning v2={v2} agentId={draft.agentId} />
-        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="What Composio delivered comes with it."><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
-        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} required hint="What Composio delivered comes with it."><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]} required={agentCap === undefined}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
           <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
@@ -1162,7 +1291,7 @@ function AppFilter({ where, onChange, issues, others = [] }: { where: RuleDraft[
 /** A feed trigger's last check, said where its page opens: whether it read, its words and when; and, when its newest
  *  firing is a note of its own that started nothing (a first check's start: the items already there), that note. */
 function LastCheck({ check, newest }: { check: NonNullable<Trigger["last_check"]> | null; newest?: Firing }) {
-  const note = newest && newest.by === "feed" && newest.status === "skipped" && !newest.run_id && newest.reason ? newest.reason : null;
+  const note = newest && (newest.by === "feed" || newest.by === "email") && newest.status === "skipped" && !newest.run_id && newest.reason ? newest.reason : null;
   return (
     <section aria-label="Last check" data-last-check={!check ? "none" : check.ok ? "ok" : "failed"} className={`mt-4 border px-4 py-3 text-body ${check && !check.ok ? "border-warning/50 bg-warning/10" : "border-primary/50 bg-primary/5"}`}>
       <p className="caps text-label text-muted-foreground">{!check ? "Not checked yet" : `${check.ok ? "Last check" : "Last check failed"} · ${at(check.at)}`}</p>
@@ -1271,16 +1400,16 @@ function FeedForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: FeedTri
           </div>
         </fieldset>
         {!trigger && <>
-          <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+          <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]} required>
             <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
               options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
                 ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
           </Field>
           <UnattendedWarning v2={v2} agentId={draft.agentId} />
-          <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The item comes with it: its title, link, summary and feed.">
+          <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} required hint="The item comes with it: its title, link, summary and feed.">
             <Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} />
           </Field>
-          <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+          <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]} required={agentCap === undefined}
             hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
             <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
           </Field>

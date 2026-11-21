@@ -18,7 +18,7 @@ import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
 import { dateOf, isWhole, sizeRefusals } from "./hosted/values.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
-import { type ComputerSpec, checkGpu, type Refusal } from "./provider.js";
+import { type ComputerResources, type ComputerSpec, checkGpu, type Refusal } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, ok, type Result, vendorFail } from "./result.js";
 
 /** The parts of a WebSocket the host uses: Node's global WebSocket, or a stand-in in tests. */
@@ -35,7 +35,7 @@ export type DaytonaTimeouts = HostedTimeouts & { retryMs: number };
 
 /**
  * The Daytona provider's options: the key and Daytona's own settings, then the shared adapter's (HostedOptions), kind
- * among them: linux alone, kind desktop refused in its descriptor's unserved words (kindRefusal).
+ * among them: a desktop on connect dial alone (kindRefusal; the why is PROVIDERS.md's Daytona bullet).
  */
 export interface DaytonaProviderOptions extends Omit<HostedOptions, "desktop" | "maxLifetimeMs" | "timeouts"> {
 	/** The Daytona API key. The caller passes it; this provider never reads the environment and never puts it in a computer. */
@@ -55,6 +55,13 @@ export interface DaytonaProviderOptions extends Omit<HostedOptions, "desktop" | 
 	 * words, since Archil's client hangs on Daytona's hosted cloud. Set it only for such a target.
 	 */
 	archilEgress?: string;
+	/**
+	 * The operator's attach relay, `<IPv4 relay>:<port>` (HostedOptions.attachEgress, attachEgressOf): for a self-hosted
+	 * Daytona target whose runners drop every sandbox connection outside an allow list that the public address is not on.
+	 * A machine that dials (connect dial, and every desktop) fetches the daemon and opens its attach socket through it,
+	 * with TLS end to end to the public host. Unset, it dials the public host; a machine on exec never reads it.
+	 */
+	attachEgress?: string;
 	/**
 	 * The snapshot GPU computers are made from: one of ours, box/Dockerfile built with a GPU (box/build-daytona.py --gpu
 	 * H100 prints its name, agentrun-archil-gpu-h100-<hash>), whose user is root; its GPU is the one its name says.
@@ -97,10 +104,30 @@ interface Sandbox {
 	gpu?: number;
 	/** The GPU type Daytona assigned (its GpuType enum), when the sandbox has GPUs. */
 	gpuType?: string;
+	/** The sandbox's CPUs, memory and disk as Daytona gave them (its Sandbox: memory and disk in GiB), which it bills by. */
+	cpu?: number;
+	memory?: number;
+	disk?: number;
 	autoDestroyAt?: string;
 	/** When Daytona made the sandbox, by its clock: the adapter keeps the oldest of two machines one request made. */
 	createdAt?: string;
 	toolboxProxyUrl?: string;
+}
+
+/** A positive finite figure of Daytona's answer, else undefined (absent, zero or not a number: never guessed). */
+const given = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
+
+/** What Daytona says a sandbox was given (Machine.resources): its CPUs, its memory (GiB, as MB), its disk (GiB) and its
+ *  GPUs (count and type), each where its answer says it; none where it says nothing. */
+function resourcesOf(sb: Pick<Sandbox, "cpu" | "memory" | "disk" | "gpu" | "gpuType">): { resources?: ComputerResources } {
+	const [cpus, memory, disk, gpus] = [given(sb.cpu), given(sb.memory), given(sb.disk), given(sb.gpu)];
+	const resources: ComputerResources = {
+		...(cpus === undefined ? {} : { cpus }),
+		...(memory === undefined ? {} : { memoryMb: memory * 1024 }),
+		...(disk === undefined ? {} : { diskGb: disk }),
+		...(gpus !== undefined && typeof sb.gpuType === "string" && sb.gpuType !== "" ? { gpu: { type: sb.gpuType, count: gpus } } : {}),
+	};
+	return Object.keys(resources).length > 0 ? { resources } : {};
 }
 
 /**
@@ -235,6 +262,10 @@ class DaytonaHost implements MachineHost {
 			maxLifetimeMs: MAX_LIFETIME_MS,
 			arch: options.arch,
 			vendorAgentPorts: [TOOLBOX_PORT],
+			// A snapshot of box/Dockerfile has xfwm4 (box/install.sh's desktop step), for a desktop (connect dial alone).
+			// computerd starts it as root makes its network namespace: the tool user can make none here (Sysbox, with
+			// kernel.apparmor_restrict_unprivileged_userns=1, measured 11-19).
+			windowManager: true,
 			...(options.connect === "dial" ? { connect: options.connect } : {}),
 		};
 		if (options.connect === "exec") {
@@ -275,6 +306,7 @@ class DaytonaHost implements MachineHost {
 			state: stateOf(sb),
 			...(made ? { createdAt: made } : {}),
 			...(endsAt ? { endsAt } : {}),
+			...resourcesOf(sb),
 			// A failed sandbox always carries a why, Daytona's or ours, so create stops on it as vendor, never as gone.
 			...(typeof sb.errorReason === "string" && sb.errorReason !== "" ? { why: sb.errorReason } : FAILED.has(sb.state ?? "") ? { why: `Daytona reads the sandbox ${sb.state}, with no reason given` } : {}),
 		};

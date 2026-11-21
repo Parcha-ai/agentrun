@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { NeedsYouStrip, type NeedsYouProps } from "./NeedsYouStrip";
 import type { Run } from "@/lib/v2";
+import type { BackendSdkBinding } from "@/lib/backendSdk";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const NOW = Date.parse("2026-11-03T16:20:00Z");
@@ -191,18 +192,20 @@ describe("NeedsYouStrip, a run paused at its spend cap", () => {
 
 
 describe("NeedsYouStrip, backend SDK execution ownership", () => {
-  const sdk = (id: string, runtime: "claude-agent-sdk" | "codex-sdk" | "eve", over: Partial<Run> = {}) => run(id, "backend", {
-    sdk: { runtime, model: "reported-model", session_id: "native-session", learning_revision: null, usage: null }, ...over,
+  const redactedPlatform = "🚀".repeat(72) + "[redacted]";
+  const sdk = (id: string, binding: BackendSdkBinding, over: Partial<Run> = {}) => run(id, "backend", {
+    sdk: { ...binding, model: "reported-model", session_id: "native-session", learning_revision: null, usage: null }, ...over,
   });
-  it.each(["claude-agent-sdk", "codex-sdk", "eve"] as const)("keeps live and failed %s calls read-only with backend guidance and encoded run links", async (runtime) => {
+  it.each([{ runtime: "claude-agent-sdk" }, { runtime: "codex-sdk" }, { runtime: "eve" }, { runtime: "external", platform: "Atlas 工作流" }, { runtime: "external", platform: redactedPlatform }] as const)("keeps live and failed $runtime calls read-only with backend guidance and encoded run links", async (binding) => {
     const writes: string[] = [];
-    const host = mount({ asking: [], live: [sdk("sdk/live", runtime, { status: "working", state: "working" })],
-      failed: [sdk("sdk/failed", runtime, { status: "failed", error: overloaded })],
+    const host = mount({ asking: [], live: [sdk("sdk/live", binding, { status: "working", state: "working" })],
+      failed: [sdk("sdk/failed", binding, { status: "failed", error: overloaded })],
       onAnswer: async () => { writes.push("answer"); return null; },
       onStop: async () => { writes.push("stop"); return null; },
       onRunAgain: async () => { writes.push("rerun"); return { started: [], problem: null }; },
     });
     expect(host.textContent).toContain("your backend");
+    if (binding.runtime === "external") expect(host.textContent).toContain(binding.platform === redactedPlatform ? "External platform" : binding.platform);
     expect(host.textContent).toContain(overloaded.message);
     expect(host.textContent).not.toMatch(/Steer|Run again|Run all again|Open to cancel/);
     expect([...host.querySelectorAll("button")].map((b) => b.textContent?.trim())).not.toContain("Stop");
@@ -214,7 +217,7 @@ describe("NeedsYouStrip, backend SDK execution ownership", () => {
   });
   it("never includes SDK failures in a managed retry group with the same error", async () => {
     const retried: string[][] = [];
-    const host = mount({ asking: [], live: [], failed: [failed[0]!, failed[1]!, sdk("sdk-failed", "codex-sdk", { status: "failed", error: overloaded })],
+    const host = mount({ asking: [], live: [], failed: [failed[0]!, failed[1]!, sdk("sdk-failed", { runtime: "external", platform: redactedPlatform }, { status: "failed", error: overloaded })],
       onRunAgain: async (runs) => { retried.push(runs.map((r) => r.run_id)); return { started: runs.map((r) => r.run_id), problem: null }; },
     });
     await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Run all again")!.click(); });

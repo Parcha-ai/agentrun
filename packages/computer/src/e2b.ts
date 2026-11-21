@@ -213,8 +213,14 @@ function machineOf(info: SandboxInfo): Machine {
 	}
 	const started = dateOf(info.startedAt);
 	const state = info.state === "running" ? "running" : info.state === "paused" ? "stopped" : "gone";
-	return { id: info.sandboxId, labels, state, ...(started ? { createdAt: started } : {}), ...(end ? { endsAt: end } : {}) };
+	// What E2B says the sandbox was given (SandboxInfo's cpuCount and memoryMB), where it says it; E2B's answer has no disk.
+	const [cpus, memoryMb] = [positive(info.cpuCount), positive(info.memoryMB)];
+	const resources = { ...(cpus === undefined ? {} : { cpus }), ...(memoryMb === undefined ? {} : { memoryMb }) };
+	return { id: info.sandboxId, labels, state, ...(started ? { createdAt: started } : {}), ...(end ? { endsAt: end } : {}), ...(Object.keys(resources).length > 0 ? { resources } : {}) };
 }
+
+/** A positive finite figure of a vendor's answer, else undefined: never guessed. */
+const positive = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
 
 /** One chunk of the SDK's output into a stream, unless the stream has ended. */
 const push = (stream: PassThrough, data: Uint8Array) => void (stream.writableEnded || stream.write(data));

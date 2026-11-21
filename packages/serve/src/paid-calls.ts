@@ -19,8 +19,13 @@ import type { Refusal } from "@parcha/agentrun-kernel";
 import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import { SPEND_CAP_REACHED } from "./cap.js";
 
-/** Parallel's published prices (https://docs.parallel.ai/getting-started/pricing, read 2026-11-03): a `fast` search
- *  $1 per 1,000 requests for up to 10 results, each further result $1 per 1,000; an extract $1 per 1,000 URLs. */
+/** The modes Parallel's Search API is priced in here; a request in any other mode (or naming none) has no price. */
+export type ParallelSearchMode = "turbo" | "fast" | "basic" | "advanced";
+/** Parallel's published prices (https://docs.parallel.ai/resources/pricing, read 2026-11-20). Search, by the request's
+ *  `mode`: `turbo` or `fast` $1 per 1,000 requests, `basic` or `advanced` $5 per 1,000, each with 10 results included,
+ *  and each result past those 10 $1 per 1,000. Extract: $1 per 1,000 URLs. */
+export const PARALLEL_SEARCH_MODE_USD: Readonly<Record<ParallelSearchMode, number>> = Object.freeze({ turbo: 0.001, fast: 0.001, basic: 0.005, advanced: 0.005 });
+/** A `fast` search's price: the mode the web tools search in (web-search.ts). */
 export const PARALLEL_SEARCH_USD = 0.001;
 export const PARALLEL_SEARCH_RESULT_USD = 0.001;
 export const PARALLEL_SEARCH_INCLUDED = 10;
@@ -32,20 +37,24 @@ export type Fee = { name: string; by: string; usd: number; basis: string };
 /** In whole millionths of a dollar, so a sum of prices is the price. */
 const usd = (dollars: number) => Math.round(dollars * 1e6) / 1e6;
 
-/** A fast search for `n` results: $0.001, and $0.001 for each past the 10 it includes. */
-export const parallelSearchFee = (n: number): Fee => {
+const isSearchMode = (mode: unknown): mode is ParallelSearchMode => typeof mode === "string" && Object.hasOwn(PARALLEL_SEARCH_MODE_USD, mode);
+
+/** A search in `mode` for `n` results: the mode's price (PARALLEL_SEARCH_MODE_USD), and $0.001 for each past the 10 it
+ *  includes. The web tools search `fast`: $0.001. */
+export const parallelSearchFee = (n: number, mode: ParallelSearchMode = "fast"): Fee => {
   const more = Math.max(0, n - PARALLEL_SEARCH_INCLUDED);
-  return { name: "Parallel's search", by: "parallel", usd: usd(PARALLEL_SEARCH_USD + PARALLEL_SEARCH_RESULT_USD * more), basis: more ? `Parallel's list price for a fast search of ${n} results` : "Parallel's list price for a fast search" };
+  return { name: "Parallel's search", by: "parallel", usd: usd(PARALLEL_SEARCH_MODE_USD[mode] + PARALLEL_SEARCH_RESULT_USD * more), basis: more ? `Parallel's list price for a ${mode} search of ${n} results` : `Parallel's list price for a ${mode} search` };
 };
 /** An extract of `urls` URLs (the web tools ask one at a time). */
 export const parallelExtractFee = (urls = 1): Fee => ({ name: "Parallel's extract", by: "parallel", usd: usd(PARALLEL_EXTRACT_USD * urls), basis: urls === 1 ? "Parallel's list price for one URL" : `Parallel's list price for ${urls} URLs` });
 
-/** The fee of a request to Parallel's `url` with `body`: its search's, by the results it asks for (10 by default), or its
- *  extract's, by the URLs; undefined for an endpoint the web tools do not ask. */
+/** The fee of a request to Parallel's `url` with `body`: its search's, by its `mode` and the results it asks for (10 by
+ *  default), or its extract's, by the URLs; undefined for an endpoint the web tools do not ask, and for a search whose
+ *  mode has no price here (one naming none, or one Parallel added since): never $0, never another mode's price. */
 export function parallelFeeOf(url: string, body: unknown): Fee | undefined {
   const path = URL.parse(url)?.pathname;
-  const asked = (body ?? {}) as { advanced_settings?: { max_results?: unknown }; urls?: unknown };
-  if (path === "/v1/search") return parallelSearchFee(typeof asked.advanced_settings?.max_results === "number" ? asked.advanced_settings.max_results : PARALLEL_SEARCH_INCLUDED);
+  const asked = (body ?? {}) as { mode?: unknown; advanced_settings?: { max_results?: unknown }; urls?: unknown };
+  if (path === "/v1/search") return isSearchMode(asked.mode) ? parallelSearchFee(typeof asked.advanced_settings?.max_results === "number" ? asked.advanced_settings.max_results : PARALLEL_SEARCH_INCLUDED, asked.mode) : undefined;
   if (path === "/v1/extract") return parallelExtractFee(Array.isArray(asked.urls) ? Math.max(1, asked.urls.length) : 1);
   return undefined;
 }
@@ -88,8 +97,9 @@ const pauseOn = async (error: unknown, pause: Ledger["pause"] = ledgers.getStore
 export type PaidBooking = {
   /** `chargedBy`: who charges for it (the charge's `charged_by` on main's records: parallel, monid, an MCP server, a
    *  browser vendor), named on its runner.request. `under`: the model session whose tool call it runs in (RunTools.admit),
-   *  whose requests in flight it is judged beside and never waits on. */
-  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string; chargedBy?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string }): Promise<unknown>;
+   *  whose requests in flight it is judged beside and never waits on. `reported`: it settles at the provider's own figure
+   *  for the call, written on its runner.request (GET /runs/{run_id}/usage says a `tools` line's basis by it). */
+  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string; chargedBy?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string; reported?: true }): Promise<unknown>;
   /** `givenBack`: the hold let go unused, nothing sent (RunTools.settle). */
   settle(id: string, usd: number | null, options?: { readonly givenBack?: true }): Promise<unknown>;
 };
@@ -187,11 +197,11 @@ export const stopRunWith = (pause: NonNullable<Ledger["pause"]>) => async (words
  *  given back, nothing charged, as a hold-only step's: a request its provider refused unrun leaves no charge row). One refused
  *  for room pauses the run through `pause`, else through the ledger of the call it runs in (bookedIn's), as main's
  *  paidCall pauses: a step outside any host tool call (a pi-native tool's, the browser's) passes the run's own. */
-export async function paidStep<T>(paid: PaidBooking, call: string | undefined, fee: { name: string; holdUsd: number; basis: string; by: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null | typeof GIVEN_BACK, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T }> {
+export async function paidStep<T>(paid: PaidBooking, call: string | undefined, fee: { name: string; holdUsd: number; basis: string; by: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; reported?: true }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null | typeof GIVEN_BACK, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T }> {
   const id = `${call ?? fee.ref ?? fee.name}#${(paidSeq += 1)}`;
   let admitted: unknown;
   try {
-    admitted = await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis, ...(call === undefined ? {} : { call }), chargedBy: fee.by, ...(fee.tool ? { tool: fee.tool } : {}), ...(fee.tag ? { tag: fee.tag } : {}), ...(fee.owed ? { owed: true as const } : {}), ...(fee.hold ? { hold: true as const } : {}), ...(fee.ref === undefined ? {} : { ref: fee.ref }) });
+    admitted = await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis, ...(call === undefined ? {} : { call }), chargedBy: fee.by, ...(fee.tool ? { tool: fee.tool } : {}), ...(fee.tag ? { tag: fee.tag } : {}), ...(fee.owed ? { owed: true as const } : {}), ...(fee.hold ? { hold: true as const } : {}), ...(fee.ref === undefined ? {} : { ref: fee.ref }), ...(fee.reported ? { reported: true as const } : {}) });
   } catch (error) {
     await pauseOn(error, pause);
     return { refused: (error as { code?: unknown })?.code === "spend_cap_reached" ? String((error as Error).message) : holdRefusal(fee.name, error) };

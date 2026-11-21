@@ -50,7 +50,7 @@ export function MonidGrants({ tools, listed = [], notes = [], refused = [], onCh
           })}
         </ul>
       )}
-      <form className="flex flex-wrap items-start gap-2" onSubmit={(e) => { e.preventDefault(); grant(); }}>
+      <form className="flex max-w-3xl flex-wrap items-start gap-2" onSubmit={(e) => { e.preventDefault(); grant(); }}>
         <Input aria-label="monid grant" value={text} onChange={(e) => { setText(e.target.value); setProblem(undefined); }} aria-invalid={problem ? true : undefined}
           placeholder="monid:<provider>/<endpoint> or monid:<provider>/*" className="min-w-0 flex-[1_1_18rem]" spellCheck={false} autoCapitalize="off" autoComplete="off" />
         <Button type="submit" size="sm" className="h-control-md" disabled={!text.trim()}><Plus aria-hidden /> Grant</Button>

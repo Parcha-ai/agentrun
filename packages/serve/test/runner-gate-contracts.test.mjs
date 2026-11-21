@@ -82,7 +82,7 @@ test("a replay-safe call its runner lost mid-call, its tool set to deny on this 
   const base = piAdapterSpec({ script, tools, hooks: quiet }, { fetch: scriptedOrigin(script, requests) });
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-gate-contracts-"));
   // The gate as the dispatch builds it at the claim, over the claiming runner's store.
-  const loopOn = (store) => createAdapterLoop(async (claim, spec) => ({ ...(await base(claim, spec)), gate: await adapterRunGate(store, claim, { kind: "agentic", body: { approvals: "ask" } }, root) }));
+  const loopOn = (store) => createAdapterLoop(async (claim, spec) => ({ ...(await base(claim, spec)), gate: await adapterRunGate(store, claim, { kind: "agentic", body: { approvals: "ask" } }, root, undefined, { facts: undefined }) }));
   const runners = [startRunner({ store: one, createLoop: loopOn(one), name: "runner-a", ...TIMING })];
   t.after(async () => {
     release();
@@ -112,7 +112,7 @@ test("a replay-safe call its runner lost mid-call, its tool set to ask before th
   const script = [{ call: "web_fetch", args: { url: "https://example.com/a" } }, { sayLastResult: true }];
   const base = piAdapterSpec({ script, tools, hooks: quiet }, { fetch: scriptedOrigin(script, requests) });
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-gate-contracts-"));
-  const loopOn = (store) => createAdapterLoop(async (claim, spec) => ({ ...(await base(claim, spec)), gate: await adapterRunGate(store, claim, { kind: "agentic", body: { approvals: "ask" } }, root) }));
+  const loopOn = (store) => createAdapterLoop(async (claim, spec) => ({ ...(await base(claim, spec)), gate: await adapterRunGate(store, claim, { kind: "agentic", body: { approvals: "ask" } }, root, undefined, { facts: undefined }) }));
   const runners = [startRunner({ store: one, createLoop: loopOn(one), name: "runner-a", ...TIMING })];
   t.after(async () => {
     release();
@@ -145,7 +145,7 @@ test("a rerun asked anew, approved, with a stop landing once the approval is rea
   const script = [{ call: "web_fetch", args: { url: "https://example.com/a" } }, { sayLastResult: true }];
   const base = piAdapterSpec({ script, tools, hooks: quiet }, { fetch: scriptedOrigin(script, requests) });
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-gate-contracts-"));
-  const loopOn = (store) => createAdapterLoop(async (claim, spec) => ({ ...(await base(claim, spec)), gate: await adapterRunGate(store, claim, { kind: "agentic", body: { approvals: "ask" } }, root) }));
+  const loopOn = (store) => createAdapterLoop(async (claim, spec) => ({ ...(await base(claim, spec)), gate: await adapterRunGate(store, claim, { kind: "agentic", body: { approvals: "ask" } }, root, undefined, { facts: undefined }) }));
   let loopStopped = false;
   const stoppable = (loop) => (deps) => {
     const inner = loop(deps);
@@ -183,7 +183,7 @@ test("the run's gate asked about a replayed call (one a CLI's bridge or pi rerun
   const { server } = await stores({ runners: 0 });
   await saveToolSettings(server, { web_fetch: { permission: "deny" }, "mcp:fake/send": { permission: "allow", pin: { channel: "C1" } } });
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-gate-contracts-"));
-  const gate = await adapterRunGate(server, { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask" } }, root);
+  const gate = await adapterRunGate(server, { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask" } }, root, undefined, { facts: undefined });
   const fetch = { callId: "c1", tool: "web_fetch", args: { url: "https://example.com/a" } };
   const outside = { callId: "c2", tool: "mcp:fake/send", args: { channel: "C9" } };
   for (const call of [fetch, outside]) {

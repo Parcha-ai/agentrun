@@ -147,10 +147,13 @@ test("an apply with agent_id writes a new revision of that agent: the same id, i
   assert.equal(run.status, 202, JSON.stringify(run.body));
   assert.equal((await api("GET", `/agents/${first.agent_id}`)).body.revisions, 1);
 
+  assert.equal(first.revision_version, 1, "a fresh apply names the revision it wrote: the agent's first");
   const again = await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "an apply with agent_id updates that agent in place");
   assert.equal(again.agent_id, first.agent_id, "the same agent");
   const read = (await api("GET", `/agents/${first.agent_id}`)).body;
   assert.equal(read.revisions, 2, "a new revision of it");
+  assert.equal(again.revision_version, read.definition.version, "the update names the revision it wrote, the agent's current one");
+  assert.equal(again.revision_version, 2);
   assert.match(read.definition.instructions, /dogs/, "the new revision is the package with the new parameters");
   assert.equal(read.template?.id, "digest");
   assert.deepEqual((await api("GET", "/agents")).body.agents.map((one) => one.agent_id), [first.agent_id], "no second agent");
@@ -229,6 +232,18 @@ test("an update keeps the agent's learned corrections", { timeout: 60_000 }, asy
   assert.equal(put.status, 200, JSON.stringify(put.body));
   await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "an update keeps the agent, and so its corrections");
   assert.equal((await api("GET", `/agents/${first.agent_id}/learning/corrections`)).body.text, text, "the owner's corrections are kept");
+});
+
+test("each apply answer says what it did to the agent: made (rev 1), updated (rev 2), and an update that changes nothing unchanged at the same rev 2, no revision written", { timeout: 60_000 }, async (t) => {
+  const { api } = await served(t);
+  const first = await applied(api, "digest", { parameters: { topic: "cats" } });
+  assert.deepEqual([first.agent_change, first.revision_version], ["made", 1]);
+  const again = await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "an update that changes the parameters");
+  assert.deepEqual([again.agent_change, again.revision_version], ["updated", 2]);
+  const same = await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "the same update again");
+  assert.deepEqual([same.agent_change, same.revision_version], ["unchanged", 2], `nothing to update: ${JSON.stringify(same)}`);
+  const read = (await api("GET", `/agents/${first.agent_id}`)).body;
+  assert.deepEqual([read.revisions, read.definition.version], [2, 2], "no revision written");
 });
 
 test("a fresh apply of a template whose same parameters already made a live agent still makes one, with a warning naming the agent there", { timeout: 60_000 }, async (t) => {
@@ -343,6 +358,30 @@ test("an update whose read of the agent went stale before it wrote answers 412 a
   assert.equal(stale.body.error.code, "precondition_failed");
   assert.equal((await api("GET", `/agents/${made.agent_id}`)).body.definition.instructions, "The owner's own words.", "the owner's edit stands");
   assert.equal((await triggersOf(api, made.agent_id)).daily.target.input.content, "Today's note on cats.", "no trigger changed");
+});
+
+test("an update whose agent was archived and purged after it read it answers 410 purged and writes nothing of the package", { timeout: 90_000 }, async (t) => {
+  const hold = readHold();
+  const { api, data } = await served(t, { templateApplyRead: hold.seam });
+  const made = await applied(api, "digest", { parameters: { topic: "cats" } });
+  const LATE = "zebras-applied-after-the-purge";
+  const update = api("POST", "/templates/digest/apply", { parameters: { topic: LATE }, agent_id: made.agent_id });
+  await Promise.race([hold.reached, update]);
+  assert.equal((await api("POST", `/agents/${made.agent_id}/archive`)).status, 200);
+  const deleted = await api("DELETE", `/agents/${made.agent_id}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  hold.release();
+  const refused = await update;
+  assert.deepEqual([refused.status, refused.body.error?.code], [410, "purged"], JSON.stringify(refused.body));
+  // No row of the store holds what the update was given: no revision, description or trigger of it.
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+  try {
+    const found = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
+      .flatMap(({ name }) => db.prepare(`SELECT * FROM "${name}"`).all().flatMap((row) => Object.entries(row).filter(([, value]) => String(value instanceof Uint8Array ? Buffer.from(value) : value).includes(LATE)).map(([column]) => `${name}.${column}`)));
+    assert.deepEqual(found, [], "nothing of the update is in the store");
+  } finally {
+    db.close();
+  }
 });
 
 test("a trigger made again for a kind change keeps the owner's off: the package's daily, a schedule the owner turned off, made again as a feed, is off", { timeout: 120_000 }, async (t) => {

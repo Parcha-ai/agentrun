@@ -1416,6 +1416,11 @@
           "type": "string",
           "title": "fence"
         },
+        "windowManager": {
+          "description": "The desktop's window manager computerd starts itself (init --window-manager), and how it goes. Absent where computerd\nstarts none: a client whose host's desktops run one then starts it itself.",
+          "$ref": "#/definitions/WindowManagerFact",
+          "title": "windowManager"
+        },
         "screen": {
           "description": "The main screen, in points. Absent on a computer with no screen.",
           "$ref": "#/definitions/ScreenSize",
@@ -3739,6 +3744,29 @@
       "required": [
         "bounds",
         "id"
+      ]
+    },
+    "WindowManagerFact": {
+      "description": "The window manager computerd starts once the display answers: \"starting\" until it answers and through the manager's\nfirst second, \"running\" once the manager has run that second, \"ended\" when it ended or never started, with why in\nwords (how it ended, when, and its last lines).",
+      "title": "WindowManagerFact",
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "ended",
+            "running",
+            "starting"
+          ],
+          "type": "string",
+          "title": "state"
+        },
+        "why": {
+          "type": "string",
+          "title": "why"
+        }
+      },
+      "required": [
+        "state"
       ]
     }
   }

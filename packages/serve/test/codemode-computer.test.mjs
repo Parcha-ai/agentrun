@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { closeOpenSessions, hostTools, MODEL, offeredTools, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
@@ -75,7 +76,8 @@ const methodsOf = (computer) => computer.calls.map(([method]) => method).filter(
  *  got, and the server's store. With `restartAt`, the first runner shuts down once it settles and a second one takes the
  *  run on. `options.computer`: the run's computer as its scripts get it bound (RunTools.computer); `options.settled`: the
  *  run's state it waits for (default ended); `options.adapter`: the run's adapter in pi's place, or `options.adapterOf(run)`
- *  makes it; `options.record`: the run's record as its harness keeps it ("loop" for a CLI's); `options.beforeNext(server)`:
+ *  makes it, and `options.facts` its adapter's facts (none for pi); `options.record`: the run's record as its harness keeps
+ *  it ("loop" for a CLI's); `options.beforeNext(server)`:
  *  what happens between the first runner's shutdown and the second's start (with `restartAt`). */
 async function codemodeRun(t, script, computerTools, gate = () => "allow", restartAt = undefined, options = {}) {
   const { server, runners: stores_ } = await stores({ runners: 2 });
@@ -84,6 +86,7 @@ async function codemodeRun(t, script, computerTools, gate = () => "allow", resta
   const requests = [];
   const loop = createAdapterLoop(async (_claim, run) => ({
     adapter: options.adapterOf ? await options.adapterOf(run) : options.adapter ?? piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0 }),
+    facts: options.facts,
     ...(options.record ? { record: options.record } : {}),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: [...hostTools(tools), ...computerTools], context: "fresh" },
     input: "Follow the script.",
@@ -373,7 +376,7 @@ test("on a vendor's desktop whose agent's bash is set to ask, a script's compute
   const { runners } = await stores({ runners: 1 });
   const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-gate-"));
   dirs.push(folder);
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, folder, "none");
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, folder, "none", { facts: undefined });
   const script = "await computer.shell.run('echo hi');\nreturn 'ran';";
   const { server } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools, gate, undefined, { computer: run.computer, settled: "parked" });
   const ask = (await entriesOf(server)).find((entry) => entry.kind === "agentrun.ask")?.data;
@@ -387,7 +390,7 @@ test("a script's computer.shell.run a person allowed carries its computer calls 
   const { runners } = await stores({ runners: 1 });
   const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-gate-"));
   dirs.push(folder);
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, folder, "none");
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, folder, "none", { facts: undefined });
   const script = "await computer.shell.run('echo hi');\nreturn 'ran';";
   const { server } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools, gate, undefined, { computer: run.computer, settled: "parked" });
   const ask = (await entriesOf(server)).find((entry) => entry.kind === "agentrun.ask")?.data;
@@ -411,7 +414,7 @@ test("on a vendor's desktop whose agent's write is set to deny, a script's compu
   const { runners } = await stores({ runners: 1 });
   const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-gate-"));
   dirs.push(folder);
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { write: { permission: "deny" } } } }, folder, "none");
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { write: { permission: "deny" } } } }, folder, "none", { facts: undefined });
   const script = "const apps = await computer.apps.list();\nawait computer.files.write('/workspace/notes.txt', 'Pears: 41');\nreturn 'wrote';";
   const { requests } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools, gate, undefined, { computer: run.computer });
   const result = lastResult(requests);
@@ -441,9 +444,9 @@ test("on Codex, whose own code mode reaches only the tools it is handed, a deskt
     const { run, tools } = await desktop({ more: VENDOR, ...(surface ? { surface } : {}) });
     let handed;
     const faux = fauxAdapter({ script: (spec) => ((handed ??= spec.tools.map((tool) => ({ name: tool.name, deferred: tool.deferred === true }))), [{ say: "done" }]) });
-    // The faux harness under Codex's id: the loop reads Codex's facts (ownCodemode) by the adapter's id.
+    // The faux harness under Codex's id and facts: the loop reads ownCodemode from the facts its spec names.
     const codex = Object.defineProperty(Object.create(faux), "id", { value: "codex" });
-    await codemodeRun(t, [], tools, () => "allow", undefined, { computer: run.computer, adapter: codex });
+    await codemodeRun(t, [], tools, () => "allow", undefined, { computer: run.computer, adapter: codex, facts: codexFacts });
     const label = `surface ${surface}`;
     const names = handed.map((tool) => tool.name);
     assert.ok(!names.includes(CODEMODE), `${label}: no host codemode beside Codex's own: ${JSON.stringify(names)}`);
@@ -484,7 +487,7 @@ async function codexRun(t, calls, options = {}) {
   const harness = resolveHarness("codex");
   const fetch = codexScript(calls);
   const adapterOf = (run_) => harness.adapter({ run: run_, model: "gpt-test", provider: { origin: "https://provider.invalid", credential: () => "not-a-secret" }, price: () => 0, sessionsDir, fetch }, { standIn: { command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "responses" } } });
-  const { server } = await codemodeRun(t, [], tools, options.gate ?? (() => "allow"), options.restartAt, { computer: run.computer, adapterOf, record: harness.record, ...(options.settled ? { settled: options.settled } : {}), ...(options.beforeNext ? { beforeNext: options.beforeNext } : {}) });
+  const { server } = await codemodeRun(t, [], tools, options.gate ?? (() => "allow"), options.restartAt, { computer: run.computer, adapterOf, facts: codexFacts, record: harness.record, ...(options.settled ? { settled: options.settled } : {}), ...(options.beforeNext ? { beforeNext: options.beforeNext } : {}) });
   return { computer, server };
 }
 
@@ -522,7 +525,7 @@ test("on Codex, a computer_op answers its script one text item: an op that ran i
   const { runners } = await stores({ runners: 1 });
   const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-codex-shape-"));
   dirs.push(folder);
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "allow" }, write: { permission: "deny" } } } }, folder, "none");
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "allow" }, write: { permission: "deny" } } } }, folder, "none", { facts: undefined });
   const { server } = await codexRun(t, [{ tool: "computer_op", args: { op: "shell.run", args: { command: "echo hi" } } }, { tool: "computer_op", args: { op: "files.write", args: { path: "/workspace/notes.txt", data: "Pears: 41" } } }], { gate });
   const answers = await codexAnswers(server);
   const ran = answers.find((one) => one.arguments?.op === "shell.run");
@@ -562,7 +565,7 @@ test("on Codex, a script whose shell.run parked on a person's approval and ran o
   const { runners } = await stores({ runners: 1 });
   const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-codex-gate-"));
   dirs.push(folder);
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, folder, "none");
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, folder, "none", { facts: undefined });
   const { computer, server } = await codexRun(t, [{ tool: "computer_op", args: { op: "shell.run", args: { command: "echo hi" } } }], { gate, settled: "parked" });
   const ask = (await entriesOf(server)).find((entry) => entry.kind === "agentrun.ask")?.data;
   assert.equal(ask?.tool, "bash", JSON.stringify(ask));
@@ -632,7 +635,7 @@ test("on Codex, a run stopped while its exec's call waits for a person's approva
   const { runners } = await stores({ runners: 1 });
   const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-codex-stop-"));
   dirs.push(folder);
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, folder, "none");
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, folder, "none", { facts: undefined });
   const { computer, server } = await codexRun(t, [{ tool: "computer_op", args: { op: "shell.run", args: { command: "echo hi" } } }], { gate, settled: "parked" });
   await sendCommand(server, "run-1", { kind: "stop" });
   await until(async () => {

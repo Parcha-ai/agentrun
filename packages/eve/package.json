@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-eve",
-  "version": "0.1.0-beta.47",
+  "version": "0.1.0-beta.50",
   "private": true,
   "description": "An eve extension that connects existing agents to AgentRun and supplies checked learning on their next turn.",
   "type": "module",
@@ -41,8 +41,8 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@parcha/agentrun-client": "0.1.0-beta.47",
-    "@parcha/agentrun-dsl": "0.1.0-beta.47",
+    "@parcha/agentrun-client": "0.1.0-beta.50",
+    "@parcha/agentrun-dsl": "0.1.0-beta.50",
     "zod": "4.6.6",
     "ajv": "8.18.0",
     "ajv-formats": "3.0.1"

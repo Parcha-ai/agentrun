@@ -24,13 +24,11 @@ Each step ends on a command that tells you whether it is done. Run them from the
 1. Watch a module pass before you write one. This runs the conformance suite on the example's harness, against a
    fake ACP agent, with no binary, no model and no key:
    `npm run test:harness-module-example`
-   It is done when the last lines read `ℹ pass 25`, `ℹ fail 0` and `ℹ skipped 6`.
+   It is done when it ends as [What passing looks like](#what-passing-looks-like) shows.
 2. Copy the example from the tag of the release your server runs,
    `https://github.com/Parcha-ai/agentrun/tree/v<version>/examples/harness-module`, to a folder of your own, and give
-   it your package name. Its `@parcha` pins are that release's. The kit, `@parcha/agentrun-serve/harness`,
-   `/conformance` and `@parcha/agentrun-harness-acp/testing` ship from the first release that includes this guide, so
-   an older tag has no example to copy. Change [what you write](#what-you-write): the id, the facts, the recipe, the
-   proxy and `missing`.
+   it your package name. Its `@parcha` pins are that release's. Change [what you write](#what-you-write): the id, the
+   facts, the recipe, the proxy and `missing`.
 3. Run `npm test` in your copy until it passes the same way ([prove it](#prove-it)).
 4. Install it beside a server and start the server with it ([load it](#load-it)). `GET /v2/capabilities` lists your
    harness in `harnesses` after the built-in ones.
@@ -89,9 +87,9 @@ Give `kit.acpEntry`:
   wire needs an `AcpProxy` of its own.
 - `beforeStart(command)`, optional: a check before each process starts, a restart included. The example checks the
   binary against its pin there.
-- `promises`, optional: what the harness promises an owner, shown on its offer. The default is a resume by
-  `session/load`, each tool call through the agent's permission ask, and billing through the proxy. An agent that
-  can't load a session says `resume: "restart"`.
+
+Its offer promises each tool call through the agent's permission ask and billing through the proxy. `resume` defaults
+to `"restart"`; `"load"` needs the recipe's `declares.load`, else its first launch is refused (`HARNESS_RESUME_UNDECLARED`).
 
 Any other agent runs on an adapter you write (the kernel's `AgentAdapter`). Give `kit.adapterEntry(facts, adapter)`,
 where `adapter(launch)` builds it for one run. `launch` holds the model, where to forward its requests
@@ -101,8 +99,13 @@ harness gets `launch.skills` only when it loads skills itself: give `kit.adapter
 argument, and the run's skills that check accepts are taken out of the prompt and handed to your adapter.
 `kit.acpEntry` has no `skillCheck`, because the ACP adapter loads no skills, so an ACP agent's skills stay in its prompt.
 
+A module may instead give a whole entry with its own runner (the members [serve's README](packages/serve/README.md#harness-modules)
+lists): it then states by hand what the kit derives from the facts (models, key rows, offer, refusal and price), and
+without facts its agent gets pi's tools, not the host tools.
+
 For either one, serve picks the model and the key the way it does for its own harnesses. A person's Claude Code login is
-never a module's credential.
+never a module's credential. An entry's `ownKeys` names no key a built-in harness owns (Cursor's `CURSOR_API_KEY`): if
+it does, the server refuses to start with `HARNESS_KEY_OWNED` and names the module, the id and the key.
 
 ### What no key fixes: `missing`
 
@@ -123,7 +126,8 @@ The conformance suite is the one this repository proves its own harnesses with. 
   harness, built-in or not.
 - `suiteHostTools(tools)` gives the suite's tools to your session as host tools.
 
-The subject runs your adapter in that loop. Its cases crash the run at each point that matters and check what happens:
+The subject runs your adapter in that loop, its run's spec naming your facts (`facts`), as the loop reads them on a
+server. Its cases crash the run at each point that matters and check what happens:
 before a tool's intent is recorded and after it, mid-answer, with the runner process killed, and with a run paused past
 its lease. A tool that changes something must run at most once; a resumed run must pick up where it was. Your facts
 say which cases your harness rules out, and the suite skips each of those with the reason.
@@ -133,10 +137,8 @@ starts a fake ACP agent whose model is the suite's script. It needs no binary, n
 before any real agent is in it. `examples/harness-module/test/subject.mjs` is the whole subject. Keep it in a module of
 its own: the suite's process cases start a second runner process that imports it.
 
-`./conformance` is for your tests alone. `registerHarnessConformance` starts the suite's runner process from your test
-process, and that runner has test hooks that read the environment. Import `@parcha/agentrun-serve/conformance` only
-from test files, never from your module's own code: the server loads your module, and the suite must never run inside
-a server.
+Import `@parcha/agentrun-serve/conformance` from test files only: its runner has test hooks and must never load in a
+server.
 
 What the fake can't prove is your recipe and your proxy on a real agent. That is the [live run](#a-live-run).
 
@@ -166,9 +168,7 @@ path. A separate `agentrun-serve runner` takes the same flag and needs it to run
 installed refuses the start and names the command that installs it.
 
 `GET /v2/capabilities` then lists your harness in `harnesses`, after the built-in ones, with its `label`, its
-`promises`, and either `available: true` and the `keys` that run it, or `available: false` and the `reason`. Loading
-your module changes nothing a built-in harness is offered: its models, key rows, default model and tool names are the
-same as without it. Tests in serve hold that.
+`promises`, and either `available: true` and the `keys` that run it, or `available: false` and the `reason`.
 
 ### A live run
 
@@ -187,9 +187,8 @@ adds a row to [docs/examples.md](docs/examples.md) with:
 ## A recipe
 
 A recipe fits an ACP agent that the [ACP registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json)
-lists with a binary release packed as `.tar.bz2` or `.tar.gz`. Today a recipe is checked and installed; a server does
-not yet run one as a harness of its own, so `harness-check` is the whole of this door for now. A recipe that passes it
-is what that server-side step will take.
+lists with a binary release packed as `.tar.bz2` or `.tar.gz`. A server doesn't run a recipe yet: today a recipe is
+installed and checked.
 
 ### What you need
 
@@ -208,7 +207,7 @@ refused (`RECIPE_INVALID`, or the code of the rule it would break).
 
 | Field | Required | What it holds |
 | --- | --- | --- |
-| `id` | yes | The harness's id: lowercase letters, digits and `-`, starting with a letter, at most 40 characters. Not an id the server's harness table already has (`pi`, `claude-agent`, `codex`, `opencode`, `goose`, `cursor`) nor a name serve reserves: one its own runs carry (`learning`, `sdk`, `workflow`, `claude-agent-sdk`, `codex-sdk`, `eve`) or every object has (`constructor`). |
+| `id` | yes | The harness's id: lowercase letters, digits and `-`, starting with a letter, at most 40 characters. Not an id the server's harness table already has (`pi`, `claude-agent`, `codex`, `opencode`, `goose`, `cursor`) nor a name serve reserves: one its own runs carry (`learning`, `sdk`, `workflow`, `claude-agent-sdk`, `codex-sdk`, `eve`, `external`) or every object has (`constructor`). |
 | `label` | yes | The harness's name in a sentence, 1 to 80 characters. |
 | `release` | yes | Where the binary comes from: `{ "registry": ID, "version": VERSION, "archives": { PLATFORM: ARCHIVE } }`. `registry` is the agent's id in the ACP registry, `version` its version there. |
 | `release.archives.PLATFORM` | at least one | `PLATFORM` as the registry names it: `linux-x86_64`, `linux-aarch64`, `darwin-aarch64`, `darwin-x86_64`. `ARCHIVE` is `{ "url", "format", "sha256", "cmd", "binarySha256"? }`: `url` the registry's `archive` (https), `format` `"tar.bz2"` or `"tar.gz"` (the formats the installer unpacks), `sha256` the registry's `sha256` of the archive (64 lowercase hex digits; when the registry lists none, the sha256 of the archive you downloaded and checked yourself), `cmd` the registry's `cmd` (the binary's path inside the archive, `./agent`). `binarySha256`, when you know it, is the sha256 of the unpacked binary; leave it out and the first install records it (rule 2). |
@@ -348,11 +347,8 @@ a harness row carries:
   asks, so its tools are gated only by its config).
 - `billing`: `proxy` or `plan`.
 
-The report's `gate` says how the tool gate was reached: each permission the agent asked for, and each question the gate
-was asked. The adapter ties a call to AgentRun's tools by the title the agent gives it: `agentrun__<tool>`,
-`agentrun: <tool>` (Goose 1.59.2 writes the tool's underscores as spaces, `agentrun: check echo`) or
-`agentrun-<tool>: <tool>`. A permission it can't tie reaches the gate as the agent's own (`acp_<kind>`) and the check
-refuses it, so an untied title fails `mcp_tool`.
+The report's `gate` lists each permission the agent asked for and each question the gate was asked. A call whose title
+the adapter can't tie to an AgentRun tool is refused, and fails `mcp_tool`.
 
 `--cap USD` bounds what the check spends (default $0.25). `--data DIR` is the data directory the agent was installed
 into. Exit 0 when every check passed, 1 when the recipe was refused, the binary is not installed or pinned, or a check

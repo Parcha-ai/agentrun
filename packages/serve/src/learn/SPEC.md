@@ -315,6 +315,20 @@ Over a cap is refused, never cut.
   of the run's metrics (`loops`: `{node, iterations, met, repick?, workflow}`, `repick` true on the re-pick loop alone,
   a top-level step of this shape), so a re-pick (`iterations` 2) and whether it found its quotes (`met`) are counted,
   and a run's views say it (`workflow.repick`: `found`, `missed`, or null); its request is booked as any node's.
+- `learning.repick` (the owner's, off by default; `learning-setting.ts`) has the re-pick read the run's pages. H6c's
+  re-pick tier, one more answer over the pages the run fetched, found its quotes on 24 of 24 misses; the compiled
+  re-pick, over its compact facts and its draft alone, found them on 2 of 8 in S6. What is rewritten: with it on, the
+  answer's re-pick loop where quoteRule finds it (a top-level step, or the composed child's writing the answer), when
+  its body is one agent, decide or extract step with a `state` map and no tools, before the draft is committed
+  (`runner/learning-end.ts` `checkDraftOf`; the mechanism is `repick.ts`'s). Its second pass runs a clone of that
+  step, `<label>_pages`, that also reads the check's pages, told they are untrusted data. Any other re-pick, or one
+  whose marker names are taken, is committed as compiled and the runner's log says so. Which shape passes: the compact
+  state rule reads only the exact marker `repick.ts` derives, at that loop, at a cap the setting allows, never in a
+  child whose node's `input` hands it `repick_next`; with the setting off, a marker is refused as any page read. What is cut: the clone's request state past `repick_max_chars`
+  (150000 by default, 1 to 400000), its longest strings first, each marked where it was cut; a state that cannot fit
+  is never sent and the run hands back; the workflow's own state stays whole for the quote check. Its request is the
+  served run's, under the run's one cost cap. A change reaches only the workflows compiled after it, and an agent on
+  an SDK bridge (`workflowAdapters`) ignores it.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 

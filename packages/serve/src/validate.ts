@@ -7,7 +7,7 @@ import { placeIssues } from "./place.js";
 import { computerIssues, settingConflict } from "./computer-setting.js";
 import { settingsIssues } from "./tool-plane.js";
 import { APPROVALS } from "./approvals.js";
-import { schemaCheck } from "./answer-json.js";
+import { carriedProblem, schemaCheck, X_CARRIED } from "./answer-json.js";
 import { learningSettingIssue } from "./learning-setting.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -123,6 +123,9 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
     else {
       const compiled = schemaCheck(d.output_schema);
       if ("why" in compiled) out.push(issue(`${at}.output_schema`, "bad_format", `${at}.output_schema ${compiled.why}`));
+      // The fields a trigger's next run is handed when the whole answer is too large (answer-json.ts X_CARRIED).
+      const carried = carriedProblem(d.output_schema);
+      if (carried) out.push(issue(`${at}.output_schema.${X_CARRIED}`, "bad_format", `${at}.output_schema.${X_CARRIED} ${carried}`, `Make ${X_CARRIED} a list of unique names from ${at}.output_schema.properties, or remove it.`));
     }
   }
   // An agentic revision's typed input: the JSON Schema each run's input meets (inputSchemaOf, the schema in force). A
@@ -216,17 +219,20 @@ export function inputSchemaIssues(schema: unknown, at = "definition.input_schema
 
 /**
  * The input schema in force for an agentic revision whose definition has `schema` (none: DEFAULT_INPUT_SCHEMA). `content`
- * is always taken, as text: a run's message, which a follow-up and a trigger's line add to. It stays required when the
- * schema requires nothing else, as an agent with no schema requires it.
+ * is always taken, as text: a run's message, which a follow-up and a trigger's line add to. It is required when the
+ * schema has no field of its own, as an agent with no schema requires it. A schema whose own fields are all optional
+ * (a template's `pr_number`, given by hand and left out of a trigger's runs) leaves `required` empty: a run gives
+ * content or one of those fields, which inputIssues checks, so an input that says nothing is still refused.
  */
 export function inputSchemaOf(schema: unknown): Json {
   if (!isObject(schema)) return DEFAULT_INPUT_SCHEMA;
   const properties = isObject(schema.properties) ? schema.properties : {};
   const required = Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === "string") : [];
+  const ownOptional = required.length === 0 && Object.keys(properties).some((key) => key !== "content");
   return {
     ...schema,
     properties: { ...properties, content: properties.content ?? { type: "string" } },
-    required: required.some((key) => key !== "content") ? required : [...new Set([...required, "content"])],
+    required: required.some((key) => key !== "content") || ownOptional ? required : [...new Set([...required, "content"])],
   };
 }
 
@@ -262,6 +268,13 @@ export function inputIssues(input: Json, schema: Json, at = "input"): InputIssue
     // A required text sent empty is one left blank (a form sends it so): said as a missing one is, never as its length.
     else if (error.keyword === "minLength" && emptyRequired(input, schema, error.instancePath, error.schemaPath)) add(where, "missing", `${where} is required`);
     else add(where, KEYWORD_REASON[error.keyword] ?? "invalid", `${where} ${error.message}`);
+  }
+  // A schema in force that requires nothing (inputSchemaOf: its own fields all optional) takes content or one of them:
+  // an input naming none says nothing, said at content, with the fields that would do instead.
+  const named = isObject(schema.properties) ? Object.keys(schema.properties) : [];
+  if (Array.isArray(schema.required) && schema.required.length === 0 && isObject(input) && !named.some((key) => input[key] !== undefined)) {
+    const instead = named.filter((key) => key !== "content").map((key) => `${at}.${key}`);
+    add(`${at}.content`, "missing", `${at}.content is required${instead.length ? `, or one of ${instead.join(", ")}` : ""}`);
   }
   return out;
 }

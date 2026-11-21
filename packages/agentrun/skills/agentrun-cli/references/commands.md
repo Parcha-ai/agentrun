@@ -36,7 +36,7 @@ Route: `POST /agents`.
 
 ### `agentrun agents delete-agent AGENT_ID`
 
-Delete an agent another system owns.
+Delete an agent another system owns, or purge an archived agent made here.
 
 Route: `DELETE /agents/{agent_id}`.
 
@@ -149,6 +149,16 @@ Route: `PUT /agents/{agent_id}/definition`.
 Check native CLI and sign-in without a paid model call.
 
 Route: `POST /agents/{agent_id}/native/verify`.
+
+## capabilities
+
+### `agentrun capabilities get-capacity`
+
+The runs waiting and held, the live runners and the recent hand-backs.
+
+Route: `GET /capacity`.
+
+- `--window INTEGER` (integer): The hand-back window in minutes, from 1 to 1440. Default 15.
 
 ## connectors
 
@@ -679,6 +689,21 @@ Route: `POST /runs`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun runs create-run-computer-viewer RUN_ID`
+
+Mint a link to the run's live view for the backend's user.
+
+Route: `POST /runs/{run_id}/computer/viewer`.
+
+- `--body JSON|@FILE|-` (application/json): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun runs delete RUN_ID`
+
+Purge a run's content and keep its cost.
+
+Route: `DELETE /runs/{run_id}`.
+
 ### `agentrun runs files RUN_ID`
 
 The files the run wrote.
@@ -859,6 +884,12 @@ Show the archived run in the lists again.
 
 Route: `POST /runs/{run_id}/unarchive`.
 
+### `agentrun runs usage RUN_ID`
+
+What a run cost, by model, by who charged for its tools, and by browser provider.
+
+Route: `GET /runs/{run_id}/usage`.
+
 ### `agentrun runs wait RUN_ID`
 
 Wait until the run ends or waits on a person, and print it.
@@ -909,10 +940,11 @@ Register a task executed by an existing backend SDK.
 Route: `POST /agents/{agent_id}/sdk-runs`.
 
 - `--idempotency-key STRING` (string, required)
-- `--runtime claude-agent-sdk|codex-sdk|eve` (string, one of these, required)
+- `--runtime claude-agent-sdk|codex-sdk|eve|external` (string, one of these, required)
 - `--input STRING` (string, required)
 - `--instructions STRING` (string, required)
 - `--model STRING` (string)
+- `--platform STRING` (string): External source's display label, such as openclaw or capy. Preserved exactly; no surrounding whitespace, controls or lone surrogates. Never selects a managed harness or workflow capability.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 

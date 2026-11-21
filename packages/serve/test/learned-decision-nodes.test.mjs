@@ -147,17 +147,18 @@ test("a compiled workflow draft with a judge node passes the draft checks (check
 });
 
 test("a decision provider is a settings key of its own (jev, parallel, openrouter), allow by default and allow or deny: a run's gate answers allow for it until an owner sets deny", async () => {
-  const { RunGate, settingsKeyOf, defaultPermission } = await import("../dist/tool-gate.js");
+  const { RunGate, defaultPermission } = await import("../dist/tool-gate.js");
   const { settingsIssues, permissionsOf, DECISION_PROVIDER_KEYS } = await import("../dist/tool-plane.js");
+  const { builtinKeyOf } = await import("./gate-support.mjs");
   assert.deepEqual([...DECISION_PROVIDER_KEYS], ["jev", "parallel", "openrouter"]);
   for (const id of DECISION_PROVIDER_KEYS) {
-    for (const harness of ["pi", "claude-agent", "codex", "opencode"]) assert.equal(settingsKeyOf(harness, id), id, `${harness} ${id}`);
+    for (const harness of ["pi", "claude-agent", "codex", "opencode"]) assert.equal(builtinKeyOf(harness, id), id, `${harness} ${id}`);
     assert.equal(defaultPermission(id), "allow", id);
     assert.deepEqual([...permissionsOf(id)], ["allow", "deny"], id);
     for (const permission of ["allow", "deny"]) assert.deepEqual(settingsIssues({ [id]: { permission } }), [], `${id} ${permission}`);
     assert.notDeepEqual(settingsIssues({ [id]: { permission: "ask" } }), [], `${id}: ask is no setting of a provider`);
   }
-  const where = { root: "/nonexistent", work: "/nonexistent", runId: "run-1" };
+  const where = { root: "/nonexistent", work: "/nonexistent", runId: "run-1", facts: undefined };
   const read = (settings) => () => ({ settings, problems: [], unreadable: false });
   const open = new RunGate(where, read({}));
   assert.equal(open.policy("jev"), "allow", "no setting: allow, never ask");

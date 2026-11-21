@@ -8,16 +8,23 @@ import { Segmented } from "@/components/ui/segmented";
 import { Spinner } from "@/components/ui/spinner";
 import { tabPanelProps, Tabs } from "@/components/ui/tabs";
 import { bytes, compact, isEstimate, runEnded, soFar } from "@/lib/format";
-import { type Bar, between, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, offset, ordered, panned, percent, place, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { BASIS_WORDS, type Bar, between, bookedWords, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
 import { cn } from "@/lib/utils";
-import type { Run, RunTrace as Trace, TraceSpan } from "@/lib/v2";
+import type { Run, RunTrace as Trace, RunUsage, TraceSpan, UsageLine } from "@/lib/v2";
 
 /** A run's trace (GET /v2/runs/{id}/trace), read when its tab opens and again each time `version` moves (the run's
  *  rows, its status, its end). One read is out at a time and none is dropped: a move while one is out, or within half a
  *  second of the last, is one more read half a second after, so a run that moves faster than a read answers still shows
  *  each read as it lands. A read that fails is the tab's error only while there is nothing to show; `retry` reads at once. */
 export function useRunTrace(read: (() => Promise<Trace>) | undefined, version: string): { trace: Trace | null; error: unknown; retry: () => void } {
-  const [trace, setTrace] = useState<Trace | null>(null);
+  const { got, error, retry } = useReread(read, version);
+  return { trace: got, error, retry };
+}
+
+/** What `read` answers, read at once and again each time `version` moves, as `useRunTrace` says: the trace, or the run's
+ *  usage lines beside it. */
+function useReread<T>(read: (() => Promise<T>) | undefined, version: string): { got: T | null; error: unknown; retry: () => void } {
+  const [trace, setTrace] = useState<T | null>(null);
   const [error, setError] = useState<unknown>(null);
   const reader = useRef(read);
   reader.current = read;
@@ -53,7 +60,7 @@ export function useRunTrace(read: (() => Promise<Trace>) | undefined, version: s
     else if (s.timer === undefined) s.timer = setTimeout(() => go.current(), 500);
     s.seen = version;
   }, [version]);
-  return { trace, error: trace ? null : error, retry: () => go.current() };
+  return { got: trace, error: trace ? null : error, retry: () => go.current() };
 }
 
 /** The time a span still going is drawn to: the clock, read each second while `ticking` (a span runs or waits, however
@@ -380,24 +387,102 @@ function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose }: { s
 /** A model's mark where the cost is split by model: the first the full colour, the next striped, the rest light with an edge. */
 const MODEL_TONES = ["bg-trace-model", `bg-trace-model ${HATCH}`, TINT];
 
+/** A tool vendor's mark where the cost is split by line: the first the full colour, the next striped, the rest light. */
+const TOOL_TONES = ["bg-trace-tool", `bg-trace-tool ${HATCH}`, "border border-trace-tool bg-trace-tool/30"];
+/** Browser and computer time's mark: its own colour, hollow, told from a tool vendor's by more than its hue. */
+const BROWSER_TONE = "border border-trace-tool bg-card";
+
+/** Each usage line as a part of the split, with its mark: a model's tones in turn, a tool vendor's, browser time's. A line
+ *  whose cost is not known counts what is known of it, and says so. */
+function lineParts(lines: readonly UsageLine[]) {
+  const seen = { tokens: 0, tools: 0 };
+  return lines.map((line) => {
+    const tone = line.meter === "browser_time" || line.meter === "compute_time" ? BROWSER_TONE
+      : line.meter === "tokens" ? MODEL_TONES[Math.min(seen.tokens++, MODEL_TONES.length - 1)]! : TOOL_TONES[Math.min(seen.tools++, TOOL_TONES.length - 1)]!;
+    return { word: lineName(line), tone, n: line.usd ?? line.so_far_usd ?? 0, says: bookedWords(line) };
+  });
+}
+
+/** Why a run has no usage lines, in one sentence. */
+const NO_LINES: Record<NonNullable<RunUsage["reason"]>, string> = {
+  running: "Cost by line appears when the run ends.",
+  not_booked: "This run's cost is its harness's own figure, so it can't be split by line.",
+  reopened: "A follow-up reopened this learning run, so its cost can't be split by round.",
+};
+
+/** The run's cost line by line, from the server's booking: a row a line, with its quantity, its cost and how the cost
+ *  was reached. */
+function CostLines({ lines }: { lines: readonly UsageLine[] }) {
+  const th = "caps whitespace-nowrap py-1.5 pl-3 text-right text-label font-normal text-muted-foreground first:pl-0 first:text-left";
+  const id = useId();
+  return (
+    <div className="mt-4">
+      <p className="caps mb-1 text-label font-semibold text-muted-foreground" id={id}>Cost by line</p>
+      <div className="overflow-x-auto" tabIndex={0} role="region" aria-labelledby={id}>
+        <table className="w-full text-small">
+          <thead><tr className="border-b">{["Line", "Quantity", "Cost", "Basis"].map((h) => <th key={h} scope="col" className={th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {lines.map((line, i) => {
+              const notes = lineNotes(line);
+              const kind = line.meter === "tokens" ? `Tokens${line.provider ? ` · sent to ${line.provider}` : ""}` : line.meter === "tools" ? "Tool charges" : line.meter === "compute_time" ? "Computer time" : "Browser time";
+              return (
+                <tr key={i} className="border-b last:border-b-0">
+                  <th scope="row" className="py-1.5 text-left font-normal">
+                    <span className="block font-mono">{lineName(line)}</span>
+                    <span className="block text-muted-foreground">{kind}</span>
+                    {notes.map((note) => <span key={note} className="block text-muted-foreground">{note}</span>)}
+                  </th>
+                  <td className="whitespace-nowrap py-1.5 pl-3 text-right align-top font-mono">{orNone(quantityWords(line))}</td>
+                  <td className="whitespace-nowrap py-1.5 pl-3 text-right align-top font-mono">{bookedWords(line)}</td>
+                  <td className="whitespace-nowrap py-1.5 pl-3 text-right align-top text-muted-foreground">{BASIS_WORDS[line.basis]}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /** A stacked bar of parts that add up to a whole, with each part named under it: its word, its figure and its share. */
-function Split({ label, parts, whole, say }: { label: string; parts: readonly { word: string; tone: string; n: number }[]; whole: number; say: (n: number) => string }) {
+/** A part's `says` is its figure in words where `say(n)` would not tell the whole of it (a cost known only in part). */
+function Split({ label, parts, whole, say }: { label: string; parts: readonly { word: string; tone: string; n: number; says?: string }[]; whole: number; say: (n: number) => string }) {
   const some = parts.filter((part) => part.n > 0);
+  const words = (part: (typeof some)[number]) => part.says ?? say(part.n);
   return (
     <>
-      <div className="flex h-3 gap-px bg-accent" role="img" aria-label={`${label}: ${some.map((part) => `${part.word} ${say(part.n)}`).join(", ")}`}>
-        {some.map((part) => <span key={part.word} className={cn("trace-mark min-w-0.5", part.tone)} style={{ width: `${(part.n / Math.max(whole, Number.MIN_VALUE)) * 100}%` }} />)}
+      <div className="flex h-3 gap-px bg-accent" role="img" aria-label={`${label}: ${some.map((part) => `${part.word} ${words(part)}`).join(", ")}`}>
+        {some.map((part, i) => <span key={`${i}:${part.word}`} className={cn("trace-mark min-w-0.5", part.tone)} style={{ width: `${(part.n / Math.max(whole, Number.MIN_VALUE)) * 100}%` }} />)}
       </div>
       <ul className="mt-3 flex flex-wrap gap-x-6 gap-y-1.5 text-small">
-        {some.map((part) => <li key={part.word} className="flex items-center gap-2"><Swatch className={part.tone} />{part.word}<span className="font-mono text-muted-foreground">{say(part.n)} · {percent(whole > 0 ? part.n / whole : 0)}</span></li>)}
+        {some.map((part, i) => <li key={`${i}:${part.word}`} className="flex items-center gap-2"><Swatch className={part.tone} />{part.word}<span className="font-mono text-muted-foreground">{words(part)} · {percent(whole > 0 ? part.n / whole : 0)}</span></li>)}
       </ul>
+    </>
+  );
+}
+
+/** Where the cost went, from the run's usage lines: one part a line, the run's total beside the heading, and the lines
+ *  in a table under the split. */
+function CostByLine({ usage, lines }: { usage: RunUsage; lines: readonly UsageLine[] }) {
+  const parts = lineParts(lines);
+  const whole = parts.reduce((sum, part) => sum + part.n, 0);
+  const free = lines.length > 0 && lines.every((line) => line.usd === 0);
+  return (
+    <>
+      <Heading level="h2" aside={usage.total ? bookedWords(usage.total) : undefined}>Where the cost went</Heading>
+      {lines.length === 0 ? <p className="text-body text-muted-foreground">This run booked no cost.</p>
+        : whole > 0 ? <Split label="Where the cost went" whole={whole} say={dollars} parts={parts} />
+        : <p className="text-body text-muted-foreground">{free ? "Every line of this run's cost was $0." : "No line of this run's cost is known yet."}</p>}
+      <p className="mt-2 max-w-prose text-small text-muted-foreground">The run's cost as the server booked it: a line for each model, each vendor that charged for a tool, and each browser provider.</p>
+      {lines.length > 0 && <CostLines lines={lines} />}
     </>
   );
 }
 
 /** The run's requests and calls added up: what stands out, where the time and the cost went, each request's input and
  *  cost in the order they ran, and the same by model and by tool. */
-function Breakdown({ trace, now, onPick, selected }: { trace: Trace; now: number; onPick: (id: string) => void; selected: string | null }) {
+function Breakdown({ trace, usage, now, onPick, selected }: { trace: Trace; usage: RunUsage | null; now: number; onPick: (id: string) => void; selected: string | null }) {
   const totals = useMemo(() => traceTotals(trace, now), [trace, now]);
   const tools = useMemo(() => byTool(trace.spans, now), [trace, now]);
   const models = useMemo(() => byModel(trace.spans, trace.model_requests === "priced"), [trace]);
@@ -463,11 +548,16 @@ function Breakdown({ trace, now, onPick, selected }: { trace: Trace; now: number
           <p className="mt-2 max-w-prose text-small text-muted-foreground">Each moment is counted once. "Neither" is the time between calls: the run waiting for a person or its turn, or its harness working.</p>
         </section>
         <section aria-label="Where the cost went" className="border bg-card p-4">
+          {usage?.lines ? <CostByLine usage={usage} lines={usage.lines} /> : (
+          <>
           <Heading level="h2" aside={split ? dollars(split.total) : undefined}>Where the cost went</Heading>
           {split && split.total === 0 ? <p className="text-body text-muted-foreground">Everything this trace knows the cost of was $0.</p>
             : split ? <Split label="Where the cost went" whole={split.total} say={dollars} parts={split.parts.map((part, i) => ({ word: part.name, tone: part.kind === "tool" ? "bg-trace-tool" : MODEL_TONES[Math.min(i, MODEL_TONES.length - 1)]!, n: part.usd }))} />
             : <p className="text-body text-muted-foreground">{trace.model_requests === "priced" ? "Nothing in this trace has a known cost yet." : "This run's cost is booked for the run as a whole: its trace carries no cost for each request."}</p>}
           {split && split.total > 0 && <p className="mt-2 max-w-prose text-small text-muted-foreground">What the trace knows the cost of: each model's requests, and each charge under a call.{totals.cost.requests?.unknown ? ` ${totals.cost.requests.unknown} request${totals.cost.requests.unknown === 1 ? " has" : "s have"} no known cost and ${totals.cost.requests.unknown === 1 ? "is" : "are"} not in it.` : ""}</p>}
+          {usage?.reason && <p className="mt-2 max-w-prose text-small text-muted-foreground">{NO_LINES[usage.reason]}</p>}
+          </>
+          )}
         </section>
       </div>
 
@@ -567,8 +657,15 @@ const TH = "relative bg-card px-3 py-2 after:absolute after:inset-x-0 after:bott
  *  `version` moves when the run does (its rows, its status), so the trace is read again. `panel`: what ties the tab's
  *  body to its tab (tabPanelProps). For a story or a test: `now`, its own clock; `open`, the span open at first; `view`,
  *  the view shown at first. */
-export function RunTrace({ run, read, version, live, panel, now: fixed, open = null, view: first = "calls" }: { run: Run; read?: () => Promise<Trace>; version: string; live: boolean; panel?: ReturnType<typeof tabPanelProps>; now?: number; open?: string | null; view?: "calls" | "breakdown" }) {
+export function RunTrace({ run, read, readUsage, version, live, panel, now: fixed, open = null, view: first = "calls" }: { run: Run; read?: () => Promise<Trace>; readUsage?: () => Promise<RunUsage>; version: string; live: boolean; panel?: ReturnType<typeof tabPanelProps>; now?: number; open?: string | null; view?: "calls" | "breakdown" }) {
   const { trace, error, retry } = useRunTrace(read, version);
+  // The run's cost line by line, read beside the trace and again as it moves. A read that fails leaves the trace's own split.
+  // Lines are shown only as read at the run's version now: a follow-up reopens a run, and a reread that failed after it must
+  // not leave an earlier end's lines on screen as this one's. (Not by `ended_at`: a run a person stopped reads no end on
+  // the run, since a follow-up may take it on, while its lines cover the stop.)
+  const readAt = readUsage && (() => readUsage().then((got) => ({ got, at: version })));
+  const { got: usageRead } = useReread(readAt, version);
+  const usage = usageRead && usageRead.at === version ? usageRead.got : null;
   // A span that still runs or waits is drawn to now, while the run has not ended; once it has, to its end (a span the
   // trace still reads as going on an ended run grows no further).
   const going = !runEnded(run.status) && !!trace?.spans.some((s) => s.status === "running" || s.status === "waiting");
@@ -717,8 +814,11 @@ export function RunTrace({ run, read, version, live, panel, now: fixed, open = n
         </div>
 
         {spans.length === 0 ? (
-          <p className="border bg-card p-4 font-mono text-body text-muted-foreground">{live ? "No model request has answered and no tool has been called yet." : "This run made no model request and called no tool."}</p>
-        ) : view === "breakdown" ? <Breakdown trace={trace} now={now} onPick={pick} selected={selected?.id ?? null} /> : (
+          // A run whose record keeps no request (a CLI harness's) and called no tool has no span, yet its booking may
+          // still have its cost by line.
+          usage?.lines?.length ? <section aria-label="Where the cost went" className="border bg-card p-4"><CostByLine usage={usage} lines={usage.lines} /></section>
+            : <p className="border bg-card p-4 font-mono text-body text-muted-foreground">{live ? "No model request has answered and no tool has been called yet." : "This run made no model request and called no tool."}</p>
+        ) : view === "breakdown" ? <Breakdown trace={trace} usage={usage} now={now} onPick={pick} selected={selected?.id ?? null} /> : (
           <>
             <section aria-label="Overview of the run" className="border bg-card">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-1.5">

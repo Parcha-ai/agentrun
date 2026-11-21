@@ -3,6 +3,7 @@
 // each read from options or from what an injected fetch is handed. The adapter's lifecycle is tested once, against its
 // one fake host (hosted-provider.test.mjs); Daytona's own lifecycle is proven live (test/daytona). The fetch here only
 // records what it is given and answers one canned reply per route: no sandbox exists, and nothing reaches the network.
+// One test, the desktop over dial, routes to a sandbox it keeps, booted from its env (fake-dial-host.mjs bootDial).
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +11,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { create, DaytonaProvider } from "../dist/daytona.js";
 import { AttachHub, checkLifetime, DAYTONA, kindRefusals, MACHINE_TOKEN_SOURCE, MemoryMachineTokens, mountsOf } from "../dist/index.js";
+import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { fakeHost } from "./fake-host.mjs";
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -187,6 +189,11 @@ test("the constructor refuses what it cannot run with, in words", () => {
 	assert.throws(make({ archilEgress: "192.0.2.40:8100:42050" }), /the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>/);
 	assert.throws(make({ archilEgress: "relay.example:18100:42050" }), /the Archil egress is/);
 	assert.doesNotThrow(make({ archilEgress: EGRESS }), "a well-formed egress is taken");
+	for (const attachEgress of ["relay.example:18443", "192.0.2.40", "192.0.2.40:0", "192.0.2.40:65536", "192.0.2.40:018443", "192.0.2.040:18443", "[2001:db8::1]:18443", "192.0.2.40:18443:1", " 192.0.2.40:18443"]) {
+		assert.throws(make({ attachEgress }), /the attach egress is <IPv4 relay>:<port>, such as 192\.0\.2\.40:18443, a port from 1 to 65535; not "/, attachEgress);
+	}
+	assert.doesNotThrow(make({ attachEgress: "192.0.2.40:18443" }), "a well-formed attach egress is taken");
+	assert.doesNotThrow(make({ attachEgress: "" }), "an empty one is none");
 	assert.throws(make({ timeouts: { retryMs: 0 } }), /retryMs/);
 });
 
@@ -344,7 +351,7 @@ test("the read-back: Daytona's states as the adapter's, its end, its GPUs and it
 	};
 	const autoDestroyAt = "2026-01-02T03:04:05.000Z";
 	const clean = await read({ autoDestroyAt });
-	assert.deepEqual(Object.keys(clean).sort(), ["endsAt", "id", "labels", "state"], "no drift, network, size or image: Daytona's create options are not read back");
+	assert.deepEqual(Object.keys(clean).sort(), ["endsAt", "id", "labels", "resources", "state"], "no drift, network or image: Daytona's create options are not read back; what it gave the sandbox is (resources)");
 	assert.equal(clean.state, "running");
 	assert.equal(clean.endsAt.toISOString(), autoDestroyAt);
 	for (const [state, want] of [
@@ -369,6 +376,19 @@ test("the read-back: Daytona's states as the adapter's, its end, its GPUs and it
 	assert.equal(Object.hasOwn(await read({ snapshot: "daytona-gpu", gpu: 1, gpuType: "H100", autoDeleteInterval: 0 }), "gpu"), false, "a GPU is the adapter's label, not a read-back");
 	const { provider } = setup({ [`GET /api/sandbox/${REF.id}`]: { status: 404, body: { statusCode: 404, message: "not found" } } });
 	assert.equal(await provider.host.get(REF.id, { timeoutMs: 1_000 }), undefined);
+});
+
+test("the read-back's resources are what Daytona's answer says the sandbox was given (memory and disk in GiB), each only where it says it", async () => {
+	const read = async (fields) => {
+		const sb = sandbox(fields);
+		const { provider } = setup({ [`GET /api/sandbox/${sb.id}`]: { body: sb } });
+		return await provider.host.get(sb.id, { timeoutMs: 1_000 });
+	};
+	assert.deepEqual((await read({ cpu: 4, memory: 8, disk: 10, gpu: 1, gpuType: "H100" })).resources, { cpus: 4, memoryMb: 8192, diskGb: 10, gpu: { type: "H100", count: 1 } });
+	assert.deepEqual((await read({ cpu: 2, memory: 4 })).resources, { cpus: 2, memoryMb: 4096 }, "no disk or GPU said: none");
+	assert.deepEqual((await read({ cpu: 2, memory: undefined, gpu: 0, gpuType: "H100" })).resources, { cpus: 2 }, "no GPUs given");
+	assert.deepEqual((await read({ cpu: 2, memory: undefined, gpu: 1 })).resources, { cpus: 2 }, "a GPU count with no type is no GPU figure");
+	assert.equal(Object.hasOwn(await read({ cpu: "four", memory: -1 }), "resources"), false, "a figure that is not a positive number is none");
 });
 
 test("list: the adapter's label alone is asked for, every page followed, destroyed ones left out; the adapter keeps the rest by labels and reads each by get", async () => {
@@ -750,6 +770,23 @@ test("connect dial: create sends the boot env as the sandbox's env and its netwo
 	assert.equal(typeof plain.provider.host.upload, "function");
 });
 
+test("connect dial with DAYTONA_ATTACH_EGRESS's attachEgress: the boot env carries the relay as AGENTRUN_ATTACH_EGRESS, the public addresses unchanged; a desktop's too; exec sends no env still", async () => {
+	assert.deepEqual(DAYTONA.keys.find((key) => key.name === "DAYTONA_ATTACH_EGRESS"), { name: "DAYTONA_ATTACH_EGRESS", option: "attachEgress", required: false });
+	for (const kind of ["linux", "desktop"]) {
+		const rec = refusedCreate();
+		const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial: dialOf(), attachEgress: "192.0.2.40:18443", kind });
+		await provider.create({ ...SPEC, image: "agentrun-box-0123456789ab" }, { requestId: `r-dial-egress-${kind}` });
+		const { env } = posted(rec);
+		assert.deepEqual(Object.keys(env).sort(), [...BOOT_NAMES, "AGENTRUN_ATTACH_EGRESS", ...(kind === "desktop" ? ["DISPLAY"] : [])].sort(), kind);
+		assert.equal(env.AGENTRUN_ATTACH_EGRESS, "192.0.2.40:18443");
+		assert.equal(env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach", "the machine still dials the public address, by name, through the relay");
+		assert.equal(env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64");
+	}
+	const rec = refusedCreate();
+	await new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, attachEgress: "192.0.2.40:18443" }).create(SPEC, { requestId: "r-exec-egress" });
+	assert.deepEqual(posted(rec).env, {}, "a machine on exec dials nothing, so it is given nothing");
+});
+
 test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, each refused in words; labels refused as on exec; no value but exec or dial", () => {
 	const { provider, rec } = setup({}, { connect: "dial", dial: dialOf(), archilEgress: EGRESS });
 	const caps = provider.capabilities();
@@ -773,21 +810,64 @@ test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, 
 	assert.equal(rec.requests.length, 0);
 });
 
-// Why Daytona gives no desktop (measured 11-19): PROVIDERS.md, Machines that dial in. The one test that pins the
-// sentence whole; every other one reads DAYTONA.unserved.desktop.
-const NO_DESKTOP = "Daytona gives no desktop computer: its sandboxes run under AppArmor's restrict_unprivileged_userns, so the tool user can't make the user and network namespaces the window manager runs in";
-
-test("kind desktop is refused when the provider is made, on every connect, in its descriptor's unserved words, before any request; kind linux stays", () => {
-	for (const connect of ["dial", undefined, "exec"]) {
-		const options = { ...(connect ? { connect } : {}), ...(connect === "dial" ? { dial: dialOf() } : {}) };
-		assert.throws(() => setup({}, { ...options, kind: "desktop" }), { message: NO_DESKTOP }, `connect ${connect}`);
-		assert.equal(setup({}, { ...options, kind: "linux" }).provider.capabilities().kind, "linux");
+test("kind desktop on connect dial: the desktop's groups, no GPU, the window manager computerd starts (init --window-manager), and DISPLAY beside the boot env, with no resources beside the snapshot; on connect exec it is refused when made, in kindRefusal's words", async () => {
+	const rec = refusedCreate();
+	const dial = dialOf();
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial, kind: "desktop" });
+	const caps = provider.capabilities();
+	assert.equal(caps.kind, "desktop");
+	assert.deepEqual(caps.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"]);
+	assert.equal(caps.gpu, undefined);
+	assert.equal(provider.host.facts.windowManager, true, "a snapshot of box/Dockerfile has xfwm4");
+	const made = await provider.create({ ...SPEC, image: "agentrun-box-0123456789ab" }, { requestId: "r-dial-desktop" });
+	assert.equal(made.error?.code, "invalid", "a create Daytona refused made nothing");
+	const body = posted(rec);
+	assert.deepEqual(Object.keys(body.env).sort(), [...BOOT_NAMES, "DISPLAY"]);
+	assert.equal(body.env.DISPLAY, ":0");
+	assert.match(body.env.AGENTRUN_INIT_ARGS, / --window-manager$/, "computerd starts the window manager, as root makes its network namespace");
+	assert.deepEqual([body.cpu, body.memory, body.disk], [undefined, undefined, undefined], "the snapshot's 2 CPUs and 4 GB: no resources beside a snapshot");
+	for (const connect of [undefined, "exec"]) {
+		assert.throws(() => setup({}, { ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: Daytona gives a desktop computer on connect "dial" alone, not "exec"$/, `connect ${connect}`);
+		assert.equal(setup({}, { ...(connect ? { connect } : {}), kind: "linux" }).provider.capabilities().kind, "linux");
 	}
 });
 
-test("Daytona's descriptor offers no desktop, and gives the reason as its unserved desktop: a sandbox alone", () => {
-	assert.deepEqual(DAYTONA.capabilities.map(({ kind }) => kind), ["linux"]);
-	assert.deepEqual(Object.keys(DAYTONA.unserved ?? {}), ["desktop"]);
+test("Daytona's desktop configuration, as serve builds it over connect exec, makes a desktop over dial from the box snapshot: the sandbox boots from its env, dials, its X server starts over that socket and computerd starts xfwm4", async () => {
+	const dial = dialServer();
+	// The operator's snapshot of box/Dockerfile (AGENTRUN_DAYTONA_SNAPSHOT, box/build-daytona.py's name): it holds Xvfb and xfwm4.
+	const SNAPSHOT = "agentrun-box-0123456789ab";
+	const ID = "sb-desktop-1";
+	let made;
+	let booted;
+	// A Daytona API that keeps the one sandbox it makes: it boots from the env it was posted (bootDial).
+	const rec = recorder({
+		"GET /api/sandbox": () => ({ body: { items: made === undefined || made.state === "destroyed" ? [] : [made] } }),
+		"POST /api/sandbox": ({ body }) => {
+			made = sandbox({ id: ID, name: body.name, snapshot: body.snapshot, labels: body.labels, networkBlockAll: body.networkBlockAll });
+			booted = bootDial(body.env, dial, { daemon: readFileSync(DAEMON) });
+			return { body: made };
+		},
+		[`GET /api/sandbox/${ID}`]: () => (made.state === "destroyed" ? { status: 404, body: { statusCode: 404, message: "Sandbox not found" } } : { body: made }),
+		[`DELETE /api/sandbox/${ID}`]: () => {
+			made.state = "destroyed";
+			return { status: 204 };
+		},
+	});
+	const { options } = DAYTONA.capabilities.find(({ kind }) => kind === "desktop");
+	// serve's options for this provider: the keys' and the settings' (daytonaConnect exec), then the configuration's.
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: { ...TIMEOUTS, listedStableMs: 0 }, dial, connect: "exec", ...options });
+	assert.equal(provider.capabilities().kind, "desktop");
+	assert.equal(provider.host.facts.connect, "dial");
+	await desktopOverDial(provider, dial, () => booted, { image: SNAPSHOT, lifetimeMs: 600_000, network: "none" });
+	const body = posted(rec);
+	assert.equal(body.snapshot, SNAPSHOT, "made from the box snapshot");
+	assert.deepEqual([body.cpu, body.memory, body.disk], [undefined, undefined, undefined], "the snapshot's 2 CPUs, 4 GB and 10 GB: no resources beside a snapshot");
+	assert.equal(made.state, "destroyed", "release deleted the sandbox");
+});
+
+test("Daytona's descriptor offers a sandbox and, on connect dial, a desktop, and leaves no kind unserved", () => {
+	assert.deepEqual(DAYTONA.capabilities.map(({ kind, options }) => [kind, options?.connect]), [["linux", undefined], ["desktop", "dial"]]);
+	assert.equal(DAYTONA.unserved, undefined);
 });
 
 test("Daytona's descriptor declares the connect setting, with no default of its own: a server's settings pass it to create() as connect, else the provider's exec holds", () => {

@@ -26,9 +26,16 @@ export interface FlyMachine {
 	id: string;
 	state: string;
 	created_at?: string;
-	config?: { metadata?: Record<string, string> | null } | null;
+	config?: { metadata?: Record<string, string> | null; guest?: FlyGuest | null } | null;
 	/** fly-go: the config rebuilt in part while host_status isn't "ok". */
-	incomplete_config?: { metadata?: Record<string, string> | null } | null;
+	incomplete_config?: { metadata?: Record<string, string> | null; guest?: FlyGuest | null } | null;
+}
+
+/** A machine's guest as Fly answers it (M, MachineGuest): its CPUs and memory, which Fly bills by. */
+export interface FlyGuest {
+	cpu_kind?: string;
+	cpus?: number;
+	memory_mb?: number;
 }
 
 /** The Fly provider's options: the token and the app, then the shared adapter's (HostedOptions), kind among them. */
@@ -98,7 +105,16 @@ function machineOf(found: FlyMachine): Machine | undefined {
 		state: state ?? "gone",
 		...(created ? { createdAt: created } : {}),
 		...(why ? { why } : {}),
+		...guestResources(config.guest),
 	};
+}
+
+/** What Fly says a machine was given (its guest's cpus and memory_mb), where its answer says it; none else. */
+function guestResources(guest: FlyGuest | null | undefined): { resources?: { cpus?: number; memoryMb?: number } } {
+	const figure = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
+	const [cpus, memoryMb] = [figure(guest?.cpus), figure(guest?.memory_mb)];
+	if (cpus === undefined && memoryMb === undefined) return {};
+	return { resources: { ...(cpus === undefined ? {} : { cpus }), ...(memoryMb === undefined ? {} : { memoryMb }) } };
 }
 
 /** An id held to Fly's form before it reaches a path: not_found else. */

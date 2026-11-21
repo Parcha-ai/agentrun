@@ -128,7 +128,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "Delete an agent another system owns"
+    "summary": "Delete an agent another system owns, or purge an archived agent made here"
   },
   {
     "command": [
@@ -537,6 +537,33 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Check native CLI and sign-in without a paid model call"
+  },
+  {
+    "command": [
+      "capabilities",
+      "get-capacity"
+    ],
+    "operationId": "getCapacity",
+    "method": "GET",
+    "path": "/capacity",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [
+      {
+        "name": "window",
+        "type": "integer",
+        "required": false,
+        "description": "The hand-back window in minutes, from 1 to 1440. Default 15."
+      }
+    ],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The runs waiting and held, the live runners and the recent hand-backs"
   },
   {
     "command": [
@@ -2176,6 +2203,52 @@ export const COMMANDS = [
   {
     "command": [
       "runs",
+      "create-run-computer-viewer"
+    ],
+    "operationId": "createRunComputerViewer",
+    "method": "POST",
+    "path": "/runs/{run_id}/computer/viewer",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": false,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Mint a link to the run's live view for the backend's user"
+  },
+  {
+    "command": [
+      "runs",
+      "delete"
+    ],
+    "operationId": "deleteRun",
+    "method": "DELETE",
+    "path": "/runs/{run_id}",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Purge a run's content and keep its cost"
+  },
+  {
+    "command": [
+      "runs",
       "files"
     ],
     "operationId": "listRunFiles",
@@ -2868,6 +2941,28 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "runs",
+      "usage"
+    ],
+    "operationId": "getRunUsage",
+    "method": "GET",
+    "path": "/runs/{run_id}/usage",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "What a run cost, by model, by who charged for its tools, and by browser provider"
+  },
+  {
+    "command": [
       "sdk-runs",
       "complete"
     ],
@@ -3027,7 +3122,8 @@ export const COMMANDS = [
         "enum": [
           "claude-agent-sdk",
           "codex-sdk",
-          "eve"
+          "eve",
+          "external"
         ],
         "required": true,
         "description": ""
@@ -3049,6 +3145,12 @@ export const COMMANDS = [
         "type": "string",
         "required": false,
         "description": ""
+      },
+      {
+        "name": "platform",
+        "type": "string",
+        "required": false,
+        "description": "External source's display label, such as openclaw or capy. Preserved exactly; no surrounding whitespace, controls or lone surrogates. Never selects a managed harness or workflow capability."
       }
     ],
     "hasBody": true,

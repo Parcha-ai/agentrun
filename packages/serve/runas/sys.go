@@ -3,6 +3,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ type sys interface {
 	CapbsetDrop(c int) error
 	AmbientClearAll() error
 	CapsetZero() error
+	CapsetOnly(mask uint64) error
 	SetNoNewPrivs() error
 	SetPdeathsig() error
 	Getppid() int
@@ -31,6 +33,8 @@ type sys interface {
 	Kill(pid int, sig syscall.Signal) error
 	LiveProcs(uid int) (int, error)
 	Sleep(d time.Duration)
+	Getuid() int
+	Own(dir string, owned func(int) bool, runner, uid, gid int, stderr io.Writer) bool
 }
 
 const (
@@ -86,6 +90,22 @@ func (realSys) AmbientClearAll() error {
 func (realSys) CapsetZero() error {
 	hdr := capHeader{version: linuxCapabilityVersion3}
 	var data [2]capData
+	_, _, e := syscall.RawSyscall(syscall.SYS_CAPSET,
+		uintptr(unsafe.Pointer(&hdr)), uintptr(unsafe.Pointer(&data[0])), 0)
+	if e != 0 {
+		return e
+	}
+	return nil
+}
+
+// CapsetOnly leaves exactly mask in the effective and permitted sets and
+// none inheritable: what the thread may keep, never what it may gain.
+func (realSys) CapsetOnly(mask uint64) error {
+	hdr := capHeader{version: linuxCapabilityVersion3}
+	data := [2]capData{
+		{effective: uint32(mask), permitted: uint32(mask)},
+		{effective: uint32(mask >> 32), permitted: uint32(mask >> 32)},
+	}
 	_, _, e := syscall.RawSyscall(syscall.SYS_CAPSET,
 		uintptr(unsafe.Pointer(&hdr)), uintptr(unsafe.Pointer(&data[0])), 0)
 	if e != 0 {
@@ -175,6 +195,12 @@ func (realSys) LiveProcs(uid int) (int, error) {
 }
 
 func (realSys) Sleep(d time.Duration) { time.Sleep(d) }
+
+func (realSys) Getuid() int { return syscall.Getuid() }
+
+func (realSys) Own(dir string, owned func(int) bool, runner, uid, gid int, stderr io.Writer) bool {
+	return ownDir(dir, owned, runner, uid, gid, stderr)
+}
 
 func openRetry(path string, flags int) (int, error) {
 	for {

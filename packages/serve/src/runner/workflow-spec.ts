@@ -789,8 +789,9 @@ type CallPolicy = (tool: string) => Promise<{ permission: "allow" | "ask" | "den
 function callPolicyOf(store: Pick<Store, "settings">, runId: string, claimed: Claimed): CallPolicy {
   // Nothing read yet: unread, so a policy asked before the first read fails closed too.
   let current: Awaited<ReturnType<typeof loadToolSettings>> = { settings: {}, problems: [], unreadable: true };
-  // Only the permission is read here: a workflow never parks, so whether anyone can answer an ask plays no part.
-  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current, true);
+  // Only the permission is read here: a workflow never parks, so whether anyone can answer an ask plays no part. A
+  // workflow runs on no harness's adapter, so no facts name its tools.
+  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot, facts: undefined }, runId, claimed.revision as never, () => current, true);
   return async (tool) => {
     current = await storeSettings(store);
     return { permission: gate.policy(tool), denyFrom: gate.denyFrom(tool) };

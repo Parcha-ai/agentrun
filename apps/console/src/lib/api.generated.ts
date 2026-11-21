@@ -150,6 +150,11 @@ export interface components {
       needs: "key" | "model" | null;
       reason: string | null;
     };
+    store_schema?: {
+      version: number | null;
+      runner_floor: number | null;
+      known: number;
+    };
     learning: {
       pending: true;
       approve: boolean;
@@ -316,6 +321,9 @@ export interface components {
     max_cost_usd?: number;
     sdk?: {
       runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
+    } | {
+      runtime: "external";
+      platform: string;
     };
     native?: {
       runtime: "claude-code" | "codex";
@@ -399,6 +407,9 @@ export interface components {
       };
       web_search?: {
         provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        permission?: "allow" | "ask" | "deny";
+      };
+      web_save?: {
         permission?: "allow" | "ask" | "deny";
       };
       email_search?: {
@@ -489,6 +500,8 @@ export interface components {
       hold_window?: number;
       hold_disagree?: number;
       stop_window?: number;
+      repick?: boolean;
+      repick_max_chars?: number;
     };
     checkout?: "pull_request" | "none";
   };
@@ -513,7 +526,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "agent_not_external" | "runs_in_flight" | "learning_busy" | "model_key_required" | "runner_refused";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "purged" | "model_key_required" | "runner_refused";
   ExternalRef: {
     source: string;
     kind: string;
@@ -830,6 +843,19 @@ export interface components {
         cache_write_tokens?: number | null;
         cost_usd?: number | null;
       } | null;
+    } | {
+      runtime: "external";
+      platform: string;
+      model: string | null;
+      session_id: string | null;
+      learning_revision: string | null;
+      usage: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      } | null;
     };
     native?: {
       runtime: string;
@@ -928,6 +954,7 @@ export interface components {
       call_id: string;
       args_preview: string;
       summary?: string;
+      asks_because?: string;
       requested_at: string;
       price?: number | "not metered" | "priced by usage";
       destructive?: true;
@@ -1075,6 +1102,19 @@ export interface components {
         cache_write_tokens?: number | null;
         cost_usd?: number | null;
       } | null;
+    } | {
+      runtime: "external";
+      platform: string;
+      model: string | null;
+      session_id: string | null;
+      learning_revision: string | null;
+      usage: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      } | null;
     };
     native?: {
       runtime: string;
@@ -1140,6 +1180,7 @@ export interface components {
       call_id: string;
       args_preview: string;
       summary?: string;
+      asks_because?: string;
       requested_at: string;
       price?: number | "not metered" | "priced by usage";
       destructive?: true;
@@ -1364,8 +1405,16 @@ export interface operations {
       template: string;
       version: string;
       agent_id: string;
+      revision_version: number;
+      agent_change: "made" | "updated" | "unchanged";
       servers: Record<string, string | null>;
       trigger_ids: string[];
+      triggers: {
+        trigger_id: string;
+        name: string;
+        kind: "schedule" | "webhook" | "github" | "composio" | "email" | "feed";
+        enabled: boolean;
+      }[];
       warnings: components["InputIssue"][];
       webhook_secrets?: {
         trigger_id: string;
@@ -1543,6 +1592,13 @@ export interface operations {
   createRun: {
     body: components["RunCreate"];
     answer: components["Run"];
+  };
+  createRunComputerViewer: {
+    body: Record<string, never>;
+    answer: {
+      url: string;
+      expires_at: string;
+    };
   };
   createTrigger: {
     body: {
@@ -1928,6 +1984,10 @@ export interface operations {
       problem: string | null;
     };
   };
+  deleteRun: {
+    body: never;
+    answer: never;
+  };
   deleteSlack: {
     body: never;
     answer: never;
@@ -2226,6 +2286,30 @@ export interface operations {
   getCapabilities: {
     body: never;
     answer: components["Capabilities"];
+  };
+  getCapacity: {
+    body: never;
+    answer: {
+      at: string;
+      runs: {
+        queued: number;
+        executing: number;
+      };
+      runners: {
+        id: string;
+        version: string | null;
+        slots: number | null;
+        executing: number;
+        free_slots: number | null;
+        refused: boolean;
+        seen_at: string;
+      }[];
+      free_slots: number;
+      hand_backs: {
+        window_minutes: number;
+        count: number;
+      };
+    };
   };
   getChatGPTSignIn: {
     body: never;
@@ -2868,6 +2952,79 @@ export interface operations {
         result_size_bytes: number | null;
       }[];
       dropped: number;
+    };
+  };
+  getRunUsage: {
+    body: never;
+    answer: {
+      run_id: components["Id"];
+      ended_at: string | null;
+      currency: "USD";
+      total: {
+        usd: number | null;
+        so_far_usd?: number;
+        unpriced?: number;
+        upper_bound?: true;
+      } | null;
+      lines: {
+        meter: "tokens" | "tools" | "browser_time" | "compute_time";
+        model: string | null;
+        provider: string | null;
+        charged_by: string | null;
+        quantity: number | null;
+        unit: "token" | "call" | "second" | "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
+        basis: "reported" | "estimate" | "unpriced";
+        usd: number | null;
+        so_far_usd?: number;
+        unpriced?: number;
+        upper_bound?: true;
+        requests?: number;
+        tokens?: {
+          input: number;
+          output: number;
+          cache_read: number;
+          cache_write: number;
+        };
+        unmetered_requests?: number;
+        not_metered_calls?: number;
+        resource?: "vcpu" | "memory" | "gpu" | "disk";
+        gpu_type?: string | null;
+        unheld_quantity?: number | null;
+        open_computers?: number;
+        measured_to?: string;
+      }[] | null;
+      browser_sessions: {
+        provider: string;
+        tag: string;
+        provider_session_id: string | null;
+        started_at: string | null;
+        ended_at: string | null;
+        release_reason: string | null;
+        charged_seconds: number | null;
+        provider_record: {
+          started_at: string | null;
+          ended_at: string | null;
+          proxy_bytes: number | null;
+        } | null;
+        provider_record_status: "read" | "not_offered" | "not_found" | "failed" | "no_session" | null;
+      }[] | null;
+      computer_intervals: {
+        provider: string;
+        provider_id: string;
+        kind: string | null;
+        gpu: {
+          type: string | null;
+          count: number | null;
+        } | null;
+        cpus: number | null;
+        memory_mb: number | null;
+        disk_gb: number | null;
+        started_at: string;
+        ended_at: string | null;
+        kept: boolean;
+        booked_seconds: number;
+      }[] | null;
+      reason: "running" | "not_booked" | "reopened" | null;
     };
   };
   getSdkRun: {
@@ -3624,6 +3781,7 @@ export interface operations {
           required: string[];
           ready: boolean;
           runs_refused: string | null;
+          folder: "bind" | "archil" | "sync" | null;
           shell: "computer" | "local" | "none";
           host_tools: string[];
           why?: string;
@@ -3788,11 +3946,14 @@ export interface operations {
             differs_on?: string;
           }[];
           stopped?: true;
+          released?: number;
+          fresh_reads?: number;
         };
         runs?: string[];
         inputs?: string[];
         replay_id?: string;
         commit?: string;
+        via?: "sdk";
         audit?: {
           window: number;
           disagree: number;
@@ -3874,6 +4035,8 @@ export interface operations {
               differs_on?: string;
             }[];
             stopped?: true;
+            released?: number;
+            fresh_reads?: number;
           } | null;
         } | null;
       }[];
@@ -4465,6 +4628,9 @@ export interface operations {
         provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
+      web_save?: {
+        permission?: "allow" | "ask" | "deny";
+      };
       email_search?: {
         permission?: "allow" | "ask" | "deny";
       };
@@ -5018,6 +5184,7 @@ export interface operations {
       required: string[];
       ready: boolean;
       runs_refused: string | null;
+      folder: "bind" | "archil" | "sync" | null;
       shell: "computer" | "local" | "none";
       host_tools: string[];
       why?: string;
@@ -5255,6 +5422,7 @@ export interface operations {
           tool: string;
           unmarked?: true;
         };
+        fresh_reads?: number;
       } | {
         type: "tool";
         id: string;
@@ -5353,6 +5521,12 @@ export interface operations {
         price_usd?: number;
       }[];
       workflow_adapters?: ("runNode" | "runJudge")[];
+    } | {
+      runtime: "external";
+      platform: string;
+      input: string;
+      instructions: string;
+      model?: string;
     };
     answer: {
       run_id: string;

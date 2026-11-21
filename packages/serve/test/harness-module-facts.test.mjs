@@ -132,3 +132,25 @@ test("a module's adapter harness is gated and searched by its own facts: its nat
   const pi = toolPlane.planeFor(env, { tools: ["web_search"], model: "anthropic/claude-sonnet-5-5" }, { web_search: { provider: "native" } });
   assert.equal(pi.web_search, "native", "pi on the same model has Anthropic's hosted search");
 });
+
+test("a module's adapter harness is refused with its facts' install fix, as the built-in Goose is: an error from `missing` or its adapter whose code its facts name is a HarnessUnavailable with that fix, said at the start with the restart", async (t) => {
+  const { HarnessUnavailable } = await import("../dist/provider.js");
+  const dir = await scratch(t);
+  const path = join(dir, "acme-fix-module.mjs");
+  writeFileSync(path, `const coded = (code, words) => Object.assign(new Error(code + ": " + words), { code });
+export const entries = (_builtins, kit) => ({ acme: kit.adapterEntry({
+  id: "acme", label: "Acme", wire: "anthropic-messages", steer: false, rerunsStarted: false, recoversCutAnswers: 0,
+  runMib: 64, thinking: ["high"], ownModel: false,
+  install: { npmLine: "acme install", spec: "acme@1.0.0", codes: { install: "ACME_MISSING", pins: "ACME_PINS" } },
+  policy: () => ({ route: () => undefined }),
+}, () => { throw coded("ACME_PINS", "acme's binary is not the pinned one. Install acme 1.0.0 again with: acme install"); }, {
+  missing: (env) => { if (env.ACME_GONE) throw coded("ACME_MISSING", "acme is not installed. Install it with: acme install"); },
+}) });\n`);
+  const env = { [HARNESS_MODULES_ENV]: JSON.stringify([path]), ANTHROPIC_API_KEY: "fake-test-key" };
+  const acme = harnessOf(env, "acme");
+  const needs = { model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, models: { getModel: () => undefined } };
+  const gone = { ...env, ACME_GONE: "1" };
+  await assert.rejects(acme.adapter(gone, needs), (error) => error instanceof HarnessUnavailable && error.fix === "install" && /^ACME_MISSING: /.test(error.message), "missing's coded error: the install fix");
+  assert.match((await acme.refusal(gone, needs, { atStart: true }))?.reason ?? "", /^ACME_MISSING: .*restart AgentRun to pick it up\.$/, "said at the start with the restart");
+  await assert.rejects(acme.adapter(env, needs), (error) => error instanceof HarnessUnavailable && error.fix === "pins" && /^ACME_PINS: /.test(error.message), "the adapter's coded error: the pins fix");
+});

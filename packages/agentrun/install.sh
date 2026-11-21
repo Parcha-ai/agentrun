@@ -207,6 +207,9 @@ It installs AgentRun, with a Node.js of its own, in ~/.agentrun, and starts it a
 macOS, systemd --user on Linux), which keeps running after the terminal closes. Where there is no service manager, it
 starts AgentRun in the background until the machine stops; `agentrun stop` stops it. It returns once AgentRun answers.
 
+AgentRun counts itself anonymously (a random id, version and platform; never prompts, files or keys). To turn that
+off, put AGENTRUN_TELEMETRY=0 before sh: https://github.com/Parcha-ai/agentrun/blob/main/docs/telemetry.md
+
 Options:
   --version V       the @parcha/agentrun version or npm tag to install (default: latest)
   --package FILE    install the launcher from FILE, a tarball `npm pack` made, in place of the registry's

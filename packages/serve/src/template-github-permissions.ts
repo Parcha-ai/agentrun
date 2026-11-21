@@ -17,9 +17,12 @@ export type Level = "read" | "write";
 export type Held = { readonly installations: readonly { readonly account: string; readonly permissions: Readonly<Record<string, Level>> }[]; readonly unread?: readonly { readonly account: string; readonly why: string }[] } | { readonly unreadable: string };
 
 /** Each GitHub MCP tool a template may grant that needs more than reading what the App's metadata gives: the permission
- *  and level GitHub's permission table for its request names, and what the template does instead when it can't. */
-export const TOOL_PERMISSIONS: Record<string, { permission: string; level: Level; instead: string }> = {
-  issue_write: { permission: "issues", level: "write", instead: "keeps its draft in its answer" },
+ *  and level GitHub's permission table for its request names, and what the template does instead when it can't.
+ *  `public`: GitHub's table states a permission for private resources, and this request works on a public repository
+ *  without it (POST /repos/{owner}/{repo}/issues: "any user with pull access to a repository can create an issue"), so the
+ *  warning is about private repositories and says what a public one does. */
+export const TOOL_PERMISSIONS: Record<string, { permission: string; level: Level; instead: string; public?: string }> = {
+  issue_write: { permission: "issues", level: "write", instead: "keeps its draft in its answer", public: "On a public repository GitHub takes it without: anyone who can read one may open an issue there." },
 };
 
 /** Each permission as GitHub's App settings name it. */
@@ -54,7 +57,8 @@ export async function appPermissionWarnings(pkg: { name: string; mcp: readonly P
     const short = map.installations.filter((installation) => !holds(installation.permissions[wants.permission], wants.level));
     if (short.length) {
       const holding = short.map(({ account, permissions }) => `${permissions[wants.permission] ? `${label}: ${permissions[wants.permission]}` : `no ${label} permission`} on ${account}`).join(", ");
-      warnings.push({ field: `grants.${name}`, reason: "not_allowed", message: `${name} needs ${label}: ${wants.level}, and this server's GitHub App has ${holding}, so GitHub refuses it: ${pkg.name} ${wants.instead}. The App's owner can add ${label}: ${wants.level} to it on GitHub.` });
+      const where = wants.public ? " on a private repository" : "";
+      warnings.push({ field: `grants.${name}`, reason: "not_allowed", message: `${name} needs ${label}: ${wants.level}${where}, and this server's GitHub App has ${holding}, so GitHub refuses it there: ${pkg.name} ${wants.instead}.${wants.public ? ` ${wants.public}` : ""} The App's owner can add ${label}: ${wants.level} to it on GitHub.` });
     }
     // Installations whose map was not read in time or at all: said apart, never passed as holding it.
     if (map.unread?.length) {

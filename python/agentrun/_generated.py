@@ -28,6 +28,7 @@ __all__ = [
     "ApplyTemplateBody",
     "ApplyTemplateBodyOverrides",
     "ApplyTemplateResponse",
+    "ApplyTemplateResponseTriggersItem",
     "ApplyTemplateResponseWebhookSecretsItem",
     "ArchiveAgentResponse",
     "ArchiveRunResponse",
@@ -54,8 +55,10 @@ __all__ = [
     "CapabilitiesPlacesBoxesItem",
     "CapabilitiesPlacesDefaultPlace1",
     "CapabilitiesPlacesDefaultPlace2",
+    "CapabilitiesResource",
     "CapabilitiesSecrets",
     "CapabilitiesServer",
+    "CapabilitiesStoreSchema",
     "CapabilitiesSwitchesValue",
     "CapabilitiesToolsItem",
     "CapabilitiesToolsItemResolves",
@@ -92,6 +95,8 @@ __all__ = [
     "CreateInlineRunResponse",
     "CreatePairingResponse",
     "CreateRunBody",
+    "CreateRunComputerViewerBody",
+    "CreateRunComputerViewerResponse",
     "CreateRunResponse",
     "CreateTriggerBody",
     "CreateTriggerBodySource1",
@@ -181,6 +186,7 @@ __all__ = [
     "DefinitionInputPlace1",
     "DefinitionInputPlace2",
     "DefinitionInputSdk",
+    "DefinitionInputSdk2",
     "DefinitionInputToolSettings",
     "DefinitionInputToolSettingsAskPerson",
     "DefinitionInputToolSettingsBash",
@@ -202,6 +208,7 @@ __all__ = [
     "DefinitionInputToolSettingsRead",
     "DefinitionInputToolSettingsSubagent",
     "DefinitionInputToolSettingsWebFetch",
+    "DefinitionInputToolSettingsWebSave",
     "DefinitionInputToolSettingsWebSearch",
     "DefinitionInputToolSettingsWrite",
     "DefinitionLearning",
@@ -214,6 +221,7 @@ __all__ = [
     "DefinitionPlace1",
     "DefinitionPlace2",
     "DefinitionSdk",
+    "DefinitionSdk2",
     "DefinitionToolSettings",
     "DefinitionToolSettingsAskPerson",
     "DefinitionToolSettingsBash",
@@ -235,6 +243,7 @@ __all__ = [
     "DefinitionToolSettingsRead",
     "DefinitionToolSettingsSubagent",
     "DefinitionToolSettingsWebFetch",
+    "DefinitionToolSettingsWebSave",
     "DefinitionToolSettingsWebSearch",
     "DefinitionToolSettingsWrite",
     "DeleteAgentArchilResponse",
@@ -329,6 +338,10 @@ __all__ = [
     "GetAgentResponseToolsItem",
     "GetCalendarResponse",
     "GetCapabilitiesResponse",
+    "GetCapacityResponse",
+    "GetCapacityResponseHandBacks",
+    "GetCapacityResponseRunnersItem",
+    "GetCapacityResponseRuns",
     "GetChatGPTSignInResponse",
     "GetClaudeLoginResponse",
     "GetClaudeLoginResponseAccount",
@@ -412,6 +425,14 @@ __all__ = [
     "GetRunTraceResponse",
     "GetRunTraceResponseSpansItem",
     "GetRunTraceResponseSpansItemTokens",
+    "GetRunUsageResponse",
+    "GetRunUsageResponseBrowserSessionsItem",
+    "GetRunUsageResponseBrowserSessionsItemProviderRecord",
+    "GetRunUsageResponseComputerIntervalsItem",
+    "GetRunUsageResponseComputerIntervalsItemGpu",
+    "GetRunUsageResponseLinesItem",
+    "GetRunUsageResponseLinesItemTokens",
+    "GetRunUsageResponseTotal",
     "GetSdkRunResponse",
     "GetSlackResponse",
     "GetSlackResponseObject1",
@@ -708,6 +729,7 @@ __all__ = [
     "PutToolSettingsBodyRead",
     "PutToolSettingsBodySubagent",
     "PutToolSettingsBodyWebFetch",
+    "PutToolSettingsBodyWebSave",
     "PutToolSettingsBodyWebSearch",
     "PutToolSettingsBodyWrite",
     "PutToolSettingsResponse",
@@ -796,6 +818,8 @@ __all__ = [
     "RunResult",
     "RunReview",
     "RunSdk",
+    "RunSdk2",
+    "RunSdk2Usage",
     "RunSdkUsage",
     "RunState",
     "RunStatus",
@@ -816,6 +840,8 @@ __all__ = [
     "RunSummaryPending6",
     "RunSummaryReview",
     "RunSummarySdk",
+    "RunSummarySdk2",
+    "RunSummarySdk2Usage",
     "RunSummarySdkUsage",
     "RunSummaryTrigger",
     "RunSummaryWorkflow",
@@ -898,6 +924,7 @@ __all__ = [
     "StartRunResponse",
     "StartRunResponseHeld",
     "StartSdkRunBody",
+    "StartSdkRunBody2",
     "StartSdkRunBodyWorkflowToolsItem",
     "StartSdkRunResponse",
     "StartSdkRunResponseLearning",
@@ -1118,7 +1145,7 @@ class Definition(_DefinitionRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
-    sdk: DefinitionSdk
+    sdk: DefinitionSdk | DefinitionSdk2
     native: DefinitionNative
     model: str
     model_tiers: DefinitionModelTiers
@@ -1137,6 +1164,11 @@ JsonObject: TypeAlias = "dict[str, Any]"
 
 class DefinitionSdk(TypedDict):
     runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
+
+
+class DefinitionSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
 
 
 class _DefinitionNativeRequired(TypedDict):
@@ -1228,6 +1260,7 @@ class DefinitionToolSettings(TypedDict, total=False):
     ask_person: DefinitionToolSettingsAskPerson
     web_fetch: DefinitionToolSettingsWebFetch
     web_search: DefinitionToolSettingsWebSearch
+    web_save: DefinitionToolSettingsWebSave
     email_search: DefinitionToolSettingsEmailSearch
     email_read: DefinitionToolSettingsEmailRead
     email_draft: DefinitionToolSettingsEmailDraft
@@ -1273,6 +1306,10 @@ class DefinitionToolSettingsWebFetch(TypedDict, total=False):
 
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsWebSave(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -1351,6 +1388,8 @@ class DefinitionLearning(TypedDict, total=False):
     hold_window: int
     hold_disagree: int
     stop_window: int
+    repick: bool
+    repick_max_chars: int
 
 
 class Source(TypedDict):
@@ -1601,7 +1640,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
-    sdk: DefinitionInputSdk
+    sdk: DefinitionInputSdk | DefinitionInputSdk2
     native: DefinitionInputNative
     model: str
     model_tiers: DefinitionInputModelTiers
@@ -1617,6 +1656,11 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
 
 class DefinitionInputSdk(TypedDict):
     runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
+
+
+class DefinitionInputSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
 
 
 class _DefinitionInputNativeRequired(TypedDict):
@@ -1708,6 +1752,7 @@ class DefinitionInputToolSettings(TypedDict, total=False):
     ask_person: DefinitionInputToolSettingsAskPerson
     web_fetch: DefinitionInputToolSettingsWebFetch
     web_search: DefinitionInputToolSettingsWebSearch
+    web_save: DefinitionInputToolSettingsWebSave
     email_search: DefinitionInputToolSettingsEmailSearch
     email_read: DefinitionInputToolSettingsEmailRead
     email_draft: DefinitionInputToolSettingsEmailDraft
@@ -1753,6 +1798,10 @@ class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
 
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsWebSave(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -1831,6 +1880,8 @@ class DefinitionInputLearning(TypedDict, total=False):
     hold_window: int
     hold_disagree: int
     stop_window: int
+    repick: bool
+    repick_max_chars: int
 
 
 SkillFiles: TypeAlias = "dict[str, str]"
@@ -2259,6 +2310,7 @@ class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsRespon
     inputs: list[str]
     replay_id: str
     commit: str
+    via: Literal["sdk"]
     audit: ListLearningPromotionsResponsePromotionsItemAudit
 
 
@@ -2282,6 +2334,8 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     skipped_tools: list[ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem]
     stopped: Literal[True]
+    released: int
+    fresh_reads: int
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckOutcomes(TypedDict):
@@ -2399,6 +2453,8 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
     skipped_tools: list[ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem]
     stopped: Literal[True]
+    released: int
+    fresh_reads: int
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckOutcomes(TypedDict):
@@ -2452,7 +2508,7 @@ class _RunSummaryRequired(TypedDict):
 
 
 class RunSummary(_RunSummaryRequired, total=False):
-    sdk: RunSummarySdk
+    sdk: RunSummarySdk | RunSummarySdk2
     native: RunSummaryNative
     console_url: str
     labels: dict[str, str]
@@ -2520,6 +2576,23 @@ class RunSummarySdk(TypedDict):
 
 
 class RunSummarySdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunSummarySdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSummarySdk2Usage | None
+
+
+class RunSummarySdk2Usage(TypedDict, total=False):
     input_tokens: int | None
     output_tokens: int | None
     cache_read_tokens: int | None
@@ -2653,6 +2726,7 @@ class _RunSummaryPending2Required(TypedDict):
 
 class RunSummaryPending2(_RunSummaryPending2Required, total=False):
     summary: str
+    asks_because: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -2769,6 +2843,34 @@ class VerifyNativeResponseNativeCapabilities(TypedDict):
 class VerifyNativeResponseNativeRemote(TypedDict):
     connector_id: str
     target_id: str
+
+
+class GetCapacityResponse(TypedDict):
+    at: str
+    runs: GetCapacityResponseRuns
+    runners: list[GetCapacityResponseRunnersItem]
+    free_slots: int
+    hand_backs: GetCapacityResponseHandBacks
+
+
+class GetCapacityResponseRuns(TypedDict):
+    queued: int
+    executing: int
+
+
+class GetCapacityResponseRunnersItem(TypedDict):
+    id: str
+    version: str | None
+    slots: int | None
+    executing: int
+    free_slots: int | None
+    refused: bool
+    seen_at: str
+
+
+class GetCapacityResponseHandBacks(TypedDict):
+    window_minutes: int
+    count: int
 
 
 class _CompleteRemoteCommandBodyRequired(TypedDict):
@@ -3821,6 +3923,7 @@ class _ListComputersResponseKindsItemProvidersItemRequired(TypedDict):
     required: list[str]
     ready: bool
     runs_refused: str | None
+    folder: Literal["bind", "archil", "sync"] | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -4084,6 +4187,7 @@ class _SaveComputerKeysResponseRequired(TypedDict):
     required: list[str]
     ready: bool
     runs_refused: str | None
+    folder: Literal["bind", "archil", "sync"] | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -5006,7 +5110,7 @@ class _RunRequired(TypedDict):
 
 class Run(_RunRequired, total=False):
     effort: Effort
-    sdk: RunSdk
+    sdk: RunSdk | RunSdk2
     native: RunNative
     console_url: str
     labels: dict[str, str]
@@ -5045,6 +5149,23 @@ class RunSdk(TypedDict):
 
 
 class RunSdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSdk2Usage | None
+
+
+class RunSdk2Usage(TypedDict, total=False):
     input_tokens: int | None
     output_tokens: int | None
     cache_read_tokens: int | None
@@ -5182,6 +5303,7 @@ class _RunPending2Required(TypedDict):
 
 class RunPending2(_RunPending2Required, total=False):
     summary: str
+    asks_because: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -5237,6 +5359,14 @@ class RunWorkflow(TypedDict):
     name: str | None
     digest: str | None
     repick: Literal["found", "missed"] | None
+
+
+CreateRunComputerViewerBody: TypeAlias = "dict[str, Any]"
+
+
+class CreateRunComputerViewerResponse(TypedDict):
+    url: str
+    expires_at: str
 
 
 ListRunFilesResponse: TypeAlias = "RunFileList"
@@ -5789,6 +5919,97 @@ class GetRunTraceResponseSpansItemTokens(_GetRunTraceResponseSpansItemTokensRequ
 UnarchiveRunResponse: TypeAlias = "dict[str, Any]"
 
 
+class GetRunUsageResponse(TypedDict):
+    run_id: Id
+    ended_at: str | None
+    currency: Literal["USD"]
+    total: GetRunUsageResponseTotal | None
+    lines: list[GetRunUsageResponseLinesItem] | None
+    browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
+    computer_intervals: list[GetRunUsageResponseComputerIntervalsItem] | None
+    reason: Literal["running", "not_booked", "reopened"] | None
+
+
+class _GetRunUsageResponseTotalRequired(TypedDict):
+    usd: float | None
+
+
+class GetRunUsageResponseTotal(_GetRunUsageResponseTotalRequired, total=False):
+    so_far_usd: float
+    unpriced: int
+    upper_bound: Literal[True]
+
+
+class _GetRunUsageResponseLinesItemRequired(TypedDict):
+    meter: Literal["tokens", "tools", "browser_time", "compute_time"]
+    model: str | None
+    provider: str | None
+    charged_by: str | None
+    quantity: float | None
+    unit: Literal["token", "call", "second", "vcpu_second", "gib_second", "gpu_second", "gb_month"]
+    basis: Literal["reported", "estimate", "unpriced"]
+    usd: float | None
+
+
+class GetRunUsageResponseLinesItem(_GetRunUsageResponseLinesItemRequired, total=False):
+    so_far_usd: float
+    unpriced: int
+    upper_bound: Literal[True]
+    requests: int
+    tokens: GetRunUsageResponseLinesItemTokens
+    unmetered_requests: int
+    not_metered_calls: int
+    resource: Literal["vcpu", "memory", "gpu", "disk"]
+    gpu_type: str | None
+    unheld_quantity: float | None
+    open_computers: int
+    measured_to: str
+
+
+class GetRunUsageResponseLinesItemTokens(TypedDict):
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+
+
+class GetRunUsageResponseBrowserSessionsItem(TypedDict):
+    provider: str
+    tag: str
+    provider_session_id: str | None
+    started_at: str | None
+    ended_at: str | None
+    release_reason: str | None
+    charged_seconds: float | None
+    provider_record: GetRunUsageResponseBrowserSessionsItemProviderRecord | None
+    provider_record_status: Literal["read", "not_offered", "not_found", "failed", "no_session"] | None
+
+
+class GetRunUsageResponseBrowserSessionsItemProviderRecord(TypedDict):
+    started_at: str | None
+    ended_at: str | None
+    proxy_bytes: int | None
+
+
+class GetRunUsageResponseComputerIntervalsItem(TypedDict):
+    provider: str
+    provider_id: str
+    kind: str | None
+    gpu: GetRunUsageResponseComputerIntervalsItemGpu | None
+    cpus: float | None
+    memory_mb: int | None
+    disk_gb: float | None
+    started_at: str
+    ended_at: str | None
+    kept: bool
+    booked_seconds: float
+
+
+class GetRunUsageResponseComputerIntervalsItemGpu(TypedDict):
+    type: str | None
+    count: int | None
+
+
 class _CompleteSdkRunBodyRequired(TypedDict):
     status: Literal["completed", "failed", "cancelled"]
     answer: str
@@ -5840,6 +6061,7 @@ class SdkRunEventsBodyEventsItem3(_SdkRunEventsBodyEventsItem3Required, total=Fa
     answer: str
     reason: str
     skipped: SdkRunEventsBodyEventsItem3Skipped
+    fresh_reads: int
 
 
 class _SdkRunEventsBodyEventsItem3SkippedRequired(TypedDict):
@@ -5901,6 +6123,17 @@ class StartSdkRunBodyWorkflowToolsItem(_StartSdkRunBodyWorkflowToolsItemRequired
     price_usd: float
 
 
+class _StartSdkRunBody2Required(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    input: str
+    instructions: str
+
+
+class StartSdkRunBody2(_StartSdkRunBody2Required, total=False):
+    model: str
+
+
 class StartSdkRunResponse(TypedDict):
     run_id: str
     agent_id: str
@@ -5960,6 +6193,7 @@ class _CapabilitiesRequired(TypedDict):
 
 
 class Capabilities(_CapabilitiesRequired, total=False):
+    store_schema: CapabilitiesStoreSchema
     workflows: CapabilitiesWorkflows
     links: CapabilitiesLinks
     home: CapabilitiesHome
@@ -6175,6 +6409,12 @@ class CapabilitiesLearningModel(TypedDict):
     model: str | None
     needs: Literal["key", "model"] | None
     reason: str | None
+
+
+class CapabilitiesStoreSchema(TypedDict):
+    version: int | None
+    runner_floor: int | None
+    known: int
 
 
 class _CapabilitiesLearningRequired(TypedDict):
@@ -6611,13 +6851,23 @@ class _ApplyTemplateResponseRequired(TypedDict):
     template: str
     version: str
     agent_id: str
+    revision_version: int
+    agent_change: Literal["made", "updated", "unchanged"]
     servers: dict[str, str | None]
     trigger_ids: list[str]
+    triggers: list[ApplyTemplateResponseTriggersItem]
     warnings: list[InputIssue]
 
 
 class ApplyTemplateResponse(_ApplyTemplateResponseRequired, total=False):
     webhook_secrets: list[ApplyTemplateResponseWebhookSecretsItem]
+
+
+class ApplyTemplateResponseTriggersItem(TypedDict):
+    trigger_id: str
+    name: str
+    kind: Literal["schedule", "webhook", "github", "composio", "email", "feed"]
+    enabled: bool
 
 
 class _ApplyTemplateResponseWebhookSecretsItemRequired(TypedDict):
@@ -6981,6 +7231,7 @@ class PutToolSettingsBody(TypedDict, total=False):
     ask_person: PutToolSettingsBodyAskPerson
     web_fetch: PutToolSettingsBodyWebFetch
     web_search: PutToolSettingsBodyWebSearch
+    web_save: PutToolSettingsBodyWebSave
     email_search: PutToolSettingsBodyEmailSearch
     email_read: PutToolSettingsBodyEmailRead
     email_draft: PutToolSettingsBodyEmailDraft
@@ -7025,6 +7276,10 @@ class PutToolSettingsBodyWebFetch(TypedDict, total=False):
 
 class PutToolSettingsBodyWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyWebSave(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -8969,6 +9224,7 @@ OPERATIONS: dict[str, Operation] = {
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "updateDefinition": Operation(method="PUT", path="/agents/{agent_id}/definition", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=True),
     "verifyNative": Operation(method="POST", path="/agents/{agent_id}/native/verify", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getCapacity": Operation(method="GET", path="/capacity", path_params=(), multi_segment=(), query=("window",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "completeRemoteCommand": Operation(method="POST", path="/connectors/{connector_id}/commands/{command_id}/complete", path_params=("connector_id", "command_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "enrollRemoteConnector": Operation(method="POST", path="/connectors/enrollment", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "importRemoteHistory": Operation(method="POST", path="/connectors/{connector_id}/targets/{target_id}/history", path_params=("connector_id", "target_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9055,6 +9311,8 @@ OPERATIONS: dict[str, Operation] = {
     "callRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/call", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "releaseRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/release", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createInlineRun": Operation(method="POST", path="/runs", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "createRunComputerViewer": Operation(method="POST", path="/runs/{run_id}/computer/viewer", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteRun": Operation(method="DELETE", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRun": Operation(method="GET", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gradeRun": Operation(method="PUT", path="/runs/{run_id}/grade", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9075,6 +9333,7 @@ OPERATIONS: dict[str, Operation] = {
     "getTimeline": Operation(method="GET", path="/runs/{run_id}/timeline", path_params=("run_id",), multi_segment=(), query=("after", "wait_ms", "limit", "calls"), headers=("Last-Event-ID",), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRunTrace": Operation(method="GET", path="/runs/{run_id}/trace", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveRun": Operation(method="POST", path="/runs/{run_id}/unarchive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getRunUsage": Operation(method="GET", path="/runs/{run_id}/usage", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "completeSdkRun": Operation(method="POST", path="/sdk-runs/{run_id}/complete", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "sdkRunEvents": Operation(method="POST", path="/sdk-runs/{run_id}/events", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getSdkRun": Operation(method="GET", path="/sdk-runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -9135,7 +9394,7 @@ class AgentsResource(Group):
         return self._call("createAgent", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
     def delete_agent(self, agent_id: str, *, timeout: float | None = None) -> None:
-        """Delete an agent another system owns (DELETE /agents/{agent_id})."""
+        """Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id})."""
         return self._call("deleteAgent", (agent_id,), None, None, timeout=timeout)
 
     def delete_agent_archil(self, agent_id: str, *, timeout: float | None = None) -> DeleteAgentArchilResponse:
@@ -9197,6 +9456,14 @@ class AgentsResource(Group):
     def verify_native(self, agent_id: str, *, timeout: float | None = None) -> VerifyNativeResponse:
         """Check native CLI and sign-in without a paid model call (POST /agents/{agent_id}/native/verify)."""
         return self._call("verifyNative", (agent_id,), None, None, timeout=timeout)
+
+
+class CapabilitiesResource(Group):
+    """client.capabilities: one method per operation."""
+
+    def get_capacity(self, *, window: int | None = None, timeout: float | None = None) -> GetCapacityResponse:
+        """The runs waiting and held, the live runners and the recent hand-backs (GET /capacity)."""
+        return self._call("getCapacity", (), None, {"window": window}, timeout=timeout)
 
 
 class ConnectorsResource(Group):
@@ -9566,6 +9833,14 @@ class RunsResource(Group):
         """Start a run of an agent another system owns, given inline (POST /runs)."""
         return self._call("createInlineRun", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
+    def create_run_computer_viewer(self, run_id: str, body: CreateRunComputerViewerBody | None = None, *, timeout: float | None = None) -> CreateRunComputerViewerResponse:
+        """Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer)."""
+        return self._call("createRunComputerViewer", (run_id,), body, None, timeout=timeout)
+
+    def delete(self, run_id: str, *, timeout: float | None = None) -> None:
+        """Purge a run's content and keep its cost (DELETE /runs/{run_id})."""
+        return self._call("deleteRun", (run_id,), None, None, timeout=timeout)
+
     def files(self, run_id: str, *, timeout: float | None = None) -> ListRunFilesResponse:
         """The files the run wrote (GET /runs/{run_id}/files)."""
         return self._call("listRunFiles", (run_id,), None, None, timeout=timeout)
@@ -9650,6 +9925,10 @@ class RunsResource(Group):
         """Show the archived run in the lists again (POST /runs/{run_id}/unarchive)."""
         return self._call("unarchiveRun", (run_id,), None, None, timeout=timeout)
 
+    def usage(self, run_id: str, *, timeout: float | None = None) -> GetRunUsageResponse:
+        """What a run cost, by model, by who charged for its tools, and by browser provider (GET /runs/{run_id}/usage)."""
+        return self._call("getRunUsage", (run_id,), None, None, timeout=timeout)
+
 
 class SdkRunsResource(Group):
     """client.sdk_runs: one method per operation."""
@@ -9666,7 +9945,7 @@ class SdkRunsResource(Group):
         """Read SDK run and learning state (GET /sdk-runs/{run_id})."""
         return self._call("getSdkRun", (run_id,), None, None, timeout=timeout)
 
-    def start(self, agent_id: str, body: StartSdkRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartSdkRunResponse:
+    def start(self, agent_id: str, body: StartSdkRunBody | StartSdkRunBody2, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartSdkRunResponse:
         """Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs)."""
         return self._call("startSdkRun", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
@@ -9847,6 +10126,7 @@ class Resources:
     """The resource groups, each operation a method that sends it through `call`. `runs` is the client's own: RunsResource with the methods it writes by hand."""
 
     agents: AgentsResource
+    capabilities: CapabilitiesResource
     connectors: ConnectorsResource
     files: FilesResource
     home: HomeResource
@@ -9868,6 +10148,7 @@ class Resources:
     def __init__(self, call: Call) -> None:
         self._operation = call
         self.agents = AgentsResource(call)
+        self.capabilities = CapabilitiesResource(call)
         self.connectors = ConnectorsResource(call)
         self.files = FilesResource(call)
         self.home = HomeResource(call)

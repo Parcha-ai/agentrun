@@ -12,12 +12,12 @@ import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 import { queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
+import { builtinFacts, builtinKeyOf } from "./gate-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
-const { settingsKeyOf } = await import("../dist/tool-gate.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
@@ -56,7 +56,7 @@ const catalogSeam = { tools: [], catalogOf: (name) => CATALOG[name], priceOf: ()
 /** One run whose call of `tool` (its wire name) is set to ask by its settings key; parked on it: the ask entry and what
  *  the run's view serves as its pending approval. `harness`: the revision's harness ("pi", or "codex" for the CLI). */
 async function askedRun(t, tool, harness) {
-  const key = CATALOG[tool] ?? settingsKeyOf(harness, tool);
+  const key = CATALOG[tool] ?? builtinKeyOf(harness, tool);
   const mcp = CATALOG[tool] ? { mcp: catalogSeam } : {};
   const opened = await stores({ runners: 1 });
   await opened.server.settings.put("tool-settings", { [key]: { permission: "ask" } });
@@ -66,9 +66,9 @@ async function askedRun(t, tool, harness) {
   const tools = { [tool]: { name: tool, replaySafe: false, ask: false, run: async () => "done" } };
   const base = harness === "pi" ? piAdapterSpec({ script: [{ call: tool, args: { q: "acme" } }, { say: "done" }], tools, hooks: quiet }) : undefined;
   const loop = createAdapterLoop(async (claim, run) => {
-    const gate = await adapterRunGate(opened.runners[0], claim, revision, root);
+    const gate = await adapterRunGate(opened.runners[0], claim, revision, root, undefined, { facts: builtinFacts(harness) });
     if (base) return { ...(await base(claim, run)), gate, ...mcp };
-    return { adapter: askingCli(tool), session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Look it up.", record: "loop", hooks: quiet, gate, ...mcp };
+    return { adapter: askingCli(tool), facts: builtinFacts(harness), session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Look it up.", record: "loop", hooks: quiet, gate, ...mcp };
   });
   const runner = startRunner({ store: opened.runners[0], createLoop: loop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
