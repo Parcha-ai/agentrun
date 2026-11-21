@@ -164,7 +164,9 @@ async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch; readon
  *  spend past the served run's cap; with less than a run's smallest cap left (or a spend not known), no shadow is started
  *  and its row says `skipped: "no allowance"`. Its started line is appended first: a shadow is created only once the
  *  ledger names it (settlement finds it there, never in a window of runs), and one whose line could not be written is
- *  never created. Idempotent: one line and one shadow per run. */
+ *  never created. Idempotent: one line and one shadow per run. A run the agent's learning reads no more starts none, as
+ *  it adds no grade row (gradeRow): one before its learning's reset (sinceReset), ended again after it by a follow-up,
+ *  or one on a named disk (learn/learning-of.ts). */
 export async function startAudit(deps: AuditDeps & { readonly runId: string; readonly launch: RunLaunch; readonly room?: () => Promise<number | null> }, serve: Pick<WorkflowFirst, "name" | "digest" | "replay"> | undefined): Promise<void> {
   const { store, agentId, runId, launch, log } = deps;
   if (!serve || serve.replay || launch.replay || launch.audit || !launch.learning || !auditableLaunch(launch)) return;
@@ -173,6 +175,9 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
   const off = deps.spendOff?.("A shadow audit");
   if (off) return void log(`workflow-first: ${off}`);
   try {
+    // The run is there at its end (its end commits after this step).
+    const row = await store.runs.get(runId);
+    if (row && ((row.disk ?? null) !== null || !(await sinceReset(store, agentId))(row))) return;
     // Read after the claim pinned the revision's MCP tools (mcp-claim.ts pinFirst): the pin a revision saved without one
     // takes at its first run is what its tools are classed by.
     const revision = await store.agents.revision(deps.revisionId);
