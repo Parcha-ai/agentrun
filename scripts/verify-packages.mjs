@@ -160,6 +160,8 @@ const allowedEndpoints = {
     ['README.md', 'http://127.0.0.1:7340'],
     // Native connect uses the same public default and refuses a host outside loopback (src/native/cli.ts).
     ['dist/native/cli.js', 'http://127.0.0.1:7340'],
+    // CLI capture uses the same public default and requires a credential-free loopback origin (src/cli-learning/install.ts).
+    ['dist/cli-learning/install.js', 'http://127.0.0.1:7340'],
     // Reflection replaces inherited HTTP MCP transports with this inert placeholder only after disabling them;
     // it confirms every server is still disabled before dispatch (src/native/runtime.ts), so no endpoint is called.
     ['dist/native/runtime.js', 'http://127.0.0.1:1'],

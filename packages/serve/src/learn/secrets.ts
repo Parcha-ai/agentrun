@@ -17,6 +17,11 @@ const BEARER_TOKEN = /(?<=\bBearer\s{1,3})(?=[A-Za-z._~+/-]*\d)[A-Za-z0-9._~+/-]
  *  name stays. A signed URL's signature is one: whoever holds the URL holds what it grants. No bracket is a value's
  *  character (a URL writes one percent-encoded), so a value already cut to "[redacted]" is never read as one. */
 const URL_CREDENTIAL = /(?<=[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?secret|x-amz-signature|x-amz-security-token|x-goog-signature|token|secret|password|passwd|signature|sig)=)[^\s&#"'`<>\\[\]]{16,}/i;
+const URL_PASSWORD = /:\/\/[^\s/?#@:]+:[^\s/?#@]*@/;
+/** A complete, single-quoted sed search expression whose password is only a capture pattern.
+ * The @ inside [^@] is regex syntax, not a password terminator. Require the closing capture,
+ * substitution/backreference and quote too; bracketed passwords or bare URLs are never exempt. */
+const SED_URL_CAPTURE = /(?:^|[\s;(])sed[ \t]+-n[ \t]+'s\|https?:\/\/(?:[A-Za-z0-9._~-]+|\[\^:\]\*):\\\(\[\^@\]\*\\\)@[A-Za-z0-9.-]+\|\\1\|p'/g;
 
 /** A bank account number beside its word: "account", "acct", "a/c" or "bank account", maybe "number", "no.", "#", ":"
  *  or "is" after it, then six digits or more, single dashes or spaces between them. A count before the word ("4
@@ -41,7 +46,7 @@ const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["Slack token", SLACK_TOKEN],
   ["JWT", JWT],
   ["webhook signing secret", WEBHOOK_SECRET],
-  ["URL with a password", /:\/\/[^\s/?#@:]+:[^\s/?#@]*@/],
+  ["URL with a password", URL_PASSWORD],
   ["bearer token", BEARER_TOKEN],
   ["URL parameter named like a credential", URL_CREDENTIAL],
 ];
@@ -55,7 +60,7 @@ export const endsInScheme = (text: string): boolean => {
 };
 
 /** The kinds of secret-shaped text in `text`. */
-export const secretShapes = (text: string): string[] => SHAPES.filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind);
+export const secretShapes = (text: string): string[] => SHAPES.filter(([, pattern]) => pattern === URL_PASSWORD ? spans(text, pattern).length > 0 : pattern.test(text)).map(([kind]) => kind);
 
 /** A bank's numbers beside their words, which learning never keeps: an account, IBAN, routing or sort-code number. Not
  *  one of SHAPES: a run may show its user an account number (a finance job's answer), and SHAPES cut every run's view;
@@ -77,9 +82,13 @@ type Span = [start: number, end: number];
 function spans(text: string, pattern: RegExp): Span[] {
   const re = new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`);
   const out: Span[] = [];
+  const expressions: Span[] = pattern === URL_PASSWORD ? [...text.matchAll(SED_URL_CAPTURE)].map(match => [match.index!, match.index! + match[0].length]) : [];
+  let expression = 0;
   const next = RESUME.get(pattern) ?? ((m: RegExpExecArray) => m.index + 1);
   for (let m = re.exec(text); m; m = re.exec(text)) {
-    out.push([m.index, m.index + m[0].length]);
+    while (expression < expressions.length && expressions[expression][1] <= m.index) expression++;
+    const range = expressions[expression];
+    if (!range || m.index < range[0] || m.index + m[0].length > range[1]) out.push([m.index, m.index + m[0].length]);
     re.lastIndex = Math.max(m.index + 1, next(m));
   }
   return out;

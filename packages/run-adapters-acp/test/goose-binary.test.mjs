@@ -198,7 +198,7 @@ test('(e) a denied tool call never runs and the model is told; a denied load_ski
   assert.match(JSON.stringify(skillResult), /declined|denied|not in this run/i);
   // Goose's own permission request, answered deny (the adapter's reject_once) in the records.
   const journaled = (await streamRecords(store, PERMISSION_STREAM)).filter((r) => r.callId === skill.callId);
-  assert.deepEqual(journaled.map((r) => [r.type, r.answer]), [['asked', undefined], ['answered', 'deny']]);
+  assert.deepEqual(journaled.map((r) => [r.type, r.answer]), [['asked', undefined], ['answered', 'deny'], ['given', undefined]]);
 });
 
 test('(f) our tool, called by the model over MCP, runs once, and its result is on the timeline and back to the model', async (t) => {

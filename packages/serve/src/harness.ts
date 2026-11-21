@@ -16,11 +16,11 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
 export const HARNESS_ID_PATTERN = "^[a-z][a-z0-9-]{0,39}$";
 /** The names serve's own runs carry where a harness id goes, so a harness module may not take one (its start is refused):
  *  `learning`, the launch harness the stores' learning queries match; `sdk`, an SDK run's launch harness
- *  (sdk/runs.ts); and the names analytics files a run's harness under: `workflow`, a workflow revision's, and each SDK
+ *  (sdk/runs.ts); `cli`, a connected CLI capture; and the names analytics files a run's harness under: `workflow`, a workflow revision's, and each SDK
  *  runtime's (sdk/schema.ts SDK_BINDING). Also every name a plain object already has that the id pattern admits
  *  (`constructor`): serve looks harnesses up by id in plain objects, where such an id would read Object's own member. */
 export const RESERVED_HARNESS_IDS: readonly string[] = Object.freeze([
-  "learning", "sdk", "workflow", ...SDK_RUNTIMES,
+  "learning", "sdk", "cli", "codex-cli", "claude-code-cli", "workflow", ...SDK_RUNTIMES,
   ...Object.getOwnPropertyNames(Object.prototype).filter((name) => new RegExp(HARNESS_ID_PATTERN).test(name)),
 ]);
 /** The harnesses that run on a person's ChatGPT plan (chatgpt-plan.ts): those whose requests go to OpenAI's Responses

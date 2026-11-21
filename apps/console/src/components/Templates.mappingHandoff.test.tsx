@@ -24,7 +24,7 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 async function mount({ playground = false, prepared, list = async () => ({ servers: [saved("github-work"), saved("github-home")] }) }: {
   playground?: boolean; prepared?: string; list?: () => Promise<{ servers: ReturnType<typeof saved>[] }>;
 } = {}) {
-  const apply = vi.fn(async () => ({ agent_id: "review-1", trigger_ids: [], warnings: [] }));
+  const apply = vi.fn(async () => ({ agent_id: "review-1", trigger_ids: [], triggers: [], warnings: [] }));
   const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
   await act(async () => root!.render(createElement(TemplatesPage, { v2: { listTemplates: async () => ({ templates: [template] }), listMcpServers: list, applyTemplate: apply } as never,
     name: template.id, playground, draft: prepared, go: () => {} })));

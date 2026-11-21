@@ -405,7 +405,7 @@ export interface EndData {
 export interface JobEndData {
   readonly end: EndData;
   readonly failedWith?: string;
-  readonly endedAt?: number;
+  readonly endedAt: number;
 }
 
 /** An escalated workflow run's review as its end keeps it: the escalation's kind, the escalate node's label (else the node

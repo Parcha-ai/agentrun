@@ -1,3 +1,4 @@
+import {cliLearningOf} from "./store/agent-body.js";
 // A revision saved with no MCP pin (before pins were made at save, or an inline agent's version stored then) is pinned
 // once, at its first run, as a save would pin it: each granted server still saved here listed once
 // (McpServersOverStore.pinListing, the save's own listing), the pin made of those listings (mcp-gateway.ts mcpPinOf), and
@@ -37,7 +38,7 @@ export interface PinFirstDeps {
 export async function pinFirst(revision: { readonly id: string; readonly kind: string; readonly body: unknown; readonly mcpPin?: unknown }, deps: PinFirstDeps): Promise<McpPin | undefined> {
   // Native source MCP names and SDK callback tools belong to their source, never this server's managed registry.
   // Their runnable guards must refuse managed execution without listing or pinning those names first.
-  if (nativeOf(revision.body) || sdkOf(revision.body)) return undefined;
+  if (nativeOf(revision.body) || sdkOf(revision.body) || cliLearningOf(revision.body)) return undefined;
   if (revision.mcpPin !== undefined && revision.mcpPin !== null) return revision.mcpPin as McpPin;
   if (revision.kind !== "agentic") return undefined;
   const granted: string[] = [];
