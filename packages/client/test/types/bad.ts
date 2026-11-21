@@ -1,5 +1,12 @@
 // Calls the client's types refuse: tsc must fail on each line marked `// error`, and on no other.
 import { AgentRun } from "@parcha/agentrun-client";
+import { BackendLearningClient } from "@parcha/agentrun-client/learning";
+
+export async function invalidExternalSource(): Promise<void> {
+  const client = new BackendLearningClient({ agentId: "platform" });
+  await client.begin({ runtime: "external", input: "x", instructions: "y" }); // error
+  await client.begin({ runtime: "codex-sdk", platform: "Capy", input: "x", instructions: "y" }); // error
+}
 
 export async function consumer(): Promise<void> {
   const client = new AgentRun();

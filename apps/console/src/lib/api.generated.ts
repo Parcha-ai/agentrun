@@ -321,6 +321,9 @@ export interface components {
     max_cost_usd?: number;
     sdk?: {
       runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
+    } | {
+      runtime: "external";
+      platform: string;
     };
     native?: {
       runtime: "claude-code" | "codex";
@@ -840,6 +843,19 @@ export interface components {
         cache_write_tokens?: number | null;
         cost_usd?: number | null;
       } | null;
+    } | {
+      runtime: "external";
+      platform: string;
+      model: string | null;
+      session_id: string | null;
+      learning_revision: string | null;
+      usage: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      } | null;
     };
     native?: {
       runtime: string;
@@ -1075,6 +1091,19 @@ export interface components {
     cost: components["Cost"];
     sdk?: {
       runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
+      model: string | null;
+      session_id: string | null;
+      learning_revision: string | null;
+      usage: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      } | null;
+    } | {
+      runtime: "external";
+      platform: string;
       model: string | null;
       session_id: string | null;
       learning_revision: string | null;
@@ -5458,6 +5487,12 @@ export interface operations {
         price_usd?: number;
       }[];
       workflow_adapters?: ("runNode" | "runJudge")[];
+    } | {
+      runtime: "external";
+      platform: string;
+      input: string;
+      instructions: string;
+      model?: string;
     };
     answer: {
       run_id: string;
