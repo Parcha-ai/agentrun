@@ -5,8 +5,10 @@
 // a column they never write made NOT NULL) fails their runs. Such a change lands in two releases: the additive half first,
 // and the destructive cleanup one release later, marked, which raises the runner floor.
 //
-// It reads statements, never meaning: a tightened constraint an earlier runner's writes break (a new UNIQUE or CHECK on
-// what it writes) is not found here, and its author marks it as well.
+// It reads statements, never meaning: a tightened constraint an earlier runner's writes break (a new UNIQUE, CHECK or
+// FOREIGN KEY on what it writes) is not found here, and its author marks it as well. A new PRIMARY KEY is found: it makes
+// its columns NOT NULL. A function's or DO block's body is not read: a destructive statement in one (an EXECUTE of a DROP)
+// is its author's to mark.
 
 /** One statement of a migration an earlier build's runner cannot run beside, and why. */
 export interface BreakingStatement {
@@ -32,7 +34,7 @@ function bare(sql: string): string {
       out += " ";
       continue;
     }
-    const dollar = /^\$[A-Za-z_]*\$/.exec(rest);
+    const dollar = /^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/.exec(rest);
     if (dollar) {
       const end = sql.indexOf(dollar[0], i + dollar[0].length);
       i = end === -1 ? sql.length : end + dollar[0].length;
@@ -66,9 +68,11 @@ const BREAKING: readonly { readonly why: string; readonly test: (statement: stri
   { why: "renames what an earlier runner names", test: (s) => /\bRENAME\b/.test(s) },
   { why: "changes a column's type", test: (s) => /\bALTER\s+(?:COLUMN\s+)?(?:"[^"]+"|\w+)\s+(?:SET\s+DATA\s+)?TYPE\b/.test(s) },
   { why: "makes a column NOT NULL that an earlier runner may leave empty", test: (s) => /\bSET\s+NOT\s+NULL\b/.test(s) },
+  // A primary key makes each of its columns NOT NULL, and is unique besides.
+  { why: "adds a primary key, which makes its columns NOT NULL", test: (s) => /^ALTER\s+TABLE\b/.test(s) && /\bADD\s+(?:CONSTRAINT\s+(?:"[^"]+"|\w+)\s+)?PRIMARY\s+KEY\b/.test(s) },
   {
     why: "adds a NOT NULL column with no default, which an earlier runner's inserts leave out",
-    test: (s) => /^ALTER\s+TABLE\b/.test(s) && addedColumns(s).map(outerWords).some((column) => /\bNOT\s+NULL\b/.test(column) && !/\bDEFAULT\b/.test(column) && !/\bGENERATED\b/.test(column)),
+    test: (s) => /^ALTER\s+TABLE\b/.test(s) && addedColumns(s).map(outerWords).map((column) => column.replace(/\bSET\s+DEFAULT\b/g, "")).some((column) => /\bNOT\s+NULL\b/.test(column) && !/\bDEFAULT\b/.test(column) && !/\bGENERATED\b/.test(column)),
   },
 ];
 

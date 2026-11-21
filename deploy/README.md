@@ -300,7 +300,11 @@ A runner exits with:
 **Upgrading on Postgres.** Deploy the server first: it migrates the store under the running runners, then roll the
 runners. A runner opens a store a later server migrated as long as the store's runner floor is at most this runner's
 schema version. Additive migrations leave the floor where it was, so the earlier runners keep running. A migration marked
-breaking raises the floor, and each earlier runner then stops as above and exits 3. To check a store before a deploy,
+breaking raises the floor, and each earlier runner then stops as above and exits 3. It notices at its next floor read,
+up to 10 s after the migration commits, and keeps claiming until then; its drain and its hand-back then run its own
+release's statements on the new schema. That is safe when the breaking migration is the cleanup a release later, which
+removes only what the runners of the release before it no longer use (CONTRIBUTING.md). A hand-back that fails leaves
+its runs to the claim's lease, which another runner takes when it lapses. To check a store before a deploy,
 `agentrun-serve store-schema` prints its schema version and runner floor beside the version this build knows, as one
 line of JSON, and changes nothing. A running server reports the same values in `GET /v2/capabilities` (`store_schema`).
 `agentrun-serve store-schema --build` prints only the build's own versions, with no store. Never deploy a server whose

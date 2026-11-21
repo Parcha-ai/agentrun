@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startRunnerProcess } from "../dist/runner/main.js";
 import { LAST_UNMARKED, migrate, Unanswered, migrationsIn, openPostgresStore, RunnerBelowFloor, runnerFloorOf, StoreAwaitsServer } from "../dist/store/index.js";
-import { readStoreSchema } from "../dist/store/store-schema.js";
+import { readStoreSchema, STORE_SCHEMA_LOCK_MS } from "../dist/store/store-schema.js";
 import { SCHEMA_STATE_MS } from "../dist/store/postgres/store.js";
 import { fauxLoops, until } from "./runner-support.mjs";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
@@ -59,6 +59,10 @@ async function setUp(schema, runs) {
     await server.close();
   }
 }
+
+/** Queues `id` with the one statement the store's runs.create runs (sqlite/store.ts, both stores' code), straight on the
+ *  schema: the later server queueing a run on a schema no store of this build may open as a server. */
+const queueRaw = (sql, schema, id) => sql.query(`INSERT INTO ${schema}.runs (id, agent_id, revision_id, state, epoch, started_at) VALUES ($1, 'agent-1', 'rev-1', 'queued', 0, $2)`, [id, Date.now()]);
 
 /** A run's row, read straight from the schema. */
 const row = async (sql, schema, id) => (await sql.query(`SELECT state, runner FROM ${schema}.runs WHERE id = $1`, [id])).rows[0];
@@ -118,13 +122,9 @@ test("an additive migration under a running runner of the earlier build: it fini
   void started.outdated.then((why) => (outdated = why));
   await until(async () => (await row(sql, schema, "run-1")).runner === "runner-old", "it holds the run");
   await migrateTo(sql, schema, [later(false)]);
-  // The later server queues one more run, on the schema it migrated (a store opened on it as a runner opens one).
-  const newer = await openPostgresStore({ url: PG_URL, schema, role: "runner" });
-  try {
-    await newer.runs.create({ id: "run-2", agentId: "agent-1", revisionId: "rev-1" });
-  } finally {
-    await newer.close();
-  }
+  // The later server queues one more run on the schema it migrated: the runner, its floor unmoved, claims it (the control
+  // for the breaking case below, which queues the same way and is never claimed).
+  await queueRaw(sql, schema, "run-2");
   for (const id of ["run-1", "run-2"]) await until(async () => (await row(sql, schema, id)).state === "ended", `${id} ends`, 20_000);
   assert.equal(outdated, undefined, "the floor did not rise: it never stopped");
   assert.deepEqual(faux.loops.map((loop) => loop.claim.runner), ["runner-old", "runner-old"]);
@@ -143,13 +143,17 @@ test("a breaking migration under a running runner of the earlier build: it claim
   await migrateTo(sql, schema, [later(true)]);
   const why = await Promise.race([started.outdated, new Promise((resolve) => setTimeout(() => resolve("never"), 10_000))]);
   assert.equal(why, `the store is at schema version ${KNOWN + 1}, and its runner floor rose to ${KNOWN + 1}, above the version this runner knows (${KNOWN}): a later server changed the schema in a way this runner cannot run beside`);
+  // The later server queues a run now. The runner has a free loop (2, holding 1) and polls every second: it claims nothing.
+  await queueRaw(sql, schema, "run-2");
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  assert.deepEqual(await row(sql, schema, "run-2"), { state: "queued", runner: null }, "the run queued after the floor rose is never claimed");
   // The process's stop (runnerMain: runUntilSignalled, then exit 3): the close, its run handed back.
   await started.close();
   closed = true;
   const after = await row(sql, schema, "run-1");
   assert.equal(after.runner, null, "handed back: no runner holds it");
   assert.ok(!["ended", "stopped", "failed"].includes(after.state), `not ended for the stop: ${after.state}`);
-  assert.equal(faux.loops.length, 1, "it claimed nothing after the floor rose");
+  assert.equal(faux.loops.length, 1, "it claimed nothing after the floor rose, with a loop free and a run queued");
   assert.deepEqual(faux.loops.map((loop) => loop.stopCalls.map((call) => call.kind)), [["shutdown"]], "its loop was stopped for a shutdown, to resume elsewhere");
   // A runner of the earlier build starting now is refused, in words that say what to run.
   await assert.rejects(runner(t, schema, { createLoop: fauxLoops().createLoop }), (error) => {
@@ -241,6 +245,22 @@ async function stallingLink() {
     }),
   };
 }
+
+test("store-schema behind a server's migration (its lock on the ledger) fails at its lock timeout, never waits it out", ONLY, async (t) => {
+  const { schema, sql } = await schemaFor(t);
+  await setUp(schema, []);
+  // A server migrating holds the ledger: its ALTER TABLE takes it ACCESS EXCLUSIVE until its transaction ends.
+  const migrating = await client();
+  t.after(() => migrating.end());
+  await migrating.query("BEGIN");
+  await migrating.query(`LOCK TABLE ${schema}.schema_migrations IN ACCESS EXCLUSIVE MODE`);
+  const began = Date.now();
+  await assert.rejects(readStoreSchema("/nonexistent-data-dir", { ...process.env, AGENTRUN_STORE_SCHEMA: schema }, PG_URL), (error) => error.code === "55P03" || /lock timeout/i.test(error.message));
+  const took = Date.now() - began;
+  assert.ok(took >= STORE_SCHEMA_LOCK_MS - 200 && took < STORE_SCHEMA_LOCK_MS + 3_000, `gave up at its lock timeout: ${took} ms`);
+  await migrating.query("ROLLBACK");
+  assert.equal((await readStoreSchema("/nonexistent-data-dir", { ...process.env, AGENTRUN_STORE_SCHEMA: schema }, PG_URL)).schema, KNOWN, "and reads once the migration is done");
+});
 
 test("a floor read on a database that stopped answering gives up at its deadline, dropping its connection: the next read and the close are never held", ONLY, async (t) => {
   const { schema } = await schemaFor(t);

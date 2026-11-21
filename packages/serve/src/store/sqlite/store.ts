@@ -266,7 +266,7 @@ const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json
  *  disk/agents/<agent>/runs/<run>/run.sqlite), its settings files (EARLIER_ROOT_FILES) and its homes' sign-ins
  *  (homes/<home>/sign-ins/sign-ins.json). Read only: nothing is opened for writing or made. The store is read before
  *  this server holds its owner lock, so it waits `busyTimeoutMs` for another process's lock on it (isThisVersionsStore). */
-function earlierVersionIn(dataDir: string, busyTimeoutMs: number): string[] {
+export function earlierVersionIn(dataDir: string, busyTimeoutMs: number): string[] {
   if (!existsSync(dataDir)) return [];
   const found: string[] = [];
   // A path the server may not look into is not an earlier version's: that version wrote its files as the server's own

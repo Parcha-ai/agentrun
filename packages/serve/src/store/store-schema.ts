@@ -21,7 +21,7 @@ import { migrationsIn, runnerFloorOf, runnerOn, type SchemaState } from "./postg
 import { STORE_CONNECT_TIMEOUT_MS } from "./postgres/connection.js";
 import { storePlace, storeTarget, type StoreTarget } from "./open.js";
 import { SCHEMA_VERSION } from "./schema.js";
-import { STORE_FILE } from "./sqlite/store.js";
+import { earlierVersionIn, STORE_FILE } from "./sqlite/store.js";
 
 /** The line `agentrun-serve store-schema` prints. */
 export interface StoreSchemaReport {
@@ -38,11 +38,16 @@ export interface StoreSchemaReport {
 /** The SQLite store's versions the server upgrades in place (sqlite/store.ts openSqliteStore). */
 const SQLITE_UPGRADES = new Set([11, 12, 13]);
 
-/** What a build that knows `build` does with a store at `state`, on `kind`. */
-export function storeSchemaReport(target: StoreTarget, state: SchemaState, build: number): StoreSchemaReport {
+/** What a build that knows `build` does with a store at `state`, on `kind`. `earlier`: the data directory holds an earlier
+ *  version's files (SQLite only), which this build's server refuses to start beside (StoreFromEarlierVersion). On SQLite
+ *  it reads the version alone: a file at this build's version whose server has not yet added a column this build's runner
+ *  needs (sqlite/store.ts openSqliteStore, each StoreAwaitsServer) still says "opens", and the runner waits for that server
+ *  (exit 3). Server and runner on SQLite share one host and image, so a deploy's skew check is Postgres's. */
+export function storeSchemaReport(target: StoreTarget, state: SchemaState, build: number, earlier = false): StoreSchemaReport {
   const { version } = state;
-  const server: StoreSchemaReport["server"] =
-    version === null ? "sets up" : version === build ? "opens" : version > build ? "refuses" : target.kind === "postgres" || SQLITE_UPGRADES.has(version) ? "migrates" : "refuses";
+  const server: StoreSchemaReport["server"] = earlier
+    ? "refuses"
+    : version === null ? "sets up" : version === build ? "opens" : version > build ? "refuses" : target.kind === "postgres" || SQLITE_UPGRADES.has(version) ? "migrates" : "refuses";
   // A SQLite runner opens only its own version: its floor is the version (sqlite/store.ts schemaState).
   const runner = runnerOn(target.kind === "sqlite" ? { version, runnerFloor: version } : state, build);
   return { store: target.kind, where: storePlace(target), schema: version, runnerFloor: state.runnerFloor, build, server, runner };
@@ -63,10 +68,24 @@ function sqliteState(dataDir: string): SchemaState {
   }
 }
 
-/** The Postgres schema's version and floor, on a connection of its own that sets nothing and is ended at once. */
+/** How long the read waits on Postgres (ms): for a lock (a server migrating holds the ledger's), for its one statement, and
+ *  for any answer at all (a database that took the connection and went silent). Past one, the read fails: exit 1. */
+export const STORE_SCHEMA_LOCK_MS = 2_000;
+export const STORE_SCHEMA_STATEMENT_MS = 5_000;
+export const STORE_SCHEMA_ANSWER_MS = 6_000;
+
+/** The Postgres schema's version and floor, on a connection of its own that writes nothing and is ended at once. Its
+ *  session's timeouts bound it: a deploy check never waits on a server's migration or on a silent database. */
 async function postgresState(url: string, schema: string): Promise<SchemaState> {
   const { default: pg } = await import("pg");
-  const client = new pg.Client({ connectionString: url, connectionTimeoutMillis: STORE_CONNECT_TIMEOUT_MS, application_name: "agentrun-store-schema" });
+  const client = new pg.Client({
+    connectionString: url,
+    connectionTimeoutMillis: STORE_CONNECT_TIMEOUT_MS,
+    lock_timeout: STORE_SCHEMA_LOCK_MS,
+    statement_timeout: STORE_SCHEMA_STATEMENT_MS,
+    query_timeout: STORE_SCHEMA_ANSWER_MS,
+    application_name: "agentrun-store-schema",
+  });
   client.on("error", () => undefined);
   await client.connect();
   try {
@@ -79,7 +98,7 @@ async function postgresState(url: string, schema: string): Promise<SchemaState> 
 /** Reads the store `dataDir` and `env` name (and the URL, this process's AGENTRUN_STORE_URL secret unless given). */
 export async function readStoreSchema(dataDir: string, env: NodeJS.ProcessEnv = process.env, url?: string): Promise<StoreSchemaReport> {
   const target = url === undefined ? storeTarget(dataDir, env) : storeTarget(dataDir, env, url);
-  if (target.kind === "sqlite") return storeSchemaReport(target, sqliteState(dataDir), SCHEMA_VERSION);
+  if (target.kind === "sqlite") return storeSchemaReport(target, sqliteState(dataDir), SCHEMA_VERSION, earlierVersionIn(dataDir, 5_000).length > 0);
   return storeSchemaReport(target, await postgresState(target.url, target.schema), migrationsIn().at(-1)!.version);
 }
 

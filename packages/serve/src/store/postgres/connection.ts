@@ -749,7 +749,9 @@ export class PgConnection implements StoreConnection {
   }
 
   /** One client of the pool for setup (migrations), released after `work`. With `deadlineMs`, `work` unanswered past it is
-   *  Unanswered and its client destroyed, never waited on (a read that runs on a timer: Store.schemaState). */
+   *  Unanswered and its client destroyed, never waited on (a read that runs on a timer: Store.schemaState). The deadline
+   *  starts once a client is in hand: taking one waits as every call's does (a new connection's connect timeout, or a full
+   *  pool's wait), so a read can take that long beside it. */
   async withClient<T>(work: (client: pg.PoolClient) => Promise<T>, deadlineMs?: number): Promise<T> {
     return this.#call(async () => {
       const client = await this.#pool.connect();

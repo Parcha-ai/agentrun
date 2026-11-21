@@ -62,6 +62,12 @@ test("the lint finds a drop, a rename, a type change, a column made NOT NULL and
     "ALTER TABLE runs ADD COLUMN attempt BIGINT NOT NULL;",
     "ALTER TABLE runs ADD attempt BIGINT NOT NULL;",
     "ALTER TABLE runs ADD COLUMN note TEXT, ADD COLUMN attempt BIGINT NOT NULL CHECK (attempt >= 0);",
+    // A primary key makes its columns NOT NULL; ON DELETE SET DEFAULT is no default of the column's own.
+    "ALTER TABLE runs ADD PRIMARY KEY (note);",
+    "ALTER TABLE runs ADD CONSTRAINT runs_note_key PRIMARY KEY (note);",
+    "ALTER TABLE runs ADD COLUMN owner_id BIGINT NOT NULL REFERENCES owners (id) ON DELETE SET DEFAULT;",
+    // A dollar-quoted body whose tag holds a digit is still a body, and a statement after it still read.
+    "DO $fn1$ BEGIN PERFORM 1; END $fn1$; ALTER TABLE runs DROP COLUMN labels;",
   ]) {
     assert.ok(found(sql).length > 0, `found in: ${sql}`);
   }
@@ -78,6 +84,7 @@ test("the lint passes additive steps, and reads no comment or string as a statem
     "ALTER TABLE runs ADD CONSTRAINT runs_note_check CHECK (note <> '');",
     "-- this file does not drop or rename anything\nUPDATE store_meta SET schema_version = 24 WHERE singleton = 1;",
     "/* DROP TABLE runs; */ SELECT 1;",
+    "DO $fn1$ BEGIN PERFORM 1; END $fn1$;",
     "UPDATE commands SET refused = 'drop it: renamed type' WHERE id = 1;",
     "DO $$ BEGIN PERFORM 1; END $$;",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS labels TEXT CHECK (labels IS NULL OR labels IS NOT NULL);",

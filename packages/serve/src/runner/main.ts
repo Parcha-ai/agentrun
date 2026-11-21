@@ -335,25 +335,30 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const relayed = relay;
   const kept = presence;
   const floor = watchFloor(store, schema, options.floorEveryMs ?? RUNNER_RENEW_EVERY_MS);
+  const close = () =>
+    (closing ??= (async () => {
+      floor.stop();
+      // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
+      await Promise.all([janitor?.close(), runner.close()]);
+      // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is
+      // there: it claims no more.
+      await relayed?.close();
+      await kept.close();
+      // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
+      await claimInstallsStopped();
+      await store.close();
+      held.release();
+    })());
+  // A floor above this runner closes it at once: it claims nothing from the read that saw the floor on, drains and hands
+  // its runs back. The process's own close (runnerMain, after `outdated`) is this same close, awaited.
+  // Its failure is the process's to say: runnerMain awaits this same close.
+  void floor.outdated.then(() => close()).catch(() => undefined);
   return {
     runner,
     store: { kind, schema },
     memoryMib: memory.budgetMib,
     outdated: floor.outdated,
-    close: () =>
-      (closing ??= (async () => {
-        floor.stop();
-        // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
-        await Promise.all([janitor?.close(), runner.close()]);
-        // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is
-        // there: it claims no more.
-        await relayed?.close();
-        await kept.close();
-        // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
-        await claimInstallsStopped();
-        await store.close();
-        held.release();
-      })()),
+    close,
   };
 }
 
