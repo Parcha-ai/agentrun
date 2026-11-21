@@ -35,6 +35,10 @@ const scratch = (name) => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), name)
 const PAUSED = /learning paused: the disk can't run the folder script/;
 /** Archil's answer to an exec on an account or region where serverless exec is off. */
 const EXEC_OFF = "the Archil exec failed: Exec is not enabled";
+/** Archil's exec that never answered (archil-exec.ts). */
+const EXEC_SLOW = "the Archil exec did not answer in 60000 ms (it may still be running, holding the folder)";
+/** The words a learning paused by the folder script's timeout says. */
+const TIMED_OUT = /learning paused: the folder script timed out on the disk/;
 
 const flow = (name) => ({
   v: 2, name,
@@ -67,13 +71,17 @@ async function world(t) {
     await folder.end();
   }
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: { compile_after: 1 } } });
-  const exec = { off: true, refused: 0 };
+  // `mode`: "off" every exec fails as Archil's does with exec off; "timeout" the exec never answers (Archil's TIMEOUT);
+  // "timed-out" it answers that the script ran past its time; "on" it runs.
+  const exec = { mode: "off", refused: 0 };
   const learningFolder = (agentId) => {
     const opened = learningWorkspace({ mode: "local", data: disk, agentId });
     const run = opened.workspace.exec;
     opened.workspace.exec = (argv, options) => {
-      if (!exec.off) return run(argv, options);
+      if (exec.mode === "on") return run(argv, options);
       exec.refused += 1;
+      if (exec.mode === "timeout") return Promise.reject(new WorkspaceError("TIMEOUT", EXEC_SLOW));
+      if (exec.mode === "timed-out") return Promise.resolve({ code: null, stdout: new Uint8Array(), stderr: "", timedOut: true, truncated: false });
       return Promise.reject(new WorkspaceError("UNAVAILABLE", EXEC_OFF));
     };
     return opened;
@@ -137,7 +145,7 @@ test("a learning folder whose disk can't run its script pauses learning: no comp
   assert.ok(exec.refused >= 2, "the disk refused the script's exec on each run");
 
   // Exec works now: the next run's compile is the agent's first, its draft checked and merged, with nothing reset.
-  exec.off = false;
+  exec.mode = "on";
   const { kept } = await run("run-3", script);
   assert.equal(kept?.state, "merged", JSON.stringify(kept));
   assert.deepEqual(kept.workflows, [{ file: "workflows/answer/workflow.json", name: "answer" }]);
@@ -147,4 +155,28 @@ test("a learning folder whose disk can't run its script pauses learning: no comp
   const loop = await agentLoopOverStore(server, "agent-1");
   assert.equal(loop.paused, null, "learning is no longer paused");
   assert.deepEqual(loop.compiles.map((one) => [one.run_id, one.workflow, one.attempts.length]), [["run-3", "answer", 1]]);
+});
+
+// Review on #3398 (lead's ruling): a folder script that timed out on the disk is a failed exec too, transient on Archil:
+// it pauses learning in words that say it timed out, never spends a compile attempt or stops the agent.
+test("a folder script that times out on the disk pauses learning, in words that say so: no compile attempt is counted, nothing stops, and once it runs the next compile is the first and lands", async (t) => {
+  const { server, exec, run } = await world(t);
+  const script = [{ say: "42" }, { say: DRAFT }, { say: DRAFT }, { say: DRAFT }];
+  for (const [id, mode] of [["run-1", "timeout"], ["run-2", "timed-out"]]) {
+    exec.mode = mode;
+    const { kept, requests } = await run(id, script);
+    assert.deepEqual([kept?.state, kept?.reason], ["dropped", "paused"], `${id} (${mode}) is paused, not a failed compile: ${JSON.stringify(kept)}`);
+    assert.match(kept.detail, TIMED_OUT, `${id} (${mode}) says the script timed out`);
+    assert.equal(kept.compiled, undefined, `${id} keeps no compile`);
+    assert.equal(requests.length, 2, `${id}: its job and one compile ask; the turn is not asked again`);
+    const records = await promotionsOf(server.settings, "agent-1");
+    assert.deepEqual(records, [], `${id}: no compile attempt is counted`);
+    assert.equal(compileStoppedOf(records), false, `${id}: nothing stops`);
+    assert.match((await agentLoopOverStore(server, "agent-1")).paused ?? "", TIMED_OUT, `${id}: the loop read says it timed out`);
+  }
+  exec.mode = "on";
+  const { kept } = await run("run-3", script);
+  assert.equal(kept?.state, "merged", JSON.stringify(kept));
+  assert.deepEqual(kept.compiled.attempts, [{ ok: true, errors: [] }], "the first attempt, passed");
+  assert.equal((await agentLoopOverStore(server, "agent-1")).paused, null);
 });
