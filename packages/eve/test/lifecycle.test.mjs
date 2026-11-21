@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import mountExtension from '../dist/extension/extension.mjs';
 import { beginTurn, learningInstructions, submitTurn } from '../dist/extension/lib/lifecycle.mjs';
 
 function service({ definition, check } = {}) {
@@ -72,6 +73,27 @@ test('new agents keep configured loop numbers with or without workflow bindings;
     assert.equal(server.requests.some(row => row.path === '/v2/agents' || row.method === 'PUT' || row.method === 'PATCH'), false,
       'A mount must never replace the owner setting with its initial-registration defaults.');
     assert.deepEqual(server.requests.find(row => row.path.endsWith('/sdk-runs')).body.workflow_tools.map(tool => tool.name), ['mcp:release/status']);
+  }
+});
+
+test('the mounted learning setting carries agree_on into the agent the client registers', async () => {
+  const learning = { compile_after: 5, agree_on: ['mcc'] };
+  mountExtension({ baseUrl: 'https://agentrun.example/v2', apiKey: 'fake-test-key', agentId: 'eve-support', instructions: 'Keep existing tool permissions.', learning });
+  assert.deepEqual(mountExtension.config.learning, learning);
+  const server = service();
+  await beginTurn({ ...mountExtension.config, fetch: server.fetch, maxRetries: 0 }, source);
+  assert.deepEqual(server.requests.find(row => row.path === '/v2/agents').body.definition.learning, learning);
+});
+
+test('the mount refuses an agree_on the server would refuse', () => {
+  const mount = agree_on => () => mountExtension({ baseUrl: 'https://agentrun.example/v2', apiKey: 'fake-test-key', agentId: 'eve-support',
+    instructions: 'Keep existing tool permissions.', learning: { agree_on } });
+  for (const agree_on of [[], ['mcc', 'mcc'], ['verdict..decision'], ['.mcc'], ['mcc.'], [''], ['a.b.c.d.e.f.g.h.i'], ['m'.repeat(129)],
+    Array.from({ length: 17 }, (_, i) => `field${i}`)]) assert.throws(mount(agree_on), /learning\.agree_on/, JSON.stringify(agree_on));
+  for (const agree_on of ['mcc', [1]]) assert.throws(mount(agree_on), /learning/, JSON.stringify(agree_on));
+  for (const agree_on of [['verdict.decision', 'mcc'], ['a.b.c.d.e.f.g.h'], ['m'.repeat(128)], Array.from({ length: 16 }, (_, i) => `field${i}`)]) {
+    mount(agree_on)();
+    assert.deepEqual(mountExtension.config.learning, { agree_on });
   }
 });
 

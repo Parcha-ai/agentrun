@@ -2,7 +2,7 @@
 // logged as failed; a 410 turns the webhook off; a queued one goes on after a restart; a store that refuses a write loses
 // no notice; a start's catch-up queues each end the ledger lacks, once. Signing, idempotency and custody are
 // webhooks-signing.test.mjs. Each case in the block below has a server (or a store) of its own, so they run a few at once; the
-// two first ones watch the process's unhandled rejections, so they run alone.
+// first ones watch the process's unhandled rejections or set its clock, so they run alone.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -124,6 +124,80 @@ test("a try's bound is refused at or past the claim it holds its message by (60 
     const data = join(await scratch(t), "agents");
     await assert.rejects(serve(t, { ...PRIVATE_OK, data, webhookTimeoutMs }), RangeError, `the server's bound ${webhookTimeoutMs}`);
   }
+});
+
+test("redeliveries that fail leave the message's own schedule as it was: it is still tried on every wait", async (t) => {
+  // The test's clock (setTimeout and Date, the process's own: this case runs alone): a wait of the message's schedule
+  // passes only when the test moves time, and every jitter is the middle of its range, so each own try is due at an exact
+  // moment. No model run: the message is the one a run's end queues (emit), on a Webhooks over a store of the test's own.
+  const T0 = Date.parse("2026-01-01T00:00:00.000Z");
+  const waits = [1_000, 2_000, 3_000];
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: T0 });
+  t.mock.method(Math, "random", () => 0.5);
+  const hook = await receiver(t, () => 500);
+  const log = logged();
+  // Every read of a message (a try's first step, made the moment its timer fires) and every write of an own try's outcome
+  // (its claim's), each as it lands: nothing is polled.
+  let reads = 0;
+  const own = [];
+  let wake = () => undefined;
+  const on = await webhookOn(t, await scratch(t), { retryMs: waits, wrap: seeing("channels", (channels) => ({
+    get: (id) => ((reads += 1), channels.get(id)),
+    settle: async (...args) => {
+      const written = await channels.settle(...args);
+      if (args[3]?.claim) (own.push(args[1]), wake());
+      return written;
+    },
+  })) });
+  // Once own try `n` is written and what follows it (its next timer, its failure's line) is done: a turn after its write.
+  const ownTry = async (n) => {
+    if (own.length < n) await new Promise((resolve) => (wake = () => own.length >= n && resolve()));
+    await turn();
+  };
+  // Whether moving the clock `ms` on starts a try of the message: its timer fires, and the try reads the message at once.
+  const moved = (ms) => {
+    const before = reads;
+    t.mock.timers.tick(ms);
+    return reads > before;
+  };
+  await on.runs("run_1");
+  const webhooks = await on.open(log.push);
+  await webhooks.save({ url: hook.url });
+  await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, "m1");
+  assert.ok(moved(0), "the first try, at once");
+  await ownTry(1);
+  const id = hook.got[0].headers["webhook-id"];
+  const schedule = async () => {
+    const { state, attempts, nextAt } = await on.store.channels.get(id);
+    return { state, attempts, nextAt };
+  };
+  // Halfway through each wait, failing redeliveries (four in the first, as many as the whole schedule's tries; one in each
+  // later one): each is sent, and leaves the message's count and next try as they were. Then each own try comes at the end
+  // of its wait, the wait its own count names (a redelivery counts none), never a moment before.
+  let at = T0;
+  let left = { state: "queued", attempts: 1, nextAt: T0 + waits[0] };
+  assert.deepEqual(await schedule(), left, "the first wait, from the first try");
+  for (const [i, wait] of waits.entries()) {
+    assert.ok(!moved(wait / 2), `own try ${i + 2} not halfway through its wait of ${wait} ms`);
+    for (let r = 1; r <= (i === 0 ? 4 : 1); r++) {
+      const redone = await webhooks.redeliver(id);
+      assert.deepEqual([redone.status_code, redone.redelivery, redone.retry_at], [500, true, null]);
+      assert.deepEqual(await schedule(), left, `after redelivery ${r} in wait ${i + 1}`);
+    }
+    assert.ok(!moved(wait / 2 - 1), `own try ${i + 2} not before its wait of ${wait} ms`);
+    assert.ok(moved(1), `own try ${i + 2} at its wait of ${wait} ms`);
+    at += wait;
+    await ownTry(i + 2);
+    left = i + 1 < waits.length ? { state: "queued", attempts: i + 2, nextAt: at + waits[i + 1] } : { state: "dropped", attempts: 4, nextAt: at };
+    assert.deepEqual(await schedule(), left, `after own try ${i + 2}`);
+  }
+  const failed = await log.when("condition=delivery_failed");
+  assert.ok(failed.includes("attempts=4"), `its own four tries, every wait: ${failed}`);
+  const tries = (await webhooks.attemptsView()).attempts.toReversed();
+  assert.deepEqual(tries.filter((a) => !a.redelivery).map((a) => a.retry_at), [T0 + 1_000, T0 + 3_000, T0 + 6_000].map((ms) => new Date(ms).toISOString()).concat(null), "each own try's next, by its own count");
+  assert.deepEqual([tries.filter((a) => !a.redelivery).length, tries.filter((a) => a.redelivery).length], [4, 6]);
+  assert.equal(hook.got.length, 10);
+  assert.ok(hook.got.every((r) => r.headers["webhook-id"] === id), "one message, under its own webhook-id");
 });
 
 describe("the outbound webhook: the outbox, its tries and its durability", { concurrency: CASES_AT_ONCE }, () => {

@@ -85,7 +85,7 @@ test('a real in-process workflow calls the original callback functions and emits
 
 async function proofFixture(t, { pending = false, fallback = false, uncertain = false, interrupt = false, preexisting = false, compiledFailure = false, unrelatedOrigin = false, missingServerChild = false, held = false } = {}) {
   const auditPath = await journal(t), agentId = 'eve-workflow-fixture', results = new Map(), runs = new Map(), prompts = [], reads = [], settings = [];
-  let learning = false, version = 1, registered = preexisting, workflowRun, checkpoint, promoted = false;
+  let learning = false, version = 1, registered = preexisting, workflowRun, checkpoint, promoted = false, checked = 0;
   const document = '{"unit-test":"scripted compiled document"}', digest = createHash("sha256").update(document).digest("hex").slice(0, 16);
   const accepted = () => Boolean(workflowRun);
   const view = () => ({ main: accepted() ? 'revision-workflow' : 'revision-empty', corrections: '',
@@ -140,8 +140,8 @@ async function proofFixture(t, { pending = false, fallback = false, uncertain = 
     const run = { run_id: runId, status: 'completed', sdk: { runtime: 'eve', session_id: sessionId, learning_revision: revision },
       ...(learning === false ? {} : { learning: { state: 'merged' } }) };
     results.set(sessionId, { input, result }); runs.set(runId, run);
-    // A separate native answer is required before this scripted check fixture promotes a draft.
-    if (workflowRun && !promoted && !held && learning !== false) promoted = true;
+    // Separate native answers, compile_after of them, are required before this scripted check fixture promotes a draft.
+    if (workflowRun && !promoted && !held && learning !== false && ++checked >= learning.compile_after) promoted = true;
     // Current compile_after counts the agent's own completed runs, including its Off baseline.
     if (typeof learning === 'object' && runs.size >= learning.compile_after) workflowRun ??= runId;
     if (interrupt) { interrupt = false; throw new Error('A native delivery completed after the connection closed.'); }
@@ -156,19 +156,20 @@ async function proofFixture(t, { pending = false, fallback = false, uncertain = 
 
 test('live-proof orchestration compiles normal native traces with current checks, proves fresh callback reuse, and switches the same agent Off', async t => {
   const f = await proofFixture(t), proof = await demonstrateWorkflows(f.options);
-  assert.equal(proof.stage, 'passed'); assert.equal(f.prompts.length, 8);
+  assert.equal(proof.stage, 'passed'); assert.equal(f.prompts.length, 12);
   assert.deepEqual(f.settings, [{ compile_after: 5 }, false]);
   assert.equal(f.prompts.at(-2), workflowTask('demo-worker')); assert.equal(f.prompts.at(-1), workflowTask('demo-worker'));
   assert.equal(proof.committed.workflows[0].run, proof.sessions.practice_3.run.runId);
-  assert.equal(proof.sessions.shadow_check.callbacks.read.source, 'native');
-  assert.equal(proof.check.runId, proof.sessions.shadow_check.run.runId);
+  const checks = [1, 2, 3, 4, 5].map(turn => proof.sessions[`shadow_check_${turn}`]);
+  assert.ok(checks.every(check => check.callbacks.read.source === 'native'), 'compile_after native turns check the draft');
+  assert.deepEqual(proof.check.runIds, checks.map(check => check.run.runId));
   assert.equal(proof.check.state, 'promoted');
   assert.equal(proof.sessions.reused.callbacks.read.source, 'workflow');
   assert.equal(proof.sessions.control_off.callbacks.read.source, 'native');
-  assert.equal(new Set(Object.values(proof.sessions).map(row => row.callbacks.read.result.observation)).size, 8);
+  assert.equal(new Set(Object.values(proof.sessions).map(row => row.callbacks.read.result.observation)).size, 12);
   const settings = [...f.settings];
   const resumed = await demonstrateWorkflows({ ...f.options, resume: proof });
-  assert.equal(resumed.stage, 'passed'); assert.equal(f.prompts.length, 8); assert.equal(f.reads.length, 8);
+  assert.equal(resumed.stage, 'passed'); assert.equal(f.prompts.length, 12); assert.equal(f.reads.length, 12);
   assert.deepEqual(f.settings, settings, 'A finished proof must not toggle settings or submit more paid work when resumed.');
 });
 
@@ -193,8 +194,8 @@ test('workflow proof stops at pending owner review without auto-approving or inv
 test('good direct-tool output is never counted as executable workflow reuse', async t => {
   const f = await proofFixture(t, { fallback: true });
   await assert.rejects(demonstrateWorkflows(f.options), /original formatter callback did not execute/);
-  assert.equal(f.prompts.length, 7); assert.equal(f.proof().sessions.control_off, undefined);
-  const result = f.results.get('session-7').result, run = f.runs.get('run-7');
+  assert.equal(f.prompts.length, 11); assert.equal(f.proof().sessions.control_off, undefined);
+  const result = f.results.get('session-11').result, run = f.runs.get('run-11');
   const chain = assertOriginalChain(result, await readWorkflowAudit(f.options.auditPath), run, 'demo-worker');
   assert.throws(() => assertExecutableReuse(result, run, f.proof().committed, chain), /No committed workflow completed/);
 });
@@ -207,7 +208,7 @@ test('uncertain submissions cannot be retried by resume, but confirmed native se
   const confirmed = await proofFixture(t, { interrupt: true });
   await assert.rejects(demonstrateWorkflows(confirmed.options), /connection closed/);
   const proof = await demonstrateWorkflows({ ...confirmed.options, resume: confirmed.proof() });
-  assert.equal(proof.stage, 'passed'); assert.equal(confirmed.prompts.length, 8);
+  assert.equal(proof.stage, 'passed'); assert.equal(confirmed.prompts.length, 12);
   assert.deepEqual(confirmed.reads, ['session-1']);
 });
 
@@ -235,7 +236,8 @@ for (const [name, option, message] of [
 test('a held compiled draft cannot pass the workflow proof or reach a reuse task', async t => {
   const f = await proofFixture(t, { held: true });
   await assert.rejects(demonstrateWorkflows(f.options), /shadow check did not promote/);
-  assert.equal(f.proof().sessions.shadow_check.callbacks.read.source, 'native');
+  assert.equal(f.proof().sessions.shadow_check_1.callbacks.read.source, 'native');
+  assert.equal(f.proof().sessions.shadow_check_2, undefined, 'a decided check asks no more paid turns');
   assert.equal(f.proof().sessions.reused, undefined);
   assert.equal(f.proof().sessions.control_off, undefined);
   assert.equal(f.prompts.length, 6);

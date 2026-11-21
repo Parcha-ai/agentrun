@@ -3,9 +3,9 @@
 // data, sign-in, setup, settings writes, MCP, triggers and their webhook hooks, agents, and a live view's WebSocket. It
 // has no owner. The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
 // writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
-// run's learning), its learning's writes and its own texts refused. A run's purge (DELETE /runs/{id}) is served for a run
-// of an agent its backend made (an inline run's, external), and refused with the profile's 404 for a run of an agent
-// made here. Off by default: the same server without it serves those routes as before.
+// run's learning) and its reset (DELETE learning), its learning's other writes and its own texts refused. A run's purge
+// (DELETE /runs/{id}) is served for a run of an agent its backend made (an inline run's, external), and refused with the
+// profile's 404 for a run of an agent made here. Off by default: the same server without it serves those routes as before.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
@@ -23,7 +23,7 @@ const notSecret = (name) => `not-a-secret-${name}`;
 /** The learning reads the profile serves, for the backend whose inline runs made the agent: the loop, the promotions,
  *  the cost per run and a run's learning ({agent}, {run} filled in by each test). */
 const LEARNING_READS = ["/v2/agents/{agent}/learning/loop", "/v2/agents/{agent}/learning/promotions", "/v2/agents/{agent}/learning/cost", "/v2/runs/{run}/learning"];
-/** The learning routes it still refuses: every write, and every read that serves the learning's own text (corrections,
+/** The learning routes it still refuses: every write but the reset (served, with the agent's delete), and every read that serves the learning's own text (corrections,
  *  files, the log, a workflow's revisions, the audits, a run's diff). */
 const LEARNING_REFUSED = [
   ["GET", "/v2/agents/{agent}/learning"], ["GET", "/v2/agents/{agent}/learning/corrections"], ["PUT", "/v2/agents/{agent}/learning/corrections"],
@@ -59,7 +59,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["PUT", "/v2/runs/run_1/grade"], ["POST", "/v2/runs/run_1/messages"], ["POST", "/v2/runs/run_1/stop"], ["POST", "/v2/runs/run_1/cancel"],
     ["GET", "/v2/runs/run_1/files"], ["GET", "/v2/runs/run_1/files/out/report.md"], ["POST", "/v2/files"], ["GET", "/v2/files/file_1"],
     ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"], ["GET", "/v2/capacity"],
-    ["GET", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1"], ["DELETE", "/v2/runs/run_1"], ["GET", "/v2/computers/daemon"],
+    ["GET", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1"], ["DELETE", "/v2/agents/a1/learning"], ["DELETE", "/v2/runs/run_1"], ["GET", "/v2/computers/daemon"],
     ["GET", "/v2/computers"], ["HEAD", "/v2/computers"], ["GET", "/v2/workspace/archil"], ["HEAD", "/v2/workspace/archil"],
     ["GET", "/v2/runs/run_1/computer"], ["POST", "/v2/runs/run_1/computer/take-over"], ["POST", "/v2/runs/run_1/computer/hand-back"],
     ["POST", "/v2/runs/run_1/computer/viewer"], ["GET", "/v2/runs/run_1/computer/live/v/x"], ["HEAD", "/v2/runs/run_1/computer/live/computer-viewer.js"],
