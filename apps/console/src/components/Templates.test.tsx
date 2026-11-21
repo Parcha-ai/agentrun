@@ -141,7 +141,7 @@ describe("the Templates page", () => {
     const bar = list.host.querySelector("header")!;
     expect(bar.className).toContain(pageToolbarClass);
     expect(bar.querySelector("h1")!.className).toBe(pageTitleClass);
-    expect(bar.textContent).toBe("Templates");
+    expect(bar.querySelector("h1")!.textContent).toBe("Templates");
     expect(list.host.querySelectorAll("h1")).toHaveLength(1);
     act(() => root?.unmount()); document.body.innerHTML = "";
     const apply = await open("pr-reviewer", { playground: false });
@@ -151,6 +151,29 @@ describe("the Templates page", () => {
     act(() => root?.unmount()); document.body.innerHTML = "";
     const inPlayground = await open(undefined, { playground: true });
     expect(inPlayground.host.querySelector("header")).toBeNull();
+  });
+
+  it("the list's top bar links to the template marketplace in a new tab; a template, a package being read and the playground's page do not", async () => {
+    const marketplace = (host: HTMLElement) => [...host.querySelectorAll("a")].filter((a) => a.getAttribute("href") === "https://marketplace.agentrun.ai");
+    const list = await open(undefined, { playground: false });
+    const [link, ...more] = marketplace(list.host);
+    expect(more).toHaveLength(0);
+    expect(link.closest("header")).toBe(list.host.querySelector("header"));
+    expect(link.textContent).toBe("Marketplace (opens in a new tab)");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")?.split(" ")).toContain("noopener");
+    // The console's button, as a link: its caps class and outline border, not a style of its own.
+    expect(link.className).toContain("caps");
+    expect(link.className).toContain("border-border");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const apply = await open("pr-reviewer", { playground: false });
+    expect(marketplace(apply.host)).toHaveLength(0);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const reading = await open(undefined, { playground: false, install: "github:acme/agents/templates/kyb@main", imported: () => new Promise(() => {}) });
+    expect(marketplace(reading.host)).toHaveLength(0);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const inPlayground = await open(undefined, { playground: true });
+    expect(marketplace(inPlayground.host)).toHaveLength(0);
   });
 
   it("routes #/templates to the list and #/templates/<name> to its Apply screen", () => {

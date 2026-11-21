@@ -1,12 +1,12 @@
 import { agentHash } from "@/components/AgentPage";
-import { ArrowLeft, Check, LayoutTemplate } from "lucide-react";
+import { ArrowLeft, Check, ExternalLink, LayoutTemplate } from "lucide-react";
 import { FieldInput, FieldIssues as Issues } from "@/components/FieldInput";
 import { Picker } from "@/components/ui/picker";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { SecretOnce } from "@/components/Schedules";
 import { ListSkeleton } from "@/components/Skeleton";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { formColumnsClass, Input } from "@/components/ui/field";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
@@ -19,7 +19,7 @@ import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib
 import { type Problem, problem } from "@/lib/problem";
 import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
 import { type FieldSpec, fieldIssueWords, fieldKind, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, schemaFields } from "@/lib/inputForm";
-import { APPLY_REQUIREMENTS, grantsOf, isPlain, issuesAt, matchesOf, needsOf, paramHelp, type ParameterText, readTemplateDraft, setUpHref, templateHash, templatePlaygroundHref, titleOf } from "@/lib/templatePackages";
+import { APPLY_REQUIREMENTS, grantsOf, isPlain, issuesAt, MARKETPLACE_URL, matchesOf, needsOf, paramHelp, type ParameterText, readTemplateDraft, setUpHref, templateHash, templatePlaygroundHref, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateImported, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void; playground?: boolean; draft?: string };
@@ -54,6 +54,8 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
         {listing
           ? <h1 className={pageTitleClass}><LayoutTemplate className="size-4" aria-hidden />Templates</h1>
           : <nav aria-label="Breadcrumb"><a href="#/templates" className={cn(pageTitleClass, "text-muted-foreground hover:text-foreground")}><ArrowLeft className="size-4" aria-hidden />Templates</a></nav>}
+        {/* Where to find more packages for Add from URL: the public marketplace, in a new tab. */}
+        {listing && <a href={MARKETPLACE_URL} target="_blank" rel="noopener" className={cn(buttonVariants({ size: "sm" }), "ml-auto")}>Marketplace<ExternalLink aria-hidden /><span className="sr-only"> (opens in a new tab)</span></a>}
       </header>
       <div className="p-5 md:p-6">{body}</div>
     </section>
