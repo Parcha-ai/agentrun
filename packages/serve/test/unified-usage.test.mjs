@@ -37,6 +37,26 @@ async function observed(s, id, days, { native, connection, harness = 'codex', co
 }
 const read = async (s, query = '') => { const result = await s.api('GET', '/stats' + query); assert.equal(result.status, 200); return result.body.analytics; };
 
+test('stats refuses an unexpected metadata read failure instead of reducing disjoint CLI usage', async t => {
+  const s = await serve(t, { runner: false });
+  await cliWindow(s, 'first-prompt', 100, 20);
+  await cliWindow(s, 'second-prompt', 30, 5);
+  const healthy = (await read(s)).usage;
+  assert.deepEqual([healthy.tokens, healthy.input, healthy.output, healthy.known_runs], [155, 130, 25, 2]);
+
+  const metadata = s.store.runs.usageMetadata;
+  const failure = Object.assign(new Error('Accounting connection lost'), { code: '08006' });
+  const mocked = t.mock.method(s.store.runs, 'usageMetadata', async (id, options) => {
+    if (id === 'second-prompt') throw failure;
+    return metadata(id, options);
+  });
+  await assert.rejects(unifiedUsage(s.store), error => error === failure,
+    'an unreadable prompt receipt is an infrastructure error, not evidence that its tokens overlap another prompt');
+
+  mocked.mock.restore();
+  assert.deepEqual((await read(s)).usage, healthy, 'recovery retains both prompt receipts without rewriting their accounting');
+});
+
 test('stats reads token receipts without materializing CLI launches or multi-megabyte SDK replay', async t => {
   const s = await serve(t, { runner: false });
   await cliWindow(s, 'captured', 100, 20, { reflection: 15 });

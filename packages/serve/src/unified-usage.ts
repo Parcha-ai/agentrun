@@ -71,7 +71,7 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
     const isCli = Boolean(metrics.cli_runtime || Object.keys(cli).length);
     const isSdk = Boolean(isCli || metrics.sdk_runtime || Object.keys(sdk).length);
     const metadata = run.purgedAt == null && (isCli || (inRange && isSdk))
-      ? await store.runs.usageMetadata(run.id, { completion: inRange && isSdk }).catch(() => undefined) : undefined;
+      ? await store.runs.usageMetadata(run.id, { completion: inRange && isSdk }) : undefined;
     let window: Record<string, any> = {};
     if (isCli) {
       window = object(metadata?.cli);
