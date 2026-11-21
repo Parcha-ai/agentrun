@@ -9,6 +9,9 @@
 // its turn for up to --drain-timeout (default AGENTRUN_DRAIN_TIMEOUT, else RUNNER_DRAIN_TIMEOUT), then every loop left is stopped where it can resume
 // and its run handed back for another runner (a loop that never stops is given up when its claim would run out, and its
 // run is claimable when its lease lapses); then 0. Bad arguments exit 2, a store it cannot open (yet) 3, anything else 1.
+// A store a later server migrated past what this build can run beside (its runner floor rose above the version this build
+// knows; read again at each renewal) is the same stop: nothing more claimed, the drain, its runs handed back; then 3, so
+// its platform starts a runner of the new release in its place.
 // A run isolation it cannot give (run-child-host.ts runIsolationOf) is said, and it stays up claiming nothing until a stop: 0.
 // An error nothing handles exits 1 at once, said with its stack (lastResort).
 import { randomUUID } from "node:crypto";
@@ -29,7 +32,7 @@ import { FAUX_ENV, FAUX_PREFIX, withoutFaux } from "../model.js";
 import { durationMs, runLine } from "../print.js";
 import { bootSealKey } from "../seal-key.js";
 import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
-import { migrationsIn, openStore, SchemaVersionUnknown, type Store, StoreAwaitsServer, storePlace, storeTarget } from "../store/index.js";
+import { migrationsIn, openStore, RunnerBelowFloor, SchemaVersionUnknown, type Store, StoreAwaitsServer, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
 import { FAUX_BROWSER_ENV } from "../tools.js";
@@ -88,6 +91,9 @@ export interface RunnerProcessOptions {
   storeUrl?: string;
   /** What a person should see at the start (a clock far from the store's Postgres): stderr by default. */
   warn?: (message: string) => void;
+  /** How often the store's runner floor is read again (Store.schemaState): each renewal (RUNNER_RENEW_EVERY_MS) unless a
+   *  test says. */
+  floorEveryMs?: number;
 }
 
 export interface RunnerProcess {
@@ -97,6 +103,10 @@ export interface RunnerProcess {
   /** What its runs may hold, in MiB (RunnerMemory.budgetMib): its host's memory, or its container's limit, less the
    *  server's own. Said once at its start, after the ready line. */
   readonly memoryMib: number;
+  /** Settles, once, with the words of why, when the store's runner floor rises above the version this build knows (a
+   *  later server applied a migration that breaks earlier runners): this runner should close, handing its runs back, and
+   *  its process exit non-zero. Never settles otherwise. */
+  readonly outdated: Promise<string>;
   /** Closes the runner (its loops stopped, its runs released), then its store connection. */
   close(): Promise<void>;
 }
@@ -121,6 +131,7 @@ export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, w
     return { store, kind: target.kind, schema: target.kind === "sqlite" ? SCHEMA_VERSION : migrationsIn().at(-1)!.version };
   } catch (error) {
     if (error instanceof StoreAwaitsServer) throw new RunnerRefused(`The store in ${where} is behind this runner: start the server first, which upgrades the store in place, then the runner.`, { cause: error });
+    if (error instanceof RunnerBelowFloor) throw new RunnerRefused(`The store in ${where} is at schema version ${error.found}, and a runner on it must know version ${error.floor} or later; this runner knows ${error.known}: run a runner of the server's release.`, { cause: error });
     if (!(error instanceof SchemaVersionUnknown)) throw error;
     const { found, known } = error;
     throw new RunnerRefused(
@@ -271,6 +282,9 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const warn = options.warn ?? ((message: string) => void process.stderr.write(`agentrun-serve runner: ${message}\n`));
   const env = options.env ?? process.env;
   const { store, kind, schema } = await openRunnerStore(options.dataDir, env, warn, options.storeUrl);
+  // A store a later server migrated, additively: said once, so a runner behind its server is seen where it runs.
+  const opened = await store.schemaState?.().catch(() => undefined);
+  if (opened?.version != null && opened.version > schema) warn(`the store is at schema version ${opened.version}, ahead of this runner's ${schema}; its runner floor is ${opened.runnerFloor}, so this runner runs on it until a later migration raises the floor`);
   const memory = options.memory ?? runnerMemory(store, undefined, env, options.processMib ?? 0);
   let runner: Runner;
   let seal: Awaited<ReturnType<typeof bootSealKey>> | undefined;
@@ -327,23 +341,66 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const held = seal;
   const relayed = relay;
   const kept = presence;
+  const floor = watchFloor(store, schema, options.floorEveryMs ?? RUNNER_RENEW_EVERY_MS);
+  const close = () =>
+    (closing ??= (async () => {
+      floor.stop();
+      // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
+      await Promise.all([janitor?.close(), runner.close()]);
+      // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is
+      // there: it claims no more.
+      await relayed?.close();
+      await kept.close();
+      // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
+      await claimInstallsStopped();
+      await store.close();
+      held.release();
+    })());
+  // A floor above this runner closes it at once: it claims nothing from the read that saw the floor on, drains and hands
+  // its runs back. The process's own close (runnerMain, after `outdated`) is this same close, awaited.
+  // Its failure is the process's to say: runnerMain awaits this same close.
+  void floor.outdated.then(() => close()).catch(() => undefined);
   return {
     runner,
     store: { kind, schema },
     memoryMib: memory.budgetMib,
-    close: () =>
-      (closing ??= (async () => {
-        // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
-        await Promise.all([janitor?.close(), runner.close()]);
-        // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is
-        // there: it claims no more.
-        await relayed?.close();
-        await kept.close();
-        // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
-        await claimInstallsStopped();
-        await store.close();
-        held.release();
-      })()),
+    outdated: floor.outdated,
+    close,
+  };
+}
+
+/** Reads `store`'s runner floor every `everyMs` (Store.schemaState): `outdated` settles, once, with the words of why,
+ *  when it is above `known`, the version this runner's build knows, and the reads stop. A read that fails (a busy store,
+ *  a connection down) is tried at the next one: a renew's own failure says so, and only a floor read says to stop. */
+function watchFloor(store: Store, known: number, everyMs: number): { readonly outdated: Promise<string>; stop(): void } {
+  let settle!: (why: string) => void;
+  const outdated = new Promise<string>((resolve) => (settle = resolve));
+  if (!store.schemaState) return { outdated, stop: () => {} };
+  let reading = false;
+  let done = false;
+  const read = async () => {
+    if (reading || done) return;
+    reading = true;
+    try {
+      const state = await store.schemaState!();
+      if (done || state.runnerFloor === null || state.runnerFloor <= known) return;
+      done = true;
+      clearInterval(timer);
+      settle(`the store is at schema version ${state.version}, and its runner floor rose to ${state.runnerFloor}, above the version this runner knows (${known}): a later server changed the schema in a way this runner cannot run beside`);
+    } catch {
+      // Tried again at the next read.
+    } finally {
+      reading = false;
+    }
+  };
+  const timer = setInterval(() => void read(), everyMs);
+  timer.unref();
+  return {
+    outdated,
+    stop: () => {
+      done = true;
+      clearInterval(timer);
+    },
   };
 }
 
@@ -438,19 +495,25 @@ export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: 
   return { dataDir, ...(harnessModules.length ? { harnessModules } : {}),...(loops === undefined ? {} : { loops }), ...(drainMs === undefined ? {} : { drainMs }), ...(name === undefined ? {} : { name }), ...(faux === undefined ? {} : { faux }), ...(fauxBrowser === undefined ? {} : { fauxBrowser }), ...(check ? { check: true as const } : {}) };
 }
 
-/** Runs until SIGTERM or SIGINT, then closes. `ready` is called once the signals are handled, never before: a line that
- *  says the runner is ready (on a pipe, written at once) may bring a SIGTERM back before the next statement runs, and one
- *  that came before the handlers would end the process unclosed. */
-export async function runUntilSignalled(process: RunnerProcess, signals: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"], ready: () => void = () => {}): Promise<void> {
-  await new Promise<void>((resolve) => {
-    const onSignal = () => {
+/** Runs until SIGTERM or SIGINT, or until the store's runner floor rises above this runner (RunnerProcess.outdated),
+ *  then closes: nothing more claimed, the drain, its runs handed back. Answers the floor's words when that was the stop,
+ *  else undefined. `ready` is called once the signals are handled, never before: a line that says the runner is ready (on
+ *  a pipe, written at once) may bring a SIGTERM back before the next statement runs, and one that came before the
+ *  handlers would end the process unclosed. `outdated`: told the floor's words before the close begins. */
+export async function runUntilSignalled(process: Pick<RunnerProcess, "close"> & Partial<Pick<RunnerProcess, "outdated">>, signals: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"], ready: () => void = () => {}, outdated: (why: string) => void = () => {}): Promise<string | undefined> {
+  const why = await new Promise<string | undefined>((resolve) => {
+    const done = (value: string | undefined) => {
       for (const signal of signals) globalThis.process.off(signal, onSignal);
-      resolve();
+      resolve(value);
     };
+    const onSignal = () => done(undefined);
     for (const signal of signals) globalThis.process.on(signal, onSignal);
+    void process.outdated?.then(done);
     ready();
   });
+  if (why !== undefined) outdated(why);
   await process.close();
+  return why;
 }
 
 /** The runner process's last resort (runnerMain installs it for unhandledRejection and uncaughtException): says what
@@ -485,8 +548,8 @@ export function troubleLine(name: string, event: RunnerEvent): string | undefine
 }
 
 /** `agentrun-serve runner ...`: the exit code. 2: bad arguments; 3: a store this runner cannot open (a schema it does not
- *  know, none set up yet, or one its server has yet to upgrade); 1: anything else; 0: closed on a signal, or --check found
- *  a fresh heartbeat. AGENTRUN_RUNNER_NAME names it when --name does not. */
+ *  know, none set up yet, or one its server has yet to upgrade), or one whose runner floor rose above it while it ran
+ *  (closed, its runs handed back); 1: anything else; 0: closed on a signal, or --check found a fresh heartbeat. AGENTRUN_RUNNER_NAME names it when --name does not. */
 export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessEnv = process.env, hooks: RunnerMainHooks = {}): Promise<number> {
   let args: ReturnType<typeof runnerArgs>;
   try {
@@ -619,14 +682,15 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   // Then its memory budget, a line of its own (the ready line's shape is read by deploy checks): what a container's limit
   // gave it is seen where it runs.
   try {
-    await runUntilSignalled(started, RUNNER_SIGNALS, () => {
+    const outdated = await runUntilSignalled(started, RUNNER_SIGNALS, () => {
       console.log(`Runner ${started.runner.name} ready: store ${started.store.kind} schema v${started.store.schema}, ${holds.loops} loops`);
       console.log(`Runner ${started.runner.name} memory: ${started.memoryMib} MiB for runs, each weighed by its harness`);
-    });
+    }, (why) => console.error(`agentrun-serve runner: Runner ${started.runner.name} stops claiming and hands its runs back: ${why}. Run a runner of the server's release.`));
+    // Past the floor: non-zero, so its platform starts a runner of the new release in its place.
+    return outdated === undefined ? 0 : 3;
   } finally {
     gauge.stop();
   }
-  return 0;
 }
 
 /** The signals that stop a runner process. */

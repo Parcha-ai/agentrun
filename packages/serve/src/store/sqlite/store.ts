@@ -267,12 +267,37 @@ async function versionOf(db: Connection): Promise<number | null> {
  *  the store, is set again. */
 const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", ".door-token"];
 
+/** The columns a runner of this build needs that an earlier build of this same version may not have: the server adds each
+ *  at its start (openSqliteStore), and a runner on a file without one waits for that server (StoreAwaitsServer, in `why`'s
+ *  words; exit 3). store-schema reads the same list, so its report says "waits" where the runner would. */
+export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly columns: readonly string[]; readonly why: string }[] = [
+  { table: "revisions", columns: ["mcp_pin", "monid_pin"], why: "install MCP and Monid revision metadata" },
+  { table: "settings", columns: ["connector_id"], why: "add native command ownership metadata" },
+  { table: "runs", columns: ["cost_upper_bound"], why: "add the bound beside each run's cost" },
+  { table: "runs", columns: ["labels"], why: "add each run's labels" },
+  { table: "triggers", columns: ["template_id"], why: "add each trigger's package mark" },
+  { table: "runners", columns: ["host"], why: "keep each runner's word that it is there and its relay in one table (runners)" },
+  { table: "runners", columns: Object.keys(RUNNERS_ADDED), why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
+  { table: "hand_backs", columns: ["run_id"], why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
+  { table: "run_attempts", columns: ["run_id"], why: "keep each claim's turn and attempt (run_attempts)" },
+];
+
+/** What a runner of this build waits for on a file of this version (SQLITE_RUNNER_NEEDS' first missing column's `why`),
+ *  or undefined when it opens; `columnsOf` reads a table's columns. */
+export async function runnerWaitsFor(columnsOf: (table: string) => Promise<ReadonlySet<string>> | ReadonlySet<string>): Promise<string | undefined> {
+  for (const need of SQLITE_RUNNER_NEEDS) {
+    const present = await columnsOf(need.table);
+    if (need.columns.some((column) => !present.has(column))) return need.why;
+  }
+  return undefined;
+}
+
 /** The files an earlier version kept in a data directory, relative to it: its store (a STORE_FILE with tables and no
  *  store_meta row), agent homes (<agent>/agent.sqlite, agents/<agent>/agent.sqlite), run databases (runs/<run>/run.sqlite,
  *  disk/agents/<agent>/runs/<run>/run.sqlite), its settings files (EARLIER_ROOT_FILES) and its homes' sign-ins
  *  (homes/<home>/sign-ins/sign-ins.json). Read only: nothing is opened for writing or made. The store is read before
  *  this server holds its owner lock, so it waits `busyTimeoutMs` for another process's lock on it (isThisVersionsStore). */
-function earlierVersionIn(dataDir: string, busyTimeoutMs: number): string[] {
+export function earlierVersionIn(dataDir: string, busyTimeoutMs: number): string[] {
   if (!existsSync(dataDir)) return [];
   const found: string[] = [];
   // A path the server may not look into is not an earlier version's: that version wrote its files as the server's own
@@ -375,6 +400,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if (upgrading && role === "runner") throw new StoreAwaitsServer(`bring this store from version ${found} to ${SCHEMA_VERSION}`);
     if (found !== SCHEMA_VERSION && !upgrading) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
+    // Every column a runner of this build needs that an earlier build of this version may lack (SQLITE_RUNNER_NEEDS), read
+    // at once: the same list store-schema reports from. Each check below says the same, where the server adds it.
+    if (role === "runner") {
+      const waits = await runnerWaitsFor(async (table) => new Set((await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).map((column) => column.name)));
+      if (waits !== undefined) throw new StoreAwaitsServer(waits);
+    }
     if (role === "runner" && (!columns.has("mcp_pin") || !columns.has("monid_pin"))) throw new StoreAwaitsServer("install MCP and Monid revision metadata");
     const nativeOwners=(await connection.all<{name:string}>("PRAGMA table_info(settings)")).some(column=>column.name==='connector_id');
     if(!nativeOwners){
@@ -484,7 +515,14 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     await connection.close().catch(() => undefined);
     throw error;
   }
-  return storeOver(connection, options.now ?? Date.now, inMemory(file) ? undefined : file);
+  const store = storeOver(connection, options.now ?? Date.now, inMemory(file) ? undefined : file);
+  // A SQLite runner opens only its own version (the server upgrades the file in place at its start, never beside a
+  // runner on another build): its floor is the version itself.
+  const schemaState = async () => {
+    const version = await versionOf(connection);
+    return { version, runnerFloor: version, known: SCHEMA_VERSION };
+  };
+  return Object.assign(store, { schemaState });
 }
 
 /** Every unrefused approve or deny after the first for one approval of a run, refused with why (the open above). */

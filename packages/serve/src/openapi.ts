@@ -3761,6 +3761,16 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   Capabilities: {
     learning_model: { ...LEARNING_MODEL, "x-agentrun-serve": "learningmodel/1" },
+    store_schema: {
+      type: "object", additionalProperties: false, required: ["version", "runner_floor", "known"],
+      properties: {
+        version: { type: ["integer", "null"], description: "The store's schema version now, read at this answer; null when none is set up." },
+        runner_floor: { type: ["integer", "null"], description: "The oldest schema version a runner's build must know to run on this store: the newest migration that breaks earlier runners (on SQLite, the version itself). A runner whose build knows less claims nothing more, hands its runs back and exits 3." },
+        known: { type: "integer", description: "The schema version this server's build knows. A build that knows less than `version` cannot be deployed on this store: its server refuses it." },
+      },
+      description: "The store's schema and runner floor beside this server's own, for a deploy's check that refuses a build older than the store. `agentrun-serve store-schema --build` prints a build's `known` without a store.",
+      "x-agentrun-serve": "runnerfloor/1",
+    },
     learning: {
       type: "object", additionalProperties: false, required: ["pending", "approve"],
       properties: {

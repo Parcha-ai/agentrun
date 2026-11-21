@@ -1007,6 +1007,11 @@ export type Capabilities = {
     needs: "key" | "model" | null;
     reason: string | null;
   };
+  store_schema?: {
+    version: number | null;
+    runner_floor: number | null;
+    known: number;
+  };
   learning: {
     pending: true;
     approve: boolean;
