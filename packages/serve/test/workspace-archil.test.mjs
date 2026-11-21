@@ -889,8 +889,7 @@ test("ArchilWorkspace: a disk gone at Archil is UNAVAILABLE in its words on ever
   await assert.rejects(workspace.append("log.txt", "a"), (error) => gone(error) && !/may also have landed/.test(error.message));
   await assert.rejects(workspace.stat("notes"), gone);
   await assert.rejects(workspace.remove("notes", { force: true }), gone);
-  // A ranged read is no SDK call, so Archil answers it 404 as for a missing file: still the disk, never NOT_FOUND (a
-  // learning folder read as empty).
+  // A ranged read too: the disk, never NOT_FOUND (a learning folder read as empty).
   await assert.rejects(workspace.read("learning/notes.md"), gone);
   // An append of more than one call refused at its first: none of it landed, and it says so.
   const big = "x".repeat(APPEND_MAX + 1);
