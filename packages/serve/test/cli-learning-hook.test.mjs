@@ -213,9 +213,9 @@ test('bounded source text survives offline retry and stays explicitly incomplete
     { prompt: 'Task.', answer: 'a'.repeat(130_000) },
     { prompt: 'Task.', answer: '😀'.repeat(32_769) },
     { prompt: 'Task.', answer: '\u0001'.repeat(40_000) },
-    { prompt: 'password '.repeat(14_000), answer: 'password '.repeat(14_000), env: { OPENAI_API_KEY: 'password' } },
+    { prompt: 'test-key '.repeat(14_000), answer: 'test-key '.repeat(14_000), env: { OPENAI_API_KEY: 'test-key' } },
     // A cut through a held value must not expose its leading fragment.
-    { prompt: 'p'.repeat(127_996) + 'abcdefghij', answer: 'Ready.', env: { OPENAI_API_KEY: 'abcdefghij' } },
+    { prompt: 'p'.repeat(127_996) + 'fake-test-key', answer: 'Ready.', env: { OPENAI_API_KEY: 'fake-test-key' } },
   ];
   for (const source of cases) await t.test(`prompt ${source.prompt.length}, answer ${source.answer.length}, redacted ${Boolean(source.env)}`, async t => {
     const f = await setup(t);
@@ -242,6 +242,6 @@ test('bounded source text survives offline retry and stays explicitly incomplete
       assert.ok(Buffer.byteLength(JSON.stringify(batch.body)) <= 256_000);
       assert.ok(batch.body.events.every(event => event.type !== 'message' || event.text.length <= 128_000));
     }
-    if (source.env?.OPENAI_API_KEY === 'abcdefghij') assert.ok(!started.input.includes('abcd'), 'redact the entire secret before cutting text');
+    if (source.env?.OPENAI_API_KEY === 'fake-test-key') assert.ok(!started.input.includes('fake'), 'redact the entire secret before cutting text');
   });
 });
