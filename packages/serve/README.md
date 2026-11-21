@@ -3938,7 +3938,10 @@ evidence and the shadow result through the run-scoped SDK credential.
 The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in run lists, the detail cut to 140
 characters and no time) says how it went: `seeded`, then `reflecting` during its end step, and `merged`, or `dropped`
 with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`, `reflect_failed`,
-`empty`, `checker`, `use`; a run record with any other reason is not counted). It is `null` for a run that does not
+`empty`, `checker`, `use`, `reset`, `paused`; a run record with any other reason is not counted). `paused` is a learning
+folder whose disk can't run the folder script (an Archil account with serverless exec off, say): no compile attempt is
+counted, nothing stops, the next run tries again, and `GET /agents/{agent_id}/learning/loop` says so in `paused` while
+it is the agent's newest learning end. It is `null` for a run that does not
 learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a workflow's or an
 imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2 corrections.",
 "Keeping what this run learned…", "Learned the workflow sort-invoice. Kept your correction.", "Nothing new to keep from
