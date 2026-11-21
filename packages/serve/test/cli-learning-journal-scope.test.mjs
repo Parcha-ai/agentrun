@@ -107,3 +107,48 @@ test('a reconnect during queued-hook replay cannot redirect the next pending pro
   assert.equal(f.calls[0].origin, f.connection.url);
   assert.equal((await readdir(join(root, 'pending'))).length, 1, 'the unprocessed source prompt remains in its original private journal');
 });
+
+test('a still-loaded hook for the prior destination cannot queue a prompt for later retry to the new destination', async t => {
+  const f = await fixture(t);
+  await saveConnection(f.options.dataDir, { ...f.connection, url: 'http://127.0.0.1:8340', token: 'fixture-new-generation' });
+  const before = await journalFiles(f.options.dataDir);
+  await runCliLearningHook({ ...f.options, url: f.connection.url }, {
+    hook_event_name: 'UserPromptSubmit', session_id: 'source-session', turn_id: 'old-loaded-hook',
+    cwd: f.options.project, prompt: 'Task submitted under the old trusted hook declaration.',
+  }, f.dependencies);
+  assert.equal(f.calls.length, 0, 'a stale hook declaration cannot dispatch to the new enrollment');
+  assert.deepEqual(await journalFiles(f.options.dataDir), before, 'a rejected destination must not queue task data under the new enrollment');
+  const retried = await flushCliLearning(f.options, { fetch: f.fetch });
+  assert.equal(f.calls.length, 0, 'retry cannot silently retarget a rejected hook');
+  assert.equal(retried.pending, 0);
+  await f.capture('new-loaded-hook', 'Task submitted after activating the new hook.');
+  assert.ok(f.calls.some(call => call.path.endsWith('/complete')), 'fresh capture remains available');
+  assert.ok(f.calls.every(call => call.origin === 'http://127.0.0.1:8340'));
+});
+
+for (const when of ['while the begin response is pending', 'after guidance was cached']) {
+  test(`disconnect ${when} prevents returning pinned guidance from a loaded hook`, async t => {
+    const f = await fixture(t);
+    const input = { hook_event_name: 'UserPromptSubmit', session_id: 'source-session', turn_id: 'pinned-context',
+      cwd: f.options.project, prompt: 'A normal source task.' };
+    const disable = () => saveConnection(f.options.dataDir, { ...f.connection, revocation_pending: true });
+    const dependencies = { ...f.dependencies, fetch: async (url, request) => {
+      await f.fetch(url, request);
+      if (when === 'while the begin response is pending') await disable();
+      return Response.json({ run_id: 'fixture-pinned-run', agent_id: 'fixture-agent', token: 'fixture-run-credential',
+        learning: { enabled: true, revision: 'fixture-revision', context: '# Learned\nUse the owner correction.', workflows: [] } });
+    } };
+    const first = await runCliLearningHook(f.options, input, dependencies);
+    if (when === 'after guidance was cached') {
+      assert.match(first.hookSpecificOutput.additionalContext, /Use the owner correction/);
+      await disable();
+      assert.equal(await runCliLearningHook(f.options, input, dependencies), undefined);
+    } else {
+      assert.equal(first, undefined, 'guidance must not return after local disconnect won during the response');
+      const files = await journalFiles(f.options.dataDir);
+      assert.ok([...files.values()].some(text => JSON.parse(text).receipt?.run_id === 'fixture-pinned-run'),
+        'the admitted receipt remains durable for diagnosis without returning its guidance');
+    }
+    assert.equal(f.calls.length, 1, 'a locally disabled capture never retries the cached begin');
+  });
+}

@@ -134,7 +134,7 @@ agentrun remote connect --origin https://your-console.example \
 
 For automation, supply a private mode-0600 file owned by the source user containing two JSON fields: `origin` for the exact destination origin and `api_key` for the enrollment token using `--credential-file /private/enrollment.json --yes`. The enrollment credential is not retained. State contains only the connector-scoped credential and the locally approved target. Never put a token in a prompt, URL or command argument.
 
-The imported agent uses ordinary AgentRun revisions and learning controls. Turn on self-improvement in the destination, run a task, inspect its checked/graded learning in Learning Dojo, then start a fresh run. The worker delivers the pinned notes and skills additively; original instructions, MCP configuration and credentials remain on the source machine. Skills are materialized under a private per-run directory, never copied over project files. Reflection and grading use the same native signed-in runtime; they are additional model calls.
+The imported agent uses ordinary AgentRun revisions and learning controls. Turn on self-improvement in the destination and edit the owner's standing corrections in Learning. The worker supplies the pinned corrections to later runs; original instructions, authored skills, MCP configuration and credentials remain on the source machine. Native connections do not generate automatic notes or skills, compile learned workflows, or launch extra reflection sessions.
 
 ## Choose live runs, history, or both
 

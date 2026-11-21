@@ -114,6 +114,8 @@ Use `claude-code` for a Claude connection. In the console, open the connected ag
 Learning tabs to inspect recorded work and edit owner corrections. The normal learning switch
 controls guidance delivery for future prompts. Disconnect revokes enrollment and
 removes only the hooks installed for this connection; existing task and learning history stays available.
+Local capture stops even when the server is offline. Status reports `capture_enabled: false` while revocation
+is pending; run disconnect again when the server is available to finish revoking the credential.
 
 Completed windows retained during an outage can be retried without duplicating runs:
 

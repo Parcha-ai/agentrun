@@ -192,8 +192,9 @@ the run and supplies accepted learning to the next fresh task. Use the matching 
 | Codex SDK | [Wrap your existing Codex client and fresh threads](docs/tutorials/codex-sdk-learning.md) |
 | External platforms, including OpenClaw and Capy | [Report agents, scheduled jobs and threads from their platform](docs/tutorials/platform-sdk-runs.md) |
 
-The [live examples](examples/sdk-learning/README.md) verify native tool execution, an accepted note or skill, fresh-run reuse,
-and a learning-Off control. Reflection and independent grading run on the server and add model usage.
+The [live examples](examples/sdk-learning/README.md) verify native tool execution, owner-correction delivery in a fresh
+session, and a learning-Off control. Separate workflow examples verify compilation, an independent check, and reuse
+through the backend's tool bridge. Workflow compilation adds server model usage.
 
 ## Take the tour
 

@@ -2987,19 +2987,25 @@ unavailable; the unavailable breakdown remains null. Run counts, outcomes, time 
 meaning and do not treat an observed session as a completed run.
 
 `known_runs` counts usable run contributions; `unknown_runs` marks missing counters or unresolved overlap.
-`observed_sessions` counts source sessions contributing reported tokens; `unknown_sessions` marks missing or
+`observed_sessions` counts source identities with usable reports in scope, including when another view supplies
+the selected total; `unknown_sessions` marks missing or
 incomplete source coverage. Known and unknown counts can overlap: a selected aggregate can supply a lower bound
 without proving complete coverage. A verified native session hash and runtime link observations to CLI prompt windows,
 native runs, SDK runs or imported sessions. Same-source aggregates are added only when their windows prove they
 do not overlap. When retained daily source reports and run counters may overlap without an exact intersection,
 the result is a conservative lower bound and `unknown_runs` marks incomplete coverage, even when every source
 reported its counters. Offline prompt captures may arrive on a later day, so server timestamps alone do not
-prove their usage is separate from source day buckets. An imported
-root can aggregate descendants, and a run can span covered and uncovered days; neither aggregate can be split
-safely from the root identity or daily counters alone. Their unproven remainder stays in `unknown_runs` coverage.
+prove their usage is separate from source day buckets. An imported root can include descendants with no retained
+identity. When its journal exactly reconciles with its saved counters, the root’s own usage can be separated and
+counted against source reports. Its full aggregate remains an alternative to the same runtime’s native total;
+the larger coherent view is retained, never added to that total. An unavailable or inconsistent journal uses the
+same conservative alternative. Unresolved descendant coverage stays in `unknown_runs`.
 CLI/SDK run metrics may also contain reflection in a separate session. When both the full metrics and immutable
-source completion counters are known, their nonnegative difference remains included. Otherwise the unproven
-remainder is counted in `unknown_runs` coverage rather than silently discarded or guessed as zero.
+source completion counters are known, their nonnegative difference remains included. Historical CLI native
+reflections can themselves appear in source observations; when that overlap is possible, their full run is a
+runtime alternative too. Purged runs retain numeric counters but no private source identity: native counters
+remain conservative alternatives to potentially overlapping source views. Otherwise an unproven remainder is
+counted in `unknown_runs` coverage rather than silently discarded or guessed as zero.
 Historical identity remains valid when learning is
 disabled or revoked. Archiving a learning profile does not disconnect its observed source. Multiple collectors
 reporting the same verified session use the copy with the largest reported total for each UTC day, then the freshest

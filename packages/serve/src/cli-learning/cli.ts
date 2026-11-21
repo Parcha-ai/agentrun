@@ -132,11 +132,12 @@ export async function learningMain(argv: string[], io: CliIO = {}): Promise<numb
             ...(typeof connection?.last_run_id === 'string' ? { last_run_id: connection.last_run_id } : {}) };
         } catch { server = { reachable: false }; }
       }
-      output(JSON.stringify({ ...installation, connection: existing ? { connection_id: existing.connection_id, agent_id: existing.agent_id, url: existing.url } : null, server }, null, 2));
+      output(JSON.stringify({ ...installation, connection: existing ? { connection_id: existing.connection_id, agent_id: existing.agent_id, url: existing.url, capture_enabled: !existing.revocation_pending } : null, server }, null, 2));
       return 0;
     }
     if (operation === 'disconnect') {
-      // Remove observation first, even if an offline server cannot acknowledge revocation yet.
+      // Loaded CLI sessions can retain hooks after their files are removed. Disable capture durably first.
+      if (existing) await saveConnection(dataDir, { ...existing, revocation_pending: true });
       const installation = await removeCliLearning(options);
       if (existing) {
         try { await revoke(fetcher, existing, await ownerToken(dataDir)); }
@@ -151,6 +152,7 @@ export async function learningMain(argv: string[], io: CliIO = {}): Promise<numb
     const before = await statusCliLearning(options);
     if (before.state === 'partial') throw new Error('AgentRun hooks were changed or disabled. Run learning disconnect before reconnecting.');
     if (existing) {
+      if (existing.revocation_pending) throw new Error('Capture is disabled while server revocation is pending. Run learning disconnect before reconnecting.');
       if (existing.url !== url) throw new Error('This project is connected to another server. Run learning disconnect before reconnecting.');
       let active = false;
       try {
@@ -182,6 +184,7 @@ export async function learningMain(argv: string[], io: CliIO = {}): Promise<numb
       output(JSON.stringify({ ...installation, connection_id: connection.connection_id, agent_id: connection.agent_id }, null, 2));
       return 0;
     } catch (error) {
+      if (saved) await saveConnection(dataDir, { ...connection, revocation_pending: true });
       if (before.state === 'not-installed') await removeCliLearning(options).catch(() => undefined);
       try {
         await revoke(fetcher, connection, token);

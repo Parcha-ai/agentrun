@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { learningMain } from '../dist/cli-learning/cli.js';
 import { connectionFile } from '../dist/cli-learning/state.js';
+import { runCliLearningHook } from '../dist/cli-learning/hook.js';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'agentrun-learning-cli-'));
@@ -77,7 +78,27 @@ test('offline disconnect removes hooks but retains revocation receipt for retry'
   assert.deepEqual(JSON.parse(await readFile(join(f.project, '.codex/hooks.json'), 'utf8')), {});
   await stat(f.privateFile);
   f.io.fetch = workingFetch;
+  const posts = f.requests.filter(request => request.method === 'POST').length;
+  const sessions = join(f.data, 'cli-learning', 'sessions');
+  const journalFiles = () => readdir(sessions, { recursive: true }).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+  const before = await journalFiles();
+  await runCliLearningHook({ runtime: 'codex', project: f.project, dataDir: f.data, url: 'http://127.0.0.1:7340' }, {
+    hook_event_name: 'UserPromptSubmit', session_id: 'still-loaded-session', turn_id: 'after-disconnect',
+    cwd: f.project, prompt: 'This task was submitted after disconnecting locally.',
+  }, { env: {}, fetch: workingFetch, snapshot: async () => ({ text: 'Fixture policy.', files: [], truncated: false }) });
+  assert.equal(f.requests.filter(request => request.method === 'POST').length, posts, 'a loaded hook must not upload after offline disconnect');
+  assert.deepEqual(await journalFiles(), before, 'a loaded hook must not save new task data after offline disconnect');
+  assert.notEqual(await learningMain(f.args('retry'), f.io), 0, 'pending server revocation keeps capture retry disabled');
+  assert.equal(f.requests.filter(request => request.method === 'POST').length, posts);
+  assert.deepEqual(await journalFiles(), before);
+  assert.equal(await learningMain(f.args('status'), f.io), 0);
+  assert.equal(JSON.parse(f.stdout.at(-1)).connection.capture_enabled, false);
+  assert.equal(JSON.parse(await readFile(f.privateFile, 'utf8')).revocation_pending, true);
+  assert.equal(await learningMain(f.args('connect'), f.io), 2, 'reconnect must not silently re-enable a locally disconnected capture');
+  assert.match(f.stderr.at(-1), /disconnect|revocation/i);
+  assert.deepEqual(JSON.parse(await readFile(join(f.project, '.codex/hooks.json'), 'utf8')), {});
   assert.equal(await learningMain(f.args('disconnect'), f.io), 0);
+  assert.equal(f.requests.at(-1).method, 'DELETE', 'the retained credential is usable only to finish server revocation');
   await assert.rejects(readFile(f.privateFile), { code: 'ENOENT' });
 });
 

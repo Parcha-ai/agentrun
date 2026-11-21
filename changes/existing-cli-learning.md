@@ -21,3 +21,6 @@ Private pending capture journals are bound to their destination and credential g
 starts a fresh journal; prior or unbound records remain on disk and are not automatically migrated,
 uploaded or deleted. `learning retry` reports `blocked_journals` and exits with status 1 when those
 records need review.
+
+Disconnect disables local capture before removing hooks or contacting the server. If server revocation is
+pending, loaded hooks and retries stay disabled until disconnect completes; status exposes `capture_enabled`.

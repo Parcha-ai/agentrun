@@ -11,6 +11,8 @@ export type CliLearningConnection = {
   connection_id: string;
   agent_id: string;
   token: string;
+  /** Local capture stops before the server acknowledges a disconnect. Keep the credential only to revoke it. */
+  revocation_pending?: true;
 };
 export const stateHash = (value: string): string => createHash('sha256').update(value).digest('hex');
 export const connectionFile = (dataDir: string, runtime: CliLearningRuntime, project: string): string =>

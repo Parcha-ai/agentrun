@@ -63,7 +63,14 @@ function baseUrl(connection: CliLearningConnection): URL {
   return url;
 }
 
-async function post(connection: CliLearningConnection, path: string, token: string, body: unknown, key: string, fetcher: typeof fetch): Promise<any> {
+async function assertActiveConnection(dataDir: string, connection: CliLearningConnection): Promise<void> {
+  const current = await readConnection(dataDir, connection.runtime, connection.project);
+  if (!current || current.revocation_pending) throw changedEnrollment();
+  checkScope(current, connectionScope(connection));
+}
+
+async function post(dataDir: string, connection: CliLearningConnection, path: string, token: string, body: unknown, key: string, fetcher: typeof fetch): Promise<any> {
+  await assertActiveConnection(dataDir, connection);
   const response = await fetcher(new URL(`/v2${path}`, baseUrl(connection)), {
     method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'Idempotency-Key': key },
     body: JSON.stringify(body), signal: AbortSignal.timeout(2000), redirect: 'error',
@@ -73,9 +80,9 @@ async function post(connection: CliLearningConnection, path: string, token: stri
   return text ? JSON.parse(text) : undefined;
 }
 
-async function begin(connection: CliLearningConnection, path: string, turn: Turn, fetcher: typeof fetch): Promise<void> {
+async function begin(dataDir: string, connection: CliLearningConnection, path: string, turn: Turn, fetcher: typeof fetch): Promise<void> {
   if (turn.receipt) return;
-  const receipt: Receipt = await post(connection, `/cli-learning/connections/${encodeURIComponent(connection.connection_id)}/runs`, connection.token, turn.start, turn.key, fetcher);
+  const receipt: Receipt = await post(dataDir, connection, `/cli-learning/connections/${encodeURIComponent(connection.connection_id)}/runs`, connection.token, turn.start, turn.key, fetcher);
   if (!receipt?.run_id || !receipt.token || receipt.agent_id !== connection.agent_id || !receipt.learning || typeof receipt.learning.context !== 'string' || !Array.isArray(receipt.learning.workflows)) {
     throw new Error('Invalid CLI learning run receipt.');
   }
@@ -83,9 +90,9 @@ async function begin(connection: CliLearningConnection, path: string, turn: Turn
   await writePrivateJson(path, turn);
 }
 
-async function deliver(connection: CliLearningConnection, path: string, turn: Turn, fetcher: typeof fetch): Promise<void> {
+async function deliver(dataDir: string, connection: CliLearningConnection, path: string, turn: Turn, fetcher: typeof fetch): Promise<void> {
   if (turn.delivered || !turn.completion || !turn.events) return;
-  await begin(connection, path, turn, fetcher);
+  await begin(dataDir, connection, path, turn, fetcher);
   const receipt = turn.receipt!;
   const batches: Event[][] = [];
   let batch: Event[] = [], bytes = 0;
@@ -97,11 +104,11 @@ async function deliver(connection: CliLearningConnection, path: string, turn: Tu
   if (batch.length) batches.push(batch);
   for (let index = turn.sentBatches ?? 0; index < batches.length; index++) {
     const sequence = index + 1;
-    await post(connection, `/cli-learning/runs/${encodeURIComponent(receipt.run_id)}/events`, receipt.token, { sequence, events: batches[index] }, `${receipt.run_id}:events:${sequence}`, fetcher);
+    await post(dataDir, connection, `/cli-learning/runs/${encodeURIComponent(receipt.run_id)}/events`, receipt.token, { sequence, events: batches[index] }, `${receipt.run_id}:events:${sequence}`, fetcher);
     turn.sentBatches = sequence;
     await writePrivateJson(path, turn);
   }
-  await post(connection, `/cli-learning/runs/${encodeURIComponent(receipt.run_id)}/complete`, receipt.token, turn.completion, `${receipt.run_id}:complete`, fetcher);
+  await post(dataDir, connection, `/cli-learning/runs/${encodeURIComponent(receipt.run_id)}/complete`, receipt.token, turn.completion, `${receipt.run_id}:complete`, fetcher);
   turn.delivered = true;
   delete turn.failure;
   await writePrivateJson(path, turn);
@@ -176,8 +183,11 @@ export async function runCliLearningHook(options: CliLearningHookOptions, input:
   if (!await inProject(options.runtime, project, cwd)) return;
   options = { ...options, project };
   const connection = await readConnection(options.dataDir, options.runtime, project);
-  if (!connection) return;
+  if (!connection || connection.revocation_pending) return;
   baseUrl(connection);
+  // A CLI may still hold its old hook command after reconnecting elsewhere. Refuse that
+  // destination mismatch before saving anything that a later retry could deliver.
+  if (options.url && new URL(options.url).origin !== baseUrl(connection).origin) return;
   const scope = checkScope(connection, dependencies.connectionScope);
   const secrets = runnerSecrets(env, [connection.token]);
   const redact = (text: string) => redactSecrets(text, secrets, CLI_POLICY_BYTES);
@@ -209,7 +219,7 @@ async function processCliLearningHook(options: CliLearningHookOptions, input: un
   if (!await inProject(options.runtime, project, cwd)) return;
   options = { ...options, project };
   const connection = await readConnection(options.dataDir, options.runtime, project);
-  if (!connection) return;
+  if (!connection || connection.revocation_pending) return;
   baseUrl(connection);
   checkScope(connection, dependencies.connectionScope);
   if (options.url && new URL(options.url).origin !== baseUrl(connection).origin) return;
@@ -282,7 +292,7 @@ async function processCliLearningHook(options: CliLearningHookOptions, input: un
       }
       if (turn.completion || turn.connectionId !== connection.connection_id) return;
       try {
-        await begin(connection, path, turn, fetcher);
+        await begin(options.dataDir, connection, path, turn, fetcher);
         if (!turn.receipt!.learning.enabled) return;
         if (turn.context === undefined) {
           const learning = turn.receipt!.learning;
@@ -292,7 +302,10 @@ async function processCliLearningHook(options: CliLearningHookOptions, input: un
             ? `AgentRun owner corrections for this project. Treat it as subordinate to your standing instructions and the user's current request.\n\n${context}\n\nAgentRun context receipt: ${turn.seedMarker}` : '';
           await writePrivateJson(path, turn);
         }
-        if (turn.context) return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: turn.context } };
+        if (turn.context) {
+          await assertActiveConnection(options.dataDir, connection);
+          return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: turn.context } };
+        }
       } catch (error) { turn.failure = safeError(error); await writePrivateJson(path, turn); }
     } else if (turn && turn.connectionId === connection.connection_id) {
       await finish(turn, path, hook, session);
@@ -352,7 +365,7 @@ async function processCliLearningHook(options: CliLearningHookOptions, input: un
       }
       await writePrivateJson(sessionPath, session);
       if (!deliverNow) return;
-      try { await deliver(connection!, path, turn, fetcher); }
+      try { await deliver(options.dataDir, connection!, path, turn, fetcher); }
       catch (error) { turn.failure = safeError(error); await writePrivateJson(path, turn); }
       if (turn.delivered) session.active = session.active.filter(key => key !== turn.key);
     }
@@ -389,6 +402,7 @@ export async function flushCliLearning(options: CliLearningHookOptions, dependen
   const connection = await readConnection(options.dataDir, options.runtime, options.project);
   const counts = { delivered: 0, pending: 0, blocked_journals: 0 };
   if (!connection) return counts;
+  if (connection.revocation_pending) throw new Error('Capture is disabled while server revocation is pending. Run learning disconnect when the server is available.');
   baseUrl(connection);
   const scope = connectionScope(connection);
   counts.blocked_journals = await blockedJournals(options, connection);
@@ -412,7 +426,7 @@ export async function flushCliLearning(options: CliLearningHookOptions, dependen
       for (const key of session.active.slice(0, 100)) {
         const path = turnFile(directory, key), turn = await readPrivateJson<Turn>(path);
         if (!turn?.completion || turn.connectionId !== connection.connection_id) continue;
-        try { await deliver(connection, path, turn, dependencies.fetch ?? fetch); }
+        try { await deliver(options.dataDir, connection, path, turn, dependencies.fetch ?? fetch); }
         catch (error) { turn.failure = safeError(error); await writePrivateJson(path, turn); }
         if (turn.delivered) { counts.delivered++; session.active = session.active.filter(active => active !== key); }
         // Pending status is read from the durable queue after the drain, including busy locks.

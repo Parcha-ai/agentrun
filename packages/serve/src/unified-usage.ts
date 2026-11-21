@@ -16,7 +16,8 @@ const fields = ['input', 'output', 'cache_read', 'cache_write'] as const;
 type Counts = Record<typeof fields[number], number | null> & { tokens: number | null };
 type Fact = Counts & { day: string; harness: string; runId?: string };
 type Observed = { id: string; key: string; received: number; harness: string; facts: Fact[]; partial: Set<string> };
-type Recorded = { id: string; fact: Fact; key?: string; imported: boolean; opaqueImport: boolean; sdk: boolean; window?: string };
+type Recorded = { id: string; fact: Fact; key?: string; imported: boolean; opaqueImport: boolean; sdk: boolean; window?: string;
+  purged: boolean; runtimeErased: boolean; nativeReflection: boolean };
 export type UnifiedUsage = Counts & {
   known_runs: number; unknown_runs: number; observed_sessions: number; unknown_sessions: number;
   partial_days: number; retention_limited: boolean;
@@ -56,15 +57,16 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
   const runs: Recorded[] = [];
   const selectedNative = new Set<string>();
   const revisions = new Map<string, Awaited<ReturnType<Store['agents']['revision']>>>();
-  for (const run of await store.runs.list(filter.agent ? { agentId: filter.agent } : {})) {
+  for (const run of await store.runs.list({ purged: true, ...(filter.agent ? { agentId: filter.agent } : {}) })) {
     if (run.archivedAt !== null || isShadowRun(run.id) || await isArchived(run.agentId)) continue;
     if (!revisions.has(run.revisionId)) revisions.set(run.revisionId, await store.agents.revision(run.revisionId));
     const revision = revisions.get(run.revisionId), body = object(revision?.body), metrics = object(run.metrics);
     const cli = object(body.cli_learning), sdk = object(body.sdk), native = object(body.native);
-    let harness = metrics.cli_runtime ?? metrics.sdk_runtime ?? metrics.native_runtime ?? cli.runtime ?? sdk.runtime ?? native.runtime ?? run.importedFrom?.source ?? body.harness ?? DEFAULT_HARNESS;
+    const cliRuntime = cli.runtime === 'codex' ? 'codex-cli' : cli.runtime === 'claude-code' ? 'claude-code-cli' : cli.runtime;
+    let harness = metrics.cli_runtime ?? metrics.sdk_runtime ?? metrics.native_runtime ?? cliRuntime ?? sdk.runtime ?? native.runtime ?? run.importedFrom?.source ?? body.harness ?? DEFAULT_HARNESS;
     let session = metrics.cli_session_id ?? metrics.sdk_session_id ?? metrics.native_session_id ?? run.importedFrom?.session;
     let window: Record<string, any> = {};
-    if (metrics.cli_runtime || Object.keys(cli).length) {
+    if (run.purgedAt == null && (metrics.cli_runtime || Object.keys(cli).length)) {
       const launch = object((await store.runs.launch(run.id).catch(() => undefined))?.body);
       window = object(launch.cli_learning);
       if (!session) { session = window.session_id; harness = window.runtime ?? harness; }
@@ -74,6 +76,8 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
     if (run.startedAt < from || run.startedAt >= to) continue;
     runs.push({ id: run.id, key, imported: run.importedFrom !== null,
       opaqueImport: Boolean(metrics.remote_history_sha256 || String(session).startsWith('redacted-')),
+      purged: run.purgedAt != null, runtimeErased: run.purgedAt != null && !Object.keys(body).length,
+      nativeReflection: Boolean(window.native_grading),
       ...(key && key === nativeKey(runtime(window.runtime), window.session_id) && typeof window.turn_id === 'string' && window.turn_id
         ? { window: window.turn_id } : {}),
       sdk: Boolean(metrics.cli_runtime || metrics.sdk_runtime || Object.keys(cli).length || Object.keys(sdk).length),
@@ -146,26 +150,34 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
   }
   const facts: Fact[] = [], partial = new Set<string>();
   const knownRuns = new Set<string>(), unknownRuns = new Set<string>();
-  const nativeFacts = new Map<string, Fact[]>(), importedAlternatives = new Map<string, Fact[]>();
+  const nativeFacts = new Map<string, Fact[]>(), opaqueAlternatives = new Map<string, Fact[]>();
   const otherNative = new Set([
     ...runs.filter(run => !run.imported && run.key && run.fact.tokens !== null).map(run => runtime(run.fact.harness)!),
     ...[...authorities.values()].filter(source => source.facts.some(fact => fact.tokens !== null)).map(source => source.harness),
   ]);
   const groups = new Map<string, Recorded[]>();
+  const alternative = (harness: string, fact: Fact) => {
+    const alternatives = opaqueAlternatives.get(harness) ?? []; alternatives.push(fact); opaqueAlternatives.set(harness, alternatives);
+  };
   for (const run of runs) {
     const harness = runtime(run.fact.harness);
+    if (run.purged && !run.key && run.fact.tokens !== null && (harness || (run.runtimeErased && otherNative.size))) {
+      // Purge intentionally deletes native identities and receipts. Keep its counters without recreating
+      // private provenance or pretending that an opaque native aggregate is disjoint from observed usage.
+      alternative(harness ?? '*', run.fact); continue;
+    }
     if (run.imported && run.key && harness && otherNative.has(harness) && run.fact.tokens !== null) {
       // Old local imports retain exact child counters, but not child identities. Verify the complete
       // journal before separating the root; a missing journal or namespaced/redacted root proves no split.
       let root: Counts | undefined;
-      if (!run.opaqueImport) try {
+      if (!run.opaqueImport && !run.purged) try {
         const entries = await journalEntries(store.readJournal(run.id), BACKGROUND_CONTEXT) as unknown as EntryLike[];
         const complete = runCounts(runMetricsOf(entries));
         const own = runCounts(runMetricsOf(entries.filter(entry => entry.kind !== REQUEST_COST || object(entry.data).request !== 'subagent')));
         if (complete.tokens !== null && own.tokens !== null && fields.every(field => complete[field] === run.fact[field] && own[field]! <= complete[field]!)) root = own;
       } catch { /* Retain the saved aggregate as an alternative, never guess missing provenance. */ }
       if (!root || root.tokens !== run.fact.tokens) {
-        const alternatives = importedAlternatives.get(harness) ?? []; alternatives.push(run.fact); importedAlternatives.set(harness, alternatives);
+        alternative(harness, run.fact);
         unknownRuns.add(run.id);
       }
       if (!root) continue;
@@ -191,16 +203,23 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
     for (const run of group) {
       if (run.fact.tokens === null) { facts.push(run.fact); unknownRuns.add(run.id); continue; }
       let fact = run.fact, window: string | undefined;
-      if (run.sdk) {
+      if (run.sdk && !run.purged) {
         const usage = (await sdkInbox(store, run.id).catch(() => undefined))?.completion?.usage;
         const task = runCounts({ input: usage?.input_tokens, output: usage?.output_tokens,
           cacheRead: usage?.cache_read_tokens, cacheWrite: usage?.cache_write_tokens });
         if (task.tokens !== null && fields.every(field => fact[field]! >= task[field]!)) {
-          // The immutable task receipt separates reflection, which ran in a different native session.
-          // It stays additive regardless of which overlapping view supplies the task's lower bound.
+          // The immutable receipt separates reflection. Current SDK reflection is an independent HTTP
+          // call; historical native graders created observable sessions without retaining their identities.
           const remainder = Object.fromEntries(fields.map(field => [field, fact[field]! - task[field]!])) as Omit<Counts, 'tokens'>;
           const tokens = plus(fields.map(field => remainder[field]!));
-          if (tokens !== null && tokens > 0) facts.push({ ...fact, ...remainder, tokens });
+          if (tokens !== null && tokens > 0) {
+            const harness = runtime(fact.harness)!;
+            const couldObserveReflection = run.nativeReflection && (
+              [...authorities.values()].some(source => source.key !== key && source.harness === harness && source.facts.some(item => item.tokens !== null))
+              || runs.some(other => other.id !== run.id && other.key !== key && runtime(other.fact.harness) === harness && other.fact.tokens !== null));
+            if (couldObserveReflection) { alternative(harness, fact); unknownRuns.add(run.id); }
+            else facts.push({ ...fact, ...remainder, tokens });
+          }
           fact = { ...fact, ...task }; window = run.window;
         }
       }
@@ -230,15 +249,28 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
     const harness = session?.harness ?? runtime(group[0]!.fact.harness)!;
     const cohort = nativeFacts.get(harness) ?? []; cohort.push(...selected); nativeFacts.set(harness, cohort);
   }
-  for (const [harness, alternatives] of importedAlternatives) {
-    // An unidentified imported child could be any other session of this runtime. Its full aggregate is
-    // an alternative to that runtime's coherent root/native view, never an additive descendant remainder.
-    // Distinct managed work and separately booked reflection stay outside this comparison.
+  for (const [harness, alternatives] of opaqueAlternatives) {
+    if (harness === '*') continue;
+    // Opaque descendants, historical native reflection and purged native counters can overlap other
+    // sessions of this runtime. Compare whole views; independent managed work and HTTP reflection stay additive.
     let selected = nativeFacts.get(harness) ?? [];
+    const ambiguous = selected.length > 0 || alternatives.length > 1;
     alternatives.sort((a, b) => a.runId!.localeCompare(b.runId!));
     for (const fact of alternatives) if (!selected.length || fact.tokens! > (plus(selected.map(item => item.tokens!)) ?? Infinity)) selected = [fact];
     nativeFacts.set(harness, selected);
-    for (const run of runs) if (run.key && runtime(run.fact.harness) === harness) unknownRuns.add(run.id);
+    if (ambiguous) {
+      for (const run of runs) if (runtime(run.fact.harness) === harness) unknownRuns.add(run.id);
+    }
+  }
+  const unscoped = opaqueAlternatives.get('*');
+  if (unscoped?.length) {
+    let selected = [...nativeFacts.values()].flat();
+    unscoped.sort((a, b) => a.runId!.localeCompare(b.runId!));
+    for (const fact of unscoped) {
+      unknownRuns.add(fact.runId!);
+      if (!selected.length || fact.tokens! > (plus(selected.map(item => item.tokens!)) ?? Infinity)) selected = [fact];
+    }
+    nativeFacts.clear(); nativeFacts.set('*', selected);
   }
   facts.push(...[...nativeFacts.values()].flat());
   for (const fact of facts) if (fact.runId && fact.tokens !== null) knownRuns.add(fact.runId);

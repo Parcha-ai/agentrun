@@ -16,14 +16,16 @@ async function run(s, id, metrics, agent = 'managed', body = { instructions: 'Ta
   await s.store.runs.create({ id, agentId: agent, revisionId: `rev-${agent}` }, launch);
   const claim = await s.store.claim(id, 'test-runner', { leaseMs: 60_000 });
   await s.store.runs.update(claim, { state: 'ended', outcome: 'completed', endedAt: Date.now(), metrics });
+  return claim;
 }
-async function cliWindow(s, id, input, output, { session = 'native-session', turn = id, agent = 'profile', reflection = 0 } = {}) {
+async function cliWindow(s, id, input, output, { session = 'native-session', turn = id, agent = 'profile', reflection = 0, nativeReflection = false } = {}) {
   const cli = { runtime: 'codex-cli', connection_id: 'connection', connection_generation: 'generation', session_id: session,
-    turn_id: turn, instructions: 'Task.', policy_complete: true };
-  await run(s, id, { ...counts(input + reflection, output), cli_runtime: cli.runtime, cli_session_id: session }, agent,
-    { instructions: 'Task.', cli_learning: { runtime: cli.runtime, connection_id: cli.connection_id } }, { body: { cli_learning: cli } });
+    turn_id: turn, instructions: 'Task.', policy_complete: true, ...(nativeReflection ? { native_grading: { runtime: 'codex' } } : {}) };
+  const claim = await run(s, id, { ...counts(input + reflection, output), cli_runtime: cli.runtime, cli_session_id: session }, agent,
+    { instructions: 'Task.', cli_learning: { runtime: 'codex', connection_id: cli.connection_id } }, { body: { cli_learning: cli } });
   await s.store.settings.putIfAbsent(`sdk-run:${id}`, { completion: { status: 'completed', session_id: session, evidence_complete: true,
     usage: { input_tokens: input, output_tokens: output, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null } } });
+  return claim;
 }
 async function observed(s, id, days, { native, connection, harness = 'codex', connector = id, received = Date.now() } = {}) {
   await s.store.settings.putIfAbsent(`observation.connector.${connector}`, { id: connector, sessions: {
@@ -241,4 +243,49 @@ test('verified root-only import usage remains additive with a different native i
   const u = (await read(s)).usage;
   assert.equal(u.tokens, 130, 'the complete journal proves there is no opaque child remainder to overlap the other session');
   assert.equal(u.unknown_runs, 0);
+});
+
+test('purging a recorded run keeps its numeric usage in the unified total', async t => {
+  const s = await serve(t, { runner: false });
+  const claim = await run(s, 'gone', counts(100, 20));
+  await s.store.release(claim);
+  await run(s, 'kept', counts(5, 1));
+  const before = (await read(s)).usage;
+  assert.equal(before.tokens, 126);
+  assert.equal((await s.api('DELETE', '/runs/gone')).status, 204);
+  assert.deepEqual((await read(s)).usage, before, 'purge removes private evidence, not already recorded numeric counters');
+});
+
+test('purged native counters remain a conservative alternative after their private identity is erased', async t => {
+  const s = await serve(t, { runner: false });
+  const claim = await cliWindow(s, 'gone-native', 100, 20);
+  await s.store.release(claim);
+  await observed(s, 'os_source', { [date(today())]: { model: usage(20, 3) } }, { native: 'native-session', connection: 'connection' });
+  assert.equal((await read(s)).usage.tokens, 120);
+  assert.equal((await s.api('DELETE', '/runs/gone-native')).status, 204);
+  let a = await read(s);
+  assert.equal(a.usage.tokens, 120, '120 anonymous native counters and23 observed tokens are alternatives, not143');
+  assert.equal(a.totals.tokens, 120, 'the original recorded counters remain exact');
+  assert.equal(a.usage.unknown_runs, 1);
+  const tombstone = await s.store.runs.get('gone-native');
+  assert.equal(tombstone.metrics.cli_session_id, undefined);
+  await assert.rejects(s.store.runs.launch('gone-native'));
+  await s.store.agents.purge('profile');
+  a = await read(s);
+  assert.equal(a.usage.tokens, 120, 'erasing the revision runtime cannot turn anonymous usage into an additive managed run');
+  assert.equal(a.usage.unknown_runs, 1);
+});
+
+test('historical native reflection is not added again when another observed session can contain it', async t => {
+  const s = await serve(t, { runner: false });
+  await cliWindow(s, 'legacy-reflected', 100, 20, { reflection: 15, nativeReflection: true });
+  await observed(s, 'os_task', { [date(today())]: { model: usage(300, 20, { cache_read_tokens: 0, cache_write_tokens: 0 }) } },
+    { native: 'native-session', connection: 'connection' });
+  await observed(s, 'os_reflection', { [date(today())]: { model: usage(15, 0, { cache_read_tokens: 0, cache_write_tokens: 0 }) } },
+    { native: 'reflection-session', connection: 'connection' });
+  const u = (await read(s)).usage;
+  assert.equal(u.tokens, 335, '320 observed task +15 observed reflection, never +15 from the legacy completion remainder again');
+  assert.equal(u.input, 315);
+  assert.equal(u.output, 20);
+  assert.equal(u.unknown_runs, 1, 'the historical reflector did not retain its native session identity');
 });
