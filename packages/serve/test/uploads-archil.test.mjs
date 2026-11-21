@@ -51,6 +51,15 @@ test("a file sent in one call is kept on the uploads disk at files/<id>/, its by
   await assert.rejects(uploads.remove(a.file_id), (error) => error instanceof ApiError && error.code === "not_found");
 });
 
+test("files sent in one millisecond still list newest first: each id sorts after the one before it", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 0, 1) });
+  const { send, uploads } = uploadsOn();
+  const sent = [];
+  // 64 in one frozen millisecond: random ids would list them in this order by chance once in 64!.
+  for (let i = 0; i < 64; i += 1) sent.push((await send(`f${i}.txt`, Buffer.from(String(i)))).file_id);
+  assert.deepEqual(await uploads.ids(), [...sent].reverse(), "newest first");
+});
+
 test("a reservation and its PUT: pending, then ready with the bytes' hash; a body of another length or hash is a 422 at that field, and nothing changes", async () => {
   const { uploads } = uploadsOn();
   const bytes = Buffer.from("exactly these bytes");

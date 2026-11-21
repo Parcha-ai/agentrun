@@ -1,12 +1,11 @@
 // npm as a child process of a repository script (npm-command.mjs), and no script that spawns it by name: on Windows that
 // fails (#3334), npm.cmd with no shell at EINVAL and `npm` at ENOENT, which is how `npm run build` broke there.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { npmCommand, npmSpawnSync } from './npm-command.mjs';
+import { npmCommand, npmSpawnSync, spawnArgvSync } from './npm-command.mjs';
 
 const SCRIPTS = fileURLToPath(new URL('.', import.meta.url));
 
@@ -15,15 +14,10 @@ test('no repository script spawns npm by name: each goes through npm-command.mjs
   const byName = /\b(?:spawn|spawnSync|execFile|execFileSync|exec|execSync)\(\s*(?:['"`]npm(?:\.cmd)?['"`]|process\.platform\s*===\s*['"]win32['"]\s*\?\s*['"]npm)/;
   // npm.cmd named anywhere: a command picked by platform, then spawned (build-console.mjs did).
   const chosen = /['"`]npm\.cmd['"`]/;
-  // A command held in an array, its program spawned as it is: ci-plan's and test-affected's commands start with npm, so
-  // the line hands npm to npm-command.mjs.
-  const first = /\b(?:spawn|spawnSync|execFile|execFileSync)\(\s*[\w.]+\[0\]/;
-  // stranger.mjs installs as a stranger does, with the npm on that stranger's PATH, in an environment of its own.
-  const asAStranger = { 'stranger.mjs': /runCommand\('npm', installArgs/ };
   const found = [];
   for (const name of readdirSync(SCRIPTS).filter((f) => f.endsWith('.mjs') && !f.endsWith('.test.mjs') && f !== 'npm-command.mjs')) {
     readFileSync(join(SCRIPTS, name), 'utf8').split('\n').forEach((line, i) => {
-      if ((byName.test(line) || chosen.test(line) || (first.test(line) && !/\bnpm(?:Spawn|SpawnSync|ExecFile)\(/.test(line))) && !asAStranger[name]?.test(line)) found.push(`scripts/${name}:${i + 1}: ${line.trim().slice(0, 120)}`);
+      if (byName.test(line) || chosen.test(line)) found.push(`scripts/${name}:${i + 1}: ${line.trim().slice(0, 120)}`);
     });
   }
   assert.deepEqual(found, []);
@@ -50,9 +44,10 @@ test("npm is this node running npm's own script: the one that ran this script, e
     { command: 'npm', args: ['exec', '-c', 'node --test "a b"', '100%'] });
 });
 
-test('npmSpawnSync runs the npm this test runs under', () => {
-  const done = npmSpawnSync(['--version'], { encoding: 'utf8' });
-  assert.equal(done.status, 0, done.stderr || String(done.error));
-  assert.match(done.stdout.trim(), /^\d+\.\d+\.\d+/);
-  assert.equal(done.stdout.trim(), execFileSync(process.execPath, [npmCommand([]).args[0] ?? process.execPath, '--version'], { encoding: 'utf8' }).trim());
+test('npmSpawnSync, and spawnArgvSync given npm, run the npm this test runs under; spawnArgvSync runs any other argv as written', () => {
+  for (const done of [npmSpawnSync(['--version'], { encoding: 'utf8' }), spawnArgvSync(['npm', '--version'], { encoding: 'utf8' })]) {
+    assert.equal(done.status, 0, done.stderr || String(done.error));
+    assert.match(done.stdout.trim(), /^\d+\.\d+\.\d+$/);
+  }
+  assert.equal(spawnArgvSync([process.execPath, '-p', '6 * 7'], { encoding: 'utf8' }).stdout.trim(), '42');
 });

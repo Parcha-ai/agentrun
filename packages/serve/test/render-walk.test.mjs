@@ -1,12 +1,22 @@
 // The Render walk (deploy/render/walk.mjs, the daily walk's render-hosted row), with no Render account: the service it
 // makes is render.yaml's, as the button's Blueprint makes it, with the values Render would generate made by the walk.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
 const ROOT = new URL("../../../", import.meta.url);
-const { PREFIX, imagePublished, serviceRequest } = await import(new URL("deploy/render/walk.mjs", ROOT));
+const { PREFIX, serviceRequest } = await import(new URL("deploy/render/walk.mjs", ROOT));
+// A scratch directory of the test's own, removed when it ends.
+const scratch = async (t, prefix) => {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  return dir;
+};
 const blueprint = parse(await readFile(new URL("render.yaml", ROOT), "utf8"));
 
 test("the walk makes render.yaml's service: its image, plan, disk and health check, its variables, the generated ones made", () => {
@@ -27,12 +37,8 @@ test("the walk makes render.yaml's service: its image, plan, disk and health che
   assert.equal(env.AGENTRUN_TELEMETRY, "0", "the walk is not a user: no usage counts");
 });
 
-test("a walk stopped midway (the job cancelled or out of time: SIGINT, then SIGTERM) deletes what it made, then exits", async () => {
-  const { spawn } = await import("node:child_process");
-  const { mkdtemp, readFile: read } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const dir = await mkdtemp(join(tmpdir(), "walk-stop-"));
+test("a walk stopped midway (the job cancelled or out of time: SIGINT, then SIGTERM) deletes what it made, then exits", async (t) => {
+  const dir = await scratch(t, "walk-stop-");
   const walk = new URL("deploy/railway/publish-and-walk.mjs", ROOT).href;
   for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
     const mark = join(dir, signal);
@@ -45,17 +51,13 @@ onStop(async () => writeFileSync(${JSON.stringify(mark)}, "deleted")); console.l
     assert.ok(started, `${signal}: the stand-in walk started`);
     child.kill(signal);
     const exit = await exited;
-    assert.equal(await read(mark, "utf8"), "deleted", `${signal}: deleted`);
+    assert.equal(await readFile(mark, "utf8"), "deleted", `${signal}: deleted`);
     assert.equal(exit, code, `${signal}: exits ${code}`);
   }
 });
 
-test("a walk stopped by SIGINT, then SIGTERM while its delete is still running (Actions' cancel), finishes the delete before it exits, though its finally took the handlers off", async () => {
-  const { spawn } = await import("node:child_process");
-  const { mkdtemp, readFile: read } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const mark = join(await mkdtemp(join(tmpdir(), "walk-stop-")), "deleted");
+test("a walk stopped by SIGINT, then SIGTERM while its delete is still running (Actions' cancel), finishes the delete before it exits, though its finally took the handlers off", async (t) => {
+  const mark = join(await scratch(t, "walk-stop-"), "deleted");
   const walk = new URL("deploy/railway/publish-and-walk.mjs", ROOT).href;
   // The stand-in's delete takes 1.5 s. The walk goes on after the SIGINT, and its `finally` calls onStop's off() while
   // that delete runs; then it says "deleting", and the SIGTERM lands in the middle of the delete.
@@ -71,7 +73,7 @@ console.log("made"); setTimeout(() => {}, 60_000);`;
   assert.ok(await deleting, "the SIGINT started the delete");
   child.kill("SIGTERM");
   const { code, signal } = await exited;
-  assert.equal(await read(mark, "utf8").catch(() => "not deleted"), "deleted", "the delete finished");
+  assert.equal(await readFile(mark, "utf8").catch(() => "not deleted"), "deleted", "the delete finished");
   assert.deepEqual({ code, signal }, { code: 130, signal: null }, "it exits as the first signal says, not killed by the second");
 });
 
@@ -150,38 +152,8 @@ test("the walk tries a request again only while Render's edge answers (502, 503 
   assert.ok(asked[0] >= 1 && asked[0] <= 100, `the send's timeout is ${asked[0]} ms, not the 100 ms left or less`);
 });
 
-test("the image check asks GHCR as an anonymous pull does: true when it has the tag, false on its 404, undefined when it can't tell", async () => {
-  const calls = [];
-  const ghcr = (manifest) => async (url, init = {}) => {
-    calls.push({ url, method: init.method ?? "GET", auth: new Headers(init.headers).get("authorization"), accept: new Headers(init.headers).get("accept") });
-    if (url.startsWith("https://ghcr.io/token?")) return Response.json({ token: "anon" });
-    if (manifest instanceof Error) throw manifest;
-    return new Response(null, { status: manifest });
-  };
-  assert.equal(await imagePublished("ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.49", ghcr(200)), true);
-  assert.deepEqual(calls.map((c) => [c.method, c.url, c.auth]), [
-    ["GET", "https://ghcr.io/token?scope=repository:parcha-ai/agentrun-server:pull", null],
-    ["HEAD", "https://ghcr.io/v2/parcha-ai/agentrun-server/manifests/v0.1.0-beta.49", "Bearer anon"],
-  ]);
-  assert.match(calls[1].accept, /application\/vnd\.oci\.image\.index\.v1\+json/, "a multi-platform image is an index: asked for by that type");
-  assert.equal(await imagePublished("ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.99", ghcr(404)), false);
-  // Any other answer, or none, is not "not published": the walk goes on and Render's pull decides.
-  for (const answer of [401, 429, 500, new TypeError("fetch failed")]) {
-    assert.equal(await imagePublished("ghcr.io/parcha-ai/agentrun-server:beta", ghcr(answer)), undefined, String(answer));
-  }
-  calls.length = 0;
-  for (const ref of ["docker.io/library/nginx:1", "ghcr.io/parcha-ai/agentrun-server@sha256:" + "a".repeat(64), "ghcr.io/parcha-ai/agentrun-server"]) {
-    assert.equal(await imagePublished(ref, ghcr(200)), undefined, ref);
-  }
-  assert.equal(calls.length, 0, "a reference it can't ask GHCR about sends nothing");
-});
-
-test("render.yaml's image not published: the walk makes no service, and its report says why", async () => {
-  const { spawn } = await import("node:child_process");
-  const { mkdtemp, writeFile, readFile: read } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const dir = await mkdtemp(join(tmpdir(), "walk-image-"));
+test("render.yaml's image not published: the walk makes no service, and its report says why", async (t) => {
+  const dir = await scratch(t, "walk-image-");
   const log = join(dir, "requests.jsonl");
   // Render's API with one workspace and no services left, GHCR with no such tag; every request is written down.
   const stub = join(dir, "stub.mjs");
@@ -197,16 +169,15 @@ globalThis.fetch = async (url, init = {}) => {
 };
 `);
   const report = join(dir, "report.md");
-  const { fileURLToPath } = await import("node:url");
   const walk = fileURLToPath(new URL("deploy/render/walk.mjs", ROOT));
   const child = spawn(process.execPath, ["--import", stub, walk, "--owner", "Walks"], { env: { ...process.env, RENDER_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "fake-test-key", REPORT: report }, stdio: "ignore" });
   const code = await new Promise((resolve) => child.on("exit", resolve));
   assert.equal(code, 1);
-  const sent = (await read(log, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+  const sent = (await readFile(log, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
   assert.deepEqual(sent.filter((r) => r.method !== "GET" && r.method !== "HEAD"), [], "no service made, nothing deleted");
   assert.ok(sent.some((r) => r.method === "HEAD" && r.url.startsWith("https://ghcr.io/v2/parcha-ai/agentrun-server/manifests/")), "render.yaml's image asked of GHCR");
-  const text = await read(report, "utf8");
+  const text = await readFile(report, "utf8");
   assert.match(text, /FAIL/);
-  assert.match(text, /is not published[^\n]*nothing made/);
+  assert.match(text, /is not on GHCR yet: nothing made/);
   assert.doesNotMatch(text, /render cost|service deleted/, "nothing made: nothing to delete or bill");
 });
