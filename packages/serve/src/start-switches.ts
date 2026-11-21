@@ -3,6 +3,7 @@
 // them causes names it, the value that allows it and the restart it takes (restartWith).
 
 import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn } from "./box-settings.js";
+import { PRIVATE_HOSTS_ENV, privateHostsSwitchValue } from "./mcp-private-hosts.js";
 
 /** The env that says this server is a local install (cli.ts), the one kind an MCP server may be on loopback for. */
 export const MCP_ALLOW_LOOPBACK_ENV = "AGENTRUN_MCP_ALLOW_LOOPBACK";
@@ -37,6 +38,7 @@ export function startSwitches(env: NodeJS.ProcessEnv, { mcpLoopback, webhookPriv
   return {
     [MCP_ALLOW_LOOPBACK_ENV]: flag(mcpLoopback, `An MCP server on this machine's loopback (127.0.0.1, localhost), for every caller of this server's API: ${ALONE_WORDS}.`),
     [WEBHOOK_PRIVATE_TARGETS_ENV]: flag(webhookPrivateTargets, `The outbound webhook (Settings → Webhook) sending to a private network or this machine, which any caller who may set it then reaches: ${ALONE_WORDS}.`),
+    [PRIVATE_HOSTS_ENV]: ((value) => ({ on: value !== null, value, allows: "The private-network hosts an owner may allow an MCP server or a calendar on (Settings → MCP servers): unset, the owner's list; none, no private host at all (set it on a server or runner many customers share); or a comma list of address ranges every listed host's address must also fall in. Set it on the server and on each runner: each process holds to its own." }))(privateHostsSwitchValue(env)),
     [BOX_ALLOW_ENV]: { on: boxAllowSetIn(env), value: boxAllowSetIn(env) ? (allow === "none" ? "none" : allow.join(",")) : null, allows: "The hosts a run's computer may reach: a comma list of host names, or none for no network. Unset, the package registries and GitHub (capabilities' places.allow)." },
     [BOX_CPUS_ENV]: size(BOX_CPUS_ENV, "A Docker computer's CPUs, such as 2 or 1.5. Unset, the Docker provider's default."),
     [BOX_MEMORY_ENV]: size(BOX_MEMORY_ENV, "A Docker computer's memory, swap included, such as 512m or 4g. Unset, the Docker provider's default."),

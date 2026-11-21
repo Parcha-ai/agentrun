@@ -22,7 +22,7 @@
 // processes of the data directory's uid whose memory it opens (/proc/<pid>/mem: the open is where ptrace's access check
 // is made).
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 
 const secrets = await import("/opt/agentrun/packages/serve/dist/secrets.js");
 const DATA = "/data";
@@ -151,7 +151,12 @@ export default async function reply(context, faux) {
     // A program that leaves the run's process group (a session of its own): the run's end must reap it all the same.
     const started = spawn("/usr/bin/setsid", ["/bin/sleep", "3600"], { stdio: "ignore" });
     started.unref();
-    writeFileSync(BEACON, JSON.stringify({ pid: process.pid, uid: process.getuid(), tmp, started: started.pid }));
+    // The check reads this as the server's user, which is in no slot's group: readable by every user (0644, past the
+    // run's umask 007), and whole once it is there (renamed into place). It holds the check's own handoff alone: a pid, a
+    // uid and a folder's path, never a secret.
+    writeFileSync(`${BEACON}.part`, JSON.stringify({ pid: process.pid, uid: process.getuid(), tmp, started: started.pid }));
+    chmodSync(`${BEACON}.part`, 0o644);
+    renameSync(`${BEACON}.part`, BEACON);
     return held(faux);
   }
   if (first.startsWith("Reach ")) {
