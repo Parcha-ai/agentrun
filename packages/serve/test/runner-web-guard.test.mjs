@@ -3,8 +3,9 @@
 // the real resolver and network, no faux web. An agent that asks web_fetch for loopback, a private range,
 // carrier-grade NAT, the cloud metadata address (as IPv4, IPv4-mapped IPv6 and AWS's IPv6), a unique-local address and
 // GCP's metadata name is refused each time, in the guard's words, and nothing listening on this machine's loopback is
-// reached. web_save dials through the same hops (publicDownload; web-save.test.mjs). On Postgres the runner has a data directory of its own, as a runner on a machine apart from its server does
-// (the shared-nothing shape the runner split ships); on SQLite it shares the server's, the store being a file there.
+// reached. web_save dials through the same hops (publicDownload; web-save.test.mjs). The runner shares the server's data
+// directory on either store: these runs are Mode 1 (their folders on the server's disk), which a runner on a data directory
+// of its own can't reach, so it claims nothing (runner/disk-free.ts; runner-disk-free.test.mjs runs one apart on Archil).
 //
 // Also: the operator's bound on owner-allowed private hosts (AGENTRUN_PRIVATE_HOSTS) is read and said by that runner at
 // its start, and inherited by its runs' processes (runner/main.ts runEnv), where MCP and calendar calls dial.
@@ -84,9 +85,9 @@ async function guardOnRunnerApart(t, { postgres }) {
   const fetchRun = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify(urls)}` } });
   assert.equal(fetchRun.status, 202, JSON.stringify(fetchRun.body));
 
-  // The runner apart: on Postgres a data directory of its own; the operator's bound set in its environment alone.
-  const runnerData = schema ? join(root, "runner-data") : data;
-  const runner = cli(t, ["runner", "--data", runnerData, "--faux", FAUX], { ...env, AGENTRUN_RUNNER_NAME: "runner-apart", AGENTRUN_PRIVATE_HOSTS: "none" });
+  // The runner apart: its own process, on the server's data directory (a Mode 1 run's folder is there); the operator's
+  // bound set in its environment alone.
+  const runner = cli(t, ["runner", "--data", data, "--faux", FAUX], { ...env, AGENTRUN_RUNNER_NAME: "runner-apart", AGENTRUN_PRIVATE_HOSTS: "none" });
   const err = [];
   createInterface({ input: runner.stderr }).on("line", (line) => err.push(line));
   await new Promise((resolve, reject) => {
@@ -119,4 +120,4 @@ async function guardOnRunnerApart(t, { postgres }) {
 
 test("on a runner apart from its server (SQLite, one data directory), web_fetch refuses every private, loopback, link-local, carrier-grade NAT and metadata address, and the runner says the operator's private-host bound", { timeout: 180_000 }, (t) => guardOnRunnerApart(t, { postgres: false }));
 
-test("on a runner apart from its server with a data directory of its own (Postgres), web_fetch refuses every private, loopback, link-local, carrier-grade NAT and metadata address", { ...postgresOnly("a runner apart on the shared store"), timeout: 180_000 }, (t) => guardOnRunnerApart(t, { postgres: true }));
+test("on a runner apart from its server on the shared Postgres store, web_fetch refuses every private, loopback, link-local, carrier-grade NAT and metadata address", { ...postgresOnly("a runner apart on the shared store"), timeout: 180_000 }, (t) => guardOnRunnerApart(t, { postgres: true }));

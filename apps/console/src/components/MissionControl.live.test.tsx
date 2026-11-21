@@ -31,7 +31,10 @@ async function open() {
     if (u.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
     if (u.pathname === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
     if (u.pathname === "/v2/stats") return json(200, stats());
-    if (u.pathname === "/v2/runs" || u.pathname === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+    // The agent picker reads the same connected inventory as the Agents page, independently of run statistics.
+    if (u.pathname === "/v2/agents") return json(200, { agents: u.searchParams.get("archived") === "true" ? [] : [{ agent_id: "calc", kind: "agentic", archived_at: null, revision: "r1", revisions: 1, definition: { version: 1, name: "Calc", instructions: "Calculate", tools: [], skills: [] } }], next_cursor: null });
+    if (u.pathname === "/v2/runs") return json(200, { runs: [], next_cursor: null });
+    if (u.pathname === "/v2/observations") return json(200, { sessions: [], connectors: [], usage: { status: "unavailable", models: [], daily: [] } });
     return json(404, { error: { code: "not_found", message: u.pathname, retryable: false } });
   });
   location.hash = "";

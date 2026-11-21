@@ -123,6 +123,9 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // A grade's feedback round always has something new, the grade's words (feedback-round.ts), whatever the job did.
     nothingNew: async (runId) => !pendingFeedbackOf(await runEntries(deps.store, runId, BACKGROUND_CONTEXT)) && onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
     feedback: async (runId) => {
+      // A source hook uploads task dialogue, not owner feedback addressed to AgentRun.
+      // CLI corrections are written explicitly through the owner corrections API.
+      if (launch.cli_learning) return [];
       const [entries, rows] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })]);
       return ownerWords(entries, rows);
     },
