@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunDetail } from "@/components/RunDetail";
-import { NO_WORDS, STILL_LEARNING } from "@/components/RunGrade";
+import { NO_WORDS } from "@/components/RunGrade";
 import { messageFeatures } from "@/fixtures";
 import { ClientError } from "@/lib/client";
 import type { GradeAnswer, GradeBody, Run, RunGraded, RunLearningRead } from "@/lib/v2";
@@ -392,21 +392,23 @@ describe("a run's page, the Grade control", () => {
     expect(t.button("Right")).toBeTruthy();
   });
 
-  it("offers no grade while an ended run still learns from its answer (the server refuses one: 409 run_learning), says why, and offers it once that ends", async () => {
-    const learning = run({ poll_after_ms: 1000, learning: { detail: null, at: "2026-11-14T10:00:09Z", state: "reflecting", reason: null } });
-    const t = await open(learning);
-    for (const name of ["Right", "Wrong"]) expect(t.button(name), `no ${name} while it learns`).toBeUndefined();
-    expect(t.section()!.textContent).toContain(STILL_LEARNING);
-    await t.rerender(run());
-    expect(t.section()!.textContent).not.toContain(STILL_LEARNING);
+  // One rule for when a grade is refused, the server's: a run whose row has ended can still read `reflecting` while what
+  // it wrote is checked, and the server takes its grade. Only the server knows when it refuses one (409 run_learning).
+  const REFLECTING: Run["learning"] = { detail: null, at: "2026-11-14T10:00:09Z", state: "reflecting", reason: null };
+  const LEARNING_409 = "The run is still learning from its answer: grade it once that ends.";
+
+  it("offers the grade on an ended run that reads reflecting, and sends it", async () => {
+    const t = await open(run({ learning: REFLECTING }));
+    expect(t.section()!.textContent).toContain("Was the answer right?");
     await t.click("Right");
     expect(t.sent).toEqual([{ correct: true }]);
-    act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
-    // A graded run learning from a later answer (a follow-up's look-back): its grade stands, and no re-grade until that ends.
-    const regrade = await open(learning, { graded: gradedOf({ correct: true }) });
-    expect(regrade.section()!.textContent).toContain("Graded right");
-    expect(regrade.section()!.textContent).toContain(STILL_LEARNING);
-    expect(regrade.button("Grade again")).toBeUndefined();
+  });
+
+  it("says a 409 run_learning in the server's words and keeps the choice", async () => {
+    const t = await open(run({ poll_after_ms: 1000, learning: REFLECTING }), { grade: async () => { throw new ClientError(409, "run_learning", LEARNING_409); } });
+    await t.click("Right");
+    expect(t.section()!.querySelector('[role="alert"]')?.textContent).toBe(`Your grade wasn't taken: ${LEARNING_409}`);
+    expect(t.button("Right")).toBeTruthy();
   });
 
   it("is not there for a run that does not learn, one that only uses what was learned, or one under way with no grade", async () => {

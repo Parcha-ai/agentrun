@@ -355,12 +355,11 @@ async function lookingBackOf(stored: RunRow, entries: Awaited<ReturnType<typeof 
   return kept !== undefined && !rows.some(waitingMessage) ? kept : undefined;
 }
 
-/** The end run `runId` keeps while it looks back after its job ended, as every reader serves it (lookingBackOf), else
- *  undefined: a run that reads ended while it is still learning from that end. */
-export async function lookingBackEnd(store: Store, runId: string): Promise<KeptEnd | undefined> {
-  const stored = await store.runs.get(runId);
-  if (stored?.state !== "running") return undefined;
-  return lookingBackOf(stored, (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries, () => store.commands(runId, 0));
+/** The end run `stored` (its row as the caller read it) keeps while it looks back after its job ended, as every reader
+ *  serves it (lookingBackOf), else undefined: a run that reads ended while it is still learning from that end. */
+export async function lookingBackEnd(store: Store, stored: RunRow): Promise<KeptEnd | undefined> {
+  if (stored.state !== "running") return undefined;
+  return lookingBackOf(stored, (await journalRecords(store.readJournal(stored.id), BACKGROUND_CONTEXT)).entries, () => store.commands(stored.id, 0));
 }
 
 /** `storeRunOf`'s reads, over `store` (a snapshot) and the run's cut, begun at `since` (servedSince). */
