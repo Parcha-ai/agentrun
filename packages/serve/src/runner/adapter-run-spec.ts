@@ -285,11 +285,13 @@ export async function graderRouteOf(
   log: (line: string) => void,
   deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf">,
   holds: readonly HeldRedact[] = [cut],
+  claim?: Pick<Claim, "runId" | "turn" | "attempt">,
 ): Promise<ModelRoute | undefined> {
   if (agreeOnOf(body.learning)?.length) return undefined;
   const savedKeys = keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
   for (const redact of new Set(holds)) holdClaimed(redact, savedKeys);
-  const env = claimModelEnv(deps.env, { ...savedKeys, ...claimed }, runKey);
+  // The claim's run, turn and attempt on its grader's requests too (request-metadata.ts): they spend on the run's cap.
+  const env = claimModelEnv(deps.env, { ...savedKeys, ...claimed }, runKey, claim);
   if (body.modelTiers?.fast === undefined && tierModelOf(env, "fast") === undefined) return undefined;
   try {
     return await deps.routeOf(body.modelTiers?.fast, env, "fast", PI_WIRES, undefined, cut);
@@ -768,7 +770,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   }
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a route of its own beside the session's, on the
   // session's booking under the run's one cap. None: the pair is compared whole, in words saying so.
-  const graderRoute = launch.replay || launch.audit ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, deps) : undefined;
+  const graderRoute = launch.replay || launch.audit ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, deps, [cut], claim) : undefined;
   if (graderRoute) tierRoutes.set(GRADER, graderRoute);
 
   // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the

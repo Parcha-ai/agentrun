@@ -43,6 +43,17 @@ test("serve's gateway gets the metadata header on either wire and from a CLI's A
   assert.equal(providerFor("anthropic-messages", elsewhere, { provider: "anthropic", modelId: "claude-sonnet-5-5" }, "claude-agent").headers, undefined, "an endpoint off the gateway's origin");
 });
 
+test("a replay's or audit's grader route, made for a claim, names the claim's run, turn and attempt too; made with no claim, none", async () => {
+  const { graderRouteOf } = await import("../dist/runner/adapter-run-spec.js");
+  const { heldRedactor } = await import("../dist/runner/redact.js");
+  const cut = heldRedactor((text) => text);
+  const env = { AGENT_MODEL_BASE_URL: `${GW}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "claude-sonnet-5-5", AGENT_MODEL_FAST: "claude-haiku-5-5" };
+  const deps = { store: undefined, sealKey: undefined, env, routeOf };
+  const graded = await graderRouteOf({}, true, undefined, {}, cut, () => {}, deps, [cut], CLAIM);
+  assert.deepEqual(graded.provider.headers, { [SPEND_LOGS_METADATA_HEADER]: SAID });
+  assert.equal((await graderRouteOf({}, true, undefined, {}, cut, () => {}, deps)).provider.headers, undefined);
+});
+
 test("a run through serve's gateway: every model request carries its run id, turn 1 and attempt 1 as LiteLLM's spend-logs metadata", { timeout: 120_000 }, async (t) => {
   const gw = await startFauxGateway({});
   t.after(() => gw.close());

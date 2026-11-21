@@ -1,6 +1,6 @@
--- The store's schema on Postgres, version 24: each claim of a run, with the turn it works and its attempt at it, as
--- store/schema.ts keeps it on SQLite (RUN_ATTEMPTS). Applied once, after 0023, inside the transaction migrate.ts opens.
--- Never edit this file once applied: a change is a new file. Additive: a runner of version 23 never reads it, and a claim
+-- The store's schema on Postgres, version 25: each claim of a run, with the turn it works and its attempt at it, as
+-- store/schema.ts keeps it on SQLite (RUN_ATTEMPTS). Applied once, after 0024, inside the transaction migrate.ts opens.
+-- Never edit this file once applied: a change is a new file. Additive: a runner of version 24 never reads it, and a claim
 -- it makes has no row.
 --
 -- run_attempts: one row per claim (run_id, epoch), written in the claim's own transaction: the turn it works and its
@@ -24,4 +24,4 @@ CREATE TABLE IF NOT EXISTS run_attempts (
   PRIMARY KEY (run_id, epoch)
 );
 
-UPDATE store_meta SET schema_version = 24 WHERE singleton = 1;
+UPDATE store_meta SET schema_version = 25 WHERE singleton = 1;
