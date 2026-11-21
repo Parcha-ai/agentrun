@@ -30,6 +30,8 @@ export type RunWorkspaceOptions = {
     /** The run's mount credential, minted per run from the account key when a computer's mount asks for it: by default
      *  the claim's own (its token(), minted once and removed by its revoke()). No disk token is kept. */
     readonly mountToken?: () => Promise<string>;
+    /** How long a write waits on another client's hold on a path (archil.ts queueMs; default its 60 s). */
+    readonly queueMs?: number;
   }
 );
 
@@ -60,6 +62,7 @@ export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<Ru
   };
   const workspace = archilWorkspace(claim.disk, runKey(agentId, runId), {
     ...(claim.image === undefined ? {} : { image: claim.image }),
+    ...(options.queueMs === undefined ? {} : { queueMs: options.queueMs }),
     onCleanupFailed: say,
     // A computer's mount of the run's folder: the disk's region, and the run's minted mount credential when a mount asks.
     region: claim.region,

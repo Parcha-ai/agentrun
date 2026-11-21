@@ -92,16 +92,20 @@ test("run workspace (Mode 2): a run's folder that can't be made fails the claim 
   assert.deepEqual(logged, []);
 });
 
-test("run workspace (Mode 2): a run's folder already there is not put again, so a later claim whose kept computer holds the folder opens at once", { timeout: 30_000 }, async () => {
+test("run workspace (Mode 2): a run's folder already there is not put again, so a later claim whose kept computer holds the folder opens at once, and its first exec runs", { timeout: 30_000 }, async () => {
   const disk = new FakeArchilDisk();
   disk.dirs.add(WORK);
   disk.files.set(`${WORK}/notes.md`, Buffer.from("kept"));
-  // A computer a park kept still mounts the run's folder: its write delegation refuses any put there (409).
+  // A computer a park kept still mounts the run's folder: its write delegation refuses any put there (409). A short
+  // queueMs: a put of the folder waits on that hold this long, not 60 s, and fails on it.
   const release = disk.delegate(WORK);
   const logged = [];
-  const run = await openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claimOf(disk), log: (message) => logged.push(message) });
+  const run = await openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claimOf(disk), log: (message) => logged.push(message), queueMs: 500 });
+  const ran = await run.workspace.exec(["bash", "-c", "echo fine"], { env: ENV, timeoutMs: 10_000 });
   release();
-  assert.equal(disk.calls.filter((call) => call.op === "putObject" && call.key === `${WORK}/`).length, 0, "no put of the folder");
+  assert.equal(text(ran.stdout), "fine\n");
+  assert.equal(disk.calls.filter((call) => call.op === "putObject" && call.key === `${WORK}/`).length, 0, "no put of the folder, at the claim or the exec");
+  assert.deepEqual(disk.refusedByDelegation, [], "nothing the hold refused");
   assert.equal(text(await run.workspace.read("notes.md")), "kept");
   assert.deepEqual(logged, []);
 });
