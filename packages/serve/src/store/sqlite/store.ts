@@ -629,7 +629,7 @@ class SqliteStore implements Store {
   readonly #released = new Map<string, number>();
   /** secureRewrite's marker (SCRUB_SUFFIX): set on a SQLite store with a file, never on a snapshot. */
   readonly #scrubMarker: string | undefined;
-  /** How many times a purge left the marker (#purged). The marker has two owners: secureRewrite removes it only when no
+  /** How many times a purge left the marker (#purged), or a retried purge found it there (purgeScrub). The marker has two owners: secureRewrite removes it only when no
    *  purge left it since the step that covers that purge's log (its own start, or the checkpoint it asked), so a marker a
    *  purge left is never removed without a checkpoint that truncated the purge's frames. */
   #purgeMarks = 0;
@@ -2278,7 +2278,10 @@ class SqliteStore implements Store {
 
   async purgeScrub(): Promise<void> {
     const marker = this.#scrubMarker;
-    if (marker === undefined || existsSync(marker)) return;
+    if (marker === undefined) return;
+    // A marker there may be a rewrite's, under way (secureRewrite): counted as one a purge left, so that rewrite keeps it
+    // unless a checkpoint asked after this truncates the log.
+    if (existsSync(marker)) return void this.#purgeMarks++;
     await this.#purged();
   }
 

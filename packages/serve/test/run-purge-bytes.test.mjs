@@ -264,6 +264,43 @@ test("a run's DELETE retried after its purge committed and could not write the s
   assert.equal(readFileSync(marker, "utf8"), "the marker as it was\n", "with the marker there, a DELETE of the purged run writes nothing new");
 });
 
+test("a run's DELETE retried while a rewrite that finds nothing to rewrite holds the marker, after its purge could not write it, keeps that marker for the purge: the rewrite never removes it, and the next start's scrub truncates the log", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
+  const word = `PURGE-SENTINEL-${randomBytes(6).toString("hex")}`;
+  const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
+  let reader;
+  t.after(() => reader?.isOpen && reader.close());
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = await storeWithRun(dir, word);
+  const host = { store, madeFrom: async () => [], forgetCopies: async () => {}, forgetRun: async () => {}, kept: async () => KEPT, turnOver: async () => false, waitMs: 0, pollMs: 20 };
+  reader = heldReader(dir);
+  const marker = join(dir, "store.sqlite.scrub");
+  mkdirSync(marker);
+  await assert.rejects(purgeRun(host, "run-1"), /the scrub's marker could not be written \(EISDIR/, "the purge commits, and its marker's write fails");
+  rmSync(marker, { recursive: true });
+  // A rewrite as the server runs one while it serves (no VACUUM): its own marker is written, and its work is held while
+  // the client's retry finds the marker there; then it finds nothing to rewrite.
+  let entered;
+  const inWork = new Promise((resolve) => (entered = resolve));
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const rewriting = store.secureRewrite(async () => (entered(), await held, 0), { vacuum: false });
+  await inWork;
+  assert.ok(existsSync(marker), "the rewrite's marker is there");
+  assert.equal(await purgeRun(host, "run-1"), undefined, "the retry answers 204");
+  release();
+  assert.deepEqual(await rewriting, { rewritten: 0, left: "deferred" }, "the rewrite leaves the scrub to the next start");
+  assert.ok(existsSync(marker), "the marker the retry found outlives the rewrite: the purge's scrub stays arranged");
+
+  reader.exec("COMMIT");
+  await store.close();
+  assert.notDeepEqual(holding(dir, word), [], "the store's bytes still hold the sentinel");
+  const next = await openSqliteStore({ dataDir: dir });
+  t.after(() => next.close());
+  assert.deepEqual(await next.secureRewrite(async () => 0), { rewritten: 0 }, "the next start's scrub finishes");
+  assert.equal(statSync(join(dir, "store.sqlite-wal")).size, 0, "and it truncated the log");
+  assert.deepEqual(holding(dir, word), [], "no store file holds the sentinel");
+});
+
 test("an agent's DELETE retried after its purge committed and could not write the scrub's marker arranges the scrub again, and drops its purge's mark: 204 with the marker written", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
   const { api, data, store } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("scrubbed", { instructions: "Answer." }))).status, 201);
