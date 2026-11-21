@@ -475,15 +475,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const mode: 1 | 2 = archilSettings === undefined ? 1 : 2;
   const archil = archilSettings === undefined
     ? undefined
-    // The run's mount credential is minted per run the first time a computer's mount asks (archil-mount-credential.ts), on
-    // the account key from the server's environment first, then the sealed row; named for the run and this claim's epoch, with
-    // a 24 h ttl as the safety net if revoke never comes (revoke normally runs at the run's end, below). A run with no
-    // mounting computer never mints one.
-    // The mint is lazy (archil-claim.ts token(), k2's run-tools.ts): only a mounting computer asks for it, so a Mode 2 run
-    // with no computer mints nothing. mountControl (a test's loopback control-plane fake) is the claim's control, so no
-    // test reaches the real control plane. MOUNT_TTL_MS is the credential's safety net (its computer's 24 h bound), not its lifetime.
-    // The disk is the run's (run-disk.ts): its launch record's, else its agent's, made on its first run that needs one,
-    // and read at Archil at every claim.
+    // The run's mount credential is minted the first time a computer's mount asks (archil-claim.ts token()), so a run with
+    // no mounting computer never mints one; revoke runs at the run's end, below.
     : await archilWhereHeld(claimOptionsOf(deps, archilSettings, claim, runRow.agentId, launch, run.signal ?? new AbortController().signal));
   // Each resource is held the moment it exists (spec-holds.ts): a throw after it lets it go.
   holds.hold({ archil });

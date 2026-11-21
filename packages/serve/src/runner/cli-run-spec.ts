@@ -354,12 +354,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const mode: 1 | 2 = archilSettings === undefined ? 1 : 2;
   const archil = archilSettings === undefined
     ? undefined
-    // The run's mount credential, minted per run (account key from the server's environment first, then the sealed row),
-    // named for the run and this claim's epoch; revoke at the run's end (below). mountControl (a test's loopback control-plane
-    // fake) is the claim's control, so no test reaches the real control plane. TODO(k2 lazy mint): the mint moves into
-    // computerForClaim (a mounting computer only), with the ttl the run's lifetime bound (not this fixed figure). As pi does.
-    // The disk is the run's (run-disk.ts): its launch record's, else its agent's, made on its first run that needs one,
-    // and read at Archil at every claim.
+    // The run's mount credential is minted the first time a computer's mount asks (archil-claim.ts token()), so a run with
+    // no mounting computer never mints one; revoke runs at the run's end, below.
     : await archilWhereHeld(claimOptionsOf(deps, archilSettings, claim, runRow.agentId, launch, run.signal ?? new AbortController().signal));
   // Each resource is held the moment it exists (spec-holds.ts): a throw after it lets it go. The claim's Archil keys go
   // from memory last, once nothing more reads the disk.

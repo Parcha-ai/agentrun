@@ -85,10 +85,9 @@ export type ArchilExecRequest = {
 };
 export type ArchilExecAnswer = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
 
-/** The disk itself is not there: Archil's lookup of it, made before the SDK's first call and again after any call
- *  answered 404, answered 404 (removed, at the start or mid-run, or the key's account or region holds none of that id).
- *  Every call that meets it fails with it. It carries no HTTP `status`, so no caller reads it as a missing file or
- *  folder. */
+/** The disk itself is not there: Archil's lookup of it answered 404 (removed, at the start or mid-run, or the key's
+ *  account or region holds none of that id). The seam looks the disk up before its first call and again after any 404.
+ *  It carries no HTTP `status`, so no caller reads it as a missing file or folder. */
 export class ArchilDiskMissing extends Error {
   constructor(readonly disk: string, readonly region: string, words: string, options?: ErrorOptions) {
     super(`the Archil disk ${disk} is not there in region ${region}: ${words}`, options);
