@@ -84,6 +84,7 @@ import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
 import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
+import type { AgenticBody } from "../store/agent-body.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
 import { monidForClaim, withMonid } from "./monid-run.js";
@@ -99,25 +100,8 @@ export type CliSpecDeps = AdapterSpecDeps;
 export const cliRefusesKind = (kind: string): string | undefined =>
   kind === "browser" ? "This agent's computer is a browser, which only the pi harness drives here: pick pi for this agent, or another kind of computer in Settings → Computers." : undefined;
 
-/** The revision's body, as the fields the spec reads of it. */
-type RevisionBody = {
-  readonly instructions?: string;
-  readonly tools?: readonly string[];
-  readonly toolSettings?: unknown;
-  readonly harness?: string;
-  readonly model?: string;
-  readonly approvals?: Approvals;
-  readonly skills?: Record<string, unknown>;
-  /** What the server checks out in the run's folder before its first turn (pr-checkout.ts). */
-  readonly checkout?: Checkout;
-  /** The JSON Schema its final answer's last json block meets (definition.output_schema), absent for none. */
-  readonly outputSchema?: unknown;
-  /** The agent's own limit on the run's requests on free models (definition.max_requests), under the server's. */
-  readonly maxRequests?: number;
-  /** The agent's computer setting, or its place (computer-setting.ts settingOfDefinition): the run's computer kind. */
-  readonly computer?: unknown;
-  readonly place?: unknown;
-};
+/** The revision's body, as the store keeps it (agent-body.ts). */
+type RevisionBody = Readonly<Partial<AgenticBody>>;
 
 /** The run's model and the catalog that prices it, as main chooses a CLI run's (app.ts wireModels and runModels): on the
  *  harness's own wire where its entry says its model is chosen there (a pin there is its own provider/model-id, never a

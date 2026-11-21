@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { freeRequestLimitOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { definitionIssues } from "../dist/validate.js";
 import { follow, journalOf, scratch, serve, withEnv } from "./support.mjs";
 
@@ -41,13 +42,11 @@ test("an agent's max_requests stops its run on a free model at that many request
   assert.equal(requests.length, 3, "3 requests left; the 4th was refused before it was sent");
 });
 
-test(`max_requests above the server's limit (${ENV}) gets the server's limit`, { timeout: 120_000 }, async (t) => {
-  withEnv(t, { [ENV]: "2" });
-  const { api, data } = await serve(t, { faux: FREE_LOOP });
-  assert.equal((await api("POST", "/agents", { definition: definition("over", { max_requests: 50 }) })).status, 201);
-  const { view, requests } = await runOf(api, data, "over", "Loop 10");
-  failedAt(view, 2);
-  assert.equal(requests.length, 2);
+test(`a run's limit is the lower of the agent's max_requests and the server's (${ENV}); none, 0 or a fraction leaves the server's`, () => {
+  const env = { [ENV]: "20" };
+  assert.equal(freeRequestLimitOf(env, 3), 3, "the agent's, when lower");
+  assert.equal(freeRequestLimitOf(env, 50), 20, "the server's, when lower");
+  for (const none of [undefined, 0, 2.5, NaN, "3"]) assert.equal(freeRequestLimitOf(env, none), 20, String(none));
 });
 
 test("an edit that leaves max_requests out keeps it; 0 clears it", { timeout: 60_000 }, async (t) => {
@@ -70,8 +69,7 @@ test("max_requests that is no whole number of at least 0 is refused, naming the 
   assert.deepEqual(definitionIssues({ name: "a", instructions: "x", max_requests: 0 }), []);
 });
 
-test("a template's budget.max_requests is listed, written onto the agent its apply makes, and stops that agent's run", { timeout: 120_000 }, async (t) => {
-  withEnv(t, {}, [ENV]);
+test("a template's budget.max_requests is listed and written onto the agent its apply makes (the agent's, which stops its runs)", { timeout: 60_000 }, async (t) => {
   const root = join(await scratch(t), "templates");
   mkdirSync(join(root, "looper"), { recursive: true });
   writeFileSync(join(root, "looper", "agent.md"), `---
@@ -83,14 +81,11 @@ budget: { per_run_usd: 1, max_requests: 3 }
 ---
 Look it up.
 `);
-  const { api, data } = await serve(t, { faux: FREE_LOOP, templates: root });
+  const { api } = await serve(t, { runner: false, templates: root });
   const listed = (await api("GET", "/templates")).body.templates.find((p) => p.name === "looper");
   assert.deepEqual(listed?.budget, { per_run_usd: 1, max_requests: 3 }, JSON.stringify(listed));
   const applied = await api("POST", "/templates/looper/apply", { parameters: {} });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition;
   assert.deepEqual([agent.max_cost_usd, agent.max_requests], [1, 3], JSON.stringify(agent));
-  const { view, requests } = await runOf(api, data, applied.body.agent_id, "Loop 10");
-  failedAt(view, 3);
-  assert.equal(requests.length, 3);
 });

@@ -52,6 +52,7 @@ import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type PollDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Journal, Store } from "../store/store.js";
+import type { WorkflowBody } from "../store/agent-body.js";
 import { SUBMIT_TOOL } from "../workflow/host-tools.js";
 import { endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
@@ -420,7 +421,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
         const writer = await sessions.open(SESSION);
         // Its model nodes' requests on free models count toward the run's limit of them, capped or not. A step waiting for
         // room under it (a map's branch, beside its siblings' holds) leaves at the run's stop or park, unsent.
-        const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, modelOf: capModelOf, freeRequests: freeRequestLimitOf(deps.env ?? process.env, (claimed.revision.body as { maxRequests?: unknown }).maxRequests), ...(context.abortSignal ? { stopped: context.abortSignal } : {}) });
+        const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, modelOf: capModelOf, freeRequests: freeRequestLimitOf(deps.env ?? process.env, (claimed.revision.body as WorkflowBody).maxRequests), ...(context.abortSignal ? { stopped: context.abortSignal } : {}) });
         booking = await modelPortFor(writer, {
           key: SESSION,
           label: SESSION,

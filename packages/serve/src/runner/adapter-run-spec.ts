@@ -95,6 +95,7 @@ import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
 import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
+import type { AgenticBody } from "../store/agent-body.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
 import { monidForClaim, type MonidFake, withMonid } from "./monid-run.js";
@@ -300,29 +301,9 @@ export async function graderRouteOf(
   }
 }
 
-/** The revision's body, as the fields the spec reads of it (agentic runs only reach here; a workflow run is dispatched to
- *  the workflow loop). */
-type RevisionBody = {
-  readonly instructions?: string;
-  readonly tools?: readonly string[];
-  readonly toolSettings?: unknown;
-  readonly harness?: string;
-  readonly approvals?: Approvals;
-  readonly skills?: Record<string, unknown>;
-  /** What the server checks out in the run's folder before its first turn (pr-checkout.ts). */
-  readonly checkout?: Checkout;
-  /** The revision's own model ("provider/model-id"), absent for the host's. */
-  readonly model?: string;
-  /** The model of each of its tiers it names (a subagent's: runner/subagent.ts), absent for the host's tier model. */
-  readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>;
-  /** The JSON Schema its final answer's last json block meets (definition.output_schema), absent for none. */
-  readonly outputSchema?: unknown;
-  /** The agent's own limit on the run's requests on free models (definition.max_requests), under the server's. */
-  readonly maxRequests?: number;
-  /** The agent's computer setting, or its place (computer-setting.ts settingOfDefinition): the run's computer kind. */
-  readonly computer?: unknown;
-  readonly place?: unknown;
-};
+/** The revision's body, as the store keeps it (agent-body.ts); agentic runs only reach here, a workflow run is
+ *  dispatched to the workflow loop. */
+type RevisionBody = Readonly<Partial<AgenticBody>>;
 
 /** What the runner routes a claimed run on: the launch's model as its start pinned it, sent as pinned, with the
  *  revision's own ref beside it (main prices a gateway's id by the provider that ref names); the revision's ref alone

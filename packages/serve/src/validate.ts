@@ -150,8 +150,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.max_cost_usd !== undefined) {
     if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd >= 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number of at least 0, in US dollars: above 0 sets the agent's default cap, 0 clears it`));
   }
-  // The agent's own limit on each run's requests on free models, under the server's (AGENTRUN_FREE_MODEL_REQUESTS, which
-  // wins when lower): above 0 sets it, 0 clears it, and an edit that leaves it out keeps the agent's (agents-store.ts).
+  // The agent's limit on each run's free-model requests: see DefinitionInput.max_requests (openapi.ts).
   if (d.max_requests !== undefined && !(typeof d.max_requests === "number" && Number.isSafeInteger(d.max_requests) && d.max_requests >= 0)) out.push(issue(`${at}.max_requests`, "wrong_type", `${at}.max_requests is a whole number of at least 0: above 0 sets the most requests on free models each run makes (the server's own limit holds when it is lower), 0 clears it`));
   // The server's checkout before each run's first turn: kept by an edit that leaves it out, cleared by `none`.
   if (d.checkout !== undefined) {
