@@ -3798,6 +3798,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
   },
   Agent: {
+    source_sync: { ...closed({ moved: { const: true } }), readOnly: true, description: "Present after a connected agent moves to managed execution. Its source sync status is read at /agents/{agent_id}/source.", "x-agentrun-serve": "source-sync/1" },
     native_status: {...NATIVE_BINDING, description: "Current remote-source readiness, derived from its heartbeat and revocation status. Read-only; the persisted native reference stays in definition.native."},
     external: {
       ...closed({

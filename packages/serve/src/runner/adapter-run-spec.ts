@@ -99,6 +99,8 @@ import type { AgenticBody } from "../store/agent-body.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
 import { monidForClaim, type MonidFake, withMonid } from "./monid-run.js";
+import { verifyPlacedProject, movedSkillFiles } from "../source-sync/claim.js";
+import { runProjectCheckpoint } from "./project-checkpoint.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -458,6 +460,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const revisionRow = await deps.store.agents.revision(runRow.revisionId);
   if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);
   const body = (revisionRow.body ?? {}) as RevisionBody;
+  const movedProject = await verifyPlacedProject(deps.store, runRow, revisionRow, launch, { data: deps.data, sealKey: deps.sealKey, env: deps.env, ...(run.signal ? { signal: run.signal } : {}), control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
   const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
   const granted = body.tools ?? [];
 
@@ -511,7 +514,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
   // folder not there yet, never over an earlier claim's. A desktop or a phone (the revision's computer
   // setting, the one computerForClaim starts) brings its kind's skill, named in the prompt beside the revision's own.
-  const kindSkills = await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
+  const kindSkills = movedProject ? [] : await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
+  const currentSkills = movedProject ? await movedSkillFiles(ws.workspace, body.skills ?? {}, settingOfDefinition(body)?.computer.kind) : [...Object.keys(body.skills ?? {}), ...kindSkills];
   // A learning run's seed, read once from its learning folder where the run's place keeps it (runner/learning-seed.ts):
   // its learned workflows, cut of the server's secrets, the ones its learned_workflow tool runs. Read before the run's
   // tools are bound. A learning fault, or a seed that failed (seedFailed), gives none.
@@ -797,7 +801,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The one path for every harness.
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
-  const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...kindSkills], ws.workspace, { onDemand: readsFiles(granted) });
+  const instructions = await promptOf(laid, currentSkills, ws.workspace, { onDemand: movedProject || readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   // The run's clock: a template eval case's (EvalFakes.now), else the real one.
   const now = fakes?.now;
@@ -955,6 +959,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // credential with it, and the run's timeline is told so.
     ...(computer.keeps ? { keptWords: computerKeptWords(computer.keeps) } : {}),
     release: (how) => holds.release(how),
+    ...(movedProject ? { projectCheckpoint: runProjectCheckpoint({ store: deps.store, agentId: runRow.agentId, claim, launch, tools, computer,
+      workspace: { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },
+      secrets: async () => runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)),
+    }) } : {}),
     endCheckout: () => holds.endCheckout(),
   };
 }

@@ -10,6 +10,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {serve,client,follow} from './support.mjs';
+import {SourceSync} from '../dist/source-sync/registry.js';
 
 async function fixture(t) {
  const dir=await mkdtemp(join(tmpdir(),'agentrun-cli-learning-'));const bin=join(dir,'bin'),home=join(dir,'home'),project=join(dir,'project');
@@ -21,6 +22,44 @@ async function fixture(t) {
  return {...await serve(t),project,home};
 }
 const startBody={session_id:'existing-session',turn_id:'turn-1',input:'Remember my release status preference: label it Launch state followed by the status.',instructions:'Keep user data private.',policy_complete:true};
+
+test('Move retains source prompt capture, its scoped credential and the same visible agent', {timeout:120000}, async t=>{
+ const s=await fixture(t), enrolled=await s.api('POST','/cli-learning/connections',{runtime:'codex',project:s.project});
+ assert.equal(enrolled.status,201,JSON.stringify(enrolled.body));
+ const connection=enrolled.body, record=await s.store.settings.get(`cli-learning-connection:${connection.connection_id}`);
+ const original=(await s.store.agents.get(connection.agent_id)).currentRevision;
+ const source={runtime:record.runtime,machine_id:record.native.machine_id,project:record.project,selector:{kind:'project'}};
+ const snapshot={version:1,digest:'a'.repeat(64),complete:true,source,entries:[],blobs:{},instructions:{text:'Managed instructions.',layers:[]},skills:[],configuration:{model:null,tools:[],permissions:{},credentials:[]},project:{git:null},blockers:[]};
+ // Snapshot transport and destination provisioning are adapter boundaries. This test exercises real HTTP capture,
+ // the real cutover transaction, runner completion, connection listing and the agent inventory after that cutover.
+ const sync=new SourceSync(s.store,{
+  authorize:async()=>({source,captureRevision:original,guards:[{key:`cli-learning-connection:${record.connection_id}`,fields:{active:true,generation:record.generation}}]}),
+  persist:async()=>{},read:async()=>snapshot,
+  prepare:async()=>({revision:{id:'prepared',kind:'agentic',body:{instructions:'Managed instructions.',tools:[],skills:{},harness:'codex',learning:false}}}),
+ });
+ const grant=await sync.grant(connection.agent_id);
+ await sync.publish(connection.agent_id,{generation:grant.generation,sequence:0,snapshot});
+ const moved=await sync.move(connection.agent_id);
+ assert.notEqual(moved.revision.id,original);
+ assert.equal((await s.api('GET',`/agents/${connection.agent_id}`)).body.definition.cli_learning,undefined);
+ assert.equal((await s.api('GET','/cli-learning/connections')).body.connections.filter(row=>row.agent_id===connection.agent_id).length,1);
+ const hook=client(s.baseUrl,connection.token), path=`/cli-learning/connections/${connection.connection_id}/runs`;
+ const started=await hook('POST',path,startBody,{'Idempotency-Key':'after-move'});
+ assert.equal(started.status,201,JSON.stringify(started.body));
+ const row=await s.store.runs.get(started.body.run_id);
+ assert.equal(row.agentId,connection.agent_id);assert.equal(row.revisionId,original,'capture cannot acquire the managed revision');
+ const launch=(await s.store.runs.launch(row.id)).body;
+ assert.equal(launch.harness,'cli');assert.equal(launch.learning,undefined,'managed learning off applies to source capture too');
+ const window=client(s.baseUrl,started.body.token);
+ assert.equal((await window('POST',`/cli-learning/runs/${row.id}/complete`,{status:'completed',answer:'Captured after Move.',evidence_complete:true,usage:{input_tokens:10,output_tokens:3,cache_read_tokens:0,cache_write_tokens:0,cost_usd:null}})).status,200);
+ await follow(s.api,row.id,['completed']);
+ assert.equal((await s.store.agents.get(connection.agent_id)).currentRevision,moved.revision.id);
+ assert.equal((await s.api('GET','/agents')).body.agents.filter(agent=>agent.agent_id===connection.agent_id).length,1);
+ assert.equal((await s.api('GET','/stats')).body.analytics.usage.tokens,13,'source tokens remain in the unified total after Move');
+ assert.equal((await hook('GET','/agents')).status,401,'capture credential never becomes a managed control credential');
+ await s.api('DELETE',`/cli-learning/connections/${connection.connection_id}`);
+ assert.equal((await hook('POST',path,{...startBody,turn_id:'revoked'},{'Idempotency-Key':'revoked'})).status,401);
+});
 test('CLI enrollment preserves external ownership, scoped tokens and one immutable run per completed prompt window', {timeout:120000},async t=>{
  const server=await fixture(t),{api,project}=server;
  const enrolled=await api('POST','/cli-learning/connections',{runtime:'codex',project});assert.equal(enrolled.status,201,JSON.stringify(enrolled.body));

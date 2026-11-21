@@ -26,6 +26,7 @@
 // Every number is the agent definition's (learning-setting.ts auditLoopOf). Nothing here fails a claim: a failure is logged.
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { overCapMessage } from "@parcha/agentrun-kernel/kernel/cap";
+import { sourceSyncOf } from "../source-sync/types.js";
 import { agreeOnOf, auditLoopOf, type AuditLoop } from "../learning-setting.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { runEntries } from "../store-reads/journal.js";
@@ -181,6 +182,10 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
     // Read after the claim pinned the revision's MCP tools (mcp-claim.ts pinFirst): the pin a revision saved without one
     // takes at its first run is what its tools are classed by.
     const revision = await store.agents.revision(deps.revisionId);
+    if (launch.sourceProject || sourceSyncOf(revision?.body)) {
+      log("workflow-first: an auxiliary audit requires its own project placement for this moved agent; no audit was started. Start a normal run to use the saved project.");
+      return;
+    }
     const writer = auditWriterOf(revision);
     if (writer !== undefined) {
       log(`workflow-first: ${serve.name} at ${serve.digest} serves this run, never audited: ${auditsOffWords(writer)}`);

@@ -16,6 +16,9 @@ export interface components {
     home_etag: string;
     created_at: components["Timestamp"];
     updated_at: components["Timestamp"];
+    source_sync?: {
+      moved: true;
+    };
     native_status?: {
       runtime: "claude-code" | "codex";
       project: string;
@@ -1533,6 +1536,47 @@ export interface operations {
     body: never;
     answer: never;
   };
+  bindSourceTool: {
+    body: {
+      tool: string;
+      server: string;
+    };
+    answer: {
+      project_issues?: {
+        run_id: string;
+        entry_id: number;
+        status: "pending" | "conflict" | "uncertain";
+        reason?: string;
+      }[];
+      enabled: boolean;
+      moved: boolean;
+      state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
+      blockers: {
+        code: string;
+        message: string;
+        path?: string;
+      }[];
+      snapshot?: string;
+      current_snapshot?: string;
+      connection?: {
+        connector_id: string;
+        target_id: string;
+      };
+      files?: number;
+      bytes?: number;
+      skills?: number;
+      tools?: number;
+      tool_connections?: {
+        name: string;
+        ready: boolean;
+        selected?: string;
+        candidates: {
+          name: string;
+          auth: string;
+        }[];
+      }[];
+    };
+  };
   callMcp: {
     body: {
       jsonrpc: "2.0";
@@ -1682,6 +1726,10 @@ export interface operations {
       selector?: {
         kind: "project" | "agent" | "profile";
         name?: string;
+      };
+      source_sync?: {
+        version: 1;
+        scope: string;
       };
     };
     answer: {
@@ -2278,6 +2326,10 @@ export interface operations {
       runtime: "codex" | "claude-code";
       project: string;
       name?: string;
+      source_sync?: {
+        version: 1;
+        scope: string;
+      };
     };
     answer: {
       connection_id: string;
@@ -2296,7 +2348,9 @@ export interface operations {
       capabilities?: {
         native_execution?: boolean;
         history_import?: boolean;
+        config_sync?: boolean;
       };
+      connector_id?: string;
     };
     answer: {
       enrollment_token: string;
@@ -3289,6 +3343,44 @@ export interface operations {
       updated_at: string;
     };
   };
+  getSourceSync: {
+    body: never;
+    answer: {
+      project_issues?: {
+        run_id: string;
+        entry_id: number;
+        status: "pending" | "conflict" | "uncertain";
+        reason?: string;
+      }[];
+      enabled: boolean;
+      moved: boolean;
+      state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
+      blockers: {
+        code: string;
+        message: string;
+        path?: string;
+      }[];
+      snapshot?: string;
+      current_snapshot?: string;
+      connection?: {
+        connector_id: string;
+        target_id: string;
+      };
+      files?: number;
+      bytes?: number;
+      skills?: number;
+      tools?: number;
+      tool_connections?: {
+        name: string;
+        ready: boolean;
+        selected?: string;
+        candidates: {
+          name: string;
+          auth: string;
+        }[];
+      }[];
+    };
+  };
   getStats: {
     body: never;
     answer: {
@@ -3701,6 +3793,10 @@ export interface operations {
       expected?: Record<string, unknown>;
     };
   };
+  grantSourceSync: {
+    body: Record<string, never>;
+    answer: Record<string, unknown>;
+  };
   handBackRunBrowser: {
     body: {
       outcome: "done" | "cancelled";
@@ -3771,6 +3867,11 @@ export interface operations {
         };
       };
       history_only?: boolean;
+      cli_adoption?: {
+        connection_id: string;
+        credential_epoch: string;
+        proof: string;
+      };
     };
     answer: {
       agent_id: string;
@@ -4424,6 +4525,7 @@ export interface operations {
           observe: true;
           native_execution: boolean;
           history_import: boolean;
+          config_sync: boolean;
         };
         targets: Record<string, unknown>[];
       }[];
@@ -4832,6 +4934,47 @@ export interface operations {
     body: never;
     answer: Record<string, unknown>;
   };
+  moveSourceAgent: {
+    body: Record<string, never>;
+    answer: {
+      agent: components["Agent"];
+      source: {
+        project_issues?: {
+          run_id: string;
+          entry_id: number;
+          status: "pending" | "conflict" | "uncertain";
+          reason?: string;
+        }[];
+        enabled: boolean;
+        moved: boolean;
+        state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
+        blockers: {
+          code: string;
+          message: string;
+          path?: string;
+        }[];
+        snapshot?: string;
+        current_snapshot?: string;
+        connection?: {
+          connector_id: string;
+          target_id: string;
+        };
+        files?: number;
+        bytes?: number;
+        skills?: number;
+        tools?: number;
+        tool_connections?: {
+          name: string;
+          ready: boolean;
+          selected?: string;
+          candidates: {
+            name: string;
+            auth: string;
+          }[];
+        }[];
+      };
+    };
+  };
   pairComputer: {
     body: {
       code: string;
@@ -4908,6 +5051,14 @@ export interface operations {
         permissions?: ("allow" | "ask" | "deny")[];
       }[];
     };
+  };
+  publishSourceSync: {
+    body: {
+      generation: string;
+      sequence: number;
+      snapshot: Record<string, unknown>;
+    };
+    answer: Record<string, unknown>;
   };
   putLearningCorrections: {
     body: {
@@ -5320,6 +5471,7 @@ export interface operations {
       capabilities: {
         native_execution: boolean;
         history_import?: boolean;
+        config_sync?: boolean;
       };
     };
     answer: {
@@ -5334,6 +5486,7 @@ export interface operations {
           observe: true;
           native_execution: boolean;
           history_import: boolean;
+          config_sync: boolean;
         };
         targets: Record<string, unknown>[];
       };
@@ -5359,6 +5512,50 @@ export interface operations {
       accepted: true;
     };
   };
+  resolveSourceSync: {
+    body: {
+      revision: string;
+      snapshot: string;
+    };
+    answer: {
+      agent: components["Agent"];
+      source: {
+        project_issues?: {
+          run_id: string;
+          entry_id: number;
+          status: "pending" | "conflict" | "uncertain";
+          reason?: string;
+        }[];
+        enabled: boolean;
+        moved: boolean;
+        state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
+        blockers: {
+          code: string;
+          message: string;
+          path?: string;
+        }[];
+        snapshot?: string;
+        current_snapshot?: string;
+        connection?: {
+          connector_id: string;
+          target_id: string;
+        };
+        files?: number;
+        bytes?: number;
+        skills?: number;
+        tools?: number;
+        tool_connections?: {
+          name: string;
+          ready: boolean;
+          selected?: string;
+          candidates: {
+            name: string;
+            auth: string;
+          }[];
+        }[];
+      };
+    };
+  };
   restoreLearningFile: {
     body: Record<string, never>;
     answer: never;
@@ -5374,6 +5571,49 @@ export interface operations {
   retireLearningFile: {
     body: never;
     answer: never;
+  };
+  reviewSourceProject: {
+    body: {
+      receipts: {
+        run_id: string;
+        entry_id: number;
+      }[];
+    };
+    answer: {
+      project_issues?: {
+        run_id: string;
+        entry_id: number;
+        status: "pending" | "conflict" | "uncertain";
+        reason?: string;
+      }[];
+      enabled: boolean;
+      moved: boolean;
+      state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
+      blockers: {
+        code: string;
+        message: string;
+        path?: string;
+      }[];
+      snapshot?: string;
+      current_snapshot?: string;
+      connection?: {
+        connector_id: string;
+        target_id: string;
+      };
+      files?: number;
+      bytes?: number;
+      skills?: number;
+      tools?: number;
+      tool_connections?: {
+        name: string;
+        ready: boolean;
+        selected?: string;
+        candidates: {
+          name: string;
+          auth: string;
+        }[];
+      }[];
+    };
   };
   revokeCliLearning: {
     body: never;
@@ -5401,6 +5641,7 @@ export interface operations {
           observe: true;
           native_execution: boolean;
           history_import: boolean;
+          config_sync: boolean;
         };
         targets: Record<string, unknown>[];
       };
@@ -5783,12 +6024,60 @@ export interface operations {
     };
     answer: components["Agent"];
   };
+  setSourceSync: {
+    body: {
+      enabled: boolean;
+    };
+    answer: {
+      project_issues?: {
+        run_id: string;
+        entry_id: number;
+        status: "pending" | "conflict" | "uncertain";
+        reason?: string;
+      }[];
+      enabled: boolean;
+      moved: boolean;
+      state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
+      blockers: {
+        code: string;
+        message: string;
+        path?: string;
+      }[];
+      snapshot?: string;
+      current_snapshot?: string;
+      connection?: {
+        connector_id: string;
+        target_id: string;
+      };
+      files?: number;
+      bytes?: number;
+      skills?: number;
+      tools?: number;
+      tool_connections?: {
+        name: string;
+        ready: boolean;
+        selected?: string;
+        candidates: {
+          name: string;
+          auth: string;
+        }[];
+      }[];
+    };
+  };
   signOutChatGPT: {
     body: never;
     answer: {
       revoked: boolean;
       message?: string;
     };
+  };
+  sourceSyncFailure: {
+    body: {
+      generation: string;
+      sequence: number;
+      code: "unsupported_platform" | "source_changed" | "source_unavailable" | "snapshot_too_large";
+    };
+    answer: Record<string, unknown>;
   };
   startChatGPTSignIn: {
     body: never;

@@ -1,3 +1,13 @@
+import { sourceSyncOf } from "./source-sync/types.js";
+import { sourceService, SOURCE_BODY_BYTES } from "./source-sync/service.js";
+import { destinationPreparation, bindSourceTool } from "./source-sync/destination.js";
+import { prepareSource, SourcePreparationError } from "./source-sync/prepare.js";
+import { SnapshotError, validateSourceSnapshot } from "./source-sync/snapshots.js";
+import { cliAdoptionResolver } from "./source-sync/adoption.js";
+import { projectPlacement } from "./source-sync/projects.js";
+import { openRunPlacement, sourceSnapshotReader } from "./source-sync/workspace.js";
+import { SOURCE_FAILURES, configurationDigest, type SourceFailureCode } from "./source-sync/registry.js";
+import type { SourceSnapshot } from "./native/source-snapshot-types.js";
 import type {RunLaunch} from "./run-launch.js";
 import { CliLearningConnections } from "./cli-learning/connections.js";
 import { ObservationLearning } from "./observation/learning.js";
@@ -34,7 +44,7 @@ import { homedir, hostname } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
 import { agentPackage } from "./agent-package.js";
-import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { uuidv7, type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -81,6 +91,10 @@ import { keepPresence, type Presence, refusedEnd, runnersRefused } from "./runne
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
 import { builtOfNow, factsOverStore, listedItem, lookingBackEnd, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { healEndedCosts } from "./cost-heal.js";
+import { reconcileProjectCheckpoints } from "./source-sync/checkpoints.js";
+import { acknowledgeProjects } from "./source-sync/checkpoint-gate.js";
+import { LocalSources } from "./source-sync/local.js";
+import { beginSourceIO } from "./source-sync/io.js";
 import { createLister } from "./run-listing.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { type ServedTimelineDeps, servedTimelineRows } from "./run-timeline-served.js";
@@ -586,6 +600,15 @@ export const ROUTES: readonly Route[] = [
   {method:"DELETE",pattern:/^\/connectors\/([^/]+)$/,name:"revokeRemoteConnector"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/import$/,name:"importRemoteTarget"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/targets\/([^/]+)\/history$/,name:"importRemoteHistory"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/targets\/([^/]+)\/sync\/grant$/,name:"grantSourceSync"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/targets\/([^/]+)\/sync$/,name:"publishSourceSync"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/targets\/([^/]+)\/sync\/status$/,name:"sourceSyncFailure"},
+  {method:"GET",pattern:/^\/agents\/([^/]+)\/source$/,name:"getSourceSync"},
+  {method:"PATCH",pattern:/^\/agents\/([^/]+)\/source$/,name:"setSourceSync"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/source\/move$/,name:"moveSourceAgent"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/source\/tools$/,name:"bindSourceTool"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/source\/resolve$/,name:"resolveSourceSync"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/source\/project-review$/,name:"reviewSourceProject"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/poll$/,name:"pollRemoteConnector"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/events$/,name:"remoteCommandEvents"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/complete$/,name:"completeRemoteCommand"},
@@ -1795,7 +1818,44 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   refusedTimer.unref();
   // The runner beside this server, when its run isolation was refused (cli.ts): its word, kept in this store until the stop.
   let refusedBeside: Presence | undefined;
+  const sourceWorkspaces = { data, sealKey, env: withSecrets(process.env, "own"), ...(options.archilControl ? { control: options.archilControl } : {}) };
+  const localSources = new LocalSources(store, { secrets: () => [...serverSecrets(), sdkSecret, ...tokens.map(entry => entry.token)] });
+  const sources = sourceService(store, sourceWorkspaces, async (entry, snapshot) => {
+    const prepared = await prepareSource(snapshot, destinationPreparation(store, entry.agent.id, {
+      env: () => env, boxes: () => boxOffers, check: revision => saveable(revision),
+    }));
+    const prior = entry.revision?.body as AgenticBody | undefined;
+    // Main's corrections/workflow setting remains the owner's choice across the ownership cutover.
+    return prior?.learning === undefined ? prepared : { ...prepared, revision: { ...prepared.revision,
+      body: { ...(prepared.revision.body as AgenticBody), learning: prior.learning } } };
+  }, async (entry, snapshot, prepared) => {
+    const record = await sources.sync.get(entry.agent.id);
+    if (!record) throw new ApiError("precondition_failed", "The source sync connection changed during preparation.");
+    const revision = { ...prepared.revision, body: { ...(prepared.revision.body as AgenticBody), sourceSync: {
+      id: record.id, snapshot: snapshot.digest, project: snapshot.digest, configuration: configurationDigest(prepared.revision.body),
+    } } };
+    // This private, unadmitted probe verifies the actual destination's modes, Git and assets before ownership moves.
+    const placed = await sourceProjects.place({ agentId: entry.agent.id, runId: uuidv7(), revision,
+      launch: { input: "", title: "Source preparation", place: resolvePlace((prepared.revision.body as AgenticBody).place as Place | undefined, { mode: "runner" }) } });
+    await placed?.undo();
+  }, agentId => localSources.authorize(agentId));
+  const sourceProjects = projectPlacement({ snapshots: agentId => sourceSnapshotReader(store, agentId, sourceWorkspaces),
+    hold: ({ agentId }) => beginSourceIO(store, agentId, "placement"),
+    destination: target => openRunPlacement(store, target, sourceWorkspaces) });
+  const localSourcePublisher = localSources.publisher(sources.sync, { agentWrite: (id, call) => agentWrite(id, call) });
+  let localSourceSweep: Promise<void> = Promise.resolve(), localSourceBusy = false;
+  const sweepLocalSources = () => {
+    if (localSourceBusy || stopping.signal.aborted) return localSourceSweep;
+    localSourceBusy = true;
+    localSourceSweep = localSourcePublisher.tick(stopping.signal).then(() => undefined).catch(() => {
+      if (!stopping.signal.aborted) process.stderr.write("agentrun-serve: source setup sync could not finish; the last complete snapshot is retained. Check the source status and connection.\n");
+    }).finally(() => { localSourceBusy = false; });
+    return localSourceSweep;
+  };
+  const localSourceTimer = setInterval(() => void sweepLocalSources(), 30_000);
+  localSourceTimer.unref();
   const startDeps: StartDeps = {
+    project: sourceProjects,
     // A start while every runner here refused to claim is refused in their words (runner/presence.ts).
     runnersRefused: refusedNow,
     runBodyIssues,
@@ -2637,6 +2697,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // The agent's folder (its runs' folders, its home, its learning folder) and its scratch folder.
       await rm(agentFolder(data, agentId), { recursive: true, force: true });
       await rm(join(data, "scratch", agentDirName(agentId)), { recursive: true, force: true });
+      // Private source metadata is owned by this exact agent. Prefix siblings with dotted IDs are left alone.
+      for (const key of [`source-sync.agent.${agentId}`, `source-sync.local.${agentId}`]) await store.settings.remove(key);
+      for (const prefix of [`source-sync.tool.${agentId}.`, `source-sync.checkpoint.${agentId}.`]) {
+        for (const row of await store.settings.all({ prefix })) if (/^[a-f0-9]{64}$/.test(row.key.slice(prefix.length))) await store.settings.remove(row.key);
+      }
       await forgetKept("agent", agentId);
     },
     // The replay runs of its input, its audit's shadow run and a learning run it names (the store's), and its audit's shadow
@@ -4328,17 +4393,54 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await broker.authenticate(connectorId, String(req.headers.authorization).slice(7));
       return send(res, 200, await broker.revoke(connectorId));
     }
-    if (["importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand"].includes(found.name)) {
+    if (["importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand", "grantSourceSync", "publishSourceSync", "sourceSyncFailure"].includes(found.name)) {
       const parts = found.pattern.exec(path)!;
       const connectorId = decodeURIComponent(parts[1]!);
       const broker = new RemoteConnectors(store);
       await broker.authenticate(connectorId, String(req.headers.authorization ?? "").replace(/^Bearer /, ""));
       // History pages and command completions have separate bounded contracts; other JSON keeps MAX_BODY.
       const limit = found.name === "importRemoteHistory" ? REMOTE_HISTORY_BODY_BYTES
-        : found.name === "completeRemoteCommand" ? REMOTE_COMPLETION_BODY_BYTES : MAX_BODY;
+        : found.name === "completeRemoteCommand" ? REMOTE_COMPLETION_BODY_BYTES : found.name === "publishSourceSync" ? SOURCE_BODY_BYTES : MAX_BODY;
       const body = await bodyOf(req, limit);
-      if (found.name === "importRemoteTarget") return send(res, 200, await broker.importTarget(connectorId, body));
+      if (found.name === "importRemoteTarget") return send(res, 200, await broker.importTarget(connectorId, body, cliAdoptionResolver(store, new CliLearningConnections(store, sdkSecret))));
       if (found.name === "importRemoteHistory") return send(res, 200, await broker.importHistory(connectorId, decodeURIComponent(parts[2]!), body, [...tokens.map((entry) => entry.token),String(req.headers.authorization??"").replace(/^Bearer /,"")]));
+      if (["grantSourceSync", "publishSourceSync", "sourceSyncFailure"].includes(found.name)) {
+        const targetId = decodeURIComponent(parts[2]!), target = await broker.syncAuthority(connectorId, targetId);
+        const scoped = sources.forConnector(broker, connectorId, targetId);
+        if (found.name === "grantSourceSync") {
+          if (Object.keys(body).length) throw new ApiError("input_invalid", "A sync grant takes an empty object; export authority comes from connector enrollment.");
+          const granted = await agentWrite(target.agentId, async () => {
+            const record = await scoped.grant(target.agentId);
+            // Account/environment prerequisites can recover while source bytes stay unchanged.
+            try { await scoped.reconcile(target.agentId); }
+            catch (error) { if (!(error instanceof SourcePreparationError) && !(error instanceof ApiError && error.status < 500)) throw error; }
+            return record;
+          });
+          return send(res, 200, granted);
+        }
+        const allowed = found.name === "publishSourceSync" ? ["generation", "sequence", "snapshot"] : ["generation", "sequence", "code"];
+        if (Object.keys(body).some(key => !allowed.includes(key)) || typeof body.generation !== "string" || !Number.isSafeInteger(body.sequence) || Number(body.sequence) < 0) throw new ApiError("input_invalid", "Supply the current sync generation and a non-negative sequence.");
+        if (found.name === "sourceSyncFailure") {
+          if (typeof body.code !== "string" || !Object.hasOwn(SOURCE_FAILURES, body.code)) throw new ApiError("input_invalid", "Choose a supported source failure code.");
+          return send(res, 200, await agentWrite(target.agentId, () => scoped.failed(target.agentId, { generation: body.generation as string, sequence: Number(body.sequence), code: body.code as SourceFailureCode })));
+        }
+        if (!isObject(body.snapshot)) throw new ApiError("input_invalid", "Supply a complete source snapshot envelope.");
+        try {
+          // Even an idempotent replay must carry a valid bounded envelope; a matching digest is not validation.
+          validateSourceSnapshot(body.snapshot as unknown as SourceSnapshot);
+          const saved = await agentWrite(target.agentId, async () => {
+            const published = await scoped.publish(target.agentId, { generation: body.generation as string, sequence: Number(body.sequence), snapshot: body.snapshot as unknown as SourceSnapshot });
+            // Publication is durable even when a new setup cannot yet be applied; the owner sees its readiness reason.
+            try { await scoped.reconcile(target.agentId); }
+            catch (error) { if (!(error instanceof SourcePreparationError) && !(error instanceof ApiError && error.status < 500)) throw error; }
+            return published;
+          });
+          return send(res, 200, saved);
+        } catch (error) {
+          if (error instanceof SnapshotError) throw new ApiError("input_invalid", error.message);
+          throw error;
+        }
+      }
       if (found.name === "pollRemoteConnector") return send(res, 200, await broker.poll(connectorId, body));
       const commandId = decodeURIComponent(parts[2]!);
       return send(res, 200, found.name === "remoteCommandEvents" ? await broker.events(connectorId, commandId, body) : await broker.complete(connectorId, commandId, body));
@@ -4406,7 +4508,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     switch (found.name) {
       case "enrollCliLearning": {
         if(!isLoopback(req.socket.remoteAddress ?? ""))throw new ApiError("forbidden","CLI learning enrollment must come from the local source machine.");
-        return send(res,201,await new CliLearningConnections(store,sdkSecret).enroll(await bodyOf(req)));
+        const { source_sync, ...body } = await bodyOf(req);
+        const connection = await new CliLearningConnections(store,sdkSecret).enroll(body);
+        if (source_sync !== undefined) {
+          await localSources.grant(connection.agent_id, source_sync); await sources.sync.grant(connection.agent_id);
+          void sweepLocalSources();
+        }
+        return send(res,201,connection);
       }
       case "listCliLearning": return send(res,200,await new CliLearningConnections(store,sdkSecret).list());
       case "revokeCliLearning": return send(res,200,await new CliLearningConnections(store,sdkSecret).revoke(id));
@@ -4437,6 +4545,52 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (!Number.isInteger(days) || days < 1 || days > 31) throw new ApiError("input_invalid", "Choose an observation window from 1 to 31 days.");
         return send(res, 200, await new Observations(store, Date.now, new ObservationLearning(store, new CliLearningConnections(store, sdkSecret), learning !== "off")).snapshot(days, url.searchParams.get("session_id") ?? undefined));
       }
+      case "getSourceSync": return send(res, 200, await sources.status(id));
+      case "reviewSourceProject": {
+        const body = await bodyOf(req), entry = await needAgent(id);
+        if (!sourceSyncOf(entry.revision?.body)) throw new ApiError("input_invalid", "This agent has no moved project to review.");
+        if (Object.keys(body).length !== 1 || !Object.hasOwn(body, "receipts")) throw new ApiError("input_invalid", "Choose the unresolved run receipts you reviewed.");
+        await reconcileProjectCheckpoints(store, id);
+        await acknowledgeProjects(store, id, body.receipts);
+        return send(res, 200, await sources.status(id));
+      }
+      case "setSourceSync": {
+        const body = await bodyOf(req);
+        if (Object.keys(body).length !== 1 || typeof body.enabled !== "boolean") throw new ApiError("input_invalid", "Set enabled to true or false.");
+        await sources.sync.setEnabled(id, body.enabled);
+        return send(res, 200, await sources.status(id));
+      }
+      case "moveSourceAgent": {
+        const body = await bodyOf(req);
+        if (Object.keys(body).length) throw new ApiError("input_invalid", "Move takes an empty object and uses the latest complete synchronized setup.");
+        try {
+          const entry = await agentWrite(id, () => sources.sync.move(id));
+          return send(res, 200, { agent: agentView(entry, linkOrigin(req), await agentExtra(entry)), source: await sources.status(id) });
+        } catch (error) {
+          if (error instanceof SourcePreparationError || error instanceof SnapshotError) throw new ApiError("agent_not_runnable", error.message);
+          throw error;
+        }
+      }
+      case "resolveSourceSync": {
+        const body = await bodyOf(req);
+        if (Object.keys(body).some(key => !["revision", "snapshot"].includes(key)) || typeof body.revision !== "string" || typeof body.snapshot !== "string") throw new ApiError("input_invalid", "Choose the source snapshot and current agent revision you reviewed.");
+        try {
+          const entry = await agentWrite(id, () => sources.sync.useSource(id, { revision: body.revision as string, snapshot: body.snapshot as string }));
+          return send(res, 200, { agent: agentView(entry, linkOrigin(req), await agentExtra(entry)), source: await sources.status(id) });
+        } catch (error) {
+          if (error instanceof SourcePreparationError || error instanceof SnapshotError) throw new ApiError("agent_not_runnable", error.message);
+          throw error;
+        }
+      }
+      case "bindSourceTool": {
+        const body = await bodyOf(req), record = await sources.sync.get(id);
+        if (Object.keys(body).some(key => !["tool", "server"].includes(key)) || typeof body.tool !== "string" || typeof body.server !== "string") throw new ApiError("input_invalid", "Choose a source tool and its destination connection.");
+        if (!record?.snapshot) throw new ApiError("agent_not_runnable", "Sync the complete setup before choosing its tool connections.");
+        const snapshot = await sources.sync.options.read(id, record.snapshot), requirement = snapshot.configuration.tools.find(tool => tool.name === body.tool);
+        if (!requirement) throw new ApiError("input_invalid", "Choose a tool required by this source setup.");
+        await bindSourceTool(store, id, requirement, body.server);
+        return send(res, 200, await sources.status(id));
+      }
       case "listRemoteConnectors": return send(res, 200, await new RemoteConnectors(store).list());
       case "enrollRemoteConnector": return send(res, 200, await new RemoteConnectors(store).enroll(await bodyOf(req)));
       case "revokeRemoteConnector": return send(res, 200, await new RemoteConnectors(store).revoke(id));
@@ -4446,7 +4600,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res,200,await discoverNative({project:body.project,...(body.runtime?{runtime:body.runtime}:{})}));
       }
       case "connectNative": {
-        const entry=await connectNative(store,await bodyOf(req));
+        const { source_sync, ...body } = await bodyOf(req);
+        const entry=await connectNative(store,body);
+        if (source_sync !== undefined) { await localSources.grant(entry.agent.id, source_sync); await sources.sync.grant(entry.agent.id); void sweepLocalSources(); }
         return send(res,200,{agent:agentView(entry,linkOrigin(req),await agentExtra(entry)),native:nativeOf(entry.revision?.body)});
       }
       case "getNative": {
@@ -4463,6 +4619,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "disconnectNative": {
         const entry=await needAgent(id); const native=nativeOf(entry.revision?.body);
         if(!native)throw new ApiError("not_found","This agent has no native connection.");
+        await localSources.revoke(id);
         const changed=await updateNative(store,entry,{...native,connected:false});
         if(native.remote)await new RemoteConnectors(store).disconnectTarget(native);
         return send(res,200,{native:nativeOf(changed.revision?.body)});
@@ -4579,6 +4736,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
           const candidate = await agents.revision(id, revision);
           if (!candidate) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
+          if (sourceSyncOf(candidate.revision.body)?.id !== sourceSyncOf(entry.revision?.body)?.id) throw new ApiError("input_invalid", "A revision restore cannot change this agent’s source ownership. Keep a revision from after Move.");
           if (stable(cliLearningOf(candidate.revision.body)) !== stable(cliLearningOf(entry.revision?.body))) throw new ApiError("input_invalid", "A revision restore cannot change the enrolled CLI learning connection.");
           if (stable(nativeOf(candidate.revision.body)) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "This revision changes the native connection. Reconnect or verify through the native connection controls; ordinary revision restore cannot change its source or connection state.");
           if (nativeOf(candidate.revision.body)) {
@@ -6125,6 +6283,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // the store closes last.
     closing = true;
     stopping.abort();
+    clearInterval(localSourceTimer);
     // Cancel a pending ChatGPT callback without signing out or changing the saved credential.
     plan.close();
     const observationStopped = stopObservationRetention();
@@ -6145,6 +6304,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await schemaSealed;
     await installStopped;
     await observationStopped;
+    await localSourceSweep;
     // The ends' follower stops before the webhooks it feeds and the store it reads.
     clearTimeout(endsTimer);
     await endsRead;

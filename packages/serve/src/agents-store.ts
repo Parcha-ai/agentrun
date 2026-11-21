@@ -5,6 +5,7 @@
 // racing another writer; the store's own transactions make each write atomic.
 //
 // The run counts an agent view shows (runs.count, runs.live) are E3's run reads, not this module's; agentView takes them.
+import { sourceSyncOf } from "./source-sync/types.js";
 import { randomBytes } from "node:crypto";
 import { purgedAgent } from "./agents.js";
 import { agentLink } from "./console-links.js";
@@ -15,7 +16,7 @@ import { type LearningSetting, learningSettingIssue } from "./learning-setting.j
 import { learningSettingForBody } from "./store/agent-body.js";
 import { storedHarness } from "./harness-table.js";
 import {
-  AgentBodyInvalid, type AgenticBody, RevisionMoved, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
+  AgentBodyInvalid, type AgenticBody, RevisionMoved, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type SettingsGuard, type RevisionBodyInput,
   type ModelTiers, type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type TemplatePackage, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
@@ -312,7 +313,7 @@ export async function commitAgent(
   store: AgentsStore,
   read: AgentEntry,
   { definition, skills, note }: DefinitionBody,
-  { ifCurrent, check, contract = false, template, fromPackage = false, inTurn }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {},
+  { ifCurrent, settingsGuards, check, contract = false, template, fromPackage = false, inTurn }: { ifCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {},
 ): Promise<AgentEntry> {
   const stale = () => new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   const held = (entry: AgentEntry): AgentEntry => {
@@ -357,7 +358,7 @@ export async function commitAgent(
       if (contract) checkPast(definition, now.version);
       else checkVersion(definition, now.revisions + 1);
       try {
-        await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...revision, ...(described ? { description } : {}) });
+        await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...(settingsGuards ? { settingsGuards } : {}), ...revision, ...(described ? { description } : {}) });
         return (await getAgent(store, agent.id))!;
       } catch (error) {
         if (!(error instanceof RevisionMoved)) storeError(error);
@@ -407,7 +408,19 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         ...(definition.checkout === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).checkout !== undefined ? { checkout: (currentBody as AgenticBody).checkout } : {}),
       }
     : {};
-  return makeRevision({ ...definition, ...carried, ...owned }, files, note);
+  const made = makeRevision({ ...definition, ...carried, ...owned }, files, note);
+  const sourceSync = sourceSyncOf(currentBody);
+  if (sourceSync) {
+    if (made.kind !== "agentic") throw new ApiError("input_invalid", "A synced agent keeps its agentic execution. Create a workflow separately.");
+    const body = made.body as AgenticBody;
+    if (body.native || body.sdk || body.cli_learning) throw new ApiError("input_invalid", "A moved agent keeps managed execution. Its source connection only syncs setup and captures source runs.");
+    if (body.harness !== (currentBody as AgenticBody).harness) {
+      const missing = ((currentBody as AgenticBody).tools ?? []).filter(tool => !body.tools?.includes(tool));
+      if (missing.length) throw new ApiError("input_invalid", `Changing harness must preserve this agent's required tools: ${missing.join(", ")}. Choose a compatible harness.`);
+    }
+    return { ...made, body: { ...(made.body as AgenticBody), sourceSync } };
+  }
+  return made;
 }
 
 /** Makes `revisionId`, one of the agent's own, its current one (POST /agents/{id}/current). */
@@ -494,6 +507,7 @@ export function agentView(
     revision: revision?.id ?? null,
     revisions: entry.revisions,
     source: null,
+    ...(sourceSyncOf(body) ? { source_sync: { moved: true as const } } : {}),
     // The template package it was applied from (its first revision keeps it): the package's id, version and the commit an
     // imported one was read at (null for a bundled one). Null for an agent made otherwise.
     template: entry.template ? { id: entry.template.id, version: entry.template.version, sha: entry.template.sha ?? null } : null,

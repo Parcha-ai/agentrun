@@ -10,11 +10,19 @@ export function agentInventory(agents: readonly Agent[], sessions: readonly Obse
   const listed = agents.filter((agent) => !!agent.archived_at === archived);
   const latest = archived ? [] : latestAgentSessions(sessions);
   const profiles = new Map(listed.filter((agent) => cliLearningOf(agent.definition)).map((agent) => [agent.agent_id, agent]));
+  const moved = new Set(listed.filter(agent => agent.source_sync?.moved).map(agent => agent.agent_id));
+  const sources = new Map<string, string[]>();
+  for (const session of latest) {
+    const id = session.learning?.agent_id;
+    if (id && moved.has(id)) sources.set(id, [...(sources.get(id) ?? []), ...observedSearchTexts(session)]);
+  }
   // Only an explicit source association can replace a learning profile's separate card. A profile with no retained
   // linked session must remain reachable, including while source telemetry has not been read or is unavailable.
   const represented = new Set(latest.map((session) => session.learning?.agent_id).filter((id) => id && profiles.has(id)));
-  const shownAgents = listed.filter((agent) => !represented.has(agent.agent_id) && matchesFilter(query, ...agentSearchTexts(agent)));
+  const shownAgents = listed.filter((agent) => !represented.has(agent.agent_id) && matchesFilter(query, ...agentSearchTexts(agent), ...(sources.get(agent.agent_id) ?? [])));
   const shownSessions = latest.filter((session) => {
+    // Only the server-verified association folds source telemetry into a moved agent. A shared title/path is no proof.
+    if (session.learning?.agent_id && moved.has(session.learning.agent_id)) return false;
     const profile = session.learning?.agent_id ? profiles.get(session.learning.agent_id) : undefined;
     return matchesFilter(query, ...observedSearchTexts(session), ...(profile ? agentSearchTexts(profile) : []));
   });

@@ -88,6 +88,8 @@ import type { AgenticBody } from "../store/agent-body.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
 import { monidForClaim, withMonid } from "./monid-run.js";
+import { verifyPlacedProject, movedSkillFiles } from "../source-sync/claim.js";
+import { runProjectCheckpoint } from "./project-checkpoint.js";
 
 /** The shared claim-time computer types live on the base spec (adapter-run-spec.ts), re-exported for this module's API. */
 export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./adapter-run-spec.js";
@@ -285,6 +287,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const revisionRow = await deps.store.agents.revision(runRow.revisionId);
   if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);
   const body = (revisionRow.body ?? {}) as RevisionBody;
+  const movedProject = await verifyPlacedProject(deps.store, runRow, revisionRow, launch, { data: deps.data, sealKey: deps.sealKey, env: deps.env, ...(run.signal ? { signal: run.signal } : {}), control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
   const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
   const granted = body.tools ?? [];
 
@@ -377,7 +380,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const start = learningStartOf(launch);
   // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts), with the kind's
   // skill of a desktop or a phone (the revision's computer setting), in the harness's skill list beside the revision's.
-  const kindSkills = await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
+  const kindSkills = movedProject ? [] : await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
+  const currentSkills = movedProject ? await movedSkillFiles(ws.workspace, body.skills ?? {}, settingOfDefinition(body)?.computer.kind) : [...Object.keys(body.skills ?? {}), ...kindSkills];
   // A learning run's seed read as the pi spec reads it (runner/learning-seed.ts): its learned workflows, the ones
   // learned_workflow runs.
   const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
@@ -436,8 +440,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // pi spec gives it), then the effort guidance.
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
-  const check = await entry.skillCheck?.();
-  const { system: instructions, native } = await systemOf(laid, [...Object.keys(body.skills ?? {}), ...kindSkills], ws.workspace, check, { onDemand: readsFiles(granted) });
+  const check = movedProject ? undefined : await entry.skillCheck?.();
+  const { system: instructions, native } = await systemOf(laid, currentSkills, ws.workspace, check, { onDemand: movedProject || readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
 
   // The run's model (the launch's, pinned at start, else the revision's) and its adapter, as main builds them, on the
@@ -778,6 +782,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // resume instead, its mount credential with it, as the pi spec's.
     ...(computer.keeps ? { keptWords: computerKeptWords(computer.keeps) } : {}),
     release: (how) => holds.release(how),
+    ...(movedProject ? { projectCheckpoint: runProjectCheckpoint({ store: deps.store, agentId: runRow.agentId, claim, launch, tools, computer,
+      workspace: { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },
+      secrets: async () => runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)),
+    }) } : {}),
     endCheckout: () => holds.endCheckout(),
   };
 }

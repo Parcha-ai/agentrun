@@ -14,6 +14,11 @@ sign-in and configuration. Turn **Self-improving** On separately to give later r
 corrections. Eligible server-run and SDK agents can also compile checked workflows; CLI capture has no workflow
 bridge. Imported history stays historical and does not automatically train the agent.
 
+New source connections also keep their setup in sync by default. A supported complete setup can **Move to AgentRun**
+from the same agent page, retaining its identity and history. Destination accounts and unsupported tools/settings
+appear as prerequisites. See [source sync and Move](../../docs/source-sync.md) for scope, project continuity,
+conflicts and current compatibility; `--no-sync` opts out when connecting.
+
 For a source on a different laptop, VM or container, choose **Connection setup → Another machine** and use the
 matching [Python source connector](../../connector/README.md). Remote execution currently needs the server and
 connector from the same reviewed development checkout; the published observation-only CLI does not include it.
