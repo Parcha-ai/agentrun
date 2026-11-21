@@ -446,6 +446,7 @@ export type RunSummary = {
     call_id: string;
     args_preview: string;
     summary?: string;
+    asks_because?: string;
     requested_at: string;
     price?: number | "not metered" | "priced by usage";
     destructive?: true;
@@ -767,6 +768,7 @@ export type Run = {
     call_id: string;
     args_preview: string;
     summary?: string;
+    asks_because?: string;
     requested_at: string;
     price?: number | "not metered" | "priced by usage";
     destructive?: true;
@@ -4173,8 +4175,15 @@ export type ApplyTemplateResponse = {
   version: string;
   agent_id: string;
   revision_version: number;
+  agent_change: "made" | "updated" | "unchanged";
   servers: Record<string, string | null>;
   trigger_ids: Array<string>;
+  triggers: Array<{
+    trigger_id: string;
+    name: string;
+    kind: "schedule" | "webhook" | "github" | "composio" | "email" | "feed";
+    enabled: boolean;
+  }>;
   warnings: Array<InputIssue>;
   webhook_secrets?: Array<{
     trigger_id: string;

@@ -949,6 +949,7 @@ export interface components {
       call_id: string;
       args_preview: string;
       summary?: string;
+      asks_because?: string;
       requested_at: string;
       price?: number | "not metered" | "priced by usage";
       destructive?: true;
@@ -1174,6 +1175,7 @@ export interface components {
       call_id: string;
       args_preview: string;
       summary?: string;
+      asks_because?: string;
       requested_at: string;
       price?: number | "not metered" | "priced by usage";
       destructive?: true;
@@ -1399,8 +1401,15 @@ export interface operations {
       version: string;
       agent_id: string;
       revision_version: number;
+      agent_change: "made" | "updated" | "unchanged";
       servers: Record<string, string | null>;
       trigger_ids: string[];
+      triggers: {
+        trigger_id: string;
+        name: string;
+        kind: "schedule" | "webhook" | "github" | "composio" | "email" | "feed";
+        enabled: boolean;
+      }[];
       warnings: components["InputIssue"][];
       webhook_secrets?: {
         trigger_id: string;

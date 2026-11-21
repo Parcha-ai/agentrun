@@ -27,6 +27,14 @@ export async function saved(api, faux, extra = {}) {
   return res.body;
 }
 
+/** An account the server can no longer reach: saved on a fake of its own (a save signs in), which is then closed, so
+ *  nothing listens on its ports. */
+export async function savedThenGone(t, api) {
+  const gone = await mailbox(t);
+  await saved(api, gone);
+  await gone.close();
+}
+
 let named = 0;
 /** An email trigger's body: agent `agentId` started on each message, with `content` as its input. */
 export const emailTrigger = (agentId, source = {}, content = "Answer this email.", extra = {}) => ({ name: `mail ${++named}`, source: { kind: "email", ...source }, target: { kind: "start_run", agent_id: agentId, input: { content }, max_cost_usd: 0.5 }, ...extra });

@@ -37,6 +37,9 @@ const cutSignalled = (signal) => new Proxy({ cut: true }, { has(target, key) { i
 /** The faux harness's `{ cutBooked: true }` (a request held until the turn is stopped, then booked at `usd`) that writes
  *  `signal` once the request is admitted, as cutSignalled does. */
 const cutBookedSignalled = (signal, usd) => new Proxy({ cutBooked: true, usd }, { has(target, key) { if (key === "cutBooked") writeFileSync(signal, ""); return key in target; } });
+/** A request held in flight (`until`: admitted, not answered until `file` exists) that writes `signal` once it is
+ *  admitted: the faux adapter asks whether an action has an `until` only after the request's beforeRequest has passed. */
+const untilSignalled = (signal, action) => new Proxy(action, { has(target, key) { if (key === "until") writeFileSync(signal, ""); return key in target; } });
 /** The faux harness's `{ hang: true }` (the turn holds with no request open, until it is aborted) that writes `signal`
  *  once the turn reaches it: the faux adapter asks whether an action is a hang first, after the request before it has
  *  been booked and has shown its text. */
@@ -323,6 +326,11 @@ export function script(spec, session = {}) {
   // `until` polls for it): the run works the while, and ends on its own once the file is there.
   const answerOnce = /Answer once (\S+) exists\./.exec(text)?.[1];
   if (answerOnce) return [{ say: "Answered.", usd: 0.002, until: answerOnce }];
+  // A read, then a request admitted and held in flight until <go> exists (<signal> written once it is), then the answer: a
+  // test cuts the turn while that request is open (runner-tool-hand-back.test.mjs). A session opened again goes on past
+  // the cut request, as the faux adapter's recovery always does, so the answer after it is the one a resumed turn gives.
+  const heldAnswer = /^Read, then hold a request until (\S+) exists \(signal (\S+)\), then answer\.$/m.exec(text);
+  if (heldAnswer) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, untilSignalled(heldAnswer[2], { say: "Answered in the held request.", usd: 0.004, until: heldAnswer[1] }), { say: "Done after the hand-back.", usd: 0.004 }];
   const wait = /Wait for (\S+) before the answer\./.exec(text)?.[1];
   if (wait) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(wait) ? [] : [{ hang: true }]), { say: "Done after the wait.", usd: 0.004 }];
   // A run's end read from its turn's end, not from its rows (turn-record.test.mjs).

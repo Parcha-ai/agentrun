@@ -68,7 +68,8 @@ export function schemaFields(schema: unknown, skip?: string): [string, FieldSpec
 }
 
 /** How the run forms take an agent's input, from its definition's input_schema (see AgentInput). The message is
- *  required when the schema's `required` lists `content`, or when it requires no other property. */
+ *  required only when the schema's `required` lists `content`, as the server reads it: a schema whose own fields are all
+ *  optional takes one of them in place of the message, and the server refuses an input with neither at input.content. */
 export function agentInputOf(schema: unknown): AgentInput {
   if (!isObject(schema)) return { kind: "message" };
   const whole = (): AgentInput => ({ kind: "json", example: exampleOf(schema as Schema) });
@@ -80,7 +81,7 @@ export function agentInputOf(schema: unknown): AgentInput {
   const fields = schemaFields(schema, "content");
   if (!fields) return whole();
   if (!fields.length) return { kind: "message" };
-  return { kind: "fields", form: { fields, contentRequired: required.includes("content") || !required.some((k) => k !== "content") } };
+  return { kind: "fields", form: { fields, contentRequired: required.includes("content") } };
 }
 
 /** A field's label: its title, else its key. */

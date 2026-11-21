@@ -38,7 +38,7 @@ func TestBinaryFailsClosedWithoutCaps(t *testing.T) {
 	}
 
 	code, stdout, stderr = runBin(t, bin, "check")
-	if code != 1 || stdout != "" || !strings.Contains(stderr, "missing CAP_SETUID, CAP_SETGID, CAP_SETPCAP") {
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "missing CAP_CHOWN, CAP_SETUID, CAP_SETGID, CAP_SETPCAP") {
 		t.Errorf("check: exit %d, stdout %q stderr %q", code, stdout, stderr)
 	}
 
