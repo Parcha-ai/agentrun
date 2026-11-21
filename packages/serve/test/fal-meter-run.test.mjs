@@ -8,6 +8,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, serve } from "./support.mjs";
 
 const FAUX = new URL("./fixtures/faux-tools-cost.mjs", import.meta.url).pathname;
+const AT_ONCE = new URL("./fixtures/faux-at-once.mjs", import.meta.url).pathname;
 const RUN_MODEL = "mcp:fal/run_model";
 const micro = (usd) => (usd === null || usd === undefined ? usd : Math.round(usd * 1e6));
 
@@ -94,4 +95,60 @@ test("a fal job booked above its hold that leaves the run within its cap stops n
   assert.equal(called("get_model_schema"), 1, "the script's next call ran");
   assert.equal(view.cost.tools_usd, 1, "booked at the 2 megapixels its output states");
   assert.equal(view.status, "completed", JSON.stringify(view.error));
+});
+
+/** A run whose model sends two ideogram jobs at once (two calls in one message) under a $1 cap, each asking 4 images at
+ *  $0.10 (each held at $0.40): the first states 7 images ($0.70) while the second is still running; the second, sent back
+ *  1.5 s after the first answered, states `secondImages`. Then, in its next turn, a call that costs nothing. */
+async function twoAtOnce(t, secondImages) {
+  const { api } = await serve(t, { faux: AT_ONCE });
+  const fake = await startFakeMcp({});
+  t.after(() => fake.close());
+  let firstAnswered;
+  const answered = new Promise((done) => { firstAnswered = done; });
+  const images = (n) => Array.from({ length: n }, (_, i) => ({ url: `https://v3.fal.media/${i}.png`, width: 1024, height: 1024 }));
+  const reply = (args, n) => ({ content: [{ type: "text", text: JSON.stringify({ status: "completed", submission_replayed: false, endpoint_id: args.endpoint_id, request_id: `r-${args.input?.prompt}`, result: { images: images(n) }, has_result: true }) }] });
+  fake.tools.get_pricing = { description: "fal's price for an endpoint.", input: { type: "object", properties: { endpoint_id: { type: "string" } }, required: ["endpoint_id"], additionalProperties: false }, run: ({ endpoint_id }) => ({ content: [{ type: "text", text: JSON.stringify({ prices: [{ endpoint_id, unit_price: 0.1, unit: "images", currency: "USD" }], next_cursor: null, has_more: false }) }] }) };
+  fake.tools.run_model = {
+    description: "Run a fal model.",
+    input: { type: "object", properties: {} },
+    run: async (args) => {
+      if (args.input?.prompt === "first") return (setTimeout(firstAnswered, 0), reply(args, 7));
+      await answered;
+      await new Promise((done) => setTimeout(done, 1500));
+      return reply(args, secondImages);
+    },
+  };
+  fake.tools.get_model_schema = { description: "A fal model's schema.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: "{}" }] }) };
+  assert.equal((await api("PUT", "/settings/mcp-servers/fal", { url: fake.url, auth: { type: "none" }, toolkit: "fal" })).status, 200);
+  const SCHEMA = "mcp:fal/get_model_schema";
+  const made = await api("POST", "/agents", agent("two", { tools: [RUN_MODEL, SCHEMA], tool_settings: { [RUN_MODEL]: { permission: "allow" }, [SCHEMA]: { permission: "allow" } } }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const job = (prompt) => ["mcp__fal__run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt, num_images: 4 } }];
+  const content = `At once: ${JSON.stringify([job("first"), job("second")])}\nAt once: ${JSON.stringify([["mcp__fal__get_model_schema", { endpoint_id: "fal-ai/ideogram/v3" }]])}`;
+  const run = await api("POST", "/agents/two/runs", { input: { content }, max_cost_usd: 1 });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  const called = (tool) => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === tool).length;
+  const costs = rows.filter((row) => row.kind === "phase" && /^Tool cost:/.test(row.summary ?? "")).map((row) => micro(row.usage?.usd));
+  return { view, called, costs };
+}
+
+test("a fal job that settles above its hold while another is still held stops nothing when what both charge stays within the cap", { timeout: 120_000 }, async (t) => {
+  const { view, called, costs } = await twoAtOnce(t, 1);
+  assert.equal(called("run_model"), 2, "both jobs were sent");
+  assert.deepEqual(costs, [micro(0.7), micro(0.1)], "the first settled above its hold before the second settled below its");
+  assert.equal(micro(view.cost.tools_usd), micro(0.8));
+  assert.equal(called("get_model_schema"), 1, "the next turn's call ran");
+  assert.equal(view.status, "completed", JSON.stringify(view.error));
+});
+
+test("a fal job that settles above its hold while another is still held: when the other's charge then takes the run past its cap, the run stops at once", { timeout: 120_000 }, async (t) => {
+  const { view, called, costs } = await twoAtOnce(t, 4);
+  assert.deepEqual(costs, [micro(0.7), micro(0.4)]);
+  assert.equal(micro(view.cost.tools_usd), micro(1.1));
+  assert.equal(called("get_model_schema"), 0, "nothing ran after the charge that passed the cap");
+  assert.deepEqual([view.status, view.error?.code], ["failed", "spend_cap_reached"]);
+  assert.match(view.error?.message ?? "", /over its cap of \$1\.$/);
 });
