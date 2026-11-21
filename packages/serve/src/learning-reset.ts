@@ -90,8 +90,10 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
     // What the agent's kept runs carry of their revisions' compile and check, kept before the records it is read from go.
     await keepResetLedger(host.store.settings, agentId, await promotionsOf(host.store.settings, agentId));
     // The watermark, before anything goes: learning reads no run that started, or read its seed, at or before it (each
-    // seed is read in this queue, so one read before this moment holds an earlier time). Set first, so no moment has the
-    // folder gone and the old runs still read; a delete that fails puts the earlier one back, its learning left as it was.
+    // seed is read in this queue, so one read before this moment never holds a later time). A seed read after the reset
+    // in the same millisecond counts as before it: its run learns nothing (reason reset) and an SDK start is refused, to
+    // start again, never a run given what the reset deleted. Set first, so no moment has the folder gone and the old runs
+    // still read; a delete that fails puts the earlier one back, its learning left as it was.
     const earlier = await resetAtOf(host.store.settings, agentId);
     const at = Date.now();
     await keepResetAt(host.store.settings, agentId, at);
@@ -102,8 +104,6 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
       if (!(error instanceof LearningInFlight)) throw error;
       throw busy(agentId, error.runs, "its learning work is in flight");
     }
-    // Out of the queue only once the clock is past the watermark: a seed read after the reset is always later than it.
-    while (Date.now() <= at) await sleep(1);
   });
 }
 
