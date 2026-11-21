@@ -1,7 +1,7 @@
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { useScrollQuiet } from "@/lib/useScrollQuiet";
 import { workflowGraph } from "@dsl/graph";
-import { ArrowLeft, ArrowUpRight, Bot, ChevronRight, RefreshCw, Search, Workflow } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bot, ChevronRight, RefreshCw, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentVersions } from "@/components/AgentVersions";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
@@ -18,7 +18,7 @@ import { SignIns } from "@/components/SignIns";
 import { LearningTab } from "@/components/Learning";
 import { LearningChips, WaitingCount } from "@/components/LearningChips";
 import { Button } from "@/components/ui/button";
-import { Banner, Chip, fieldBoxClass, Input, Tabs, tabPanelProps } from "@/components/ui";
+import { Banner, Chip, Tabs, tabPanelProps } from "@/components/ui";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { type Agent, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
@@ -35,6 +35,8 @@ import { rangeFrom, type Stats } from "@/lib/mission";
 import type { Run } from "@/lib/v2";
 import { drawnNodeCount, nodesWord } from "@/lib/wfGraph";
 import { pageToolbarClass } from "@/components/ui/toolbar";
+import { matchesFilter } from "@/lib/filter";
+import { ListFilter } from "@/components/ListFilter";
 
 /** `stats`: the page's own read of the agent's stats over the Analytics tab's first range, which that tab starts from. */
 type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null; history?: RunHistory };
@@ -345,10 +347,10 @@ function RunsTab({ agent, history }: TabProps) {
   const { runs, cursor, reading, more, error, refresh, loadMore, reloadLatest } = history!;
   if (error && !runs) return <ProblemCard problem={error} onRetry={refresh} className="" />;
   if (!runs) return <ListSkeleton label="Loading the runs" rows={5} />;
-  const filtered = runs.filter((r) => `${runTitle(r)} ${r.run_id} ${r.status}`.toLowerCase().includes(query.toLowerCase()));
+  const filtered = runs.filter((r) => matchesFilter(query, runTitle(r), r.run_id, r.status));
   return <section className="min-h-[380px] overflow-hidden border" aria-label="Agent run history">
     <div className="flex flex-wrap items-center gap-3 border-b p-3">
-      <label className={cn(fieldBoxClass, "flex w-56 min-w-0 items-center gap-2 px-3")}><Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden /><Input bare type="search" aria-label="Search this agent's runs" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search runs…" className="h-control-md w-full" /></label>
+      <ListFilter value={query} onChange={setQuery} label="Search this agent's runs" placeholder="Search runs…" shown={filtered.length} total={runs.length} className="max-w-md flex-1" />
       <span className="text-small text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</span>
       <div className="ml-auto"><CodingAgentAction label="Query" prompt={`${queryRunsPrompt(location.origin, agent.agent_id)}\nCurrent view: all statuses; ${agent.archived_at ? "archived runs" : "non-archived runs"}.`} playgroundHref={queryPlaygroundHref(agent.agent_id, { archived: !!agent.archived_at })} /></div>
     </div>

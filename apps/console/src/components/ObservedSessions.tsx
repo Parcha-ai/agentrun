@@ -6,13 +6,14 @@ import { when } from "@/lib/format";
 import { observationHash, observedHarness, observedNumber, observedState, observedTone, type ObservationRead, type ObservedUsage, useObservations } from "@/lib/observations";
 import { pageToolbarClass } from "@/components/ui/toolbar";
 import { cn } from "@/lib/utils";
+import { matchesFilter } from "@/lib/filter";
 
 /** Native sessions share the existing pages, with their actual source and metadata limits visible. */
 export function ObservedSessions({ read, view = "table", query = "", days = 30 }: { read: ObservationRead; view?: "cards" | "table" | "summary"; query?: string; days?: 7 | 30 }) {
   const { data, error, refresh } = read;
   const storageFull = data?.connectors.some((connector) => connector.storage_full);
   if (!data?.sessions.length && !error && !storageFull) return null;
-  const sessions = (data?.sessions ?? []).filter((session) => `${session.display_name} ${session.harness} ${session.models.join(" ")}`.toLowerCase().includes(query.toLowerCase()));
+  const sessions = (data?.sessions ?? []).filter((session) => matchesFilter(query, session.display_name, session.harness, ...session.models));
   return <section className="space-y-4" aria-label="Observed sessions">
     <div className="flex flex-wrap items-center gap-3">
       <div className="mr-auto"><h2 className="flex items-center gap-2 text-lead font-semibold"><RadioTower className="size-4" aria-hidden />Observed sessions</h2><p className="mt-1 text-small text-muted-foreground">Agents running in their original applications. Activity refreshes every 15 seconds.</p></div>

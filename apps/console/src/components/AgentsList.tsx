@@ -16,6 +16,7 @@ import { workflowShape } from "@/lib/workflowDoc";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { buildAgentPrompt, editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { matchesFilter } from "@/lib/filter";
 
 export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onLearning?: (id: string) => void; onArchive?: (id: string, archive: boolean) => void };
 
@@ -23,7 +24,7 @@ export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: s
  *  its revision and runs, and its actions). Archived agents are their own view. */
 export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error, handoff, observations }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null; handoff?: ReactNode; observations?: ObservationRead }) {
   const [q, setQ] = useState("");
-  const shown = (agents ?? []).filter((a) => `${a.definition.name} ${a.definition.description ?? ""}`.toLowerCase().includes(q.toLowerCase()));
+  const shown = (agents ?? []).filter((a) => matchesFilter(q, a.definition.name, a.definition.description));
   return (
     <section className="flex min-h-full flex-col">
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
