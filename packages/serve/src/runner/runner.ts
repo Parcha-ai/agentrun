@@ -214,6 +214,8 @@ interface Held {
   cursor: number;
   /** A stop is on its way to the loop, or the loop's start() has returned. */
   stopping: boolean;
+  /** The first stop asked of the loop: a shutdown's release says the run was drained (run_attempts cut). */
+  stoppedFor?: StopReason["kind"];
   /** start() has returned: the run's end (its sweep, flush and release) is under way. A Fenced answer now is no lost claim. */
   ending: boolean;
   /** No more of the claim is written: set once the end stops waiting for an in-flight delivery, before its sweep. */
@@ -394,6 +396,9 @@ export function startRunner(options: RunnerOptions): Runner {
     held.fence.lost = true;
     clock.clearTimeout(held.deadline);
     emit({ type: "claim-lost", runId: held.claim.runId, epoch: held.claim.epoch, why });
+    // Its attempt was cut by the lapse, said while this runner is still there (run_attempts); a store it cannot reach
+    // leaves it unsaid, and the claim that takes the run over reads a crash.
+    store.runAttempts?.lapsed(held.claim.runId, held.claim.epoch).catch(() => undefined);
     stopLoop(held, { kind: "claim-lost" });
     held.abort.abort(new ClaimLost(`run ${held.claim.runId}: claim lost (${why})`));
   };
@@ -402,6 +407,7 @@ export function startRunner(options: RunnerOptions): Runner {
     // A person's stop of a run that keeps its computer for its owner ends its agent only: its rows (the owner's calls,
     // the release, a cancel) are still handed on until the computer is let go.
     if (!held.loop.keepsComputer?.(reason)) held.stopping = true;
+    held.stoppedFor ??= reason.kind;
     held.loop.stop(reason).catch((error: unknown) => emit({ type: "error", runId: held.claim.runId, step: "stop", message: message(error) }));
   };
 
@@ -653,6 +659,8 @@ export function startRunner(options: RunnerOptions): Runner {
     // Running, said: a stop that reached the loop while it parked (its ask landed with the run parked, under this claim)
     // leaves the row parked, and a release with no state keeps it so; the store's parked rule admits an untaken stop
     // whatever its backoff (a person's stop never waits on a failed resume's), so the run would be claimed again at once.
+    // No cut: the next claim only retries the end (endRetried), never the turn, so it redoes no request or paid call, and
+    // the work before the stop stays billable (run-usage.ts attemptTags reads a redo only after a cut).
     await release(claim, { state: "running", backoffUntil: now() + wait });
     emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "interrupted" });
     emit({ type: "handed-back", runId: claim.runId, epoch: claim.epoch, cause: "end_retry" });
@@ -737,10 +745,15 @@ export function startRunner(options: RunnerOptions): Runner {
       const inARow = closedItself ? (interruptedInARow.get(claim.runId) ?? 0) + 1 : 0;
       if (inARow > 0) interruptedInARow.set(claim.runId, inARow);
       else interruptedInARow.delete(claim.runId);
-      await release(claim,
-        end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt }
+      // A run let go unfinished says why on its claim's attempt (run_attempts cut): a runner's close drained it, or its
+      // loop ended interrupted on its own and the run is tried again. The next claim works its turn again.
+      const cut = end.state !== "interrupted" ? undefined : closedItself ? "retry" as const : held.stoppedFor === "shutdown" ? "drain" as const : undefined;
+      await release(claim, {
+        ...(end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt }
         : inARow > 0 ? { backoffUntil: Date.now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
-        : {});
+        : {}),
+        ...(cut ? { cut } : {}),
+      });
       emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: end.state });
       // Left running for another claim: a hand-back, by its cause (this runner's close stopped its loop, or it ended so).
       if (end.state === "interrupted") emit({ type: "handed-back", runId: claim.runId, epoch: claim.epoch, cause: closed && !closedItself ? "drain" : "interrupted" });

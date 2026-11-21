@@ -17,6 +17,7 @@ import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf } from "./claude-lo
 import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef } from "./model.js";
 import { modelWire, WIRES, wireOf } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
+import { gatewayHeadersOf } from "./request-metadata.js";
 import { EXPIRED, PLAN_ORIGIN, PLAN_PROVIDER, planOf, SIGNED_OUT } from "./chatgpt-plan.js";
 
 // Each wire's own settings live in a leaf module (wires.ts), which the harness table reads as it loads.
@@ -135,7 +136,15 @@ export function anthropicModelId(model: ModelRef): string {
  *  the plan's token, asked at each request, and `refused` tells the plan OpenAI answered 401 to one it sent. */
 /** `login`: claude-agent on Claude Code's login on this machine (claude-login.ts): billed to the person's plan, its CLI
  *  calling Anthropic itself; `origin` and `credential` are never read (no proxy, no key). */
-export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: ClaudeAgentLogin };
+/** `headers`: what each request on serve's own gateway carries beside its key (request-metadata.ts: the run, turn and
+ *  attempt it was made for, as LiteLLM's spend-logs metadata); none on any other endpoint. */
+export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: ClaudeAgentLogin; headers?: Readonly<Record<string, string>> };
+
+/** `env`'s gateway headers (gatewayHeadersOf), as a Provider's optional field. */
+const onGateway = (env: NodeJS.ProcessEnv): { headers?: Readonly<Record<string, string>> } => {
+  const headers = gatewayHeadersOf(env);
+  return headers ? { headers } : {};
+};
 
 /** OpenRouter's key, read per request, refused by name where it is not set. */
 function openRouterKey(env: NodeJS.ProcessEnv, who: string, named: string): () => string {
@@ -145,7 +154,7 @@ function openRouterKey(env: NodeJS.ProcessEnv, who: string, named: string): () =
 
 /** Serve's gateway (AGENT_MODEL_BASE_URL) on either wire: its base, its key (AGENT_MODEL_API_KEY, or none) as a bearer
  *  token, the model id as model.ts chose it, priced as runModels prices it. */
-const gatewayProvider = (env: NodeJS.ProcessEnv, model: ModelRef): Provider => ({ origin: modelGatewayBase(env.AGENT_MODEL_BASE_URL!), credential: () => env.AGENT_MODEL_API_KEY || "none", auth: "bearer", modelId: model.modelId, priceModel: model });
+const gatewayProvider = (env: NodeJS.ProcessEnv, model: ModelRef): Provider => ({ origin: modelGatewayBase(env.AGENT_MODEL_BASE_URL!), credential: () => env.AGENT_MODEL_API_KEY || "none", auth: "bearer", modelId: model.modelId, priceModel: model, ...onGateway(env) });
 
 export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef, who: string): Provider {
   const named = `${model.provider}/${model.modelId}`;
@@ -171,7 +180,8 @@ export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef,
     // An endpoint on serve's own gateway's origin takes each run's own key where the server holds none (run-model-key.ts):
     // the harness runs here with no standing key, and a run with no key to spend is refused at its start.
     if (!env.ANTHROPIC_API_KEY && !onServeGateway(env, origin)) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY.`, undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.`, undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
-    return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", modelId: own } };
+    // On serve's own gateway's origin, the claim's request metadata goes with each request (request-metadata.ts).
+    return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", modelId: own }, ...(onServeGateway(env, origin) ? onGateway(env) : {}) };
   }
   // A ChatGPT plan's model: OpenAI's Responses API on the plan's token, whatever else is set.
   if (model.provider === PLAN_PROVIDER) {
