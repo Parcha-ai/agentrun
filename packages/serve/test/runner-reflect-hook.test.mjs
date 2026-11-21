@@ -275,6 +275,17 @@ test("a merge that could not be written drops the learning: unavailable as faile
   assert.deepEqual([two.state, two.reason, two.problems], ["dropped", "checker", problems]);
 });
 
+// Review on #3398: a merge whose folder's disk can't run its script pauses, and keeps no compile marker, so a held
+// workflow's next run asks its revision again.
+test("a merge whose folder's disk can't run its script pauses learning and keeps no compile", async () => {
+  const why = "the Archil exec failed: Exec is not enabled";
+  const { hook, input, calls } = hookWith({ compile: NEW, commit: () => ({ ok: false, reason: "unavailable", problems: [], paused: why }) });
+  const out = kept(await hook(input()));
+  assert.deepEqual([out.state, out.reason, out.detail], ["dropped", "paused", said.paused(why)]);
+  assert.equal(out.compiled, undefined, JSON.stringify(out));
+  assert.deepEqual(calls.failed, [], "no compile attempt is counted");
+});
+
 test("every string the step keeps is cut of what the run must never learn", async () => {
   const value = "hold-this-value-0123456789";
   const { hook, input } = hookWith({ refuse: async () => [value], words: [`Use ${value}.`], refused: [{ rule: "secret_value", path: "corrections.md", detail: `it holds ${value}` }] });

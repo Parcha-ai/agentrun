@@ -207,7 +207,9 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         const problems = [...refusedCorrection, ...(left ?? []), ...draftProblems];
         return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(corrections ? { corrections } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, corrections, problems) }));
       }
-      if (done.paused !== undefined) return close(dropped("paused", said.paused(done.paused), compiledFields));
+      // A paused merge keeps no compile marker: a held workflow's next run asks its revision again (compileAskOf reads a
+      // compile since the hold as asked already).
+      if (done.paused !== undefined) return close(dropped("paused", said.paused(done.paused)));
       if (done.reason === "unavailable") return close(dropped("reflect_failed", said.stopped(STOPPED.failed), compiledFields));
       return close(dropped("checker", correctionWords(done.problems), { problems: [...done.problems], ...compiledFields }));
     }

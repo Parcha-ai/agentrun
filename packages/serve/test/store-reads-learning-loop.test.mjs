@@ -99,6 +99,10 @@ test("learning is paused while the agent's newest learning end was paused (its d
   assert.equal(await read({ r1: [{ at: T0 + 10, row: compiled }], r2: [{ at: T0 + 20, row: paused }] }), words, "the newest end paused");
   assert.equal(await read({ r1: [{ at: T0 + 10, row: paused }], r2: [{ at: T0 + 20, row: compiled }] }), null, "a later end that merged");
   assert.equal(await read({ r1: [{ at: T0 + 10, row: paused }, { at: T0 + 30, row: { state: "dropped", reason: "empty" } }], r2: [{ at: T0 + 20, row: paused }] }), null, "a later round of an earlier run");
+  // Review on #3398: a follow-up sets the paused run going again; its end still says learning is paused.
+  const going = [runOf("r1", 1, { path: "agent" }), runOf("r2", 2, { path: "agent" }, { state: "running" })];
+  const kept = { r1: [{ at: T0 + 10, row: compiled }], r2: [{ at: T0 + 20, row: paused }] };
+  assert.equal((await agentLoopOverStore(storeOf({ runs: going, kept }), "sorter")).paused, words, "a running follow-up of the paused run");
 });
 
 test("GET /agents/{id}/learning/loop: empty before any compile, in the schema's shape; 404 for an agent that is not there", async (t) => {

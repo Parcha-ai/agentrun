@@ -34,7 +34,9 @@ const texts = (list: unknown): string[] => (Array.isArray(list) ? list.filter((o
  *  script), else null. */
 export async function agentLoopOverStore(store: Store, agentId: string): Promise<{ compiles: LoopCompile[]; completed_runs: number; paused: string | null }> {
   const since = await sinceReset(store, agentId);
-  const ended = (await store.runs.list({ agentId, disk: null })).filter((run) => run.agentId === agentId && FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && since(run)).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
+  // The agent's runs in any state: a follow-up sets an ended run going again and keeps its earlier ends, which still say
+  // whether learning is paused; only the ended ones list their compiles.
+  const runs = (await store.runs.list({ agentId, disk: null })).filter((run) => run.agentId === agentId && !run.importedFrom && run.archivedAt === null && since(run)).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   // The completed runs of the agent's own toward its compile (what compileDue counts), at most compile_after: the tab
   // says "N of compile_after" from this, never from the one page of runs it reads.
   const current = (await store.agents.get(agentId))?.currentRevision;
@@ -43,9 +45,11 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
   const promotions = await promotionsOf(store.settings, agentId).catch(() => []);
   const compiles: (LoopCompile & { createdAt: number })[] = [];
   const ends: { createdAt: number; proposal: unknown }[] = [];
-  for (const run of ended) {
+  for (const run of runs) {
+    const ended = FINAL_STATES.includes(run.state);
     for (const kept of await roundsOf(store, run.id).catch(() => [])) {
       ends.push(kept);
+      if (!ended) continue;
       const row = (kept.proposal ?? null) as { compiled?: unknown; draft_errors?: unknown } | null;
       if (!row) continue;
       const errors = texts(row.draft_errors);
