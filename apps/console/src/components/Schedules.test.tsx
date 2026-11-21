@@ -175,12 +175,18 @@ describe("the schedules list", () => {
     const quiet = on("t_quiet", { kind: "webhook" }, "triage");
     const triggers = [...kinds];
     const s = server({ triggers });
+    // Each agent read whose answer has come back: the page's own handler of it runs right after.
+    const answered: string[] = [];
+    const read = s.v2.getAgent;
+    s.v2.getAgent = (...args: Parameters<typeof read>) => read(...args).then((r) => { answered.push(args[0]); return r; });
     const t = await open(s.v2, {}, undefined, 30);
     const row = (id: string) => t.host.querySelector(`[data-trigger="${id}"]`)!;
     // A later read of the list names an agent the first did not: that one is read then, and the others not again.
     triggers.push(quiet);
-    for (let i = 0; i < 20 && !row("t_quiet"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
-    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    const triageRead = () => s.calls.some((c) => c.path === "/v2/agents/triage") && answered.includes("triage");
+    for (let i = 0; i < 50 && !(row("t_quiet") && triageRead()); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    // The page's handler of the triage answer, queued behind the one above, has run.
+    await act(async () => {});
     for (const k of kinds) {
       const cue = row(k.id).querySelector("[data-asks]");
       expect(cue?.textContent, k.id).toBe("Waits for your approval: send_email and create_issue_comment");
