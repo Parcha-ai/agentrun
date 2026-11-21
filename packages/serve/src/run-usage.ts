@@ -172,23 +172,29 @@ const NO_ATTEMPT: AttemptTag = { attempt: null, billable: true };
 /** A run's attempts (`rows`, by epoch) as tags: the attempt a journal entry was written in (the last claim whose first
  *  entry id is at or below the entry's), and the one a time falls in (the last claim made at or before it, on the
  *  store's clock: a computer is made a moment after its claim). `spans` splits a stretch of time across the claims whose
- *  windows it falls in (each claim's window runs from its claim to the next claim's). An attempt is billable unless
- *  another claim worked its turn again after it (the same turn, one attempt more). With no rows (a run from before
+ *  windows it falls in (each claim's window runs from its claim to the next claim's). Every part is billable: a claim
+ *  that takes over a cut turn resumes from what the cut one saved (its answered requests, its finished calls), so that
+ *  work is the task's, done once. `redoneAt` is the one exception: the attempt an entry was written in, billable unless
+ *  another claim worked its turn again after it (the same turn, one attempt more), for a model request that attempt sent
+ *  and never finished (usageLinesOf), which the claim after it sends again. With no rows (a run from before
  *  them), every part is NO_ATTEMPT: attempt null, billable. A part before the first row is NO_ATTEMPT too, unless that
  *  row is the run's first claim (taken from queued): then nothing came before it, and a part read a moment early (a
  *  runner's clock behind the store's) is that claim's. A run that took its first row after the change that writes them
  *  (an older run's follow-up) never counts what it did before as any attempt's. */
-export function attemptTags(rows: readonly RunAttemptRow[]): { atEntry(id: unknown): AttemptTag; atTime(ms: number): AttemptTag; spans(from: number, to: number): { at: AttemptTag; ms: number }[] } {
+export function attemptTags(rows: readonly RunAttemptRow[]): { atEntry(id: unknown): AttemptTag; redoneAt(id: unknown): AttemptTag; atTime(ms: number): AttemptTag; spans(from: number, to: number): { at: AttemptTag; ms: number }[] } {
   const sorted = [...rows].sort((a, b) => a.epoch - b.epoch);
-  const tagOf = (row: RunAttemptRow | undefined): AttemptTag =>
+  const tagOf = (row: RunAttemptRow | undefined): AttemptTag => (row === undefined ? NO_ATTEMPT : { attempt: row.attempt, billable: true });
+  const redoneOf = (row: RunAttemptRow | undefined): AttemptTag =>
     row === undefined ? NO_ATTEMPT : { attempt: row.attempt, billable: !sorted.some((later) => later.epoch > row.epoch && later.turn === row.turn && later.attempt === row.attempt + 1) };
   const last = (fits: (row: RunAttemptRow) => boolean): RunAttemptRow | undefined => sorted.filter(fits).at(-1);
   const before = sorted[0]?.from === "queued" ? sorted[0] : undefined;
+  const entryRow = (id: unknown): RunAttemptRow | undefined => {
+    const n = Number(id);
+    return Number.isFinite(n) ? last((row) => row.journalFrom <= n) ?? before : sorted.at(-1);
+  };
   return {
-    atEntry: (id) => {
-      const n = Number(id);
-      return Number.isFinite(n) ? tagOf(last((row) => row.journalFrom <= n) ?? before) : tagOf(sorted.at(-1));
-    },
+    atEntry: (id) => tagOf(entryRow(id)),
+    redoneAt: (id) => redoneOf(entryRow(id)),
     atTime: (ms) => tagOf(last((row) => row.claimedAt <= ms) ?? before),
     spans: (from, to) => {
       if (!(to > from)) return [{ at: tagOf(last((row) => row.claimedAt <= from) ?? before), ms: 0 }];
@@ -270,11 +276,19 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
     const d = (e.data ?? {}) as { tag?: unknown; at?: unknown; final?: unknown };
     if (e.kind === BROWSER_CHARGED && typeof d.tag === "string") chargeAt.set(`browser:${d.tag}@${String(d.at)}${d.final ? "/final" : ""}`, tags.atEntry(e.id));
   }
+  // A model request its attempt sent and never finished: no answer booked (a crash cut it off), or booked as cut (a stop
+  // cut it, at its hold). The claim that takes the turn over sends it again, so when a later claim redid that turn it is
+  // the infrastructure's (redoneAt). An answered request, and every paid call, is the task's: the next claim reuses it.
+  const answered = new Set<string>();
+  for (const e of entries) {
+    if (e.kind === RUNNER_RECORDS.turn && (e.data as { cut?: unknown } | undefined)?.cut !== true) answered.add(turnOf(e));
+  }
+  const unfinished = (e: EntryLike) => conv(e) !== paidConv && !answered.has(turnOf(e));
   const atOf = new Map<string, AttemptTag>();
   for (const e of entries) {
     if (!(e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn) || atOf.has(turnOf(e))) continue;
     const ref = (e.data as { ref?: unknown } | undefined)?.ref;
-    atOf.set(turnOf(e), (typeof ref === "string" ? chargeAt.get(ref) : undefined) ?? tags.atEntry(e.id));
+    atOf.set(turnOf(e), (typeof ref === "string" ? chargeAt.get(ref) : undefined) ?? (unfinished(e) ? tags.redoneAt(e.id) : tags.atEntry(e.id)));
   }
   const at = (e: EntryLike) => atOf.get(turnOf(e)) ?? tags.atEntry(e.id);
   // Each booked request's group, by its turn: a model request's or a decision's, the model its runner.request was sent on;

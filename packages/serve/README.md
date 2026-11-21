@@ -4152,18 +4152,21 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
 
 A run's turn can be worked more than once. A runner that drains for a deploy hands its runs back mid-turn, a runner that
 dies leaves its claims to lapse, a runner that can't renew loses its claim, and a turn whose loop ended on its own is
-tried again. In each case another claim works the same turn again and makes its requests again. Those requests are the
-infrastructure's cost, not the task's.
+tried again. In each case another claim works the same turn again. It resumes from what the cut claim saved: requests
+already answered and calls already finished are reused, not sent again. What it does send again is each model request
+the cut claim sent and never finished, cut in flight or cut off by a crash. Those requests are the infrastructure's
+cost, not the task's.
 
 The read says which is which (`runusage/5`). It does not change what anything costs: `total` and `cost.usd` still hold
 every line.
 
 - Each line, browser session and computer interval has `attempt`: the attempt at its turn it was made in (1 for the
-  turn's first, 2 for its first redo, and so on). Each also has `billable`: false for an attempt that was cut and done
-  again, true for every other. A turn's charges are split into one line per attempt, so a cut attempt's model requests
-  and paid calls show apart from the redo's.
-- `infra_usd` is the sum of the lines that are not billable. It is 0 for a run none of whose attempts was cut. It is
-  null with no lines, or when one such line's cost is unknown.
+  turn's first, 2 for its first redo, and so on). A turn's charges are split into one line per attempt.
+- Each also has `billable`. It is false only for the model requests an attempt never finished when a later attempt
+  worked its turn again. Everything else is billable: answered requests, paid calls, browser and computer time.
+- `infra_usd` is the sum of the lines that are not billable. It is 0 for a run with no such request. A request cut in
+  flight never got an answer, so its cost is unknown, and `infra_usd` reads null for a run that has one, as `total`
+  does. It is also null with no lines.
 - A run from before this server kept attempts reads `attempt: null` and `billable: true` on every line.
 
 The attempts live in the store's `run_attempts` table: one row per claim, written in the claim's own transaction. Each

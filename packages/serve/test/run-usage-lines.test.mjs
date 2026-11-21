@@ -411,9 +411,9 @@ test("a job's browser released at the run's end, inside the learning turn's rang
   assert.deepEqual(read.browser_sessions.map((one) => [one.tag, one.provider_session_id, one.ended_at, one.release_reason]), [["job-tab", "bb-job", "2026-11-19T10:00:00.000Z", "run_end"]]);
 });
 
-test("a run with a cut attempt: each line is one attempt's, the cut attempt's not billable, its computer tagged the same, and infra_usd their sum", async () => {
+test("a run with a cut attempt: only the request the cut attempt never finished is not billable (the claim after it sends it again); its answered request, its paid call and its computer are the task's, reused", async () => {
   const { usageLinesOf, computerIntervalsOf, infraUsdOf, attemptTags } = await import("../dist/run-usage.js");
-  // Attempt 1 (entries from id 1) was cut by a drain; attempt 2 (entries from id 100) did the turn again; a later turn (a
+  // Attempt 1 (entries from id 1) was cut by a drain; attempt 2 (entries from id 100) took the turn over; a later turn (a
   // follow-up, entries from id 200) ran once. Each claim's first journal id is the run's next id when it claimed.
   const attempts = [
     { runId: "run_1", epoch: 1, turn: 1, attempt: 1, cause: null, cut: "drain", runner: "a", from: "queued", journalFrom: 1, claimedAt: ENDED - 900_000 },
@@ -421,27 +421,30 @@ test("a run with a cut attempt: each line is one attempt's, the cut attempt's no
     { runId: "run_1", epoch: 5, turn: 2, attempt: 1, cause: null, cut: null, runner: "b", from: "running", journalFrom: 200, claimedAt: ENDED - 300_000 },
   ];
   const at = (from, entries) => entries.map((one, i) => ({ ...one, id: String(from + i) }));
+  // Attempt 1: one answered request and one paid call (saved: attempt 2 resumes past them), then a request the drain cut
+  // (booked as cut, no answer), and a crash-cut one (sent, nothing booked after): attempt 2 sends the turn's next request.
   const entries = [
-    ...at(1, [...keys(), ...reported(7, 1, "m", 0.01, usage(100, 10)), ...paid(1, "monid:faux/person/enrich", "monid", 0.003), e(1, "agentrun.browser_session_open", { tag: "s1", provider: "browserbase" })]),
-    ...at(100, [...reported(7, 2, "m", 0.02, usage(200, 20)), ...paid(2, "monid:faux/person/enrich", "monid", 0.003)]),
-    ...at(200, reported(7, 3, "m", 0.04, usage(400, 40))),
+    ...at(1, [...keys(), ...reported(7, 1, "m", 0.01, usage(100, 10)), ...paid(1, "monid:faux/person/enrich", "monid", 0.003), e(1, "agentrun.browser_session_open", { tag: "s1", provider: "browserbase" }), e(7, "runner.request", { turn: 2, model: "m" }), e(7, "runner.turn", { turn: 2, cut: true, usd: null }), e(7, "runner.request", { turn: 3, model: "m" })]),
+    ...at(100, [...reported(7, 4, "m", 0.02, usage(200, 20)), ...paid(2, "monid:faux/person/enrich", "monid", 0.003)]),
+    ...at(200, reported(7, 5, "m", 0.04, usage(400, 40))),
   ];
   const { lines, total } = usageLinesOf(entries, undefined, new Map(), { rows: [], at: 0 }, attempts);
-  assert.deepEqual(lines.map((one) => [one.meter, nameOf(one), one.attempt, one.billable, micro(one.usd)]), [
-    ["tokens", "m", 1, false, micro(0.01)],
-    ["tokens", "m", 1, true, micro(0.04)],
-    ["tokens", "m", 2, true, micro(0.02)],
-    ["tools", "monid", 1, false, micro(0.003)],
-    ["tools", "monid", 2, true, micro(0.003)],
-  ], "the cut attempt's lines apart from the redo's and from a later turn's first attempt");
-  assert.equal(micro(infraUsdOf(lines)), micro(0.013), "the cut attempt's model request and its paid call");
-  assert.equal(micro(total.usd), micro(0.076), "total holds every line, billable or not");
-  assert.equal(infraUsdOf([{ ...lines[0], usd: null }]), null, "a cut line of unknown cost leaves infra unknown");
-  // A computer is its maker's: the claim it was made under, by the store's clock.
+  assert.deepEqual(lines.map((one) => [one.meter, nameOf(one), one.attempt, one.billable, one.requests, one.usd === null ? null : micro(one.usd)]), [
+    ["tokens", "m", 1, false, 2, null],
+    ["tokens", "m", 1, true, 2, micro(0.05)],
+    ["tokens", "m", 2, true, 1, micro(0.02)],
+    ["tools", "monid", 1, true, undefined, micro(0.003)],
+    ["tools", "monid", 2, true, undefined, micro(0.003)],
+  ], "the cut attempt's two unfinished requests apart; its answered request with the later turn's first attempt, billable");
+  assert.equal(infraUsdOf(lines), null, "the unfinished requests have no known cost: infra_usd is unknown, never a guess");
+  assert.equal(total.usd, null, "nor is the total, as before attempts were kept");
+  assert.equal(micro(infraUsdOf(lines.map((one) => (one.billable ? one : { ...one, usd: 0.005 })))), micro(0.005), "infra_usd is the non-billable lines' sum when each is known");
+  // A computer is its maker's attempt, and billable: its time is the task's whatever claim made it.
   const computers = computerIntervalsOf([interval("sbx-1", { startedAt: ENDED - 800_000 }), interval("sbx-2", { startedAt: ENDED - 500_000 })], attempts);
-  assert.deepEqual(computers.map((one) => [one.provider_id, one.attempt, one.billable]), [["sbx-1", 1, false], ["sbx-2", 2, true]]);
+  assert.deepEqual(computers.map((one) => [one.provider_id, one.attempt, one.billable]), [["sbx-1", 1, true], ["sbx-2", 2, true]]);
   const tags = attemptTags(attempts);
-  assert.deepEqual([tags.atEntry("5"), tags.atEntry("150"), tags.atEntry("250")], [{ attempt: 1, billable: false }, { attempt: 2, billable: true }, { attempt: 1, billable: true }]);
+  assert.deepEqual([tags.atEntry("5"), tags.atEntry("150"), tags.atEntry("250")], [{ attempt: 1, billable: true }, { attempt: 2, billable: true }, { attempt: 1, billable: true }]);
+  assert.deepEqual([tags.redoneAt("5"), tags.redoneAt("150"), tags.redoneAt("250")], [{ attempt: 1, billable: false }, { attempt: 2, billable: true }, { attempt: 1, billable: true }], "redone: only attempt 1 of turn 1, which attempt 2 worked again");
   assert.deepEqual(attemptTags([]).atEntry("5"), { attempt: null, billable: true }, "a run from before attempts were kept: every part billable");
 });
 
@@ -461,9 +464,9 @@ test("a browser charge whose booking the next claim recovered (its ref) stays on
   ];
   const { lines, total } = usageLinesOf(entries, undefined, new Map(), { rows: [], at: 0 }, attempts);
   const browser = lines.filter((one) => one.meter === "browser_time");
-  assert.deepEqual(browser.map((one) => [one.quantity, one.usd, one.attempt, one.billable]), [[60, 0.002, 1, false]], "its seconds and its money on one line, the cut attempt's");
+  assert.deepEqual(browser.map((one) => [one.quantity, one.usd, one.attempt, one.billable]), [[60, 0.002, 1, true]], "its seconds and its money on one line, the cut attempt's, billable: a finished charge is the task's");
   assert.equal(micro(total.usd), micro(0.012), "the total is known");
-  assert.equal(micro(infraUsdOf(lines)), micro(0.002));
+  assert.equal(infraUsdOf(lines), 0, "nothing was sent again");
 });
 
 test("a computer kept across a park is billed by the claims that held it: each claim's window of its time sits with that claim's bookings, never a line of unknown quantity (#3351 review)", async () => {
@@ -477,20 +480,21 @@ test("a computer kept across a park is billed by the claims that held it: each c
   const { lines, total } = usageLinesOf(entries, undefined, new Map(), { rows, at: ENDED }, attempts);
   // Its vCPU lines (its memory said no figure: those lines have no quantity, and no booking).
   const compute = lines.filter((one) => one.meter === "compute_time" && one.resource === "vcpu");
+  // Claim 1's and claim 2's windows are both an attempt 1 (of turns 1 and 2), billable: one line, 200 s + 300 s.
   assert.deepEqual(compute.map((one) => [one.attempt, one.billable, one.quantity, one.usd, one.unheld_quantity]), [
-    [1, false, 300, 0.003, 0],
-    [1, true, 200, 0.002, 0],
+    [1, true, 500, 0.005, 0],
     [2, true, 500, 0.005, 0],
-  ], "a line per claim's window, its quantity and its money together");
+  ], "a line per attempt, each window's quantity with its own bookings' money");
   assert.equal(micro(total.usd), micro(0.01));
 });
 
 test("a run that took its first attempt row after its earlier work (an older run's follow-up): what came before is no attempt's, billable, even when that follow-up is cut (#3351 review)", async () => {
   const { usageLinesOf, infraUsdOf, attemptTags } = await import("../dist/run-usage.js");
   const attempts = [claimRow(7, 2, 1, 100, ENDED - 600_000, { from: "running", cut: "drain" }), claimRow(9, 2, 2, 200, ENDED - 300_000)];
-  const entries = [...ids(1, [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))]), ...ids(100, reported(7, 2, "m", 0.02, usage(10, 1))), ...ids(200, reported(7, 3, "m", 0.04, usage(10, 1)))];
+  // The cut follow-up answered one request and was cut in its next (sent, never answered), which attempt 2 sent again.
+  const entries = [...ids(1, [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))]), ...ids(100, [...reported(7, 2, "m", 0.02, usage(10, 1)), e(7, "runner.request", { turn: 3, model: "m" })]), ...ids(200, reported(7, 4, "m", 0.04, usage(10, 1)))];
   const { lines } = usageLinesOf(entries, undefined, new Map(), { rows: [], at: 0 }, attempts);
-  assert.deepEqual(lines.map((one) => [one.attempt, one.billable, micro(one.usd)]), [[null, true, micro(0.01)], [1, false, micro(0.02)], [2, true, micro(0.04)]]);
-  assert.equal(micro(infraUsdOf(lines)), micro(0.02), "only the cut follow-up's request");
+  assert.deepEqual(lines.map((one) => [one.attempt, one.billable, one.usd === null ? null : micro(one.usd)]), [[null, true, micro(0.01)], [1, false, null], [1, true, micro(0.02)], [2, true, micro(0.04)]]);
+  assert.equal(infraUsdOf(lines), null, "only the cut follow-up's unfinished request, of no known cost");
   assert.deepEqual(attemptTags(attempts).atTime(ENDED - 700_000), { attempt: null, billable: true }, "a computer made before it too");
 });

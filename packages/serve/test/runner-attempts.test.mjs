@@ -48,6 +48,8 @@ function bookingLoops(plan) {
           writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: state.session, kind: "runner.request", data: { turn, model: "m" } } });
           writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: state.session, kind: "runner.turn", data: { turn, usd, bookedUsd: usd, tableUsd: usd, usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 }, rule: "answered" } } });
         }
+        // A request sent and never answered (the cut lands while it is in flight): its booking has no answer.
+        if (step.unfinished) writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: state.session, kind: "runner.request", data: { turn: ++state.turn, model: "m" } } });
         if (step.end) {
           const id = await journal.mintId();
           journal.stage({ run: { state: "ended" }, effect: id });
@@ -83,11 +85,12 @@ const rested = (server) => until(async () => {
   return row.state === "ended" && row.runner === null && row;
 }, "the run ended and was let go", 20_000);
 
-test("a runner's close (SIGTERM) mid-turn hands the run back: the next claim is attempt 2 of the same turn, cause drain; attempt 1's lines are not billable, and infra_usd is their sum", async (t) => {
+test("a runner's close (SIGTERM) mid-turn hands the run back: the next claim is attempt 2 of the same turn, cause drain; attempt 1's request in flight, which attempt 2 sends again, is not billable; its answered requests, reused, are", async (t) => {
   const { server, runners: [a, b] } = await stores({ runners: 2 });
   await queue(server, RUN);
-  // Attempt 1 books two requests ($0.01 and $0.02) and is cut mid-turn; attempt 2 books the turn again ($0.04) and ends.
-  const loops = bookingLoops([{ usd: [0.01, 0.02] }, { usd: [0.04], end: true }]);
+  // Attempt 1 books two answered requests ($0.01 and $0.02), sends a third, and is cut with it in flight; attempt 2 resumes
+  // past the answered two, sends the turn's next request ($0.04) and ends.
+  const loops = bookingLoops([{ usd: [0.01, 0.02], unfinished: true }, { usd: [0.04], end: true }]);
   const first = runnerOn(t, a, loops, "runner-a", { drainMs: 50 });
   await until(() => loops.state.booked === 1, "attempt 1 booked its requests");
   await first.close();
@@ -101,11 +104,9 @@ test("a runner's close (SIGTERM) mid-turn hands the run back: the next claim is 
 
   const usage = await runUsageOverStore(server, RUN);
   const lines = usage.lines.map((line) => [line.meter, line.model, line.attempt, line.billable, line.requests, micro(line.usd)]);
-  assert.deepEqual(lines, [["tokens", "m", 1, false, 2, micro(0.03)], ["tokens", "m", 2, true, 1, micro(0.04)]], "a line per attempt: the cut one's two requests, then the redo's one");
-  const cut = usage.lines.filter((line) => !line.billable);
-  assert.equal(micro(usage.infra_usd), micro(cut.reduce((sum, line) => sum + line.usd, 0)), "infra_usd is the sum of the lines that are not billable");
-  assert.equal(micro(usage.infra_usd), micro(0.03));
-  assert.equal(micro(usage.total.usd), micro(0.07), "total still holds every line: nothing is charged differently");
+  assert.deepEqual(lines, [["tokens", "m", 1, false, 1, null], ["tokens", "m", 1, true, 2, micro(0.03)], ["tokens", "m", 2, true, 1, micro(0.04)]], "the request cut in flight apart; attempt 1's answered two billable; the redo's one");
+  assert.equal(usage.infra_usd, null, "the request cut in flight has no known cost: infra_usd is unknown, never a guess");
+  assert.deepEqual([usage.total.usd, micro(usage.total.so_far_usd)], [null, micro(0.07)], "total holds every line: unknown by that request, $0.07 so far, as before attempts were kept");
 });
 
 test("a run whose turn no claim cut: one attempt, its lines billable, infra_usd 0", async (t) => {
@@ -124,7 +125,7 @@ test("a run whose turn no claim cut: one attempt, its lines billable, infra_usd 
 test("a runner that dies mid-turn (no release) leaves its claim to lapse: the claim that takes the run over is attempt 2, cause crash", async (t) => {
   const { server, runners: [a, b] } = await stores({ runners: 2 });
   await queue(server, RUN);
-  const loops = bookingLoops([{ usd: [0.01] }, { usd: [0.01], end: true }]);
+  const loops = bookingLoops([{ usd: [0.01], unfinished: true }, { usd: [0.01], end: true }]);
   const short = { leaseMs: 400, renewEveryMs: 100, stopMarginMs: 100 };
   const first = runnerOn(t, a, loops, "runner-a", short);
   await until(() => loops.state.booked === 1, "attempt 1 booked");
@@ -134,8 +135,8 @@ test("a runner that dies mid-turn (no release) leaves its claim to lapse: the cl
   const attempts = await server.runAttempts.forRun(RUN);
   assert.deepEqual(attempts.map((row) => [row.runner, row.turn, row.attempt, row.cause, row.cut]), [["runner-a", 1, 1, null, null], ["runner-b", 1, 2, "crash", null]]);
   const usage = await runUsageOverStore(server, RUN);
-  assert.deepEqual(usage.lines.map((line) => [line.attempt, line.billable]), [[1, false], [2, true]]);
-  assert.equal(micro(usage.infra_usd), micro(0.01));
+  assert.deepEqual(usage.lines.map((line) => [line.attempt, line.billable, line.requests]), [[1, false, 1], [1, true, 1], [2, true, 1]], "only the request the crash cut off is not billable");
+  assert.equal(usage.infra_usd, null);
 });
 
 test("a lapse its runner lived to say reads lease_lapse, on the cut attempt and the cause of the one after it, whichever was written first", async (t) => {
