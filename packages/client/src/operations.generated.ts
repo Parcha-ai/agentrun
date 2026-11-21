@@ -1638,6 +1638,28 @@ export type ListLearningPromotionsResponse = {
       stopped?: true;
       released?: number;
       fresh_reads?: number;
+      turns?: {
+        n: number;
+        agreed: number;
+        alone: number;
+        of: Array<string>;
+        outcomes: {
+          answered: number;
+          handed_back: number;
+          failed: number;
+          skipped_write: number;
+        };
+        disagreements?: Array<{
+          run: string;
+          input: string;
+          agent: string | null;
+          draft?: string;
+          escalated?: string;
+          failed?: true;
+          differs_on?: string;
+        }>;
+        fresh_reads?: number;
+      };
     };
     runs?: Array<string>;
     inputs?: Array<string>;
@@ -1727,6 +1749,28 @@ export type ListLearningPromotionsResponse = {
         stopped?: true;
         released?: number;
         fresh_reads?: number;
+        turns?: {
+          n: number;
+          agreed: number;
+          alone: number;
+          of: Array<string>;
+          outcomes: {
+            answered: number;
+            handed_back: number;
+            failed: number;
+            skipped_write: number;
+          };
+          disagreements?: Array<{
+            run: string;
+            input: string;
+            agent: string | null;
+            draft?: string;
+            escalated?: string;
+            failed?: true;
+            differs_on?: string;
+          }>;
+          fresh_reads?: number;
+        };
       } | null;
     } | null;
   }>;
@@ -2811,6 +2855,10 @@ export type ListComputersResponse = {
     groups: Array<string>;
     tools: Array<string>;
     settings: Array<string>;
+    record: {
+      available: boolean;
+      why?: string;
+    };
     providers: Array<{
       id: string;
       name: string;
@@ -3980,6 +4028,8 @@ export type GetRunUsageResponse = {
     quantity: number | null;
     unit: "token" | "call" | "second" | "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
     basis: "reported" | "estimate" | "unpriced";
+    attempt: number | null;
+    billable: boolean;
     usd: number | null;
     so_far_usd?: number;
     unpriced?: number;
@@ -4013,6 +4063,8 @@ export type GetRunUsageResponse = {
       proxy_bytes: number | null;
     } | null;
     provider_record_status: "read" | "not_offered" | "not_found" | "failed" | "no_session" | null;
+    attempt: number | null;
+    billable: boolean;
   }> | null;
   computer_intervals: Array<{
     provider: string;
@@ -4029,7 +4081,10 @@ export type GetRunUsageResponse = {
     ended_at: string | null;
     kept: boolean;
     booked_seconds: number;
+    attempt: number | null;
+    billable: boolean;
   }> | null;
+  infra_usd: number | null;
   reason: "running" | "not_booked" | "reopened" | null;
 };
 

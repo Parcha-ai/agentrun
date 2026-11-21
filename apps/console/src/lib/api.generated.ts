@@ -3116,6 +3116,8 @@ export interface operations {
         quantity: number | null;
         unit: "token" | "call" | "second" | "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
         basis: "reported" | "estimate" | "unpriced";
+        attempt: number | null;
+        billable: boolean;
         usd: number | null;
         so_far_usd?: number;
         unpriced?: number;
@@ -3149,6 +3151,8 @@ export interface operations {
           proxy_bytes: number | null;
         } | null;
         provider_record_status: "read" | "not_offered" | "not_found" | "failed" | "no_session" | null;
+        attempt: number | null;
+        billable: boolean;
       }[] | null;
       computer_intervals: {
         provider: string;
@@ -3165,7 +3169,10 @@ export interface operations {
         ended_at: string | null;
         kept: boolean;
         booked_seconds: number;
+        attempt: number | null;
+        billable: boolean;
       }[] | null;
+      infra_usd: number | null;
       reason: "running" | "not_booked" | "reopened" | null;
     };
   };
@@ -3949,6 +3956,10 @@ export interface operations {
         groups: string[];
         tools: string[];
         settings: string[];
+        record: {
+          available: boolean;
+          why?: string;
+        };
         providers: {
           id: string;
           name: string;
@@ -4129,6 +4140,28 @@ export interface operations {
           stopped?: true;
           released?: number;
           fresh_reads?: number;
+          turns?: {
+            n: number;
+            agreed: number;
+            alone: number;
+            of: string[];
+            outcomes: {
+              answered: number;
+              handed_back: number;
+              failed: number;
+              skipped_write: number;
+            };
+            disagreements?: {
+              run: string;
+              input: string;
+              agent: string | null;
+              draft?: string;
+              escalated?: string;
+              failed?: true;
+              differs_on?: string;
+            }[];
+            fresh_reads?: number;
+          };
         };
         runs?: string[];
         inputs?: string[];
@@ -4218,6 +4251,28 @@ export interface operations {
             stopped?: true;
             released?: number;
             fresh_reads?: number;
+            turns?: {
+              n: number;
+              agreed: number;
+              alone: number;
+              of: string[];
+              outcomes: {
+                answered: number;
+                handed_back: number;
+                failed: number;
+                skipped_write: number;
+              };
+              disagreements?: {
+                run: string;
+                input: string;
+                agent: string | null;
+                draft?: string;
+                escalated?: string;
+                failed?: true;
+                differs_on?: string;
+              }[];
+              fresh_reads?: number;
+            };
           } | null;
         } | null;
       }[];

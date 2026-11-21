@@ -20,7 +20,8 @@
 // (IMPORTED_TEMPLATES), as it does the one-answer index. A hosted machine's minted token (minted_tokens, MINTED_TOKENS) is
 // added the same way, and so is each runner's word that it is there and whether it refused to claim (runners, RUNNERS),
 // and each computer a run made, from its create to its proven delete (computer_intervals, COMPUTER_INTERVALS). Each runner's
-// version and slots (runners.version, .slots: RUNNERS_ADDED) and each hand-back (hand_backs, HAND_BACKS) are added the same way.
+// version and slots (runners.version, .slots: RUNNERS_ADDED), each hand-back (hand_backs, HAND_BACKS) and each claim of a
+// run with the turn it works and its attempt at it (run_attempts, RUN_ATTEMPTS) are added the same way.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -204,6 +205,27 @@ export const HAND_BACKS_AT = "CREATE INDEX IF NOT EXISTS hand_backs_at ON hand_b
 export const HAND_BACKS_RUN = "CREATE INDEX IF NOT EXISTS hand_backs_run ON hand_backs (run_id)";
 /** How long a hand-back's row is kept: the longest window the capacity read takes. */
 export const HAND_BACKS_KEPT_MS = 24 * 60 * 60_000;
+
+/** Each claim of a run (store.runAttempts, RunAttemptRow): the turn it works and its attempt at it, why the attempt before
+ *  was cut (`cause`: drain, crash, lease_lapse, retry; null on a turn's first), why this one let the run go unfinished
+ *  (`cut`), its runner, the run's state it took the run from, the first journal entry id it could write
+ *  (`journal_from`) and when it claimed. Written in the claim's own transaction, its cut in its release's. Data only:
+ *  the usage read (run-usage.ts) splits a run's cost by it, and nothing decides what a run does on it. In STORE_DDL, and
+ *  added at a server open to a store an earlier build of this version made, as COMPUTER_INTERVALS is: a claim made before
+ *  it has no row. */
+export const RUN_ATTEMPTS = `CREATE TABLE IF NOT EXISTS run_attempts (
+    run_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    turn INTEGER NOT NULL CHECK (turn >= 1),
+    attempt INTEGER NOT NULL CHECK (attempt >= 1),
+    cause TEXT CHECK (cause IS NULL OR cause IN ('drain', 'crash', 'lease_lapse', 'retry')),
+    cut TEXT CHECK (cut IS NULL OR cut IN ('drain', 'lease_lapse', 'retry')),
+    runner TEXT NOT NULL,
+    from_state TEXT NOT NULL,
+    journal_from INTEGER NOT NULL,
+    claimed_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, epoch)
+  ) STRICT`;
 
 /** Version 13 → 14 on SQLite (the server's open, sqlite/store.ts), given the runs' and the agents' columns now: when each
  *  run and each agent was purged (null: none was), and the version, in one durable write. */
@@ -675,6 +697,7 @@ export const STORE_DDL: readonly string[] = [
   HAND_BACKS_RUN,
   COMPUTER_INTERVALS,
   COMPUTER_INTERVALS_RUN,
+  RUN_ATTEMPTS,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD

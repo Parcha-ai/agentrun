@@ -888,7 +888,9 @@ one computer that it keeps between runs, instead of a fresh one for each run:
 **A video of each run.** `computer: {"kind": "desktop", "provider": "e2b", "record": true}` records the computer's
 screen during each of the agent's runs. Off by default; a desktop, a phone or a browser (a sandbox is 422). A browser's is
 each session's page, one file per session (its computer), from the live view's own screencast of it, which the viewer
-shares: frames come as the page changes.
+shares: frames come as the page changes. `GET /v2/computers` says per kind whether its runs can record here, in
+`record` (`{"available": false, "why": "..."}` for a sandbox, for no computer, and for every kind on a server with no
+`ffmpeg` on its PATH), and the console's Recording switch reads it.
 
 - **It shows everything on the screen.** That includes what a person types while they have taken over the computer, and
   any password, key or private page shown on it. Pixels can't be redacted. Turn it on only for an agent whose screen
@@ -2959,7 +2961,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
 | `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates and verified source reports; source completion counters are read when needed to separate overlapping usage. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` (`reported`, `estimate` or `unpriced`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis)), or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that the `from` and `to` query parameters (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, `runs_with_token_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. Token totals sum only runs with every token counter reported, counted by `runs_with_token_metrics`; other runs remain in `runs` but cannot hide the known partial total. If runs exist but none reports a complete count, `tokens` is null; an empty scope is zero. Individual token-kind totals remain null when a measured run reports that counter as unknown. `analytics.usage` combines recorded runs and connected source reports ([Unified token usage](#unified-token-usage)). `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the store ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; once it ended, its store is read lock-free, so a poll never waits on it and never answers `home_busy`. An agentic run has none (`404`). |
-| `GET /runs/{id}/usage` | This server's own (`runusage/1`): what one run cost, line by line: its model requests by model and provider, its paid tool calls by who charged for them, its browser time by provider, its computers' time by provider and resource (`runusage/4`), joining to its `cost.usd` ([A run's cost, line by line](#a-runs-cost-line-by-line)); beside them its browser sessions (`runusage/2`) and the computers it made, each from its create to its proven delete (`runusage/3`). Lines once the run ended; `reason` says why there are none. |
+| `GET /runs/{id}/usage` | This server's own (`runusage/1`): what one run cost, line by line: its model requests by model and provider, its paid tool calls by who charged for them, its browser time by provider, its computers' time by provider and resource (`runusage/4`), each line by the attempt it was made in and whether that attempt is billable, with `infra_usd` beside them (`runusage/5`), joining to its `cost.usd` ([A run's cost, line by line](#a-runs-cost-line-by-line)); beside them its browser sessions (`runusage/2`) and the computers it made, each from its create to its proven delete (`runusage/3`). Lines once the run ended; `reason` says why there are none. |
 | `GET /runs/{id}/trace` | A run's trace, for a person who debugs it: each model request that answered and each tool call as one span, in the order they started. A span has its `kind` (`model` or `tool`), its `name` (the model, or the tool), when it started and ended, how it ended (`status`), and the span it ran under (`parent_id`: the request that made a call, the call a subagent's request was started by). A model request also has its `tokens` (`input` not read from cache, `cache_read`, `cache_write`, `output`, and `reasoning` where reported), and its `usd`. A tool call also has the head of its arguments and of its output, as its Timeline rows show them, and what was charged under it (`usd`, `charged`, `not_metered`). A call that asked for approval ends as its approval did: `waiting` until it is answered, `refused` on a deny, `interrupted` when it was withdrawn with its run. Nothing is measured again or estimated: `model_requests` says what the run's record keeps. `priced`: each request is a span with its cost. `tokens_only`: a workflow run. Its model nodes' requests carry tokens and no cost, since the run's cost is its booking's; each of its decisions (a judge's, a route's, a verify's request) is a span too (`decision: true`), named by the model its provider answered with and labelled by its node, with its own cost. `not_recorded`: a CLI harness's record keeps no request, so its trace is its tool calls. A computer's own time is its provider's to bill and is in no span. Readable while the run goes; one read serves the run's first 2,000 spans and counts the rest in `dropped`. Its words are cut as the Timeline's are, and a run whose handed sign-in can't be read back is refused (`403`), as its graph is. The console's Dev tools tab reads it. |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
@@ -3908,8 +3910,10 @@ check closed.
 The bridge posts one `workflow_check` event with the reservation's `id` and `digest`, its execution `outcome`
 (`answered`, `handed_back`, `failed` or `skipped_write`), and its answer or reason. It does not choose whether the
 workflow passes. The server compares the answer with the immutable native completion and applies the same
-`agree_min` and `alone_min` promotion policy. This initial SDK check uses **one independent native turn** (`n: 1`),
-not the server-run agent's historical replay set. Agreement is whole-answer equality (JSON values or trimmed text), or equality of the owner's
+`agree_min` and `alone_min` promotion policy on the same evidence bar: the check decides once, on `compile_after`
+**independent native turns**, as a server check decides once on that many of the agent's inputs. Each turn is one row,
+kept on the promotion record (`check.turns`) while the check waits for the next turn the draft takes; the turn that
+makes `compile_after` decides on all of them. Agreement is whole-answer equality (JSON values or trimmed text), or equality of the owner's
 configured `agree_on` fields; there is no semantic model grader on this path. A paraphrase can therefore be held even
 when a person would consider it equivalent.
 
@@ -4160,6 +4164,60 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   `browser_sessions`. A run's computers made before this server kept them have none either. The records are kept in the
   store's `computer_intervals` table (keyed by provider and the provider's id), and a purge of the run keeps them.
 
+### Attempts: what the infrastructure redid
+
+A run's turn can be worked more than once. A runner that drains for a deploy hands its runs back mid-turn, a runner that
+dies leaves its claims to lapse, a runner that can't renew loses its claim, and a turn whose loop ended on its own is
+tried again. In each case another claim works the same turn again. It resumes from what the cut claim saved: requests
+already answered and calls already finished are reused, not sent again. What it does send again is each model request
+the cut claim sent and never finished, cut in flight or cut off by a crash. Those requests are the infrastructure's
+cost, not the task's.
+
+The read says which is which (`runusage/5`). It does not change what anything costs: `total` and `cost.usd` still hold
+every line.
+
+- Each line, browser session and computer interval has `attempt`: the attempt at its turn it was made in (1 for the
+  turn's first, 2 for its first redo, and so on). A turn's charges are split into one line per attempt.
+- Each also has `billable`. It is false only for the model requests an attempt never finished when a later attempt
+  worked its turn again. Everything else is billable: answered requests, paid calls, browser and computer time.
+- `infra_usd` is the sum of the lines that are not billable. It is 0 for a run with no such request. A request cut in
+  flight never got an answer, so its cost is unknown, and `infra_usd` reads null for a run that has one, as `total`
+  does. It is also null with no lines.
+- A run from before this server kept attempts reads `attempt: null` and `billable: true` on every line.
+
+The attempts live in the store's `run_attempts` table: one row per claim, written in the claim's own transaction. Each
+row holds the claim's turn and attempt, and `cause`, which says why the attempt before it was cut:
+
+| `cause` | What cut the attempt before |
+| --- | --- |
+| `drain` | Its runner closed (SIGTERM) and handed the run back. |
+| `crash` | Its lease ran out and nobody said why (its runner died). |
+| `lease_lapse` | Its runner was still there but could not renew the claim in time. |
+| `retry` | Its loop ended interrupted on its own, and the run was released to be tried again. A stopped run whose end was refused is no cut: the claim that retries the end runs no turn, so it starts a new one and redoes nothing. |
+
+A turn is the work one claim starts afresh: the run's first, a follow-up's, or a resume after a park. A claim is a redo
+only of the claim it takes over, and only when that claim wrote its row. A runner of an earlier build, running beside
+this server through an upgrade, writes none. When the claim after it takes over, it starts a new turn, so no earlier
+recorded turn is read as redone.
+
+Each part of the usage is matched to its claim this way:
+
+- **Journal entries:** a claim's entries start at the run's next entry id at the moment it claimed. Anything written
+  before the run's first recorded claim belongs to no attempt and stays billable, unless that claim was the run's first.
+- **Browser charges:** a charge whose booking a later claim recovered is the attempt's that wrote the charge, matched
+  by its ref.
+- **Computer time:** a computer's time is split across the claims that held it, by each claim's window on the store's
+  clock. A computer kept across a park is billed by the claim that resumed it. Its `unheld_quantity` is spread over those
+  windows by their share of its life.
+- **Computer intervals:** each record's own `attempt` is the claim that made the computer.
+
+Each model request a claim sends to this server's model gateway carries the run, turn and attempt as LiteLLM's
+spend-logs metadata, in the header `x-litellm-spend-logs-metadata` (LiteLLM v1.110.0 and later). For example:
+`{"agentrun_run_id":"run_…","agentrun_turn":1,"agentrun_attempt":2}`. A gateway's spend logs can then be matched to the
+run's lines call by call. "This server's model gateway" means `AGENT_MODEL_BASE_URL`, or `ANTHROPIC_BASE_URL` on its
+origin. The header is sent on pi's routes and Claude Code's; Codex's adapter takes no extra headers yet. It is never
+sent to a vendor's own endpoint.
+
 ### Computer time
 
 A computer's time is priced the way providers bill it: by what the computer holds (its vCPUs, its memory, its GPUs, its
@@ -4212,10 +4270,18 @@ what each request still in flight is held at, plus the most this request can cos
 request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). The cap is a hard stop for everything but
 the charge of a monid call priced by usage, which can pass the estimate it was held at: when it does, the run stops at
 once ([monid](#monid)). An MCP tool counts only at the price saved for it (its server's `prices`); one with none is
-not metered and bills its own account outside the cap. fal's generations are such calls: they bill your fal account at
-fal's price for the model and the output, the fal presets save no price, and the cap does not count them. A template
-that uses fal caps its fal spend itself, with an input such as `max_fal_usd` that it prices its plan against before the
-first paid call. A request costs its input, plus the output it
+not metered and bills its own account outside the cap. fal is counted: a job sent to a fal server (one saved with the
+toolkit `fal`, or at `mcp.fal.ai`) through `run_model`, `submit_job` or `submit_jobs` is priced before it is sent, at
+fal's unit price for its endpoint (the server's own `get_pricing`, read with the run's credential and kept five
+minutes) times the units the job's input states: its images, their megapixels, its text's characters, the seconds it
+names, or the length of the audio or video it is given, read from the file first. That price is held under the cap, a
+job the cap can't take is refused before it is submitted, and the job is booked as the run's tool cost, charged by the
+server, with the price and the count it came from. It is an estimate at fal's list price, not fal's invoice: fal
+reports no cost for a job, and a minimum charge, a discount or a rate that depends on a setting `get_pricing` does not
+list are not in it. A job whose units can't be known before it runs (one billed by compute time or tokens, one that
+names no size or length, media whose length can't be read, an endpoint with no listed price) is refused under a cap,
+in words that say why; with no cap it runs, booked as an unknown charge. A price saved for a fal tool takes the place
+of this. A request costs its input, plus the output it
 is sent with at the output price, plus any fee its tokens do not show (below). Its input is priced at its worst case:
 every input token at the higher of the input and cache-write prices, since the provider may bill any of it as a cache
 write and a cache can miss at any request. So no request passes the cap, a cache miss included: a request costs at most

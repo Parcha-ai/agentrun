@@ -10,9 +10,9 @@ import { DatabaseSync } from "node:sqlite";
 import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } from '../native-command-owner.js';
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
-import { RunStorage } from "../journal/storage.js";
+import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNNERS, RUNNERS_ADDED, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -21,7 +21,7 @@ import {
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
-  type ComputerIntervalRow, type ComputerIntervals, type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
+  type AttemptCause, type ComputerIntervalRow, type ComputerIntervals, type RunAttemptRow, type RunAttempts, type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
   type ImportedTemplates, type MintedTokenRow, type MintedTokens, type SecureRewrite,
   RUNNER_ROWS_KEPT_MS, type RunnerRow, type Runners, tombstoneMetrics,
 } from "../store.js";
@@ -222,6 +222,12 @@ const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, seale
 type ComputerLedgerRecord = { provider: string; session_id: string; labels: string; detail: string; updated_at: number };
 type ComputerIntervalRecord = { run_id: string; provider: string; provider_id: string; kind: string | null; gpu_type: string | null; gpu_count: number | string | null; cpus: number | string | null; memory_mb: number | string | null; disk_gb: number | string | null; started_at: number | string; kept: number | string; ended_at: number | string | null; booked_ms: number | string };
 const orNull = (value: number | string | null): number | null => (value === null ? null : Number(value));
+type RunAttemptRecord = { run_id: string; epoch: number | string; turn: number | string; attempt: number | string; cause: string | null; cut: string | null; runner: string; from_state: string; journal_from: number | string; claimed_at: number | string };
+const attemptOf = (r: RunAttemptRecord): RunAttemptRow => ({
+  runId: r.run_id, epoch: Number(r.epoch), turn: Number(r.turn), attempt: Number(r.attempt), cause: r.cause as AttemptCause | null, cut: r.cut as RunAttemptRow["cut"],
+  runner: r.runner, from: r.from_state as RunState, journalFrom: Number(r.journal_from), claimedAt: Number(r.claimed_at),
+});
+
 const intervalOf = (r: ComputerIntervalRecord): ComputerIntervalRow => ({
   runId: r.run_id, provider: r.provider, providerId: r.provider_id, kind: r.kind, gpuType: r.gpu_type, gpuCount: orNull(r.gpu_count), cpus: orNull(r.cpus),
   memoryMb: orNull(r.memory_mb), diskGb: orNull(r.disk_gb), startedAt: Number(r.started_at), kept: Number(r.kept) === 1, endedAt: orNull(r.ended_at), bookedMs: Number(r.booked_ms),
@@ -273,6 +279,7 @@ export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly co
   { table: "runners", columns: ["host"], why: "keep each runner's word that it is there and its relay in one table (runners)" },
   { table: "runners", columns: Object.keys(RUNNERS_ADDED), why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
   { table: "hand_backs", columns: ["run_id"], why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
+  { table: "run_attempts", columns: ["run_id"], why: "keep each claim's turn and attempt (run_attempts)" },
 ];
 
 /** What a runner of this build waits for on a file of this version (SQLITE_RUNNER_NEEDS' first missing column's `why`),
@@ -438,6 +445,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if (role === "runner" && (Object.keys(RUNNERS_ADDED).some((column) => !runnerColumns.has(column)) || (await connection.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hand_backs'")).length === 0)) {
       throw new StoreAwaitsServer("keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)");
     }
+    // A claim writes its turn and attempt (schema.ts RUN_ATTEMPTS) in its own transaction: a runner waits for the server
+    // that adds the table.
+    if (role === "runner" && (await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('run_attempts')")).length === 0) {
+      throw new StoreAwaitsServer("keep each claim's turn and attempt (run_attempts)");
+    }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
     // An earlier build of this version made no one-answer index on commands (schema.ts COMMANDS_ONE_ANSWER), or one that
@@ -472,6 +484,8 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         // Nor any computer a run made (schema.ts COMPUTER_INTERVALS): a computer made before it has no row.
         { sql: COMPUTER_INTERVALS },
         { sql: COMPUTER_INTERVALS_RUN },
+        // Nor any claim's turn and attempt (schema.ts RUN_ATTEMPTS): a claim made before it has no row.
+        { sql: RUN_ATTEMPTS },
         { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
       // A computer_intervals an earlier build of this version made has no disk or booked time (schema.ts
@@ -607,6 +621,8 @@ async function dropRunContent(tx: SqliteExecutor, runId: string): Promise<void> 
   await tx.run("DELETE FROM trigger_conversations WHERE run_id = ?", runId);
   await tx.run("DELETE FROM run_changes WHERE run_id = ?", runId);
   await tx.run("DELETE FROM hand_backs WHERE run_id = ?", runId);
+  // Its claims' attempts: what each cost is in its tombstone's money, and no read of a purged run splits it.
+  await tx.run("DELETE FROM run_attempts WHERE run_id = ?", runId);
 }
 
 /** An agent's own rows no tombstone keeps (its learning, its saved sign-ins and their tombstones), gone: what an agent's
@@ -657,6 +673,7 @@ class SqliteStore implements Store {
   readonly sealedKeys: SealedKeys;
   readonly computerLedger: ComputerLedger;
   readonly computerIntervals: ComputerIntervals;
+  readonly runAttempts: RunAttempts;
   readonly pairedComputers: PairedComputers;
   readonly mintedTokens: MintedTokens;
   readonly runners: Runners;
@@ -1978,6 +1995,21 @@ class SqliteStore implements Store {
         (await db.all<ComputerIntervalRecord>("SELECT run_id, provider, provider_id, kind, gpu_type, gpu_count, cpus, memory_mb, disk_gb, started_at, kept, ended_at, booked_ms FROM computer_intervals WHERE run_id = ? ORDER BY started_at, provider, provider_id", runId)).map(intervalOf),
     };
 
+    this.runAttempts = {
+      lapsed: async (runId, epoch) => {
+        await db.transaction(async (tx) => {
+          // Held as a claim holds it, from its UPDATE of the run to its attempt row: a takeover in flight writes its row
+          // (with the cause it read) before this reads it, and one after this reads the cut. Never a cause left unsaid.
+          await d.lockRow(tx, "runs", "id", runId);
+          await tx.run("UPDATE run_attempts SET cut = 'lease_lapse' WHERE run_id = ? AND epoch = ? AND cut IS NULL", runId, epoch);
+          // The claim that took the run over read the lapse as a crash, if it came first: this says what it was.
+          await tx.run("UPDATE run_attempts SET cause = 'lease_lapse' WHERE run_id = ? AND cause = 'crash' AND epoch = (SELECT min(epoch) FROM run_attempts WHERE run_id = ? AND epoch > ?)", runId, runId, epoch);
+        });
+      },
+      forRun: async (runId) =>
+        (await db.all<RunAttemptRecord>("SELECT run_id, epoch, turn, attempt, cause, cut, runner, from_state, journal_from, claimed_at FROM run_attempts WHERE run_id = ? ORDER BY epoch", runId)).map(attemptOf),
+    };
+
     const PAIRED = "SELECT id, name, hello, driver, labels, pairing_id, created_at, seen_at, revoked_at FROM paired_computers";
     this.pairedComputers = {
       addCode: async (id, codeSha256, expiresAt) => {
@@ -2431,8 +2463,52 @@ class SqliteStore implements Store {
       // A newer claim of a run supersedes its release here: journal() refuses by epoch, and the newer epoch passes.
       for (const { id } of picked) this.#released.delete(id);
       // A running run that still names its runner was taken from it: that runner's lease ran out mid-run (CLAIMABLE).
-      return picked.map(({ id, state, runner: held }) => ({ runId: id, runner, epoch: epochs.get(id)!, until: untils.get(id)!, from: state, ...(state === "running" && held !== null ? { lost: { runner: held } } : {}) }));
+      const lostOf = (state: RunState, held: string | null) => (state === "running" && held !== null ? held : undefined);
+      const attempts = await this.#attemptsAt(tx, runner, stamp, picked.map(({ id, state, runner: held }) => ({ runId: id, epoch: epochs.get(id)!, from: state, lost: lostOf(state, held) !== undefined })));
+      return picked.map(({ id, state, runner: held }) => {
+        const lost = lostOf(state, held);
+        const at = attempts.get(id);
+        return { runId: id, runner, epoch: epochs.get(id)!, until: untils.get(id)!, from: state, ...(lost !== undefined ? { lost: { runner: lost } } : {}), ...(at ? { turn: at.turn, attempt: at.attempt } : {}) };
+      });
     });
+  }
+
+  /** Each claim's turn and attempt (run_attempts), written in the claim's transaction `tx`, in three statements for the
+   *  whole batch: the run's latest claim before it, and the run's next journal id now (no write under an older claim can
+   *  land after this one: each commit is fenced on the run's row, which this transaction holds). A claim that takes a run
+   *  still running from a claim that was cut (that claim's release said why, or its lease ran out) works that claim's turn
+   *  again, one attempt more; any other claim starts the run's next turn (a follow-up, a resume after a park, the first).
+   *  The cause is the cut claim's word, else a crash (a lease that ran out with no word), else a retry. Only when the
+   *  latest row is that cut claim's own: a claim moves the epoch one and a release one more, so the claim taken over is at
+   *  epoch - 1 (its lease ran out) or epoch - 2 (released). A row further back belongs to an earlier claim, past one that
+   *  wrote none (a runner of an earlier build, beside this server): that unrecorded claim's turn is not that row's, so this
+   *  claim starts a new turn, and nothing that row's claim did is read as redone. */
+  async #attemptsAt(tx: Tx, runner: string, stamp: StoreNow, claims: readonly { runId: string; epoch: number; from: RunState; lost: boolean }[]): Promise<Map<string, { turn: number; attempt: number }>> {
+    const out = new Map<string, { turn: number; attempt: number }>();
+    if (claims.length === 0) return out;
+    const ids = claims.map((claim) => claim.runId);
+    const marks = ids.map(() => "?").join(", ");
+    const before = new Map((await tx.all<{ run_id: string; epoch: number | string; turn: number | string; attempt: number | string; cut: string | null }>(
+      `SELECT run_id, epoch, turn, attempt, cut FROM run_attempts a WHERE run_id IN (${marks}) AND epoch = (SELECT max(epoch) FROM run_attempts b WHERE b.run_id = a.run_id)`, ...ids,
+    )).map((row) => [row.run_id, row]));
+    const next = new Map((await tx.all<{ run_id: string; next_id: string }>(`SELECT run_id, next_id FROM pi_metadata WHERE run_id IN (${marks})`, ...ids)).map((row) => [row.run_id, Number(row.next_id)]));
+    const rows: SqliteValue[][] = [];
+    for (const claim of claims) {
+      const prev = before.get(claim.runId);
+      // The claim taken over is the latest row's only at epoch - 1 (lost: no release moved it) or epoch - 2 (released, cut).
+      const replaced = prev !== undefined && Number(prev.epoch) === claim.epoch - (claim.lost ? 1 : 2) ? prev : undefined;
+      const redone = claim.from === "running" && replaced !== undefined && (claim.lost || replaced.cut !== null) ? replaced : undefined;
+      const turn = prev === undefined ? 1 : Number(prev.turn) + (redone ? 0 : 1);
+      const attempt = redone ? Number(redone.attempt) + 1 : 1;
+      const cause: AttemptCause | null = redone ? ((redone.cut as AttemptCause | null) ?? (claim.lost ? "crash" : "retry")) : null;
+      out.set(claim.runId, { turn, attempt });
+      rows.push([claim.runId, claim.epoch, turn, attempt, cause, runner, claim.from, next.get(claim.runId) ?? JOURNAL_FIRST_ID]);
+    }
+    await tx.run(
+      `INSERT INTO run_attempts (run_id, epoch, turn, attempt, cause, runner, from_state, journal_from, claimed_at) VALUES ${rows.map(() => `(?, ?, ?, ?, ?, ?, ?, ?, ${stamp.sql})`).join(", ")} ON CONFLICT (run_id, epoch) DO NOTHING`,
+      ...rows.flatMap((row) => [...row, ...stamp.params]),
+    );
+    return out;
   }
 
   /** Holds the run's row before a fenced write reads the store's clock: the lease is checked, and runs, from when the write
@@ -2486,7 +2562,7 @@ class SqliteStore implements Store {
     }, { lease: true });
   }
 
-  async release(claim: Claim, { state, wakeAt = null, backoffUntil = null }: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null } = {}): Promise<void> {
+  async release(claim: Claim, { state, wakeAt = null, backoffUntil = null, cut }: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null; cut?: "drain" | "retry" } = {}): Promise<void> {
     // The end commit is the one write that makes a run final (applyRunPatch: the leftover rows refused and the run_live
     // row deleted with it). A release never does: asked to, it is refused before anything is written.
     if (state !== undefined && FINAL_STATES.includes(state as RunState)) throw new TypeError(`a release never makes a run final (asked for ${state}): only the run's end commit does, refusing its leftover rows with it`);
@@ -2517,6 +2593,8 @@ class SqliteStore implements Store {
         await tx.run(`DELETE FROM hand_backs WHERE at < ${now.sql} - ${this.#db.dialect.bigintParam}`, ...now.params, HAND_BACKS_KEPT_MS);
         await tx.run(`INSERT INTO hand_backs (run_id, runner, epoch, at) VALUES (?, ?, ?, ${now.sql})`, claim.runId, claim.runner, claim.epoch, ...now.params);
       }
+      // Why the claim let its run go unfinished, on its own row, in the release's transaction: the next claim reads it.
+      if (cut !== undefined) await tx.run("UPDATE run_attempts SET cut = ? WHERE run_id = ? AND epoch = ? AND cut IS NULL", cut, claim.runId, claim.epoch);
     }, { full: true });
     // The released claim's journal is dead (its epoch moved on): the store keeps it no longer, and refuses it from now.
     this.#journals.delete(journalKey(claim));

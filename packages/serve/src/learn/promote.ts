@@ -7,6 +7,7 @@
 // its workflows' promotion records), over the settings table; the orchestration is runner/promotion.ts. Grades are what
 // a person or an eval said of a run (PUT /runs/{id}/grade).
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { RunPath } from "../learning-cost.js";
 import type { FeedbackRound, OpenedRound } from "../runner/feedback-round.js";
 import type { Settings } from "../store/store.js";
@@ -99,9 +100,10 @@ export interface PromotionRecord {
   /** The learning commit whose workflows/<workflow>/workflow.json is this digest's text: the seed of the claim that
    *  recorded it. What the digest serves from as the champion (championOf) once a newer revision is on the folder's main. */
   readonly commit?: string;
-  /** `sdk`: a connected (SDK) agent's check (runner/promotion.ts reserveSdkCheck), on its reservation and the record that
-   *  decides it. Its one run (`runs`) is the agent's own native turn, not a replay run; a replaying one with no `runs`
-   *  waits for the next native turn the draft takes. Absent: a server replay's. */
+  /** `sdk`: a connected (SDK) agent's check (runner/promotion.ts reserveSdkCheck), on each reservation and the record that
+   *  decides it. Its one run (`runs`) is the agent's native turn reserved now, not a replay run; a replaying one with no
+   *  `runs` waits for the next native turn the draft takes. It collects its checked turns (`check.turns`) and decides once
+   *  it holds compile_after of them, as a managed check decides once on its inputs. Absent: a server replay's. */
   readonly via?: "sdk";
 }
 
@@ -177,10 +179,28 @@ export type CheckRecord = CheckBar & {
   /** A connected agent's check: how many fresh read-only calls its shadow made where the native turn's recording had
    *  no result (the client's opt-in shadowReadFallback). Absent: none, every call was answered from the recording. */
   readonly fresh_reads?: number;
+  /** A connected agent's check still collecting native turns (runner/promotion.ts sdkCheckTurn): the turns checked so
+   *  far, until it holds compile_after of them and decides once on them all. Absent once decided on them, and on a
+   *  managed check; a check stopped or set aside before it held them keeps the turns it had. */
+  readonly turns?: CheckTurns;
   /** How it compared with no agree_on: the fast model that read the answers (its name), when it was asked on any input.
    *  With agree_on, the paths compared (CheckBar.agree_on); with neither, the whole answer. */
   readonly grader?: string;
 };
+
+/** A connected agent's checked native turns before its check decides, counted as a decided check counts its inputs:
+ *  `n` turns, `agreed` and `alone` of them, the agent's runs (`of`, newest first), one outcome per turn (a turn past its
+ *  deadline failed), each turn it did not agree on, and the shadows' fresh reads. Each is compared on its own turn, its
+ *  texts cut as a decided check's are. */
+export interface CheckTurns {
+  readonly n: number;
+  readonly agreed: number;
+  readonly alone: number;
+  readonly of: readonly string[];
+  readonly outcomes: ReplayOutcomes;
+  readonly disagreements?: readonly CheckDisagreement[];
+  readonly fresh_reads?: number;
+}
 
 /** The most characters of an input or an answer a check's disagreement keeps. */
 export const CHECK_TEXT_MAX = 1_200;
@@ -315,20 +335,27 @@ const blankCheck = (one: CheckDisagreement): CheckDisagreement => ({
 /** An audit's disagreement blanked the same way: its run ids and whether a grade wrote it kept. */
 const blankAudit = (one: AuditDisagreement): AuditDisagreement => ({ run: one.run, served: one.served, input: "", agent: null, draft: null, ...(one.graded ? { graded: true as const } : {}) });
 
-/** `record` with what it copied from run `runId` blanked: each disagreement naming it (a check's agent run; an audit's
- *  served run or shadow run), and the grader's words its reason quotes from one (differentDecisionWords' example). Its
- *  decision, numbers and run ids stay. The record itself when it names no such disagreement. */
+/** `record` with what it copied from run `runId` blanked: each disagreement naming it (a check's agent run, a connected
+ *  agent's collected turn too; an audit's served run or shadow run), and the grader's words its reason quotes from one
+ *  (differentDecisionWords' example). Its decision, numbers and run ids stay. The record itself when it names no such
+ *  disagreement. */
 function forgetRunIn(record: PromotionRecord, runId: string): PromotionRecord {
   if (!record || typeof record !== "object") return record;
   const check = record.check?.disagreements?.some((one) => one.run === runId);
+  const turns = record.check?.turns?.disagreements?.some((one) => one.run === runId);
   const audit = record.audit?.disagreements.some((one) => one.run === runId || one.served === runId);
-  if (!check && !audit) return record;
+  if (!check && !turns && !audit) return record;
   let reason = record.reason;
   for (const one of record.check?.disagreements ?? []) if (one.run === runId && one.differs_on !== undefined) reason = reason.replace(` (for example: ${one.differs_on})`, "");
+  const blanked = (list: readonly CheckDisagreement[]) => list.map((one) => (one.run === runId ? blankCheck(one) : one));
   return {
     ...record,
     reason,
-    ...(check && record.check ? { check: { ...record.check, disagreements: record.check.disagreements!.map((one) => (one.run === runId ? blankCheck(one) : one)) } } : {}),
+    ...((check || turns) && record.check ? { check: {
+      ...record.check,
+      ...(check ? { disagreements: blanked(record.check.disagreements!) } : {}),
+      ...(turns ? { turns: { ...record.check.turns!, disagreements: blanked(record.check.turns!.disagreements!) } } : {}),
+    } } : {}),
     ...(audit && record.audit ? { audit: { ...record.audit, disagreements: record.audit.disagreements.map((one) => (one.run === runId || one.served === runId ? blankAudit(one) : one)) } } : {}),
   };
 }
@@ -462,9 +489,16 @@ export function shownDeep(value: unknown, shown: { readonly text: (text: string)
  *  only when it won the write: the loser reads the winner's record, never its turn to act. */
 export type Recorded = { readonly record: PromotionRecord | undefined; readonly won: boolean };
 
+/** The runs whose copies `record`'s check has blanked (forgetRunIn): each disagreement, decided or of a turn collected,
+ *  left as blankCheck leaves it. */
+const blankedRuns = (record: PromotionRecord | undefined): string[] =>
+  [...(record?.check?.disagreements ?? []), ...(record?.check?.turns?.disagreements ?? [])].filter((one) => isDeepStrictEqual(one, blankCheck(one))).map((one) => one.run);
+
 /** Keeps `record` as the newest of its workflow at its digest, when `still` holds of the one there now (none: undefined)
  *  and of every record kept (`items`: a check across revisions, one at a time, in the same guarded write): so of two
- *  claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). */
+ *  claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). What the one
+ *  there now has blanked is blanked in `record` too (forgetRunIn): a record built on a copy read before a run's purge
+ *  (a connected agent's next turn, release or decision carries its turns on) never writes that run's text back. */
 export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean): Promise<Recorded> {
   let out: Recorded = { record, won: true };
   await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
@@ -474,8 +508,9 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
       out = { record: now, won: false };
       return items;
     }
-    out = { record, won: true };
-    return trimPromotions([...items, record]);
+    const kept = blankedRuns(now).reduce(forgetRunIn, record);
+    out = { record: kept, won: true };
+    return trimPromotions([...items, kept]);
   });
   return out;
 }

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.51 (2026-11-21)
+
+- A person's answer to an ACP agent's own tool call (Cursor's shell) now reaches the run when the agent, started again, asks for another command instead: the adapter asks about each request the turn left waiting before it starts the agent, so the answer is taken and the run's pending approval moves on, and with no answer yet the run parks again with no prompt sent. Before, the answer was never taken, and the run restarted the agent every few seconds, each time with a new approval, until the plan's turn limit. The recovery note tells the agent what the person answered, and an agent that asks for another command three times (`REASK_LIMIT`) instead of the one the person allowed ends its turn with `ACP_REASK_LIMIT`. <!-- changes/acp-parked-permission-settled.md -->
+- An ACP agent (Cursor) that skipped a command the person allowed no longer has its turn cut after three more commands its tool setting allows: only commands that wait for the person count toward `REASK_LIMIT`. An allow-once is now used once: if a later agent process in the same turn asks for the same command again, the person is asked again instead of the old allow running it a second time. <!-- changes/acp-reask-parks-only.md -->
+
 ## 0.1.0-beta.48 (2026-11-20)
 
 - A harness module builds its harness the way the built-in harnesses are built: `entries(builtins, kit)` now gets a kit with `kit.adapterEntry(facts, adapter)` and `kit.acpEntry({ facts, recipe, proxy })`, so the harness is offered its wire's vendor's models, named on that vendor's and OpenRouter's key rows, and gated and named by its own facts. [HARNESS.md](../../HARNESS.md) is the guide, and `examples/harness-module` is a whole module (Goose under an id of its own). <!-- changes/harness-modules-kit.md -->

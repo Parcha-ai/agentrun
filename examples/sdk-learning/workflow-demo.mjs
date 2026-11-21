@@ -27,6 +27,9 @@ export function assertWorkflowReuse(result, receipt, acceptedRevision, names) {
   assert.equal(chain.formatted.runId, receipt.runId);
 }
 
+// The agent's learning.compile_after: completed runs before a compile, and native turns its draft is checked on.
+const COMPILE_AFTER = 5;
+
 export async function demonstrateWorkflows({ runtime, createBackend,
   baseUrl = process.env.AGENTRUN_BASE_URL, apiKey = process.env.AGENTRUN_API_KEY,
   agentPrefix = `sdk-workflow-${runtime}-${Date.now()}`, fetch: send = globalThis.fetch, onProgress = () => {} }) {
@@ -48,7 +51,7 @@ export async function demonstrateWorkflows({ runtime, createBackend,
   const options = { baseUrl, apiKey, fetch: capture, instructions: WORKFLOW_INSTRUCTIONS, learningTimeoutMs: 180_000 };
   const client = new AgentRun({ baseUrl, apiKey, fetch: send });
   const agentId = `${agentPrefix}-on`, controlId = `${agentPrefix}-off`;
-  const on = await createBackend({ ...options, agentId, name: `${runtime} workflow release reporter`, learning: { compile_after: 5 } });
+  const on = await createBackend({ ...options, agentId, name: `${runtime} workflow release reporter`, learning: { compile_after: COMPILE_AFTER } });
   let off;
   const run = async (stage, backend, prompt, service) => {
     onProgress({ stage, state: 'running' });
@@ -59,8 +62,8 @@ export async function demonstrateWorkflows({ runtime, createBackend,
     onProgress({ stage, state: 'completed' });
     return result;
   };
-  // Compilation is not promotion. A separate ordinary native task checks one pinned draft without offering it
-  // to the model, then the next task may receive the promoted champion.
+  // Compilation is not promotion. Separate ordinary native tasks, compile_after of them, check one pinned draft without
+  // offering it to the model; the server decides once on all of them, then the next task may receive the champion.
   const compiled = workflow => workflow.status === 'checking' && workflow.run;
   const serving = workflow => workflow.status === 'serving' && workflow.run;
   try {
@@ -78,13 +81,19 @@ export async function demonstrateWorkflows({ runtime, createBackend,
     }
     const drafts = learned.workflows.filter(compiled);
     assert.ok(drafts.length, 'No workflow was compiled after the ordinary practice cadence. Inspect Learning Dojo before running more paid tasks.');
-    const checked = await run('independent-shadow-check', on, releaseTask('demo-api'), 'demo-api');
-    const checkReceipt = receipts.filter(receipt => receipt.agentId === agentId).at(-1);
-    assert.ok(checkReceipt.check && drafts.some(item => item.name === checkReceipt.check.workflow), 'The native check turn received no matching compiled draft.');
-    assert.deepEqual(checkReceipt.workflows, [], 'The baseline turn must not receive an executable workflow.');
-    assert.equal(checked.calls.filter(call => call.source === 'workflow').length, 0, 'The check must not execute extra original callbacks.');
-    learned = await client.learning.get(agentId);
-    const accepted = learned.workflows.filter(item => serving(item) && item.name === checkReceipt.check.workflow);
+    let accepted = [];
+    for (let turn = 1; turn <= COMPILE_AFTER; turn++) {
+      const checked = await run(`independent-shadow-check-${turn}`, on, releaseTask('demo-api'), 'demo-api');
+      const checkReceipt = receipts.filter(receipt => receipt.agentId === agentId).at(-1);
+      assert.ok(checkReceipt.check && drafts.some(item => item.name === checkReceipt.check.workflow), `Native check turn ${turn} received no matching compiled draft.`);
+      assert.deepEqual(checkReceipt.workflows, [], 'A baseline turn must not receive an executable workflow.');
+      assert.equal(checked.calls.filter(call => call.source === 'workflow').length, 0, 'The check must not execute extra original callbacks.');
+      learned = await client.learning.get(agentId);
+      const draft = learned.workflows.find(item => item.name === checkReceipt.check.workflow);
+      accepted = learned.workflows.filter(item => serving(item) && item.name === checkReceipt.check.workflow);
+      // Decided: promoted, or held (no more paid tasks to fish for a promotion).
+      if (accepted.length || !compiled(draft ?? {})) break;
+    }
     assert.ok(accepted.length, 'The independent shadow check did not promote its draft. Inspect Learning Dojo before running more paid tasks.');
     const workflowFiles = [];
     for (const item of accepted) {

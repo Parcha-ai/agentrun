@@ -16,12 +16,12 @@
 // (node_modules/.cache/agentrun-build-stamp) is written only after a build that succeeds and cleared when one starts, so a failed build, which
 // tsc may still emit files for, never reads as current. A package with no build script is never stale.
 //   --root <dir>                                  the repository to build (default: this script's)
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
+import { npmSpawnSync } from './npm-command.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const FIELDS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
@@ -232,7 +232,7 @@ if (isMain(import.meta)) {
       // The stamp goes before the build and comes back only if it succeeds on inputs that did not change under it.
       clearStamp(p);
       const before = inputsOf(p, root);
-      const status = spawnSync('npm', ['run', 'build', '-w', name], { cwd: root, stdio: 'inherit' }).status ?? 1;
+      const status = npmSpawnSync(['run', 'build', '-w', name], { cwd: root, stdio: 'inherit' }).status ?? 1;
       if (status === 0 && inputsOf(p, root) === before) writeStamp(p, before, Object.fromEntries(p.deps.filter((dep) => byName.get(dep)?.build).map((dep) => [dep, readStamp(byName.get(dep))?.id ?? 'none'])));
       return status;
     });
