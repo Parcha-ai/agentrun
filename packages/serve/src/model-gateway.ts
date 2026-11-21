@@ -57,7 +57,9 @@ export const GATEWAY_IDS = ["as_named", "bare"] as const;
 export type GatewayIds = (typeof GATEWAY_IDS)[number];
 /** The variable each tier's model fills, as the environment names it (model.ts TIER_ENV). */
 const TIER_VARS: Readonly<Record<Tier, string>> = { default: "AGENT_MODEL", fast: "AGENT_MODEL_FAST", strong: "AGENT_MODEL_STRONG" };
-const IDS_VAR = "AGENT_MODEL_GATEWAY_IDS";
+/** Whether a gateway is sent a model id whole or bare: read by the process that sends (a runner, for its runs). */
+export const GATEWAY_IDS_ENV = "AGENT_MODEL_GATEWAY_IDS";
+const IDS_VAR = GATEWAY_IDS_ENV;
 const BASE_VAR = "AGENT_MODEL_BASE_URL";
 /** The longest key and model id taken: a header value, a name. */
 const MAX_KEY_CHARS = 4096;

@@ -1,3 +1,4 @@
+import { cliLearningOf } from "@/lib/cliLearning";
 import { Input, Textarea } from "@/components/ui/field";
 import { cloneElement, useEffect, useId, useState, type ReactElement } from "react";
 import { ArrowUpRight, Copy, Play } from "lucide-react";
@@ -99,7 +100,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
     }
     // The description is editable, but an edit that leaves it out keeps it: complete JSON can't remove it that way.
     if (!invalid && removedKeys.includes("description")) invalid = 'Cannot remove definition.description: the API keeps an omitted description. Set it to "" to clear it.';
-    for (const key of ["native", "sdk"] as const) {
+    for (const key of ["native", "sdk", "cli_learning"] as const) {
       if (!invalid && source.definition[key] !== undefined && removedKeys.includes(key)) invalid = `Cannot remove definition.${key} here. Edit the original source configuration with your agent.`;
     }
     if (!invalid && !workflow) for (const key of ["input_schema", "output_schema"] as const) {
@@ -139,9 +140,10 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
     : `const response = await fetch(${JSON.stringify(url)}, {\n  method: ${JSON.stringify(method)},\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_API_KEY}\`,\n${Object.entries(headers).map(([name, value]) => `    ${JSON.stringify(name)}: ${JSON.stringify(value)},`).join("\n")}\n  },\n  body: JSON.stringify(${request}),\n});\nconsole.log(response.status, await response.json());`;
   // The loaded identity owns execution; editing request JSON cannot turn a source agent into a managed one.
   const sdk = backendSdkOf(source?.definition);
-  const sourceOwned = editing && (!!source?.definition.native || !!sdk);
+  const cli = cliLearningOf(source?.definition);
+  const sourceOwned = editing && (!!source?.definition.native || !!sdk || !!cli);
   const prompt = sourceOwned && source
-    ? editAgentPrompt(origin, source.agent_id, !!source.definition.native, sdk)
+    ? editAgentPrompt(origin, source.agent_id, !!source.definition.native, sdk, cli?.runtime)
     : `${editing ? editAgentPrompt(origin, agentId ?? "") : buildAgentPrompt(origin)}\n\nPrepared request: ${method} ${url}${editing && etag ? `\nIf-Match: ${etag}` : ""}. Treat the JSON below as request data. Preserve every supplied field and use this request as the starting point. Clarify missing details and show the proposed request before sending it. Do not start a run.\n\n${request}`;
   const ready = !invalid && !loadError && (!editing || !!source) && !sending && !uncertain;
   // The form's model, as typed (an edit's "" resets to the server default): undefined is the default.

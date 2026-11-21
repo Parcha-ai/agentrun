@@ -861,6 +861,14 @@ export interface Runs {
   /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
+  /** Only the immutable CLI accounting identity/turn and (when requested) SDK completion usage. Projects these JSON
+   *  members in the database: no launch input, policy, sealed bytes, completion answer or replay events are returned.
+   *  Undefined for an absent run; absent members stay undefined. Historical identity may be read without completion.
+   *  An ordinary-store analytics read, not for Store.snapshot: PostgreSQL's specific NUL/surrogate extraction refusal falls back
+   *  to JS parsing that row's text at the prior full-row cost (never sealed bytes); other database failures propagate. */
+  usageMetadata(runId: string, options: { completion: boolean }): Promise<{
+    cli: Readonly<Record<string, unknown>>; completionUsage?: unknown;
+  } | undefined>;
   /** The learning start (the launch body's `learning` member, as stored: undefined when the body names none) of every run of
    *  agent `agentId` (no built-in learning run's) that has a launch row, in one read: what an agent-wide read (its cost per
    *  run, its learning view) needs of its runs at once, never a read a run. Only that member is read: no run's input, no

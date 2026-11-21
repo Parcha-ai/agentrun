@@ -413,6 +413,179 @@ test("selection and scoped credential fences reject cross-source writes and repl
   );
 });
 
+const pollingEvent = (sequence, usage, extra = {}) => ({
+  event_id: randomUUID(),
+  source_id: sourceCodex.source_id,
+  external_session_id: "opaque-codex-session",
+  sequence,
+  type: "session_observed",
+  occurred_at: new Date().toISOString(),
+  metadata: { harness: "codex", activity: "working" },
+  ...(usage === undefined ? {} : { usage }),
+  ...extra,
+});
+
+test("session labels retain native titles and project basenames across fresh activity, stale labels and usage", async (t) => {
+  const s = await setup(t, "polling");
+  assert.equal((await s.request("GET", "/connectors/capabilities", undefined, "")).body.session_labels, true);
+  const labels = { display_name: "AgentRun OSS -> Hosted conversion", project_name: "console" };
+  const event = pollingEvent(2, undefined, { metadata: { harness: "codex", activity: "working", ...labels } });
+  const send = (...events) => s.scoped("events", { selections_revision: 1, events });
+  assert.equal((await send(event)).status, 200);
+  assert.equal((await send(event)).status, 200);
+  assert.equal((await send({ ...event, metadata: { ...event.metadata, display_name: "Changed replay" } })).status, 409);
+  const usage = { model: "test-model", input_tokens: 30, output_tokens: 5 };
+  assert.equal((await send(pollingEvent(3, usage))).status, 200, "older clients may omit labels on fresh activity");
+  assert.equal((await send(pollingEvent(2, undefined, { metadata: { ...event.metadata, display_name: "Stale title", project_name: "wrong-project" } }))).status, 200);
+  assert.equal((await s.scoped("heartbeat", {})).status, 200);
+  let snapshot = await new Observations(s.store).snapshot();
+  assert.equal(snapshot.sessions[0].display_name, labels.display_name);
+  assert.equal(snapshot.sessions[0].project_name, labels.project_name);
+  assert.equal(snapshot.sessions[0].usage.total_tokens, 35);
+  assert.equal((await send(pollingEvent(4, undefined, { metadata: { harness: "codex", activity: "idle", display_name: "CI/CD deploy — 修正 🚀" } }))).status, 200);
+  snapshot = await s.view();
+  assert.equal(snapshot.sessions[0].display_name, "CI/CD deploy — 修正 🚀");
+  assert.equal(snapshot.sessions[0].project_name, labels.project_name, "a title-only update preserves the project");
+  assert.equal(snapshot.sessions[0].activity, "idle");
+  assert.equal(snapshot.usage.total_tokens, 35, "naming does not change accounting");
+});
+
+test("unlabeled observed sessions have distinct stable native-harness names", async (t) => {
+  const s = await setup(t, "polling");
+  const events = [
+    pollingEvent(1, undefined, { external_session_id: "opaque-abcdefgh" }),
+    pollingEvent(2, undefined, { external_session_id: "opaque-ijklmnop" }),
+    pollingEvent(3, undefined, { source_id: source.source_id, external_session_id: "opaque-qrstuvwx", metadata: { harness: "claude", activity: "idle" } }),
+  ];
+  assert.equal((await s.scoped("events", { selections_revision: 1, events })).status, 200);
+  const snapshot = await s.view();
+  assert.deepEqual(snapshot.sessions.map(session => session.display_name).sort(), ["Claude Code · qrstuvwx", "Codex · abcdefgh", "Codex · ijklmnop"]);
+  assert.ok(snapshot.sessions.every(session => !Object.hasOwn(session, "project_name")));
+});
+
+test("session label validation rejects unsafe metadata atomically and counts UTF-16 limits", async (t) => {
+  const s = await setup(t, "polling");
+  const before = await storeBytes(s.store);
+  const bad = [
+    null, true, 3, [], {}, "", "  ", " title", "title ", "a\nline", "a\u0085line", "a\u2028line", "a\u2029line",
+    "hidden\u202Ename", "hidden\u200Bname", "hidden\uFEFFname", "bad\ud800name",
+    "/private/project", "//server/share", "//server", "project /private/path", "~/project", "C:\\project", "project\\subdir", "https://example.com", "file:///tmp/file",
+    // Synthetic provider-shaped value; keep the rejection case without publishing a plausible credential literal.
+    "key sk-test", "key SK_test", "ghp_fixture", "github_pat_fixture", "xoxb-fixture", "Bearer fixture", "AKIA" + "1234567890123456",
+  ];
+  for (const field of ["display_name", "project_name"]) {
+    const limit = field === "display_name" ? 120 : 80;
+    const invalid = [...bad, "x".repeat(limit + 1), "🚀".repeat(limit / 2 + 1), ...(field === "project_name" ? ["CI/CD"] : [])];
+    for (const value of invalid) {
+      const event = pollingEvent(1, undefined, { metadata: { harness: "codex", activity: "idle", [field]: value } });
+      const reply = await s.scoped("events", { selections_revision: 1, events: [pollingEvent(1), event] });
+      assert.equal(reply.status, 422, `${field}: ${JSON.stringify(value)}`);
+      assert.deepEqual(await storeBytes(s.store), before, "no earlier event or receipt may commit");
+    }
+  }
+  for (const extra of [{ preview: "private body" }, { name: "unrecognized alias" }, { cwd: "/private/project" }]) {
+    assert.equal((await s.scoped("events", { selections_revision: 1, events: [pollingEvent(1, undefined, { metadata: { harness: "codex", activity: "idle", ...extra } })] })).status, 422);
+  }
+  const valid = [
+    { display_name: "x".repeat(120), project_name: "x".repeat(80) },
+    { display_name: "🚀".repeat(60), project_name: "🚀".repeat(40) },
+    { display_name: "Task-planner CI/CD", project_name: "Task-planner" },
+  ];
+  for (const [index, labels] of valid.entries()) {
+    const event = pollingEvent(index + 1, undefined, { metadata: { harness: "codex", activity: "idle", ...labels } });
+    assert.equal((await s.scoped("events", { selections_revision: 1, events: [event] })).status, 200);
+  }
+  assert.equal((await s.view()).sessions[0].display_name, "Task-planner CI/CD");
+});
+
+test("polling usage deltas use source days and survive duplicate delivery and receiver restart", async (t) => {
+  const s = await setup(t, "polling");
+  assert.equal((await s.request("GET", "/connectors/capabilities", undefined, "")).body.token_usage.polling, true);
+  const day = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
+  const usage = { model: "test-model", input_tokens: 100, output_tokens: 20, cache_read_tokens: 60, cache_write_tokens: 10 };
+  // The offset crosses midnight: daily totals must use the source date in UTC, not receipt/local date.
+  const event = pollingEvent(1, usage, { occurred_at: day + "T23:30:00-01:00" });
+  const sourceDay = new Date(event.occurred_at).toISOString().slice(0, 10);
+  const batch = { selections_revision: 1, events: [event] };
+  assert.equal((await s.scoped("events", batch)).status, 200);
+  const replays = await Promise.all(Array.from({ length: 4 }, () => s.scoped("events", batch)));
+  assert.ok(replays.every(reply => reply.status === 200));
+  const restored = new Observations(s.store);
+  await restored.events(s.connector.id, s.credential, batch);
+  const next = pollingEvent(2, { ...usage, input_tokens: 40, output_tokens: 5, cache_read_tokens: 10, cache_write_tokens: 0 }, { occurred_at: event.occurred_at });
+  const activity = pollingEvent(3, undefined, { metadata: { harness: "codex", activity: "idle" } });
+  assert.equal((await s.scoped("events", { ...batch, events: [next, activity] })).status, 200);
+  assert.equal((await s.scoped("heartbeat", {})).status, 200);
+  const snapshot = await restored.snapshot();
+  assert.equal(snapshot.sessions[0].activity, "idle");
+  assert.deepEqual(snapshot.sessions[0].models, ["test-model"]);
+  assert.equal(snapshot.usage.input_tokens, 140);
+  assert.equal(snapshot.usage.output_tokens, 25);
+  assert.equal(snapshot.usage.cache_read_tokens, 70);
+  assert.equal(snapshot.usage.cache_write_tokens, 10);
+  assert.equal(snapshot.usage.cache_hit_rate, 0.5);
+  assert.deepEqual(snapshot.usage.daily, [{ date: sourceDay, total_tokens: 165 }]);
+  assert.equal((await restored.snapshot(1)).usage.total_tokens, 0, "backfill must not inflate today's usage");
+  assert.equal(snapshot.connectors[0].receipt_count, 3);
+});
+
+test("polling usage fences equal and stale sequences even when their receipt IDs differ", async (t) => {
+  const s = await setup(t, "polling");
+  const usage = { model: "test-model", input_tokens: 50, output_tokens: 10 };
+  const send = (...events) => s.scoped("events", { selections_revision: 1, events });
+  const first = pollingEvent(2, usage);
+  assert.equal((await send(first)).status, 200);
+  assert.equal((await send({ ...first, usage: { ...usage, input_tokens: 51 } })).status, 409);
+  assert.equal((await send(pollingEvent(2, usage), pollingEvent(1, usage))).status, 200);
+  const idle = pollingEvent(4, undefined, { metadata: { harness: "codex", activity: "idle" } });
+  assert.equal((await send(idle, pollingEvent(3, usage))).status, 200);
+  assert.equal((await send(pollingEvent(5, { ...usage, input_tokens: 8, output_tokens: 2, cache_read_tokens: 4, cache_write_tokens: 0 }, { metadata: idle.metadata }))).status, 200);
+  assert.equal((await s.scoped("heartbeat", {})).status, 200);
+  const snapshot = await s.view();
+  assert.equal(snapshot.sessions[0].activity, "idle");
+  assert.equal(snapshot.sessions[0].sequence, 5);
+  assert.equal(snapshot.usage.total_tokens, 70);
+  assert.equal(snapshot.usage.cache_read_tokens, null, "one report without cache data leaves aggregate cache use unknown");
+  assert.equal(snapshot.usage.cache_write_tokens, null);
+  assert.equal(snapshot.usage.cache_hit_rate, null);
+});
+
+test("polling usage validates numeric metadata and rejects the entire batch before mutation", async (t) => {
+  const s = await setup(t, "polling");
+  const valid = { model: "test-model", input_tokens: 50, output_tokens: 10 };
+  const before = await storeBytes(s.store);
+  for (const usage of [
+    null, [], {}, { ...valid, model: "" }, { ...valid, model: "private model text" },
+    { ...valid, model: "x".repeat(129) }, { ...valid, prompt: "PRIVATE" },
+    { ...valid, input_tokens: -1 }, { ...valid, output_tokens: 0.5 },
+    { ...valid, input_tokens: "50" }, { ...valid, output_tokens: true },
+    { ...valid, input_tokens: null }, { model: valid.model, input_tokens: 50 },
+    { ...valid, cache_read_tokens: null }, { ...valid, cache_write_tokens: -1 },
+    { ...valid, cache_read_tokens: 51 }, { ...valid, cache_read_tokens: 30, cache_write_tokens: 21 },
+    { ...valid, input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 1 },
+    { ...valid, input_tokens: Number.MAX_SAFE_INTEGER + 1 },
+  ]) {
+    const reply = await s.scoped("events", { selections_revision: 1, events: [pollingEvent(1, valid), pollingEvent(2, usage)] });
+    assert.equal(reply.status, 422, JSON.stringify(usage));
+    assert.deepEqual(await storeBytes(s.store), before, "invalid usage must not store an earlier valid event or receipt");
+  }
+  assert.equal((await s.view()).sessions.length, 0);
+});
+
+test("polling usage refuses aggregate overflow without accepting its receipt", async (t) => {
+  const s = await setup(t, "polling");
+  const send = event => s.scoped("events", { selections_revision: 1, events: [event] });
+  assert.equal((await send(pollingEvent(1, { model: "test-model", input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 0 }))).status, 200);
+  const event = pollingEvent(2, { model: "other-model", input_tokens: 0, output_tokens: 1 });
+  const reply = await send(event);
+  assert.equal(reply.status, 409);
+  assert.equal(reply.body.detail.code, "connector_token_total_limit");
+  const snapshot = await s.view();
+  assert.equal(snapshot.sessions[0].sequence, 1);
+  assert.equal(snapshot.connectors[0].receipt_count, 1);
+  assert.equal(snapshot.usage.total_tokens, Number.MAX_SAFE_INTEGER);
+});
+
 test("polling observes selected sessions, fences sequence and persists source receipts atomically", async (t) => {
   const s = await setup(t, "polling");
   const event = {

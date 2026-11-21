@@ -51,8 +51,10 @@ x-runner: &runner
   stop_grace_period: 35s
   mem_limit: ${AGENTRUN_RUNNER_MEMORY:-2g}
 
-# A runner's health: its heartbeat (runner-<name>.alive in /data) is younger than 20 s. `runner --check` reads no store
-# and needs no secret, so it runs with an empty environment: the seal key the container was given stays out of it.
+# A runner's health: `runner --check` checks the runner's environment by name (its store opens, its seal key is the
+# store's, it holds every run-facing name the server holds, a forwarder on loopback answers) and that its heartbeat
+# (runner-<name>.alive in /data) is younger than 20 s. It reads the container's environment, so it runs with it; it
+# prints names only, never a value.
 x-runner-check: &runner-check
   interval: 10s
   timeout: 5s
@@ -107,7 +109,7 @@ services:
       AGENTRUN_RUN_SLOT_FIRST: "0"
     healthcheck:
       <<: *runner-check
-      test: ["CMD", "env", "-i", "/usr/local/bin/node", "/opt/agentrun/packages/serve/dist/cli.js", "runner", "--check", "--data", "/data", "--name", "runner-1"]
+      test: ["CMD", "/usr/local/bin/node", "/opt/agentrun/packages/serve/dist/cli.js", "runner", "--check", "--data", "/data", "--name", "runner-1"]
 
   runner-2:
     <<: *runner
@@ -119,7 +121,7 @@ services:
       AGENTRUN_RUN_SLOT_FIRST: "128"
     healthcheck:
       <<: *runner-check
-      test: ["CMD", "env", "-i", "/usr/local/bin/node", "/opt/agentrun/packages/serve/dist/cli.js", "runner", "--check", "--data", "/data", "--name", "runner-2"]
+      test: ["CMD", "/usr/local/bin/node", "/opt/agentrun/packages/serve/dist/cli.js", "runner", "--check", "--data", "/data", "--name", "runner-2"]
 
   # Postgres for the store, only with `--profile pg`, for when the store takes AGENTRUN_STORE_URL:
   #   AGENTRUN_PG_PASSWORD=<a password>   and

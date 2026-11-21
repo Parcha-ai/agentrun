@@ -567,6 +567,306 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "cli-learning",
+      "complete"
+    ],
+    "operationId": "completeCliLearningRun",
+    "method": "POST",
+    "path": "/cli-learning/runs/{run_id}/complete",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [
+      {
+        "name": "Idempotency-Key",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "bodyFlags": [
+      {
+        "name": "status",
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "answer",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "error",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "session_id",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "evidence_complete",
+        "type": "boolean",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "seed_observed",
+        "type": "boolean",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "seed_revision",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Close an existing CLI prompt window exactly once"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "enroll"
+    ],
+    "operationId": "enrollCliLearning",
+    "method": "POST",
+    "path": "/cli-learning/connections",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "runtime",
+        "type": "string",
+        "enum": [
+          "codex",
+          "claude-code"
+        ],
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "project",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "name",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Enable learning for an existing local CLI without launching it"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "events"
+    ],
+    "operationId": "cliLearningEvents",
+    "method": "POST",
+    "path": "/cli-learning/runs/{run_id}/events",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [
+      {
+        "name": "Idempotency-Key",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "bodyFlags": [
+      {
+        "name": "sequence",
+        "type": "integer",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Upload bounded role-preserving CLI dialogue and tool evidence"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "get"
+    ],
+    "operationId": "getCliLearningRun",
+    "method": "GET",
+    "path": "/cli-learning/runs/{run_id}",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read CLI prompt-window learning progress"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "list"
+    ],
+    "operationId": "listCliLearning",
+    "method": "GET",
+    "path": "/cli-learning/connections",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read enrolled CLI learning connections"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "revoke"
+    ],
+    "operationId": "revokeCliLearning",
+    "method": "DELETE",
+    "path": "/cli-learning/connections/{connection_id}",
+    "pathParams": [
+      "connection_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Revoke CLI capture and guidance delivery, retaining history and learned files"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "start"
+    ],
+    "operationId": "startCliLearningRun",
+    "method": "POST",
+    "path": "/cli-learning/connections/{connection_id}/runs",
+    "pathParams": [
+      "connection_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [
+      {
+        "name": "Idempotency-Key",
+        "type": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "bodyFlags": [
+      {
+        "name": "session_id",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "turn_id",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "input",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "instructions",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "policy_complete",
+        "type": "boolean",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Register one prompt window from an existing CLI session"
+  },
+  {
+    "command": [
       "connectors",
       "complete-remote-command"
     ],
@@ -3363,7 +3663,7 @@ export const COMMANDS = [
         "name": "agent",
         "type": "string",
         "required": false,
-        "description": "One agent's runs."
+        "description": "One agent's runs and associated source usage, or a connected session id to select that session's usage (with no recorded runs)."
       }
     ],
     "headers": [],
