@@ -345,9 +345,9 @@ export class Connection implements SqliteDatabase, StoreConnection {
   all<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T[]> {
     return this.#queued(async () => (await this.#stmt(sql, params, "all")) as T[]);
   }
-  /** A WAL checkpoint (TRUNCATE) that waits `busyMs` at most for another connection's reader or writer, never the
-   *  connection's own busy wait: every call queued behind it waits that long at most for it. Busy (1) when one held it. */
-  checkpoint(busyMs: number): Promise<CheckpointResult | undefined> {
+  /** A WAL checkpoint (TRUNCATE) that waits `busyMs` at most for another connection's reader or writer (default: the
+   *  connection's own busy wait): every call queued behind it waits that long at most for it. Busy (1) when one held it. */
+  checkpoint(busyMs = this.#busyTimeoutMs): Promise<CheckpointResult | undefined> {
     return this.#queued(async () => ((await this.#send({ op: "checkpoint", busyMs })) ?? undefined) as CheckpointResult | undefined);
   }
 
