@@ -3793,8 +3793,10 @@ check closed.
 The bridge posts one `workflow_check` event with the reservation's `id` and `digest`, its execution `outcome`
 (`answered`, `handed_back`, `failed` or `skipped_write`), and its answer or reason. It does not choose whether the
 workflow passes. The server compares the answer with the immutable native completion and applies the same
-`agree_min` and `alone_min` promotion policy. This initial SDK check uses **one independent native turn** (`n: 1`),
-not the server-run agent's historical replay set. Agreement is whole-answer equality (JSON values or trimmed text), or equality of the owner's
+`agree_min` and `alone_min` promotion policy on the same evidence bar: the check decides once, on `compile_after`
+**independent native turns**, as a server check decides once on that many of the agent's inputs. Each turn is one row,
+kept on the promotion record (`check.turns`) while the check waits for the next turn the draft takes; the turn that
+makes `compile_after` decides on all of them. Agreement is whole-answer equality (JSON values or trimmed text), or equality of the owner's
 configured `agree_on` fields; there is no semantic model grader on this path. A paraphrase can therefore be held even
 when a person would consider it equivalent.
 

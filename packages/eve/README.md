@@ -107,9 +107,10 @@ corrections or create a workflow after every successful task.
    Raw tool inputs/results, reasoning and native credentials remain with eve.
 4. Submit the original outcome once. Once enough complete native runs are recorded, AgentRun's
    ordinary runner compiles workflow drafts using the owner's corrections and the bound tool
-   schemas and commits them as drafts. A later native turn receives one candidate privately for a
-   shadow check after its own answer. The shared client replays recorded tool results and compares
-   the workflow answer through the server's promotion gate. Only promoted workflows become
+   schemas and commits them as drafts. Later native turns receive one candidate privately for a
+   shadow check after their own answers. The shared client replays recorded tool results, and the
+   server compares the workflow's answers through its promotion gate once it holds as many checked
+   turns as the compile threshold. Only promoted workflows become
    reusable context on subsequent turns. Neither compilation nor receiving a check executes a workflow for the user.
 
 Evidence is bounded per turn. An oversized or conflicting buffer skips that turn’s learning;
@@ -160,8 +161,9 @@ locally; only schemas and permission metadata are sent to AgentRun.
 
 After binding the original tools, enable **Self-improving** in the agent's learning settings.
 The server can compile a workflow from complete native traces once the configured threshold is
-reached. A separate native turn checks the draft against the agent's own answer using its recorded
-tool results. The server applies the same promotion gate as other connected harnesses; mismatched,
+reached. Separate native turns, as many as that threshold, check the draft against the agent's own
+answers using their recorded tool results, and the server decides once on all of them. The server
+applies the same promotion gate as other connected harnesses; mismatched,
 incomplete or untested drafts are withheld. A subsequent turn can choose a promoted workflow
 when it fits, or use its original tools directly. When eve chooses `learned_workflow`, the extension
 executes through the shared in-process bridge, with the original callbacks, schema checks and live
