@@ -75,7 +75,7 @@ import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../por
  *  run), which every gate of the run reads with its sessions' spend (runBooking's sessions.beside, overCap, the
  *  wrap-ups). None: nothing is. */
 export type RunCapConfig = Omit<RunCapOptions, "sessions"> & { beside?(): Promise<number | null> };
-import { bookedIn, type PaidBooking } from "../paid-calls.js";
+import { bookedIn, type PaidBooking, stopRunWith } from "../paid-calls.js";
 import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { CODEMODE, defersCatalog, isCatalogWire, TOOLS_CALL, TOOLS_SEARCH } from "@parcha/agentrun-kernel";
@@ -1846,7 +1846,25 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A host tool call's paid requests name the session the call runs in (RunTools.admit `under`): a request of it still
         // in flight may be the one that asked for the call (Claude Code books its cost after its calls; Codex starts a call
         // with its response open), so the call is judged beside it and never waits on it. pi's request has answered by then.
-        const paidUnder: PaidBooking = { admit: (request) => paid.admit({ ...request, under: spec.session.key }), settle: (id, usd, options) => paid.settle(id, usd, options) };
+        // A call settled above its hold (a fal job whose output states more than its input asked) that takes the run's spend
+        // past its cap stops the run at once in the cap's words (overCap), as a stop for good (paid-calls.ts stopRun): no
+        // tool runs after it, a script's own calls included. Its hold, kept from its admission, tells it.
+        const holds = new Map<string, number>();
+        const paidUnder: PaidBooking = {
+          admit: async (request) => {
+            const admitted = await paid.admit({ ...request, under: spec.session.key });
+            holds.set(request.id, request.holdUsd);
+            return admitted;
+          },
+          settle: async (id, usd, options) => {
+            const held = holds.get(id);
+            holds.delete(id);
+            const settled = await paid.settle(id, usd, options);
+            const over = typeof usd === "number" && held !== undefined && Math.round(usd * 1e6) > Math.round(held * 1e6) ? await overCap() : undefined;
+            if (over) await stopRunWith(ledger.pause)(over);
+            return settled;
+          },
+        };
         let refused: Refusal | undefined;
         /** The pause a refusal for room journaled before pi heard of it (pauseAtCap), the run parked with it. */
         let pausedAtRefusal = false;
