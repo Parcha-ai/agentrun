@@ -16,6 +16,10 @@ function fakeHost({ runs = { r1: "ended", r2: "working" }, cannot = [], busy = f
   const states = new Map(Object.entries(runs));
   const cancelled = new Map();
   const store = {
+    // A store's own origin is itself (Store.origin): the readers' caches key on it (store-view.ts forgetServed).
+    get origin() {
+      return this;
+    },
     triggers: { list: async (agentId) => { calls.push(`triggers.list:${agentId}`); return [{ id: "t1" }]; } },
     runs: {
       every: async () => {

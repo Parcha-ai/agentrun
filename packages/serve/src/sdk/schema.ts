@@ -1,4 +1,5 @@
 import { MCP_TOOL_KEY_PATTERN } from "../tool-names.js";
+import { SDK_RUNTIMES, SDK_PLATFORM_MAX_LENGTH, SDK_PLATFORM_PATTERN } from "./runtimes.js";
 
 const text = { type: "string" };
 const object = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
@@ -7,7 +8,20 @@ const object = (properties: Record<string, unknown>, required = Object.keys(prop
   properties,
   required,
 });
-export const SDK_BINDING = object({ runtime: { enum: ["claude-agent-sdk", "codex-sdk", "eve"] } });
+const platform = {
+  ...text, minLength: 1, maxLength: SDK_PLATFORM_MAX_LENGTH, pattern: SDK_PLATFORM_PATTERN,
+  description: "External source's display label, such as openclaw or capy. Preserved exactly; no surrounding whitespace, controls or lone surrogates. Never selects a managed harness or workflow capability.",
+};
+/** Closed alternatives keep platform required only for external sources in every generated client. External starts
+ *  do not accept bridge fields, even an empty catalog: a platform name never confers an integration's capabilities. */
+const sdkObject = (properties: Record<string, unknown> = {}, required = Object.keys(properties)) => ({
+  "x-agentrun-python-preserve-object": true,
+  oneOf: [
+    object({ runtime: { enum: SDK_RUNTIMES.filter(runtime => runtime !== "external") }, ...properties }, ["runtime", ...required]),
+    object({ runtime: { const: "external" }, platform, ...Object.fromEntries(Object.entries(properties).filter(([key]) => key !== "workflow_tools" && key !== "workflow_adapters")) }, ["runtime", "platform", ...required]),
+  ],
+});
+export const SDK_BINDING = sdkObject();
 const usage = object(
   Object.fromEntries(
     ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd"].map((key) => [
@@ -18,8 +32,7 @@ const usage = object(
   [],
 );
 export const SDK_RUN = {
-  ...object({
-    runtime: SDK_BINDING.properties.runtime,
+  ...sdkObject({
     model: { type: ["string", "null"] },
     session_id: { type: ["string", "null"] },
     learning_revision: { type: ["string", "null"] },
@@ -80,9 +93,8 @@ export const SDK_PATHS = {
         "Requires an SDK agent definition. Captures the actual original policy and input, pins promoted workflows and any compiled shadow-check candidate separately, and returns a credential scoped to this run. The backend retains all model/tool/auth settings. Learning requires a configured server reflection/grading model; learning Off needs no server model key.",
       parameters: [id("agent_id"), { ...key, required: true }],
       requestBody: body(
-        object(
+        sdkObject(
           {
-            runtime: SDK_BINDING.properties.runtime,
             input: { ...text, maxLength: 128000 },
             instructions: { ...text, maxLength: 128000 },
             model: { ...text, maxLength: 256 },
@@ -96,7 +108,7 @@ export const SDK_PATHS = {
             }, ["name", "description", "input_schema", "permission"]) },
             workflow_adapters: { type: "array", maxItems: 2, uniqueItems: true, items: { enum: ["runNode", "runJudge"] }, description: "Optional backend callbacks available for workflow model and decision nodes. Default empty; requires workflow_tools." },
           },
-          ["runtime", "input", "instructions"],
+          ["input", "instructions"],
         ),
       ),
       responses: {

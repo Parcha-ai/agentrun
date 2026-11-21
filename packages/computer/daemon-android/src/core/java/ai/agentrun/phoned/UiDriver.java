@@ -852,7 +852,8 @@ public final class UiDriver {
 
 	/**
 	 * Whether a step landed, by reading the window back: verified only when what a person would see of the target's
-	 * window (its fingerprint) differs from before the step. An accessibility event or a new frame is only the cue to
+	 * window (its fingerprint), or of the window of another app the step put in front, differs from before the step. An
+	 * accessibility event, a new frame or a new app in front is only the cue to
 	 * read again: a tap's ripple draws frames and changes nothing, so it never verifies a step.
 	 */
 	private final class Sign {
@@ -862,6 +863,8 @@ public final class UiDriver {
 		private final Wire.Cancel cancel;
 		private final String before;
 		private final long events;
+		/** The app in front before the step. */
+		private final String frontBefore;
 
 		Sign(Device.Accessibility a11y, Target target, Device.AxWindow window, Wire.Cancel cancel) {
 			this.a11y = a11y;
@@ -870,10 +873,14 @@ public final class UiDriver {
 			this.cancel = cancel;
 			this.before = new Look(window, false).fingerprint();
 			this.events = a11y.events();
+			this.frontBefore = device.apps().foreground();
 			a11y.framesSince(windowId);
 		}
 
-		/** Reads the window back until it differs, within SIGN_MS; reads again only on an event or a frame. */
+		/**
+		 * Reads the window back until it differs, within SIGN_MS; reads again only on an event or a frame. Past that, a
+		 * step after which another app is in front landed elsewhere (landedInFront).
+		 */
 		boolean seen() throws InterruptedException {
 			Device.Clock clock = device.clock();
 			long start = clock.now();
@@ -881,12 +888,33 @@ public final class UiDriver {
 			boolean read = true;
 			for (;;) {
 				if (read && !before.equals(new Look(after(a11y, target), false).fingerprint())) return true;
-				if (clock.now() - start >= Settle.SIGN_MS) return false;
+				if (clock.now() - start >= Settle.SIGN_MS) return landedInFront(start);
 				cancel.check();
 				clock.sleep(Settle.POLL_MS);
 				long now = a11y.events();
 				read = now != seen || a11y.framesSince(windowId) > 0;
 				seen = now;
+			}
+		}
+
+		/**
+		 * A step that opens another app's page (Settings' search is Settings Intelligence's activity) puts that app in
+		 * front at once, and the act's own window lingers unchanged until the new one reaches the tree, often past
+		 * SIGN_MS. So when the app in front after the step is neither the one before it nor the act's, the step is read
+		 * against that app's window: verified once it shows and differs from before, within MAX_SETTLE_MS of the step.
+		 * The app in front changing is never enough alone: a window must show.
+		 */
+		private boolean landedInFront(long start) throws InterruptedException {
+			String front = device.apps().foreground();
+			if (front == null || front.equals(frontBefore) || front.equals(target.app)) return false;
+			Device.Clock clock = device.clock();
+			for (;;) {
+				for (Device.AxWindow w : a11y.windows()) {
+					if (front.equals(appOf(w)) && !before.equals(new Look(w, false).fingerprint())) return true;
+				}
+				if (clock.now() - start >= MAX_SETTLE_MS) return false;
+				cancel.check();
+				clock.sleep(Settle.POLL_MS);
 			}
 		}
 	}

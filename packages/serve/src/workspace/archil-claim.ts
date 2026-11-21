@@ -54,9 +54,11 @@ export interface ArchilClaimOptions {
   readonly makeDisk?: (options: ArchilDiskOptions) => ArchilDisk;
   /** The run's mount credential, minted when a mount first asks: the run and this claim's epoch (its token user's
    *  nickname, agentrun:<run>:<epoch>, so a reclaim removes an earlier claim's first) and its ttl (the run's lifetime
-   *  bound, the safety net if the remove never comes); a loopback control plane and its fetch in a test. Absent: a mount
-   *  is refused in words. */
-  readonly mount?: { readonly runId: string; readonly epoch: number; readonly ttlMs: number; readonly baseUrl?: string; readonly fetch?: typeof fetch };
+   *  bound, the safety net if the remove never comes). Absent: a mount is refused in words. */
+  readonly mount?: { readonly runId: string; readonly epoch: number; readonly ttlMs: number };
+  /** Archil's control plane, where the run's disk is read (and made) and its mount credential minted: a loopback fake
+   *  and its fetch in a test. Absent: the region's own. */
+  readonly control?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
   /** The server's environment, passed in (never read here): an ARCHIL_API_KEY variable overrides the saved key. */
   readonly env?: KeyEnv;
   /** The run whose disk the claim resolves (run-disk.ts runDiskOf): its agent, the disk its launch record names, and the
@@ -141,7 +143,7 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   held.add(apiKey);
   // The run's disk first (run-disk.ts): its launch's, else its agent's, made now when it has none; every call below is on
   // it alone, the run's mount credential minted, revoked and reclaimed there.
-  const control = { region: settings.region, key: () => apiKey, ...(options.mount?.baseUrl ? { baseUrl: options.mount.baseUrl } : {}), ...(options.mount?.fetch ? { fetch: options.mount.fetch } : {}) };
+  const control = { region: settings.region, key: () => apiKey, ...(options.control?.baseUrl ? { baseUrl: options.control.baseUrl } : {}), ...(options.control?.fetch ? { fetch: options.control.fetch } : {}) };
   let chosen: RunDisk;
   try {
     chosen = await runDiskOf({ store: options.run.store, agentId: options.run.agentId, ...(options.mount ? { runId: options.mount.runId } : {}), ...(options.run.launch ? { launch: options.run.launch } : {}), control, signal: options.signal });

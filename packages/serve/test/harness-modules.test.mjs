@@ -131,7 +131,9 @@ test("a module that names an id the runner or serve keeps for its own runs (lear
   ]);
   // The names serve's own runs carry as a launch's harness or a run's harness in analytics: `learning` (the stores'
   // learning queries match it), an SDK run's, a workflow revision's, and each SDK runtime's.
-  for (const id of ["learning", "sdk", "workflow", ...SDK_BINDING.properties.runtime.enum]) assert.ok(RESERVED_HARNESS_IDS.includes(id), id);
+  const runtimeIds = SDK_BINDING.oneOf.flatMap(({ properties: { runtime } }) => runtime.enum ?? [runtime.const]);
+  for (const id of ["learning", "sdk", "workflow", ...runtimeIds]) assert.ok(RESERVED_HARNESS_IDS.includes(id), id);
+  assert.ok(RESERVED_HARNESS_IDS.includes("external"), "reporting sources cannot be replaced by a managed harness");
   const dir = await scratch(t);
   for (const id of RESERVED_HARNESS_IDS) {
     const path = ownModule(dir, id);

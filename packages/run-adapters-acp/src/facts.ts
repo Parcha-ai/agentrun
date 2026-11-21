@@ -28,6 +28,8 @@ export const ACP_CODES = Object.freeze({
   keyMissing: "ACP_KEY_MISSING",
   /** The run's model (recipe.model) is not one the agent lists for its key: no prompt was sent. */
   modelUnlisted: "ACP_MODEL_UNLISTED",
+  /** The agent asked for another call of its own tools REASK_LIMIT times in a turn instead of one the person allowed. */
+  reaskLimit: "ACP_REASK_LIMIT",
 } as const);
 
 export interface AcpFacts {

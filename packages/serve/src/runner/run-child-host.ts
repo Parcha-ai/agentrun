@@ -612,7 +612,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     (archil ??= (async () => {
       const settings = await loadArchilSettings(store, deps.env);
       if (settings === undefined) return undefined;
-      const made = await archilClaim({ settings, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, run: { agentId: run.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+      const made = await archilClaim({ settings, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS }, ...(deps.mountControl ? { control: deps.mountControl } : {}), run: { agentId: run.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
       releases.push(() => made.release());
       return made;
     })());
