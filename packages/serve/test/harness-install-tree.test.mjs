@@ -192,3 +192,50 @@ test("an unlimited explicit hold never expires a live local owner when process b
   assert.equal(typeof token, "string", "the dead process is recoverable even with no time limit");
   await releaseHold(dir, token, { holdPath });
 });
+
+const beforeBoot = "00000000-0000-4000-8000-000000000001";
+const currentBoot = "00000000-0000-4000-8000-000000000002";
+
+test("an unlimited hold from this host's previous kernel boot is recoverable even when its PID namespace changed", async t => {
+  const dir = scratch(t, "hold-prior-boot"), holdPath = join(dir, "connection.lock");
+  writeFileSync(holdPath, JSON.stringify({ host: "this-host", pidns: "pid:[1]", pid: 4242, identity: `${beforeBoot}:100`, startedAt: Date.now(), token: "prior-boot" }));
+  const token = await takeHold(dir, {
+    holdPath, timeoutMs: Infinity, host: "this-host", pidns: "pid:[2]",
+    identity: pid => pid === process.pid ? `${currentBoot}:200` : assert.fail("a foreign PID is never inspected"),
+    isAlive: () => assert.fail("a foreign PID is never inspected"),
+  });
+  assert.equal(typeof token, "string", "the prior kernel boot cannot still own the lock");
+  assert.equal(JSON.parse(readFileSync(holdPath, "utf8")).token, token);
+  await releaseHold(dir, token, { holdPath });
+});
+
+for (const example of [
+  { name: "same-boot foreign namespace", host: "this-host", identity: `${currentBoot}:100`, own: `${currentBoot}:200` },
+  { name: "foreign host", host: "another-host", identity: `${beforeBoot}:100`, own: `${currentBoot}:200` },
+  { name: "unknown owner boot", host: "this-host", own: `${currentBoot}:200` },
+  { name: "unknown current boot", host: "this-host", identity: `${beforeBoot}:100` },
+  { name: "malformed owner boot", host: "this-host", identity: "boot-before:100", own: `${currentBoot}:200` },
+  { name: "malformed current boot", host: "this-host", identity: `${beforeBoot}:100`, own: "boot-now:200" },
+  { name: "malformed start ticks", host: "this-host", identity: `${beforeBoot}:unknown`, own: `${currentBoot}:200` },
+  { name: "trailing identity data", host: "this-host", identity: `${beforeBoot}:100\n`, own: `${currentBoot}:200` },
+]) test(`an unlimited hold with ${example.name} remains protected`, async t => {
+  const dir = scratch(t, "hold-uncertain-boot"), holdPath = join(dir, "connection.lock");
+  writeFileSync(holdPath, JSON.stringify({ host: example.host, pidns: "pid:[1]", pid: 4242, identity: example.identity, startedAt: Date.now() - 86_400_000, token: "protected" }));
+  assert.equal(await takeHold(dir, {
+    holdPath, timeoutMs: Infinity, host: "this-host", pidns: "pid:[2]",
+    identity: pid => pid === process.pid ? example.own : assert.fail("a foreign PID is never inspected"),
+    isAlive: () => assert.fail("a foreign PID is never inspected"),
+  }), undefined);
+  assert.equal(JSON.parse(readFileSync(holdPath, "utf8")).token, "protected");
+});
+
+test("finite installer holds retain their existing foreign-namespace timeout policy across kernel boots", async t => {
+  const dir = scratch(t, "hold-finite-boot"), holdPath = join(dir, "connection.lock");
+  writeFileSync(holdPath, JSON.stringify({ host: "this-host", pidns: "pid:[1]", pid: 4242, identity: `${beforeBoot}:100`, startedAt: Date.now(), token: "bounded" }));
+  assert.equal(await takeHold(dir, {
+    holdPath, host: "this-host", pidns: "pid:[2]",
+    identity: pid => pid === process.pid ? `${currentBoot}:200` : assert.fail("a foreign PID is never inspected"),
+    isAlive: () => assert.fail("a foreign PID is never inspected"),
+  }), undefined);
+  assert.equal(JSON.parse(readFileSync(holdPath, "utf8")).token, "bounded");
+});

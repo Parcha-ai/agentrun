@@ -108,18 +108,24 @@ class Queue:
         return sequence
 
     def observe(self, source_id, candidate, collect_usage=False, collect_labels=False, cli_learning=None, connector_id=None):
-        labels = {}
-        if collect_labels:
-            for field in ('display_name', 'project_name'):
-                value = label(getattr(candidate, field, None), project=field == 'project_name')
-                if value is not None:
-                    labels[field] = value
-        signature_fields = {**labels, **({'cli_learning': cli_learning.signature()} if cli_learning else {})}
-        signature = json.dumps(signature_fields, sort_keys=True) if signature_fields else ''
         with self.db:
             # Acquire the writer lock before reading counters or native checkpoints.
             # A crash cannot commit a cursor while losing its queued usage deltas.
             self.db.execute("UPDATE counters SET value=value WHERE name='sequence'")
+            previous_labels = self.db.execute("SELECT labels FROM metadata_labels WHERE session=?", (candidate.id,)).fetchone()
+            # A bounded poll can miss an explicitly selected thread. Its activity is
+            # unknown, but that does not erase safe names already reported here.
+            # This checkpoint is cleared when the queue changes destination.
+            retained = json.loads(previous_labels[0]) if (collect_labels and not candidate.native_id and
+                        previous_labels and previous_labels[0]) else {}
+            labels = {}
+            if collect_labels:
+                for field in ('display_name', 'project_name'):
+                    value = label(getattr(candidate, field, None) or retained.get(field), project=field == 'project_name')
+                    if value is not None:
+                        labels[field] = value
+            signature_fields = {**labels, **({'cli_learning': cli_learning.signature()} if cli_learning else {})}
+            signature = json.dumps(signature_fields, sort_keys=True) if signature_fields else ''
             usage_events = []
             if collect_usage and candidate.harness == 'codex':
                 saved = self.db.execute("SELECT state FROM usage_checkpoints WHERE session=?", (candidate.id,)).fetchone()
@@ -145,7 +151,6 @@ class Queue:
                     self._enqueue(source_id, candidate, event['occurred_at'], event['usage'], labels, cli_learning, connector_id)
             now = time.time()
             previous = self.db.execute("SELECT activity, sequence, observed_at FROM observations WHERE session=?", (candidate.id,)).fetchone()
-            previous_labels = self.db.execute("SELECT labels FROM metadata_labels WHERE session=?", (candidate.id,)).fetchone()
             if not usage_events and previous and previous[0] == candidate.activity and (previous_labels[0] if previous_labels else '') == signature and now - previous[2] < self.refresh_seconds:
                 return
             sequence = self._enqueue(source_id, candidate, datetime.now(timezone.utc).isoformat(), labels=labels,

@@ -99,6 +99,31 @@ class SessionLabels(unittest.TestCase):
         queue.acknowledge([e['event_id'] for e in queue.batch()]); queue.observe('source', candidate, collect_labels=True)
         self.assertEqual(queue.batch()[0]['metadata']['display_name'], 'Native title')
 
+    def test_unread_selected_session_keeps_labels_but_reports_unknown_activity(self):
+        candidate = self.candidate(name='Selected historical task')
+        queue = Queue(self.directory, binding='original')
+        queue.observe('source', candidate, collect_labels=True)
+        queue.acknowledge([event['event_id'] for event in queue.batch()]); queue.close()
+        queue = Queue(self.directory, binding='original'); self.addCleanup(queue.close)
+        unavailable = candidate.model_copy(update={'native_id': '', 'activity': 'unknown', 'display_name': None,
+                                                   'project_name': None, 'usage_path': None})
+        queue.observe('source', unavailable, collect_labels=True)
+        self.assertEqual(queue.batch()[0]['metadata'], {'harness': 'codex', 'activity': 'unknown',
+                         'display_name': 'Selected historical task', 'project_name': 'console'})
+        self.assertNotIn('usage', queue.batch()[0], 'a missed read must not replay cached usage')
+        queue.acknowledge([event['event_id'] for event in queue.batch()])
+        queue.observe('source', unavailable, collect_labels=False)
+        self.assertEqual(queue.batch()[0]['metadata'], {'harness': 'codex', 'activity': 'unknown'})
+
+    def test_unread_session_cannot_restore_another_destinations_labels(self):
+        candidate = self.candidate(name='Previous destination title')
+        queue = Queue(self.directory, binding='original')
+        queue.observe('source', candidate, collect_labels=True); queue.close()
+        queue = Queue(self.directory, binding='replacement'); self.addCleanup(queue.close)
+        unavailable = candidate.model_copy(update={'native_id': '', 'activity': 'unknown', 'display_name': None, 'project_name': None})
+        queue.observe('source', unavailable, collect_labels=True)
+        self.assertEqual(queue.batch()[0]['metadata'], {'harness': 'codex', 'activity': 'unknown'})
+
     def test_metadata_has_no_authority_to_expand_selection(self):
         chosen = self.candidate(name='Selected')
         selections = [{'harness':'codex','mode':'session','external_session_id':chosen.id,'source_id':chosen.id,'include_future_sessions':False}]

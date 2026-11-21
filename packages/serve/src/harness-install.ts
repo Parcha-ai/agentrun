@@ -510,6 +510,14 @@ export function processIdentity(pid: number): string | undefined {
   }
 }
 
+/** Only the kernel UUID and numeric process-start format proves a boot. An absent,
+ * malformed or adapter-specific identity cannot establish that an owner is gone. */
+function identityBoot(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):[0-9]+$/i.exec(value);
+  return match?.[0] === value ? match[1]!.toLowerCase() : undefined;
+}
+
 /** The hold at `at` as written, or undefined when it cannot be read (gone, cut short, not one). */
 async function readHold(at: string): Promise<Partial<Hold> | undefined> {
   try {
@@ -535,11 +543,21 @@ export async function takeHold(dir: string, { isAlive = alive, identity = proces
   const token = randomUUID();
   const draft = `${at}.${token}`;
   const own = identity(process.pid);
+  const ownBoot = identityBoot(own);
   await writeFile(draft, JSON.stringify({ host, ...(pidns ? { pidns } : {}), pid: process.pid, ...(own ? { identity: own } : {}), startedAt: Date.now(), token } satisfies Hold));
   /** Whether a hold's pid can be asked of this process table: written on this host, in this pid namespace where both
    *  name one. Another namespace's (another container's on the same data, with the same hostname) is judged as another
    *  host's. */
   const local = (held: Partial<Hold>): boolean => held.host === host && (typeof held.pidns !== "string" || pidns === undefined || held.pidns === pidns);
+  /** An unbounded local-command hold cannot expire after a reboot. A known previous
+   * kernel boot on this host proves its owner gone even if the PID namespace changed.
+   * A container recreated within the same boot still needs proof that its old namespace
+   * died; never inspect its PID from this namespace or steal a live sibling's hold.
+   * Finite installer holds retain their existing foreign-namespace timeout policy. */
+  const previousBoot = (held: Partial<Hold>): boolean => {
+    const boot = identityBoot(held.identity);
+    return timeoutMs === Infinity && held.host === host && ownBoot !== undefined && boot !== undefined && boot !== ownBoot;
+  };
   /** Whether a hold of this host's is still its installer's: that process alive, by its identity where both are known. */
   const installing = (held: Partial<Hold> & { pid: number; startedAt: number }): boolean => {
     if (!isAlive(held.pid)) return false;
@@ -558,7 +576,7 @@ export async function takeHold(dir: string, { isAlive = alive, identity = proces
       if (!judged) continue;
       const held = await readHold(at);
       const live = typeof held?.pid === "number" && typeof held.startedAt === "number"
-        ? local(held) ? installing(held as Partial<Hold> & { pid: number; startedAt: number }) : Date.now() - held.startedAt <= timeoutMs + HOLD_STOP_MS
+        ? !previousBoot(held) && (local(held) ? installing(held as Partial<Hold> & { pid: number; startedAt: number }) : Date.now() - held.startedAt <= timeoutMs + HOLD_STOP_MS)
         : Date.now() - judged.mtimeMs <= HOLD_WRITING_MS;
       if (live) return undefined;
       // Left by its installer: reaped by one taker alone. The hold is never moved; a taker links it to a name of that very

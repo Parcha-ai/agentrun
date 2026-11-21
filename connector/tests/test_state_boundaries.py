@@ -225,6 +225,83 @@ class StateBoundaries(unittest.TestCase):
         parsed = network.response_payload(json.dumps(response), 'POST', '/connectors')
         self.assertEqual(parsed['connector']['ingestion_mode'], 'otlp')
 
+    def test_codex_short_poll_budgets_do_not_retry_one_hung_session_forever(self):
+        now, poll_state, visited = [0.0], {}, set()
+        class Socket:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def send(self, message): self.message = json.loads(message)
+            def recv(self, timeout):
+                method = self.message['method']
+                native = self.message['params'].get('threadId', '')
+                delay = 4 if method == 'initialize' else 10 if native.endswith('hung') else 0.1
+                now[0] += min(delay, timeout)
+                if timeout < delay: raise TimeoutError()
+                result = ({'data': ['loaded-hung', 'loaded-ready']} if method == 'thread/loaded/list' else
+                          {'thread': {'id': native}} if method == 'thread/read' else {})
+                return json.dumps({'id': self.message['id'], 'result': result})
+        def version(_command):
+            now[0] += 8
+            return {'status': 'running', 'socketPath': '/fixture/codex.sock'}
+        with patch.object(adapters, 'command_json', side_effect=version), patch.object(adapters.Path, 'is_socket', return_value=True), \
+             patch.object(adapters, 'unix_connect', side_effect=lambda *a, **k: Socket()), \
+             patch.object(adapters.time, 'monotonic', side_effect=lambda: now[0]):
+            for _ in range(8):
+                now[0] = 0
+                visited.update(row['id'] for row in adapters.codex_rows(['explicit-hung', 'explicit-ready'],
+                               loaded_only=True, poll_state=poll_state))
+                self.assertLessEqual(now[0], 14)
+        self.assertEqual(visited, {'explicit-ready', 'loaded-ready'}, 'a shortened hung read must yield to other sessions on later polls')
+
+    def test_mixed_codex_polls_rotate_slow_reads_without_starving_either_selection(self):
+        for historical_delay, loaded_delay in ((4, 0.25), (0.25, 4), (4, 4)):
+            with self.subTest(historical_delay=historical_delay, loaded_delay=loaded_delay), tempfile.TemporaryDirectory() as directory:
+                state = State(directory)
+                historical = [f'history-{index}' for index in range(4)]
+                loaded = [f'live-{index}' for index in range(4)]
+                identities = [state.identity('codex', native) for native in historical]
+                project = state.project('codex', '/fixture/subscribed')
+                state.data['selections'] = [
+                    {'source_id': identity, 'harness': 'codex', 'mode': 'session',
+                     'external_session_id': identity, 'include_future_sessions': False}
+                    for identity in identities
+                ] + [{'source_id': project, 'harness': 'codex', 'mode': 'project',
+                      'external_session_id': '', 'include_future_sessions': True}]
+                state.save()
+                now, calls, visited = [0.0], [], set()
+                class Socket:
+                    def __enter__(self): return self
+                    def __exit__(self, *args): pass
+                    def send(self, message):
+                        self.message = json.loads(message)
+                        if 'id' in self.message: calls.append(self.message)
+                    def recv(self, timeout):
+                        method = self.message['method']
+                        if method == 'thread/read':
+                            native = self.message['params']['threadId']
+                            delay = historical_delay if native in historical else loaded_delay
+                            now[0] += min(delay, timeout)
+                            if timeout < delay: raise TimeoutError()
+                            result = {'thread': {'id': native, 'cwd': '/fixture/subscribed', 'name': native,
+                                                  'status': {'type': 'active' if native in loaded else 'idle'}}}
+                        else:
+                            result = {'data': loaded} if method == 'thread/loaded/list' else {}
+                        return json.dumps({'id': self.message['id'], 'result': result})
+                with patch.object(adapters, 'command_json', return_value={'status': 'running', 'socketPath': '/fixture/codex.sock'}), \
+                     patch.object(adapters.Path, 'is_socket', return_value=True), patch.object(adapters, 'unix_connect', side_effect=lambda *a, **k: Socket()), \
+                     patch.object(adapters.time, 'monotonic', side_effect=lambda: now[0]):
+                    for poll in range(6):
+                        now[0] = 0.0; calls.clear()
+                        observed = adapters.observe(State(directory))
+                        visited.update(row.native_id for row in observed if row.native_id)
+                        self.assertLessEqual(now[0], 14, 'rotation must retain the shared pass deadline')
+                        self.assertIn('thread/loaded/list', [call['method'] for call in calls], 'history must not consume loaded discovery time')
+                        reads = [call['params']['threadId'] for call in calls if call['method'] == 'thread/read']
+                        self.assertEqual(len(reads), len(set(reads)), 'each native session gets at most one read per poll')
+                        if poll == 0:
+                            self.assertTrue(visited.intersection(loaded), 'a new running agent must be visible in the first poll')
+                    self.assertEqual(visited, set(historical + loaded), 'both read queues must advance across bounded polls')
+
     def test_unsafe_existing_state_is_never_replaced_during_identity_allocation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'config.json'

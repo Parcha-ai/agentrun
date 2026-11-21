@@ -67,8 +67,9 @@ def command_json(command):
             process.stdout.close()
 
 
-def codex_rows(native_ids=None, diagnostic=None, stopping=None, loaded_only=False):
+def codex_rows(native_ids=None, diagnostic=None, stopping=None, loaded_only=False, poll_state=None):
     diagnostic = diagnostic if diagnostic is not None else {}
+    poll_state = poll_state if poll_state is not None else {}
     diagnostic.update(status="unavailable", reason="interface_unavailable")
     rows = []
     # Reserve one second for WebSocket cleanup inside the overall fifteen-second pass budget.
@@ -112,38 +113,68 @@ def codex_rows(native_ids=None, diagnostic=None, stopping=None, loaded_only=Fals
             call("initialize", {"clientInfo": {"name": "agentrun_observer", "version": __version__}})
             socket.send(json.dumps({"method": "initialized"}))
             seen = set()
-            if native_ids is not None:
-                for native in native_ids:
-                    if native in seen: continue
-                    try:
-                        row = call("thread/read", {"threadId": native, "includeTurns": False})["thread"]
-                        if isinstance(row, dict) and row.get("id") not in seen:
-                            rows.append(row); seen.add(row.get("id"))
-                    except (ValueError, KeyError, TypeError):
-                        continue
-                if not loaded_only:
-                    return rows
-            # Mixed selections also read explicitly selected unloaded sessions above, inside this same
-            # pass deadline. Loaded threads include exec and delegated sessions; read them before any
-            # fallback history walk so that walk cannot hide agents currently running.
+            # Discover before reading individual threads: a slow explicit selection must not
+            # hide newly loaded agents. Leave part of the same deadline for selected reads.
             loaded_available = False
-            try:
-                loaded = call("thread/loaded/list", {"limit": 100})
-                if not isinstance(loaded, dict) or not isinstance(loaded.get('data'), list) or not all(isinstance(item, str) for item in loaded['data']):
-                    raise ValueError("codex_invalid_response")
-                loaded_available = True
-                for native in loaded.get("data", [])[:100]:
-                    if not isinstance(native, str) or native in seen: continue
-                    try:
-                        row = call("thread/read", {"threadId": native, "includeTurns": False})["thread"]
-                        if isinstance(row, dict) and row.get("id") not in seen:
-                            rows.append(row); seen.add(row.get("id"))
-                    except (ValueError, KeyError, TypeError):
-                        continue
-                if loaded.get("nextCursor"):
-                    diagnostic.update(status="partial", reason="discovery_limit")
-            except (ValueError, KeyError, TypeError):
-                pass  # Older native daemons may not expose the loaded-list method.
+            loaded_ids = []
+            if native_ids is None or loaded_only:
+                try:
+                    loaded = call("thread/loaded/list", {"limit": 100}, timeout=min(5, check() / 2))
+                    if not isinstance(loaded, dict) or not isinstance(loaded.get('data'), list) or not all(isinstance(item, str) for item in loaded['data']):
+                        raise ValueError("codex_invalid_response")
+                    loaded_available = True
+                    loaded_ids = loaded['data'][:100]
+                    if loaded.get("nextCursor"):
+                        diagnostic.update(status="partial", reason="discovery_limit")
+                except (ValueError, KeyError, TypeError):
+                    pass  # Older native daemons may not expose the loaded-list method.
+                except TimeoutError:
+                    diagnostic.update(status="partial", reason="time_budget")
+
+            # Alternate queues and advance on every attempted read, including a timeout.
+            # Persistent cursors let later IDs progress even when a poll ends mid-queue.
+            pending = {}
+            sizes = {}
+            for kind, identifiers in (("explicit", native_ids or []), ("loaded", loaded_ids)):
+                identifiers = sorted(set(identifiers))
+                sizes[kind] = len(identifiers)
+                cursor = poll_state.get(kind, 0)
+                cursor = cursor % max(1, len(identifiers)) if type(cursor) is int else 0
+                indexed = list(enumerate(identifiers))
+                pending[kind] = indexed[cursor:] + indexed[:cursor]
+            attempted = set()
+            while pending['explicit'] or pending['loaded']:
+                check()
+                kind = poll_state.get('next', 'loaded')
+                if kind not in pending or not pending[kind]:
+                    kind = 'explicit' if pending['explicit'] else 'loaded'
+                index, native = pending[kind].pop(0)
+                poll_state[kind] = (index + 1) % sizes[kind]
+                if native in attempted:
+                    continue
+                attempted.add(native)
+                poll_state['next'] = 'explicit' if kind == 'loaded' else 'loaded'
+                retrying_short_read = poll_state.pop('retry', None) == kind
+                read_budget = min(5, check())
+                try:
+                    row = call("thread/read", {"threadId": native, "includeTurns": False}, timeout=read_budget)["thread"]
+                    if isinstance(row, dict) and row.get("id") not in seen:
+                        rows.append(row); seen.add(row.get("id"))
+                        if diagnostic.get('reason') is not None:
+                            diagnostic['status'] = 'partial'
+                except (ValueError, KeyError, TypeError):
+                    continue
+                except TimeoutError:
+                    if read_budget < 5 and not retrying_short_read:
+                        # Retry a read cut short by this pass first next time. Advancing
+                        # past it can strand the same tail ID on every complete rotation.
+                        # Only retry once: setup can leave too little time on every poll.
+                        poll_state[kind] = index
+                        poll_state['next'] = kind
+                        poll_state['retry'] = kind
+                    diagnostic.update(status="partial" if rows else "unavailable", reason="time_budget")
+            if native_ids is not None and not loaded_only:
+                return rows
             if loaded_only and loaded_available:
                 return rows
             cursor = None
@@ -277,8 +308,12 @@ def observe(state, stopping=None):
         native_ids = [key.split(":", 1)[1] for key, value in state.data["identities"].items()
                       if key.startswith("codex:") and value in identifiers]
         diagnostic = {"harness": "codex"}
+        saved_poll = state.data.get('codex_poll', {})
+        poll_state = {key: saved_poll[key] for key in ('explicit', 'loaded', 'next', 'retry') if key in saved_poll} if isinstance(saved_poll, dict) else {}
         observed = candidates(state, "codex", codex_rows(native_ids,
-                              diagnostic=diagnostic, stopping=stopping, loaded_only=any(source["mode"] != "session" for source in codex)), selections=selections, diagnostic=diagnostic)
+                              diagnostic=diagnostic, stopping=stopping, loaded_only=any(source["mode"] != "session" for source in codex),
+                              poll_state=poll_state), selections=selections, diagnostic=diagnostic)
+        state.data['codex_poll'] = poll_state
         diagnostic["sessions"] = len(observed)
         diagnostics.append(diagnostic)
         rows.extend(observed)

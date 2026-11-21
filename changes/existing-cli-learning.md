@@ -26,3 +26,5 @@ Disconnect disables local capture before removing hooks or contacting the server
 pending, loaded hooks and retries stay disabled until disconnect completes; status exposes `capture_enabled`.
 Retries advance across retained sessions, queued hooks and unfinished turns so older entries cannot indefinitely
 hide later uploads. Interrupted connection commands recover an abandoned lock while a live owner keeps it.
+Recovery also recognizes a proven previous kernel boot on the same host. A different namespace from the
+same boot, or an unknown boot identity, stays protected until its owner's death can be established.
