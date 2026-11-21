@@ -147,11 +147,11 @@ test('a connection command recovers a lock left by a killed owner',async t=>{
  const f=await fixture(t);
  const child=spawn(process.execPath,['--input-type=module','-e',`
   const { learningMain }=await import(${JSON.stringify(new URL('../dist/cli-learning/cli.js',import.meta.url).href)});
-  await learningMain(JSON.parse(process.argv[1]),{
+  await learningMain(${JSON.stringify(f.args('connect'))},{
    stdout:()=>{},stderr:()=>{},command:['node','/opt/agentrun/cli.js'],
    fetch:async()=>{process.stdout.write('operation-started\\n');return new Promise(()=>setInterval(()=>{},1000));},
   });
- `,JSON.stringify(f.args('connect'))],{stdio:['ignore','pipe','pipe']});
+ `],{stdio:['ignore','pipe','pipe']});
  t.after(()=>child.kill('SIGKILL'));
  const exited=once(child,'exit');
  const [ready]=await once(child.stdout,'data',{signal:AbortSignal.timeout(5000)});

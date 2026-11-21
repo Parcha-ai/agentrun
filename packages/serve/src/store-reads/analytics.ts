@@ -1,10 +1,11 @@
-import {cliLearningOf} from "../store/agent-body.js";
 // GET /v2/stats' analytics over the one store (design 2.1): the runs' metrics summed, the same StoreAnalytics the old store
 // gave, from A's run rows — each run's metrics as its end commit wrote them (the StoredMetrics JSON on the row), its cost,
 // and its revision's harness. The runs not archived (their own or their agent's), started in [from, to) and of `agent` when
 // given. A pending run (its end on the caller's way, not yet in the store) is counted at the state its end will have, in
 // the totals alone; its metrics, cost and effort wait for its end. No journal is read: the figures are the row's.
 import { sdkOf } from "../sdk/runs.js";
+import { cliLearningOf } from "../store/agent-body.js";
+import { NATIVE_RUNTIME_FACTS } from "../native/runtimes.js";
 import type { RunRow, Store } from "../store/store.js";
 import { DEFAULT_HARNESS } from "../harness.js";
 import { costOfRun, runReadState } from "./runs.js";
@@ -89,7 +90,10 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     if (toMs !== null && !(run.startedAt < toMs)) continue;
     if (!harnessOf.has(run.revisionId)) {
       const revision = await store.agents.revision(run.revisionId);
-      harnessOf.set(run.revisionId, revision?.kind === "workflow" ? "workflow" : (cliLearningOf(revision?.body) ? (cliLearningOf(revision?.body)!.runtime==="codex"?"codex-cli":"claude-code-cli") : sdkOf(revision?.body)?.runtime ?? (revision?.body as { harness?: string } | null)?.harness ?? DEFAULT_HARNESS));
+      const cli = cliLearningOf(revision?.body);
+      harnessOf.set(run.revisionId, revision?.kind === "workflow" ? "workflow" : cli
+        ? NATIVE_RUNTIME_FACTS[cli.runtime].captureRuntime
+        : sdkOf(revision?.body)?.runtime ?? (revision?.body as { harness?: string } | null)?.harness ?? DEFAULT_HARNESS);
     }
     const read = runReadState(run, harnessOf.get(run.revisionId) === "workflow" ? "workflow" : "agentic");
     const running = read === "running";

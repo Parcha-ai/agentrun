@@ -11,7 +11,7 @@ import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './
 import { REMOTE_HISTORY_BODY_BYTES } from './native/history.js';
 import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED, NATIVE_CAP_UNSUPPORTED } from "./native/binding.js";
 import { discoverNative } from "./native/discovery.js";
-import { isNativeRuntime } from "./native/runtimes.js";
+import { isNativeRuntime, NATIVE_RUNTIME_FACTS } from "./native/runtimes.js";
 import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
@@ -4204,7 +4204,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const body=await bodyOf(req);
       if(Object.keys(body).some(key=>!["session_id","turn_id","input","instructions","policy_complete","model"].includes(key)) || typeof body.session_id!=="string" || !body.session_id || body.session_id.length>256 || typeof body.turn_id!=="string" || !body.turn_id || body.turn_id.length>256 || typeof body.policy_complete!=="boolean")throw new ApiError("input_invalid","Supply session_id, turn_id, input, instructions, and explicit policy_complete.");
       const entry=await needAgent(connection.agent_id);
-      const runtime=connection.runtime==="codex"?"codex-cli" as const:"claude-code-cli" as const;
+      const runtime = NATIVE_RUNTIME_FACTS[connection.runtime].captureRuntime;
       const sdk=new SdkRuns(store,data,sdkSecret,()=>[...serverSecrets(),broker.token(connection)],[],"cli");
       const input={runtime,input:body.input,instructions:body.instructions,...(body.model!==undefined?{model:body.model}:{})};
       const key=`cli-window:${connectionId}:${connection.generation}:${createHash("sha256").update(`${body.session_id}\0${body.turn_id}`).digest("hex")}`;

@@ -70,6 +70,25 @@ test("by harness and effort across agents, an escalation counted as completed an
   assert.deepEqual((await analytics(store, { agent: "a-wf" })).totals.runs, 1, "only a-wf's run");
 });
 
+test("CLI prompt windows retain their native capture groups beside SDK and managed runs", async t => {
+  const { store } = await storeOn(t);
+  const definitions = [
+    ["captured-codex", { cli_learning: { runtime: "codex", connection_id: "codex-connection", project: "/fixture/project" } }],
+    ["captured-claude", { cli_learning: { runtime: "claude-code", connection_id: "claude-connection", project: "/fixture/project" } }],
+    ["external-sdk", { sdk: { runtime: "codex-sdk" } }],
+    ["managed", { harness: "codex" }],
+  ];
+  for (const [id, body] of definitions) {
+    await store.agents.create({ id, name: id }, { id: `rev-${id}`, kind: "agentic", body: { instructions: "x", ...body } });
+    await store.runs.create({ id: `run-${id}`, agentId: id, revisionId: `rev-${id}` });
+    await end(store, `run-${id}`, { state: "ended", outcome: "completed", metrics: metrics(), endedAt: T0 + 1000 });
+  }
+  const result = await analytics(store);
+  assert.deepEqual(result.byHarnessEffort.map(group => [group.harness, group.runs, group.tokens]), [
+    ["claude-code-cli", 1, 135], ["codex", 1, 135], ["codex-cli", 1, 135], ["codex-sdk", 1, 135],
+  ]);
+});
+
 test("token totals keep measured runs visible beside unknown CLI usage, with coverage in every group", async (t) => {
   const { store } = await storeOn(t);
   await store.agents.create({ id: "agent-1", name: "A" }, { id: "rev-1", kind: "agentic", body: { instructions: "x" } });

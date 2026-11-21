@@ -9,6 +9,7 @@ import { sdkBindingOf, type SdkBinding } from "../sdk/runtimes.js";
 import { createHash } from "node:crypto";
 import type { NativeBinding } from "../native/types.js";
 import { nativeBindingOf } from "../native/binding.js";
+import { isNativeRuntime, type NativeRuntime } from "../native/runtimes.js";
 import { type LearningSetting, learningSettingIssue, learningSettingOf } from "../learning-setting.js";
 
 /** A revision's body the store refuses: its content is not one the store keeps. The server maps it to an input refusal. */
@@ -65,8 +66,8 @@ export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
  *  listed it at the save; its input as POST /v1/run takes it; `usd` its fixed price (monid.ts fixedUsd), null for one
  *  priced by usage (held at monid's estimate). Stamped by the save (server.ts saveable), never shown in a definition. */
 export type MonidPinBody = Readonly<Record<string, { readonly description: string; readonly input: Record<string, unknown>; readonly usd: number | null }>>;
-export type CliLearningBinding = { runtime: "codex" | "claude-code"; connection_id: string; project: string };
-export const cliLearningOf = (body: unknown): CliLearningBinding | undefined => isObject(body) && isObject(body.cli_learning) && ["codex", "claude-code"].includes(String(body.cli_learning.runtime)) && typeof body.cli_learning.connection_id === "string" && typeof body.cli_learning.project === "string" ? body.cli_learning as CliLearningBinding : undefined;
+export type CliLearningBinding = { runtime: NativeRuntime; connection_id: string; project: string };
+export const cliLearningOf = (body: unknown): CliLearningBinding | undefined => isObject(body) && isObject(body.cli_learning) && isNativeRuntime(body.cli_learning.runtime) && typeof body.cli_learning.connection_id === "string" && typeof body.cli_learning.project === "string" ? body.cli_learning as CliLearningBinding : undefined;
 /** Read old CLI enrollment settings through the current model without rewriting its revision or learned files.
  * New definitions still reject "notes"; existing CLI profiles use owner corrections and no workflow bridge. */
 export function learningSettingForBody(body: unknown): LearningSetting | undefined {
