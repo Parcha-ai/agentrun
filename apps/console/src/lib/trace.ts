@@ -1,6 +1,7 @@
 // A run's trace (GET /v2/runs/{id}/trace) as the Dev tools tab reads it: where each span sits on the time axis, what the
 // run's requests and calls add up to, and the same broken down by tool and by model. Every figure here is a sum, a share
 // or a rank of what the server sent; a figure the trace does not carry stays unknown (null), never 0.
+import { matchesFilter } from "./filter";
 import type { RunTrace, RunUsage, TraceSpan, UsageLine } from "./v2";
 
 export type SpanKind = "all" | "model" | "tool" | "failed";
@@ -222,10 +223,7 @@ export function byModel(spans: readonly TraceSpan[], priced = true): ModelRow[] 
  *  its subagent or its arguments holding every word typed. */
 export function keeps(span: TraceSpan, kind: SpanKind, query: string): boolean {
   if (kind === "failed" ? span.status !== "failed" : kind !== "all" && span.kind !== kind) return false;
-  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return true;
-  const text = `${span.name} ${span.agent_label ?? ""} ${span.input_preview ?? ""} ${span.status}`.toLowerCase();
-  return words.every((word) => text.includes(word));
+  return matchesFilter(query, span.name, span.agent_label, span.input_preview, span.status);
 }
 
 /** `spans` in the table's order: as they started, or the longest, the dearest or the largest first (one with no such
