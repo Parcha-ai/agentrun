@@ -53,6 +53,12 @@ test("it holds no key and picks nothing: no ENV, ARG or secret mount, and its bu
   assert.match(DOCKERFILE, /AGENTRUN_DOCKER_IMAGE=\$tag/);
 });
 
+test("its HyperFrames reports nothing home and checks for no update, unless the caller says otherwise: a box's work stays in the box", () => {
+  for (const name of ["HYPERFRAMES_NO_TELEMETRY", "HYPERFRAMES_NO_UPDATE_CHECK"]) {
+    assert.match(RUNS, new RegExp(`export ${name}="\\$\\{${name}:-1\\}"`), name);
+  }
+});
+
 test("the package ships it", () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.ok(pkg.files.includes("media"), JSON.stringify(pkg.files));
