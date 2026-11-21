@@ -33,6 +33,9 @@
 //               config directory is $CURSOR_CONFIG_DIR, else $XDG_CONFIG_HOME/cursor, else $HOME/.cursor; sessions in
 //               <dir>/acp-sessions, and an edit, write, delete or move refused unasked when <dir>/cli-config.json denies
 //               Write(**) (Cursor reports it completed all the same).
+//   tally: a file the takes of a `retitled` native step are counted in: a step {native, title, retitled: [t2, t3, ...]}
+//          asks with its title the first time and with the next of `retitled` each time it is taken again (the last
+//          one repeats), its input's command that title, as Cursor writes a new command after a restart.
 // A script step {hang: true} is a model that never answers (until a cancel the agent heeds).
 // The step the model takes is the number it took before: its session's history (calls, native calls, answers), plus the
 // calls a recovery or context note names that its history does not hold, as a resumed model reads its conversation.
@@ -110,6 +113,14 @@ function writeAuth() {
   said({ type: "auth", file, keySha, saved: true });
 }
 const steps = (history) => history.filter((h) => h.kind === "call" || h.kind === "native" || h.kind === "say").length;
+/** How many times script step `index` was taken before, across this agent's processes (config.tally, a file each take
+ *  appends its index to); this take is added. */
+function tally(index) {
+  if (!config.tally) throw new Error("fake-acp: a retitled step needs config.tally");
+  const before = existsSync(config.tally) ? readFileSync(config.tally, "utf8").split("\n").filter((line) => line === String(index)).length : 0;
+  appendFileSync(config.tally, `${index}\n`);
+  return before;
+}
 const text = (blocks) => blocks.filter((b) => b.type === "text").map((b) => b.text);
 
 /** The calls a note names (`- name(...), call <id>:`), a nested one's (`<id>/<key>`) left out. */
@@ -281,7 +292,10 @@ async function takeTurn(client, session, prompt, signal) {
     }
     if ("native" in s) {
       const id = `native_${step - 1}`;
-      const update = { toolCallId: id, title: s.title ?? s.native, kind: s.native, status: "pending", rawInput: s.input ?? {} };
+      // A model that, taking a step again (after a restart), writes another command for it (retitled).
+      const again = s.retitled?.length ? tally(step - 1) : 0;
+      const title = again > 0 ? s.retitled[Math.min(again, s.retitled.length) - 1] : (s.title ?? s.native);
+      const update = { toolCallId: id, title, kind: s.native, status: "pending", rawInput: again > 0 ? { ...(s.input ?? {}), command: title } : (s.input ?? {}) };
       const entry = { kind: "native", id, title: update.title, status: "pending" };
       session.history.push(entry);
       save(session);
