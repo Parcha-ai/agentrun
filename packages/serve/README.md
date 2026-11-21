@@ -371,7 +371,9 @@ runners by backlog, not by CPU. It gives:
 - `runs.executing`: the runs a live claim holds now, on any runner.
 - `runners`: each runner that said it was there in the last 30 s, by name. Each has its build's `version`, its `slots`
   (the most runs it holds at once), what it holds (`executing`), its `free_slots` and whether it `refused` to claim.
-  `version` and `slots` are null for a runner of an earlier build. A runner also claims by its host's memory, so a free
+  `version` and `slots` are null for a runner of an earlier build that is still running. (On Postgres, an earlier
+  runner refuses to start once the server has applied `0024_runner_capacity.sql`, so upgrade runners with the server.)
+  A runner also claims by its host's memory, so a free
   slot is the most it may take.
 - `free_slots`: the sum of the live runners' free slots.
 - `hand_backs`: how many runs a runner gave back still running within `?window=` minutes (1 to 1440, default 15). A

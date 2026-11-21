@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { StoreAwaitsServer } from "../dist/store/store.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { queued, storeOn, T0 } from "./store-helpers.mjs";
-import { sqliteOnly } from "./store-target.mjs";
+import { client, onPostgres, sqliteOnly } from "./store-target.mjs";
 
 const LEASE = 30_000;
 const MINUTE = 60_000;
@@ -90,6 +90,27 @@ test("a run's end is no hand-back, and a purge removes its hand-backs", async (t
   assert.equal((await capacityOf(store)).handBacks, 0, "purged with its run");
 });
 
+test("hand_backs is indexed by time (the window, the prune) and by run (a run's purge and delete)", async (t) => {
+  const { file } = await storeOn(t);
+  let names;
+  if (onPostgres) {
+    const c = await client(file.slice("pg:".length));
+    try {
+      names = (await c.query("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'hand_backs' ORDER BY indexname")).rows.map((row) => row.indexname);
+    } finally {
+      await c.end();
+    }
+  } else {
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
+      names = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'hand_backs' ORDER BY name").all().map((row) => row.name);
+    } finally {
+      db.close();
+    }
+  }
+  assert.deepEqual(names, ["hand_backs_at", "hand_backs_run"]);
+});
+
 test("a runner's row says its version and slots; a row put without them says neither", async (t) => {
   const { store } = await storeOn(t);
   await store.runners.put({ runner: "runner-a", incarnation: "i-1", refused: null, version: "9.9.9", slots: 25 });
@@ -116,6 +137,12 @@ test("a SQLite store an earlier build of this version made gets each runner's ve
   try {
     assert.deepEqual((await server.runners.list()).map(({ runner, version, slots }) => ({ runner, version, slots })), [{ runner: "old", version: null, slots: null }], "the earlier row kept, its version and slots unknown");
     assert.equal((await server.runners.capacity(MINUTE)).handBacks, 0, "hand_backs made");
+    const raw = new DatabaseSync(file, { readOnly: true });
+    try {
+      assert.deepEqual(raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'hand_backs' ORDER BY name").all().map((row) => row.name), ["hand_backs_at", "hand_backs_run"], "and its indexes");
+    } finally {
+      raw.close();
+    }
   } finally {
     await server.close();
   }

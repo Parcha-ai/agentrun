@@ -188,6 +188,8 @@ export const HAND_BACKS = `CREATE TABLE IF NOT EXISTS hand_backs (
   ) STRICT`;
 /** The hand-backs by time, for the capacity read's window and the release's prune. */
 export const HAND_BACKS_AT = "CREATE INDEX IF NOT EXISTS hand_backs_at ON hand_backs (at)";
+/** A run's hand-backs, for its purge and its delete (dropRunContent), so neither scans every hand-back kept. */
+export const HAND_BACKS_RUN = "CREATE INDEX IF NOT EXISTS hand_backs_run ON hand_backs (run_id)";
 /** How long a hand-back's row is kept: the longest window the capacity read takes. */
 export const HAND_BACKS_KEPT_MS = 24 * 60 * 60_000;
 
@@ -654,6 +656,7 @@ export const STORE_DDL: readonly string[] = [
   RUNNERS,
   HAND_BACKS,
   HAND_BACKS_AT,
+  HAND_BACKS_RUN,
   COMPUTER_INTERVALS,
   COMPUTER_INTERVALS_RUN,
 
