@@ -60,7 +60,8 @@ kubectl -n agentrun create secret generic agentrun-keys \
 File tools and `web_fetch`, and no shell: a cluster gives the server no Docker. For a shell, add a sandbox provider's
 key in the console.
 
-Each run's process runs as a user of its own. The run helper switches to it with three file capabilities (`SETUID`,
-`SETGID`, `SETPCAP`), which the container keeps while dropping every other capability, and the init container runs as
+Each run's process runs as a user of its own. The run helper switches to it, and gives the run's folders to it and back,
+with four file capabilities (`CHOWN`, `SETUID`, `SETGID`, `SETPCAP`), which the container keeps while dropping every
+other capability (the kernel refuses to start the helper when one is missing), and the init container runs as
 root with `CHOWN` and `FOWNER`. The pod therefore needs the `baseline` Pod Security level (Kubernetes' default): a
 namespace that enforces `restricted` rejects it, and the chart doesn't support one.

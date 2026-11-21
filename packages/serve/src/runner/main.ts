@@ -38,6 +38,7 @@ import { LOOPBACK as LIVE_LOOPBACK, runnerLiveOf } from "../live-reach.js";
 import { LOOPBACK } from "../mcp-oauth.js";
 import { serverOwn } from "../mcp-private-hosts.js";
 import { MCP_ALLOW_LOOPBACK_ENV } from "../mcp-servers-store.js";
+import { PRIVATE_HOSTS_ENV, privateHostsSwitchValue } from "../mcp-private-hosts.js";
 import { envValue, type KeyEnv } from "../key-meta.js";
 import { fauxComputers } from "../faux-computers.js";
 import { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
@@ -186,6 +187,10 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   // relay's: dial-relay.ts); with none, its provider refuses.
   const computers = runnerComputers(store, runs, sealKey, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(dial ? { dial } : {}) });
   const loopback = runnerLoopback(env);
+  // The operator's bound on owner-allowed private hosts (mcp-private-hosts.ts), read by every dial this runner and its
+  // runs' processes make (they inherit it, runEnv): said at the start when it narrows the owner's list.
+  const privateBound = privateHostsSwitchValue(env);
+  if (privateBound !== null) process.stderr.write(`agentrun-serve runner: ${PRIVATE_HOSTS_ENV}=${privateBound}: an owner's private-network hosts for MCP servers and calendars are ${privateBound.startsWith("none") ? "never allowed" : `allowed only in ${privateBound}`} on this runner\n`);
   if (loopback) process.stderr.write(`agentrun-serve runner: ${MCP_ALLOW_LOOPBACK_ENV}=1: this runner's runs may reach an MCP server on this machine's loopback, never at ${loopback.own.join(" or ")} nor where its server listens\n`);
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,

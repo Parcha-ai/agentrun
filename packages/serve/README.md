@@ -391,6 +391,7 @@ AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use`
 | --- | --- | --- | --- |
 | `AGENTRUN_MCP_ALLOW_LOOPBACK=1` | An MCP server on this machine's loopback ([MCP servers](#mcp-servers)) | off | Loopback is this machine's other services too: set it only on a machine you alone use |
 | `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` | The outbound webhook to a private network or this machine ([Webhooks](#webhooks)) | off | Whoever may set the webhook could make the server POST inside its network: only on a machine you alone use |
+| `AGENTRUN_PRIVATE_HOSTS` | Bounds the private-network hosts an owner may allow an MCP server or a calendar on (Settings → MCP servers): `none` allows none (and only an empty list can be saved), or a comma list of address ranges (`10.20.0.0/16,fd12:3456::/32`) every listed host's address must also fall in. Loopback, link-local (cloud metadata) and this machine's addresses stay refused whatever it says. A value that is neither reads as `none` | unset: the owner's list holds | On a server or runner many customers share, an owner's list would reach the operator's own private network: set `none` there, on the server and on each runner (each process holds to its own) |
 | `AGENTRUN_BOX_ALLOW` | The hosts a run's computer may reach: a comma list, or `none` ([A run in a Docker box](#a-run-in-a-docker-box)) | the package registries and GitHub | A run's network is the operator's policy, not a caller's |
 | `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS` | A Docker computer's size ([Computers](#computers)) | 2 CPUs, 4 GiB, 1,024 processes | The machine's capacity is the operator's |
 
@@ -4505,16 +4506,23 @@ carries no cost at all, as from a provider that does not price the model. The te
   process of its uid).
 - In the image, each run's process also runs as a user of its own: slot `s` of its runner is uid and gid `1001 + s`
   (256 slots), started through `agentrun-runas`, a helper installed root:node `0750` with the file capabilities
-  `cap_setuid`, `cap_setgid` and `cap_setpcap`. The helper reaches only that range and refuses uid and gid 0; it sets
+  `cap_chown`, `cap_setuid`, `cap_setgid` and `cap_setpcap`. The helper reaches only that range and refuses uid and gid 0; it sets
   the run's uid, gid and groups (its slot's group alone: not node's, not the Docker socket's group compose gives the
   server), empties every capability set, sets `no_new_privs` and keeps only the run's two descriptors open. So one run
   reads neither another live run's folder nor its process's memory, environment or descriptors, and none reads the data
   directory (`0711`: crossed to its own folders, never listed), the store's files (`0600`), the seal key or the
-  server's memory. A run's folders are its slot group's (`2770`), which the server's user is in. At the run's end every
-  process of its uid is killed, one in a session of its own included, its files in `/tmp`, `/var/tmp`, `/dev/shm`,
-  `/run/lock` (`/var/lock`) and `/dev/mqueue` are removed, and its folders go back to the server's group, which the
-  slot's next run cannot enter. SysV IPC objects (`ipcs`) a run leaves are not removed.
-  `GET /v2/capabilities` says `run_isolation: "uid"`.
+  server's memory. The server's user (node) is in one group, its own (1000), and in no slot's; no slot is in node's.
+  Before a run starts, its folders and everything in them are given to its slot: the slot's uid, node's group, folders
+  `2770` with the setgid bit (`agentrun-runas own <slot>`, keeping `cap_chown` alone and changing each entry through a
+  descriptor it opened without following a link). The run reaches them as their owner and the server reads them through
+  its one group; no other slot can enter them. A folder the run itself shuts (`chmod 700`, which drops the setgid bit,
+  since node's group is not the run's) the server cannot read until the run ends. At the run's end every process of its
+  uid is killed, one in a session of its own included, its files in `/tmp`, `/var/tmp`, `/dev/shm`, `/run/lock`
+  (`/var/lock`) and `/dev/mqueue` are removed, and its folders and everything in them go back to node
+  (`agentrun-runas own runner`), which the slot's next run cannot enter. A give-back that fails retires the slot, as a
+  reap that does not hold does. SysV IPC objects (`ipcs`) a run leaves are not removed.
+  `GET /v2/capabilities` says `run_isolation: "uid"`. A runner shared by many customers: see the threat model,
+  [docs/multi-tenant-runners.md](../../docs/multi-tenant-runners.md).
 - A platform that strips the image's file capabilities, or starts it with `no-new-privileges` (Docker's
   `security_opt: no-new-privileges:true`, Kubernetes' `allowPrivilegeEscalation: false`), leaves the helper unable to
   switch, or unable to start (a spawn `EPERM`): the runner then refuses to claim, saying so and naming the setting, and
