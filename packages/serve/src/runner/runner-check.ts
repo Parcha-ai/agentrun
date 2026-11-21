@@ -20,6 +20,7 @@ import { PROVIDERS } from "@parcha/agentrun-computer";
 import { ARCHIL_SETTINGS_ENV } from "../archil-settings.js";
 import { BOX_ALLOW_ENV } from "../box-settings.js";
 import { TOOL_KEY_ROWS } from "../key-words.js";
+import { PRIVATE_HOSTS_ENV } from "../mcp-private-hosts.js";
 import { bootSealKey } from "../seal-key.js";
 import { SECRET_NAMES } from "../secrets.js";
 import type { Settings, Store } from "../store/store.js";
@@ -41,7 +42,7 @@ const UPSTREAM = /_(?:BASE_URL|API_URL)$/;
 
 /** The fixed run-facing names: every secret the launcher hands over but the server's own, each tool key, each box
  *  provider's keys and settings by their environment names, the Archil settings, the default model and the boxes'
- *  network allow-list. */
+ *  network allow-list, and the operator's bound on owners' private hosts (each dial reads it from the process that dials). */
 const FIXED: ReadonlySet<string> = new Set([
   ...SECRET_NAMES,
   ...TOOL_KEY_ROWS.flatMap((row) => row.fields as readonly string[]),
@@ -52,6 +53,7 @@ const FIXED: ReadonlySet<string> = new Set([
   "AGENT_MODEL_FAST",
   "AGENT_MODEL_STRONG",
   BOX_ALLOW_ENV,
+  PRIVATE_HOSTS_ENV,
 ].filter((name) => !NOT_RUN_FACING.has(name)));
 
 /** Whether `name` is one a run's claim reads from its runner's environment (FIXED, or an upstream's address). */
