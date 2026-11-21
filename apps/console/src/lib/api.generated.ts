@@ -150,6 +150,11 @@ export interface components {
       needs: "key" | "model" | null;
       reason: string | null;
     };
+    store_schema?: {
+      version: number | null;
+      runner_floor: number | null;
+      known: number;
+    };
     learning: {
       pending: true;
       approve: boolean;
@@ -2281,6 +2286,30 @@ export interface operations {
   getCapabilities: {
     body: never;
     answer: components["Capabilities"];
+  };
+  getCapacity: {
+    body: never;
+    answer: {
+      at: string;
+      runs: {
+        queued: number;
+        executing: number;
+      };
+      runners: {
+        id: string;
+        version: string | null;
+        slots: number | null;
+        executing: number;
+        free_slots: number | null;
+        refused: boolean;
+        seen_at: string;
+      }[];
+      free_slots: number;
+      hand_backs: {
+        window_minutes: number;
+        count: number;
+      };
+    };
   };
   getChatGPTSignIn: {
     body: never;

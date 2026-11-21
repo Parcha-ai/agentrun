@@ -150,6 +150,16 @@ Check native CLI and sign-in without a paid model call.
 
 Route: `POST /agents/{agent_id}/native/verify`.
 
+## capabilities
+
+### `agentrun capabilities get-capacity`
+
+The runs waiting and held, the live runners and the recent hand-backs.
+
+Route: `GET /capacity`.
+
+- `--window INTEGER` (integer): The hand-back window in minutes, from 1 to 1440. Default 15.
+
 ## connectors
 
 ### `agentrun connectors complete-remote-command CONNECTOR_ID COMMAND_ID`

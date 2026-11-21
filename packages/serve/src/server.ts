@@ -18,6 +18,7 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { apiOnlyRefusal, servedApiOnly } from "./api-only.js";
+import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -670,6 +671,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/quotes$/, name: "createQuote", capability: "quotes" },
   { method: "GET", pattern: /^\/usage$/, name: "getUsage" },
   { method: "GET", pattern: /^\/stats$/, name: "getStats" },
+  // The runs waiting and held, the live runners and their free slots, and the recent hand-backs (capacity.ts).
+  { method: "GET", pattern: /^\/capacity$/, name: "getCapacity" },
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
@@ -3979,7 +3982,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // runner_refused: why no runner here can take a run, in their words, while every runner there refused to claim
       // (runner/presence.ts); null while one can, or none is there yet.
       const runnerRefused = (await refusedNow().catch(() => undefined)) ?? null;
-      return send(res, 200, { ...answer, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) } } });
+      // store_schema: the store's version and runner floor now, beside this build's (Store.schemaState), for a deploy's
+      // skew check; left out when the store cannot say (a read that failed).
+      const state = await store.schemaState?.().catch(() => undefined);
+      const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
+      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
@@ -4779,6 +4786,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getUsage":
         return send(res, 200, await usage(url));
+      case "getCapacity":
+        return send(res, 200, await capacityOverStore(store.runners, capacityWindowOf(url)));
       case "getStats": {
         const filter = analyticsFilter(url);
         // The store's counts and cost sums (store-reads/stats), the runs' metrics summed (store-reads/analytics), and the
