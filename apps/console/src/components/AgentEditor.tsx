@@ -1,7 +1,8 @@
 import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Monitor, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { LearningField } from "@/components/LearningSwitch";
-import { ListFilter, matchesFilter } from "@/components/ListFilter";
+import { ListFilter } from "@/components/ListFilter";
+import { matchesFilter } from "@/lib/filter";
 import { McpToolPicker, mcpShownCount } from "@/components/McpToolPicker";
 import { MonidGrants } from "@/components/MonidGrants";
 import { ComputerSetting } from "@/components/ComputerSetting";
@@ -201,8 +202,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const workflow = agent?.kind === "workflow";
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
-  // The Tools step's cards: the built-in tools offered (a call-only one to a workflow, or to an agent that names it) and,
-  // where this agent grants MCP tools, every saved server's. `toolCount`: how many a filter query keeps ("": all).
+  // The built-in tools offered: a call-only one to a workflow, or to an agent that names it.
   const offeredTools = caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name));
   const toolCount = (query: string) => offeredTools.filter((t) => matchesFilter(query, t.name, t.blurb, t.summary)).length
     + (caps.mcp && !workflow ? mcpShownCount(mcpServers ?? null, f.tools ?? [], query) : 0);

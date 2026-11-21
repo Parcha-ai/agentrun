@@ -69,7 +69,7 @@ describe("the Tools step's MCP servers", () => {
   it("marks each tool its server's read says is not metered, and no other", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(McpToolPicker, { servers: [{ ...FAKE, prices: { add: 0.01 }, not_metered: ["delete_thing"] }], tools: [], harness: "pi", onChange: () => {} })));
+    act(() => root!.render(createElement(McpToolPicker, { servers: [{ ...FAKE, prices: { add: 0.01 }, not_metered: ["delete_thing"] }], tools: [], harness: "pi", filter: "", onChange: () => {} })));
     const label = (grant: string) => host.querySelector(`input[value="${grant}"]`)!.closest("label")!.textContent ?? "";
     expect(label("mcp:fake/delete_thing")).toContain("not metered");
     expect(label("mcp:fake/add")).not.toContain("not metered");
@@ -145,14 +145,14 @@ describe("the Tools step's MCP servers", () => {
     // The server says why (grant_problems, in the save's words); the picker renders it and keeps no rule of its own.
     const WHY = `mcp:fake/${long} is too long: mcp__fake__${long} must be at most 52 characters, the budget every harness's tool names share.`;
     const server = { ...FAKE, tools: [...FAKE.tools, { ...tool(long, "A tool with a long name."), grant_problems: { "*": WHY } }] };
-    const html = renderToStaticMarkup(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", onChange: () => {} }));
+    const html = renderToStaticMarkup(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", filter: "", onChange: () => {} }));
     expect(html).toMatch(new RegExp(`value="mcp:fake/${long}"[^>]*disabled=""|disabled=""[^>]*value="mcp:fake/${long}"`));
     expect(html).toContain("is too long: mcp__fake__");
     expect(html).not.toMatch(/value="mcp:fake\/add"[^>]*disabled=""|disabled=""[^>]*value="mcp:fake\/add"/);
     let now: string[] = [];
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: ["read", `mcp:fake/${long}`], harness: "pi", onChange: (t: string[]) => { now = t; } })));
+    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: ["read", `mcp:fake/${long}`], harness: "pi", filter: "", onChange: (t: string[]) => { now = t; } })));
     const box = host.querySelector(`input[value="mcp:fake/${long}"]`) as HTMLInputElement;
     expect([box.checked, box.disabled]).toEqual([true, false]);
     await act(async () => { box.click(); });
@@ -161,17 +161,17 @@ describe("the Tools step's MCP servers", () => {
 
   it("disables, on claude-agent alone, a tool the server says that harness's client drops (grant_problems)", () => {
     const server = { ...FAKE, tools: [...FAKE.tools, { name: "either", description: "One shape or another.", input_schema: { type: "object", anyOf: [{ required: ["a"] }, { required: ["b"] }] }, grant_problems: { "claude-agent": "The MCP server fake's tool either cannot be offered on claude-agent: /anyOf: the Claude Agent CLI drops a tool whose root has anyOf." } }] };
-    const disabled = (harness: string) => /value="mcp:fake\/either"[^>]*disabled=""|disabled=""[^>]*value="mcp:fake\/either"/.test(renderToStaticMarkup(createElement(McpToolPicker, { servers: [server], tools: [], harness, onChange: () => {} })));
+    const disabled = (harness: string) => /value="mcp:fake\/either"[^>]*disabled=""|disabled=""[^>]*value="mcp:fake\/either"/.test(renderToStaticMarkup(createElement(McpToolPicker, { servers: [server], tools: [], harness, filter: "", onChange: () => {} })));
     expect(disabled("claude-agent")).toBe(true);
     expect(disabled("pi")).toBe(false);
-    expect(renderToStaticMarkup(createElement(McpToolPicker, { servers: [server], tools: [], harness: "claude-agent", onChange: () => {} }))).toContain("the Claude Agent CLI drops a tool whose root has anyOf");
+    expect(renderToStaticMarkup(createElement(McpToolPicker, { servers: [server], tools: [], harness: "claude-agent", filter: "", onChange: () => {} }))).toContain("the Claude Agent CLI drops a tool whose root has anyOf");
   });
 
   it("disables a known meta tool with the server's reason, on every harness", () => {
     const REASON = "it runs other actions by name, so a grant can't name the real action. Use the server's direct tools instead.";
     const server = { ...FAKE, tools: [...FAKE.tools, { ...tool("execute_action", "Runs any action."), grantable: false as const, reason: REASON }] };
     for (const harness of ["pi", "claude-agent"]) {
-      const html = renderToStaticMarkup(createElement(McpToolPicker, { servers: [server], tools: [], harness, onChange: () => {} }));
+      const html = renderToStaticMarkup(createElement(McpToolPicker, { servers: [server], tools: [], harness, filter: "", onChange: () => {} }));
       expect(html).toMatch(/value="mcp:fake\/execute_action"[^>]*disabled=""|disabled=""[^>]*value="mcp:fake\/execute_action"/);
       expect(html).toContain("execute_action can&#x27;t be granted: it runs other actions by name");
     }
