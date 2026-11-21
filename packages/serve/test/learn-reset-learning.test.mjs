@@ -15,7 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { keepRunDisk, saveArchilSettings, storeAgentDisk } from "../dist/archil-settings.js";
 import { agentFolderOf } from "../dist/files.js";
-import { deleteLearning } from "../dist/learn/delete.js";
+import { deleteLearning, LearningInFlight } from "../dist/learn/delete.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { lastOwnRuns } from "../dist/learn/compile.js";
 import { gradesKey, promotionsKey, promotionsOf, resetLedgerKey } from "../dist/learn/promote.js";
@@ -781,6 +781,29 @@ test("a run seeded after the reset whose end writes another learning folder than
 const PRE = "PRE-RESET-MARKER";
 const COMPILE_ASKED = "enough times to write it down";
 const askedToCompile = (request) => JSON.stringify(request.body ?? {}).includes(COMPILE_ASKED);
+
+test("a reset whose delete fails part way keeps its watermark, so the runs before it never feed a compile into the emptied folder; the next call finishes it; one refused before anything went (LearningInFlight) puts the earlier watermark back", async (t) => {
+  const w = await storeWorld(t);
+  await corrected(w);
+  const real = w.host.deleteLearning;
+  w.host.deleteLearning = async (store, agentId, kept) => {
+    await real(store, agentId, kept);
+    throw new Error("the store refused a write");
+  };
+  const failed = await w.reset();
+  assert.match(String(failed?.message), /refused a write/, String(failed));
+  assert.equal(existsSync(join(w.repo, "corrections.md")), false, "the folder went before the failure");
+  assert.equal(typeof (await w.server.settings.get(resetAtKey("agent-1")))?.at, "number", "the watermark stays: learning reads no run before it");
+  w.host.deleteLearning = real;
+  assert.equal(await w.reset(), 204, "the next call finishes it");
+  const at = (await w.server.settings.get(resetAtKey("agent-1"))).at;
+  w.host.deleteLearning = async (_store, agentId) => {
+    throw new LearningInFlight(agentId, ["run-going"]);
+  };
+  const busy = await w.reset();
+  assert.equal(busy?.code, "learning_busy", String(busy));
+  assert.equal((await w.server.settings.get(resetAtKey("agent-1"))).at, at, "nothing went, so the earlier watermark is back");
+});
 
 test("the watermark: runs before the reset never reach a later compile, even past compile_after (N = 3 before it, fewer than N after: no compile; then the compile reads only the runs after it, no text of one before)", { timeout: 180_000 }, async (t) => {
   const w = await storeWorld(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 3 } });
