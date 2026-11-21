@@ -22,7 +22,7 @@ import { capNowOf } from "./runner/journal-kinds.js";
 import { journalRecords } from "./runner/journal-reader.js";
 import { decisionsOverStore } from "./store-reads/decisions.js";
 import { readRun } from "./store-reads/runs.js";
-import { runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
+import { runTimeline, servedSince, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { FINAL_STATES, type Store } from "./store/store.js";
 
 export type ServedTimelineDeps = {
@@ -42,7 +42,9 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
   // The run's rows, its decisions, its learning end and the triggers' names, all read in one snapshot of the store (one
   // moment, whatever the run's runner writes meanwhile): a row from before an answer never sits beside one from after it.
   // They are rendered under the run's cut, which is read before the snapshot and again after it (underCut): the cut only
-  // grows, so a cut that is the same after holds every value saved before the rows were read.
+  // grows, so a cut that is the same after holds every value saved before the rows were read. Its whole answers are kept
+  // only while no run's text was forgotten since it began (servedSince: a purge it overtook).
+  const since = servedSince(store);
   const read = await underCut(() => runCutValues(deps, store, runId), async (cut) => {
     if (cut === "unreadable") return undefined;
     const { values } = cut;
@@ -68,7 +70,7 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       const final = run?.state === "stopped" || run?.state === "failed" ? run.state
         : stopAsked(view, run, await snapshot.commands(runId, 0)) ? "stopped" as const : undefined;
       const options = { redact, settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redacted(text, values, CALL_RESULT_CHARS), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
-      const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values));
+      const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values), since);
       // A run whose booked spend passed its cap says so, by how much, after its usage row (run-view.ts withOverCap, as main's
       // served Timeline did): at the cap as it stands (a raise taken counts, capNowOf).
       const capNow = capNowOf((await launchOf(snapshot, runId))?.maxCostUsd, records.entries);

@@ -484,6 +484,9 @@ final class UiTest {
 		Map<String, Object> seen = phone.call("ui.observe", "{" + target + "}");
 		String search = (String) phone.node(seen, "Search settings").get("ref");
 		Map<String, Object> acted = phone.call("ui.act", "{" + target + ",\"state\":\"s1\",\"steps\":[{\"press\":\"" + search + "\"}]}");
+		// The press landed: another app is in front after it, and its window, once it shows, differs from Settings'. The
+		// step is verified against that window, never against Settings' own, which lingers unchanged past the step's read.
+		eq(Json.obj("route", "semantic", "verified", true), step(acted, 0));
 		eq(true, acted.get("changed"));
 		eq("s2", acted.get("state"));
 		// The state it answers is the search page's: the app in front, observed since it, shows nothing new.
@@ -494,6 +497,7 @@ final class UiTest {
 		String field = null;
 		for (Object n : list(front, "nodes")) if ("search_src_text".equals(map(n).get("id"))) field = (String) map(n).get("ref");
 		Map<String, Object> still = phone.call("ui.act", "{\"steps\":[{\"press\":\"" + field + "\"}]}");
+		eq(Json.obj("route", "semantic", "verified", false), step(still, 0));
 		eq(false, still.get("changed"));
 		eq("s4", still.get("state"));
 		// A page of the act's own app (Settings' Network & internet, as About phone) answers changed, as before.
@@ -501,6 +505,7 @@ final class UiTest {
 		Map<String, Object> again = phone.call("ui.observe", "{" + target + "}");
 		String network = (String) phone.node(again, "Network & internet").get("ref");
 		Map<String, Object> page = phone.call("ui.act", "{" + target + ",\"steps\":[{\"press\":\"" + network + "\"}]}");
+		eq(Json.obj("route", "semantic", "verified", true), step(page, 0));
 		eq(true, page.get("changed"));
 		eq("Internet", map(phone.call("ui.observe", "{\"since\":\"" + page.get("state") + "\"}").get("window")).get("title"));
 	}

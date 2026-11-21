@@ -74,7 +74,8 @@ phoned's real core over a scripted phone (`src/fake`, `test/phoned/`).
   point, a key, a drag, or an element without the action (a canvas). Injected input reaches the focused display
   directly, so phoned reports it as `foreground`, and a call without `foreground: true` gets it refused `denied`. A
   step is `verified` only when the window, read back, differs from before it: an event or a frame alone verifies
-  nothing. The `expect` is checked after the last step.
+  nothing. A step after which another app is in front (Settings' search opens Settings Intelligence's page) is read
+  against that app's window once it shows. The `expect` is checked after the last step.
 - `input.actions`: taps, long presses, swipes and paths, a two-finger pinch, buttons (back, home, app switch), keys and
   combos, holds, and text: typed by the key map when every character has a key, else pasted through the clipboard,
   which is put back after.
