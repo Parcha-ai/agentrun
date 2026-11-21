@@ -4115,13 +4115,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Answering a tool call's approval takes the owner's password sign-in in the console, never a token." : "Answering a tool call's approval takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
-    // Purging a run or an agent, or deleting another system's agent, cannot be undone: the owner's session or the API
-    // token. A console session counts as the owner's only where it does for a secret (secret-writes.ts: accounts off on a
-    // loopback-bound server); bound off loopback with accounts off, whoever opened the console is no owner. With no
-    // credential at all it is 401, as every route is.
-    if ((found.name === "deleteRun" || found.name === "deleteAgent") && byConsoleSession(req) && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
+    // Purging a run or an agent, deleting another system's agent, or resetting an agent's learning cannot be undone: the
+    // owner's session or the API token. A console session counts as the owner's only where it does for a secret
+    // (secret-writes.ts: accounts off on a loopback-bound server); bound off loopback with accounts off, whoever opened the
+    // console is no owner. With no credential at all it is 401, as every route is.
+    if ((found.name === "deleteRun" || found.name === "deleteAgent" || found.name === "deleteAgentLearning") && byConsoleSession(req) && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
       authFailed(`/v2${path}`, "delete_without_owner");
-      throw new ApiError("forbidden", "Deleting a run or an agent takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token.");
+      throw new ApiError("forbidden", "Deleting a run or an agent, or resetting an agent's learning, takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token.");
     }
     // Saving, replacing or removing a secret (secret-writes.ts): the one check. Who may is mayWriteSecrets' alone (the
     // owner's session); which writes are secret is each plane's registered predicate, read from the body, so a token's
