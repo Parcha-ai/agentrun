@@ -2,7 +2,8 @@
 // step is (the kernel's runCap over the run's sessions, its backend's reported job spend beside them): one whose hold would
 // pass the cap is refused before it leaves, nothing sent and nothing booked for it, and the compile is skipped in the
 // cap's words (reflect-hook.ts CAP_REFUSAL: no_budget), the job's figures kept. Under the cap it is sent and booked. On a
-// free model, uncapped (the case an SDK start allows today), the run's free-request limit refuses it the same way.
+// free model, uncapped (the case an SDK start allows today), the run's free-request limit refuses it the same way, and the
+// agent's own max_requests binds it when it is the smaller.
 // Real HTTP SDK receipts; only the provider is scripted, and nothing here reads a clock.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -66,11 +67,12 @@ function scriptedRoute(cost = COST) {
 
 /** One completed SDK run of an agent that compiles after its first run, its end-of-run step run under a cap of `capUsd`
  *  (the launch's figure, as a capped run's launch carries it; undefined: uncapped) on a route at rates `cost`, with the
- *  runner's `env`. `before` runs on the claim first, with the route and its origin's requests. */
-async function endUnderCap(t, capUsd, { cost = COST, env = {}, before } = {}) {
+ *  runner's `env`, the agent's definition with `definition` beside it. `before` runs on the claim first, with the route
+ *  and its origin's requests. */
+async function endUnderCap(t, capUsd, { cost = COST, env = {}, before, definition = {} } = {}) {
   const runtime = "claude-agent-sdk", server = await serve(t, { runner: false }), agentId = "sdk-ask-cap";
   assert.equal((await server.api("POST", "/agents", { definition: {
-    id: agentId, name: agentId, instructions, sdk: { runtime }, learning: { compile_after: 1 }, tools: [], output_schema: tool.output_schema,
+    id: agentId, name: agentId, instructions, sdk: { runtime }, learning: { compile_after: 1 }, tools: [], output_schema: tool.output_schema, ...definition,
   } })).status, 201);
   const started = await server.api("POST", `/agents/${agentId}/sdk-runs`, { runtime, input: "Check the release.", instructions, workflow_tools: [tool] }, { "Idempotency-Key": "ask-cap" });
   assert.equal(started.status, 201, JSON.stringify(started.body));
@@ -144,4 +146,19 @@ test("an uncapped SDK run's compile ask on a free model is held to the run's fre
   assert.equal(kept.proposal.job_cost_usd, JOB_USD);
   assert.equal(kept.proposal.look_back_usd, 0, "the refused compile spent nothing");
   assert.equal(learning.compiled, null, "no compile ran");
+});
+
+test("an SDK run's compile ask on a free model is held to the agent's own max_requests when it is under the server's limit", async t => {
+  // The server's limit is its default (60); the agent's max_requests is 1, so the run's one free request is its last.
+  const { kept, requests } = await endUnderCap(t, undefined, {
+    cost: FREE, env: {}, definition: { max_requests: 1 },
+    before: async ({ route, requests, run }) => {
+      const first = await bookedAsk(route, { capUsd: undefined, beside: async () => 0, freeRequests: 1 })({ prompt: "Say ready.", maxTokens: 64 }, new AbortController().signal, run);
+      assert.equal(first.usd, 0);
+      assert.equal(requests.length, 1, "the first ask was sent");
+    },
+  });
+  assert.equal(requests.length, 1, "the compile ask was refused unsent at the agent's limit, not the server's 60");
+  assert.equal(kept.proposal.state, "dropped");
+  assert.equal(kept.proposal.reason, "no_budget", JSON.stringify(kept.proposal));
 });
