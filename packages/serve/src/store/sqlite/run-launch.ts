@@ -47,6 +47,19 @@ export async function readLaunch(executor: Pick<SqliteExecutor, "get">, runId: s
   return runLaunchOf(row);
 }
 
+/** Whether `error` (or a cause of it, six deep) is Postgres refusing a JSON document for an escaped NUL or a lone
+ *  surrogate in it: the text type keeps them, but every json function decodes the whole document's strings. */
+function postgresUnicodeRefusal(error: unknown): boolean {
+  for (let cause: any = error, depth = 0; cause && depth < 6; cause = cause.cause, depth++)
+    if (cause.code === "22P05" || (cause.code === "22P02" && cause.reason === "json_surrogate")) return true;
+  return false;
+}
+
+/** Postgres SQL for JSON text `column` with its escaped NULs and surrogates (\u0000, \ud800-\udfff) read as escaped
+ *  spaces, for a read of one number or id out of a document whose other strings may hold one (0026_run_disk.sql does
+ *  the same). A replaced escape stays an escape (an escaped backslash before u0000 keeps its own), so it is still JSON. */
+const postgresReadableJson = (column: string): string => `regexp_replace(${column}, '\\\\u(0000|[dD][89a-fA-F][0-9a-fA-F]{2})', '\\\\u0020', 'g')`;
+
 /** Project accounting facts before crossing the database boundary. An SDK inbox can contain megabytes of replay;
  *  the raw-JSON projection preserves strings, nulls and invalid scalar shapes equally on SQLite and Postgres.
  *  Uses an ordinary store connection: a PostgreSQL Unicode refusal is retried outside a failed transaction. */
@@ -70,10 +83,7 @@ export async function readUsageMetadata(
     // PostgreSQL accepts escaped NUL/lone-surrogate strings in JSON TEXT but cannot extract ANY member of
     // such a document. Only its exact Unicode refusal permits the former JS read/parse cost for that row.
     // Never sanitize native identities or silently lose known counters to an unrelated replay string.
-    let unicode = false;
-    for (let cause: any = error, depth = 0; cause && depth < 6; cause = cause.cause, depth++)
-      if (cause.code === "22P05" || (cause.code === "22P02" && cause.reason === "json_surrogate")) unicode = true;
-    if (executor.dialect.name !== "postgres" || !unicode) throw error;
+    if (executor.dialect.name !== "postgres" || !postgresUnicodeRefusal(error)) throw error;
     const raw = await executor.get<{ body: string | null; inbox?: string | null }>(
       `SELECT l.body${completion ? ", s.value AS inbox" : ""} ${from}`, ...params,
     );
@@ -102,6 +112,16 @@ export async function readLearningStarts(executor: Pick<SqliteExecutor, "all"> &
 /** The ids of agent `agentId`'s runs started after `at` whose learning seed was read at or before it (the launch body's
  *  `learning.seededAt`), in one read of that one number a run started after `at`: never a run's section or input. */
 export async function readSeededBefore(executor: Pick<SqliteExecutor, "all"> & { readonly dialect: Dialect }, agentId: string, at: number): Promise<string[]> {
-  const rows = await executor.all<{ run_id: string; seeded_at: string | number | null }>(`SELECT run_id, ${executor.dialect.jsonText("body", ["learning", "seededAt"])} AS seeded_at FROM run_launch WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ? AND started_at > ?)`, agentId, at);
+  const read = (body: string) => executor.all<{ run_id: string; seeded_at: string | number | null }>(`SELECT run_id, ${executor.dialect.jsonText(body, ["learning", "seededAt"])} AS seeded_at FROM run_launch WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ? AND started_at > ?)`, agentId, at);
+  let rows: Awaited<ReturnType<typeof read>>;
+  try {
+    rows = await read("body");
+  } catch (error) {
+    // A body holding an escaped NUL or a lone surrogate anywhere (a run's input) makes Postgres refuse the whole read: the
+    // one number is read again from copies with those escapes blanked (postgresReadableJson), never a run's text. On an
+    // ordinary store connection, as readUsageMetadata's, so the retry is outside a failed transaction.
+    if (executor.dialect.name !== "postgres" || !postgresUnicodeRefusal(error)) throw error;
+    rows = await read(postgresReadableJson("body"));
+  }
   return rows.flatMap((row) => (row.seeded_at !== null && Number(row.seeded_at) <= at ? [row.run_id] : []));
 }
