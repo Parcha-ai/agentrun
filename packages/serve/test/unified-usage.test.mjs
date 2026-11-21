@@ -36,6 +36,48 @@ async function observed(s, id, days, { native, connection, harness = 'codex', co
 }
 const read = async (s, query = '') => { const result = await s.api('GET', '/stats' + query); assert.equal(result.status, 200); return result.body.analytics; };
 
+for (const [input, output, expected] of [[100, 20, [120, 100, 20]], [1, 200, [201, 1, 200]], [20, 3, [120, 100, 20]]]) {
+  test(`already-lost observation identity keeps a conservative coherent total for ${input + output} reported tokens`, async t => {
+    const s = await serve(t, { runner: false });
+    await cliWindow(s, 'captured', 100, 20);
+    await observed(s, 'os_lost', { [date(today())]: { model: usage(input, output, { cache_read_tokens: 0, cache_write_tokens: 0 }) } },
+      { native: 'native-session', connection: 'connection' });
+    const key = 'observation.connector.os_lost', old = await s.store.settings.get(key), lost = structuredClone(old);
+    lost.sessions.os_lost.learning_association = { readiness: 'unknown' };
+    assert.ok(await s.store.settings.replaceIf(key, old, lost), 'simulate a pre-fix disconnect that already discarded identity');
+    const u = (await read(s)).usage;
+    assert.deepEqual([u.tokens, u.input, u.output], expected, 'unprovable overlap selects one complete view, never per-field maxima');
+    assert.equal(u.unknown_sessions, 1); assert.equal(u.unknown_runs, 1);
+    assert.deepEqual(u.by_day, [{ day: date(today()), tokens: expected[0] }]);
+    assert.deepEqual((await s.store.settings.get(key)).sessions.os_lost.learning_association, { readiness: 'unknown' }, 'accounting never invents a lost identity');
+  });
+}
+
+test('unverified collectors are whole-view alternatives while independent managed work and HTTP reflection stay additive', async t => {
+  const s = await serve(t, { runner: false });
+  await cliWindow(s, 'captured', 100, 20, { reflection: 15 });
+  await run(s, 'managed', counts(5, 2));
+  await observed(s, 'os_first', { [date(today())]: { model: usage(100, 20, { cache_read_tokens: 0, cache_write_tokens: 0 }) } }, { connector: 'collector-one' });
+  await observed(s, 'os_copy', { [date(today())]: { model: usage(110, 10, { cache_read_tokens: 0, cache_write_tokens: 0 }) } }, { connector: 'collector-two' });
+  // This collector's second opaque session is part of its own complete observation view.
+  const key = 'observation.connector.collector-one', before = await s.store.settings.get(key), next = structuredClone(before);
+  next.sessions.os_other = { id: 'os_other', harness: 'codex', received_at: new Date().toISOString(),
+    usage_by_day: { [date(today() - DAY)]: { model: usage(20, 10, { cache_read_tokens: 0, cache_write_tokens: 0 }) } } };
+  assert.ok(await s.store.settings.replaceIf(key, before, next));
+  const u = (await read(s)).usage;
+  assert.deepEqual([u.tokens, u.input, u.output], [172, 140, 32], '150 from one collector view +15 proven HTTP reflection +7 managed, never both collector copies');
+  assert.equal(u.unknown_sessions, 3); assert.equal(u.unknown_runs, 1);
+  assert.deepEqual(u.by_day, [{ day: date(today() - DAY), tokens: 30 }, { day: date(today()), tokens: 142 }]);
+});
+
+test('source-only collectors continue reporting their selected usage without a native run alternative', async t => {
+  const s = await serve(t, { runner: false });
+  await observed(s, 'os_one', { [date(today())]: { model: usage(100, 20) } });
+  await observed(s, 'os_two', { [date(today())]: { model: usage(20, 10) } });
+  const u = (await read(s)).usage;
+  assert.equal(u.tokens, 150); assert.equal(u.observed_sessions, 2); assert.equal(u.unknown_runs, 0);
+});
+
 test('one dashboard token total includes managed runs and connected sessions even without cache breakdown', async t => {
   const s = await serve(t, { runner: false });
   await run(s, 'managed-run', counts(100, 20, 50, 0));

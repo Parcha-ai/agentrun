@@ -4,6 +4,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Store } from "../store/store.js";
 import { NATIVE_OBSERVATION_HARNESSES, nativeObservationProtocol, type NativeObservationHarness } from "../native/runtimes.js";
 import { ObservationLearning, unboundLearning, type LearningAssociation, type LearningReport } from "./learning.js";
+import { usageIdentityOf, type UsageIdentity } from "./usage-identity.js";
 
 const PREFIX = "observation.connector.";
 const DAY = 86_400_000;
@@ -67,6 +68,7 @@ type Session = {
   display_name?: string;
   project_name?: string;
   learning_association?: LearningAssociation;
+  usage_identity?: UsageIdentity;
   sequence: number;
   source_time?: string;
   ingestion_epoch?: number;
@@ -724,6 +726,13 @@ export class Observations {
             old = row.sessions[sessionId];
           if (!old && Object.keys(row.sessions).length >= MAX_SESSIONS)
             refuse(429, "connector_session_capacity_exceeded");
+          // Historical accounting survives readiness changes and credential revocation. Migrate
+          // old verified associations before replacing them, never trust the raw source report.
+          const previousIdentity = usageIdentityOf(old?.usage_identity) ?? usageIdentityOf(old?.learning_association);
+          const assertedIdentity = usageIdentityOf(learning_association);
+          if (previousIdentity && assertedIdentity && previousIdentity.native_session_hash !== assertedIdentity.native_session_hash)
+            refuse(409, "connector_session_identity_conflict");
+          const usage_identity = previousIdentity ?? assertedIdentity;
           const at = this.stamp();
           row.receipts[e.event_id] = {
             hash: request,
@@ -750,6 +759,7 @@ export class Observations {
               ...(display_name ? { display_name } : {}),
               ...(project_name ? { project_name } : {}),
               ...(learning_association ? { learning_association } : {}),
+              ...(usage_identity ? { usage_identity } : {}),
               sequence: e.sequence,
               ingestion_epoch: row.ingestion_epoch ?? 0,
               ...(e.source_time ? { source_time: e.source_time } : {}),
@@ -760,6 +770,9 @@ export class Observations {
               usage_by_day: old?.usage_by_day ?? {},
             };
           }
+          // An older, independently verified receipt can still establish historical identity
+          // without changing current activity/readiness or admitting its stale usage again.
+          if (usage_identity) row.sessions[sessionId]!.usage_identity = usage_identity;
           // Polling reports durable counter deltas in sequence order. A new UUID must not
           // make a stale sequence count twice; native OTLP requests can legitimately arrive late.
           if (e.usage && (mode === "otlp" || newer)) {
@@ -1007,7 +1020,7 @@ export class Observations {
           this.now();
         const terminal = ["finished", "failed", "stopped"].includes(s.activity);
         const summary = summaries.get(s.id);
-        const { usage_by_day, ingestion_epoch, learning_association, ...shown } = s;
+        const { usage_by_day, ingestion_epoch, learning_association, usage_identity, ...shown } = s;
         sessions.push({
           ...shown,
           connector_id: row.id,

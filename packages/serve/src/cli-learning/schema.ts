@@ -4,7 +4,7 @@ const object=(properties:Record<string,unknown>,required=Object.keys(properties)
 const response=(schema:unknown)=>({description:'Local CLI learning connection or prompt window.',content:{'application/json':{schema}}});
 const body=(schema:unknown)=>({required:true,content:{'application/json':{schema}}});
 const id=(name:string)=>({name,in:'path',required:true,schema:text});
-const mark={'x-agentrun-serve':'clilearning/1',security:[{bearer:[]}],tags:['CLI learning']};
+const mark={'x-agentrun-serve':'clilearning/1',security:[{bearer:[]}],tags:['cli-learning']};
 const owner={...mark,security:[{bearer:[]},{ownerSession:[]}]};
 export const CLI_LEARNING_BINDING={...object({runtime:{enum:['codex','claude-code']},connection_id:text,project:text}),'x-agentrun-serve':'clilearning/1',description:'An enrolled existing CLI. Execution and tools remain in its original session. Only local owner enrollment creates this reference.'};
 export const CLI_LEARNING_RUN={...object({runtime:{enum:['codex-cli','claude-code-cli']},session_id:text,turn_id:text,model:{type:['string','null']},learning_revision:{type:['string','null']},seed_observed:{type:'boolean'},policy_complete:{type:'boolean'},evidence_complete:{type:'boolean'},usage:SDK_RUN.oneOf[0]!.properties.usage}),'x-agentrun-serve':'clilearning/1'};

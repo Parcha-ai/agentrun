@@ -1259,9 +1259,13 @@ test("public learning connection verbs reach the local installer while existing 
   const local = spawnSync(process.execPath, [BIN, "learning", "status", "--runtime", "codex", "--project", project, "--data", data], {env,encoding:"utf8",timeout:30_000});
   assert.equal(local.status, 0, local.stderr);
   assert.equal(JSON.parse(local.stdout).state, "not-installed");
-  const help = spawnSync(process.execPath, [BIN, "learning", "connect", "--help"], {env,encoding:"utf8",timeout:30_000});
-  assert.equal(help.status, 0, help.stderr);
-  assert.match(help.stdout, /--runtime codex\|claude-code/);
+  for (const verb of ["connect", "status", "disconnect", "retry", "hook"]) {
+    const help = spawnSync(process.execPath, [BIN, "learning", verb, "--help"], {env,encoding:"utf8",timeout:30_000});
+    assert.ifError(help.error);
+    assert.equal(help.status, 0, `${verb}: ${help.stderr}`);
+    assert.match(help.stdout, /usage: agentrun-serve learning/);
+    assert.match(help.stdout, /--runtime codex\|claude-code/);
+  }
   const api = spawnSync(process.execPath, [BIN, "learning", "corrections", "--help"], {env,encoding:"utf8",timeout:30_000});
   assert.equal(api.status, 0, api.stderr);
   assert.match(api.stdout, /corrections/);

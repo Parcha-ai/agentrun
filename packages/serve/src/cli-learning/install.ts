@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { codexHookLocation, readConfigText } from './codex-worktree.js';
+import { takeHold, releaseHold } from '../harness-install.js';
 
 export type CliLearningRuntime = 'codex' | 'claude-code';
 type ObjectValue = Record<string, unknown>;
@@ -185,18 +186,17 @@ export async function statusCliLearning(options: CliLearningLocation): Promise<C
 
 async function lock<T>(directory: string, fn: () => Promise<T>, filename = 'install.lock', waitMs = 0): Promise<T> {
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const path = join(directory, filename);
-  let handle;
+  const holdPath = join(directory, filename);
+  let token;
   const deadline = Date.now() + waitMs;
-  while (!handle) {
-    try { handle = await open(path, 'wx', 0o600); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      if (Date.now() >= deadline) throw new Error('Another AgentRun hook installation is in progress.');
-      await new Promise((done) => setTimeout(done, 20));
+  while (!token) {
+    token = await takeHold(directory, { holdPath, timeoutMs: Infinity, recoverUnknownOwner: false });
+    if (!token) {
+      if (Date.now() >= deadline) throw new Error(`AgentRun hook installation lock is held or its owner cannot be verified: ${holdPath}. Wait for the current installation to finish. For a legacy or malformed lock, stop all AgentRun connect/disconnect commands using this checkout and its linked worktrees, verify none remain, then remove only this lock and retry.`);
+      await new Promise(done => setTimeout(done, 20));
     }
   }
-  try { return await fn(); } finally { await handle.close(); await rm(path, { force: true }); }
+  try { return await fn(); } finally { await releaseHold(directory, token, { holdPath }); }
 }
 
 function stripHandlers(config: Configuration, owned: Receipt, warnings: string[], stableIndices: boolean): boolean {

@@ -28,3 +28,6 @@ Retries advance across retained sessions, queued hooks and unfinished turns so o
 hide later uploads. Interrupted connection commands recover an abandoned lock while a live owner keeps it.
 Recovery also recognizes a proven previous kernel boot on the same host. A different namespace from the
 same boot, or an unknown boot identity, stays protected until its owner's death can be established.
+Project installer and shared Codex hook locks now keep private owner records and recover after a proven
+owner death. Legacy empty or malformed installer locks stay protected regardless of age; the error names
+the lock and requires stopping and verifying all relevant installers before manually removing that lock.

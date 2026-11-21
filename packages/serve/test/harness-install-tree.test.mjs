@@ -185,8 +185,8 @@ test("an explicit hold path shares stale-owner exclusion and releases only that 
 test("an unlimited explicit hold never expires a live local owner when process birth identity is unavailable", async t => {
   const root = scratch(t, "explicit-hold-alive"), dir = join(root, "harnesses", "fake");
   const holdPath = join(root, "connection.lock");
-  writeFileSync(holdPath, JSON.stringify({ host: "this-host", pid: 4242, startedAt: Date.now() - 86_400_000, token: "running" }));
-  const options = { holdPath, timeoutMs: Infinity, host: "this-host", identity: () => undefined };
+  writeFileSync(holdPath, JSON.stringify({ host: "this-host", pidns: "pid:[1]", pid: 4242, startedAt: Date.now() - 86_400_000, token: "running" }));
+  const options = { holdPath, timeoutMs: Infinity, host: "this-host", pidns: "pid:[1]", identity: () => undefined, recoverUnknownOwner: false };
   assert.equal(await takeHold(dir, { ...options, isAlive: () => true }), undefined);
   const token = await takeHold(dir, { ...options, isAlive: pid => pid !== 4242 });
   assert.equal(typeof token, "string", "the dead process is recoverable even with no time limit");
@@ -238,4 +238,32 @@ test("finite installer holds retain their existing foreign-namespace timeout pol
     isAlive: () => assert.fail("a foreign PID is never inspected"),
   }), undefined);
   assert.equal(JSON.parse(readFileSync(holdPath, "utf8")).token, "bounded");
+});
+
+for (const [name, text] of [
+  ["empty", ""], ["malformed JSON", "{"],
+  ["missing host", JSON.stringify({ pid: 4242, startedAt: 1, token: "unknown" })],
+  ["invalid PID", JSON.stringify({ host: "this-host", pid: -1, startedAt: 1, token: "unknown" })],
+  ["invalid timestamp", JSON.stringify({ host: "this-host", pid: 4242, startedAt: -1, token: "unknown" })],
+  ["missing token", JSON.stringify({ host: "this-host", pid: 4242, startedAt: 1 })],
+  ["malformed identity", JSON.stringify({ host: "this-host", pid: 4242, startedAt: 1, identity: "not-a-process-identity", token: "unknown" })],
+]) test(`a protected ${name} owner record is never recovered from age or an untrusted PID`, async t => {
+  const dir = scratch(t, "unknown-owner"), holdPath = join(dir, "install.lock");
+  writeFileSync(holdPath, text);
+  const old = (Date.now() - 86_400_000) / 1000;
+  utimesSync(holdPath, old, old);
+  const token = await takeHold(dir, { holdPath, host: "this-host", timeoutMs: Infinity, recoverUnknownOwner: false,
+    isAlive: () => false });
+  assert.equal(token, undefined);
+  assert.equal(readFileSync(holdPath, "utf8"), text);
+});
+
+test("strict owner proof never inspects a PID when only the current namespace is known", async t => {
+  const dir = scratch(t, "unknown-owner-namespace"), holdPath = join(dir, "install.lock");
+  const text = JSON.stringify({ host: "this-host", pid: 4242, startedAt: 1, token: "unknown-namespace" });
+  writeFileSync(holdPath, text);
+  const token = await takeHold(dir, { holdPath, host: "this-host", pidns: "pid:[2]", timeoutMs: Infinity, recoverUnknownOwner: false,
+    identity: () => undefined, isAlive: () => assert.fail("an unproven namespace never authorizes inspecting this process table") });
+  assert.equal(token, undefined);
+  assert.equal(readFileSync(holdPath, "utf8"), text);
 });

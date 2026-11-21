@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtemp, mkdir, readFile, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -32,6 +33,91 @@ async function legacyInstall(o) {
   try { await installCliLearning(o); }
   finally { await rename(join(o.project, '.git.saved'), join(o.project, '.git')); }
 }
+
+/** Pause at the filesystem adapter boundary after both installer locks and the receipt
+ * are durable, before the shared configuration is atomically replaced. */
+async function pausedInstaller(t, options, shared) {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `
+    import fs from 'node:fs';
+    import { once } from 'node:events';
+    import { syncBuiltinESMExports } from 'node:module';
+    const rename = fs.promises.rename;
+    fs.promises.rename = async (from, to) => {
+      if (to === ${JSON.stringify(shared)}) {
+        process.stdout.write('locks-held\\n');
+        await once(process.stdin, 'data');
+      }
+      return rename(from, to);
+    };
+    syncBuiltinESMExports();
+    const { installCliLearning } = await import(${JSON.stringify(new URL('../dist/cli-learning/install.js', import.meta.url).href)});
+    await installCliLearning(${JSON.stringify(options)});
+    process.stdin.destroy();
+  `], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const exited = once(child, 'exit');
+  t.after(async () => { child.kill('SIGKILL'); await exited; });
+  const [ready] = await once(child.stdout, 'data', { signal: AbortSignal.timeout(5000) });
+  assert.match(String(ready), /locks-held/);
+  return {
+    kill: async () => { child.kill('SIGKILL'); await exited; },
+    finish: async () => { child.stdin.end('continue'); assert.deepEqual(await exited, [0, null]); },
+  };
+}
+
+test('a killed installer releases proven ownership of both project and shared worktree locks on retry', async t => {
+  const { main, shared, options: [first, second] } = await fixture(t);
+  const paused = await pausedInstaller(t, first, shared);
+  for (const path of [join(first.project, '.agentrun/cli-learning/install.lock'), join(main, '.codex/.agentrun-learning.lock')]) {
+    assert.equal((await stat(path)).mode & 0o777, 0o600, 'installer owner records remain private');
+  }
+  await paused.kill();
+  assert.equal((await installCliLearning(second)).configured, true, 'a sibling worktree recovers the dead shared owner');
+  assert.equal((await removeCliLearning(first)).configured, false, 'disconnect recovers the dead project owner and clears its interrupted receipt');
+  assert.equal((await statusCliLearning(second)).configured, true, 'recovery preserves the other worktree hooks');
+  assert.equal((await installCliLearning(first)).configured, true);
+  for (const groups of Object.values((await readJson(shared)).hooks)) {
+    assert.equal(groups.filter(group => group.hooks.length).length, 2);
+  }
+});
+
+test('a live shared installer excludes a sibling until release, then both hook sets survive', async t => {
+  const { shared, options: [first, second] } = await fixture(t);
+  const paused = await pausedInstaller(t, first, shared);
+  let finished = false;
+  const concurrent = installCliLearning(second).then(value => { finished = true; return value; });
+  concurrent.catch(() => {}); // Preserve cleanup if an assertion fails while the sibling is waiting.
+  // The second project's own lock proves it entered installation, while the shared
+  // writer must still be waiting for the first process to release its lock.
+  const lock = join(second.project, '.agentrun/cli-learning/install.lock');
+  const deadline = Date.now() + 5000;
+  while (!await stat(lock).catch(() => undefined)) {
+    assert.ok(Date.now() < deadline, 'the sibling enters its installation');
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(finished, false);
+  await assert.rejects(readFile(shared), { code: 'ENOENT' }, 'neither writer has replaced shared configuration early');
+  await paused.finish();
+  assert.equal((await concurrent).configured, true);
+  for (const groups of Object.values((await readJson(shared)).hooks)) {
+    assert.equal(groups.filter(group => group.hooks.length).length, 2);
+  }
+  assert.equal((await statusCliLearning(first)).configured, true);
+  assert.equal((await statusCliLearning(second)).configured, true);
+});
+
+test('an old ownerless shared lock is preserved across a sibling install attempt', async t => {
+  const { main, shared, options: [first, second] } = await fixture(t);
+  await installCliLearning(first);
+  const before = await readFile(shared, 'utf8');
+  const lock = join(main, '.codex/.agentrun-learning.lock');
+  await writeFile(lock, '', { mode: 0o600 });
+  const old = new Date(Date.now() - 86_400_000);
+  await utimes(lock, old, old);
+  await assert.rejects(installCliLearning(second), error => error.message.includes(lock) && /stop|stopped/i.test(error.message));
+  assert.equal(await readFile(lock, 'utf8'), '');
+  assert.equal(await readFile(shared, 'utf8'), before);
+  assert.equal((await statusCliLearning(first)).configured, true);
+});
 
 test('linked worktrees serialize additive installs in the native shared file and leave local TOML untouched', async (t) => {
   const { main, shared, options: [first, second] } = await fixture(t);

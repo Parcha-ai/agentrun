@@ -518,6 +518,17 @@ function identityBoot(value: unknown): string | undefined {
   return match?.[0] === value ? match[1]!.toLowerCase() : undefined;
 }
 
+/** A caller protecting legacy ownerless locks needs a complete, well-formed owner
+ * record before process liveness or boot identity can authorize recovery. */
+function ownerProof(held: Partial<Hold> | undefined): boolean {
+  return held !== undefined && typeof held.host === "string" && held.host.length > 0
+    && typeof held.pid === "number" && Number.isSafeInteger(held.pid) && held.pid > 0 && held.pid <= 0x7fffffff
+    && typeof held.startedAt === "number" && Number.isSafeInteger(held.startedAt) && held.startedAt >= 0
+    && typeof held.token === "string" && held.token.length > 0
+    && (held.pidns === undefined || (typeof held.pidns === "string" && /^pid:\[[0-9]+\]$/.exec(held.pidns)?.[0] === held.pidns))
+    && (held.identity === undefined || identityBoot(held.identity) !== undefined);
+}
+
 /** The hold at `at` as written, or undefined when it cannot be read (gone, cut short, not one). */
 async function readHold(at: string): Promise<Partial<Hold> | undefined> {
   try {
@@ -537,18 +548,20 @@ async function readHold(at: string): Promise<Partial<Hold> | undefined> {
  *  way. A hold its installer left (gone, or past that bound, or unreadable and older than HOLD_WRITING_MS) is taken over
  *  by one taker alone: the one that links it to a name of that very file's removes it, and only while it is still that
  *  file, so a hold another taker made meanwhile is never removed. */
-export async function takeHold(dir: string, { isAlive = alive, identity = processIdentity, host = hostname(), pidns = pidNamespace(), timeoutMs = INSTALL_TIMEOUT_MS, holdPath = installHoldOf(dir) }: { isAlive?: (pid: number) => boolean; identity?: (pid: number) => string | undefined; host?: string; pidns?: string; timeoutMs?: number; holdPath?: string } = {}): Promise<string | undefined> {
+export async function takeHold(dir: string, { isAlive = alive, identity = processIdentity, host = hostname(), pidns = pidNamespace(), timeoutMs = INSTALL_TIMEOUT_MS, holdPath = installHoldOf(dir), recoverUnknownOwner = true }: { isAlive?: (pid: number) => boolean; identity?: (pid: number) => string | undefined; host?: string; pidns?: string; timeoutMs?: number; holdPath?: string; recoverUnknownOwner?: boolean } = {}): Promise<string | undefined> {
   const at = holdPath;
   await mkdir(dirname(at), { recursive: true });
   const token = randomUUID();
   const draft = `${at}.${token}`;
   const own = identity(process.pid);
   const ownBoot = identityBoot(own);
-  await writeFile(draft, JSON.stringify({ host, ...(pidns ? { pidns } : {}), pid: process.pid, ...(own ? { identity: own } : {}), startedAt: Date.now(), token } satisfies Hold));
+  await writeFile(draft, JSON.stringify({ host, ...(pidns ? { pidns } : {}), pid: process.pid, ...(own ? { identity: own } : {}), startedAt: Date.now(), token } satisfies Hold), { mode: 0o600 });
   /** Whether a hold's pid can be asked of this process table: written on this host, in this pid namespace where both
    *  name one. Another namespace's (another container's on the same data, with the same hostname) is judged as another
-   *  host's. */
-  const local = (held: Partial<Hold>): boolean => held.host === host && (typeof held.pidns !== "string" || pidns === undefined || held.pidns === pidns);
+   *  host's. Strict owner proof also withholds a PID check when only one side knows its namespace. */
+  const local = (held: Partial<Hold>): boolean => held.host === host && (recoverUnknownOwner
+    ? typeof held.pidns !== "string" || pidns === undefined || held.pidns === pidns
+    : held.pidns === pidns);
   /** An unbounded local-command hold cannot expire after a reboot. A known previous
    * kernel boot on this host proves its owner gone even if the PID namespace changed.
    * A container recreated within the same boot still needs proof that its old namespace
@@ -575,6 +588,7 @@ export async function takeHold(dir: string, { isAlive = alive, identity = proces
       const judged = await lstat(at).catch(() => undefined);
       if (!judged) continue;
       const held = await readHold(at);
+      if (!recoverUnknownOwner && !ownerProof(held)) return undefined;
       const live = typeof held?.pid === "number" && typeof held.startedAt === "number"
         ? !previousBoot(held) && (local(held) ? installing(held as Partial<Hold> & { pid: number; startedAt: number }) : Date.now() - held.startedAt <= timeoutMs + HOLD_STOP_MS)
         : Date.now() - judged.mtimeMs <= HOLD_WRITING_MS;

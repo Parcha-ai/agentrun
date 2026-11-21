@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -136,4 +136,23 @@ test('disconnect still clears its receipt when the user already removed the conf
   assert.equal((await removeCliLearning(o)).configured, false);
   await assert.rejects(readFile(configPath(o)), { code: 'ENOENT' });
   assert.equal((await statusCliLearning(o)).state, 'not-installed');
+});
+
+test('an aged ownerless installer lock stays protected and explains the manual recovery prerequisite', async t => {
+  const o = await fixture(t, 'claude-code');
+  await installCliLearning(o);
+  const before = await readFile(configPath(o), 'utf8');
+  const lock = join(o.project, '.agentrun/cli-learning/install.lock');
+  await writeFile(lock, '', { mode: 0o600 });
+  const old = new Date(Date.now() - 86_400_000);
+  await utimes(lock, old, old);
+  for (const operation of [installCliLearning, removeCliLearning]) {
+    await assert.rejects(operation(o), error => {
+      assert.ok(error.message.includes(lock), 'identify the specific blocked lock');
+      assert.match(error.message, /stop|stopped/i, 'manual recovery requires stopping all installers first');
+      return true;
+    });
+    assert.equal(await readFile(lock, 'utf8'), '', 'age is not proof that an unknown owner died');
+    assert.equal(await readFile(configPath(o), 'utf8'), before);
+  }
 });

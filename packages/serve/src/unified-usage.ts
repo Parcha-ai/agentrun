@@ -10,12 +10,13 @@ import { sdkInbox } from './sdk/runs.js';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { journalEntries } from './runner/journal-reader.js';
 import { REQUEST_COST, runMetricsOf, type EntryLike } from './timeline/index.js';
+import { usageIdentityOf } from './observation/usage-identity.js';
 
 const DAY = 86_400_000, RETENTION = 90 * DAY;
 const fields = ['input', 'output', 'cache_read', 'cache_write'] as const;
 type Counts = Record<typeof fields[number], number | null> & { tokens: number | null };
 type Fact = Counts & { day: string; harness: string; runId?: string };
-type Observed = { id: string; key: string; received: number; harness: string; facts: Fact[]; partial: Set<string> };
+type Observed = { id: string; key: string; collector: string; verified: boolean; received: number; harness: string; facts: Fact[]; partial: Set<string> };
 type Recorded = { id: string; fact: Fact; key?: string; imported: boolean; opaqueImport: boolean; sdk: boolean; window?: string;
   purged: boolean; runtimeErased: boolean; nativeReflection: boolean };
 export type UnifiedUsage = Counts & {
@@ -91,18 +92,18 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
   for (const row of await store.settings.all({ prefix: 'observation.connector.' })) {
     const connector = object(row.value);
     for (const raw of Object.values(object(connector.sessions))) {
-      const session = object(raw), association = object(session.learning_association);
+      const session = object(raw);
       if (typeof session.id !== 'string' || !runtime(session.harness)) continue;
       const harness = runtime(session.harness)!;
-      // This hash was verified at ingestion. It remains historical provenance if learning is later revoked.
-      const attested = typeof association.native_session_hash === 'string' && /^[a-f0-9]{64}$/.test(association.native_session_hash)
-        && typeof association.connection_id === 'string' && typeof association.generation === 'string';
-      const key = attested ? `${harness}:${association.native_session_hash}` : `observation:${connector.id}:${session.id}`;
+      // Accounting identity is independent of current learning readiness. Older persisted sessions
+      // still carry their verified identity in the association until their next ingestion migrates it.
+      const identity = usageIdentityOf(session.usage_identity) ?? usageIdentityOf(session.learning_association);
+      const key = identity ? `${harness}:${identity.native_session_hash}` : `observation:${connector.id}:${session.id}`;
       let agent: string | undefined;
-      if (attested) {
-        if (!connections.has(association.connection_id)) connections.set(association.connection_id,
-          object(await store.settings.get(`cli-learning-connection:${association.connection_id}`)).agent_id);
-        agent = connections.get(association.connection_id);
+      if (identity) {
+        if (!connections.has(identity.connection_id)) connections.set(identity.connection_id,
+          object(await store.settings.get(`cli-learning-connection:${identity.connection_id}`)).agent_id);
+        agent = connections.get(identity.connection_id);
       }
       if (filter.agent && filter.agent !== session.id && filter.agent !== agent && !selectedNative.has(key)) continue;
       sourceSelected = true;
@@ -121,7 +122,7 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
         }
       }
       if (!overlaps && !(received >= from && received < to) && filter.agent !== session.id) continue;
-      observed.push({ id: session.id, key, received, harness, facts, partial });
+      observed.push({ id: session.id, key, collector: row.key, verified: !!identity, received, harness, facts, partial });
     }
   }
   // Copies of a verified session may cover disjoint days. Choose the most reported copy for each UTC day,
@@ -132,21 +133,34 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
   }
   const authorities = new Map<string, Observed>();
   const uncertainSources = new Set<string>();
+  type SourceDay = { session: Observed; facts: Fact[]; score: number };
+  const better = (next: SourceDay, old: SourceDay | undefined) => !old || next.score > old.score
+    || (next.score === old.score && (next.session.received > old.session.received
+      || (next.session.received === old.session.received && next.session.id < old.session.id)));
+  const collectorViews = new Map<string, Map<string, Fact[]>>();
   for (const [key, group] of copies) {
-    const days = new Map<string, { session: Observed; facts: Fact[]; score: number }>();
+    const days = new Map<string, SourceDay>();
+    const perCollector = new Map<string, Map<string, SourceDay>>();
     const partial = new Set<string>();
     for (const session of group) {
       for (const day of session.partial) partial.add(day);
       const own = new Map<string, Fact[]>();
       for (const fact of session.facts) { const items = own.get(fact.day) ?? []; items.push(fact); own.set(fact.day, items); }
       for (const [day, facts] of own) {
-        const score = facts.reduce((sum, fact) => sum + (fact.tokens ?? 0), 0), old = days.get(day);
+        const next = { session, facts, score: facts.reduce((sum, fact) => sum + (fact.tokens ?? 0), 0) }, old = days.get(day);
         if (old) uncertainSources.add(key);
-        if (!old || score > old.score || (score === old.score && (session.received > old.session.received
-          || (session.received === old.session.received && session.id < old.session.id)))) days.set(day, { session, facts, score });
+        if (better(next, old)) days.set(day, next);
+        const ownDays = perCollector.get(session.collector) ?? new Map<string, SourceDay>();
+        if (better(next, ownDays.get(day))) ownDays.set(day, next);
+        perCollector.set(session.collector, ownDays);
       }
     }
     authorities.set(key, { ...group[0]!, facts: [...days.values()].flatMap(day => day.facts), partial });
+    for (const [collector, ownDays] of perCollector) {
+      const views = collectorViews.get(group[0]!.harness) ?? new Map<string, Fact[]>();
+      views.set(collector, [...(views.get(collector) ?? []), ...[...ownDays.values()].flatMap(day => day.facts)]);
+      collectorViews.set(group[0]!.harness, views);
+    }
   }
   const facts: Fact[] = [], partial = new Set<string>();
   const knownRuns = new Set<string>(), unknownRuns = new Set<string>();
@@ -190,6 +204,10 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
       if (run.fact.tokens === null) unknownRuns.add(run.id);
     }
   }
+  const recordedRuntimes = new Set([...groups.values()].flat().filter(run => run.fact.tokens !== null).map(run => runtime(run.fact.harness)!));
+  for (const harness of opaqueAlternatives.keys()) recordedRuntimes.add(harness);
+  const unidentifiedOverlap = new Set([...authorities.values()].filter(session => !session.verified
+    && session.facts.some(fact => fact.tokens !== null) && (recordedRuntimes.has(session.harness) || recordedRuntimes.has('*'))).map(session => session.harness));
   let observed_sessions = 0;
   for (const [key, session] of authorities) {
     if (!groups.has(key)) groups.set(key, []);
@@ -235,6 +253,9 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
       }
     }
     facts.push(...sourceFacts.filter(fact => fact.tokens === null));
+    // An old disconnect may already have erased a verified identity. Do not invent it or
+    // add this observation to potentially overlapping native runs; compare collector views below.
+    if (session && !session.verified && unidentifiedOverlap.has(session.harness)) continue;
     const observed = sourceFacts.filter(fact => fact.tokens !== null), captured = [...windows.values()].map(window => window.fact);
     const score = (items: Fact[]) => plus(items.map(fact => fact.tokens!));
     if (observed.length && captured.length) for (const window of windows.values()) for (const id of window.runs) unknownRuns.add(id);
@@ -261,6 +282,16 @@ export async function unifiedUsage(store: Store, filter: AnalyticsFilter = {}, n
     if (ambiguous) {
       for (const run of runs) if (runtime(run.fact.harness) === harness) unknownRuns.add(run.id);
     }
+  }
+  for (const harness of unidentifiedOverlap) {
+    let selected = nativeFacts.get(harness) ?? [];
+    for (const [, view] of [...(collectorViews.get(harness) ?? new Map<string, Fact[]>())].sort(([a], [b]) => a.localeCompare(b))) {
+      const known = view.filter(fact => fact.tokens !== null);
+      if (known.length && (!selected.length || (plus(known.map(fact => fact.tokens!)) ?? Infinity) > (plus(selected.map(fact => fact.tokens!)) ?? Infinity))) selected = known;
+    }
+    nativeFacts.set(harness, selected);
+    for (const session of authorities.values()) if (session.harness === harness && !session.verified) uncertainSources.add(session.key);
+    for (const run of runs) if (runtime(run.fact.harness) === harness && (run.key || run.purged)) unknownRuns.add(run.id);
   }
   const unscoped = opaqueAlternatives.get('*');
   if (unscoped?.length) {
