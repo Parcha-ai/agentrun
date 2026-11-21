@@ -204,3 +204,38 @@ test("Mode 2: two first starts of one inline agent at once place their files tog
     assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
   }
 });
+
+test("Mode 2: starts at once share the server's copy slots: at most PLACE_CONCURRENCY files are copied into run folders at a time, across every start, and each start's files all land", { timeout: 120_000 }, async (t) => {
+  // Archil's S3 gateway resets HTTP/2 streams (NGHTTP2_ENHANCE_YOUR_CALM) when 3 or more 10 MiB writes are in flight on
+  // the server's one connection to it, measured live: the limit is the server's, not each start's.
+  const { api, disks, store, upload } = await split(t);
+  const { PLACE_CONCURRENCY } = await import("../dist/uploads-archil.js");
+  assert.equal(PLACE_CONCURRENCY, 2);
+  const ids = { one: [], two: [] };
+  for (const [run, list] of Object.entries(ids)) for (let i = 0; i < 5; i++) list.push((await upload(`${run}/f${i}.txt`, Buffer.from(`${run} ${i}`))).file_id);
+  const saved = await whenFree(() => api("POST", "/agents", agent("mode2-slots", { tools: ["read"] })));
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  let inFlight = 0;
+  let most = 0;
+  const originalPut = FakeArchilDisk.prototype.putObject;
+  FakeArchilDisk.prototype.putObject = async function (key, bytes) {
+    if (!/\/runs\/[^/]+\/work\/inputs\/(one|two)\//.test(key)) return originalPut.call(this, key, bytes);
+    most = Math.max(most, ++inFlight);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return await originalPut.call(this, key, bytes);
+    } finally {
+      inFlight--;
+    }
+  };
+  t.after(() => void (FakeArchilDisk.prototype.putObject = originalPut));
+  const [one, two] = await Promise.all(["one", "two"].map((run) => api("POST", "/agents/mode2-slots/runs", { input: { content: `Run ${run}.` }, file_ids: ids[run] })));
+  assert.equal(one.status, 202, JSON.stringify(one.body));
+  assert.equal(two.status, 202, JSON.stringify(two.body));
+  assert.equal(most, PLACE_CONCURRENCY, `at most ${PLACE_CONCURRENCY} copies in flight across both starts, and that many used: ${most}`);
+  for (const [run, started] of [["one", one], ["two", two]]) {
+    const runId = started.body.run_id;
+    const launch = readLaunchBody((await store.runs.launch(runId)).body);
+    for (let i = 0; i < 5; i++) assert.equal(Buffer.from(disks.get(launch.archilDisk.diskId).files.get(`${runKey("mode2-slots", runId)}/inputs/${run}/f${i}.txt`) ?? "").toString("utf8"), `${run} ${i}`);
+  }
+});

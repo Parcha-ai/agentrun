@@ -522,9 +522,10 @@ export async function readyFilesOf(ids: readonly unknown[], get: (id: string) =>
  *  already (the same path twice, a file where another's folder goes, or what the folder held before) gets the next free
  *  suffix (`notes-2.txt`, `docs-2/`), the same for the same files in the same order, every name chosen before the first
  *  byte is written. Each copy is a new file written whole by the Workspace. `read`: a file's bytes. `concurrency`: how
- *  many files are read and written at once (default 1, one after another); `signal`: stops the copy before its next
- *  file, rejecting with the signal's reason. */
-export async function copyFilesInto(workspace: Workspace, files: readonly UploadedFile[], read: (file: UploadedFile) => Promise<Uint8Array>, { concurrency = 1, signal }: { readonly concurrency?: number; readonly signal?: AbortSignal } = {}): Promise<void> {
+ *  many files are read and written at once (default 1, one after another); `turn`: each file's read and write runs
+ *  inside it, as a limit shared with other copies (slots) takes them; `signal`: stops the copy before its next file,
+ *  rejecting with the signal's reason. */
+export async function copyFilesInto(workspace: Workspace, files: readonly UploadedFile[], read: (file: UploadedFile) => Promise<Uint8Array>, { concurrency = 1, turn = (copy) => copy(), signal }: { readonly concurrency?: number; readonly turn?: (copy: () => Promise<void>) => Promise<void>; readonly signal?: AbortSignal } = {}): Promise<void> {
   await uploadTestHooks.beforeCopy?.(workspace);
   const names = takenNames(workspace);
   // inputs/message.md is the run's message's (MESSAGE_FILE), never an upload's.
@@ -544,8 +545,12 @@ export async function copyFilesInto(workspace: Workspace, files: readonly Upload
     while (!failed && next < targets.length) {
       const { file, to } = targets[next++]!;
       try {
+        // Checked once the turn is had too: a file that waited for one past the deadline is not started.
         signal?.throwIfAborted();
-        await workspace.write(to, await read(file));
+        await turn(async () => {
+          signal?.throwIfAborted();
+          await workspace.write(to, await read(file));
+        });
       } catch (error) {
         failed = true;
         throw error;
@@ -556,6 +561,24 @@ export async function copyFilesInto(workspace: Workspace, files: readonly Upload
   const settled = await Promise.allSettled(Array.from({ length: Math.max(1, Math.min(concurrency, targets.length)) }, worker));
   const first = settled.find((one): one is PromiseRejectedResult => one.status === "rejected");
   if (first) throw first.reason;
+}
+
+/** At most `size` of the calls given to it running at once, the rest waiting in the order they came: a slot a call
+ *  leaves goes straight to the next one waiting. */
+export function slots(size: number): <T>(work: () => Promise<T>) => Promise<T> {
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  return async (work) => {
+    if (running < size) running++;
+    else await new Promise<void>((resolve) => waiting.push(resolve));
+    try {
+      return await work();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else running--;
+    }
+  };
 }
 
 /** The files a run's claim copies in (placeRunInputs): its launch's, unless the server already placed them in its folder

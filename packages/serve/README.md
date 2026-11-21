@@ -3075,7 +3075,9 @@ keeps them on an Archil disk of its own, `agentrun-<server id>-files`, made by i
 answers are the ones above, but the bytes are held in the server's memory (up to 50 MiB a file) instead of streamed to
 disk. When a run is started with `file_ids`, the server copies each file into the run's folder on its disk, at
 `work/inputs/<path>` (the launch's `archil_disk`, else its agent's, made first when the agent has none), before the run
-is queued: 4 files at a time, for at most 45 s. A copy that fails or takes longer refuses the start with
+is queued, for at most 45 s. The server copies 2 files at a time across all the runs it is starting, because Archil
+resets a connection carrying more large writes at once; 20 files of 10 MiB took 11 to 14 s. A copy that fails or takes
+longer refuses the start with
 `424 upstream_failed` ("The run's files could not be copied into its folder on Archil, so it was not started: ..."). No
 run is made and what was copied is removed. The run's claim then finds its files in place and reads no upload. Files
 uploaded while Archil was off stay in `DIR/files/` and are not seen while it is on, and the other way round.

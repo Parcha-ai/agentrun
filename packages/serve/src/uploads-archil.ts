@@ -10,9 +10,9 @@
 // - At a run's start with file_ids (placeRunFiles), before its row is written: the run's disk is resolved as its claim
 //   resolves it (workspace/run-disk.ts runDiskOf: the launch's, else its agent's, made when the agent has none), and each
 //   file is copied into the run's folder at work/inputs/<path> as a claim copies it in Mode 1 (uploads.ts
-//   copyFilesInto), PLACE_CONCURRENCY at a time, all within PLACE_TIMEOUT_MS. A copy that fails, or runs past that,
-//   refuses the start in words, and what it wrote is removed. The launch then says so (RunLaunch.filesPlaced) and names
-//   the disk, so the claim mounts that disk and copies nothing.
+//   copyFilesInto), PLACE_CONCURRENCY at a time across every start on the server, all within PLACE_TIMEOUT_MS. A copy
+//   that fails, or runs past that, refuses the start in words, and what it wrote is removed. The launch then says so
+//   (RunLaunch.filesPlaced) and names the disk, so the claim mounts that disk and copies nothing.
 // - Retention (sweepUploads): a file older than the retention (AGENTRUN_UPLOAD_RETENTION, default 7d; "off" keeps every
 //   file) that no run in the store names is deleted. A mark of a run the store no longer has does not count, but a mark
 //   younger than MARK_GRACE_MS does: its run may be starting now, its row not yet written.
@@ -36,7 +36,7 @@ import { agentDirName, runKey } from "./workspace/paths.js";
 import { runDiskOf } from "./workspace/run-disk.js";
 import { isWorkspaceError, type Workspace, WorkspaceError } from "./workspace/index.js";
 import {
-  answerOf, copyFilesInto, type FileUploadAnswer, INPUTS_DIR, isUploadedFile, MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, mismatchOf, pathProblem, readyFilesOf, type Received, reservation, sentInOneCall,
+  answerOf, copyFilesInto, type FileUploadAnswer, INPUTS_DIR, isUploadedFile, MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, mismatchOf, pathProblem, readyFilesOf, type Received, reservation, sentInOneCall, slots,
   type UploadedFile, type UploadStore, uuidv7,
 } from "./uploads.js";
 
@@ -46,8 +46,10 @@ const RECORD = "file.json";
 const BYTES = "bytes";
 /** Each file's marks of the runs started with it. */
 const MARKS = "runs";
-/** How many of a run's files the server copies into its folder at once. */
-export const PLACE_CONCURRENCY = 4;
+/** How many files the server copies into run folders at once, across every start: its one HTTP/2 connection to
+ *  Archil's S3 host carries them all, and with 3 or more 10 MiB writes in flight Archil's gateway resets their streams
+ *  (NGHTTP2_ENHANCE_YOUR_CALM), measured live. Two at a time copied 20 files of 10 MiB in 11 to 14 s. */
+export const PLACE_CONCURRENCY = 2;
 /** How long a start may spend copying its files (and making its agent's disk, when it has none) before it is refused:
  *  well inside a client's read timeout of a start (grep reads one for 90 s). */
 export const PLACE_TIMEOUT_MS = 45_000;
@@ -288,6 +290,8 @@ export function archilUploads(options: ArchilUploadsOptions) {
   const disks = new Map<string, string>();
   /** Each uploads disk's per-file turns (WorkspaceUploads commits), by its id: one map for every request on it. */
   const turns = new Map<string, Map<string, Promise<unknown>>>();
+  /** The copy slots every start's placing shares (PLACE_CONCURRENCY). */
+  const copying = slots(PLACE_CONCURRENCY);
   const turnsOf = (diskId: string): Map<string, Promise<unknown>> => {
     let held = turns.get(diskId);
     if (!held) turns.set(diskId, (held = new Map()));
@@ -373,7 +377,7 @@ export function archilUploads(options: ArchilUploadsOptions) {
       const runDisk = diskOf(open.settings, open.key, disk.diskId);
       runs = archilWorkspace(runDisk, `agents/${agentDirName(agentId)}/runs`, { queueMs: 5_000 });
       await uploads.mark(ids, runId);
-      await copyFilesInto(archilWorkspace(runDisk, runKey(agentId, runId)), files, (file) => uploads.bytes(file), { concurrency: PLACE_CONCURRENCY, signal });
+      await copyFilesInto(archilWorkspace(runDisk, runKey(agentId, runId)), files, (file) => uploads.bytes(file), { concurrency: PLACE_CONCURRENCY, turn: copying, signal });
     })();
     /** Removes what the placing wrote, once every read and write it started has settled, so none lands after. */
     const undo = async (): Promise<void> => {
