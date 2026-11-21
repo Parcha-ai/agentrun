@@ -46,7 +46,6 @@ import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
 import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
-import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { type LearnedAction, learnedAskShown, LEARNED_WORKFLOW_TOOL, learnedMcpCalls, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER, tieredModels, tierProvider } from "../port-models.js";
@@ -532,11 +531,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // folder not there yet, never over an earlier claim's. A desktop or a phone (the revision's computer
   // setting, the one computerForClaim starts) brings its kind's skill, named in the prompt beside the revision's own.
   const kindSkills = await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
-  // A learning run's seed, read once from its learning folder where the run's place keeps it (runner/learning-seed.ts):
+  // A learning run's seed, read once from its learning folder in the data directory, in either mode (runner/learning-seed.ts):
   // its learned workflows, cut of the server's secrets, the ones its learned_workflow tool runs. Read before the run's
   // tools are bound. A learning fault, or a seed that failed (seedFailed), gives none.
   const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
-  const learningFolder = () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil }));
+  const learningFolder = () => learningFolderOf(deps.data, runRow.agentId);
   const seedLaid = start && !seedFailed(start)
     ? await layLearningSeed({ seed: start.seed, folder: learningFolder, shown, log, ...(start.noWorkflows ? { workflows: false as const } : {}) })
     : undefined;
@@ -888,9 +887,6 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     log,
     // A workflow draft's decision nodes are checked against the host's decision providers, on its keys (LS-07).
     decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, DECISION_PROVIDER_KEYS)) }),
-    learningFolder: archil === undefined
-      ? (agentId: string) => learningFolderOf(deps.data, agentId)
-      : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
   }), { ...audits, launch, ...(run.redact ? { redact: run.redact } : {}) });
 
   return {

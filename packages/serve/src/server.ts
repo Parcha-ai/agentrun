@@ -104,7 +104,6 @@ import { type AgenticBody, type AgentRow, type McpCredentialMark, type MonidPinB
 import { agentDeleting, answerOf, logged, purgedAgent } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
-import { namedDisksOf } from "./learn/learning-of.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
@@ -2519,37 +2518,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. ${again}`, { retry_after_ms: 5_000 });
     }
   };
-  /** The Archil disks agent `agentId`'s learning folder may be on: a Mode 2 run's end writes it on the disk its claim
-   *  mounted (workspace/learning-workspace.ts, at learningKey), the agent's stored disk (named here only for
-   *  `agentDisk`) or one a launch named (kind "launch", a customer's: each run's disk, learn/learning-of.ts namedDisksOf,
-   *  read off its row, so a purged run whose launch is gone still names it). A run's kept disk, or a launch's kind
-   *  "agent", is the agent's own disk, mounted only while it is still the stored one (workspace/run-disk.ts runDiskOf):
-   *  one no longer stored was removed at Archil, its folder with it. */
-  const learningDisksOf = async (agentId: string, agentDisk: boolean): Promise<string[]> => {
-    const disks = new Set<string>();
-    const stored = agentDisk ? await agentDiskOf(store, agentId) : undefined;
-    if (stored) disks.add(stored.diskId);
-    for (const disk of await namedDisksOf(store, agentId)) disks.add(disk);
-    return [...disks];
-  };
   /** Step 2 of DELETE /agents/{id}, and DELETE /agents/{id}/learning: the learning module's delete over the agent's
-   *  learning folder on this server's disk, as the learning routes open it (learningFolderOf), which deleteLearning ends
-   *  in its finally, and over its folder on each Archil disk a launch of its runs named and, for a reset (`agentDisk`),
-   *  on its own disk, which the agent's delete removes whole in step 3 (archil-routes.ts removeLearningFolder; Archil
-   *  off or refusing is 503 unavailable, nothing here deleted, for the next call). */
-  const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId, { keepResetLedger = false, agentDisk = false } = {}) => deleteLearning(given, agentId, learningFolderOf(data, agentId), {
-    keepResetLedger,
-    elsewhere: async () => {
-      for (const diskId of await learningDisksOf(agentId, agentDisk)) {
-        try {
-          await archil.removeLearningFolder(agentId, diskId);
-        } catch (error) {
-          if (!(error instanceof ApiError && ["unavailable", "upstream_failed"].includes(error.code))) throw error;
-          throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. The agent's learning folder on this server and its learning records are kept: send the DELETE again once it can be reached.`, { retry_after_ms: 5_000 });
-        }
-      }
-    },
-  }));
+   *  learning folder in this server's data directory (in either mode), as the learning routes open it
+   *  (learningFolderOf), which deleteLearning ends in its finally. */
+  const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId, { keepResetLedger = false } = {}) => deleteLearning(given, agentId, learningFolderOf(data, agentId), { keepResetLedger }));
   /** What DELETE /agents/{id} does outside the store's rows, on this server (agent-delete.ts AgentDeleteHost). */
   const agentDeleteHost: AgentDeleteHost = {
     store,
@@ -2595,8 +2567,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // DELETE. A run on its agent's own disk: with its agent's delete that disk went whole (removeDisk), its folder with
       // it; deleted alone, its folder there is deleted, the disk kept, read from its disk setting, which goes after.
       const launched = await store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
-      // Purged alone, the agent's learning stays, maybe on that disk too: the run's tombstone keeps its disk (runs.disk),
-      // for the agent's reset or delete to find (learningDisksOf).
       if (launched?.kind === "launch") await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"], again);
       else if (alone) {
         const own = launched?.diskId ?? (await runDiskKept(store, runId));

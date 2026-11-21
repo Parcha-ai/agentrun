@@ -2,11 +2,11 @@
 //
 // Layout, under a server's data directory, or from the root of an Archil disk (the same keys, without <data>/disk):
 //   <data>/disk/agents/<agent>/runs/<run>/work   a run's folder (runFolder; runKey on a disk): its Workspace's root
-//   <data>/disk/agents/<agent>/learning          an agent's learning folder (agentLearningFolder; learningKey): its git
-//                                                folder
 //   <data>/disk/agents/<agent>/home              an agent's home (agentHomeFolder; homeKey): the files its owner keeps
 //                                                for it
 // and on this machine alone:
+//   <data>/disk/agents/<agent>/learning          an agent's learning folder (agentLearningFolder): its git folder, in
+//                                                either mode, never on an Archil disk
 //   <data>/scratch/<agent>/<run>                 a run's scratch folder (scratchFolder): never on the disk above, so in
 //                                                no Workspace: a harness's working directory, and its private files
 //                                                in harness/<claim's epoch>, swept at that claim's end
@@ -47,9 +47,6 @@ export const agentFolder = (dataDir: string, agentId: string): string => join(da
 /** Run `runId`'s folder as a key from a disk's root: `agents/<agent>/runs/<run>/work` (an Archil workspace's root). */
 export const runKey = (agentId: string, runId: string): string => `agents/${agentDirName(agentId)}/runs/${checkId(runId, "run")}/work`;
 
-/** Agent `agentId`'s learning folder as a key from a disk's root: `agents/<agent>/learning`. */
-export const learningKey = (agentId: string): string => `agents/${agentDirName(agentId)}/learning`;
-
 /** Run `runId`'s folder, the root of its Workspace: `<data>/disk/agents/<agent>/runs/<run>/work`. */
 export const runFolder = (dataDir: string, agentId: string, runId: string): string => join(dataDir, DISK_DIR, runKey(agentId, runId));
 
@@ -60,7 +57,7 @@ export const RECORDINGS = "recordings";
 export const recordingsFolder = (dataDir: string, agentId: string, runId: string): string => join(dirname(runFolder(dataDir, agentId, runId)), RECORDINGS);
 
 /** Agent `agentId`'s learning folder, the root of its learning Workspace: `<data>/disk/agents/<agent>/learning`. */
-export const agentLearningFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, learningKey(agentId));
+export const agentLearningFolder = (dataDir: string, agentId: string): string => join(agentFolder(dataDir, agentId), "learning");
 
 /** Agent `agentId`'s home as a key from a disk's root: `agents/<agent>/home`. */
 export const homeKey = (agentId: string): string => `agents/${agentDirName(agentId)}/home`;

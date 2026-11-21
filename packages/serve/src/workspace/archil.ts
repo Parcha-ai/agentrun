@@ -1,7 +1,7 @@
 // ArchilWorkspace: a Workspace on a folder of the owner's Archil disk, through the disk's file API and its serverless
 // exec (archil-disk.ts, archil-exec.ts). Nothing is mounted on the server or a runner, and no program runs here.
 //
-// Keys. The workspace's root is a folder of the disk (paths.ts runKey or learningKey); every key, prefix, directory
+// Keys. The workspace's root is a folder of the disk (paths.ts runKey, or a folder of uploads); every key, prefix, directory
 // and exec mount it sends is the root or under it, or its exec spill folder beside it (spillFolderOf: a run's
 // "exec-out"), built from paths paths.ts has checked. An exec mounts those two folders alone (each a mount's
 // subdirectory): the rest of the owner's disk is not in its container. The spill folder holds an exec's stdin and its

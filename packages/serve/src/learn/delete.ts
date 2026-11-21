@@ -19,19 +19,17 @@ export class LearningInFlight extends Error {
   }
 }
 
-/** Agent `agentId`'s learning deleted: its learning folder on each other disk it is on (`elsewhere`: a Mode 2 run's end
- *  writes it on the Archil disk its claim mounted; server.ts names those disks), then every file of its learning folder
- *  here (`folder`, learning.ts learningFolderOf: its corrections.md and workflows, its git history and snapshot,
+/** Agent `agentId`'s learning deleted: every file of its learning folder (`folder`, learning.ts learningFolderOf, in
+ *  the server's data directory in either mode: its corrections.md and workflows, its git history and snapshot,
  *  audits.jsonl), then the learning records the store keeps for it (its promotions and grades, and the reset ledger and
  *  watermark its earlier resets kept, unless `keepResetLedger`: a reset keeps them, the runs they cover staying).
- *  Refused (LearningInFlight), with nothing removed, while a run of the agent has not ended; `elsewhere` failing leaves
- *  this folder and the records for the next call. Idempotent: what is gone already is skipped, so a second call removes
- *  nothing. `files`: this folder's entries it removed; `records`: the store's records. `folder` is ended here. */
-export async function deleteLearning(store: Store, agentId: string, folder: LearningFolder, { keepResetLedger = false, elsewhere }: { keepResetLedger?: boolean; elsewhere?: () => Promise<void> } = {}): Promise<{ files: number; records: number }> {
+ *  Refused (LearningInFlight), with nothing removed, while a run of the agent has not ended. Idempotent: what is gone
+ *  already is skipped, so a second call removes nothing. `files`: the folder's entries it removed; `records`: the
+ *  store's records. `folder` is ended here. */
+export async function deleteLearning(store: Store, agentId: string, folder: LearningFolder, { keepResetLedger = false }: { keepResetLedger?: boolean } = {}): Promise<{ files: number; records: number }> {
   try {
     const open = (await store.runs.list({ agentId })).filter((run) => run.agentId === agentId && !FINAL_STATES.includes(run.state)).map((run) => run.id);
     if (open.length) throw new LearningInFlight(agentId, open);
-    await elsewhere?.();
     const entries = await folder.workspace.list("").catch((error: unknown) => (isWorkspaceError(error, "NOT_FOUND") ? [] : Promise.reject(error)));
     for (const entry of entries) await folder.workspace.remove(entry.name, { recursive: true, force: true });
     let records = 0;

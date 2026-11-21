@@ -37,7 +37,7 @@ import { handedValuesOf } from "../handed-values.js";
 import { excerptShown, MIN_SECRET, redactSecrets } from "../learn/secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { META_TOOLS } from "../meta-tool-names.js";
-import { holdsSecret, LEARNING_LABEL, secretsShown } from "../learning.js";
+import { holdsSecret, LEARNING_LABEL, learningFolderOf, secretsShown } from "../learning.js";
 import type { RunPath } from "../learning-cost.js";
 import { said, seedStopped } from "../learning-words.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
@@ -58,16 +58,13 @@ import { runnerSecrets } from "./redact.js";
 import { mcpNameOf } from "../tool-names.js";
 import { held, heldEndOfRun } from "./held.js";
 
-/** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
- *  the agent's learning folder (where the run's place keeps it), the runner's environment (the host's secrets a draft or
- *  a correction is refused for), and what the run was handed (its claim's keys, its sign-in's pointers through
- *  `signIns`), which it never learns. */
+/** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with,
+ *  and the agent's learning folder, learning.ts learningFolderOf, in either mode), the runner's environment (the host's
+ *  secrets a draft or a correction is refused for), and what the run was handed (its claim's keys, its sign-in's
+ *  pointers through `signIns`), which it never learns. */
 export interface LearningEndDeps {
   readonly store: Store;
   readonly data: string;
-  /** Agent `agentId`'s learning folder, where the run's place keeps it: learningWorkspace({ mode: "local", agentId, data })
-   *  in Mode 1, { mode: "archil", agentId, archil } in Mode 2. Opened for each read or write, and ended after it. */
-  readonly learningFolder: (agentId: string) => LearningFolder;
   readonly env?: NodeJS.ProcessEnv;
   /** The agent's sign-ins, opened (sign-ins-store.ts signInReads over the store and the seal key): the pointers the run's
    *  row says it was handed are read back through them and never learned. Absent, a run marked as handed one learns
@@ -157,7 +154,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     checkDraft: ({ runId, agentId, draft, refuse, revised }) => checkDraftOf(deps, { runId, agentId, seed, draft, refuse, ...(revised ? { revised } : {}) }),
     commit: async ({ runId, agentId, round: at, draft, correction, refuse }) => {
       const reason = draft ? `Compiled the job as workflow ${draft.name}${correction !== undefined ? ", with its owner's correction" : ""}.` : "Its owner's correction.";
-      const done = await commitDirect({ folder: () => deps.learningFolder(agentId), log: deps.log ?? (() => undefined) }, {
+      const done = await commitDirect({ folder: () => learningFolderOf(deps.data, agentId), log: deps.log ?? (() => undefined) }, {
         runId, round: at, reason, seed, ...(mustHold ? { mustHold } : {}), files: draft ? draft.files.map((file) => ({ ...file })) : [],
         ...(draft?.held?.length ? { held: [...draft.held] } : {}), ...(draft?.bases ? { bases: draft.bases } : {}),
         ...(correction !== undefined ? { correction, refuseValues: refuse } : {}),
@@ -177,8 +174,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // The one check at the entry of a run's learning end, before any merge, look-back, compile, draft check or record: a
     // run whose seed was read at or before a reset of its agent's learning (its watermark, learn/promote.ts resetAtOf; a
     // start that records no time is read as before it) learns nothing, whole. Its corrections and compile would land on
-    // what the reset left. Read by time alone: a Mode 2 run's end writes the folder on its disk, which never held the
-    // seed the server read from its own folder, so a commit missing here says nothing of a reset.
+    // what the reset left. Read by time alone.
     const reset = await resetAtOf(deps.store.settings, input.agentId);
     if (reset !== undefined && !(start.seededAt !== undefined && start.seededAt > reset)) {
       return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "reset", detail: said.reset } } }] };
@@ -242,8 +238,8 @@ export async function capSpendOf(store: Pick<Store, "runs">, runId: string, entr
 }
 
 /** `read` over agent `agentId`'s learning folder, opened for it and always ended after. */
-async function withFolder<T>(deps: Pick<LearningEndDeps, "learningFolder">, agentId: string, read: (folder: LearningFolder) => Promise<T>): Promise<T> {
-  const folder = deps.learningFolder(agentId);
+async function withFolder<T>(deps: Pick<LearningEndDeps, "data">, agentId: string, read: (folder: LearningFolder) => Promise<T>): Promise<T> {
+  const folder = learningFolderOf(deps.data, agentId);
   try {
     return await read(folder);
   } finally {
@@ -595,7 +591,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const shown = secretsShown(input.refuse);
   const holds = (value: unknown) => holdsSecret(typeof value === "string" ? value : (JSON.stringify(value) ?? ""), shown);
   const leftOut = { workflows: new Set<string>(), traces: 0, input: false };
-  const folder = deps.learningFolder(input.agentId);
+  const folder = learningFolderOf(deps.data, input.agentId);
   // `main`: the commit the snapshot read is main's at, which `current` was read from.
   let read: { workflows: number; current?: string; held?: PromotionRecord; main?: string };
   try {

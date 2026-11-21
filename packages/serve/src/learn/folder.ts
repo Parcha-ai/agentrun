@@ -1,10 +1,12 @@
 // The agent's learning folder through its Workspace: the one way serve reads and writes it. The folder is a git
-// repository in the agent's own workspace (a local folder, or the owner's Archil disk), never touched with git here:
+// repository in the server's data directory (workspace/learning-workspace.ts, in either mode: never on an Archil disk),
+// never touched with git here:
 // - Every write to main is ONE exec of the checked-in script (learning.sh), one hold of the folder: a person's edit,
 //   create, retire, approve or restore and a run's merge alike (commitChange; learn/commit.ts learningCommit is the
 //   API callers use), and the folder's first commit
 //   (learningInit). The script is written into the folder once per version, `.agentrun/learning-<sha8>.sh`, and run
-//   there: an Archil exec takes one command line of bounded length, so its text never travels in argv.
+//   there. The server and each runner beside it on the same data directory write the one folder: the script's compare
+//   and swap on main, and its lock on the first commit, keep two writers from losing or breaking either's work.
 // - This side computes everything it can: the tree's changes, the commit's message and time, the front matter, each
 //   file's history and order, the log, and so the whole next snapshot (nextSnapshot), from the snapshot the write read
 //   and the change. The script does the git plumbing, the file writes and the atomic swap: the commit by compare and
@@ -41,7 +43,7 @@ export const LOG_KEEP = 200;
 export const FILE_CAP = 1 << 20;
 /** A diff's file whose patch is larger than this is withheld as too large (learning.sh PATCH_CAP). */
 export const PATCH_CAP = 64 * 1024;
-/** How long one script run may take: a hung git would hold the folder. Archil's own cap is 295 s. */
+/** How long one script run may take: a hung git would hold the folder. */
 const SCRIPT_TIMEOUT_MS = 60_000;
 /** How many times a write is computed again on a main that moved under it, or a body that changed as it was read. */
 const WRITE_TRIES = 3;
@@ -400,13 +402,12 @@ const withMain = (snapshot: Snapshot, main: string): Snapshot => JSON.parse(JSON
 // ---------------------------------------------------------------------------------------------------------------------
 // The folder's Workspace is the one learningWorkspace (workspace/learning-workspace.ts): the local folder under the
 // data directory, made by the first write (a read makes nothing: a folder not made reads as no main yet, NOT_FOUND),
-// each level on the way checked, a link there refused as ESCAPE naming it (folderFailure reads it as a link); or the
-// claim's Archil disk at learningKey, whose end() sweeps the exec spill. folderTestHooks.workspace stands in for it in
-// tests.
+// each level on the way checked, a link there refused as ESCAPE naming it (folderFailure reads it as a link).
+// folderTestHooks.workspace stands in for it in tests.
 
-/** Where an agent's learning folder is: the local folder under the data directory, or the claim's Archil disk. */
+/** Whose learning folder, under which data directory. */
 export type LearningPlace = OneLearningPlace;
-/** The folder's Workspace, and its end: called in a finally after every use (on Archil it sweeps the exec spill). */
+/** The folder's Workspace, and its end: called in a finally after every use. */
 export type LearningFolder = OneLearningWorkspace;
 
 /** Agent `place.agentId`'s learning folder as a Workspace: the one learningWorkspace, or the test's stand-in. */
@@ -432,8 +433,8 @@ export class FolderUnreadable extends Error {
   }
 }
 
-/** A workspace failure as the folder's: ESCAPE (a link below the root, Local) or a read of a link (Archil's file API:
- *  UNAVAILABLE naming a symbolic link) in words that name the link; any other UNAVAILABLE as the folder unreadable. */
+/** A workspace failure as the folder's: ESCAPE (a link below the root) or a read of a link (UNAVAILABLE naming a
+ *  symbolic link) in words that name the link; any other UNAVAILABLE as the folder unreadable. */
 export function folderFailure(error: unknown): unknown {
   if (error instanceof FolderUnreadable) return error;
   if (isWorkspaceError(error, "ESCAPE") || (isWorkspaceError(error, "UNAVAILABLE") && /symbolic link/.test(error.message))) {

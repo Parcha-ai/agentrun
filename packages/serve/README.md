@@ -1027,7 +1027,7 @@ owner's.
   falls back to a shared disk.
 - **Removing an agent's disk.** This server archives agents and never deletes one, and an archive keeps everything,
   its disk included. `DELETE /v2/agents/{agent_id}/archil` deletes the agent's own disk at Archil (its runs' folders,
-  its home and its learning with it) and frees a disk of the plan, once no live run of any agent is on it (a run of
+  and its home with it; its learning is in the server's data directory and stays) and frees a disk of the plan, once no live run of any agent is on it (a run of
   another agent may name it in `archil_disk`). The agent must be archived, unless its source manages it: an inline
   run's agent is never archived here, and its caller decides when it is done. The disk is marked as being removed
   before the live runs are counted: from then a new run of the agent on it is `409 agent_not_runnable`, and a run
@@ -3789,7 +3789,8 @@ corrections and shows captured runs; new captures begin with the next normal pro
 Historical learning files remain stored and are not converted into owner corrections or deleted. Older stored
 CLI `learning: "notes"` settings read publicly as `true`; that compatibility read does not rewrite the revision.
 
-An agent that learns has a learning folder, `learning/` in its folder on the disk (`DATA/disk/agents/<key>/learning/`):
+An agent that learns has a learning folder, `learning/` in its folder in the data directory
+(`DATA/disk/agents/<key>/learning/`), with Archil run disks too: a learning folder is never on an Archil disk.
 
 - `corrections.md`, its owner's standing corrections, one `- ` line each, at most 2048 bytes;
 - one folder per learned workflow, `workflows/<name>/`, with its `workflow.json` and its `README.md` (front matter with
@@ -3797,9 +3798,10 @@ An agent that learns has a learning folder, `learning/` in its folder on the dis
 
 The server reads and writes it with its own code, in [`src/learn/`](src/learn/SPEC.md), whose `SPEC.md` is the
 folder's contract. The folder is plain git with `main` checked out. The agent's first run that learns makes it, with
-one empty commit on `main`; an agent that does not learn never gets one. The server is its only writer. Every git
-call the server makes there runs with the folder's hooks and fsmonitor off, no replace refs, no lazy fetch and no system
-or global config, one at a time per agent.
+one empty commit on `main`; an agent that does not learn never gets one. The server and the runners on its data
+directory are its only writers. Every git call they make there runs with the folder's hooks and fsmonitor off, no
+replace refs, no lazy fetch and no system or global config, one at a time per agent in each process; between
+processes, a commit moves `main` by compare and swap, so a writer that lost the race writes nothing and tries again.
 
 Each run of an agent that learns starts from `main` as it is when the run is made, whatever its harness:
 

@@ -223,9 +223,10 @@ const queues = new Map<string, Promise<unknown>>();
  *  process. Everything that touches an agent's folder goes through it, so two runs made at once never both make it. */
 export const withAgentRepo = <T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> => serialBy(queues, learningRepo(data, agentId), work);
 
-/** Agent `agentId`'s learning folder (learn/folder.ts learningWorkspace), in this server's place: Mode 1's local folder
- *  under `data`. The one point that names the place; its `end()` is called in a finally after every use. */
-export const learningFolderOf = (data: string, agentId: string): LearningFolder => learningWorkspace({ mode: "local", agentId, data });
+/** Agent `agentId`'s learning folder (learn/folder.ts learningWorkspace): the folder under the data directory `data`, in
+ *  either mode (a Mode 2 server's too: never on an Archil disk). The one point that names the place; its `end()` is
+ *  called in a finally after every use. */
+export const learningFolderOf = (data: string, agentId: string): LearningFolder => learningWorkspace({ agentId, data });
 
 /** The seed of `snapshot` (undefined: no main yet), each body read by `text`: corrections.md, and each active draft's
  *  README.md and workflow.json. A draft whose README's front matter does not read one way is never read as active. */

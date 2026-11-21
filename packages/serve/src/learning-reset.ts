@@ -1,6 +1,6 @@
 // DELETE /v2/agents/{agent_id}/learning: an agent's learning reset, the agent kept. What it learned goes (the learning
-// module's deleteLearning: its learning folder's files, its git history and audit ledger among them, on this server and
-// on every Archil disk its runs used, learn/learning-of.ts namedDisksOf, then its promotions and grades); the agent, its
+// module's deleteLearning: its learning folder's files in this server's data directory, its git history and audit ledger
+// among them, then its promotions and grades); the agent, its
 // definition, its runs and everything kept of them (their files, journals, costs, the learning each one kept) stay, so
 // the run list, the stats and the usage read the same before and after. A served run's cost carries its share of its
 // revision's compile and check, read from the promotion records the reset deletes: each revision they name is kept
@@ -94,13 +94,13 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
     // in the same millisecond counts as before it: its run learns nothing (reason reset) and an SDK start is refused, to
     // start again, never a run given what the reset deleted. Set first, so no moment has the folder gone and the old runs
     // still read. A delete refused before it removed anything (LearningInFlight) puts the earlier one back, its learning
-    // left as it was; one that failed on the way (a disk, a file, a record) may have removed some of it, so the watermark
+    // left as it was; one that failed on the way (a file, a record) may have removed some of it, so the watermark
     // stays and the next call finishes the reset: the old runs never feed a compile into a folder emptied part way.
     const earlier = await resetAtOf(host.store.settings, agentId);
     const at = Date.now();
     await keepResetAt(host.store.settings, agentId, at);
     try {
-      await host.deleteLearning(host.store, agentId, { keepResetLedger: true, agentDisk: true });
+      await host.deleteLearning(host.store, agentId, { keepResetLedger: true });
     } catch (error) {
       if (!(error instanceof LearningInFlight)) throw error;
       await (earlier === undefined ? host.store.settings.remove(resetAtKey(agentId)) : keepResetAt(host.store.settings, agentId, earlier));

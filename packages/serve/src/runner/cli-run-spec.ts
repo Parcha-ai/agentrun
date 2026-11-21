@@ -33,7 +33,6 @@ import { environmentLine, runZone } from "../environment.js";
 import { factsOf, type HarnessEntry, harnessOf } from "../harness-table.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
-import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { type ModelRef, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
 import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
@@ -397,7 +396,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A learning run's seed read as the pi spec reads it (runner/learning-seed.ts): its learned workflows, the ones
   // learned_workflow runs.
   const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
-  const learningFolder = () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil }));
+  const learningFolder = () => learningFolderOf(deps.data, runRow.agentId);
   const seedLaid = start && !seedFailed(start)
     ? await layLearningSeed({ seed: start.seed, folder: learningFolder, shown, log, ...(start.noWorkflows ? { workflows: false as const } : {}) })
     : undefined;
@@ -719,9 +718,6 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     log,
     // A workflow draft's decision nodes are checked against the host's decision providers, on its keys (LS-07).
     decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, DECISION_PROVIDER_KEYS)) }),
-    learningFolder: archil === undefined
-      ? (agentId: string) => learningFolderOf(deps.data, agentId)
-      : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
   }), { ...audits, launch, ...(run.redact ? { redact: run.redact } : {}) });
 
   return {
