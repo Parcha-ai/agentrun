@@ -6,7 +6,8 @@
 //   API callers use), and the folder's first commit
 //   (learningInit). The script is written into the folder once per version, `.agentrun/learning-<sha8>.sh`, and run
 //   there. The server and each runner beside it on the same data directory write the one folder: the script's compare
-//   and swap on main, and its lock on the first commit, keep two writers from losing or breaking either's work.
+//   and swap on main, a first commit's init that finishes another's, and its lock on bringing the working tree and the
+//   snapshot in line with main keep two writers from losing either's work or leaving an older main's snapshot.
 // - This side computes everything it can: the tree's changes, the commit's message and time, the front matter, each
 //   file's history and order, the log, and so the whole next snapshot (nextSnapshot), from the snapshot the write read
 //   and the change. The script does the git plumbing, the file writes and the atomic swap: the commit by compare and
@@ -675,7 +676,7 @@ export class FolderTooLarge extends Error {
 
 /** What one commit did: landed (its main and the snapshot written), stale (main is `main`, not the one it read:
  *  nothing was written), refused (a precondition failed on main: nothing was written), landed without its files
- *  brought in line (main moved; no snapshot written, or the one written overtaken by a newer main), or merged (the run, this round, merged already: its merge commit,
+ *  brought in line (main moved, no snapshot written), or merged (the run, this round, merged already: its merge commit,
  *  nothing written). */
 export type Committed =
   | { landed: true; main: string; snapshot: Snapshot }
@@ -686,8 +687,9 @@ export type Committed =
 
 /**
  * One write to main, one exec of the script: `change` on the snapshot it was computed from (`base`: none for the
- * folder's first commit, `op` "init"). The commit moves main only from `base.main` (compare and swap); then the
- * working tree, a merge's diff file, and the next snapshot (nextSnapshot), last. Nothing is retried here: writeLearning
+ * folder's first commit, `op` "init"). The commit moves main only from `base.main` (compare and swap); then a merge's
+ * diff file, the working tree and the next snapshot (nextSnapshot), last; or, when another writer's commit landed on
+ * it by then, neither: that writer brings the folder in line with its newer main. Nothing is retried here: writeLearning
  * computes again on a main that moved.
  */
 export async function commitChange(ws: Workspace, base: Snapshot | undefined, change: FolderChange | undefined): Promise<Committed> {
