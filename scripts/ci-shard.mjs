@@ -47,8 +47,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const signalGroup = (pid, signal) => { try { process.kill(-pid, signal); return true; } catch { return false; } };
 
 // The command runs in a process group of its own, so a kill reaches every process it started (npm, its shell, node --test
-// and each test file's process), not npm alone, which would leave the suite running. Its exit status, or 'killed' when it
-// was still running after `ms`.
+// and each test file's process), not npm alone, which would leave the suite running. Its exit status, the signal that ended
+// it ('SIGKILL'), or 'killed' when it was still running after `ms`.
 async function run(command, ms) {
   const child = spawnArgv(command, { stdio: 'inherit', detached: true });
   // The one way a command is stopped, by the limit or by a cancel: `signal` to its group (on SIGTERM node --test prints its
@@ -65,7 +65,7 @@ async function run(command, ms) {
   const forward = (signal) => { cancelled ??= stop(signal).then(() => process.exit(128 + constants.signals[signal])); };
   process.on('SIGINT', forward).on('SIGTERM', forward);
   let timer;
-  const status = await Promise.race([once(child, 'exit').then(([code]) => code), new Promise((resolve) => { timer = setTimeout(resolve, ms, 'killed'); })]);
+  const status = await Promise.race([once(child, 'exit').then(([code, signal]) => code ?? signal), new Promise((resolve) => { timer = setTimeout(resolve, ms, 'killed'); })]);
   clearTimeout(timer);
   if (status === 'killed') await stop('SIGTERM');
   if (cancelled) await cancelled;
@@ -87,7 +87,10 @@ for (const command of commands(shard)) {
   const started = Date.now();
   const status = await run(command, ends - started);
   console.log('::endgroup::');
+  // A failed suite says how, so one ended by a signal before it printed anything is not an empty group in the log.
   if (status === 'killed') console.log(`::error::ci-shard: ${shown(command)} ran ${minutes(Date.now() - started)} min and was killed at the shard's ${minutes(SHARD_TIMEOUT_MS)}-minute limit`);
+  else if (typeof status === 'string') console.log(`::error::ci-shard: ${shown(command)} was ended by ${status}`);
+  else if (status !== 0) console.log(`::error::ci-shard: ${shown(command)} exited with status ${status}`);
   if (status !== 0) failed.push(shown(command));
 }
 // Its time against its model, whatever the result: a shard far over it means scripts/ci-timings.json is stale.

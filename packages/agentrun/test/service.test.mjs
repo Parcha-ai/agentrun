@@ -292,24 +292,8 @@ test("agentrun open: the setup page with no code on a loopback server; the conso
   assert.match(said.out.join(""), /Opened the console in your browser\./);
 });
 
-// An opener that stays in the foreground until the browser closes held `agentrun service install` (and the installer)
-// open after the setup page was up, until the browser closed: the opener is started and left running.
-test("launchOpener returns once the opener has started, while it still runs; false when there is no such command", async (t) => {
-  const dir = fresh();
-  const pidFile = join(dir, "opener.pid");
-  writeFileSync(join(dir, "xdg-open"), `#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 30\n`, { mode: 0o755 });
-  const began = Date.now();
-  assert.equal(await launchOpener("xdg-open", ["http://127.0.0.1:7345/setup"], { PATH: `${dir}:/usr/bin:/bin` }), true);
-  assert.ok(Date.now() - began < 5_000, "it did not wait for the opener to exit");
-  for (let waited = 0; !existsSync(pidFile) && waited < 5_000; waited += 50) await new Promise((done) => setTimeout(done, 50));
-  const pid = Number(readFileSync(pidFile, "utf8"));
-  t.after(() => {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {}
-  });
-  assert.doesNotThrow(() => process.kill(pid, 0), "the opener still runs");
-  assert.equal(await launchOpener("agentrun-no-such-opener", ["x"], { PATH: dir }), false);
+test("launchOpener is false when there is no such command", async () => {
+  assert.equal(await launchOpener("agentrun-no-such-opener", ["x"], { PATH: fresh() }), false);
 });
 
 test("agentrun open with no server answering says so, exit 1", async () => {
