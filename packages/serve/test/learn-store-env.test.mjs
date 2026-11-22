@@ -53,6 +53,10 @@ test("a data directory's store: the local folder by default, code.storage when s
   await learningInit(learningStoreOf(data, "agent-one"));
   useLearningStore(data, { name: "example-org", key: PEM, apiUrl: "https://api.example-org.code.storage.invalid", serverId: async () => "srv1", fetch: async () => { throw new Error("not reached"); } });
   assert.equal(learningStoreOf(data, "agent-one").id, "code.storage:example-org:agent-one");
+  // A key that reads as a PEM but is no key: making the store never throws (every run makes one), each call fails closed.
+  useLearningStore(data, { name: "example-org", key: "-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----\n", serverId: async () => "srv1", fetch: async () => { throw new Error("not reached"); } });
+  const unkeyed = learningStoreOf(data, "agent-one");
+  await assert.rejects(unkeyed.head(), (error) => error.name === "FolderUnreadable" && /AGENTRUN_CODE_STORAGE_KEY is not a private key/.test(error.message) && !error.message.includes("not-a-key"));
   useLearningStore(data, { refused: LEARNING_APART });
   const refused = learningStoreOf(data, "agent-one");
   for (const call of [() => refused.head(), () => refused.read("0".repeat(40)), () => refused.save({ old: null, message: "x", at: 1, writes: [] }), () => refused.remove()]) {

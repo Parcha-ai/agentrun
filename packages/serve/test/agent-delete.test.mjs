@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -224,13 +224,12 @@ async function stateOf(data, runId, state) {
   }
 }
 
-test("the server's own learning delete: the agent's learning folder emptied and its promotions and grades records gone, after its runs stopped and before its other things went; 204", { timeout: 180_000 }, async (t) => {
+test("the server's own learning delete: the agent's learning store removed and its promotions and grades records gone, after its runs stopped and before its other things went; 204", { timeout: 180_000 }, async (t) => {
   const at = { seen: [] };
   const { api, data, store } = await serve(t, {
     agentDeleteAt: async (step, agentId) => {
       if (step !== "after_step_2") return;
-      const files = await readdir(learningDir(at.data, agentId)).catch((error) => `unread: ${error.code}`);
-      at.seen.push({ files, records: await recordsOf(at.store, agentId), agentFolder: existsSync(join(at.data, "disk", "agents", agentDir(agentId))) });
+      at.seen.push({ learning: existsSync(learningDir(at.data, agentId)), records: await recordsOf(at.store, agentId), agentFolder: existsSync(join(at.data, "disk", "agents", agentDir(agentId))) });
     },
   });
   Object.assign(at, { data, store });
@@ -240,8 +239,8 @@ test("the server's own learning delete: the agent's learning folder emptied and 
 
   const deleted = await api("DELETE", `/agents/${agentId}`);
   assert.equal(deleted.status, 204, `DELETE /agents/{id} with the server's own learning delete: ${deleted.status} ${JSON.stringify(deleted.body)}`);
-  // At step 2's end the learning module has done its part (the folder empty, the records gone), the agent's folder kept.
-  assert.deepEqual(at.seen, [{ files: [], records: [], agentFolder: true }], "the learning deleted by step 2, the rest after");
+  // At step 2's end the learning module has done its part (the store removed, the records gone), the agent's folder kept.
+  assert.deepEqual(at.seen, [{ learning: false, records: [], agentFolder: true }], "the learning deleted by step 2, the rest after");
   assert.deepEqual(await recordsOf(store, agentId), [], "no learning record of the agent is left");
   assert.ok(!existsSync(learningDir(data, agentId)), "nor its learning folder");
   assert.deepEqual(rowsOf(data, agentId, [runId]), NONE);
@@ -455,9 +454,8 @@ test("a run's folder on the Archil disk its launch named (the caller's) is delet
   // What the run wrote there (its work folder and its exec spill folder, runKey's and spillFolderOf's), beside what is the
   // caller's own and another agent's run.
   const own = `agents/${agentDir(agentId)}`;
-  // Its learning folder there too (learningKey): a Mode 2 run's end writes the agent's learning on the run's disk.
-  const its = [`${own}/runs/${runId}/work/notes.md`, `${own}/runs/${runId}/work/deep/out.json`, `${own}/runs/${runId}/exec-out/spill.txt`, `${own}/learning/corrections.md`, `${own}/learning/.git/HEAD`];
-  const theirs = ["shared/customers.csv", `agents/${agentDir("another-agent")}/runs/run-other/work/kept.md`, `agents/${agentDir("another-agent")}/learning/corrections.md`];
+  const its = [`${own}/runs/${runId}/work/notes.md`, `${own}/runs/${runId}/work/deep/out.json`, `${own}/runs/${runId}/exec-out/spill.txt`];
+  const theirs = ["shared/customers.csv", `agents/${agentDir("another-agent")}/runs/run-other/work/kept.md`];
   for (const key of [...its, ...theirs]) await disk.putObject(key, Buffer.from("bytes"));
 
   // A computer still holds the run's work folder (Archil's write delegation): its files can't be deleted there yet.

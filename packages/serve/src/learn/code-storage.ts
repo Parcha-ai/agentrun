@@ -17,7 +17,7 @@
 // - remove: DELETE repos/delete (a 404 is done). The next save makes the repository again, empty. Never restore_commit:
 //   it keeps the old commits reachable, so it is no erasure.
 import { createHash, createPrivateKey, type KeyObject, randomUUID, sign } from "node:crypto";
-import { COMMIT, FolderUnreadable, IDENTITY, type LearningStore, MARKER_KEY, PATCH_CAP, purgedMarker, runMarker, type Saved, type StoreCommit, type StoreDiffFile, type StoreFile, type StoreSave } from "./store.js";
+import { CODE_STORAGE_ENV, COMMIT, FolderUnreadable, IDENTITY, type LearningStore, MARKER_KEY, PATCH_CAP, purgedMarker, runMarker, type Saved, type StoreCommit, type StoreDiffFile, type StoreFile, type StoreSave } from "./store.js";
 import type { CodeStorageSettings } from "./store-of.js";
 
 /** How long a token is good for. */
@@ -58,7 +58,17 @@ type CommitView = { sha: string; parent_shas?: string[]; message?: string; date?
 
 /** Agent `agentId`'s learning store on code.storage, by `settings`. */
 export function codeStorageLearningStore(settings: CodeStorageSettings, agentId: string): LearningStore {
-  const key: KeyObject = typeof settings.key === "string" ? createPrivateKey(settings.key) : settings.key;
+  // The key read when first signed with, so making a store (every run of an agent makes its own) never throws: a key
+  // that is no key fails each call, as a store that can't be reached does.
+  let key: KeyObject | undefined;
+  const keyOf = (): KeyObject => {
+    if (key) return key;
+    try {
+      return (key = typeof settings.key === "string" ? createPrivateKey(settings.key) : settings.key);
+    } catch {
+      throw new FolderUnreadable(false, `${CODE_STORAGE_ENV.key} is not a private key code.storage's tokens can be signed with: nothing learned is read or written until it is`);
+    }
+  };
   const base = `${(settings.apiUrl ?? `https://api.${settings.name}.code.storage`).replace(/\/+$/, "")}/api/v1/`;
   const doFetch = settings.fetch ?? fetch;
   let repo: Promise<string> | undefined;
@@ -69,7 +79,7 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
     const now = Math.floor(Date.now() / 1000);
     const head = b64({ alg: "ES256", typ: "JWT" });
     const body = b64({ iss: settings.name, sub: "@agentrun/serve", repo: await repoId(), scopes, iat: now, exp: now + TOKEN_SECONDS });
-    const signature = sign("sha256", Buffer.from(`${head}.${body}`), { key, dsaEncoding: "ieee-p1363" }).toString("base64url");
+    const signature = sign("sha256", Buffer.from(`${head}.${body}`), { key: keyOf(), dsaEncoding: "ieee-p1363" }).toString("base64url");
     return `${head}.${body}.${signature}`;
   }
 

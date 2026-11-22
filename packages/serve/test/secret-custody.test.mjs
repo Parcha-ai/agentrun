@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
+import { CODE_STORAGE_ENV } from "../dist/learn/store.js";
 import { PROVIDER_KEYS } from "../dist/model.js";
 import { keyShaped } from "../dist/secret-cut.js";
 import { BOX_KEYS } from "../dist/place-offers.js";
@@ -155,7 +156,12 @@ function canaries() {
   // The seal key's must be a key the server takes (43 base64url characters: it never starts on a bad one), and is still a
   // canary: the canary is base64url, padded to a key's length.
   const sealKey = (value) => (assert.ok(value.length <= 43, value), value.padEnd(43, "k"));
-  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_TOKENS" ? `rotation:${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : `${canary}-${i}`])) };
+  // code.storage's key must read as a PEM (a start with it alone, or with no PEM, stops), and is still a canary inside
+  // one; its org's name (no secret) set beside it, so the start takes it. No learning is read here: code.storage is
+  // never called.
+  const pem = (value) => `-----BEGIN PRIVATE KEY-----\n${value}\n-----END PRIVATE KEY-----\n`;
+  const secrets = Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_TOKENS" ? `rotation:${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : name === CODE_STORAGE_ENV.key ? pem(`${canary}-${i}`) : `${canary}-${i}`]));
+  return { canary, secrets: { ...secrets, [CODE_STORAGE_ENV.name]: "example-org" } };
 }
 
 /** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment.

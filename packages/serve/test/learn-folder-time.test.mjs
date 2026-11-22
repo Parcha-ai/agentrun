@@ -1,29 +1,29 @@
-// A commit's time as the learning folder's snapshot keeps it (learn/folder.ts commitTime): git's %cI carries the offset
-// git's version and the committer's zone give it ("+00:00", "+02:00", or "Z"), and the snapshot rebuilt from git must
-// say the same time the incremental snapshot (nextSnapshot) wrote: UTC in whole seconds, ending "Z".
+// A commit's time as the learning snapshot keeps it (learn/folder.ts commitTime): a store gives git's %cI, with the offset
+// git's version and the committer's zone give it ("+00:00", "+02:00", or "Z"), and the snapshot rebuilt from a store's
+// read must say the same time the snapshot a save wrote: UTC in whole seconds, ending "Z".
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { commitTime, nextSnapshot, parseRead } from "../dist/learn/folder.js";
+import { commitChange, commitTime, learningInit, readSnapshot } from "../dist/learn/folder.js";
+import { localLearningStore } from "../dist/learn/store-local.js";
 
-/** The script's `read` with one commit at `cI` and no tree or blob, as learning.sh prints it. */
-function readWith(cI) {
-  const sha = "a".repeat(40);
-  const log = `\x1e${[sha, cI, "learning: init", "", "", "", ""].join("\x1f")}\0corrections.md\0`;
-  const head = `agentrun-read 1 ${sha} 0 ${Buffer.byteLength(log)} 0\n`;
-  return Buffer.from(`${head}${log}`, "utf8");
-}
-
-test("parseRead keeps every commit time in UTC ending Z, whatever offset git printed: +00:00, +02:00 and Z read as one instant", () => {
+test("commitTime keeps every commit time in UTC ending Z, whatever offset git printed: +00:00, +02:00 and Z read as one instant", () => {
   for (const [printed, kept] of [["2026-11-10T05:18:16+00:00", "2026-11-10T05:18:16Z"], ["2026-11-10T07:18:16+02:00", "2026-11-10T05:18:16Z"], ["2026-11-10T05:18:16Z", "2026-11-10T05:18:16Z"]]) {
-    const [record] = parseRead(readWith(printed)).records;
-    assert.equal(record.commit.at, kept, printed);
+    assert.equal(commitTime(printed), kept, printed);
   }
+  assert.equal(commitTime("not a time"), "not a time", "text that is no time is kept as it is");
 });
 
-test("a commit time read from git and the one nextSnapshot writes for the same second are the same text", () => {
-  const seconds = Date.parse("2026-11-10T05:18:16Z") / 1000;
-  const { snapshot } = nextSnapshot(undefined, undefined, seconds);
-  assert.equal(snapshot.at, "2026-11-10T05:18:16Z");
-  assert.equal(commitTime("2026-11-10T05:18:16+00:00"), snapshot.at);
-  assert.equal(commitTime("not a time"), "not a time", "text that is no time is kept as it is");
+test("the time a save's snapshot says of its commit is the commit's own time, as the store's log gives it", async (t) => {
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-learning-time-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const store = localLearningStore(data, "agent-one");
+  await learningInit(store);
+  const merged = await commitChange(store, await readSnapshot(store), { by: { run: "run-1", reason: "A correction." }, writes: [{ path: "corrections.md", text: "- Be brief.\n" }] });
+  const [commit] = await store.log(merged.main, { limit: 1 });
+  assert.equal(commit.sha, merged.main);
+  assert.match(merged.snapshot.at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  assert.equal(merged.snapshot.at, commitTime(commit.at));
 });

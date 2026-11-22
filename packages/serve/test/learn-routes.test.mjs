@@ -113,7 +113,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   assert.equal(retired.text, `---\nname: answer\ndescription: ${DESCRIPTION}\nstatus: retired\nretired_from: active\n---\n`);
   assert.ok(retired.headers.get("etag") !== etag1 && retired.headers.get("etag") === blob(README), "a new ETag, the new blob's");
   assert.deepEqual(git(repo, ["log", "-1", "--format=%an%n%s%n%b", "main"]).split("\n").filter(Boolean), ["agentrun-serve", `learning: retired by a person: ${README}`, "Changed-By: user"]);
-  assert.deepEqual(git(repo, ["show", "--name-only", "--format=", "main"]).split("\n").filter(Boolean), [README], "one file changed");
+  assert.deepEqual(git(repo, ["show", "--name-only", "--format=", "main"]).split("\n").filter((path) => path && !path.startsWith(".agentrun/")), [README], "one learned file changed (the host's snapshot beside it)");
   assert.equal(git(repo, ["status", "--porcelain"]), "");
   const stale = await retire(README, { "if-match": etag1 });
   assert.deepEqual([stale.status, stale.body?.error.code], [412, "precondition_failed"], "a stale ETag");
