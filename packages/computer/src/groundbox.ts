@@ -506,6 +506,8 @@ class GroundboxHost implements MachineHost {
 			heard();
 			if (message.type === "started" && typeof message.exec_id === "string") {
 				command.execId = message.exec_id;
+				// The watchdog arms only once there is a command to attach to: from here, a socket silent after `started` alone is let go too.
+				heard();
 				ready();
 			} else if ((message.type === "stdout" || message.type === "stderr") && typeof message.data === "string") {
 				command.events.push({ stream: message.type, base64: message.data });

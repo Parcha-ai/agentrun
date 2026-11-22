@@ -438,6 +438,26 @@ test("a socket gone silent with no close is let go at once: another attaches fro
 	assert.equal(await reading, "a\nb\n");
 });
 
+test("a socket silent from its `started` on, with no output, heartbeat or close, is let go too: another attaches from the start of the output", async () => {
+	const streams = scriptedSockets();
+	const { host } = hostOf(() => undefined, streams, { streamBounds: { silenceMs: 100 } });
+	const starting = host.exec(ID, ["sh", "-c", "sleep 1; echo a"], CTX);
+	await until(() => streams.opened.length === 1, "the first socket");
+	const [first] = streams.opened;
+	first.say({ type: "started", exec_id: "ex_0123456789abcdef" });
+	const proc = await starting;
+	const reading = textOf(proc.stdout);
+	await until(() => streams.opened.length === 2, "a second socket, after `started` alone and silence");
+	assert.deepEqual(first.closed, [4000]);
+	const [, second] = streams.opened;
+	await until(() => second.sent.length === 1, "the attach");
+	assert.deepEqual(second.sent, [{ type: "attach", exec_id: "ex_0123456789abcdef", seq: 0, encoding: "base64" }]);
+	second.say(out("a\n", 2));
+	second.say({ type: "exit", exit_code: 0 });
+	assert.equal(await proc.wait(), 0);
+	assert.equal(await reading, "a\n");
+});
+
 test("output the reader has not taken is bounded: past the high mark the socket is let go, and reading resumes from the position read to once the reader catches up", async () => {
 	const streams = scriptedSockets();
 	const { host } = hostOf(() => undefined, streams, { streamBounds: { queueHighBytes: 200_000, queueLowBytes: 50_000 } });
