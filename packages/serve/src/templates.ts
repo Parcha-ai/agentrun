@@ -9,6 +9,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import { type InputIssue, invalid } from "./errors.js";
+import { DOCKER_IMAGE_FIX, needsIssues } from "./computer-needs.js";
 // Where a package's MCP tools come from (a Composio toolkit, GitHub's MCP server, or any other server by its address): a
 // saved MCP server records one too, and apply maps each need to a server whose record matches.
 import { MCP_SOURCES, type McpSource } from "./mcp-sources.js";
@@ -50,7 +51,7 @@ export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "mailbo
  *  `none`, no shell, the file tools alone. Apply takes the first this server meets now (pickComputer). */
 export const COMPUTER_ENTRIES = ["shell", "none"] as const;
 export type ComputerEntry = (typeof COMPUTER_ENTRIES)[number];
-const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "category", "tags", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "checkout", "parameters", "inputs", "secrets", "budget", "learning", "approvals", "triggers", "output"];
+const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "category", "tags", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "needs", "checkout", "parameters", "inputs", "secrets", "budget", "learning", "approvals", "triggers", "output"];
 /** What a package is for, shown on a marketplace page and the console's list: display only, never applied. */
 export const CATEGORIES = ["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] as const;
 const TAG = /^[a-z0-9-]{1,32}$/;
@@ -195,6 +196,10 @@ export type Package = {
   /** The computers it prefers, in order (`[shell, none]`): apply takes the first this server meets now (pickComputer)
    *  and writes it as the agent's computer. Absent (or `default` in the manifest): where this server puts a new agent. */
   computer?: ComputerEntry[];
+  /** The programs its sandbox must have on its PATH (`needs`, beside `computer: [shell]` alone): apply writes them onto
+   *  the sandbox it picks as the agent's `computer.needs`, which each run checks in its box before any model request
+   *  (computer-needs.ts); it names no image, which stays the server's (AGENTRUN_DOCKER_IMAGE). */
+  needs?: string[];
   /** A policy by tool (bash only: `read-only`, bash-read-only.ts), which apply writes as the tool's `policy` in the
    *  agent's tool settings, so the gate holds its runs to it whatever the tool's permission. */
   toolPolicy?: { bash: BashPolicy };
@@ -718,6 +723,15 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
       if (!computer.includes("shell") && shellOnly.length) bad(MANIFEST, `computer: [none] gives no shell, so ${shellOnly.join(", ")} would never be granted: add shell to computer, or take ${shellOnly.length === 1 ? "it" : "them"} out of tools`);
     }
   }
+  // The programs its sandbox must have, checked as a sandbox's computer.needs is: only beside [shell] alone, so a package
+  // that needs them is a sandbox's or nothing, never a fallback to no computer.
+  let needs: string[] | undefined;
+  if (f.needs !== undefined) {
+    const issues = needsIssues(f.needs, "needs");
+    for (const issue of issues) bad(MANIFEST, issue.message);
+    if (computer?.length !== 1 || computer[0] !== "shell") bad(MANIFEST, "needs: the programs a sandbox must have, so computer is [shell]: a template that needs them never falls back to no computer, nor runs where a new agent does");
+    else if (!issues.length) needs = [...(f.needs as string[])];
+  }
   // The server's checkout before each run's first turn: the pull request the run's GitHub event names, at its head.
   if (f.checkout !== undefined && f.checkout !== "pull_request") bad(MANIFEST, "checkout is pull_request: the server checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn");
   // The setup an apply takes, in the inputs' grammar, by the same compiler; none, a schema of no fields.
@@ -935,7 +949,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags,
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: { ...(f.model as NonNullable<Package["model"]>), ...(choices ? { choices } : {}) } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number, ...(f.budget.max_requests !== undefined ? { max_requests: f.budget.max_requests as number } : {}) } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
+    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(needs ? { needs } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number, ...(f.budget.max_requests !== undefined ? { max_requests: f.budget.max_requests as number } : {}) } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -1011,7 +1025,7 @@ export function packageView(p: Package) {
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
     category: p.category ?? null, tags: p.tags,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
-    harness: p.harness ?? null, model: modelView(p.model), effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, checkout: p.checkout ?? null,
+    harness: p.harness ?? null, model: modelView(p.model), effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, needs: p.needs ?? null, checkout: p.checkout ?? null,
     mcp: p.mcp.map(({ source, toolkit, tools, required, reason, allow, pin }) => ({ source, toolkit, required, reason: reason ?? null, tools: tools.map((name) => ({ name, tool: mcpToolName(toolkit, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, input_schema: p.inputSchema ?? null, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, approvals_default: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
@@ -1179,7 +1193,7 @@ export async function choiceUnrunnable(env: NodeJS.ProcessEnv, choice: ModelChoi
 }
 
 /** A computer setting as a definition names it (`definition.computer`). */
-export type PickedSetting = { kind: string; provider?: string };
+export type PickedSetting = { kind: string; provider?: string; needs?: string[] };
 /** The shell this server can give an agent now (server.ts shellHere): the computer setting that gives it, the shell
  *  tools a run there has (tools.ts shellTools), and the shell in words; else, `none`, why it has none. */
 export type ShellHere = { computer: PickedSetting; tools: readonly string[]; words: string } | { none: string };
@@ -1190,13 +1204,15 @@ export type ComputerPick = { entry: ComputerEntry; computer: PickedSetting; shel
 
 /** What to do where a package's computer list has no shell to take: in the apply's refusal and its fallback warning. */
 export const COMPUTER_FIX = "Turn on Archil in Settings → Workspace, or run AgentRun where Docker answers, then apply again to give it a shell.";
+/** What to do where a package that needs programs (`needs`) has no sandbox to take: a Docker box whose image has them. */
+export const NEEDS_FIX = `Run AgentRun where Docker answers, with Archil off in Settings → Workspace. ${DOCKER_IMAGE_FIX} Then apply again.`;
 
 /** The first entry of a package's computer list (`[shell, none]`) this server meets now, given the shell it has
  *  (`here`): shell, where it has one; none, always (kind none, and no shell tool: a run on the runner in Mode 2 has bash,
  *  so a shell tool is dropped rather than left to it). Undefined for a package with no list (it runs where a new agent
  *  does); `refused`, in words, when no entry is met. The rule is the package's preference alone: nothing here knows a
  *  template. */
-export function pickComputer(p: Pick<Package, "name" | "computer" | "tools">, here: ShellHere): ComputerPick | { refused: string } | undefined {
+export function pickComputer(p: Pick<Package, "name" | "computer" | "tools" | "needs">, here: ShellHere): ComputerPick | { refused: string; fix?: string } | undefined {
   if (!p.computer) return undefined;
   // A shell that is a sandbox runs the agent in the box, where a runner-only tool (browser) is refused: such a package
   // cannot take that shell, so its list falls to the next entry, as it does where there is no shell at all.
@@ -1205,6 +1221,13 @@ export function pickComputer(p: Pick<Package, "name" | "computer" | "tools">, he
   const clash = found && found.computer.kind === "sandbox" && runnerOnly.length ? `${found.words} runs ${runnerOnly.join(", ")} nowhere` : undefined;
   const shell = clash ? undefined : found;
   const lack = "none" in here ? here.none : clash ?? "this server has none";
+  // A package that needs programs (its list is [shell] alone) takes a sandbox, whose box each run checks for them: a
+  // shell that is no sandbox (Archil's serverless exec runs on the runner, whose programs no run checks) is refused.
+  if (p.needs && !(shell && shell.computer.kind === "sandbox")) {
+    const why = shell ? `the shell here is ${shell.words}, which is no sandbox` : lack;
+    const list = new Intl.ListFormat("en", { type: "conjunction" }).format(p.needs);
+    return { refused: `The ${p.name} template needs a sandbox that has ${list} on its PATH, and ${why}. Nothing was created. ${NEEDS_FIX}`, fix: NEEDS_FIX };
+  }
   const entry = p.computer.find((one) => one === "none" || shell);
   if (!entry) return { refused: `The ${p.name} template needs a shell, and ${lack}. Nothing was created.` };
   const runs = entry === "shell" && shell ? shell.tools : [];
@@ -1214,7 +1237,7 @@ export function pickComputer(p: Pick<Package, "name" | "computer" | "tools">, he
     ? `${lack.charAt(0).toUpperCase()}${lack.slice(1)}, so the agent was made with the template's next choice, no computer${dropped.length ? `, and without ${without}` : ""}. ${COMPUTER_FIX}`
     : dropped.length && shell ? `The shell here is ${shell.words}, which runs ${runs.join(", ")} alone, so the agent was made without ${without}.` : null;
   return entry === "shell" && shell
-    ? { entry, computer: { ...shell.computer }, shell: shell.words, dropped, defaults: [...shell.tools], note }
+    ? { entry, computer: { ...shell.computer, ...(p.needs ? { needs: [...p.needs] } : {}) }, shell: shell.words, dropped, defaults: [...shell.tools], note }
     : { entry, computer: { kind: "none" }, shell: null, dropped, defaults: [], note };
 }
 

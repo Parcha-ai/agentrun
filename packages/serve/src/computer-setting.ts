@@ -1,5 +1,5 @@
 // An agent's computer, its one setting for where its tools run (Settings → Computers): `computer: { kind, provider?,
-// image?, gpu?, persistent?, surface?, exec?, record? }` on its revision. kind is none, sandbox, desktop, phone or browser;
+// image?, gpu?, persistent?, surface?, exec?, record?, needs? }` on its revision. kind is none, sandbox, desktop, phone or browser;
 // provider names one of the computer providers (the computer package's kind registry), and is absent for none; image
 // names one the provider offers for the kind, and absent is the kind's default; a sandbox's gpu is { type, count };
 // persistent: true keeps the agent's own computer between its runs, where the configuration declares persistence. A
@@ -10,6 +10,7 @@
 // {kind: "sandbox", provider: X}. Writing either sets both. A desktop, phone or browser computer leaves the run's folder
 // on the runner, so its place reads runner.
 import { configurationOf, PROVIDERS, serves } from "@parcha/agentrun-computer";
+import { needsIssues } from "./computer-needs.js";
 import { recorderMissing } from "./computer-record.js";
 import type { InputIssue } from "./errors.js";
 
@@ -33,7 +34,7 @@ export type ComputerSurface = (typeof COMPUTER_SURFACES)[number];
  *  desktop or a phone may say its surface, and `exec: false`: the agent gets no shell and starts no program on it. */
 export type ComputerSetting =
   | { readonly kind: "none" }
-  | { readonly kind: "sandbox"; readonly provider: string; readonly image?: string; readonly gpu?: GpuSetting; readonly persistent?: boolean }
+  | { readonly kind: "sandbox"; readonly provider: string; readonly image?: string; readonly gpu?: GpuSetting; readonly persistent?: boolean; readonly needs?: readonly string[] }
   | { readonly kind: "desktop" | "phone"; readonly provider: string; readonly image?: string; readonly persistent?: boolean; readonly surface?: ComputerSurface; readonly exec?: boolean; readonly record?: boolean }
   | { readonly kind: "browser"; readonly provider: string; readonly image?: string; readonly persistent?: boolean; readonly record?: boolean };
 
@@ -88,6 +89,12 @@ const OPTIONAL: Readonly<Record<string, { readonly kinds?: readonly ComputerKind
       if (!Number.isSafeInteger(gpu.count) || (gpu.count as number) < 1) return [{ field: `${field}.count`, reason: "wrong_type", message: `gpu.count ${JSON.stringify(gpu.count)} is not a whole number from 1` }];
       return [];
     },
+  },
+  // The programs the sandbox must have on its PATH (computer-needs.ts): checked in the box at each claim, before the
+  // run's first model request; a box that lacks one ends the run in words. It says what the box holds, never its image.
+  needs: {
+    kinds: ["sandbox"],
+    check: needsIssues,
   },
 };
 
