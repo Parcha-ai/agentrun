@@ -30,7 +30,7 @@ const ACCOUNT_A = "ca_alice_gmail_0001";
 const USER_B = "host-user-bob-0002";
 const ACCOUNT_B = "ca_bob_gmail_0002";
 const OWNER = "owner-0001";
-// A team's connected account, as a host names it: Composio user `team:<tenant>`.
+// A Composio user id with a ':', such as a team's.
 const TEAM = "team:tenant-0042";
 const ACCOUNT_TEAM = "ca_team_gmail_0042";
 // Each Composio user's connected accounts, as the fake's MCP endpoint checks a call against them.
@@ -80,7 +80,7 @@ test("two users, one per-run Gmail server: B's run is called at Composio as B's 
   }
 });
 
-test("a team's account binds a run as a person's does: its Composio user team:<tenant> is taken, and the run calls as that user and account; a space, a slash or the listing-only user's ~ is still refused", async (t) => {
+test("a user id with a ':' binds a run as any other does; a space, a slash or the listing-only user's ~ is still refused", async (t) => {
   const s = await setup(t);
   const team = await runOnce(s, bind(TEAM, ACCOUNT_TEAM));
   assert.equal(toolCalls(team.sent).length, 1, `the team's one call reached Composio: ${team.answer}`);
