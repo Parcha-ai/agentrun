@@ -324,13 +324,14 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
       },
     };
     const one = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => counted))).start(startOf(workspace));
-    // The mtime a coarse clock (a jiffy) gives a write in the push's own tick: the ctime its extraction left on f. Then
-    // a sync past the racy rule's 1 s.
+    // The mtime a coarse clock (a jiffy) gives a write in the push's own tick: the ctime its extraction left on f.
     await sh(one.computer.computer.client, 't="$(stat -c %z f)" && printf bbbb > f && touch -d "$t" f');
-    await new Promise((resolve) => setTimeout(resolve, 1100));
-    await sh(one.computer.computer.client, "true");
-    assert.equal(text(disk.files.get(`${ROOT}/f`)), "bbbb", "the rewrite is on the disk");
-    assert.deepEqual(reads, [["files.read", "/workspace/f"], ["files.read", "/workspace/f"]], "f and its racy re-read; keep and d/g, as pushed, are never read back");
+    assert.equal(text(disk.files.get(`${ROOT}/f`)), "bbbb", "the rewrite is on the disk at the first sync");
+    assert.deepEqual(reads, [["files.read", "/workspace/f"]], "f is read once; keep and d/g, as pushed, are never read back");
+    // Not racy, so never read again: the push gave them the mtime of the year 2000, which no clock gives a write. Read
+    // through the daemon's own client, under no sync. The racy re-read of a written file is pinned on an injected clock
+    // in the computer package (sync-folder-cases.mjs).
+    for (const path of ["keep", "d/g"]) assert.equal((await stat(computer, path)).mtimeMs, 946_684_800_000, `${path} keeps the mtime the push gave it`);
     await one.release();
   });
 
