@@ -838,8 +838,12 @@ export interface Agents {
    *  apply kept naming it, its revisions' content (body, skills, package, note, pins) and its own name and description
    *  blanked, and its purge time set last. Only once each of its runs is purged (Runs.purge) and no trigger is left:
    *  refused while a run is not (StoreConstraint) or a trigger is (TriggersLeft), nothing written. Its row and its
-   *  revisions' ids stay, so its runs' tombstones and every total over them read as before. An agent with no row, or one
-   *  purged already, is no write. On SQLite, the scrub's marker first and a WAL checkpoint once it commits (Runs.purge). */
+   *  revisions' ids stay, so its runs' tombstones and every total over them read as before. In the same write, each
+   *  uploaded package (`upload:<name>`, imported_templates) a revision of it was applied from is removed when no revision
+   *  of another agent not purged (an archived one too) was, each read and removed holding its id; a package imported from
+   *  GitHub stays. The server stops serving what it removed (template-import.ts dropRemovedUploads). An agent with no
+   *  row, or one purged already, is no write. On SQLite, the scrub's marker first and a WAL checkpoint once it commits
+   *  (Runs.purge). */
   purge(agentId: string): Promise<void>;
 }
 
@@ -1561,11 +1565,15 @@ export interface Runners {
   capacity(windowMs: number): Promise<RunCapacity>;
 }
 
+/** The id prefix of a package uploaded whole (POST /v2/templates/import {files}): `upload:<name>`. */
+export const UPLOAD_PREFIX = "upload:";
+
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
  *  (`github:<owner>/<repo>[/<path>]`), its source as given, the commit SHA read, its publisher (the GitHub account), and
  *  its files as they were read, by path, base64. An uploaded one's id and source are `upload:<name>`, its sha the
- *  package's sha256, its publisher empty. The server checks them again (templates.ts readPackage) as it loads them
- *  at its start, so a package this build no longer takes is never served. */
+ *  package's sha256, its publisher empty; it goes with the last agent applied from it (Agents.purge). The server checks
+ *  them again (templates.ts readPackage) as it loads them at its start, so a package this build no longer takes is never
+ *  served. */
 export interface ImportedTemplateRow {
   readonly id: string;
   readonly source: string;
@@ -1579,6 +1587,8 @@ export interface ImportedTemplateRow {
 export interface ImportedTemplates {
   /** Every imported package, by id. */
   list(): Promise<ImportedTemplateRow[]>;
+  /** Every imported package's id, sorted, with none of its files read. */
+  ids(): Promise<string[]>;
   /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it). */
   put(row: Omit<ImportedTemplateRow, "importedAt">): Promise<void>;
   /** Removes the package: false when none had that id. */
