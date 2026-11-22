@@ -8,6 +8,7 @@
 // makes its agent though a tool key the template declares is not set here, and says so in a warning; a run of that
 // revision that does not carry the key is refused (409 agent_not_runnable, at keys.<NAME>). Off, nothing changes.
 import type { InputIssue } from "./errors.js";
+import { handedSecretOf } from "./handed-secret.js";
 import type { Revision } from "./agent-rows.js";
 import { needsOf, type RunNeeds } from "./run-secrets.js";
 import type { TemplatePackage } from "./store/store.js";
@@ -42,8 +43,8 @@ export async function declaredKeys(revision: Pick<Revision, "kind" | "body"> & o
 /** The longest key value taken. */
 export const MAX_KEY = 8192;
 
-/** `keys` as a body gives it, checked: tool key names (TOOL_FIELDS) to their values, each text of 1 to 8192 characters. Each
- *  problem goes to `issues` by name, never with its value. */
+/** `keys` as a body gives it, checked: tool key names (TOOL_FIELDS) to their values, each checked as every handed key is
+ *  (handed-secret.ts), up to MAX_KEY. Each problem goes to `issues` by name, never with its value. */
 export function runKeysOf(value: unknown, issues: InputIssue[]): RunKeys {
   if (!isObject(value)) {
     issues.push({ field: "keys", reason: "wrong_type", message: 'keys is an object of tool key names to their values, such as {"PARALLEL_API_KEY": "..."}.' });
@@ -54,8 +55,11 @@ export function runKeysOf(value: unknown, issues: InputIssue[]): RunKeys {
     const field = `keys.${name}`;
     if (!TOOL_FIELDS.includes(name)) issues.push({ field, reason: "not_an_option", message: `${name} is not a tool key a run can carry: one of ${TOOL_FIELDS.join(", ")}.` });
     else if (typeof given !== "string") issues.push({ field, reason: "wrong_type", message: `${field} is the key's value, as text.` });
-    else if (!given.trim() || given.length > MAX_KEY) issues.push({ field, reason: "bad_format", message: `${field} is the key's value: text of 1 to ${MAX_KEY} characters.` });
-    else out[name] = given;
+    else {
+      const wrong = handedSecretOf(given, field, MAX_KEY);
+      if (wrong) issues.push(wrong);
+      else out[name] = given;
+    }
   }
   return out;
 }

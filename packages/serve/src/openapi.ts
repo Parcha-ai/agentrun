@@ -32,6 +32,7 @@ import { LOOP_COMPILES_MAX } from "./store-reads/loop.js";
 import { GRADE_SOURCES, GRADES_KEPT, LABEL_MAX } from "./learn/promote.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { MAX_MODEL_KEY_CHARS } from "./run-model-key.js";
+import { MIN_SECRET } from "./learn/secrets.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
 import { PLACE_MODES } from "./place.js";
 import { TOOL_FIELDS, TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
@@ -3489,18 +3490,21 @@ const MCP_RUN_AUTH: Json = {
   "x-agentrun-serve": "mcpperrun/1",
 };
 
+/** A handed key's characters (handed-secret.ts): no space or control character. */
+const HANDED_SECRET_PATTERN = "^[^\\s\\x00-\\x1f\\x7f]+$";
+
 /** runmodelkey/1: the run's own model key (run-model-key.ts), such as a LiteLLM virtual key minted for it. */
 const RUN_MODEL_KEY: Json = {
-  type: "string", minLength: 1, maxLength: MAX_MODEL_KEY_CHARS, pattern: "^[^\\s\\x00-\\x1f\\x7f]+$",
+  type: "string", minLength: MIN_SECRET, maxLength: MAX_MODEL_KEY_CHARS, pattern: HANDED_SECRET_PATTERN,
   // Not x-agentrun-secret, as mcp_auth: a key for this run alone, handed by whoever may start it, never kept for others.
-  description: `The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at \`model_key\` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 \`model_key_required\`, never a failure at its first model call.`,
+  description: `The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 \`invalid\` at \`model_key\` for a key under ${MIN_SECRET} characters (no cut could hold it) or one with a space or a control character; 422 at \`model_key\` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 \`model_key_required\`, never a failure at its first model call.`,
   "x-agentrun-serve": "runmodelkey/1",
 };
 
 /** runkeys/1: the run's own tool keys (run-keys.ts), by name. */
 const RUN_TOOL_KEYS: Json = {
-  type: "object", propertyNames: { enum: [...TOOL_FIELDS] }, additionalProperties: { type: "string", minLength: 1, maxLength: MAX_RUN_KEY },
-  description: `The run's own tool keys, by name: a value for each tool key its revision reads (its tools', its workflow nodes' and decision providers', and those its template declares), which its tools use in place of the server's key of that name. Sealed into the run's launch, opened at each claim for its tools alone, erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint, and cut from what the run writes. 422 at \`keys.<NAME>\` for a name that is not a tool key, or one no tool of the run's revision reads (a model key goes in \`model_key\`). On a server started with AGENTRUN_RUN_KEYS=1, a run of an agent made from a template that declares a tool key the server does not hold is 409 \`agent_not_runnable\` at \`keys.<NAME>\` without it.`,
+  type: "object", propertyNames: { enum: [...TOOL_FIELDS] }, additionalProperties: { type: "string", minLength: MIN_SECRET, maxLength: MAX_RUN_KEY, pattern: HANDED_SECRET_PATTERN },
+  description: `The run's own tool keys, by name: a value for each tool key its revision reads (its tools', its workflow nodes' and decision providers', and those its template declares), which its tools use in place of the server's key of that name. Sealed into the run's launch, opened at each claim for its tools alone, erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint, and cut from what the run writes. 422 at \`keys.<NAME>\` for a name that is not a tool key, or one no tool of the run's revision reads (a model key goes in \`model_key\`), and 422 \`invalid\` there for a value under ${MIN_SECRET} characters (no cut could hold it) or one with a space or a control character. On a server started with AGENTRUN_RUN_KEYS=1, a run of an agent made from a template that declares a tool key the server does not hold is 409 \`agent_not_runnable\` at \`keys.<NAME>\` without it.`,
   "x-agentrun-serve": "runkeys/1",
 };
 
