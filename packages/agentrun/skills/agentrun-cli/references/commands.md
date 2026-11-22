@@ -142,6 +142,12 @@ Route: `POST /agents/{agent_id}/source/move`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun agents package AGENT_ID`
+
+The agent's current revision as a template package.
+
+Route: `GET /agents/{agent_id}/package`.
+
 ### `agentrun agents resolve-source-sync AGENT_ID`
 
 Use an explicitly reviewed source snapshot while retaining the prior managed revision in history.

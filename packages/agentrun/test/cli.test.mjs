@@ -287,13 +287,6 @@ test("generate-clients --check passes on the committed table, and fails on a han
   assert.equal(goneOmit.status, 1);
   assert.match(goneOmit.stderr, /noSuchOperation/);
 
-  // An operation left to a hand-written command must be one a hand-written command calls.
-  const byHand = join(dir, "by-hand.json");
-  writeFileSync(byHand, JSON.stringify({ ...resources, handWritten: { ...resources.handWritten, getRun: "no command calls it" } }));
-  const unwritten = check("--resources", byHand);
-  assert.equal(unwritten.status, 1);
-  assert.match(unwritten.stderr, /getRun written by hand, and no hand-written command names its route GET \/runs\/\{run_id\}/);
-
   const segments = join(dir, "segments.json");
   for (const multiSegment of [{ noSuchOperation: "path" }, { readRunFile: "no_such_parameter" }]) {
     writeFileSync(segments, JSON.stringify({ ...resources, multiSegment }));

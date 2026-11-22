@@ -131,7 +131,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 
 ## Commands
 
-- `agentrun agents`: archive, bind-source-tool, connect-native, create, delete-agent, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, get-source-sync, list, list-learning-audits, list-learning-promotions, move-source-agent, resolve-source-sync, review-source-project, runs, set-source-sync, unarchive, update, verify-native
+- `agentrun agents`: archive, bind-source-tool, connect-native, create, delete-agent, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, get-source-sync, list, list-learning-audits, list-learning-promotions, move-source-agent, package, resolve-source-sync, review-source-project, runs, set-source-sync, unarchive, update, verify-native
 - `agentrun capabilities`: get-capacity
 - `agentrun cli-learning`: complete, enroll, events, get, list, revoke, start
 - `agentrun connectors`: complete-remote-command, enroll-remote-connector, grant-source-sync, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, publish-source-sync, register-remote-connector, remote-command-events, revoke-remote-connector, source-sync-failure

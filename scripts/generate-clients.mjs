@@ -271,14 +271,8 @@ export const commandOf = (op, map) => map.commands[op.operationId] ?? [op.tags[0
 export function problemsOf(ops, map) {
   const ids = new Set(ops.map((op) => op.operationId));
   const problems = [];
-  for (const id of [...Object.keys(map.commands), ...map.secretBody, ...Object.keys(map.omit), ...Object.keys(map.handWritten), ...Object.keys(map.multiSegment)]) {
+  for (const id of [...Object.keys(map.commands), ...map.secretBody, ...Object.keys(map.omit), ...Object.keys(map.multiSegment)]) {
     if (!ids.has(id)) problems.push(`${RESOURCES} names ${id}, which the document has no operation for`);
-  }
-  // An operation the CLI runs through a hand-written command has no table command of its own, and keeps its client
-  // methods: the hand-written command names its route.
-  for (const op of ops.filter((o) => map.handWritten[o.operationId] !== undefined)) {
-    const route = `${op.method} ${op.path}`;
-    if (!HAND.local.some((entry) => [entry.route ?? []].flat().includes(route))) problems.push(`${RESOURCES} has ${op.operationId} written by hand, and no hand-written command names its route ${route}`);
   }
   // An operation that writes a secret is left out of the CLI by its mark, never by hand: omitting it would drop its client
   // method too. Its name in the map stays, as the client's method's.
@@ -318,7 +312,7 @@ export function commandsOf(ops, map) {
   const entries = [];
   for (const op of ops) {
     // An operation that writes a secret has no command: the CLI holds only the token, which the server refuses on it.
-    if (op.unsupported || op.browserOnly || op.writesSecret || map.omit[op.operationId] !== undefined || map.handWritten[op.operationId] !== undefined) continue;
+    if (op.unsupported || op.browserOnly || op.writesSecret || map.omit[op.operationId] !== undefined) continue;
     const flag = (p) => ({ name: p.name, ...(flagType(p) ?? { type: 'string' }), required: p.required, description: p.description });
     const query = op.parameters.filter((p) => p.in === 'query').map(flag);
     const taken = new Set([...GLOBAL_FLAGS, ...query.map((q) => flagOf(q.name))]);
@@ -382,7 +376,7 @@ export function tableText(ops, map) {
 
 async function main() {
   const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, skill: { type: 'string' }, client: { type: 'string' }, python: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' }, types: { type: 'string' } } });
-  const map = { secretBody: [], omit: {}, handWritten: {}, multiSegment: {}, publicFields: {}, bodyFill: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
+  const map = { secretBody: [], omit: {}, multiSegment: {}, publicFields: {}, bodyFill: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
   const doc = values.document ? JSON.parse(await readFile(resolve(values.document), 'utf8')) : await servedDocument();
   const ops = operationsOf(doc);
   const problems = [...problemsOf(ops, map), ...publicFieldProblems(doc, map), ...clientProblems(ops, map, commandOf), ...pythonProblems(ops, map, commandOf)];
