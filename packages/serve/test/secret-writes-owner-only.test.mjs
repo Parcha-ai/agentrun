@@ -4,8 +4,8 @@
 //   credential stays; the owner's session drops it;
 // - a token's save let through against no credential never lands over one the owner saved while it listed (412);
 // - removing an MCP server that holds a credential is refused to the token, and the server stays; the console removes it,
-//   its request made as the page makes it (the session's cookie, same origin, JSON, no token); one with none is the
-//   token's to remove;
+//   its request made as the page makes it (the session's cookie, same origin, JSON, no token); the token removes only a
+//   server the token saved with none, and one the owner saved stays the owner's;
 // - a sign-in's start is refused to the token, with no state cookie handed back;
 // - every operation on a secret's route (MCP servers, GitHub, sign-ins, tool keys, computers, the workspace, a trigger's
 //   secret) is in the one gate's registry, or said on purpose to write none, with why;
@@ -112,14 +112,27 @@ test("removing an MCP server that holds a credential is the owner's alone: the t
   assert.equal(await savedAuth(page), undefined, "removed");
 });
 
-test("a server saved with no credential is the token's to remove (an eval's fake): it drops no secret", async (t) => {
+test("a server the token saved with no credential is the token's to remove (an eval's fake); one the owner saved with none stays the owner's: 403, and it stays", async (t) => {
   const server = await serve(t);
   const fake = await startFakeMcp();
   t.after(() => fake.close());
   const page = await asPage(server);
-  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
-  const removed = await asToken(server)("DELETE", "/settings/mcp-servers/fake");
+  const token = asToken(server);
+  assert.equal((await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  const removed = await token("DELETE", "/settings/mcp-servers/fake");
   assert.equal(removed.status, 204, removed.text);
+  assert.equal(await savedAuth(page), undefined, "removed");
+  // The owner's, with no credential either: the token deletes only what the token saved.
+  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  const refused = await token("DELETE", "/settings/mcp-servers/fake");
+  assert.equal(refused.status, 403, refused.text);
+  assert.ok(String(refused.json?.error?.message).startsWith(gate.SECRET_WRITE_REFUSAL));
+  assert.ok(await savedAuth(page), "still saved");
+  // A token's save over it (no credential) leaves it the owner's.
+  assert.equal((await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  assert.equal((await token("DELETE", "/settings/mcp-servers/fake")).status, 403, "still the owner's");
+  const ownersRemove = await page("DELETE", "/settings/mcp-servers/fake");
+  assert.ok(ownersRemove.status >= 200 && ownersRemove.status < 300, ownersRemove.text);
   assert.equal(await savedAuth(page), undefined, "removed");
 });
 

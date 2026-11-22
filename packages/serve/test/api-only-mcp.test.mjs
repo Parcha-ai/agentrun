@@ -159,6 +159,37 @@ test("full profile: the owner's session saves a Composio server by api_key_env; 
   assert.equal(storeBytes(s.server.data).includes(Buffer.from(KEY)), false, "the store's bytes never hold the key");
 });
 
+// The token deletes only a server the token saved (recorded at the save, checked at the delete): an owner's server stays
+// the owner's, sealed or not, and nothing of it reaches Composio.
+test("full profile: the owner's Composio server saved by api_key_env, sealing nothing, is 403 to the token's delete: nothing reaches Composio and it stays; the owner's session deletes it", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t, { full: true });
+  const owner = asOwner(s.server);
+  assert.equal((await owner("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
+  assert.equal((await s.server.store.mcp.server("mail")).sealed, null, "it seals nothing");
+  const from = s.composio.calls.length;
+  const refused = await s.token("DELETE", "/settings/mcp-servers/mail");
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
+  assert.equal(s.composio.calls.length, from, "nothing reached Composio");
+  assert.ok(await s.server.store.mcp.server("mail"), "it stays");
+  const deleted = await owner("DELETE", "/settings/mcp-servers/mail");
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  assert.equal(deleted.body.composio?.removed, true, JSON.stringify(deleted.body));
+});
+
+test("full profile: the owner's Composio server saved with its key sealed is 403 to the token's delete: nothing reaches Composio and it stays", async (t) => {
+  const s = await setup(t, { full: true });
+  assert.equal((await asOwner(s.server)("PUT", "/settings/mcp-servers/mail/composio", { api_key: KEY, toolkit: "gmail", tools: ["add"], user_id: "per_run" })).status, 200);
+  assert.notEqual((await s.server.store.mcp.server("mail")).sealed, null, "its key is sealed");
+  const from = s.composio.calls.length;
+  const refused = await s.token("DELETE", "/settings/mcp-servers/mail");
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
+  assert.equal(s.composio.calls.length, from, "nothing reached Composio");
+  assert.ok(await s.server.store.mcp.server("mail"), "it stays");
+});
+
 test("API-only: the token saves no server at an address of its own: the generic save, the list and the read are refused (404), and the address gets nothing", async (t) => {
   const elsewhere = await startFakeMcp();
   t.after(() => elsewhere.close());
@@ -251,6 +282,35 @@ test("claim: a row reading its key from COMPOSIO_API_KEY at an address off Compo
   const step = await claimOf(store, "run-2", new URL(elsewhere.url).origin);
   t.after(() => step.release());
   assert.equal(step.credentials.mail?.headers?.["x-api-key"], KEY, "on Composio's origin the key is attached");
+});
+
+test("claim: a run granted no tool of the Composio server gets no entry for it, and nothing it is handed holds the key", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const composio = await startFakeMcp();
+  t.after(() => composio.close());
+  const sealKey = Buffer.alloc(32, 7);
+  const { store } = await storeOn(t);
+  await handWritten(store, "mail", composio.url, { perRun: true });
+  for (const [runId, grants] of [["run-none", []], ["run-other", ["read", "web_fetch"]]]) {
+    await queued(store, runId, { mcpPin: await registryPin(store) });
+    const claim = await store.claim(runId, "runner-a", { leaseMs: 60_000 });
+    const step = await mcpClaim({ store, claim, grants, sealKey, signal: new AbortController().signal, loopback: true, composioMcpOrigin: new URL(composio.url).origin });
+    t.after(() => step?.release());
+    assert.equal(step?.credentials?.mail, undefined, `${runId}: no entry for the Composio server`);
+    assert.equal(JSON.stringify(step ?? {}).includes(KEY), false, `${runId}: nothing holds the key`);
+  }
+  assert.deepEqual(composio.log, [], "Composio got nothing");
+});
+
+test("API-only: a server the token did not save (a row written by hand, sealing nothing) is 403 to the token's delete, and it stays", async (t) => {
+  const elsewhere = await startFakeMcp();
+  t.after(() => elsewhere.close());
+  const s = await setup(t);
+  await s.server.store.mcp.put({ name: "gw", url: elsewhere.url, auth: "none", tools: [ADD_TOOL], sealed: null });
+  const refused = await s.token("DELETE", "/settings/mcp-servers/gw");
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
+  assert.deepEqual((await s.token("GET", "/settings/mcp-server-names")).body, { names: ["gw"] }, "it stays");
 });
 
 test("API-only: a run of a Composio server whose variable was unset after its save is refused by name, and no run starts", async (t) => {
