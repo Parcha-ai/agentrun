@@ -1,6 +1,7 @@
-// The API-only profile (api-only.ts, AGENTRUN_API_ONLY=1): the server serves the run routes alone, for a caller's
-// backend, and refuses every other address with a 404 before the request is read further: the console, the store page's
-// data, sign-in, setup, settings writes, MCP, triggers and their webhook hooks, agents, and a live view's WebSocket. It
+// The API-only profile (api-only.ts, AGENTRUN_API_ONLY=1): the server serves the run routes and a deploy's routes alone
+// (api-only-deploy.test.mjs), for a caller's backend, and refuses every other address with a 404 before the request is
+// read further: the console, the store page's data, sign-in, setup, settings writes, MCP, triggers and their webhook
+// hooks, the agents list and their writes, and a live view's WebSocket. It
 // has no owner. The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
 // writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
 // run's learning) and its reset (DELETE learning), its learning's other writes and its own texts refused. A run's purge
@@ -64,6 +65,10 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/runs/run_1/computer"], ["POST", "/v2/runs/run_1/computer/take-over"], ["POST", "/v2/runs/run_1/computer/hand-back"],
     ["POST", "/v2/runs/run_1/computer/viewer"], ["GET", "/v2/runs/run_1/computer/live/v/x"], ["HEAD", "/v2/runs/run_1/computer/live/computer-viewer.js"],
     ...LEARNING_READS.flatMap((path) => [["GET", at(path, "a1", "run_1")], ["HEAD", at(path, "a1", "run_1")]]),
+    // A deploy's routes: a template's apply, the agent's read, its revisions, its current revision moved back, and its
+    // archive (and unarchive) before its delete.
+    ["POST", "/v2/templates/x/apply"], ["GET", "/v2/agents/a1"], ["HEAD", "/v2/agents/a1"], ["GET", "/v2/agents/a1/revisions"],
+    ["POST", "/v2/agents/a1/current"], ["POST", "/v2/agents/a1/archive"], ["POST", "/v2/agents/a1/unarchive"],
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
   for (const [method, raw] of [
     ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/llms.txt"],
@@ -72,7 +77,10 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["POST", "/v2/mcp"], ["GET", "/v2/triggers"], ["POST", "/v2/triggers"], ["POST", "/v2/hooks/trg_1"],
     ["GET", "/v2/agents"], ["POST", "/v2/agents"], ["POST", "/v2/runs/run_1/approvals/a"], ["GET", "/v2/runs/run_1/browser"], ["POST", "/v2/runs/run_1/kill"],
     ["GET", "/v2/runs/run_1/browser/live/v/x"], ["POST", "/v2/runs/run_1/computer/live/v/x"], ["POST", "/v2/runs/run_1/computer/call"], ["POST", "/v2/runs/run_1/computer/release"],
-    ["GET", "/v2/openapi.json"], ["POST", "/v2/templates/x/apply"], ["GET", "/v2/templates"], ["DELETE", "/v2/templates/x"], ["GET", "/v2/v2/runs"],
+    ["GET", "/v2/openapi.json"], ["GET", "/v2/v2/runs"],
+    ["GET", "/v2/templates"], ["DELETE", "/v2/templates/x"], ["PUT", "/v2/agents/a1/definition"],
+    ["GET", "/v2/triggers/trg_1"], ["PATCH", "/v2/triggers/trg_1"], ["DELETE", "/v2/triggers/trg_1"], ["GET", "/v2/triggers/trg_1/firings"],
+    ["POST", "/v2/triggers/trg_1/fire"], ["POST", "/v2/triggers/trg_1/secret"], ["POST", "/v2/hooks/composio/p1"],
     ["POST", "/v2/computers/pairings"], ["POST", "/v2/computers/pair"], ["GET", "/v2/computers/attach"],
     ["PUT", "/v2/computers/e2b/keys"], ["POST", "/v2/computers/e2b/test"], ["GET", "/v2/computers/e2b/choices"], ["DELETE", "/v2/computers/pc_1"],
     ["PUT", "/v2/workspace/archil"], ["DELETE", "/v2/workspace/archil"], ["POST", "/v2/workspace/archil/test"],
@@ -363,6 +371,6 @@ test("off by default: the same routes are served without the profile", async (t)
 
 test("the banner says the server is API-only in place of the console's link", () => {
   const lines = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: "x".repeat(32), source: "env", apiOnly: true });
-  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused."), lines.join("\n"));
+  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run and deploy routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused."), lines.join("\n"));
   assert.ok(!lines.some((line) => line.startsWith("Open ")), "no console link");
 });
