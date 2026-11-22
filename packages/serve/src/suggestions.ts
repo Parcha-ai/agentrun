@@ -391,8 +391,12 @@ ${cjs ? `\nmodule.exports = { ${fn} };\n` : ""}`;
     // the caller's value as it is, and the client's own names stay its own.
     const shape = `{${s.agent.inputs.map((f) => `"${f.name}": ${pyType(f)}`).join(", ")}}`;
     const required = s.agent.inputs.filter((f) => f.required).map((f) => `"${f.name}"`);
-    // Every word a model wrote goes in a # comment, on one line: never in a string or a docstring it could end.
-    const code = `${header(s, repo, commit, "#")}
+    // Every word a model wrote goes in a # comment, on one line: never in a string or a docstring it could end. The
+    // first two lines are fixed, the first declaring UTF-8: Python reads an encoding declaration only on line 1 or 2, so
+    // a title like "coding: unicode_escape" is never one, and no later comment is decoded into code.
+    const code = `# -*- coding: utf-8 -*-
+# Written by AgentRun's agent scout. The comments below quote its suggestion; nothing in them runs.
+${header(s, repo, commit, "#")}
 #
 # run_${py} takes the agent's input as a dict:
 ${s.agent.inputs.map((f) => `#   ${f.name} (${pyType(f)}${f.required ? ", required" : ""}): ${oneLine(f.description)}`).join("\n")}

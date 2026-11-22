@@ -5598,11 +5598,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, view ? { connected: true, ...view } : { connected: false });
       }
       case "listGitHubRepositories": {
+        // The installations repaired from GitHub's own first, as getGitHubConnection does (at most once a minute): an
+        // installation whose event was missed is listed, not hidden until a restart.
+        await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
         const listed = await githubConnect.repositories(stopping.signal);
         if ("unusable" in listed) throw new ApiError("github_not_connected", listed.unusable);
         return send(res, 200, listed, { "cache-control": "no-store" });
       }
       case "listSuggestions":
+        // The same repair first: the page's Refresh and Check again read installations as GitHub has them.
+        await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
         return send(res, 200, await suggestions.list({ ...(url.searchParams.has("repo") ? { repo: url.searchParams.get("repo")! } : {}), ...(url.searchParams.has("status") ? { status: url.searchParams.get("status")! } : {}) }), { "cache-control": "no-store" });
       case "scanForSuggestions": {
         const scanned = await suggestions.scan(await bodyOf(req));

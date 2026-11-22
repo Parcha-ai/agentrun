@@ -63,7 +63,8 @@ test("a model's words in every field land only in comments and strings they cann
       if (language === "python") {
         writeFileSync(join(dir, path), content);
         // The program Python reads, comments gone: nothing of the hostile text is code.
-        const code = execFileSync("python3", ["-I", "-c", "import ast,sys; print(ast.dump(ast.parse(open(sys.argv[1]).read())))", join(dir, path)], { encoding: "utf8" });
+        // Parsed from the file's bytes, as Python imports it: an encoding declaration in the first two lines would apply.
+        const code = execFileSync("python3", ["-I", "-c", "import ast,sys; print(ast.dump(ast.parse(open(sys.argv[1], 'rb').read())))", join(dir, path)], { encoding: "utf8" });
         assert.ok(!/system|whoami|exit/.test(code), `python runs model words: ${code.slice(0, 200)}`);
         continue;
       }
@@ -81,6 +82,23 @@ test("a model's words in every field land only in comments and strings they cann
   const { body } = pullText(s, { repo: "acme/app", commit: "a".repeat(40), agentId: "agent_1" });
   assert.ok(!/@someone/.test(body), "an @mention is defused");
   assert.match(body, /@​someone/);
+});
+
+test("a title that reads as a Python encoding declaration declares nothing: escaped text in a later comment stays a comment", () => {
+  const raw = base();
+  raw.title = "coding: unicode_escape";
+  raw.integration = { ...raw.integration, language: "python", path: "app/triage.py", call_site: { ...raw.integration.call_site, note: "Call it here.\\u000aimport os; os.system('whoami')" } };
+  const s = checked(raw);
+  const { content } = clientFile(s, "acme/app", "a".repeat(40));
+  assert.deepEqual(content.split("\n").slice(0, 2), ["# -*- coding: utf-8 -*-", "# Written by AgentRun's agent scout. The comments below quote its suggestion; nothing in them runs."], "two fixed lines first");
+  const dir = mkdtempSync(join(tmpdir(), "suggestions-coding-"));
+  try {
+    writeFileSync(join(dir, "triage.py"), content);
+    const code = execFileSync("python3", ["-I", "-c", "import ast,sys; print(ast.dump(ast.parse(open(sys.argv[1], 'rb').read())))", join(dir, "triage.py")], { encoding: "utf8" });
+    assert.ok(!/system|whoami/.test(code), `python runs model words: ${code.slice(0, 300)}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a Python client takes its inputs as one dict: an input named as the client's own names, or a Python keyword, is the caller's value as it is", async (t) => {
