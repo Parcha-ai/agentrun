@@ -748,12 +748,10 @@ dependencies from the registry as it stood at that instant (by date, not by cont
 the same Debian packages. It is about 2.7 GB on disk. An agent that needs it says so with
 [`computer.needs`](#computers), so a server on another image fails its runs in words instead of running them.
 
-**The documents image.** For an agent that writes decks, documents and sheets, the computer package keeps a third
-recipe, the folder `packages/computer/documents`: the default image's base, by the same digest, and its programs, with
-its Debian packages from snapshot.debian.org at one instant, plus python-pptx, python-docx and openpyxl for `python3`
-(each with every package it needs, pinned by version and sha256, wheels only) and pptxgenjs, docx and exceljs for `node`
-(at exact versions, their dependencies as the registry stood at that same instant, no install script run). The Node
-libraries are linked as `/node_modules`, so a script in any folder requires or imports them. They are the folder's
+**The documents image.** For an agent that writes decks, documents and sheets, `packages/computer/documents` is the
+default image plus the Python and Node libraries that write Office files (python-pptx, python-docx and openpyxl for
+`python3`; pptxgenjs, docx and exceljs for `node`), pinned as its header says. The Node libraries are linked as
+`/node_modules`, so a script in any folder requires or imports them. The libraries are the folder's
 `documents.sh`, the one layer both builds run. Build it and name its tag in `AGENTRUN_DOCKER_IMAGE`:
 
 ```sh
@@ -762,11 +760,11 @@ docker build -t "$tag" packages/computer/documents
 AGENTRUN_DOCKER_IMAGE=$tag AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
-It is about 920 MB on disk. On Daytona, `python3 packages/computer/box/build-daytona.py --documents` builds the box
+On Daytona, `python3 packages/computer/box/build-daytona.py --documents` builds the box
 image with the same layer on top as the snapshot `agentrun-documents-<hash>` (the box recipe's snapshot,
 `agentrun-box-<hash>`, is unchanged); name it in `AGENTRUN_DAYTONA_SNAPSHOT`. An agent that needs them says so in
-`computer.needs` (`["python-pptx", "pptxgenjs"]`), and a box without them ends its runs in words naming this image's
-build, before any model request. Neither is published, and no agent setting picks one: a server's Docker image, or its
+`computer.needs` (`["python-pptx", "pptxgenjs"]`), and a box without them ends its runs before any model request; on
+Docker, the words name this image's build. Neither is published, and no agent setting picks one: a server's Docker image, or its
 Daytona snapshot, is one for every agent.
 
 ### In the published image
@@ -882,7 +880,7 @@ the provider's words.
 32 names (letters, digits, `.`, `_`, `+` and `-`; no path), each once. A name may also be a library the agent's code
 loads: a Python package by the name pip installs it by (`python-pptx`), which the box's `python3` has installed, or a
 Node package (`pptxgenjs`), which a script of the box's `node` requires (from `node_modules` of the folder the check
-runs in or any folder above it, up to `/node_modules`). It says what the box must have, never which
+runs in or any folder above it, up to `/node_modules`). A scoped npm package (`@scope/name`) can't be named. It says what the box must have, never which
 image it is: a Docker box's image is still `AGENTRUN_DOCKER_IMAGE`'s, and another provider's is its own. Each run's
 claim asks the box it started, before the run's first model request: one `sh` with the names as its arguments, which
 prints those that are neither a program `command -v` finds nor such a library, searching the folders the agent's shell searches (`/usr/local/sbin`,

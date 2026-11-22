@@ -79,7 +79,7 @@ test("a template's needs read beside computer: [shell] alone, as a list of progr
     assert.ok(problems.some((p) => beside.test(p)), `${JSON.stringify(computer)}: ${JSON.stringify(problems)}`);
   }
   // As a sandbox's computer.needs is checked (computer-needs.ts needsIssues), at the field `needs`.
-  for (const [value, words] of [["ffmpeg", /needs is a list of 1 to 32 program names/], ["[]", /needs is a list of 1 to 32 program names/], ["[/usr/bin/ffmpeg]", /needs holds "\/usr\/bin\/ffmpeg", not a program's name/], ["[ffmpeg, ffmpeg]", /needs names one program twice/]]) {
+  for (const [value, words] of [["ffmpeg", /needs is a list of 1 to 32 program names/], ["[]", /needs is a list of 1 to 32 program names/], ["[/usr/bin/ffmpeg]", /needs holds "\/usr\/bin\/ffmpeg", not a need's name/], ["[ffmpeg, ffmpeg]", /needs names one need twice/]]) {
     const problems = await problemsOf(t, "[hyperframes, ffmpeg]", value);
     assert.ok(problems.some((p) => words.test(p)), `${value}: ${JSON.stringify(problems)}`);
   }
