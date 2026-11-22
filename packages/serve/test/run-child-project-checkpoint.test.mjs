@@ -15,7 +15,7 @@ import { beginSourceIO, requireSourceIOIdle, sourceIOPrefix } from '../dist/sour
 import { purgingKey } from '../dist/agent-delete.js';
 import { storeOn } from './store-helpers.mjs';
 
-async function fixture(t, { sync = async () => {}, release = async () => {}, missingPlacement = false, rawComputer } = {}) {
+async function fixture(t, { sync = async () => {}, release = async () => {}, missingPlacement = false, rawComputer, auxiliary = false } = {}) {
   let side;
   t.after(() => side?.release());
   const { store, dir: data, clock } = await storeOn(t), sealKey = Buffer.alloc(32, 7);
@@ -37,7 +37,7 @@ async function fixture(t, { sync = async () => {}, release = async () => {}, mis
     snapshots: agentId => sourceSnapshotReader(store, agentId, options), destination: input => openRunPlacement(store, input, options) });
   const revision = await store.agents.revision('base');
   const placed = await placement.place({ agentId: 'agent', runId: 'own-run', revision,
-    launch: { input: { content: 'Work.' }, title: 'Work', place: { mode: 'runner' } } });
+    launch: { input: { content: 'Work.' }, title: 'Work', place: { mode: 'runner' }, ...(auxiliary ? { audit: { of: 'served-run' } } : {}) } });
   await store.runs.create({ id: 'own-run', agentId: 'agent', revisionId: 'base', expectedCurrent: 'base' }, { body: launchBody(placed.launch) });
   await placed.admitted();
   const claim = await store.claim('own-run', 'fixture', { leaseMs: 60_000 });
@@ -162,4 +162,78 @@ test('an unresolved nested write prevents a checkpoint candidate and retains own
   assert.equal(JSON.stringify(receipt).includes('fixture transport'), false);
   await f.side.release();
   assert.equal((await f.store.settings.all({ prefix: sourceIOPrefix('agent') })).length, 1);
+});
+
+async function parkOwnedClaim(f) {
+  const journal = f.store.journal(f.claim);
+  await commitWrites(journal, [{ type: 'conversation', value: { id: 1 } }], BACKGROUND_CONTEXT);
+  const id = await journal.mintId();
+  journal.stage({ run: { state: 'parked' }, effect: id });
+  await commitWrites(journal, [{ type: 'entry', value: { id, conversationId: 1, kind: 'agentrun.ask', data: { callId: 'not-dispatched' } } }], BACKGROUND_CONTEXT);
+  await journal.close();
+  const row = await f.store.runs.get(f.claim.runId);
+  assert.equal(row.state, 'parked');
+  assert.equal(row.epoch, f.claim.epoch);
+  assert.equal(row.runner, f.claim.runner);
+}
+
+test('an auxiliary audit ending at approval settles its still-owned parked claim without publishing a project', async t => {
+  let syncs = 0;
+  const f = await fixture(t, { auxiliary: true, sync: async () => { syncs++; } });
+  await parkOwnedClaim(f);
+  const receipt = await f.side.held.projectCheckpoint();
+  assert.equal(receipt.status, 'discarded', JSON.stringify(receipt));
+  assert.equal(syncs, 1, 'the non-dispatched approval is no reason to skip actual project settlement');
+  await f.side.release();
+  await requireSourceIOIdle(f.store, 'agent');
+});
+
+test('a parked audit cannot dispatch new work through the held host', async t => {
+  const f = await fixture(t, { auxiliary: true });
+  await parkOwnedClaim(f);
+  await assert.rejects(f.side.held.computer({ hadComputer: async () => false }), /claim/);
+});
+
+test('a normal parked run cannot request the auxiliary terminal-settlement exception', async t => {
+  let syncs = 0;
+  const f = await fixture(t, { sync: async () => { syncs++; } });
+  await parkOwnedClaim(f);
+  const receipt = await f.side.held.projectCheckpoint();
+  assert.equal(receipt.status, 'uncertain');
+  assert.equal(syncs, 0);
+});
+
+test('a parked audit with an unknown write outcome still cannot settle or clear ownership', async t => {
+  let syncs = 0;
+  const f = await fixture(t, { auxiliary: true, sync: async () => { syncs++; }, rawComputer: { client: {
+    call: async () => { throw new Error('fixture write result lost'); },
+  } } });
+  await assert.rejects(f.computer.computer.client.call('files.write', { path: 'state.txt', content: 'unacknowledged' }));
+  await parkOwnedClaim(f);
+  const receipt = await f.side.held.projectCheckpoint();
+  assert.equal(receipt.status, 'uncertain'); assert.equal(syncs, 0);
+  await f.side.release();
+  await assert.rejects(requireSourceIOIdle(f.store, 'agent'));
+});
+
+test('a parked audit cannot settle after the claim has been released', async t => {
+  let syncs = 0;
+  const f = await fixture(t, { auxiliary: true, sync: async () => { syncs++; } });
+  await parkOwnedClaim(f);
+  await f.side.release();
+  await assert.rejects(async () => f.side.held.projectCheckpoint(), /released/);
+  assert.equal(syncs, 0);
+});
+
+test('a parked audit cannot settle through its superseded claim even when the replacement is also parked', async t => {
+  let syncs = 0;
+  const f = await fixture(t, { auxiliary: true, sync: async () => { syncs++; } });
+  await parkOwnedClaim(f);
+  await f.store.command(f.claim.runId, { kind: 'approve', body: { approval: 'not-dispatched' } });
+  f.clock.now += 60_001;
+  const next = await f.store.claim(f.claim.runId, 'replacement', { leaseMs: 60_000 });
+  assert.ok(next.epoch > f.claim.epoch);
+  await f.store.runs.update(next, { state: 'parked' });
+  const receipt = await f.side.held.projectCheckpoint();
+  assert.equal(receipt.status, 'uncertain'); assert.equal(syncs, 0);
 });

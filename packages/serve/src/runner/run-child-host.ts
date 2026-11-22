@@ -624,15 +624,18 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   let projectFailed = false, projectReleased = false, projectClosing = false, projectCaptureDone = false;
   let projectRelease: Promise<void> | undefined;
   let projectCleanup: Promise<unknown> | undefined;
-  const projectOwns = async (): Promise<void> => {
+  const projectOwns = async (settlingAudit = false): Promise<void> => {
     projectSignal.throwIfAborted();
     const row = await store.runs.get(claim.runId);
-    if (!row || row.agentId !== run.agentId || row.revisionId !== run.revisionId || row.epoch !== claim.epoch || row.runner !== claim.runner || row.state !== "running")
+    // A never-waiting audit journals its Ask/cap as parked before terminalizing under this same claim. Only its
+    // checkpoint may finish from that state; ordinary held calls still require running, and claim identity is exact.
+    const settlingParkedAudit = settlingAudit && launch.audit !== undefined && row?.state === "parked";
+    if (!row || row.agentId !== run.agentId || row.revisionId !== run.revisionId || row.epoch !== claim.epoch || row.runner !== claim.runner || row.state !== "running" && !settlingParkedAudit)
       throw new ClaimRefused("This project checkpoint no longer holds its original run claim.");
   };
-  const ownProject = async (): Promise<void> => {
+  const ownProject = async (settlingAudit = false): Promise<void> => {
     if (!projectGate) return;
-    await projectOwns();
+    await projectOwns(settlingAudit);
     await (projectIO ??= beginSourceIO(store, run.agentId, "snapshot"));
   };
   const projectCall = <T>(work: () => Promise<T>): Promise<T> => projectGate ? projectGate.run(async () => { await ownProject(); return work(); }) : work();
@@ -697,8 +700,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         let result: ProjectCheckpoint;
         try {
           await projectGate.drain();
-          await ownProject();
-          signal.throwIfAborted(); await projectOwns();
+          await ownProject(true);
+          signal.throwIfAborted(); await projectOwns(true);
           if (projectGate.uncertain) throw new ClaimRefused("An earlier project operation has an unresolved outcome.");
           if (!projectComputer || !projectWorkspace) throw new ClaimRefused("The project's held execution resources are unavailable.");
           checkpoint = runProjectCheckpoint({ store, agentId: run.agentId, claim, launch, computer: projectComputer, ioHeld: true,
@@ -708,7 +711,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
             secrets: async () => runnerSecrets(deps.env, [...runnerSecrets(claimed), ...await storeSecrets(store, sealKey, deps.data)]),
           });
           result = await checkpoint.capture(signal);
-          signal.throwIfAborted(); await projectOwns();
+          signal.throwIfAborted(); await projectOwns(true);
           if (result.status !== "candidate" && result.status !== "discarded") projectFailed = true;
         } catch {
           projectFailed = true;

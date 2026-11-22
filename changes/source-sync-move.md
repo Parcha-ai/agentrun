@@ -14,6 +14,10 @@ Moved agents can learn checked workflows on the server using their existing lear
 shadow-audit runs receive isolated copies of the reserved project; their results remain learning evidence, while
 their settled file changes are explicitly discarded rather than published to the saved project. Uncertain writes
 retain recovery receipts, and the existing restrictions on auditing write-capable agents still apply.
+An audit that stops at an approval can still settle its private project under its original held claim, so that
+refused tool call does not falsely block later runs. Parked runs gain no new tool-dispatch permission; superseded
+claims and unresolved writes still refuse settlement. The bounded host-settlement model covers this transition;
+the DSL effect-admission and recovery-driver models are unchanged.
 
 Supported HTTP MCP connections retain source tool selections and denials, with explicit destination account binding.
 Resource lists, templates and reads use the same pinned grants, credentials and permission gate; resource-only servers
