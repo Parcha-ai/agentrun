@@ -7,7 +7,7 @@ import { ARCHIVE_FORMATS, type ArchiveFormat, type ArchiveInstallOptions, archiv
 import { BUILTIN_HARNESS_IDS } from "./harness-table.js";
 import { commandData } from "./harness-owned.js";
 import { harnessesOf, installDirOf, shellWord } from "./harness-install.js";
-import { ENV_NAME, launchEnv } from "@parcha/agentrun-kernel";
+import { ENV_NAME, KEY_NAME, launchEnv } from "@parcha/agentrun-kernel";
 import { acpPackage } from "./acp-package.js";
 import { keyShaped } from "./secret-name.js";
 import { SECRET_NAMES } from "./secrets.js";
@@ -221,13 +221,13 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
       // One saved key reaches the agent under one name: the adapter maps each saved name to a single variable.
       if (saved.has(name)) say(RECIPE_CODES.keys, `the key ${name} is named twice: a saved key is handed under one name`);
       saved.add(name);
-      if (!ENV_NAME.test(name)) say(RECIPE_CODES.keys, `the key ${JSON.stringify(name)} is not a variable name`);
+      if (!KEY_NAME.test(name)) say(RECIPE_CODES.keys, `the key ${JSON.stringify(name)} is not a key's name (capitals, digits and _, at most 64)`);
       else if (serverKey(name)) say(RECIPE_CODES.keys, `${name} is a key this server holds for something else; a recipe names only keys saved for its own harness (save it under a name of its own, and hand it as ${name} with { "name", "env" })`);
       else if (SET_BY_ADAPTER.has(name)) say(RECIPE_CODES.env, `${name} is set by the adapter or the proxy, never by a key`);
       // The variable it reaches the agent as may be a provider's name the server holds a key under (GEMINI_API_KEY): the
       // value is this harness's own, read by its saved name, so the server's never reaches the agent. Never the
       // adapter's, the proxy's, or the server's own (AGENTRUN_, AGENT_MODEL_).
-      if (!ENV_NAME.test(env)) say(RECIPE_CODES.keys, `the key ${name}'s env ${JSON.stringify(env)} is not a variable name`);
+      if (!KEY_NAME.test(env)) say(RECIPE_CODES.keys, `the key ${name}'s env ${JSON.stringify(env)} is not a key's name (capitals, digits and _, at most 64)`);
       else if (SET_BY_ADAPTER.has(env) || env.startsWith("AGENTRUN_") || env.startsWith("AGENT_MODEL_")) say(RECIPE_CODES.env, `the key ${name} is handed as ${env}, which the adapter, the proxy or the server sets`);
       else if (launchEnv(env)) say(RECIPE_CODES.env, `the key ${name} is handed as ${env}, which changes what the agent's process loads or runs`);
       if (handed.has(env)) say(RECIPE_CODES.keys, `two keys are handed as ${env}`);

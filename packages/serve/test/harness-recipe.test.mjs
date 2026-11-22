@@ -745,6 +745,12 @@ test("a recipe's keys and sign-in are checked: keys handed under the name the ag
     ["one saved key named twice", both({ keys: [KEY, "MODEL_AGENT_GEMINI_API_KEY"] }), RECIPE_CODES.keys],
     ["a key handed as the server's own variable", both({ keys: [{ name: "MODEL_AGENT_GEMINI_API_KEY", env: "AGENTRUN_TOKEN" }] }), RECIPE_CODES.env],
     ["a key entry with a field it has not", both({ keys: [{ ...KEY, value: "x" }] }), RECIPE_CODES.keys],
+    // The ACP adapter's key-name rule: capitals, digits and _, at most 64. A lowercase or long name would load here and
+    // be refused at harness-check.
+    ["a key saved under a lowercase name", both({ keys: [{ name: "model_agent_key", env: "GEMINI_API_KEY" }] }), RECIPE_CODES.keys],
+    ["a key handed under a lowercase name", both({ keys: [{ name: "MODEL_AGENT_GEMINI_API_KEY", env: "gemini_api_key" }] }), RECIPE_CODES.keys],
+    ["a key named with a leading _", both({ keys: ["_MODEL_AGENT_KEY"] }), RECIPE_CODES.keys],
+    ["a key named past 64 characters", both({ keys: [`M${"_".repeat(64)}`] }), RECIPE_CODES.keys],
     ["keyMethod with no keys", recipeOf(undefined, { model: plan, keyMethod: "model-agent-api-key", signIn: SIGN_IN }), RECIPE_CODES.invalid],
   ];
   for (const [why, recipe, code] of cases) assert.ok(refusalOf(recipe).codes.includes(code), `${why}: ${refusalOf(recipe).message}`);
