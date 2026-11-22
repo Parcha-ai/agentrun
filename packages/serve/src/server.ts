@@ -3608,7 +3608,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const model = model_key === undefined ? undefined : modelKeyOf(model_key, issues);
       const keys = given === undefined ? undefined : runKeysOf(given, issues);
       if (issues.length) throw invalid(issues);
-      return { ...(mcp_auth !== undefined ? { mcp: auth } : {}), ...(model !== undefined ? { model } : {}), ...(keys && Object.keys(keys).length ? { keys } : {}) };
+      // Empty keys are kept: on a message they replace the run's keys with none (on a start, none is what it has).
+      return { ...(mcp_auth !== undefined ? { mcp: auth } : {}), ...(model !== undefined ? { model } : {}), ...(keys !== undefined ? { keys } : {}) };
     };
     return { body: rest, handed };
   }

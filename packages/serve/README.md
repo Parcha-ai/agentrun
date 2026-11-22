@@ -1376,7 +1376,8 @@ curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer 
   each claim for its tools alone, and erased by the write that ends its turn. Since no read after that could cut
   them, the runner cuts them from everything the run writes, as it writes it.
 - A message's `keys` replace the run's in the message's own write, read from the run's next claim on; a turn still
-  going keeps the keys it opened. A message without them keeps the run's, which are none once its last turn ended.
+  going keeps the keys it opened. `keys: {}` leaves the run none. A message without them keeps the run's, which are
+  none once its last turn ended.
 
 **A server that holds no tool keys: `AGENTRUN_RUN_KEYS=1`.** Off, a template's apply refuses a tool key the server does
 not hold (409, as before). With the setting on, the apply makes the agent and says, in a warning, which tool keys
