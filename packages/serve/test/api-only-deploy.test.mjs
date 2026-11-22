@@ -202,6 +202,7 @@ test("an API-only server unarchives an agent it archived, so an archive sent by 
   assert.equal(back.status, 200, JSON.stringify(back.body));
   assert.equal((await server.store.agents.get(agent)).archivedAt, null, "not archived");
   assert.deepEqual(back.body.triggers_off, [], JSON.stringify(back.body));
+  assert.deepEqual(await server.store.triggers.list(agent), [], "the unarchive turns no trigger on, since none was made");
 });
 
 test("off by default: the whole server's unarchive turns none of its triggers on, and names each one its archive turned off, as before", { timeout: 60_000 }, async (t) => {
