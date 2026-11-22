@@ -34,7 +34,7 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_HOOKED_KINDS, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
-import { declaredKeys, keysOwed, packageKeysOf, RUN_KEYS_ENV, type RunKeys, runKeysOf, undeclaredKeys, withCarried } from "./run-keys.js";
+import { declaredKeys, keysOwed, keysOwedRefusal, packageKeysOf, RUN_KEYS_ENV, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -2011,6 +2011,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const carried = typeof view.revision === "string" ? carriedFields(((await store.agents.revision(view.revision))?.body as { outputSchema?: unknown } | undefined)?.outputSchema) : undefined;
       return { output: (view.result as { output?: unknown } | null)?.output ?? null, endedAt: (view.ended_at as string | null | undefined) ?? null, ...(carried ? { carried } : {}) };
     },
+    // Read as the server's environment stands now (a saved key changes it).
+    ...(options.runKeys ? { keysOwed: (revision: object) => keysOwed(revision, env, []) } : {}),
+    hooked: options.launchHook !== undefined,
   };
   const targets = triggerTargets(store, triggerDeps);
   // Every presented token is checked here, against every token the server takes, in constant time (api-token.ts). The id
@@ -2900,7 +2903,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Under the run-keys setting, a template's tool key this host does not hold is each run's to carry: one that does not
     // is refused for it alone, before the checks that read the keys it would bring.
     const owed = options.runKeys ? keysOwed(revision, env, carried) : [];
-    if (owed.length) throw new ApiError("agent_not_runnable", owed.map((one) => one.message).join(" "), { fields: owed, details: { unbound: [], missing: {} } });
+    if (owed.length) throw keysOwedRefusal(owed);
     // Claude Code's login on this machine is a runner place's alone: a sandbox run is checked for a key, as it runs.
     const blockers = await blockersOf(withCarried(envAtPlace(env, shape.place), carried), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
     if (!blockers.length) return;
@@ -3324,13 +3327,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // by the triggers' own clock, the one POST /triggers checks by and they fire by (a template eval case's `now`).
     // A feed trigger whose urls are one array parameter given empty reads no feed: skipped, never the apply (feedLeftEmpty).
     const emptyFeeds = new Set(made.triggers.flatMap((trigger, i) => (feedLeftEmpty(trigger) ? [i] : [])));
-    // On an API-only server a trigger is made only when its firings have somewhere to go: a schedule or a feed with the
-    // launch hook set. Each other is said (api-only.ts), and stays listed, so a trigger the agent has by its name is left
-    // as it is, never removed.
-    const hostless = new Map(options.apiOnly ? made.triggers.flatMap((trigger, i) => {
-      const skip = apiOnlyTriggerSkipped(pkg.name, trigger, options.launchHook !== undefined);
+    // A trigger is made only when its firings have somewhere to go: on an API-only server, a schedule or a feed with the
+    // launch hook set (api-only.ts); under the run-keys setting, for an agent whose runs owe keys, only with the launch
+    // hook, the one way a firing's run carries them (run-keys.ts). Each other is said, and stays listed, so a trigger the
+    // agent has by its name is left as it is, never removed.
+    const hooked = options.launchHook !== undefined;
+    const hostless = new Map(made.triggers.flatMap((trigger, i) => {
+      const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
       return skip ? [[i, skip] as const] : [];
-    }) : []);
+    }));
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
     const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
     if (refusedTriggers.length) throw invalid(refusedTriggers);

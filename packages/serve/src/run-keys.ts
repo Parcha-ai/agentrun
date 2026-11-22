@@ -7,8 +7,9 @@
 // AGENTRUN_RUN_KEYS=1 (runKeysFrom): an install whose runs bring the tool keys it does not hold. A template's apply then
 // makes its agent though a tool key the template declares is not set here, and says so in a warning; a run of that
 // revision that does not carry the key is refused (409 agent_not_runnable, at keys.<NAME>). Off, nothing changes.
-import type { InputIssue } from "./errors.js";
+import { ApiError, type InputIssue } from "./errors.js";
 import { handedSecretOf } from "./handed-secret.js";
+import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
 import type { Revision } from "./agent-rows.js";
 import { needsOf, type RunNeeds } from "./run-secrets.js";
 import type { TemplatePackage } from "./store/store.js";
@@ -97,4 +98,26 @@ export function keysOwed(revision: object, env: NodeJS.ProcessEnv, carried: read
     message: `This agent's template needs ${name}, which this server does not hold: it takes it from each run (${RUN_KEYS_ENV}=1).`,
     fix: `Send keys.${name} with the run.`,
   }));
+}
+
+/** The 409 a run that owes `owed` (keysOwed) gets at its start, and a trigger that could only start or message such runs
+ *  gets when it is made or moved (firingsOwe). */
+export const keysOwedRefusal = (owed: readonly InputIssue[]): ApiError =>
+  new ApiError("agent_not_runnable", owed.map((one) => one.message).join(" "), { fields: [...owed], details: { unbound: [], missing: {} } });
+
+/** Under the run-keys setting, whether a trigger's firings could never bring the keys runs of its agent owe (`owed`,
+ *  keysOwed with nothing carried): a message_run's never do, hook or not; a start_run's do only through the launch hook,
+ *  which hands each firing to the backend in front of this server to start the run with its keys (trigger-launch-hook.ts). */
+export const firingsOwe = (owed: readonly unknown[], target: "start_run" | "message_run", hooked: boolean): boolean =>
+  owed.length > 0 && (target === "message_run" || !hooked);
+
+/** Why an apply under the run-keys setting does not make `trigger` of the `packageName` template (a start_run's) for an
+ *  agent whose runs owe `owed`, or undefined when it makes it (firingsOwe). */
+export function runKeysTriggerSkipped(packageName: string, trigger: { name?: unknown; source?: unknown }, owed: readonly string[], hooked: boolean): { reason: "not_set_up_here"; message: string } | undefined {
+  if (!firingsOwe(owed, "start_run", hooked)) return undefined;
+  const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
+  return {
+    reason: "not_set_up_here",
+    message: `The ${packageName} template's trigger ${String(trigger.name).trim()} (${kind}) was not made: each run of its agent must carry ${owed.join(" and ")} in keys (${RUN_KEYS_ENV}=1), and its firings would start runs without them. Start its runs through the API with keys, or set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}) and apply again: each firing then goes to the backend in front of this server, which starts the run with its keys.`,
+  };
 }
