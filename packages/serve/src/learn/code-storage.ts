@@ -287,7 +287,8 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
       if (!COMMIT.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
       const got = await getJson<{ files?: { path: string; state?: string; raw?: string; bytes?: number }[]; filtered_files?: { path: string; state?: string }[] }>("diff", "repos/diff", { sha: commit });
       if (!got) return undefined;
-      const status = (state: string | undefined): StoreDiffFile["status"] => (state === "added" || state === "deleted" ? state : "modified");
+      // The API sends git's raw letter (A, M, D, T, U; R and C with a score): A added, D deleted, any other modified.
+      const status = (state: string | undefined): StoreDiffFile["status"] => (state?.[0] === "A" ? "added" : state?.[0] === "D" ? "deleted" : "modified");
       const out: StoreDiffFile[] = [];
       for (const file of got.files ?? []) {
         const raw = file.raw ?? "";
@@ -450,7 +451,7 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
       for (let g = 0; g <= Math.max(n, ...drop) + 1; g++) await on(await idOf(g)).drop();
       return generations.drop(agentId);
     }
-    // A reset skips the next generation (a purge's build may hold it) and deletes it with the current one.
+    // N+2, not N+1: a purge may be building g<N+1> now, and a reset landing there would serve its half-built chain.
     for (;;) {
       const { at } = await current();
       if (await flip(at, at.n + 2, [at.n, at.n + 1])) return;

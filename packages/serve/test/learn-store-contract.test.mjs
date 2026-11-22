@@ -10,6 +10,8 @@
 //     node --test packages/serve/test/learn-store-contract.test.mjs
 // Each case there is a server id of its own (12 fresh hex digits), so its repositories are
 // agentrun-<that id>-agent-one-g<N>; every generation is deleted (each by its exact id, no listing) when the case ends.
+// The settings are read once, below, before any of dist is imported (every dist import here is a dynamic one inside a
+// case): dist's secrets module takes each key out of the environment as it loads (secrets.ts).
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
@@ -24,6 +26,8 @@ import { codeStorageFake } from "./fixtures/code-storage-fake.mjs";
 /** The variable the capture path's check (the case at the end) hands its child the fake's public key in: set, the live
  *  cases run against a fake keyed with it, never the network. */
 const FAKE_PEM = "LEARN_STORE_CONTRACT_FAKE_PEM";
+/** The live settings, as this process was started with them: read here, before dist takes the key out. */
+const LIVE = { name: process.env.AGENTRUN_CODE_STORAGE_NAME, key: process.env.AGENTRUN_CODE_STORAGE_KEY, apiUrl: process.env.AGENTRUN_CODE_STORAGE_API_URL, fake: process.env[FAKE_PEM] };
 const HEX = /^[0-9a-f]{40}$/;
 /** The fakes' server id: 12 hex digits, as archil-settings.ts serverIdOf makes one. */
 const SRV = "0123456789ab";
@@ -103,14 +107,14 @@ const STORES = {
     FAKES.push(fake);
     return Object.assign(store, { fake });
   },
-  ...(process.env.AGENTRUN_CODE_STORAGE_NAME ? {
+  ...(LIVE.name ? {
     "code.storage live": async (t) => {
       const { codeStorageLearningStore } = await import("../dist/learn/code-storage.js");
-      const { codeStorageFromEnv } = await import("../dist/learn/store-of.js");
-      const settings = codeStorageFromEnv(process.env, (name) => process.env[name]);
+      const { CODE_STORAGE_ENV, codeStorageFromEnv } = await import("../dist/learn/store-of.js");
+      const settings = codeStorageFromEnv({ [CODE_STORAGE_ENV.name]: LIVE.name, [CODE_STORAGE_ENV.apiUrl]: LIVE.apiUrl }, () => LIVE.key);
       const serverId = randomBytes(6).toString("hex");
       // The capture path's own check (the case at the end) runs these cases against a fake keyed with the settings' key.
-      const fake = process.env[FAKE_PEM] ? codeStorageFake({ name: settings.name, publicKey: process.env[FAKE_PEM] }) : undefined;
+      const fake = LIVE.fake ? codeStorageFake({ name: settings.name, publicKey: LIVE.fake }) : undefined;
       const store = codeStorageLearningStore({ ...settings, ...(fake ? { fetch: fake.fetch } : {}), serverId: async () => serverId }, "agent-one");
       t.after(async () => {
         await store.remove({ erase: true });
@@ -549,10 +553,10 @@ test("code.storage: every repository id the whole suite sent is agentrun-<12 hex
   assert.deepEqual([...new Set(sent.filter((call) => call.method === "DELETE").map((call) => call.path))], ["repos/delete"]);
 });
 
-// The live cases' settings are read before any of dist is: its secrets module takes every key out of the environment as
-// it loads (secrets.ts), so a read inside a case finds the name alone. Checked in CI in a process of this file's own,
-// started with the three settings and the fake's public key: every live case runs, against the fake, and passes.
-if (!process.env.AGENTRUN_CODE_STORAGE_NAME) {
+// The live cases' settings are read before any of dist is (LIVE): its secrets module takes every key out of the
+// environment as it loads (secrets.ts), so a read inside a case would find the name alone. Checked in CI in a process of
+// this file's own, started with the three settings and the fake's public key: every live case runs, against the fake.
+if (!LIVE.name) {
   test("code.storage live: started with its settings, every live case runs and passes (here against the fake, keyed with the settings' key), each erasing what it made", { timeout: 180_000 }, async () => {
     const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
     // NODE_TEST_CONTEXT left out: under `node --test` the child would report to this runner's pipe, not as TAP.
