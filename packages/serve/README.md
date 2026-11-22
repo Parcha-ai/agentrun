@@ -3221,7 +3221,7 @@ serves these routes alone:
   is what its delete (`DELETE /agents/{id}`) needs first. A run here starts through the backend, on its keys and
   budget, never on this server's own model key. So with the [launch hook](#launch-hook) set, the apply makes the
   package's schedule and feed triggers, and each firing goes to the backend, which starts its run through the API; the
-  unarchive turns them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up`: set
+  unarchive turns them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set
   the hook, or start those runs through the API). A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
