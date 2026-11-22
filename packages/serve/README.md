@@ -2023,8 +2023,8 @@ its charge unknown, as any cut call's) and given back when monid refused it unru
 which `maxCost` 0 lets through) is the call, settled at its charge. Under a cap, a read that ends with its charge unknown
 (no answer, or `FAILED` with no cost) stops the run at once, "monid may have charged for <name> and did not say how
 much, so this run's cap can't be kept; the run stopped": its $0 hold bounds nothing. Its charge can pass the estimate: then it is booked
-as charged, and the run stops at once, failed, in the words "monid charged $X, more than the $Y held; the run stopped".
-A run's spend cap is a hard stop for everything but that one charge. A mark a crash left unsettled leaves the run's cost unknown, as a
+as charged and logged ("monid charged $X, more than the $Y held"), and the run goes on while its charges fit its cap; one
+that takes them past it stops the run at once in the cap's words ([Spend cap](#spend-cap)). A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
 never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as
@@ -4337,10 +4337,10 @@ spend limit. A workflow definition keeps one the same way. The cap is checked in
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 what each request still in flight is held at, plus the most this request can cost must stay within it, or the
 request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). The cap is a hard stop for everything but
-two charges that can pass what they were held at: a monid call priced by usage, which can pass monid's estimate (when
-it does, the run stops at once, [monid](#monid)), and a fal job, booked at the units its output states, which can pass
-those its input asked for (when that takes the run past its cap, the run stops at once in the cap's words, nothing
-run after it). An MCP tool counts only at the price saved for it (its server's `prices`); one with none is
+two charges that can pass what they were held at: a monid call priced by usage, which can pass monid's estimate
+([monid](#monid)), and a fal job, booked at the units its output states, which can pass those its input asked for. Either
+is booked as charged; when that takes the run past its cap, the run stops at once in the cap's words, nothing run after
+it, and below the cap the run goes on. An MCP tool counts only at the price saved for it (its server's `prices`); one with none is
 not metered and bills its own account outside the cap. fal is counted: a job sent to a fal server (one saved with the
 toolkit `fal`, or at `mcp.fal.ai`) through `run_model`, `submit_job` or `submit_jobs` is priced before it is sent, at
 fal's unit price for its endpoint (the server's own `get_pricing`, read with the run's credential and kept five

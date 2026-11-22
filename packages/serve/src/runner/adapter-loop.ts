@@ -1868,7 +1868,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A host tool call's paid requests name the session the call runs in (RunTools.admit `under`): a request of it still
         // in flight may be the one that asked for the call (Claude Code books its cost after its calls; Codex starts a call
         // with its response open), so the call is judged beside it and never waits on it. pi's request has answered by then.
-        // A call settled above its hold (a fal job whose output states more than its input asked) can take what the run was
+        // A call settled above its hold (a fal job whose output states more than its input asked, a monid call charged above
+        // its maxCost) can take what the run was
         // charged past its cap. From then on, a settle that leaves the run's charges over its cap stops the run at once in
         // the cap's words (overCap, settled charges only), as a stop for good (paid-calls.ts stopRun): no tool runs after it,
         // a script's own calls included. A charge is never given back, so that stop holds; a call still in flight counts
@@ -1969,8 +1970,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A paid call's refusal is the call's result first: its pause is journaled at the model's next request (beforeRequest,
         // pendingPause), once the harness has stored that result, so the run never reads waiting on a raise before its
         // Timeline says why. The refusal is kept on the root at once (KINDS.pausePending, no run patch, nothing a person
-        // reads), so a claim lost in between restores it (pendingPauseOf) and the next claim's request parks the run.
+        // reads), so a claim lost in between restores it (pendingPauseOf) and the next claim's request parks the run. A stop
+        // for good (paid-calls.ts stopRun) stays: a refusal after it (a call admitted after the stop, refused for room) never
+        // replaces it, so no tool runs after the stop.
         pauseFor = async (refusal) => {
+          if (pendingPause?.forGood) return;
           pendingPause = refusal;
           await keepPending(refusal);
         };
