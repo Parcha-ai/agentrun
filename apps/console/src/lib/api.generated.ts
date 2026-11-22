@@ -3392,11 +3392,13 @@ export interface operations {
           bash: "read-only";
         } | null;
         computer: ("shell" | "none")[] | null;
+        needs: string[] | null;
         computer_here: {
           entry: "shell" | "none" | null;
           computer: {
             kind: string;
             provider?: string;
+            needs?: string[];
           } | null;
           shell: string | null;
           dropped: string[];
@@ -3423,6 +3425,7 @@ export interface operations {
         secrets: string[];
         budget: {
           per_run_usd: number;
+          max_requests?: number;
         } | null;
         learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";

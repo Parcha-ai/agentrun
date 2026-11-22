@@ -4559,11 +4559,13 @@ export type GetTemplateResponse = {
       bash: "read-only";
     } | null;
     computer: Array<"shell" | "none"> | null;
+    needs: Array<string> | null;
     computer_here: {
       entry: "shell" | "none" | null;
       computer: {
         kind: string;
         provider?: string;
+        needs?: Array<string>;
       } | null;
       shell: string | null;
       dropped: Array<string>;
@@ -4590,6 +4592,7 @@ export type GetTemplateResponse = {
     secrets: Array<string>;
     budget: {
       per_run_usd: number;
+      max_requests?: number;
     } | null;
     learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";

@@ -7364,6 +7364,7 @@ class GetTemplateResponseTemplate(TypedDict):
     checkout: Literal["pull_request"] | None
     tool_policy: GetTemplateResponseTemplateToolPolicy | None
     computer: list[Literal["shell", "none"]] | None
+    needs: list[str] | None
     computer_here: GetTemplateResponseTemplateComputerHere | None
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
@@ -7432,6 +7433,7 @@ class _GetTemplateResponseTemplateComputerHereComputerRequired(TypedDict):
 
 class GetTemplateResponseTemplateComputerHereComputer(_GetTemplateResponseTemplateComputerHereComputerRequired, total=False):
     provider: str
+    needs: list[str]
 
 
 class GetTemplateResponseTemplateMcpItem(TypedDict):
@@ -7456,8 +7458,12 @@ class GetTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
 
 
-class GetTemplateResponseTemplateBudget(TypedDict):
+class _GetTemplateResponseTemplateBudgetRequired(TypedDict):
     per_run_usd: float
+
+
+class GetTemplateResponseTemplateBudget(_GetTemplateResponseTemplateBudgetRequired, total=False):
+    max_requests: int
 
 
 class _ImportTemplateBodyRequired(TypedDict):
