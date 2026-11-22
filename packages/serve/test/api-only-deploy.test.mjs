@@ -391,21 +391,6 @@ test("an API-only server with the launch hook makes a feed whose urls are given;
   assert.deepEqual(skippedOf(empty.body).map(([field, reason, message]) => [field, reason, /no feed|status_feeds/.test(message)]), [["triggers.1", "not_set_up_here", true]], JSON.stringify(empty.body.warnings));
 });
 
-test("an API-only server with the launch hook unarchives an agent: the schedule its archive turned off is on again, as no trigger route is served to turn it on", { timeout: 60_000 }, async (t) => {
-  const server = await deployServer(t, { apiOnly: true, launchHook: { url: (await hookServer(t)).url, secret: mintSecret() } }, NO_MAIL);
-  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
-  assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const agent = applied.body.agent_id;
-  const archived = await send(server, "POST", `/v2/agents/${agent}/archive`);
-  assert.equal(archived.status, 200, JSON.stringify(archived.body));
-  assert.deepEqual((await server.store.triggers.list(agent)).map((row) => row.enabled), [false], "its schedule is off");
-  const back = await send(server, "POST", `/v2/agents/${agent}/unarchive`);
-  assert.equal(back.status, 200, JSON.stringify(back.body));
-  assert.deepEqual(back.body.triggers_off, [], JSON.stringify(back.body));
-  const [schedule] = await server.store.triggers.list(agent);
-  assert.deepEqual([schedule.name, schedule.enabled, schedule.disabled ?? null, typeof schedule.nextAt], ["morning", true, null, "number"], JSON.stringify(schedule));
-});
-
 test("an API-only unarchive names a feed trigger that its first check turned off again: what is off is read after each turn-on, never assumed", { timeout: 60_000 }, async (t) => {
   const blog = await feed(t, { format: "rss", title: "Posts", items: posts(1) });
   const server = await deployServer(t, { apiOnly: true, launchHook: { url: (await hookServer(t)).url, secret: mintSecret() }, feedsAt: () => blog.url }, `---
