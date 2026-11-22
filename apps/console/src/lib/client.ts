@@ -449,7 +449,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     listSuggestions: (repo?: string) => call<SuggestionsList>("GET", `/suggestions${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`),
     /** Starts a scan of a repository (or answers the one still running). */
     scanRepository: (repo: string) => call<ScanStarted>("POST", "/suggestions/scans", { body: { repo } }),
-    getSuggestion: (id: string) => call<SuggestionDetail>("GET", `/suggestions/${encodeURIComponent(id)}`),
+    /** `name`: the agent's name a create would be sent; the files come rendered with it. */
+    getSuggestion: (id: string, name?: string) => call<SuggestionDetail>("GET", `/suggestions/${encodeURIComponent(id)}${name ? `?name=${encodeURIComponent(name)}` : ""}`),
     discardSuggestion: (id: string) => call<Suggestion>("POST", `/suggestions/${encodeURIComponent(id)}/discard`, { body: {} }),
     restoreSuggestion: (id: string) => call<Suggestion>("POST", `/suggestions/${encodeURIComponent(id)}/restore`, { body: {} }),
     /** Pushes the agent's package and client on a new branch, makes the agent here and opens the pull request. 409

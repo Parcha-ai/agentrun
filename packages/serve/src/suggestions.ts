@@ -122,6 +122,8 @@ export type SuggestionsDeps = {
   startScan(agentId: string, content: string): Promise<string>;
   /** A run's state; undefined when there is no such run. */
   readRun(runId: string): Promise<ScanRun | undefined>;
+  /** A scan's run cancelled: one that started but whose scan could not be kept, so nothing would ever read it. */
+  cancelScan(runId: string): Promise<void>;
   /** The package (its files, under the id and origin given) made into an agent here: applied, then kept beside the other
    *  imported templates. Throws what the apply refuses (a missing model key, say), with nothing made. */
   makeAgent(id: string, origin: { source: string; sha: string; publisher: string }, files: ReadonlyMap<string, Buffer>): Promise<{ agentId: string; warnings: InputIssue[] }>;
@@ -716,7 +718,15 @@ export class Suggestions {
       }
       // The newest scan of a repository is the one kept: its suggestions replace the open ones of the scan before. The
       // reservation is this request's, so the row is written whole (a list that read the older scan meanwhile is replaced).
-      await this.deps.settings.put(key, scan);
+      try {
+        await this.deps.settings.put(key, scan);
+      } catch (error) {
+        // The run started but its scan could not be kept: no scan would read it, so it is cancelled rather than left to
+        // spend, and the row goes back as it was, so the next scan starts at once instead of waiting out the claim.
+        await this.deps.cancelScan(scan.run_id).catch(() => {});
+        await (isObject(was) ? this.deps.settings.replaceIf(key, claim, was) : this.deps.settings.removeIf(key, claim)).catch(() => false);
+        throw error;
+      }
       return { status: 202, body: { repo, run_id: scan.run_id, agent_id: scan.agent_id, status: "running", already_running: false } };
     }
     throw new ApiError("home_busy", `The scan of ${repo} kept changing while it started: send it again.`);
@@ -724,12 +734,15 @@ export class Suggestions {
 
   /** GET /v2/suggestions/{id}: the suggestion whole, the files a create would add (rendered now), and whether this
    *  server's GitHub App can open its pull request (read from GitHub now), with what to do when it can't. */
-  async get(id: string, signal?: AbortSignal): Promise<Json> {
+  async get(id: string, signal?: AbortSignal, name?: string): Promise<Json> {
+    if (name !== undefined && !(name.trim().length >= 3 && name.trim().length <= 60)) throw invalid([{ field: "name", reason: "invalid", message: "name is the agent's name: 3 to 60 characters" }]);
     const item = await this.need(id);
     const s = item.suggestion;
-    const files = [...packageFiles(s)].map(([name, data]) => ({ path: `${PACKAGE_DIR}/${s.key}/${name}`, content: data.toString("utf8") }));
+    // Rendered with the name a create would be sent, so the preview is the very files it pushes.
+    const named = name?.trim();
+    const files = [...packageFiles(s, named)].map(([file, data]) => ({ path: `${PACKAGE_DIR}/${s.key}/${file}`, content: data.toString("utf8") }));
     files.push(clientFile(s, item.repo, item.scan.commit));
-    return { ...itemView(item, true), files, problems: packageProblems(s), github: await this.readiness(item.repo, signal) };
+    return { ...itemView(item, true), files, problems: packageProblems(s, named), github: await this.readiness(item.repo, signal) };
   }
 
   /** Whether a pull request can be opened on `repo` now, and if not, why and where to fix it. */

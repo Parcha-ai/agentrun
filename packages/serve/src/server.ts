@@ -2232,6 +2232,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     // Kept, then applied (template-import.ts applyImported): a thrown error means no agent was made. The package has no
     // trigger, so the apply makes the agent as its last write.
+    cancelScan: async (runId) => { await cancel(store, await needRun(runId)); },
     agentFrom: async (id, sha) => (await agents.list()).find((one) => one.template?.id === id && one.template.sha === sha && !one.agent.archivedAt)?.agent.id,
     makeAgent: async (id, origin, files) => {
       const made = await applyImported({ registry, store, apply: (pkg) => applyTemplate(pkg, { parameters: {} }) }, id, origin, files);
@@ -5615,7 +5616,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, scanned.status, scanned.body, { location: `/v2/runs/${String(scanned.body.run_id)}` });
       }
       case "getSuggestion":
-        return send(res, 200, await suggestions.get(id, stopping.signal), { "cache-control": "no-store" });
+        return send(res, 200, await suggestions.get(id, stopping.signal, url.searchParams.get("name") ?? undefined), { "cache-control": "no-store" });
       case "discardSuggestion":
         return send(res, 200, await suggestions.discard(id));
       case "restoreSuggestion":

@@ -39,6 +39,7 @@ async function service(t, { makeAgent }) {
   const minted = [];
   const revoked = [];
   const made = new Map();
+  const cancelled = [];
   const store = settings();
   const deps = {
     settings: store,
@@ -64,13 +65,14 @@ async function service(t, { makeAgent }) {
       return agent;
     },
     agentFrom: async (id, sha) => made.get(`${id}@${sha}`),
+    cancelScan: async (runId) => void cancelled.push(runId),
   };
   const s = new Suggestions(deps);
   await s.scan({ repo: REPO });
   await s.list({});
   const state = async () => (await fetch(`${gh.url}/_faux/state`)).json();
   const permissions = async (set) => (await fetch(`${gh.url}/_faux/permissions`, { method: "POST", body: JSON.stringify(set) })).json();
-  return { s, deps, store, state, permissions, minted, revoked, id: suggestionId(REPO, "ticket-triage") };
+  return { s, deps, store, state, permissions, minted, revoked, cancelled, id: suggestionId(REPO, "ticket-triage") };
 }
 
 test("an apply refused after the push removes the branch, makes nothing, and leaves the suggestion open for a clean retry", async (t) => {
@@ -137,6 +139,33 @@ test("a create whose agent was made but whose row could not be kept reuses that 
   const after = await state();
   assert.deepEqual([Object.keys(after.branches).sort(), after.pulls.length], [["agentrun/ticket-triage", "main"], 1], "one branch, one pull request");
   assert.equal((await store.get(`suggestions.item.${id}`)).pushed, undefined, "the push record is gone once created");
+});
+
+test("a scan whose run started but whose row could not be kept cancels that run and frees the row: the next scan starts at once", async (t) => {
+  const { deps, store, cancelled } = await service(t, { makeAgent: async () => assert.fail("no agent is made") });
+  let starts = 0;
+  const s = new Suggestions({ ...deps, startScan: async () => `run_${++starts}` });
+  const other = "faux-org/other";
+  // The store refuses the write that keeps the started scan (the row with its run), once.
+  const put = store.put;
+  let refused = 0;
+  store.put = async (key, value) => {
+    if (key === `suggestions.scan.${other}` && value?.run_id && refused++ === 0) throw new Error("The store is read-only for a moment.");
+    return put(key, value);
+  };
+  await assert.rejects(s.scan({ repo: other }), /read-only for a moment/);
+  assert.deepEqual(cancelled, ["run_1"], "the run no scan would read is cancelled");
+  assert.equal(await store.get(`suggestions.scan.${other}`), undefined, "the row goes back as it was");
+  const again = await s.scan({ repo: other });
+  assert.deepEqual([again.status, again.body.run_id], [202, "run_2"], "the next scan starts at once, not held by a claim");
+});
+
+test("the preview is rendered with the name a create would be sent, so it shows the files the create pushes", async (t) => {
+  const { s, id } = await service(t, { makeAgent: async () => assert.fail("no agent is made") });
+  const agentMd = async (name) => (await s.get(id, undefined, name)).files.find((f) => f.path.endsWith("/agent.md")).content;
+  assert.match(await agentMd(undefined), /^display_name: "Support ticket triage"$/m);
+  assert.match(await agentMd("Ticket sorter"), /^display_name: "Ticket sorter"$/m);
+  await assert.rejects(s.get(id, undefined, "ab"), (error) => error.code === "input_invalid");
 });
 
 test("a file the repository already has stops the create before anything is written", async (t) => {

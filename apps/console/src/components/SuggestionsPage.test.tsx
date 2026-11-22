@@ -30,13 +30,13 @@ const SCANNED = { repo: REPO, scan: { run_id: "run_1", agent_id: "scout", starte
 const READY = { ready: true, reason: null, message: null, missing: [], install_url: "https://github.com/apps/agentrun-acme/installations/new", permissions_url: "https://github.com/organizations/acme/settings/apps/agentrun-acme/permissions", installation_url: "https://github.com/organizations/acme/settings/installations/7" };
 const SHORT = { ...READY, ready: false, reason: "permission_missing", message: "Opening a pull request on acme/shop needs the GitHub App's Contents: Read and write, which its installation on acme does not have yet.", missing: ["contents: write"] };
 
-type Call = { method: string; path: string; body: unknown };
+type Call = { method: string; path: string; query: string; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 type Listing = { repositories: { full_name: string; private: boolean; account: string; installation: number }[]; truncated: boolean; unread: { account: string; why: string }[] };
 function server(state: { connected: boolean; suggestions: typeof SUGGESTION[]; readiness: typeof READY | typeof SHORT; repos?: Listing }) {
   const calls: Call[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
-    const call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined };
+    const call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, query: new URL(String(url), "http://serve.test").search, body: init?.body ? JSON.parse(String(init.body)) : undefined };
     calls.push(call);
     const one = state.suggestions.find((s) => call.path.startsWith(`/v2/suggestions/${s.id}`));
     if (call.path === "/v2/suggestions" && call.method === "GET") return json(200, { github: state.connected ? { connected: true, app: "agentrun-acme", installations: [{ account: "acme" }], install_url: READY.install_url } : { connected: false, app: null, installations: [], install_url: null }, repositories: state.connected ? [SCANNED] : [], suggestions: state.suggestions.filter((s) => s.status !== "discarded") });
@@ -133,6 +133,25 @@ describe("Suggested agents", () => {
     expect(dialog().textContent).toContain("Triage support tickets: created");
     expect(dialog().querySelector(`a[href="https://github.com/${REPO}/pull/12"]`)?.textContent).toContain("Open pull request #12");
     expect(dialog().textContent).toMatch(/AGENTRUN_AGENT_TICKET_TRIAGEagent_77/);
+  });
+
+  it("a name typed in Create renders the preview with it, and Create waits for that preview: the files shown are the files pushed", async () => {
+    const state = { connected: true, suggestions: [structuredClone(SUGGESTION)], readiness: READY as typeof READY | typeof SHORT };
+    const { v2, calls } = server(state);
+    const { click, button } = await page(v2);
+    await click(/^Create Triage support tickets$/);
+    const reads = () => calls.filter((c) => c.method === "GET" && c.path === `/v2/suggestions/${SUGGESTION.id}`).map((c) => c.query);
+    expect(reads()).toEqual([""]);
+    const input = document.querySelector<HTMLInputElement>("[role=dialog] input")!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => { setValue.call(input, "Ticket sorter"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(button(/^Create and open pull request$/)?.disabled, "not before the preview shows the name").toBe(true);
+    await act(async () => { await new Promise((r) => setTimeout(r, 600)); });
+    await settle();
+    expect(reads()).toEqual(["", "?name=Ticket+sorter"].map((q) => q.replace("+", "%20")));
+    expect(button(/^Create and open pull request$/)?.disabled).toBe(false);
+    await click(/^Create and open pull request$/);
+    expect(calls.find((c) => c.path.endsWith("/create"))?.body).toEqual({ name: "Ticket sorter" });
   });
 });
 

@@ -3035,8 +3035,8 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     get: {
       operationId: "getSuggestion", tags: ["local"], summary: "One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it",
       description: "The suggestion with its agent's instructions; `files`, the files a create pushes (its package's `agent.md` and `output.schema.json` under `.agentrun/agents/<key>/`, and the client at `integration.path`), rendered now from its checked fields; `problems`, why its package would not check; and `github`, whether this server's GitHub App can open its pull request now, read from GitHub (the installation that covers the repository and its permissions), with what is missing and the pages that fix it.",
-      parameters: [SUGGESTION_ID],
-      responses: { "200": json(SUGGESTION_WHOLE, "The suggestion."), ...errors(401, 404, 429, 500) },
+      parameters: [SUGGESTION_ID, { name: "name", in: "query", required: false, schema: { type: "string", minLength: 3, maxLength: 60 }, description: "The agent's name a create would be sent (`POST .../create` `name`): `files` are rendered with it, as the create pushes them. 422 when it is not 3 to 60 characters." }],
+      responses: { "200": json(SUGGESTION_WHOLE, "The suggestion."), ...errors(401, 404, 422, 429, 500) },
       ...SUGGESTIONS_MARK,
     },
   },

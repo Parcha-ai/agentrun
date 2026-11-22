@@ -399,20 +399,30 @@ function CreateDialog({ v2, suggestion, onClose, onCreated, go }: { v2: Client; 
   const [detail, setDetail] = useState<SuggestionDetail | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [name, setName] = useState(suggestion.agent.name);
+  // The name the preview was rendered with: the typed one once it stops changing and checks, so the files shown are the
+  // files Create pushes.
+  const [shown, setShown] = useState(suggestion.agent.name);
+  useEffect(() => {
+    const typed = name.trim();
+    if (typed.length < 3 || typed.length > 60 || typed === shown) return;
+    const later = setTimeout(() => setShown(typed), 500);
+    return () => clearTimeout(later);
+  }, [name, shown]);
   const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<{ title: string; text: string } | null>(null);
   const [done, setDone] = useState<SuggestionCreated | null>(null);
   const check = useCallback(async () => {
     setChecking(true);
-    try { setDetail(await v2.getSuggestion(suggestion.id)); setReadError(null); }
+    try { setDetail(await v2.getSuggestion(suggestion.id, shown !== suggestion.agent.name ? shown : undefined)); setReadError(null); }
     catch (e) { setReadError(e instanceof Error ? e.message : String(e)); }
     finally { setChecking(false); }
-  }, [v2, suggestion.id]);
+  }, [v2, suggestion.id, suggestion.agent.name, shown]);
   useEffect(() => { void check(); }, [check]);
   const nameOk = name.trim().length >= 3 && name.trim().length <= 60;
   const retry = suggestion.status === "created";
-  const ready = Boolean(detail?.github.ready) && !detail?.problems.length && nameOk;
+  // Ready once the preview shows the name typed: Create never pushes files other than the ones on screen.
+  const ready = Boolean(detail?.github.ready) && !detail?.problems.length && nameOk && shown === name.trim() && !checking;
   const create = async () => {
     setBusy(true); setSaid(null);
     try {
