@@ -17,8 +17,7 @@
     "NOTICE"
   ],
   "dependencies": {
-    "@parcha/agentrun-serve": "0.1.0-beta.52",
-    "yaml": "2.9.0"
+    "@parcha/agentrun-serve": "0.1.0-beta.52"
   },
   "scripts": {
     "test": "node --test 'test/*.test.mjs'"

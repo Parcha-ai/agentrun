@@ -330,7 +330,7 @@ async function fakeTarget(t, answers) {
   return { base: `http://127.0.0.1:${fake.address().port}/v2`, seen, bodies };
 }
 
-test("a folder's upload is its package alone: agent.md, skills/, rules/, evals/ and the answer's schema the manifest names, never a .env, a key, a README or another folder beside them; no agent.md is refused with nothing sent; deploy delete removes the upload with its agent", { timeout: 180_000 }, async (t) => {
+test("a folder's upload is its package alone: agent.md, skills/, rules/, evals/ and the answer's schema the manifest names at its root, never a .env, a key, a README or another folder beside them; no agent.md is refused with nothing sent; deploy delete removes the upload with its agent", { timeout: 180_000 }, async (t) => {
   const { dir, env } = scratch();
   const key = { AGENTRUN_API_KEY: "not-a-secret" };
   const fake = await fakeTarget(t, {});
@@ -358,13 +358,14 @@ test("a folder's upload is its package alone: agent.md, skills/, rules/, evals/ 
   await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], key);
   const sent = fake.bodies["POST /templates/import"]?.files?.map((file) => file.path);
   assert.deepEqual(sent, ["agent.md", "answer.schema.json", "evals/today/graders/says.md", "evals/today/prompt.md", "rules/STYLE.md", "skills/check/SKILL.md"], fake.seen.join("\n"));
-  // A schema in a folder of its own: that file alone, nothing else of the folder.
+  // A schema named in another folder is not sent, nor anything of that folder: the target takes no folder but skills/,
+  // rules/ and evals/, and refuses such a package in its own words.
   const nested = folder(dir, { name: "nested", extra: ["output: { schema: schemas/answer.schema.json }"] });
   mkdirSync(join(nested, "schemas"));
   writeFileSync(join(nested, "schemas", "answer.schema.json"), "{}\n");
   writeFileSync(join(nested, "schemas", "draft.schema.json"), "{}\n");
   await cli(env, ["deploy", nested, "--to", fake.base, "--yes"], key);
-  assert.deepEqual(fake.bodies["POST /templates/import"]?.files?.map((file) => file.path), ["agent.md", "schemas/answer.schema.json", "skills/check/SKILL.md"]);
+  assert.deepEqual(fake.bodies["POST /templates/import"]?.files?.map((file) => file.path), ["agent.md", "skills/check/SKILL.md"]);
 
   // A real target takes it whole (its answer's schema read from the root), and deploy delete leaves no upload there.
   const b = await server(t, dir, env, "b");
