@@ -141,18 +141,19 @@ test("active drafts with no check promotion are not offered to pi, Claude or Cod
   }
 });
 
-test("a seed read whose secrets read fails starts the run with no learned workflow and says so: it never stops the run", async () => {
+test("a seed read whose secrets read fails starts the run with no learned workflow and says so: it never stops the run", async (t) => {
   const { layLearningSeed } = await import("../dist/runner/learning-seed.js");
+  const { localLearningStore } = await import("../dist/learn/store-local.js");
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-seed-secrets-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
   const log = [];
-  let ended = 0;
   const laid = await layLearningSeed({
     seed: null,
-    folder: () => ({ workspace: {}, end: async () => void ended++ }),
+    learning: localLearningStore(data, "agent-one"),
     shown: async () => { throw new Error("the secrets read failed"); },
     log: (line) => log.push(line),
   });
   assert.deepEqual(laid, { seed: { sha: null, corrections: "", workflows: [] }, workflows: [] });
-  assert.equal(ended, 1, "the folder is ended");
   assert.equal(log.length, 1, JSON.stringify(log));
   assert.match(log[0], /no learned workflow: the secrets read failed/);
 });
