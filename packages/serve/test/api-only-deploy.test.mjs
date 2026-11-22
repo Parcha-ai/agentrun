@@ -175,7 +175,7 @@ test("an API-only server applies a template, reads its agent and revisions, move
   assert.deepEqual([gone.status, gone.body.error?.code], [410, "purged"], JSON.stringify(gone.body));
 });
 
-test("on an API-only server a template's schedule starts no run when its time passes, on the triggers' own clock; on the whole server it does", { timeout: 60_000 }, async (t) => {
+test("on an API-only server a template's schedule is never armed on the triggers' own clock, so its time passing starts no run; the whole server arms it", { timeout: 60_000 }, async (t) => {
   const apiOnlyClock = fakeClock("2026-06-01T08:00:00Z");
   const wholeClock = fakeClock("2026-06-01T08:00:00Z");
   const apiOnly = await deployServer(t, { apiOnly: true, triggerClock: apiOnlyClock }, NO_MAIL);
@@ -183,17 +183,17 @@ test("on an API-only server a template's schedule starts no run when its time pa
   const hosted = await send(apiOnly, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
   assert.equal(hosted.status, 201, JSON.stringify(hosted.body));
   assert.deepEqual(hosted.body.triggers, [], JSON.stringify(hosted.body.triggers));
-  assert.deepEqual(skippedOf(hosted.body).map(([field]) => field), ["triggers.0", "triggers.1"], "the schedule and the webhook both said");
+  assert.deepEqual(skippedOf(hosted.body).map(([field, reason]) => [field, reason]), [["triggers.0", NOT_SET_UP], ["triggers.1", "not_an_option"]], "the schedule and the webhook both said");
   const own = await send(whole, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
   assert.equal(own.status, 201, JSON.stringify(own.body));
 
+  // The whole server's schedule is armed for its 09:00; a due schedule's run is the trigger tests' (on the same clock).
+  await until(() => wholeClock.timer?.at === Date.parse("2026-06-01T09:00:00Z"), "the whole server never armed its schedule for 09:00");
+  // The API-only server holds no trigger, so its clock holds nothing to fire, and passing 09:00 fires nothing.
+  assert.deepEqual(await apiOnly.store.triggers.list(hosted.body.agent_id), [], "it holds no trigger");
+  assert.equal(apiOnlyClock.timer, null, "nothing armed on its clock");
   apiOnlyClock.to("2026-06-01T09:00:00Z");
-  wholeClock.to("2026-06-01T09:00:00Z");
-  // The whole server's schedule starts its run: the clock reaches it, so this server's would too had it made one.
-  for (const end = Date.now() + 20_000; (await runsOf(whole, own.body.agent_id)).length === 0; await sleep(100)) assert.ok(Date.now() < end, "the whole server's schedule never started its run");
-  await sleep(500);
   assert.deepEqual(await runsOf(apiOnly, hosted.body.agent_id), [], "no run started on the API-only server");
-  assert.deepEqual(await apiOnly.store.triggers.list(hosted.body.agent_id), [], "and it holds no trigger");
 });
 
 test("an API-only dry run plans each trigger as skipped, in the words its apply says them", { timeout: 60_000 }, async (t) => {
@@ -298,17 +298,10 @@ test("off by default: the whole server's apply makes the webhook trigger too, an
 });
 
 test("the profile's apply makes a schedule and a feed with the launch hook alone, and no other source, hook or not, one added later included", () => {
+  // Each kind's reason, without the hook and with it (undefined: made). The words are SKIPPED's, through an apply.
+  const reasons = (kind) => [false, true].map((hooked) => apiOnlyTriggerSkipped("pkg", { name: "one", source: { kind } }, hooked)?.reason);
   for (const kind of [...SOURCE_KINDS, "a-source-added-later"]) {
-    const trigger = { name: "one", source: { kind } };
-    const bare = apiOnlyTriggerSkipped("pkg", trigger, false);
-    const hooked = apiOnlyTriggerSkipped("pkg", trigger, true);
-    if (kind === "schedule" || kind === "feed") {
-      assert.deepEqual(bare, { reason: NOT_SET_UP, message: needsHook("one", kind, "pkg") }, kind);
-      assert.equal(hooked, undefined, `${kind}: made with the hook`);
-    } else {
-      assert.deepEqual(bare, { reason: "not_an_option", message: notHere("one", kind, "pkg") }, kind);
-      assert.deepEqual(hooked, bare, `${kind}: the hook makes it no more`);
-    }
+    assert.deepEqual(reasons(kind), kind === "schedule" || kind === "feed" ? [NOT_SET_UP, undefined] : ["not_an_option", "not_an_option"], kind);
   }
 });
 
