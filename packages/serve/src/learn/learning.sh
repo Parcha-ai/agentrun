@@ -261,11 +261,17 @@ rewrite_ref() {
 op=${1:-}
 # Every way back to a history main no longer holds gone: every ref but main (a rewrite's, an old release's, an import
 # a commit on another main was making: that commit is stale), the reflogs, and the objects nothing reaches then. An
-# import on main itself stays: its commit may land, and holds nothing main does not. TIDY marks a rewrite whose main
-# moved and whose old history is not gone yet; it goes last.
+# import on main itself stays: its commit may land, and holds nothing main does not. The working tree is brought to
+# main first, so no file of the old history stays checked out; a checkout that fails (an index.lock left behind) dies
+# with the mark kept, for a purge sent again. TIDY marks a rewrite whose main moved and whose old history is not gone
+# yet; it goes last.
 TIDY=$GIT_DIR/agentrun-tidy
 tidy_history() {
   at_main=$(main_now)
+  if [ -n "$at_main" ] && ! g read-tree -u --reset "$at_main" 2> "$tmp/checkout"; then
+    cat "$tmp/checkout" >&2
+    die "the working tree could not be brought to main, so the old history stays marked for a purge sent again"
+  fi
   g for-each-ref --format='%(refname)' > "$tmp/refs" || die "for-each-ref failed"
   while IFS= read -r r; do
     [ "$r" = refs/heads/main ] && continue
@@ -423,7 +429,6 @@ case $op in
       cat "$tmp/cas" >&2
       exit 2
     fi
-    g read-tree -u --reset "$new" 2> "$tmp/checkout" || cat "$tmp/checkout" >&2
     tidy_history
     printf '%s\n' "$new"
     ;;
