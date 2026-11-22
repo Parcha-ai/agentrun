@@ -3100,7 +3100,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const had = onto ? await store.triggers.list(onto.agent.id) : [];
     if (onto && options.templateApplyRead) await options.templateApplyRead(onto.agent.id);
     // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made.
-    const missing = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])].filter((name) => !secret(name, storedKeys));
+    const declared = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])].sort();
+    const missing = declared.filter((name) => !secret(name, storedKeys));
     // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
     // one: several and no pick is a 422); the package's
     // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers).
@@ -3206,10 +3207,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     });
     if (notOurs.length) throw new ApiError("name_taken", notOurs.length === 1 ? notOurs[0]!.message : `${notOurs.length} of the agent's triggers have the names of the ${pkg.name} template's and are not its own. Nothing was changed: rename or delete each, then apply the template again.`, { fields: notOurs });
     // The agent keeps where it came from (the package on the revision the apply writes): the package's id, version and,
-    // imported, its SHA; and a keyed digest of the parameters it was given (never the parameters: one may be a credential).
-    // Which triggers are the package's is on each trigger (its mark), not here.
+    // imported, its SHA; a keyed digest of the parameters it was given (never the parameters: one may be a credential); and
+    // the names of the keys it declared (never a value), which an export names after the server's copy of the package
+    // changes. Which triggers are the package's is on each trigger (its mark), not here.
     const digest = parametersDigest(sealKey, stable(parameters));
-    const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters_digest: digest };
+    const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters_digest: digest, secrets: declared };
     // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
     // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
     const twins: InputIssue[] = onto ? [] : (await agents.list())
@@ -4481,7 +4483,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           agent: { id, name: agent.name, description: agent.description ?? null },
           definition: definitionOf(agent, revision, entry.version),
           skills: (isObject(revision.skills) ? revision.skills : {}) as Record<string, string>,
-          template: entry.template ? { id: entry.template.id, version: entry.template.version } : null,
+          template: entry.template ? { id: entry.template.id, version: entry.template.version, ...(entry.template.secrets ? { secrets: entry.template.secrets } : {}) } : null,
           origin: entry.template ? registry.get(entry.template.id) : undefined,
           servers: mcpMeta,
           triggers: views,

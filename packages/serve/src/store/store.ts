@@ -126,6 +126,10 @@ export interface TemplatePackage {
    *  parameters, one of which may be a credential: a later fresh apply of the same package whose parameters give the same
    *  digest warns of this agent. Absent on a revision applied before it was kept. */
   readonly parameters_digest?: string;
+  /** The names of the keys the package declared (its `secrets`, and those of the model choice the apply took), sorted,
+   *  never their values: what an export of the agent names, whatever version of the package the server holds later.
+   *  Absent on a revision applied before it was kept. */
+  readonly secrets?: readonly string[];
 }
 
 export interface NewRevision {
