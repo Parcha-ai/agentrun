@@ -4,7 +4,7 @@
 // stored from a GitHub account needs its owner's "I trust <account>", remembered server-side (settings
 // TRUSTED_PUBLISHERS); an upload needs none, as only this server's owner (its session or its token) sends one. Nothing in
 // a package runs.
-import { createHash } from "node:crypto";
+import { packageSha256 } from "./agent-package.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import type { Store } from "./store/index.js";
 import { fetchPackageFiles, type GithubReach, type GithubSource, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
@@ -30,12 +30,8 @@ export type TemplateImportDeps = {
  *  (agent.md's `name` is it). */
 const nameOf = (id: string) => (id.startsWith(UPLOAD_PREFIX) ? id.slice(UPLOAD_PREFIX.length) : id.slice("github:".length).split("/").at(-1)!);
 
-/** A package's sha256: hex over its files sorted by path, each `path NUL bytes NUL` (what `agentrun deploy` locks). */
-export function packageSha256(files: ReadonlyMap<string, Buffer>): string {
-  const hash = createHash("sha256");
-  for (const path of [...files.keys()].sort()) hash.update(path).update("\0").update(files.get(path)!).update("\0");
-  return hash.digest("hex");
-}
+/** An upload's sha: the digest an export names (agent-package.ts packageSha256), which `agentrun deploy` locks. */
+const uploadSha = (files: ReadonlyMap<string, Buffer>): string => packageSha256([...files].map(([path, data]) => ({ path, encoding: "base64", content: data.toString("base64") })));
 
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 /** A path part that is not plain, or a character no package path holds (a control character, a backslash). */
@@ -154,7 +150,7 @@ async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: bo
   try {
     files = uploadFiles(raw);
     const id = `${UPLOAD_PREFIX}${manifestName(files.get(MANIFEST)?.toString("utf8") ?? "") ?? ""}`;
-    pkg = importedPackage(id, { source: id, sha: packageSha256(files), publisher: "" }, files);
+    pkg = importedPackage(id, { source: id, sha: uploadSha(files), publisher: "" }, files);
   } catch (error) {
     refusalOf(error);
   }
