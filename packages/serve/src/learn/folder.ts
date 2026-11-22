@@ -543,6 +543,13 @@ async function snapshotOf(store: LearningStore, commit: string): Promise<Snapsho
   return snapshot;
 }
 
+/** Commit `commit`'s snapshot rebuilt from its tree and log alone (snapshotOfRead), never the one it holds: what a reader
+ *  of a commit with no snapshot of its own reads. */
+export async function rebuiltSnapshotAt(store: LearningStore, commit: string): Promise<Snapshot | undefined> {
+  const whole = await wholeRead(store, checkCommit(commit));
+  return whole ? snapshotOfRead(whole) : undefined;
+}
+
 /** The store's main snapshot, or undefined when it has none (no main yet: the agent never learned). */
 export async function readSnapshot(store: LearningStore): Promise<Snapshot | undefined> {
   const main = await store.head();

@@ -427,7 +427,9 @@ for (const [kind, make] of Object.entries(STORES)) {
 
   // A purge takes off only what the purged run's revisions put there: each workflow file the purged run wrote last holds
   // the bytes it had in the rebuilt parent of that run's merge (absent there: absent), so no other run's file goes.
-  test(`${kind}: a purge gives back the workflow the purged run revised (a): A's v1 is at the tip and in every tree from B's merge on, its snapshot entry is A's again, and a workflow B wrote alone (b) is in no tree`, async (t) => {
+  // run-purge-workflow.test.mjs runs #3458's cases on main through the server; these add what they don't check: every
+  // rewritten tree, not main alone, and a revision of one file of a workflow.
+  test(`${kind}: a purge gives back the workflow the purged run revised in every rewritten tree: A's v1 in each from B's merge on, its snapshot entry A's again, and a workflow B wrote alone in none`, async (t) => {
     const store = await make(t);
     const { forgetRunText, learningCommit, readSnapshot, runMergeOf } = await learn();
     const merge = async (change) => assert.equal((await learningCommit(store, change)).ok, true, change.runId);
@@ -460,7 +462,7 @@ for (const [kind, make] of Object.entries(STORES)) {
     assert.deepEqual((await readSnapshot(store)).workflows.map(({ name, run }) => [name, run]), [["x", "run_alpha"]]);
   });
 
-  test(`${kind}: a purge keeps a later run's revision (c): A v1, B v2, C v3, purge B: C's v3 from C's merge on, A's v1 between B's merge and C's; a purge again changes nothing (d)`, async (t) => {
+  test(`${kind}: a purge keeps a later run's revision in every rewritten tree: A v1, B v2, C v3, purge B: C's v3 from C's merge on, A's v1 between B's merge and C's; a purge again changes no tree`, async (t) => {
     const store = await make(t);
     const { forgetRunText, learningCommit, readSnapshot, runMergeOf } = await learn();
     for (const word of ["ALPHA", "BRAVO", "CHARLIE"]) assert.equal((await learningCommit(store, { runId: `run_${word.toLowerCase()}`, reason: `${word} reason words`, files: flow("x", word) })).ok, true);
@@ -477,25 +479,12 @@ for (const [kind, make] of Object.entries(STORES)) {
     for (const { sha } of log.slice(0, charlie + 1)) assert.deepEqual(await store.read(sha, files), v3, `C's x at ${sha}`);
     for (const { sha } of log.slice(charlie + 1, bravo + 1)) assert.deepEqual(await store.read(sha, files), v1, `A's x at ${sha}`);
     assert.deepEqual((await readSnapshot(store)).workflows.map(({ name, run }) => [name, run]), [["x", "run_charlie"]]);
-    // (d) A purge again changes nothing: main, every tree.
+    // A purge again changes nothing: main, every tree.
     const trees = await Promise.all(log.map(async ({ sha }) => [sha, paths(await store.read(sha))]));
     const again = await forgetRunText(store, "run_bravo");
     assert.equal(again.nothing, "purged", JSON.stringify(again));
     assert.equal(await store.head(), tip);
     assert.deepEqual(await Promise.all((await store.log(tip)).map(async ({ sha }) => [sha, paths(await store.read(sha))])), trees);
-  });
-
-  test(`${kind}: two purged runs in a row end at the first writer's version (e): A v1, B v2, C v3, purge B then C: A's v1 at the tip, its entry A's`, async (t) => {
-    const store = await make(t);
-    const { forgetRunText, learningCommit, readSnapshot, runMergeOf } = await learn();
-    for (const word of ["ALPHA", "BRAVO", "CHARLIE"]) assert.equal((await learningCommit(store, { runId: `run_${word.toLowerCase()}`, reason: `${word} reason words`, files: flow("x", word) })).ok, true);
-    const files = ["workflows/x/README.md", "workflows/x/workflow.json"];
-    const v1 = await store.read((await runMergeOf(store, "run_alpha")).merge, files);
-    assert.ok("commit" in (await forgetRunText(store, "run_bravo")));
-    assert.ok("commit" in (await forgetRunText(store, "run_charlie")));
-    assert.doesNotMatch(await everything(store), /BRAVO|CHARLIE/);
-    assert.deepEqual(await store.read(await store.head(), files), v1);
-    assert.deepEqual((await readSnapshot(store)).workflows.map(({ name, run }) => [name, run]), [["x", "run_alpha"]]);
   });
 
   test(`${kind}: a purge takes out the purged run's line after its owner moved it (the owner swaps two runs' lines): the other run's line stays`, async (t) => {
