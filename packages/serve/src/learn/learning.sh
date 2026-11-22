@@ -198,9 +198,7 @@ commit() {
     *[!0-9a-z/-]*) die "the import ref is not one this script takes" ;;
   esac
   run=$(sed -n 's/^run //p' "$tmp/head")
-  purged=$(sed -n 's/^purged //p' "$tmp/head")
   [ -z "$run" ] || key_ok "$run" || die "a run's key is letters, digits, dots, dashes and underscores"
-  [ -z "$purged" ] || key_ok "$purged" || die "a purged key is letters, digits, dots, dashes and underscores"
   cur=$(main_now)
   if [ "$cur" != "$old" ]; then
     printf '%s\n' "$cur"
@@ -208,9 +206,9 @@ commit() {
   fi
   if [ -n "$run" ]; then
     marker ".agentrun/runs/$run"
-    marker ".agentrun/purged/$run"
+    # A purged run (learn/purge.ts) merges no round again.
+    marker ".agentrun/purged/$(printf '%s' "$run" | sed 's/\.r[0-9][0-9]*$//')"
   fi
-  [ -n "$purged" ] && marker ".agentrun/purged/$purged"
   preconditions
   g fast-import --quiet --done < "$tmp/rest" > /dev/null || die "fast-import failed"
   new=$(g rev-parse -q --verify "$ref^{commit}") || die "fast-import made no commit"
@@ -237,6 +235,17 @@ commit() {
     exit 5
   fi
   printf '%s\n' "$new"
+}
+
+# A rewrite's ref ($1): refs/agentrun/rewrite-<hex>, else die.
+rewrite_ref() {
+  case $1 in
+    refs/agentrun/rewrite-[0-9a-f]*) ;;
+    *) die "no rewrite ref" ;;
+  esac
+  case $1 in
+    refs/agentrun/rewrite-*[!0-9a-f]*) die "the rewrite ref is not one this script takes" ;;
+  esac
 }
 
 op=${1:-}
@@ -337,7 +346,57 @@ case $op in
     done < "$tmp/changed"
     printf ']\n'
     ;;
+  build)
+    # One commit of a rewrite's chain (stdin: fast-import's stream of it, on the rewrite's ref), its id printed. Nothing
+    # reaches it but that ref until the rewrite moves main to the chain's tip.
+    ref=${2:-}
+    rewrite_ref "$ref"
+    [ -d "$GIT_DIR" ] || die "there is no learning to rewrite"
+    g fast-import --quiet --done > /dev/null || die "fast-import failed"
+    g rev-parse -q --verify "$ref^{commit}" || die "fast-import made no commit"
+    ;;
+  drop)
+    # A rewrite given up: its ref goes, and its commits with it at the next prune.
+    ref=${2:-}
+    rewrite_ref "$ref"
+    [ -d "$GIT_DIR" ] && g update-ref -d "$ref" 2> /dev/null
+    :
+    ;;
+  rewrite)
+    # main moved from $2 to the chain's tip $3 (built on ref $4), by compare and swap: exit 3 naming main when it is not
+    # $2. Then every way back to the old history goes: every ref but main (a leftover import's, a rewrite's), the
+    # reflogs, and the objects nothing reaches then, so the old history's bytes leave the repository.
+    old=${2:-}
+    new=${3:-}
+    ref=${4:-}
+    hex40 "$old" && hex40 "$new" || die "rewrite takes the main it moves from and the chain's tip"
+    rewrite_ref "$ref"
+    [ -d "$GIT_DIR" ] || {
+      printf '\n'
+      exit 3
+    }
+    g ls-tree -r --full-tree "$new" | awk -F '\t' '{ split($1, a, " "); print a[1] " " $2 }' > "$tmp/paths" || die "ls-tree failed"
+    no_links
+    if ! g update-ref -m learning refs/heads/main "$new" "$old" 2> "$tmp/cas"; then
+      g update-ref -d "$ref" 2> /dev/null
+      cur=$(main_now)
+      if [ "$cur" != "$old" ]; then
+        printf '%s\n' "$cur"
+        exit 3
+      fi
+      cat "$tmp/cas" >&2
+      exit 2
+    fi
+    g for-each-ref --format='%(refname)' > "$tmp/refs" || die "for-each-ref failed"
+    while IFS= read -r r; do
+      [ "$r" = refs/heads/main ] || g update-ref -d "$r" || die "ref $r could not be removed"
+    done < "$tmp/refs"
+    g read-tree -u --reset "$new" 2> "$tmp/checkout" || cat "$tmp/checkout" >&2
+    g reflog expire --expire=now --expire-unreachable=now --all || die "the reflog could not be expired"
+    g gc --prune=now --quiet || die "git gc failed"
+    printf '%s\n' "$new"
+    ;;
   *)
-    die "no op $op: head, init, commit, read, log or diff"
+    die "no op $op: head, init, commit, read, log, diff, build, drop or rewrite"
     ;;
 esac

@@ -7,9 +7,9 @@
 // finish; a DELETE of a purged run is 204 again. A live run (not final, or held by a runner) refuses its purge with 409
 // run_not_final and nothing purged. The runs made from a run are purged before it: one a claim made after the DELETE read
 // them is found by the store's purge under the run's row lock (RunsMadeFromLeft, 409 naming it), and one made once the run
-// is purged is refused at its create (RunPurged). A run's purge takes its text off its agent's learning's current files
-// (its merges' feedback lines, forgetCopies) and the learning's history reads serve none of its merges, while the
-// learning store's history keeps their bytes until a learning reset or the agent's purge removes the store.
+// is purged is refused at its create (RunPurged). A run's purge takes its text out of its agent's learning (its merges'
+// feedback lines and reasons, forgetCopies): the learning's whole history is rewritten without them, every commit's id
+// changing, and no byte of the old history kept.
 //
 // Another system's agent is first marked refusing new runs (its archive time, set with its triggers off in one commit, read
 // by every path that would start a run), then its runs are cancelled and waited for, then its learning goes, then its
@@ -70,7 +70,7 @@ export interface AgentDeleteHost {
   madeFrom(runId: string): Promise<string[]>;
   /** What agent `agentId`'s learning copied from run `runId`, gone: the grades it keeps of the run dropped, its promotion
    *  records' disagreements naming the run blanked, their decisions, numbers and run ids kept (learn/promote.ts
-   *  forgetRunCopies), and the run's text off its learning's current files (learn/commit.ts forgetRunText).
+   *  forgetRunCopies), and the run's text out of its learning, history and all (learn/purge.ts forgetRunText).
    *  Idempotent: a purged run's DELETE runs it again. */
   forgetCopies(agentId: string, runId: string): Promise<void>;
   /** What run `runId`'s spend reads from its journal, read before its purge removes it (store-reads/cap.ts). */

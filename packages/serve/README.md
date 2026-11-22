@@ -3493,16 +3493,20 @@ stays in every total.
     blocks go back to the filesystem unwiped. Postgres's own WAL and its archived WAL keep the old values until they are
     recycled or expire, and backups keep them for their retention.
 - Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id and the
-  commits it names. A run's purge removes its feedback line from the learning's current files, and the learning's
-  history no longer serves its merge; the bytes stay in the learning store's history until a learning reset
-  (`DELETE /v2/agents/{id}/learning`) or the agent's purge, which remove the store whole. Each merge's feedback line goes
-  in one commit by the host, marked `.agentrun/purged/<key>` (none when nothing is left to remove), a line a person
-  edited since stays, and another merge's diff that shows the line as context is served without it. The log, a
-  workflow's revisions and a champion read by its digest leave out its merges, known by the run the log names for each
-  (its newest 200 changes), and a champion whose workflow it changed last is not read at main either. Each merge's
-  scrub lands once, so a `DELETE` sent again after a stop takes no other run's same line, and a merge of the run made
-  since is scrubbed by it. A second `DELETE` does this again. It covers the agent's one learning store, local or on
-  code.storage.
+  commits it names. A run's purge takes its text out of the learning's whole history, not only its current files: every
+  commit of main is rebuilt, oldest first, without the feedback lines the run's merges added to `corrections.md` and
+  without its merges' reasons (each merge kept, its message `learning: <run>: merged`, empty of its text), each
+  snapshot rebuilt, and one commit by the host on top marks `.agentrun/purged/<run>`, so no round of the run merges
+  again. No byte of the old history is kept: the local folder moves main to the new history, removes every other ref,
+  expires its reflog and prunes; code.storage builds the new history in the agent's next repository generation, moves
+  the agent to it and deletes the old repository (a purge cut short leaves the live repository untouched, and the next
+  one deletes the half-built repository by its exact id first). What it costs: every commit id of the agent's learning
+  changes (a promotion record's commit id then names no commit, and a champion is read at main); on code.storage it
+  takes about 0.3 s a commit (the local folder is fast), and the agent's learning waits meanwhile; a run of the agent
+  in flight merges nothing, as after a reset; every other run's history and diffs are kept. The log, a workflow's
+  revisions and a champion read by its digest leave out its merges, known by the run the log names for each (its newest
+  200 changes), and a champion whose workflow it changed last is not read at main either. A second `DELETE` finds the
+  purge marked and does nothing. It covers the agent's one learning store, local or on code.storage.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`. An [API-only](#api-only) server purges a run of
   an agent another system owns alone; a run of an agent made here is its profile's `404` there.
@@ -3528,8 +3532,9 @@ delete what it sent. `DELETE /v2/agents/{id}` deletes such an agent whole, in th
    while a `DELETE` runs waits for it, then finds the agent gone (`404`), so none lands after its learning went. Each of
    its runs still going, its learning runs included, is cancelled as `POST /runs/{id}/cancel` cancels it, and the
    delete waits until every one has ended.
-2. Its learning is deleted by the learning module: its learning store removed whole (the local folder, or its
-   code.storage repository), then its promotions and grades.
+2. Its learning is deleted by the learning module: its learning store removed whole (the local folder, or on
+   code.storage every repository generation the agent ever had, `-g0` through the one past its current one, each by
+   its exact id, no call listing repositories), then its promotions and grades.
    It refuses while learning work of the agent is in flight: `409 learning_busy`, naming
    that work in `details.runs`.
 3. The rest: its triggers (and what each registered at its source), its saved sign-ins (and each object at its vendor),
@@ -3820,10 +3825,14 @@ never gets one. The server and its runners are its only writers. Two stores keep
 - **code.storage**, when the server and each runner are started with `AGENTRUN_CODE_STORAGE_NAME` (the org's name) and
   `AGENTRUN_CODE_STORAGE_KEY` (its signing key, a PEM, held as every secret is: never logged, never in a command line),
   and `AGENTRUN_CODE_STORAGE_API_URL` when the API is not `https://api.<org>.code.storage`: one repository an agent,
-  `agentrun-<server id>-<agent id>`, which runners on other hosts reach as the server does. The name turns it on: the
-  key or the URL set without it changes nothing, and the start says so. The name without the key, or a value it can't
-  take, stops the start, naming each variable. A reset or an erasure deletes the repository, and the next run that
-  learns makes it again.
+  `agentrun-<server id>-<agent id>-g<generation>` (the server id is 12 hex digits; the generation, a setting of the
+  server's store, moves on at each reset or run purge), which runners on other hosts reach as the server does. Every
+  call checks the repository it names starts `agentrun-<12 hex digits>-`, and none lists repositories, so the org's
+  other repositories are never touched. The start says it in one line, `learning: on code.storage (org <name>), one
+  repository per agent: agentrun-<server id>-<agent>-g<generation>` (no key, no token). The name turns it on: the key or
+  the URL set without it changes nothing, and the start says so. The name without the key, or a value it can't take,
+  stops the start, naming each variable. A reset moves the agent to its next generation and deletes the old one, and
+  the next run that learns makes it; an agent's delete deletes every generation it had.
 
   ```sh
   AGENTRUN_CODE_STORAGE_NAME=example-org AGENTRUN_CODE_STORAGE_KEY="$(cat key.pem)" node packages/serve/dist/cli.js

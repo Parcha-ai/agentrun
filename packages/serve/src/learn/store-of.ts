@@ -3,15 +3,18 @@
 import type { KeyObject } from "node:crypto";
 import { held, heldLearningStore } from "../runner/held.js";
 import { secret } from "../secrets.js";
-import { codeStorageLearningStore } from "./code-storage.js";
+import { serverIdOf } from "../archil-settings.js";
+import type { Settings } from "../store/index.js";
+import { codeStorageLearningStore, type Generation, type Generations } from "./code-storage.js";
 import { CODE_STORAGE_ENV, FolderUnreadable, type LearningStore } from "./store.js";
 
 export { CODE_STORAGE_ENV };
 import { localLearningStore } from "./store-local.js";
 
 /** code.storage's settings: the org, its signing key, the API's base URL (absent: `https://api.<org>.code.storage`), this
- *  server's id (the repository's middle part), and a `fetch` in place of the network (tests). */
-export type CodeStorageSettings = { name: string; key: string | KeyObject; apiUrl?: string; serverId: () => Promise<string>; fetch?: typeof fetch };
+ *  server's id (the repository's middle part), each agent's repository generation (absent: kept in this process alone),
+ *  and a `fetch` in place of the network (tests). */
+export type CodeStorageSettings = { name: string; key: string | KeyObject; apiUrl?: string; serverId: () => Promise<string>; fetch?: typeof fetch; generations?: Generations };
 
 /** code.storage's environment set wrong: one of its name and key without the other, or a value it can't take. */
 export class CodeStorageEnvInvalid extends Error {
@@ -85,17 +88,43 @@ function refusedStore(agentId: string, words: string): LearningStore {
   const no = async (): Promise<never> => {
     throw new FolderUnreadable(false, words);
   };
-  return { id: `refused:${agentId}`, head: no, read: no, log: no, diff: no, save: no, remove: no };
+  return { id: `refused:${agentId}`, head: no, read: no, log: no, diff: no, save: no, rewrite: no, remove: no };
 }
 
 /** Data directory `data`'s learning as a start sets it from `env` (codeStorageFromEnv, its key read by `key`): on
- *  code.storage, its server id read once from `store` when first asked (archil-settings.ts serverIdOf); refused for a
- *  runner `apart` from its server's disk with no code.storage settings (LEARNING_APART); else in the local folder.
- *  `warn`: where a key set without the name is said, and a runner apart's refusal, naming the settings, once at its
- *  start (each run's learning says it in a person's words, learning-words.ts STOPPED.apart). */
-export function learningStoreFromEnv(data: string, env: NodeJS.ProcessEnv, serverId: () => Promise<string>, { apart = false, key = secret, warn }: { apart?: boolean; key?: (name: string) => string | undefined; warn?: (message: string) => void } = {}): void {
-  const settings = codeStorageFromEnv(env, key, warn);
-  if (!settings && apart) warn?.(`its runs run with nothing learned: ${LEARNING_APART}`);
+ *  code.storage, its server id read once from `settings` (the server's store; archil-settings.ts serverIdOf) when first
+ *  asked and each agent's repository generation kept there (learningGenerations); refused for a runner `apart` from its
+ *  server's disk with no code.storage settings (LEARNING_APART); else in the local folder. `warn`: where a key set
+ *  without the name is said; the one line saying learning is on code.storage, its org and its repositories' names (no
+ *  key, no token); and a runner apart's refusal, naming the settings, once at its start (each run's learning says it in
+ *  a person's words, learning-words.ts STOPPED.apart). */
+export function learningStoreFromEnv(data: string, env: NodeJS.ProcessEnv, settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf" | "remove">, { apart = false, key = secret, warn }: { apart?: boolean; key?: (name: string) => string | undefined; warn?: (message: string) => void } = {}): void {
+  const keyed = codeStorageFromEnv(env, key, warn);
+  if (!keyed && apart) warn?.(`its runs run with nothing learned: ${LEARNING_APART}`);
   let id: Promise<string> | undefined;
-  useLearningStore(data, settings ? { ...settings, serverId: () => (id ??= serverId()) } : apart ? { refused: LEARNING_APART } : undefined);
+  const serverId = () => (id ??= serverIdOf({ settings }));
+  if (keyed) void serverId().then((server) => warn?.(`learning: on code.storage (org ${keyed.name}), one repository per agent: agentrun-${server}-<agent>-g<generation>`), () => undefined);
+  useLearningStore(data, keyed ? { ...keyed, serverId, generations: learningGenerations(settings) } : apart ? { refused: LEARNING_APART } : undefined);
+}
+
+/** Each agent's code.storage repository generation (code-storage.ts Generations) as a setting of the server's store,
+ *  `learning-generation:<agent id>` = {v: 1, n, drop?}, read by its runners too; none is generation 0. */
+export function learningGenerations(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf" | "remove">): Generations {
+  const keyOf = (agentId: string) => `learning-generation:${agentId}`;
+  const rowOf = (at: Generation) => ({ v: 1, n: at.n, ...(at.drop?.length ? { drop: at.drop } : {}) });
+  const fresh = (at: Generation) => at.n === 0 && !at.drop?.length;
+  return {
+    async get(agentId) {
+      const row = (await settings.get(keyOf(agentId))) as { v?: unknown; n?: unknown; drop?: unknown } | undefined;
+      if (row === undefined) return { n: 0 };
+      const ok = (n: unknown) => Number.isSafeInteger(n) && (n as number) >= 0;
+      if (row?.v !== 1 || !ok(row.n) || !(row.drop === undefined || (Array.isArray(row.drop) && row.drop.every(ok)))) throw new FolderUnreadable(false, `this server's store keeps a ${keyOf(agentId)} that does not read as one`);
+      return { n: row.n as number, ...(Array.isArray(row.drop) && row.drop.length ? { drop: row.drop as number[] } : {}) };
+    },
+    async set(agentId, was, now) {
+      if (fresh(was)) return JSON.stringify(await settings.putIfAbsent(keyOf(agentId), rowOf(now))) === JSON.stringify(rowOf(now));
+      return settings.replaceIf(keyOf(agentId), rowOf(was), rowOf(now));
+    },
+    drop: (agentId) => settings.remove(keyOf(agentId)),
+  };
 }

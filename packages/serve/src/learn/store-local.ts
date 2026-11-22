@@ -13,7 +13,8 @@ import { lstat, mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentLearningFolder, DISK_DIR } from "../workspace/paths.js";
-import { COMMIT, FolderUnreadable, IDENTITY, type LearningStore, MARKER_KEY, type Saved, type StoreCommit, type StoreDiffFile, type StoreFile, type StoreSave } from "./store.js";
+import { blobOid } from "./folder.js";
+import { type ChainCommit, COMMIT, FolderUnreadable, IDENTITY, type LearningStore, MARKER_KEY, type Rewritten, type Saved, type StoreCommit, type StoreDiffFile, type StoreFile, type StoreSave } from "./store.js";
 
 /** The script, as built beside this file. */
 const SCRIPT = fileURLToPath(new URL("./learning.sh", import.meta.url));
@@ -125,6 +126,30 @@ function importStream(ref: string, save: StoreSave, markers: readonly string[]):
   return Buffer.concat(parts);
 }
 
+/** The fast-import stream of one commit of a rewrite's chain on `ref`, every file it holds (`deleteall`, then each):
+ *  a blob this rewrite wrote already (`written`, by id) named by its id, any other given whole. */
+function chainStream(ref: string, one: ChainCommit, written: Set<string>): Buffer {
+  const parts: Buffer[] = [];
+  const add = (text: string) => parts.push(Buffer.from(text, "utf8"));
+  const who = `${IDENTITY.name} <${IDENTITY.email}> ${one.at} +0000`;
+  const message = Buffer.from(one.message, "utf8");
+  add(`commit ${ref}\nauthor ${who}\ncommitter ${who}\ndata ${message.length}\n`);
+  parts.push(message);
+  add(`\n${one.parent ? `from ${one.parent}\n` : ""}deleteall\n`);
+  for (const file of one.files) {
+    const oid = blobOid(file.body);
+    if (written.has(oid)) add(`M ${file.mode} ${oid} ${file.path}\n`);
+    else {
+      add(`M ${file.mode} inline ${file.path}\ndata ${file.body.length}\n`);
+      parts.push(file.body);
+      add("\n");
+      written.add(oid);
+    }
+  }
+  add("\ndone\n");
+  return Buffer.concat(parts);
+}
+
 /** What the script's `read` printed: its tree (`git ls-tree -r -l -z`) and its blobs (`git cat-file --batch`). */
 function parseRead(out: Buffer): StoreFile[] {
   const end = out.indexOf(10);
@@ -216,16 +241,15 @@ export function localLearningStore(data: string, agentId: string): LearningStore
       return out ? (JSON.parse(out.toString("utf8")) as StoreDiffFile[]) : undefined;
     },
     async save(save): Promise<Saved> {
-      for (const key of [save.run, save.purged]) if (key !== undefined && !MARKER_KEY.test(key)) throw new Error(`${JSON.stringify(key)} is not a marker's key`);
+      if (save.run !== undefined && !MARKER_KEY.test(save.run)) throw new Error(`${JSON.stringify(save.run)} is not a marker's key`);
       if (save.old !== null) checkCommit(save.old);
       for (const commit of [...(save.same ?? []).map(({ commit }) => commit), ...(save.seed !== undefined ? [save.seed] : [])]) checkCommit(commit);
       await open(true);
       const ref = `refs/agentrun/import-${randomBytes(8).toString("hex")}`;
-      const markers = [...(save.run ? [`.agentrun/runs/${save.run}`] : []), ...(save.purged ? [`.agentrun/purged/${save.purged}`] : [])];
+      const markers = save.run ? [`.agentrun/runs/${save.run}`] : [];
       const header = [
         `ref ${ref}`,
         ...(save.run ? [`run ${save.run}`] : []),
-        ...(save.purged ? [`purged ${save.purged}`] : []),
         ...(save.absent ?? []).map((path) => `absent ${path}`),
         ...(save.same ?? []).map(({ commit, path }) => `same ${commit} ${path}`),
         ...(save.seed !== undefined ? [`seed ${save.seed}`] : []),
@@ -247,6 +271,31 @@ export function localLearningStore(data: string, agentId: string): LearningStore
       if (run.code === 7) return { unchanged: true };
       throw failed(args[0]!, run);
     },
+    async rewrite(old, build): Promise<Rewritten> {
+      checkCommit(old);
+      if (!(await open(false))) return { stale: null };
+      const ref = `refs/agentrun/rewrite-${randomBytes(8).toString("hex")}`;
+      const written = new Set<string>();
+      let tip: string;
+      try {
+        tip = checkCommit(await build(async (one) => {
+          if (one.parent !== null) checkCommit(one.parent);
+          const run = await runScript(root, ["build", ref], chainStream(ref, one, written));
+          const said = run.stdout.toString("utf8").trim();
+          if (run.code !== 0 || !COMMIT.test(said)) throw failed("build", run);
+          return said;
+        }));
+      } catch (error) {
+        await runScript(root, ["drop", ref]).catch(() => undefined);
+        throw error;
+      }
+      const run = await runScript(root, ["rewrite", old, tip, ref]);
+      const said = run.stdout.toString("utf8").trim();
+      if (run.code === 0 && said === tip) return { saved: tip };
+      if (run.code === 3) return { stale: said || null };
+      throw failed("rewrite", run);
+    },
+    // An erasure is a reset here: the folder, every commit of it, is all the store keeps.
     async remove() {
       // Each level on the way checked first: a link there is never followed, the folder behind it never removed.
       for (const dir of levels.slice(0, -1)) if (!(await level(data, dir, false))) return;

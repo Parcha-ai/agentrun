@@ -206,7 +206,7 @@ import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
-import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKept, runDiskKey, serverIdOf } from "./archil-settings.js";
+import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKept, runDiskKey } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
@@ -1264,7 +1264,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   await recordDataRoot(store, data);
   // Where this server's agents' learning is (learn/store-of.ts): code.storage where its environment keys it, one
   // repository an agent named by this server's id, else the local folder under the data directory.
-  learningStoreFromEnv(data, process.env, () => serverIdOf(store), { warn: (message) => void process.stderr.write(`agentrun-serve: ${message}\n`) });
+  learningStoreFromEnv(data, process.env, store.settings, { warn: (message) => void process.stderr.write(`agentrun-serve: ${message}\n`) });
   await recordRunEnv(store, runFacingNames((name) => secret(name) ?? (base as NodeJS.ProcessEnv)[name], Object.keys(base)));
   // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
   // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled. A hosted machine a runner in a

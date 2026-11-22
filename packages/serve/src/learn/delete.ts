@@ -29,7 +29,9 @@ export async function deleteLearning(store: Store, agentId: string, learning: Le
   const open = (await store.runs.list({ agentId })).filter((run) => run.agentId === agentId && !FINAL_STATES.includes(run.state)).map((run) => run.id);
   if (open.length) throw new LearningInFlight(agentId, open);
   const learned = (await learning.head()) !== null;
-  await learning.remove();
+  // An agent's delete erases every trace in the store (code.storage: each of its repository generations); a reset starts
+  // the store again empty.
+  await learning.remove({ erase: !keepResetLedger });
   let records = 0;
   for (const key of [promotionsKey(agentId), gradesKey(agentId), ...(keepResetLedger ? [] : [resetLedgerKey(agentId), resetAtKey(agentId)])]) {
     if ((await store.settings.get(key)) === undefined) continue;

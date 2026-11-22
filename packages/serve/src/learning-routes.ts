@@ -17,7 +17,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 import { CORRECTIONS_CAP, draftProblems, frontKeys, isHeld, LEARNED_KEYS, learnedPlace, learnedStatus, type Problem, printable, released, restorable, restoredLearned, retiredLearned, UNCLEAR_FRONT, unclearFront, unstorable, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { readmeProblems, type DraftDecisions } from "./learn/workflow-draft.js";
-import { forgetRunText, putCorrections, purgedContextOut, readCorrections } from "./learn/commit.js";
+import { putCorrections, readCorrections } from "./learn/commit.js";
+import { forgetRunText } from "./learn/purge.js";
 import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, type PersonKind, readLearning, readSnapshot, runMergeOf, type SnapChange, type SnapHistory, type SnapLearned, type Snapshot, textsAt, writeLearning } from "./learn/folder.js";
 import { FolderUnreadable, type LearningStore, PATCH_CAP } from "./learn/store.js";
 import { learningStoreOf } from "./learn/store-of.js";
@@ -61,6 +62,10 @@ class Recent<T> {
     this.held.set(key, value);
     while (this.held.size > this.entries) this.held.delete(this.held.keys().next().value!);
   }
+  /** Every value whose key starts `prefix` dropped. */
+  forget(prefix: string): void {
+    for (const key of [...this.held.keys()]) if (key.startsWith(prefix)) this.held.delete(key);
+  }
 }
 
 /** The snapshots this server read last, by the folder's agent and main: a later page's cursor names one of them. */
@@ -90,12 +95,14 @@ async function servedIn(snapshot: Snapshot, purgedOf: PurgedOf): Promise<(change
   return ({ by }) => !("run" in by && purged.has(by.run));
 }
 
-/** Run `runId`'s text taken off agent `agentId`'s learning's current files at its purge (learn/commit.ts
+/** Run `runId`'s text taken out of agent `agentId`'s learning at its purge, its history rewritten (learn/purge.ts
  *  forgetRunText), in the agent's queue, as every write of its learning is. */
 export async function forgetRunLearning(data: string, agentId: string, runId: string): Promise<void> {
   await withAgentRepo(data, agentId, async () => {
     try {
       await forgetRunText(learningStoreOf(data, agentId), runId);
+      // A page's cursor named a main of the history rewritten: its next page starts again at main now's first item.
+      seen.forget(seenKey(agentId, ""));
     } catch (error) {
       throw routeFailure(error);
     }
@@ -508,7 +515,7 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
 
 /** GET /runs/{id}/learning/diff over the one store: once merged (its learning end, store-reads/learning.ts
  *  runLearningEnd), its merge commit against its parent, as its agent's learning store diffs the commit its merge marked
- *  (learn/folder.ts runMergeOf), a purged run's line left out of its context (learn/commit.ts purgedContextOut); a run
+ *  (learn/folder.ts runMergeOf; by its marker, so a purge's rewrite, which changes every commit's id, keeps it); a run
  *  that merged nothing, no file, against the seed its launch's learning start names. A
  *  run that does not learn (no learning start and no learning end) is not_found. A file's patch is withheld when too large
  *  (as the store gave it), or when it holds one of the host's secrets now (`shown`); any other is served as every
@@ -527,10 +534,8 @@ export async function runDiffOverStore(data: string, store: Store, runId: string
   if (end?.merged) {
     const learning = learningStoreOf(data, row.agentId);
     const diff = await runMergeOf(learning, runId, kept?.round).catch((error: unknown) => Promise.reject(routeFailure(error)));
-    if (!diff || diff.merge !== end.merged) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
-    // A purged run's line shown as this merge's context is left out (learn/commit.ts purgedContextOut).
-    const files = await purgedContextOut(learning, diff.files).catch((error: unknown) => Promise.reject(routeFailure(error)));
-    return { base: diff.parent, head: diff.merge, files: files.map((entry) => ("patch" in entry ? file(entry.path, entry.status, entry.patch) : { path: shown.name(entry.path), status: entry.status, withheld: entry.withheld })) };
+    if (!diff) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
+    return { base: diff.parent, head: diff.merge, files: diff.files.map((entry) => ("patch" in entry ? file(entry.path, entry.status, entry.patch) : { path: shown.name(entry.path), status: entry.status, withheld: entry.withheld })) };
   }
   return { base: start?.seed ?? null, head: null, files: [] };
 }

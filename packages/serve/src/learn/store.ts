@@ -12,11 +12,16 @@
 // - log: a commit's first-parent history, newest first, optionally only the commits that changed one path;
 // - diff: each path a commit changed against its first parent, its patch (hunks alone) or withheld past PATCH_CAP;
 // - save: ONE commit on main by compare and swap on the head it read (`old`), after its preconditions hold there
-//   (`absent`, `same`, `seed`); a run's merge leaves the marker file `.agentrun/runs/<key>` in the same commit, a purge's
-//   scrub `.agentrun/purged/<key>`, and a key whose marker (either, for a merge) is on `old` is `already`, nothing
+//   (`absent`, `same`, `seed`); a run's merge leaves the marker file `.agentrun/runs/<key>` in the same commit, and a
+//   key whose marker is on `old`, or whose run a purge marked (`.agentrun/purged/<run>`), is `already`, nothing
 //   written. A save that changes nothing is `unchanged`, never an error;
+// - rewrite: main's whole history replaced (a run's purge, learn/purge.ts): a new chain of commits built apart from
+//   main, none of it reachable while it is built, then main moved to its tip by compare and swap on `old`, and the old
+//   history's bytes gone from the store (the local folder expires its reflog and prunes; code.storage builds the chain
+//   in the agent's next repository, flips to it, and deletes the old one). A rewrite cut short leaves main as it was;
 // - remove: every commit gone (a reset, an agent's or a person's erasure); the next save makes the store again, empty.
-//   Removing a store that is gone already is done.
+//   Removing a store that is gone already is done. `erase` (an agent's delete): nothing of the agent is left in the
+//   store at all, code.storage's every repository generation included.
 // A commit's time is the store's: the local folder commits at the save's `at`; code.storage dates each commit on its own
 // clock (its API takes no date), so a snapshot's times (the writer's clock) may be a second or so off a rebuild's.
 
@@ -32,7 +37,7 @@ export type StoreDiffFile =
 /** One save: the head it read (`old`, null for the first commit), the commit's message and time (whole seconds), what
  *  it writes and deletes, and what must hold on `old`: `absent` paths not there; `same` paths as they are on another
  *  commit (one the store does not hold fails it); `seed` a commit the store must still hold. `run`: a run's merge, its
- *  key (a run's id, `<run>.r<round>` past its first round); `purged`: a purge's scrub, the key it scrubs. */
+ *  key (a run's id, `<run>.r<round>` past its first round). */
 export type StoreSave = {
   old: string | null;
   message: string;
@@ -43,8 +48,13 @@ export type StoreSave = {
   same?: readonly { commit: string; path: string }[];
   seed?: string;
   run?: string;
-  purged?: string;
 };
+/** One commit of a chain a rewrite builds: its parent (null: the chain's first), message, time (whole seconds) and every
+ *  file it holds. */
+export type ChainCommit = { parent: string | null; message: string; at: number; files: readonly StoreFile[] };
+/** What a rewrite did: `saved` main is the chain's tip; `stale` main was not `old` when it would have moved (nothing of
+ *  the chain reachable). */
+export type Rewritten = { saved: string } | { stale: string | null };
 /** What a save did: `saved` the new main; `stale` main is not `old` (nothing written); `refused` a precondition failed
  *  (nothing written); `already` the key's marker is on `old`, the commit that added it (nothing written); `unchanged` the
  *  tree would be `old`'s (nothing written). */
@@ -63,14 +73,19 @@ export interface LearningStore {
   log(ref: string, options?: { limit?: number; path?: string }): Promise<StoreCommit[] | undefined>;
   diff(commit: string): Promise<StoreDiffFile[] | undefined>;
   save(save: StoreSave): Promise<Saved>;
-  remove(): Promise<void>;
+  /** `build` makes the chain, one commit at a time by `commit` (each answering its id), and answers its tip. */
+  rewrite(old: string, build: (commit: (one: ChainCommit) => Promise<string>) => Promise<string>): Promise<Rewritten>;
+  remove(options?: { erase?: boolean }): Promise<void>;
 }
 
 /** The host's folder in every commit: the snapshot and the marker files. Never learned, never laid into a run. */
 export const HOST_DIR = ".agentrun";
 export const runMarker = (key: string): string => `${HOST_DIR}/runs/${key}`;
-export const purgedMarker = (key: string): string => `${HOST_DIR}/purged/${key}`;
-/** A marker's key: a run's id and round, or the key a purge scrubs. */
+/** The marker a run's purge leaves on main (learn/purge.ts): no key of that run merges after. */
+export const purgedMarker = (runId: string): string => `${HOST_DIR}/purged/${runId}`;
+/** The run a merge's key names: its id, a later round's `.r<round>` cut. */
+export const runOfKey = (key: string): string => key.replace(/\.r\d+$/, "");
+/** A marker's key: a run's id and round. */
 export const MARKER_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 /** A commit's id: git's sha1 or sha256. */
 export const COMMIT = /^[0-9a-f]{40}([0-9a-f]{24})?$/;

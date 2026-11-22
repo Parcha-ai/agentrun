@@ -67,9 +67,6 @@ export type Snapshot = {
   audits?: { oid: string; bytes: number };
   workflows: SnapLearned[];
   log: SnapChange[]; log_more: boolean;
-  /** The runs a purge's scrub marked on main (`.agentrun/purged/<key>`), by run id, sorted; absent when none: no history
-   *  read serves their lines as another merge's context (learn/commit.ts purgedContextOut). */
-  purged?: string[];
 };
 /** A run's merge (its round), as its commit holds it: its key, its commit, its parent, and each file's patch. */
 export type RunDiff = {
@@ -130,15 +127,6 @@ function changeEntry(commit: CommitInfo, sha: string, files: string[]): SnapChan
   return { commit: sha, at: new Date(commit.at).toISOString(), by, reason: paragraphs.slice(0, -1).join(" ") || commit.subject.replace(/^learning: /, ""), files };
 }
 
-/** The run a purge's scrub key names (runDiffKey's inverse): its id, a later round's `.r<round>` cut. */
-export const purgedRunOf = (key: string): string => key.replace(/\.r\d+$/, "");
-/** `log` with each change by a run of `purged` given no reason: a purged run's words are kept in no snapshot (the
- *  snapshot is a file of main's tree), its change itself kept for the history reads to leave out by its run. */
-const purgedField = (purged: Iterable<string> | undefined): { purged?: string[] } => {
-  const runs = [...new Set(purged ?? [])].sort();
-  return runs.length ? { purged: runs } : {};
-};
-const reasonsOut = (log: SnapChange[], purged: ReadonlySet<string>): SnapChange[] => (purged.size ? log.map((change) => ("run" in change.by && purged.has(change.by.run) ? { ...change, reason: "" } : change)) : log);
 /** Whether a commit's message holds a line git's log of changes greps for: `Run-Id: ` or `Changed-By: user`. */
 const isChange = (commit: CommitInfo) => `${commit.subject}\n${commit.body}`.split("\n").some((line) => line.startsWith("Run-Id: ") || line === "Changed-By: user");
 
@@ -161,8 +149,7 @@ const textOf = (bytes: Uint8Array | undefined): string | undefined => {
 type TreeEntry = { mode: string; type: string; oid: string; bytes: number; path: string };
 /** A commit read whole: its tree (no host path), its first-parent history with the paths each commit changed (no host
  *  path), and its blobs by id. */
-/** `purged`: the runs a scrub's marker on the commit names (`.agentrun/purged/<key>`). */
-type WholeRead = { main: string | undefined; tree: TreeEntry[]; records: { commit: CommitInfo; sha: string; files: string[] }[]; blobs: Map<string, Buffer>; purged?: ReadonlySet<string> };
+type WholeRead = { main: string | undefined; tree: TreeEntry[]; records: { commit: CommitInfo; sha: string; files: string[] }[]; blobs: Map<string, Buffer> };
 
 /** A commit's time as a store gives it (git's %cI, its own offset, "+00:00", "+02:00" or "Z"), in the one form a
  *  snapshot keeps: UTC in whole seconds, ending "Z", as nextSnapshot writes it, so a snapshot rebuilt from history and
@@ -182,8 +169,7 @@ function infoOf(commit: StoreCommit): CommitInfo {
   const trailer = (key: string) => last.split("\n").filter((line) => line.startsWith(`${key}: `)).map((line) => line.slice(key.length + 2).trim()).join(",");
   return { at: commitTime(commit.at), subject, body, runId: trailer("Run-Id"), changedBy: trailer("Changed-By"), approvedVia: trailer("Approved-Via") };
 }
-const isHostPath = (path: string) => path === HOST_DIR || path.startsWith(`${HOST_DIR}/`);
-const PURGED_DIR = `${HOST_DIR}/purged/`;
+export const isHostPath = (path: string) => path === HOST_DIR || path.startsWith(`${HOST_DIR}/`);
 
 /** The snapshot of a commit read whole: every item from its tree and its blobs, each file's history and order from its
  *  first-parent log, and the newest LOG_KEEP changes. */
@@ -236,8 +222,7 @@ export function snapshotOfRead(read: WholeRead): Snapshot | undefined {
     });
     if (item) workflows.push(item);
   }
-  // A run a scrub marked (`.agentrun/purged/<key>`) has no reason in the log rebuilt, as in the one its scrub wrote.
-  return { v: 1, main, at, ...(corrections ? { corrections: { path: CORRECTIONS_FILE, oid: corrections.oid, bytes: corrections.bytes } } : {}), ...(audits ? { audits: { oid: audits.oid, bytes: audits.bytes } } : {}), workflows: workflows.sort(byName), log: reasonsOut(log, read.purged ?? new Set()), log_more: more, ...purgedField(read.purged) };
+  return { v: 1, main, at, ...(corrections ? { corrections: { path: CORRECTIONS_FILE, oid: corrections.oid, bytes: corrections.bytes } } : {}), ...(audits ? { audits: { oid: audits.oid, bytes: audits.bytes } } : {}), workflows: workflows.sort(byName), log, log_more: more };
 }
 
 /** A draft from its folder's files: listed when its folder is well named and its README.md and workflow.json are there,
@@ -275,9 +260,6 @@ export type FolderChange = {
    *  correction alone included), named only when this folder held it as the run's end began (commit.ts mustHold): one a
    *  reset of the agent's learning removed refuses the merge. */
   seed?: string;
-  /** A purge's scrub of a run's text: the key it scrubs (runDiffKey), marked in its commit, so that key never merges
-   *  after, and the scrub itself lands once. */
-  purged?: string;
 };
 
 /** A commit's message and trailers, as git keeps them: a person's names their action and the file, with Changed-By (and
@@ -358,15 +340,49 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
   }
 
   const entry = change && isChange(commit) ? changeEntry(commit, PLACEHOLDER, changed) : undefined;
-  // A purge's scrub takes its run's reasons off the log as it takes its lines off corrections.md.
-  const log = reasonsOut([...(entry ? [entry] : []), ...(before?.log ?? [])], new Set(change?.purged !== undefined ? [purgedRunOf(change.purged)] : []));
+  const log = [...(entry ? [entry] : []), ...(before?.log ?? [])];
   const snapshot: Snapshot = {
     v: 1, main: PLACEHOLDER, at: commit.at, ...(corrections ? { corrections } : {}), ...(audits ? { audits } : {}),
     workflows: workflows.sort(byName),
     log: log.slice(0, LOG_KEEP), log_more: Boolean(before?.log_more) || log.length > LOG_KEEP,
-    ...purgedField([...(before?.purged ?? []), ...(change?.purged !== undefined ? [purgedRunOf(change.purged)] : [])]),
   };
   return { snapshot, changed };
+}
+
+/**
+ * A commit's snapshot as a purge rewrites it (learn/purge.ts): the one commit `commit` kept of its own (keptSnapshot;
+ * undefined when it kept none, or a stale one: the rewritten commit keeps none either), each commit its log names put
+ * as `rewritten` maps it (one mapped to null was dropped: its change goes too) with the files it changes now
+ * (`changed`, by the old commit: a scrubbed merge may change corrections.md no more), run `runId`'s changes given the reason
+ * its scrubbed message gives ("merged"), corrections.md's blob as `corrections` (undefined: the commit holds none), and
+ * `parent` its new parent. `text` is the file; `snapshot` what a reader of the new commit reads, its own commit the
+ * placeholder still (`landed` puts it).
+ */
+export function rewrittenSnapshot(file: StoreFile | undefined, commit: { sha: string; parent: string | null }, rewritten: ReadonlyMap<string, string | null>, changed: ReadonlyMap<string, string[]>, runId: string, corrections: SnapFile | undefined, parent: string | null): { text: string; landed: (sha: string) => Snapshot } | undefined {
+  const kept = keptSnapshot(file, commit.sha, commit.parent);
+  if (!kept) return undefined;
+  const log = kept.log.flatMap((change) => {
+    const sha = change.commit === commit.sha ? PLACEHOLDER : rewritten.get(change.commit);
+    if (sha === null) return [];
+    const files = changed.get(change.commit);
+    return [{ ...change, commit: sha ?? change.commit, ...(files ? { files } : {}), ...("run" in change.by && change.by.run === runId ? { reason: SCRUBBED_REASON } : {}) }];
+  });
+  const { corrections: _was, ...rest } = kept;
+  const snapshot: Snapshot = { ...rest, main: PLACEHOLDER, ...(corrections ? { corrections } : {}), log };
+  return { text: snapshotText(snapshot, parent), landed: (sha) => withMain(snapshot, sha) };
+}
+
+/** The reason a purged run's scrubbed merge gives, in its message and in every snapshot: messageOf's own for none. */
+const SCRUBBED_REASON = "merged";
+/** A purged run's merge's message, scrubbed: its subject and its Run-Id, no reason. */
+export const scrubbedMessage = (runId: string): string => messageOf({ run: runId, reason: "" }).message;
+/** The host's commit on top of a rewritten history (`words`, as `host: <words>`): its message, and its snapshot after
+ *  `before` (the last rewritten commit's, landed) with no change of its own, on `parent`; no snapshot when `before`
+ *  is none. */
+export function hostCommitOf(words: string, before: Snapshot | undefined, parent: string, seconds: number): { message: string; snapshot?: string } {
+  const message = messageOf({ host: words }).message;
+  if (!before) return { message };
+  return { message, snapshot: snapshotText(nextSnapshot(before, { by: { host: words }, writes: [] }, seconds).snapshot, parent) };
 }
 
 /** The snapshot with its placeholder put for `main`: what the commit holds, as a reader reads it. */
@@ -396,6 +412,13 @@ function keepSnapshot(key: string, snapshot: Snapshot): void {
     if (snapshots.size <= SNAPSHOTS_KEPT) break;
     snapshots.delete(old);
   }
+}
+
+/** What this process keeps of `store`'s commits forgotten (their snapshots), and the bodies `oids` name: a history a
+ *  purge rewrote (learn/purge.ts) is read again from the store, none of the old one served from here. */
+export function forgetHistory(store: LearningStore, oids: Iterable<string>): void {
+  for (const key of [...snapshots.keys()]) if (key.startsWith(`${store.id}\0`)) snapshots.delete(key);
+  for (const oid of oids) forgetBody(oid);
 }
 
 /** Bodies already checked, by blob id: an oid names its bytes, so one read is good for every snapshot naming it. */
@@ -438,8 +461,8 @@ function keptSnapshot(file: StoreFile | undefined, commit: string, parent: strin
   } catch {
     return undefined;
   }
-  if (value?.v !== 1 || value.parent !== parent || value.main !== commit || !Array.isArray(value.workflows) || !Array.isArray(value.log) || (value.corrections !== undefined && !isOidField(value.corrections?.oid)) || (value.audits !== undefined && !isOidField(value.audits?.oid)) || (value.purged !== undefined && !(Array.isArray(value.purged) && value.purged.every((run) => typeof run === "string")))) return undefined;
-  return { v: 1, main: value.main, at: value.at, ...(value.corrections ? { corrections: value.corrections } : {}), ...(value.audits ? { audits: value.audits } : {}), workflows: value.workflows, log: value.log, log_more: value.log_more, ...purgedField(value.purged) };
+  if (value?.v !== 1 || value.parent !== parent || value.main !== commit || !Array.isArray(value.workflows) || !Array.isArray(value.log) || (value.corrections !== undefined && !isOidField(value.corrections?.oid)) || (value.audits !== undefined && !isOidField(value.audits?.oid))) return undefined;
+  return { v: 1, main: value.main, at: value.at, ...(value.corrections ? { corrections: value.corrections } : {}), ...(value.audits ? { audits: value.audits } : {}), workflows: value.workflows, log: value.log, log_more: value.log_more };
 }
 
 /** Commit `commit` read whole from `store`: its tree and blobs, its history and what each commit changed. */
@@ -448,9 +471,7 @@ async function wholeRead(store: LearningStore, commit: string): Promise<WholeRea
   if (!files || !history) return undefined;
   const blobs = new Map<string, Buffer>();
   const tree: TreeEntry[] = [];
-  const purged = new Set<string>();
   for (const file of files) {
-    if (file.path.startsWith(PURGED_DIR)) purged.add(purgedRunOf(file.path.slice(PURGED_DIR.length)));
     if (isHostPath(file.path)) continue;
     const oid = blobOid(file.body);
     blobs.set(oid, file.body);
@@ -461,7 +482,7 @@ async function wholeRead(store: LearningStore, commit: string): Promise<WholeRea
     const changed = one.files ?? (await store.diff(one.sha))?.map((file) => file.path) ?? [];
     records.push({ commit: infoOf(one), sha: one.sha, files: changed.filter((path) => !isHostPath(path)) });
   }
-  return { main: commit, tree, records, blobs, purged };
+  return { main: commit, tree, records, blobs };
 }
 
 /** Commit `commit`'s snapshot in `store`: the one it holds when it is its own, else rebuilt from it whole. Undefined
@@ -626,9 +647,8 @@ export type Committed =
 export async function commitChange(store: LearningStore, base: Snapshot | undefined, change: FolderChange | undefined): Promise<Committed> {
   const seconds = Math.floor(Date.now() / 1000);
   const { snapshot, changed } = nextSnapshot(base, change, seconds);
-  // A change that changes nothing on main is no commit: main stays, and nothing is saved. A purge's scrub always lands
-  // (its marker is the change).
-  if (base && change && !changed.length && change.purged === undefined) return { landed: true, main: base.main, snapshot: base };
+  // A change that changes nothing on main is no commit: main stays, and nothing is saved.
+  if (base && change && !changed.length) return { landed: true, main: base.main, snapshot: base };
   const writes = change?.writes ?? [];
   for (const { path } of writes) checkPath(path);
   for (const path of [...(change?.deletes ?? []), ...(change?.absent ?? []), ...(change?.same ?? []).map(({ path }) => path)]) checkPath(path);
@@ -648,7 +668,6 @@ export async function commitChange(store: LearningStore, base: Snapshot | undefi
     ...(change?.same?.length ? { same: change.same } : {}),
     ...(change?.seed !== undefined ? { seed: change.seed } : {}),
     ...(run ? { run } : {}),
-    ...(change?.purged !== undefined ? { purged: change.purged } : {}),
   });
   if ("saved" in saved) {
     const landed = withMain(snapshot, saved.saved);

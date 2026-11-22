@@ -183,6 +183,7 @@ export function heldLearningStore(agentId: string): LearningStore {
     log: call("log"),
     diff: call("diff"),
     save: none("save"),
+    rewrite: none("rewrite"),
     remove: none("remove"),
   };
 }

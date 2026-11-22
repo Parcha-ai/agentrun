@@ -1,16 +1,15 @@
 // learningCommit: the writes on an agent's learning. Every call is ONE save on the learning store's main (learn/folder.ts
 // commitChange), computed from main's snapshot and the bodies it names. A main that moved under it (stale) is computed
-// again on the main that won. A store with no main yet is made in the same call (its first commit first). Four writes:
+// again on the main that won. A store with no main yet is made in the same call (its first commit first). Three writes (a
+// purged run's text leaves by a rewrite of the whole history, learn/purge.ts):
 //   - a run's compiled workflow draft (learningCommit), already checked, its files whole; a file that is not on main as
 //     it was on the run's seed (or its `bases` commit) is a conflict, never written over;
 //   - one line of an owner's feedback appended to corrections.md (appendCorrection), after the refusals;
-//   - corrections.md replaced whole by a person (putCorrections), under the ETag they read;
-//   - a purged run's feedback lines taken off main by the host (forgetRunText), each merge's scrub marked
-//     `.agentrun/purged/<key>`, so it lands once.
+//   - corrections.md replaced whole by a person (putCorrections), under the ETag they read.
 import type { Problem } from "./check.js";
 import { CORRECTIONS_CAP, CORRECTIONS_FILE, correctionLine, correctionsProblems } from "./corrections.js";
-import { blobOid, type FolderChange, FolderMerged, FolderRefused, FolderTooLarge, forgetBody, readLearning, readSnapshot, type RunDiff, runMergeOf, type Snapshot, writeLearning } from "./folder.js";
-import { HOST_DIR, type LearningStore, MARKER_KEY, type StoreDiffFile } from "./store.js";
+import { blobOid, type FolderChange, FolderMerged, FolderRefused, FolderTooLarge, readLearning, readSnapshot, type RunDiff, runMergeOf, type Snapshot, writeLearning } from "./folder.js";
+import type { LearningStore } from "./store.js";
 import { held, isHeld } from "./workflow-draft.js";
 
 /** A run's merge, one a round: its compiled draft's files, already checked, and its owner's correction. */
@@ -192,147 +191,4 @@ export async function putCorrections(store: LearningStore, input: { text: string
     return { result: { ok: true, text: input.text, oid: blobOid(input.text) }, change: { by: { person: "edited", file: CORRECTIONS_FILE }, writes: [{ path: CORRECTIONS_FILE, text: input.text }] } };
   });
   return result;
-}
-
-/** The host's subject words for a purge's scrub (its commit reads `host: <these>`). */
-const SCRUB = "a purged run's corrections removed";
-
-/**
- * Run `runId`'s text taken off the learning's current files, at its purge (agent-delete.ts purgeRun): the lines each of
- * its merges added to corrections.md, as the store diffs that merge, dropped from main in one host commit per merge (a
- * line a person edited since is theirs and stays), marked `.agentrun/purged/<key>` (the merge's key, runDiffKey). Its
- * merges stay in the store's history until a learning reset or its agent's purge removes the store; another merge's
- * diff that shows such a line as context is served without it (purgedContextOut). Each merge's scrub lands once (a
- * second is the store's `already`), its marker landing even when no line is left to drop (a person took it off first):
- * the commit's snapshot keeps no reason of the run either way. A merge is found by its commit on
- * corrections.md's history whose Run-Id trailer names the run, its key by the marker the commit added. `commit`: the
- * host's last commit, when one was made.
- */
-export async function forgetRunText(store: LearningStore, runId: string): Promise<{ commit?: string }> {
-  let commit: string | undefined;
-  for (const { key, added } of await correctionMerges(store, runId)) {
-    // Lands once, by the merge's key: a call that stopped after it finds it landed and takes no line again, so another
-    // run's same line stays; a merge of the run made since (a purge that stopped before the run's tombstone left it open
-    // to a grade) is a key of its own, scrubbed in its turn.
-    const done = await writeLearning<string | undefined>(store, async ({ snapshot, body }) => {
-      const before = snapshot?.corrections ? await body(CORRECTIONS_FILE, snapshot.corrections.oid) : "";
-      const after = withoutLines(before, added);
-      const write = after === before ? { writes: [] } : after ? { writes: [{ path: CORRECTIONS_FILE, text: after }] } : { writes: [], deletes: [CORRECTIONS_FILE] };
-      return { result: after === before ? "" : snapshot!.corrections!.oid, change: { by: { host: SCRUB }, purged: key, ...write } };
-    }).catch((error: unknown) => (error instanceof FolderMerged ? { result: undefined, main: undefined } : Promise.reject(error)));
-    if (done.result !== undefined) {
-      if (done.result) forgetBody(done.result);
-      commit = done.main;
-    }
-  }
-  return commit ? { commit } : {};
-}
-
-/** Run `runId`'s merges that added a line to corrections.md, oldest first: each one's key (the `.agentrun/runs/<key>`
- *  marker its commit added) and the lines it added. */
-async function correctionMerges(store: LearningStore, runId: string): Promise<{ key: string; added: string[] }[]> {
-  const main = await store.head();
-  if (!main) return [];
-  const trailer = `Run-Id: ${runId}`;
-  const commits = ((await store.log(main, { path: CORRECTIONS_FILE })) ?? []).filter(({ message }) => message.split("\n").includes(trailer)).reverse();
-  const out: { key: string; added: string[] }[] = [];
-  for (const { sha } of commits) {
-    const files = (await store.diff(sha)) ?? [];
-    const key = files.find(({ path, status }) => status === "added" && path.startsWith(RUNS_DIR))?.path.slice(RUNS_DIR.length);
-    if (!key || !MARKER_KEY.test(key)) continue;
-    const added = files.flatMap((file) => (file.path === CORRECTIONS_FILE && "patch" in file ? addedLines(file.patch) : []));
-    if (added.length) out.push({ key, added });
-  }
-  return out;
-}
-
-const RUNS_DIR = `${HOST_DIR}/runs/`;
-const TRAILER = "Run-Id: ";
-
-/** The lines each run merge added to corrections.md, by store and merge commit: a commit's never change. */
-const mergeLines = new Map<string, string[]>();
-
-/**
- * A merge's diff `files` as a history read serves it: corrections.md's patch with each context line a purged run's
- * merge added left out, so no read serves a purged run's line as another merge's context, whether its purge's scrub
- * took the line off main or a person had taken it off first. The purged runs are the ones main's snapshot names (each
- * scrub's marker, forgetRunText); their lines are what the store diffs each of their merges on corrections.md's history
- * (by its Run-Id trailer) as adding. A patch with no context line, or a learning no purge marked, reads none of it.
- */
-export async function purgedContextOut(store: LearningStore, files: readonly StoreDiffFile[]): Promise<StoreDiffFile[]> {
-  if (!files.some((file) => file.path === CORRECTIONS_FILE && "patch" in file && /^ /m.test(file.patch))) return [...files];
-  const snapshot = await readSnapshot(store);
-  const purged = new Set(snapshot?.purged ?? []);
-  if (!snapshot || !purged.size) return [...files];
-  const gone = new Set<string>();
-  for (const { sha, message } of (await store.log(snapshot.main, { path: CORRECTIONS_FILE })) ?? []) {
-    const runId = message.split("\n").findLast((line) => line.startsWith(TRAILER))?.slice(TRAILER.length);
-    if (runId === undefined || !purged.has(runId)) continue;
-    const at = `${store.id}\0${sha}`;
-    let lines = mergeLines.get(at);
-    if (!lines) {
-      lines = ((await store.diff(sha)) ?? []).flatMap((file) => (file.path === CORRECTIONS_FILE && "patch" in file ? addedLines(file.patch) : []));
-      mergeLines.set(at, lines);
-      for (const old of mergeLines.keys()) {
-        if (mergeLines.size <= 256) break;
-        mergeLines.delete(old);
-      }
-    }
-    for (const line of lines) gone.add(line);
-  }
-  if (!gone.size) return [...files];
-  return files.map((file) => (file.path === CORRECTIONS_FILE && "patch" in file ? { ...file, patch: withoutContext(file.patch, gone) } : file));
-}
-
-/** The lines a patch (git's hunks) adds and does not take away: what a merge appended. */
-function addedLines(patch: string): string[] {
-  const lines = patch.split("\n");
-  const taken = new Map<string, number>();
-  for (const line of lines) if (line.startsWith("-")) taken.set(line.slice(1), (taken.get(line.slice(1)) ?? 0) + 1);
-  return lines.filter((line) => line.startsWith("+")).map((line) => line.slice(1)).filter((line) => {
-    const left = taken.get(line) ?? 0;
-    if (left) taken.set(line, left - 1);
-    return !left && line.trim() !== "";
-  });
-}
-
-/** `text` with the last line equal to each of `lines` left out. */
-function withoutLines(text: string, lines: readonly string[]): string {
-  const kept = text.split("\n");
-  for (const line of lines) {
-    const at = kept.lastIndexOf(line);
-    if (at >= 0) kept.splice(at, 1);
-  }
-  return kept.join("\n");
-}
-
-/** `patch` (git's hunks) with each context line that is one of `gone` left out, a hunk that lost one given the header
- *  of what it keeps: the start moved past the lines it lost at its top (git names the line before when it keeps none
- *  on a side), each count less what it lost. */
-function withoutContext(patch: string, gone: ReadonlySet<string>): string {
-  const lines = patch.split("\n");
-  const out: string[] = [];
-  const dropped = (line: string) => line.startsWith(" ") && gone.has(line.slice(1));
-  for (let i = 0; i < lines.length;) {
-    const head = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/.exec(lines[i]!);
-    if (!head) {
-      out.push(lines[i++]!);
-      continue;
-    }
-    let end = i + 1;
-    while (end < lines.length && !lines[end]!.startsWith("@@")) end++;
-    const body = lines.slice(i + 1, end);
-    const kept = body.filter((line) => !dropped(line));
-    const lost = body.length - kept.length;
-    if (!lost) out.push(lines[i]!, ...body);
-    else {
-      const top = body.findIndex((line) => !dropped(line));
-      const lead = top < 0 ? lost : top;
-      const [olds, news] = [Number(head[2] ?? 1) - lost, Number(head[4] ?? 1) - lost];
-      const at = (start: string, count: number) => Number(start) + lead - (count ? 0 : 1);
-      out.push(`@@ -${at(head[1]!, olds)},${olds} +${at(head[3]!, news)},${news} @@${head[5]}`, ...kept);
-    }
-    i = end;
-  }
-  return out.join("\n");
 }
