@@ -4,29 +4,19 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { removeAtEnd } from "./support.mjs";
+import { scratch as scratchOf, server } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
-const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
 const ROOT = new URL("../../../", import.meta.url).pathname;
 const GENERATOR = join(ROOT, "scripts", "generate-clients.mjs");
 const TABLE = join(ROOT, "packages", "agentrun", "lib", "commands.generated.mjs");
-const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
-/** No box: unset, AGENTRUN_BOXES turns Docker on where it answers, which a CI runner's does (boxes.ts). */
-const NO_BOXES = { AGENTRUN_BOXES: "none" };
 
-function scratch(t) {
-  const dir = mkdtempSync(join(tmpdir(), "agentrun-cli-"));
-  removeAtEnd(dir);
-  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
-  return { dir, env: { ...env, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") } };
-}
+const scratch = () => scratchOf("cli");
 
 /** A port nothing listens on. */
 async function closedPort() {
@@ -37,23 +27,8 @@ async function closedPort() {
   return port;
 }
 
-/** The server on `data`, with a faux model; resolves once it wrote DIR/.server.json. */
-async function serve(t, dir, env) {
-  const faux = join(dir, "faux.mjs");
-  writeFileSync(faux, 'export default (context, faux) => faux.message("The answer is 42.");\n');
-  const data = join(dir, "data");
-  const child = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", faux], { stdio: ["ignore", "pipe", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
-  const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
-  t.after(() => child.exitCode === null && child.kill("SIGKILL"));
-  let err = "";
-  child.stdout.resume();
-  child.stderr.on("data", (chunk) => (err += chunk));
-  for (let i = 0; !existsSync(join(data, ".server.json")); i++) {
-    assert.ok(i < 600 && child.exitCode === null, `the server started: ${err}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return { child, exited, data, token: readFileSync(join(data, ".token"), "utf8").trim() };
-}
+/** The server on DIR/data with a faux model (support.mjs server). */
+const serve = (t, dir, env) => server(t, { data: join(dir, "data"), env, faux: 'export default (context, faux) => faux.message("The answer is 42.");\n' });
 
 /** A loopback HTTP server that records every request under its own random path prefix (part of `base`; a request's `url`
  *  is recorded without it) and answers with `answer(request)`: [status, type, bytes]. Anything else, such as another

@@ -6,53 +6,19 @@
 // `deploy delete` removes the agent and the lock. Two real servers on loopback with a faux model: A, where the command
 // runs, and B, where it deploys.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
-import { hostname, tmpdir } from "node:os";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { removeAtEnd } from "./support.mjs";
+import { cli as agentrun, scratch as scratchOf, server as serverOf } from "./support.mjs";
 
-const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
-const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
-const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_CLOUD_URL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
-
-function scratch() {
-  const dir = mkdtempSync(join(tmpdir(), "agentrun-deploy-"));
-  removeAtEnd(dir);
-  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), AGENTRUN_BOXES: "none", HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") };
-  return { dir, env };
-}
-
-/** A server on its own data directory with a faux model: its base URL, its token, and a client for its API. */
-async function server(t, dir, env, name) {
-  const data = join(dir, name);
-  mkdirSync(data, { recursive: true });
-  const faux = join(dir, `${name}-faux.mjs`);
-  writeFileSync(faux, 'export default (context, faux) => faux.message("Nothing changed today.");\n');
-  const child = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", faux], { stdio: ["ignore", "pipe", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
-  t.after(() => child.exitCode === null && child.kill("SIGKILL"));
-  let err = "";
-  child.stdout.resume();
-  child.stderr.on("data", (chunk) => (err += chunk));
-  for (let i = 0; !existsSync(join(data, ".server.json")); i++) {
-    assert.ok(i < 600 && child.exitCode === null, `server ${name} started: ${err}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const base = JSON.parse(readFileSync(join(data, ".server.json"), "utf8")).base_url;
-  const token = readFileSync(join(data, ".token"), "utf8").trim();
-  const api = async (method, path, body) => {
-    const res = await fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    const text = await res.text();
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch {}
-    return { status: res.status, body: json ?? text };
-  };
-  return { data, base, token, api };
-}
+const scratch = () => scratchOf("deploy");
+/** A server on DIR/NAME with a faux model (support.mjs server). */
+const server = (t, dir, env, name) => serverOf(t, { data: join(dir, name), env, faux: 'export default (context, faux) => faux.message("Nothing changed today.");\n' });
+/** The CLI with `extra` on its environment; stdin closed (no terminal). */
+const cli = (env, args, extra = {}) => agentrun({ ...env, ...extra }, args);
 
 /** A loopback proxy in front of `to` that records each request's method and path: what a deploy sent. */
 async function recorder(t, to) {
@@ -70,18 +36,6 @@ async function recorder(t, to) {
   await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (proxy.closeAllConnections(), proxy.close(resolve))));
   return { base: `http://127.0.0.1:${proxy.address().port}${target.pathname}`, seen };
-}
-
-/** The CLI in a child process; stdin closed (no terminal). */
-function cli(env, args, extra = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, stdio: ["ignore", "pipe", "pipe"] });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (chunk) => (out += chunk));
-    child.stderr.on("data", (chunk) => (err += chunk));
-    child.on("close", (code) => resolve({ code, out, err, json: () => JSON.parse(out) }));
-  });
 }
 
 const SKILL = (line = "Say what changed.") => `---

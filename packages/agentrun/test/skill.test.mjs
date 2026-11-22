@@ -10,9 +10,9 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
+import { removeAtEnd, server } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
-const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
 const ROOT = new URL("../../../", import.meta.url).pathname;
 const SKILL = join(ROOT, "packages", "agentrun", "skills", "agentrun-cli");
 const GENERATOR = join(ROOT, "scripts", "generate-clients.mjs");
@@ -41,25 +41,14 @@ export const cost = { input: 0, output: 100, cacheRead: 0, cacheWrite: 0 };
 /** The server, its data in HOME/.agentrun where the CLI looks with no flag, and a PATH with `agentrun` on it. */
 async function serve(t) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-skill-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  removeAtEnd(dir);
   const shim = join(dir, "bin");
   mkdirSync(shim);
   writeFileSync(join(shim, "agentrun"), `#!/bin/sh\nexec "${process.execPath}" "${BIN}" "$@"\n`, { mode: 0o755 });
   const kept = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
   const env = { ...kept, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config"), PATH: `${shim}:${process.env.PATH}` };
-  writeFileSync(join(dir, "faux.mjs"), FAUX);
-  const data = join(dir, ".agentrun");
-  const child = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", join(dir, "faux.mjs")], { stdio: ["ignore", "pipe", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") } });
-  t.after(() => child.exitCode === null && child.kill("SIGKILL"));
-  let err = "";
-  child.stdout.resume();
-  child.stderr.on("data", (chunk) => (err += chunk));
-  for (let i = 0; !existsSync(join(data, ".server.json")); i++) {
-    assert.ok(i < 600 && child.exitCode === null, `the server started: ${err}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const record = JSON.parse(readFileSync(join(data, ".server.json"), "utf8"));
-  return { dir, env, base: record.base_url, token: readFileSync(join(data, ".token"), "utf8").trim() };
+  const { base, token } = await server(t, { data: join(dir, ".agentrun"), env: { ...env, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, faux: FAUX });
+  return { dir, env, base, token };
 }
 
 /** The CLI on the PATH, every output kept in `seen`. */
