@@ -145,7 +145,7 @@ test("an API-only server applies a template, reads its agent and revisions, move
   assert.deepEqual([gone.status, gone.body.error?.code], [410, "purged"], JSON.stringify(gone.body));
 });
 
-test("an API-only server unarchives an agent it archived, so an archive sent by mistake is undone", { timeout: 60_000 }, async (t) => {
+test("an API-only server unarchives an agent it archived, so an archive sent by mistake is undone: the schedule its archive turned off is on again", { timeout: 60_000 }, async (t) => {
   const server = await deployServer(t, { apiOnly: true });
   const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
@@ -154,6 +154,22 @@ test("an API-only server unarchives an agent it archived, so an archive sent by 
   const back = await send(server, "POST", `/v2/agents/${agent}/unarchive`);
   assert.equal(back.status, 200, JSON.stringify(back.body));
   assert.equal((await server.store.agents.get(agent)).archivedAt, null, "not archived");
+  // No trigger route is served here to turn it on, so the unarchive does, and none is left off to name.
+  assert.deepEqual(back.body.triggers_off, [], JSON.stringify(back.body));
+  const [schedule] = await server.store.triggers.list(agent);
+  assert.deepEqual([schedule.name, schedule.enabled, schedule.disabled ?? null, typeof schedule.nextAt], ["morning", true, null, "number"], JSON.stringify(schedule));
+});
+
+test("off by default: the whole server's unarchive turns none of its triggers on, and names each one its archive turned off, as before", { timeout: 60_000 }, async (t) => {
+  const server = await deployServer(t, {}, NO_MAIL);
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = applied.body.agent_id;
+  assert.equal((await send(server, "POST", `/v2/agents/${agent}/archive`)).status, 200);
+  const back = await send(server, "POST", `/v2/agents/${agent}/unarchive`);
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  assert.deepEqual(back.body.triggers_off.map((one) => one.name).sort(), ["lead-form", "morning"], JSON.stringify(back.body));
+  assert.deepEqual((await server.store.triggers.list(agent)).map((row) => row.enabled), [false, false], "both stay off");
 });
 
 test("an API-only server reads an agent its inline runs made", { timeout: 60_000 }, async (t) => {
