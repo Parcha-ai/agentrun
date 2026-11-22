@@ -8,7 +8,7 @@ import { ApiError } from "../errors.js";
 import { canonical, isObject, cliLearningOf, learningSettingForBody, type AgenticBody } from "../store/agent-body.js";
 import type { Claim, RunOrigin, Store, SettingsGuard } from "../store/store.js";
 import type { AgentEntry } from "../agents-store.js";
-import { uuidv7 } from "../agents-store.js";
+import { uuidv7 } from "../ids.js";
 import { launchBody, type RunLaunch } from "../run-launch.js";
 import { learningStartFor, type StartDeps } from "../runs-over-store.js";
 import { chooseWorkflows, type LearnedWorkflow, seedAt, secretsShown, withAgentRepo } from "../learning.js";

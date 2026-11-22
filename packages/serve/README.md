@@ -743,7 +743,9 @@ AGENTRUN_DOCKER_IMAGE=$tag AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
 The tag is the recipe's hash, so an edit to the recipe is a new tag, and a tag already on this machine is used as it is
-(nothing is pulled). It is about 2.7 GB on disk. An agent that needs it says so with
+(nothing is pulled). Its Debian packages come from snapshot.debian.org at one instant, and the CLI's npm dependencies
+from the registry as it stood at that instant (by date, not by content), so two builds of one tag install the same
+Debian packages. It is about 2.7 GB on disk. An agent that needs it says so with
 [`computer.needs`](#computers), so a server on another image fails its runs in words instead of running them.
 
 ### In the published image
@@ -3157,6 +3159,14 @@ serves these routes alone:
 - a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
   minted;
 - `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
+- a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
+  its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
+  (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
+  is what its delete (`DELETE /agents/{id}`) needs first. The apply makes no trigger of any source: a run here starts
+  through the backend's API calls alone, on its keys and budget, never on this server's own clock and model key (a
+  schedule or a feed) or from a hook or setting this profile refuses (a webhook, GitHub, Composio or email). The answer
+  says so for each under `warnings` (`triggers.<i>`, `not_an_option`), and the dry run (`dry_run: true`) plans each as
+  `skip` in the same words. The backend starts those runs through the API instead;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
@@ -3164,12 +3174,13 @@ Here a run's computer routes take the server's token. `POST /runs/{id}/computer/
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
 assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
-`POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no
-page to sign in to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or
-`false` serve the whole server, as before; any value other than these and `1` or `true` stops the start, in words.
+`POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
+template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
+to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the
+whole server, as before; any value other than these and `1` or `true` stops the start, in words.
 
-Its routes for agents are refused too, so on an API-only server a run is launched inline (`POST /runs` with its
-definition), or on an agent made before the profile was turned on.
+So on an API-only server a run is launched inline (`POST /runs` with its definition), on an agent a template's apply
+made, or on an agent made before the profile was turned on.
 
 ## Uploads
 
@@ -4023,8 +4034,10 @@ A start reserves a check only on a turn that can be its baseline: a JSON object 
 schema (a prose task's input is resolved by the bridge), and a start whose task or instructions held a protected value
 reserves nothing. A reserved turn that still cannot be the baseline (cancelled or failed, incomplete, redacted or
 workflow-assisted evidence, no `workflow_check` report, or a shadow that `failed` or `skipped_write`) gives the
-reservation back: the record stays `replaying` with no `runs`, counts it in `check.released`, and the next turn the
-draft takes is checked. The fifth given-back turn stops the check with nothing checked (no recompile). A turn the
+reservation back: the record stays `replaying` with no `runs`, counts it in `check.released` (a cancel is never
+counted), and the next turn the draft takes is checked. A turn that lands starts the count again; five counted
+give-backs in a row hold the draft, never promoted and never stopped for good: the agent's next compile, after
+`compile_after` more runs, revises it, and the revision is checked afresh. A turn the
 backend never completes within an hour is decided as one failed input through the same check, so its hold asks the
 one recompile and a recompile's check that ends the same way stops. Connected checks' records say `via: "sdk"`;
 `check.fresh_reads` counts the shadow's `shadowReadFallback` reads.

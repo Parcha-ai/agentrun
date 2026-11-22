@@ -33,7 +33,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { apiOnlyRefusal, servedApiOnly } from "./api-only.js";
+import { apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -46,7 +46,8 @@ import { homedir, hostname } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
 import { agentPackage } from "./agent-package.js";
-import { uuidv7, type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { uuidv7 } from "./ids.js";
+import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -229,7 +230,7 @@ import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceVie
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
-import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgedAgain, purgeRun, purgingKey } from "./agent-delete.js";
+import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgeRun, purgingKey } from "./agent-delete.js";
 import { type LearningResetHost, resetLearning } from "./learning-reset.js";
 import { agentComputerHoldKey } from "./workspace/agent-computer.js";
 import { sdkRunKey } from "./sdk/runs.js";
@@ -2506,7 +2507,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function needRunnableAgent(id: string): Promise<AgentEntry> {
     const entry = await needAgent(id);
     // Another system's agent is archived only by its delete (its archive route is refused).
-    if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
+    if (entry.agent.archivedAt && ownedElsewhere(entry.agent)) throw agentDeleting(id);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${id} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
     return entry;
   }
@@ -2570,7 +2571,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const entry = await needAgent(id);
       // A purged agent's row stays as its tombstone: a write that waited on its purge is 410, never a folder made again.
       if (entry.agent.purgedAt !== null) throw purgedAgent(entry.agent);
-      if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
+      if (entry.agent.archivedAt && ownedElsewhere(entry.agent)) throw agentDeleting(id);
       // A purge stopped part way (its mark still there): nothing of the agent is written, nor is it unarchived, until a
       // DELETE finishes it.
       if (entry.agent.archivedAt && (await store.settings.get(purgingKey(id))) !== undefined) throw agentDeleting(id);
@@ -3159,6 +3160,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (const [i, trigger] of p.made.triggers.entries()) {
       const name = String(trigger.name).trim();
       const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
+      // On an API-only server, skipped in the apply's own words (prepareApply).
+      const hostSkip = p.hostless.get(i);
+      if (hostSkip) {
+        planned.push({ name, kind, action: "skip", reason: hostSkip });
+        continue;
+      }
       if (p.emptyFeeds.has(i)) {
         planned.push({ name, kind, action: "skip", reason: feedTriggerEmpty(p.pkg.name, trigger, isObject(p.pkg.triggers[i]?.source) ? p.pkg.triggers[i]!.source.urls : undefined) });
         continue;
@@ -3272,12 +3279,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // by the triggers' own clock, the one POST /triggers checks by and they fire by (a template eval case's `now`).
     // A feed trigger whose urls are one array parameter given empty reads no feed: skipped, never the apply (feedLeftEmpty).
     const emptyFeeds = new Set(made.triggers.flatMap((trigger, i) => (feedLeftEmpty(trigger) ? [i] : [])));
-    const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !emptyFeeds.has(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
+    // On an API-only server no trigger is made, and each is said (api-only.ts). Each stays listed, so a trigger the agent
+    // has by its name is left as it is, never removed.
+    const hostless = new Map(options.apiOnly ? made.triggers.map((trigger, i) => [i, apiOnlyTriggerSkipped(pkg.name, trigger)] as const) : []);
+    const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
+    const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
-    // The package's triggers by name, as this apply makes them (a feed it left empty is not made, so not listed either).
-    const listed = new Set(made.triggers.flatMap((trigger, i) => (emptyFeeds.has(i) ? [] : [String(trigger.name).trim()])));
+    // The package's triggers by name, as this apply makes them (a feed it left empty is not made, so not listed either,
+    // except on an API-only server, which makes none and leaves each the agent has: hostless above).
+    const listed = new Set(made.triggers.flatMap((trigger, i) => (emptyFeeds.has(i) && !hostless.has(i) ? [] : [String(trigger.name).trim()])));
     // The triggers to remove: each of the agent's that an apply of this package marked as its own (TriggerRow.templateId)
     // and whose name the package no longer lists. A trigger the owner made, one a PATCH moved here from another agent (or
     // away and back), and one made before the mark was kept carry none, and are left. One whose removal fails keeps its
@@ -3292,7 +3304,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const resent = new Map<number, Source>();
     const remade = new Set<number>();
     for (const [i, trigger] of made.triggers.entries()) {
-      const was = emptyFeeds.has(i) ? undefined : hadByName.get(String(trigger.name).trim());
+      const was = unmade(i) ? undefined : hadByName.get(String(trigger.name).trim());
       if (!was || !isObject(trigger.source) || trigger.source.kind !== "composio" || !isObject(was.source) || was.source.kind !== "composio") continue;
       try {
         resent.set(i, composioTriggers.resent(was.source as Source, was.id, trigger.source as Source));
@@ -3308,7 +3320,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // have to make again without being its own, or another package's, refuses the apply with nothing written (409 under
     // triggers.<i>): the owner renames or deletes it, then applies again.
     const notOurs: InputIssue[] = made.triggers.flatMap((trigger, i) => {
-      const was = emptyFeeds.has(i) ? undefined : hadByName.get(String(trigger.name).trim());
+      const was = unmade(i) ? undefined : hadByName.get(String(trigger.name).trim());
       if (!was || was.templateId === pkg.id) return [];
       const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
       const wasKind = isObject(was.source) ? String(was.source.kind) : "";
@@ -3325,13 +3337,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // changes. Which triggers are the package's is on each trigger (its mark), not here.
     const digest = parametersDigest(sealKey, stable(parameters));
     const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters_digest: digest, secrets: declared };
-    return { pkg, onto, missing, unsaved, saved, mapped, grants, pick, made, emptyFeeds, hadByName, remade, resent, removing, digest, origin, warned: [...skipped, ...kept, ...modelWarnings, ...computerWarnings] };
+    return { pkg, onto, missing, unsaved, saved, mapped, grants, pick, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned: [...skipped, ...kept, ...modelWarnings, ...computerWarnings] };
   }
 
   /** applyTemplate's work, in its turn on the agent where it has agent_id: prepareApply's reads and checks, then its
    *  writes. */
   async function applyWith(template: Package, body: Json) {
-    const { pkg, onto, saved, mapped, grants, made, emptyFeeds, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
+    const { pkg, onto, saved, mapped, grants, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
     // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
     // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
     const twins: InputIssue[] = onto ? [] : (await agents.list())
@@ -3370,7 +3382,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const leftThere: InputIssue[] = [];
     try {
       for (const [i, trigger] of made.triggers.entries()) {
-        if (emptyFeeds.has(i)) continue;
+        if (unmade(i)) continue;
         const aimed: Json = { ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } };
         let was = hadByName.get(String(trigger.name).trim());
         const own = { templateId: pkg.id, onAgent: entry.agent.id };
@@ -3445,9 +3457,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const ticked = saved.map((need) => ({ ...need, tools: need.tools.filter((tool) => grants.includes(mcpToolName(need.server, tool))) }));
     const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => mcpMeta.get(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
-    const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
+    const hooks = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
-    const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "github"
+    const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "github"
       ? [unconnected.has(i) ? { field: `triggers.${i}`, reason: NOT_SET_UP, message: githubTriggerUnconnected(pkg.name, trigger.source) } : { field: `triggers.${i}`, reason: "not_an_option", message: githubTriggerWords(pkg.name, trigger.source) }]
       : []));
     // Each composio trigger it skipped: which, the refusal's words, and where to make it once that's fixed.
@@ -3456,7 +3468,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return refused && isObject(trigger.source) && trigger.source.kind === "composio" ? [{ field: `triggers.${i}`, reason: NOT_SET_UP, message: composioTriggerSkipped(pkg.name, trigger, refused.message), fix: COMPOSIO_TRIGGER_FIX }] : [];
     });
     // Each feed trigger it skipped for want of a feed: which, and the parameter to set.
-    const feedsSkipped: InputIssue[] = [...emptyFeeds].map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: feedTriggerEmpty(pkg.name, made.triggers[i]!, isObject(pkg.triggers[i]?.source) ? pkg.triggers[i]!.source.urls : undefined) }));
+    const feedsSkipped: InputIssue[] = [...emptyFeeds].filter((i) => !hostless.has(i)).map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: feedTriggerEmpty(pkg.name, made.triggers[i]!, isObject(pkg.triggers[i]?.source) ? pkg.triggers[i]!.source.urls : undefined) }));
+    // Each trigger an API-only server does not make: nothing set up here makes it, so not_an_option.
+    const hostSkipped: InputIssue[] = [...hostless].map(([i, message]) => ({ field: `triggers.${i}`, reason: "not_an_option", message }));
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
@@ -3465,7 +3479,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // What the apply did to the agent: made it, wrote a new revision, or wrote none (an update whose package and
     // parameters the current revision already holds: commitAgent keeps that revision).
     const agentChange = !onto ? "made" : entry.revision?.id === onto.revision?.id ? "unchanged" : "updated";
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_id: entry.revision?.id ?? null, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...warned, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_id: entry.revision?.id ?? null, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...warned, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...hostSkipped, ...leftThere, ...appShort, ...twins] };
     return { applied, minted, updated: onto !== undefined };
   }
 
@@ -4735,7 +4749,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // at a time, the agent read in its turn, so a DELETE after one that finished is 404 (deleted) or 204 (purged).
         await deleteInTurn(id, async () => {
           const { agent } = await needAgent(id);
-          if (agent.purgedAt !== null) return purgedAgain(agentDeleteHost, id);
+          if (agent.purgedAt !== null) return;
           if (ownedElsewhere(agent)) return deleteExternalAgent(agentDeleteHost, id);
           if (agent.archivedAt === null) throw new ApiError("agent_not_archived", `The agent ${id} is not archived: archive it first (POST /v2/agents/${id}/archive), which stops new runs and turns its triggers off, then send the DELETE again. Nothing was purged.`);
           await purgeAgent(agentDeleteHost, id);
@@ -4767,7 +4781,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const entry = await needAgent(id);
         const controller = new AbortController();
         req.once("close", () => controller.abort());
-        const agent = { id, archived: entry.agent.archivedAt != null, external: entry.agent.externalRef !== null, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, id, diskId) };
+        const agent = { id, archived: entry.agent.archivedAt != null, external: ownedElsewhere(entry.agent), liveOn: (diskId: string) => liveRunsOnDisk(store.runs, id, diskId) };
         return send(res, 200, await archilRoute(archil, found.name, { agent, signal: controller.signal }), { "cache-control": "no-store" });
       }
       case "forgetSignIn": {
@@ -4846,7 +4860,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteRun": {
         // In its agent's delete turn (an agent's delete or purge, or another purge of one of its runs, finishes first), the
         // run read in that turn, so a DELETE after one that finished is 204 again (purgeRun: a purged run's only work is
-        // its store scrub's marker and its learning folder's scrub, again).
+        // its learning folder's scrub, again).
         const row = ID.test(id) ? await store.runs.get(id) : undefined;
         if (!row) throw new ApiError("not_found", `no run ${id}`);
         // API-only (api-only.ts): a run of an agent another system owns alone, for the backend whose inline runs made it,
