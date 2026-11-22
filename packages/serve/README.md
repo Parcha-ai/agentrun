@@ -2205,7 +2205,9 @@ preset: you give your Composio API key, a toolkit (`github`, `slack`...), the ac
 toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
 ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
 `{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
-user_id?, auth_config_id?, price_usd?}` makes and saves the server. When the toolkit needs your account and `user_id`
+user_id?, auth_config_id?, price_usd?}` makes and saves the server. In place of `api_key`, `"api_key_env":
+"COMPOSIO_API_KEY"` reads the key from that variable of the server's environment at each use and keeps no copy: the
+way an [API-only](#api-only) server's token saves one. When the toolkit needs your account and `user_id`
 (default `agentrun`) has none active, the answer's `connect_url` is Composio's page to connect it; nothing here signs
 in. The server and its connect link are made against the toolkit's Composio-managed auth config (found, else made), or
 against `auth_config_id`, one you already have at Composio (your own OAuth app's, say): it is read first, and one
@@ -3226,13 +3228,33 @@ serves these routes alone:
   the hook, or start those runs through the API). A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
+- its MCP servers, for a backend that grants its runs tools: the list and one server's read
+  (`GET /settings/mcp-servers`, `GET /settings/mcp-servers/{name}`), a save and a delete. The token here never writes a
+  secret, so a save keeps none:
+  - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
+    `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
+    value, and reads it at each use: the save's calls to Composio, each run's connection and the delete's, so a new
+    value is used from the next run. `COMPOSIO_API_KEY` is the one name taken (`422 invalid` for any other), and it
+    must be set when the server is saved (`422 missing`). A run of a server whose variable is unset is refused before
+    it starts (`409 agent_not_runnable`), naming it; it never runs without the server's tools. `toolkit`, `tools`,
+    `auth_config_id`, `price_usd` and `user_id: "per_run"` work as they do on the full server;
+  - any other server (`PUT /settings/mcp-servers/{name}`) is saved with `auth.type` `per_run` at an `https` address
+    alone: each run hands its own credential in `mcp_auth`. Any other auth type is `422` under `auth.type`, and an
+    `http` address `422` under `url`;
+  - a delete (`DELETE /settings/mcp-servers/{name}`) takes either kind.
+
+  The reads here answer each server's brief: its name, kind (`composio` or `url`), auth type (and `api_key_env`), the
+  Composio toolkit, its tools by name, and its key as every secret is read (`source: "env"`, `set` while the variable
+  is). No credential, and its address as its origin alone. The preview, refresh, sign-in, Composio tool listing and
+  every other MCP settings route stay refused. On the full server the token's `api_key_env` is `403`, as `api_key` is:
+  the owner's session saves a Composio server there either way;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
 `AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every other `/settings` route, `POST /mcp`, triggers and their
 `POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
 template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
 to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the

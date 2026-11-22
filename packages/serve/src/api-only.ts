@@ -1,7 +1,7 @@
 // The API-only profile (AGENTRUN_API_ONLY=1): a server that runs behind its caller's backend serves the run routes and a
 // deploy's routes alone, and refuses every other address before anything else reads the request: the console at "/" and
-// its assets, sign-in and setup, settings, MCP, triggers and their webhook hooks, the rest of agents and templates.
-// Off by default.
+// its assets, sign-in and setup, settings but its MCP servers, the MCP endpoint, triggers and their webhook hooks, the
+// rest of agents and templates. Off by default.
 import type { Route } from "./server.js";
 import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
 
@@ -28,7 +28,12 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
  *    revision back, and archives it before its delete (or unarchives it, the schedule and feed triggers its archive
  *    turned off on again when the server has the launch hook): its token already makes agents through inline runs, so it
- *    gains no new power. A trigger the apply can't make here is skipped, and said (apiOnlyTriggerSkipped). */
+ *    gains no new power. A trigger the apply can't make here is skipped, and said (apiOnlyTriggerSkipped);
+ *  - an API-only server has no owner, so the token is the backend's own, as with take-over: it lists, reads, saves and
+ *    deletes the MCP servers its agents need, and never writes a secret (secret-writes.ts). A Composio server names its
+ *    key by api_key_env (COMPOSIO_API_KEY, read at each use); any other is a per_run server at an https address, whose
+ *    runs each hand their own credential (mcp_auth). It reads each server brief: no credential, no address past its
+ *    origin. Previews, refreshes, sign-ins and Composio's triggers stay refused. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
@@ -41,6 +46,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames",
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
+  "listMcpServers", "getMcpServer", "saveComposioServer", "saveMcpServer", "deleteMcpServer",
 ]);
 
 /** The trigger sources an apply on an API-only server makes once the server has the launch hook: the ones that fire on

@@ -18,8 +18,13 @@ export type Made = { id: string; made: boolean };
  *  under it. `per_run`: saved with `user_id: "per_run"` (COMPOSIO_PER_RUN), its address names no user and no account,
  *  and each run names its own (mcp_auth, composioPerRun); `user` is then that word and `accounts` empty. Only a save made
  *  since the mode exists writes it, so a server saved before for a Composio user literally named "per_run" keeps that
- *  user until it is saved again. */
-export type ComposioMade = { user: string; auth_config: (Made & { named?: true }) | null; accounts: Made[]; per_run?: true };
+ *  user until it is saved again. `key_env`: saved with `api_key_env`, its key is read from this variable of the server's
+ *  environment at each use, and its row seals no credential (composioKeyFromEnv). */
+export type ComposioMade = { user: string; auth_config: (Made & { named?: true }) | null; accounts: Made[]; per_run?: true; key_env?: typeof COMPOSIO_KEY_ENV };
+
+/** The one variable a Composio save may name for its key (`api_key_env`). Composio's host is fixed in code, so no other
+ *  secret of the server's environment is ever sent there. */
+export const COMPOSIO_KEY_ENV = "COMPOSIO_API_KEY";
 /** What a delete does at Composio beyond the MCP server: what it removes, in order (the accounts before the auth config
  *  they are under), and what it keeps, each with whose it stays (`by`: the saved server that uses it too; none: this
  *  server didn't make it). */
@@ -42,7 +47,7 @@ export function recordedMade(value: unknown, createdAt: number | undefined): Com
   const config = value.auth_config === null ? null : thingOf(value.auth_config);
   const accounts = value.accounts.map(thingOf);
   if (config === undefined || accounts.some((account) => !account)) return undefined;
-  return { user: value.user, auth_config: config, accounts: accounts as Made[], ...(value.per_run === true ? { per_run: true as const } : {}) };
+  return { user: value.user, auth_config: config, accounts: accounts as Made[], ...(value.per_run === true ? { per_run: true as const } : {}), ...(value.key_env === COMPOSIO_KEY_ENV ? { key_env: COMPOSIO_KEY_ENV } : {}) };
 }
 
 /** Whether the saved server `row` is a per-run Composio server: auth headers (the install's sealed key) and its own
@@ -64,8 +69,19 @@ export function madeToWrite(found: ComposioMade, was: ComposioMade | undefined, 
   const config = found.auth_config && { id: found.auth_config.id, made: !found.auth_config.named && (found.auth_config.made || madeHere(found.auth_config.id)) };
   const accounts = found.accounts.map((a) => ({ id: a.id, made: a.made || madeHere(a.id) }));
   const kept = was && sharesAccounts(found, was) ? was.accounts.filter((a) => a.made && !accounts.some((b) => b.id === a.id)) : [];
-  return { user: found.user, auth_config: config, accounts: [...accounts, ...kept], ...(found.per_run ? { per_run: true as const } : {}) };
+  return { user: found.user, auth_config: config, accounts: [...accounts, ...kept], ...(found.per_run ? { per_run: true as const } : {}), ...(found.key_env ? { key_env: found.key_env } : {}) };
 }
+
+/** The value of `name`, a server's key variable (ComposioMade.key_env), in `env` as it is now: trimmed, none when unset,
+ *  blank or longer than any key. Read at each use, never kept. */
+export function composioKeyFromEnv(name: typeof COMPOSIO_KEY_ENV = COMPOSIO_KEY_ENV, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const value = env[name]?.trim();
+  return value && value.length <= 8192 ? value : undefined;
+}
+
+/** Why the server `server`, which reads its key from `name`, can't be used now: the variable is unset. */
+export const composioKeyUnset = (server: string, name: string = COMPOSIO_KEY_ENV): string =>
+  `The MCP server ${server} reads its Composio key from the environment variable ${name}, which is not set: set it where AgentRun runs, then try again.`;
 
 /** The records of the other saved servers (`others`, by name) that say they made the auth config `id`, each as it is to
  *  be written once the owner named that config in a save: made by none of them, so none of their deletes removes it. */

@@ -2849,6 +2849,7 @@ export interface operations {
       auth: {
         type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
         headers?: string[];
+        api_key_env?: "COMPOSIO_API_KEY";
       };
       credential: "sealed" | "unreadable" | "expired" | null;
       oauth?: {
@@ -2883,6 +2884,17 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+    } | {
+      name: string;
+      kind: "composio" | "url";
+      url: string;
+      auth: {
+        type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
+        api_key_env?: "COMPOSIO_API_KEY";
+      };
+      toolkit: string | null;
+      tools: string[];
+      secret: components["SecretMeta"];
     };
   };
   getModelGateway: {
@@ -4497,7 +4509,7 @@ export interface operations {
   listMcpServers: {
     body: never;
     answer: {
-      servers: {
+      servers: ({
         name: string;
         url: string;
         source: "composio" | "github" | "url";
@@ -4505,6 +4517,7 @@ export interface operations {
         auth: {
           type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
           headers?: string[];
+          api_key_env?: "COMPOSIO_API_KEY";
         };
         credential: "sealed" | "unreadable" | "expired" | null;
         oauth?: {
@@ -4539,7 +4552,18 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
-      }[];
+      } | {
+        name: string;
+        kind: "composio" | "url";
+        url: string;
+        auth: {
+          type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
+          api_key_env?: "COMPOSIO_API_KEY";
+        };
+        toolkit: string | null;
+        tools: string[];
+        secret: components["SecretMeta"];
+      })[];
     };
   };
   listRemoteConnectors: {
@@ -5474,6 +5498,7 @@ export interface operations {
         auth: {
           type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
           headers?: string[];
+          api_key_env?: "COMPOSIO_API_KEY";
         };
         credential: "sealed" | "unreadable" | "expired" | null;
         oauth?: {
@@ -5752,12 +5777,13 @@ export interface operations {
   };
   saveComposioServer: {
     body: {
-      api_key: string;
       toolkit: string;
       tools: string[];
       user_id?: string;
       auth_config_id?: string;
       price_usd?: number;
+      api_key?: string;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     answer: {
       server: {
@@ -5768,6 +5794,7 @@ export interface operations {
         auth: {
           type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
           headers?: string[];
+          api_key_env?: "COMPOSIO_API_KEY";
         };
         credential: "sealed" | "unreadable" | "expired" | null;
         oauth?: {
@@ -5802,6 +5829,17 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+      } | {
+        name: string;
+        kind: "composio" | "url";
+        url: string;
+        auth: {
+          type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
+          api_key_env?: "COMPOSIO_API_KEY";
+        };
+        toolkit: string | null;
+        tools: string[];
+        secret: components["SecretMeta"];
       };
       connect_url?: string;
       not_served?: string[];
@@ -5905,6 +5943,7 @@ export interface operations {
       auth: {
         type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
         headers?: string[];
+        api_key_env?: "COMPOSIO_API_KEY";
       };
       credential: "sealed" | "unreadable" | "expired" | null;
       oauth?: {
@@ -5939,6 +5978,21 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+      composio?: {
+        removed: boolean;
+        note: string;
+      };
+    } | {
+      name: string;
+      kind: "composio" | "url";
+      url: string;
+      auth: {
+        type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
+        api_key_env?: "COMPOSIO_API_KEY";
+      };
+      toolkit: string | null;
+      tools: string[];
+      secret: components["SecretMeta"];
       composio?: {
         removed: boolean;
         note: string;

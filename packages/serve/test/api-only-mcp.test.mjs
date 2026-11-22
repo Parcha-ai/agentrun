@@ -16,7 +16,7 @@ import tls from "node:tls";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { follow, serve, serverLog, storeBytes, withEnv } from "./support.mjs";
+import { asOwner, follow, serve, serverLog, storeBytes, withEnv } from "./support.mjs";
 
 const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
 const { composioMadeKey } = await import("../dist/composio-made.js");
@@ -64,7 +64,8 @@ test("API-only: the token saves a per-run Composio server by api_key_env; the li
   const listed = await s.token("GET", "/settings/mcp-servers");
   assert.equal(listed.status, 200, JSON.stringify(listed.body));
   const [server] = listed.body.servers;
-  assert.deepEqual({ name: server.name, kind: server.kind, auth: server.auth, toolkit: server.toolkit, tools: server.tools }, { name: "mail", kind: "composio", auth: { type: "headers" }, toolkit: "gmail", tools: ["add"] });
+  assert.deepEqual({ name: server.name, kind: server.kind, auth: server.auth, toolkit: server.toolkit }, { name: "mail", kind: "composio", auth: { type: "headers", api_key_env: KEY_ENV }, toolkit: "gmail" });
+  assert.ok(server.tools.includes("add") && server.tools.every((tool) => typeof tool === "string"), `its tools by name: ${JSON.stringify(server.tools)}`);
   assert.equal(server.credential, undefined, "no credential in the listing");
   assert.equal(String(server.url ?? "").includes("?"), false, `no query in its address: ${server.url}`);
   assert.deepEqual({ name: server.secret?.name, set: server.secret?.set, source: server.secret?.source }, { name: "mcp:mail", set: true, source: "env" }, "its key as every secret is read: by name, set, from the environment");
@@ -147,6 +148,21 @@ test("full profile: the token's api_key_env is the one secret-write refusal (403
   assert.equal(server.kind, undefined, "no API-only entry");
   for (const field of ["url", "source", "credential", "protocol", "server_info", "listed_at", "updated_at", "secret"]) assert.ok(Object.hasOwn(server, field), `the full view's ${field}`);
   assert.equal(typeof server.tools[0], "object", "each tool whole");
+});
+
+test("full profile: the owner's session saves a Composio server by api_key_env; its full view names the variable, and the store holds no copy", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t, { full: true });
+  const saved = await asOwner(s.server)("PUT", "/settings/mcp-servers/mail/composio", SAVE);
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.ok(s.composio.calls.length > 0 && s.composio.calls.every((call) => call.keyOk), "the save's calls carried the variable's value");
+  const view = saved.body.server;
+  assert.deepEqual(view.auth, { type: "headers", headers: ["x-api-key"], api_key_env: KEY_ENV });
+  assert.equal(view.credential, null, "no credential sealed");
+  assert.deepEqual({ set: view.secret?.set, source: view.secret?.source }, { set: true, source: "env" });
+  assert.equal((await s.server.store.mcp.server("mail")).sealed, null);
+  await s.server.store.flush();
+  assert.equal(storeBytes(s.server.data).includes(Buffer.from(KEY)), false, "the store's bytes never hold the key");
 });
 
 /** A self-signed certificate for 127.0.0.1, made with openssl in a folder of its own. */

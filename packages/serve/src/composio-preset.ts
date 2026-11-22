@@ -4,9 +4,10 @@
 // adapter, no auth type, no key row of its own: after the save a Composio server is a saved MCP server, gated and
 // metered like every other. The four meta tools Composio adds (serve/src/mcp-meta.ts) stay refused; the helper actions
 // that connect an account are left off the server's address. The key goes only to Composio and into the sealed header: it
-// is never logged, echoed or put in an error.
+// is never logged, echoed or put in an error. A save may name it instead by a variable of the server's environment
+// (`api_key_env`, COMPOSIO_API_KEY only): the server then keeps the name, seals nothing, and reads the value at each use.
 import { randomBytes } from "node:crypto";
-import type { Cleanup, ComposioMade, Made, Thing } from "./composio-made.js";
+import { COMPOSIO_KEY_ENV, composioKeyFromEnv, type Cleanup, type ComposioMade, type Made, type Thing } from "./composio-made.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { priceValid } from "./mcp-probe.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
@@ -94,16 +95,30 @@ export function asking(control: ComposioControl, key: string, signal: AbortSigna
   };
 }
 
-/** The key and toolkit of a body, checked. */
-function head(body: unknown): { key: string; toolkit: string; rest: Json } {
-  if (!isObject(body)) throw invalid([issue("body", "invalid", "The body is {api_key, toolkit}.")]);
-  const key = typeof body.api_key === "string" ? body.api_key.trim() : "";
+/** The key and toolkit of a body, checked. The key is the body's `api_key`, or, where `keyEnv` is taken (a save), the value
+ *  of the variable its `api_key_env` names: COMPOSIO_KEY_ENV only, so no other secret of the server's environment is sent
+ *  to Composio. `keyEnv` in the answer: the key came from there. */
+function head(body: unknown, { keyEnv = false }: { keyEnv?: boolean } = {}): { key: string; toolkit: string; rest: Json; keyEnv?: typeof COMPOSIO_KEY_ENV } {
+  if (!isObject(body)) throw invalid([issue("body", "invalid", `The body is {${keyEnv ? "api_key or api_key_env" : "api_key"}, toolkit}.`)]);
   const toolkit = typeof body.toolkit === "string" ? body.toolkit.trim().toLowerCase() : "";
   const issues: InputIssue[] = [];
-  if (!key || key.length > 8192) issues.push(issue("api_key", "missing", "Send your Composio API key."));
+  let key = "";
+  let named: typeof COMPOSIO_KEY_ENV | undefined;
+  if (keyEnv && body.api_key_env !== undefined) {
+    if (body.api_key !== undefined) issues.push(issue("api_key_env", "not_allowed", "Send api_key or api_key_env, not both."));
+    else if (body.api_key_env !== COMPOSIO_KEY_ENV) issues.push(issue("api_key_env", "invalid", `api_key_env names the variable the key is read from, and only ${COMPOSIO_KEY_ENV} is taken.`));
+    else {
+      named = COMPOSIO_KEY_ENV;
+      key = composioKeyFromEnv(named) ?? "";
+      if (!key) issues.push(issue("api_key_env", "missing", `${COMPOSIO_KEY_ENV} is not set where AgentRun runs: set it to your Composio API key, then save again.`));
+    }
+  } else {
+    key = typeof body.api_key === "string" ? body.api_key.trim() : "";
+    if (!key || key.length > 8192) issues.push(issue("api_key", "missing", keyEnv ? `Send your Composio API key, or api_key_env: "${COMPOSIO_KEY_ENV}" to read it from the server's environment.` : "Send your Composio API key."));
+  }
   if (!TOOLKIT.test(toolkit)) issues.push(issue("toolkit", "invalid", "Send the toolkit's slug as Composio names it (github, slack, gmail...)."));
   if (issues.length) throw invalid(issues);
-  return { key, toolkit, rest: body };
+  return { key, toolkit, rest: body, ...(named ? { keyEnv: named } : {}) };
 }
 
 /** Whether a toolkit needs no sign-in. Composio's answer for one toolkit has no `no_auth` field (only its toolkit list
@@ -190,9 +205,10 @@ export const composioRunQuery = (binding: { readonly user_id: string; readonly c
  *  the owner has, a custom OAuth app's say: read first, and refused unless it is this toolkit's and enabled), else the
  *  toolkit's Composio-managed one, found or made. `save` gets what the server stands on there too (`stands`,
  *  composio-made.ts): the auth config found or made and the account found or started, each marked whether this save made
- *  it, for its delete to remove what was made. */
+ *  it, for its delete to remove what was made. The key is the body's `api_key`, or COMPOSIO_API_KEY's value when the body
+ *  sends `api_key_env` (head): then `stands.key_env` names it, and the store seals no credential. */
 export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> }; prices?: Record<string, number> }, made: { source: "composio"; toolkit: string | null }, stands: ComposioMade) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
-  const { key, toolkit, rest } = head(body);
+  const { key, toolkit, rest, keyEnv } = head(body, { keyEnv: true });
   const tools = Array.isArray(rest.tools) ? rest.tools : [];
   const user = rest.user_id === undefined ? COMPOSIO_USER : typeof rest.user_id === "string" ? rest.user_id : "";
   const price = rest.price_usd;
@@ -283,8 +299,9 @@ export async function composioSave<T extends { tools?: readonly { name: string }
         }
       }
     }
-    // One the owner named is theirs (`named`): never recorded as made here, whoever made it (composio-made.ts).
-    const stands: ComposioMade = { user, auth_config: authConfig ? { id: authConfig, made: madeConfig, ...(ownConfig ? { named: true as const } : {}) } : null, accounts, ...(perRun ? { per_run: true as const } : {}) };
+    // One the owner named is theirs (`named`): never recorded as made here, whoever made it (composio-made.ts). A key read
+    // from the environment (`key_env`): the save lists the tools with it, and the store keeps the variable's name alone.
+    const stands: ComposioMade = { user, auth_config: authConfig ? { id: authConfig, made: madeConfig, ...(ownConfig ? { named: true as const } : {}) } : null, accounts, ...(perRun ? { per_run: true as const } : {}), ...(keyEnv ? { key_env: keyEnv } : {}) };
     url = composioAddress(address, perRun);
     // Saved as what it is, a Composio server of this toolkit: a template that needs the toolkit maps to it, whatever its
     // name. A slug no template can name (mcp:<toolkit>/<tool>: no `_`) is saved as a Composio server of no toolkit.

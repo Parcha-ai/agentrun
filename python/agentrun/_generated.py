@@ -425,9 +425,12 @@ __all__ = [
     "GetLearningLoopResponseCompilesItemAttemptsItem",
     "GetMcpPrivateHostsResponse",
     "GetMcpServerResponse",
-    "GetMcpServerResponseAuth",
-    "GetMcpServerResponseOauth",
-    "GetMcpServerResponseToolsItem",
+    "GetMcpServerResponseObject1",
+    "GetMcpServerResponseObject1Auth",
+    "GetMcpServerResponseObject1Oauth",
+    "GetMcpServerResponseObject1ToolsItem",
+    "GetMcpServerResponseObject2",
+    "GetMcpServerResponseObject2Auth",
     "GetModelGatewayResponse",
     "GetModelGatewayResponseModels",
     "GetModelGatewayResponseSecret",
@@ -673,10 +676,12 @@ __all__ = [
     "ListLearningPromotionsResponseServingItemCheck",
     "ListMcpServerNamesResponse",
     "ListMcpServersResponse",
-    "ListMcpServersResponseServersItem",
-    "ListMcpServersResponseServersItemAuth",
-    "ListMcpServersResponseServersItemOauth",
-    "ListMcpServersResponseServersItemToolsItem",
+    "ListMcpServersResponseServersItem1",
+    "ListMcpServersResponseServersItem1Auth",
+    "ListMcpServersResponseServersItem1Oauth",
+    "ListMcpServersResponseServersItem1ToolsItem",
+    "ListMcpServersResponseServersItem2",
+    "ListMcpServersResponseServersItem2Auth",
     "ListRemoteConnectorsResponse",
     "ListRemoteConnectorsResponseConnectorsItem",
     "ListRemoteConnectorsResponseConnectorsItemCapabilities",
@@ -958,10 +963,12 @@ __all__ = [
     "SaveComposioServerBody",
     "SaveComposioServerResponse",
     "SaveComposioServerResponseComposio",
-    "SaveComposioServerResponseServer",
-    "SaveComposioServerResponseServerAuth",
-    "SaveComposioServerResponseServerOauth",
-    "SaveComposioServerResponseServerToolsItem",
+    "SaveComposioServerResponseServer1",
+    "SaveComposioServerResponseServer1Auth",
+    "SaveComposioServerResponseServer1Oauth",
+    "SaveComposioServerResponseServer1ToolsItem",
+    "SaveComposioServerResponseServer2",
+    "SaveComposioServerResponseServer2Auth",
     "SaveComputerKeysBody",
     "SaveComputerKeysResponse",
     "SaveComputerKeysResponseGpu",
@@ -977,10 +984,14 @@ __all__ = [
     "SaveMcpServerBody",
     "SaveMcpServerBodyAuth",
     "SaveMcpServerResponse",
-    "SaveMcpServerResponseAuth",
-    "SaveMcpServerResponseComposio",
-    "SaveMcpServerResponseOauth",
-    "SaveMcpServerResponseToolsItem",
+    "SaveMcpServerResponseObject1",
+    "SaveMcpServerResponseObject1Auth",
+    "SaveMcpServerResponseObject1Composio",
+    "SaveMcpServerResponseObject1Oauth",
+    "SaveMcpServerResponseObject1ToolsItem",
+    "SaveMcpServerResponseObject2",
+    "SaveMcpServerResponseObject2Auth",
+    "SaveMcpServerResponseObject2Composio",
     "SaveModelGatewayBody",
     "SaveModelGatewayBodyModels",
     "SaveModelGatewayResponse",
@@ -5087,7 +5098,6 @@ class SaveCalendarResponse(TypedDict):
 
 
 class _SaveComposioServerBodyRequired(TypedDict):
-    api_key: str
     toolkit: str
     tools: list[str]
 
@@ -5096,10 +5106,12 @@ class SaveComposioServerBody(_SaveComposioServerBodyRequired, total=False):
     user_id: str
     auth_config_id: str
     price_usd: float
+    api_key: str
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _SaveComposioServerResponseRequired(TypedDict):
-    server: SaveComposioServerResponseServer
+    server: SaveComposioServerResponseServer1 | SaveComposioServerResponseServer2
 
 
 class SaveComposioServerResponse(_SaveComposioServerResponseRequired, total=False):
@@ -5108,52 +5120,53 @@ class SaveComposioServerResponse(_SaveComposioServerResponseRequired, total=Fals
     composio: SaveComposioServerResponseComposio
 
 
-class _SaveComposioServerResponseServerRequired(TypedDict):
+class _SaveComposioServerResponseServer1Required(TypedDict):
     name: str
     url: str
     source: Literal["composio", "github", "url"]
     toolkit: str | None
-    auth: SaveComposioServerResponseServerAuth
+    auth: SaveComposioServerResponseServer1Auth
     credential: Literal["sealed", "unreadable", "expired"] | None
     protocol: str
     server_info: dict[str, Any] | None
-    tools: list[SaveComposioServerResponseServerToolsItem]
+    tools: list[SaveComposioServerResponseServer1ToolsItem]
     listed_at: str
     updated_at: str
 
 
-class SaveComposioServerResponseServer(_SaveComposioServerResponseServerRequired, total=False):
-    oauth: SaveComposioServerResponseServerOauth
+class SaveComposioServerResponseServer1(_SaveComposioServerResponseServer1Required, total=False):
+    oauth: SaveComposioServerResponseServer1Oauth
     instructions: str
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
 
 
-class _SaveComposioServerResponseServerAuthRequired(TypedDict):
+class _SaveComposioServerResponseServer1AuthRequired(TypedDict):
     type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
 
 
-class SaveComposioServerResponseServerAuth(_SaveComposioServerResponseServerAuthRequired, total=False):
+class SaveComposioServerResponseServer1Auth(_SaveComposioServerResponseServer1AuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
-class _SaveComposioServerResponseServerOauthRequired(TypedDict):
+class _SaveComposioServerResponseServer1OauthRequired(TypedDict):
     scopes: list[str]
     client: Literal["pre-registered", "metadata-document", "dynamic"]
 
 
-class SaveComposioServerResponseServerOauth(_SaveComposioServerResponseServerOauthRequired, total=False):
+class SaveComposioServerResponseServer1Oauth(_SaveComposioServerResponseServer1OauthRequired, total=False):
     expires_at: str
     client_id: str
 
 
-class _SaveComposioServerResponseServerToolsItemRequired(TypedDict):
+class _SaveComposioServerResponseServer1ToolsItemRequired(TypedDict):
     name: str
     input_schema: dict[str, Any]
 
 
-class SaveComposioServerResponseServerToolsItem(_SaveComposioServerResponseServerToolsItemRequired, total=False):
+class SaveComposioServerResponseServer1ToolsItem(_SaveComposioServerResponseServer1ToolsItemRequired, total=False):
     title: str
     description: str
     resource: Literal["list", "templates", "read"]
@@ -5168,6 +5181,24 @@ class SaveComposioServerResponseServerToolsItem(_SaveComposioServerResponseServe
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class SaveComposioServerResponseServer2(TypedDict):
+    name: str
+    kind: Literal["composio", "url"]
+    url: str
+    auth: SaveComposioServerResponseServer2Auth
+    toolkit: str | None
+    tools: list[str]
+    secret: SecretMeta
+
+
+class _SaveComposioServerResponseServer2AuthRequired(TypedDict):
+    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
+
+
+class SaveComposioServerResponseServer2Auth(_SaveComposioServerResponseServer2AuthRequired, total=False):
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class SaveComposioServerResponseComposio(TypedDict):
@@ -5506,52 +5537,56 @@ class DeleteMcpServerResponseComposio(TypedDict):
     note: str
 
 
-class _GetMcpServerResponseRequired(TypedDict):
+GetMcpServerResponse: TypeAlias = "GetMcpServerResponseObject1 | GetMcpServerResponseObject2"
+
+
+class _GetMcpServerResponseObject1Required(TypedDict):
     name: str
     url: str
     source: Literal["composio", "github", "url"]
     toolkit: str | None
-    auth: GetMcpServerResponseAuth
+    auth: GetMcpServerResponseObject1Auth
     credential: Literal["sealed", "unreadable", "expired"] | None
     protocol: str
     server_info: dict[str, Any] | None
-    tools: list[GetMcpServerResponseToolsItem]
+    tools: list[GetMcpServerResponseObject1ToolsItem]
     listed_at: str
     updated_at: str
 
 
-class GetMcpServerResponse(_GetMcpServerResponseRequired, total=False):
-    oauth: GetMcpServerResponseOauth
+class GetMcpServerResponseObject1(_GetMcpServerResponseObject1Required, total=False):
+    oauth: GetMcpServerResponseObject1Oauth
     instructions: str
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
 
 
-class _GetMcpServerResponseAuthRequired(TypedDict):
+class _GetMcpServerResponseObject1AuthRequired(TypedDict):
     type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
 
 
-class GetMcpServerResponseAuth(_GetMcpServerResponseAuthRequired, total=False):
+class GetMcpServerResponseObject1Auth(_GetMcpServerResponseObject1AuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
-class _GetMcpServerResponseOauthRequired(TypedDict):
+class _GetMcpServerResponseObject1OauthRequired(TypedDict):
     scopes: list[str]
     client: Literal["pre-registered", "metadata-document", "dynamic"]
 
 
-class GetMcpServerResponseOauth(_GetMcpServerResponseOauthRequired, total=False):
+class GetMcpServerResponseObject1Oauth(_GetMcpServerResponseObject1OauthRequired, total=False):
     expires_at: str
     client_id: str
 
 
-class _GetMcpServerResponseToolsItemRequired(TypedDict):
+class _GetMcpServerResponseObject1ToolsItemRequired(TypedDict):
     name: str
     input_schema: dict[str, Any]
 
 
-class GetMcpServerResponseToolsItem(_GetMcpServerResponseToolsItemRequired, total=False):
+class GetMcpServerResponseObject1ToolsItem(_GetMcpServerResponseObject1ToolsItemRequired, total=False):
     title: str
     description: str
     resource: Literal["list", "templates", "read"]
@@ -5566,58 +5601,77 @@ class GetMcpServerResponseToolsItem(_GetMcpServerResponseToolsItemRequired, tota
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class GetMcpServerResponseObject2(TypedDict):
+    name: str
+    kind: Literal["composio", "url"]
+    url: str
+    auth: GetMcpServerResponseObject2Auth
+    toolkit: str | None
+    tools: list[str]
+    secret: SecretMeta
+
+
+class _GetMcpServerResponseObject2AuthRequired(TypedDict):
+    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
+
+
+class GetMcpServerResponseObject2Auth(_GetMcpServerResponseObject2AuthRequired, total=False):
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class ListMcpServersResponse(TypedDict):
-    servers: list[ListMcpServersResponseServersItem]
+    servers: list[ListMcpServersResponseServersItem1 | ListMcpServersResponseServersItem2]
 
 
-class _ListMcpServersResponseServersItemRequired(TypedDict):
+class _ListMcpServersResponseServersItem1Required(TypedDict):
     name: str
     url: str
     source: Literal["composio", "github", "url"]
     toolkit: str | None
-    auth: ListMcpServersResponseServersItemAuth
+    auth: ListMcpServersResponseServersItem1Auth
     credential: Literal["sealed", "unreadable", "expired"] | None
     protocol: str
     server_info: dict[str, Any] | None
-    tools: list[ListMcpServersResponseServersItemToolsItem]
+    tools: list[ListMcpServersResponseServersItem1ToolsItem]
     listed_at: str
     updated_at: str
 
 
-class ListMcpServersResponseServersItem(_ListMcpServersResponseServersItemRequired, total=False):
-    oauth: ListMcpServersResponseServersItemOauth
+class ListMcpServersResponseServersItem1(_ListMcpServersResponseServersItem1Required, total=False):
+    oauth: ListMcpServersResponseServersItem1Oauth
     instructions: str
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
 
 
-class _ListMcpServersResponseServersItemAuthRequired(TypedDict):
+class _ListMcpServersResponseServersItem1AuthRequired(TypedDict):
     type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
 
 
-class ListMcpServersResponseServersItemAuth(_ListMcpServersResponseServersItemAuthRequired, total=False):
+class ListMcpServersResponseServersItem1Auth(_ListMcpServersResponseServersItem1AuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
-class _ListMcpServersResponseServersItemOauthRequired(TypedDict):
+class _ListMcpServersResponseServersItem1OauthRequired(TypedDict):
     scopes: list[str]
     client: Literal["pre-registered", "metadata-document", "dynamic"]
 
 
-class ListMcpServersResponseServersItemOauth(_ListMcpServersResponseServersItemOauthRequired, total=False):
+class ListMcpServersResponseServersItem1Oauth(_ListMcpServersResponseServersItem1OauthRequired, total=False):
     expires_at: str
     client_id: str
 
 
-class _ListMcpServersResponseServersItemToolsItemRequired(TypedDict):
+class _ListMcpServersResponseServersItem1ToolsItemRequired(TypedDict):
     name: str
     input_schema: dict[str, Any]
 
 
-class ListMcpServersResponseServersItemToolsItem(_ListMcpServersResponseServersItemToolsItemRequired, total=False):
+class ListMcpServersResponseServersItem1ToolsItem(_ListMcpServersResponseServersItem1ToolsItemRequired, total=False):
     title: str
     description: str
     resource: Literal["list", "templates", "read"]
@@ -5632,6 +5686,24 @@ class ListMcpServersResponseServersItemToolsItem(_ListMcpServersResponseServersI
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class ListMcpServersResponseServersItem2(TypedDict):
+    name: str
+    kind: Literal["composio", "url"]
+    url: str
+    auth: ListMcpServersResponseServersItem2Auth
+    toolkit: str | None
+    tools: list[str]
+    secret: SecretMeta
+
+
+class _ListMcpServersResponseServersItem2AuthRequired(TypedDict):
+    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
+
+
+class ListMcpServersResponseServersItem2Auth(_ListMcpServersResponseServersItem2AuthRequired, total=False):
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 McpOAuthClientResponse: TypeAlias = "dict[str, Any]"
@@ -5733,6 +5805,7 @@ class _RefreshMcpServerResponseServerAuthRequired(TypedDict):
 
 class RefreshMcpServerResponseServerAuth(_RefreshMcpServerResponseServerAuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _RefreshMcpServerResponseServerOauthRequired(TypedDict):
@@ -5786,53 +5859,57 @@ class SaveMcpServerBodyAuth(_SaveMcpServerBodyAuthRequired, total=False):
     headers: dict[str, str]
 
 
-class _SaveMcpServerResponseRequired(TypedDict):
+SaveMcpServerResponse: TypeAlias = "SaveMcpServerResponseObject1 | SaveMcpServerResponseObject2"
+
+
+class _SaveMcpServerResponseObject1Required(TypedDict):
     name: str
     url: str
     source: Literal["composio", "github", "url"]
     toolkit: str | None
-    auth: SaveMcpServerResponseAuth
+    auth: SaveMcpServerResponseObject1Auth
     credential: Literal["sealed", "unreadable", "expired"] | None
     protocol: str
     server_info: dict[str, Any] | None
-    tools: list[SaveMcpServerResponseToolsItem]
+    tools: list[SaveMcpServerResponseObject1ToolsItem]
     listed_at: str
     updated_at: str
 
 
-class SaveMcpServerResponse(_SaveMcpServerResponseRequired, total=False):
-    oauth: SaveMcpServerResponseOauth
+class SaveMcpServerResponseObject1(_SaveMcpServerResponseObject1Required, total=False):
+    oauth: SaveMcpServerResponseObject1Oauth
     instructions: str
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
-    composio: SaveMcpServerResponseComposio
+    composio: SaveMcpServerResponseObject1Composio
 
 
-class _SaveMcpServerResponseAuthRequired(TypedDict):
+class _SaveMcpServerResponseObject1AuthRequired(TypedDict):
     type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
 
 
-class SaveMcpServerResponseAuth(_SaveMcpServerResponseAuthRequired, total=False):
+class SaveMcpServerResponseObject1Auth(_SaveMcpServerResponseObject1AuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
-class _SaveMcpServerResponseOauthRequired(TypedDict):
+class _SaveMcpServerResponseObject1OauthRequired(TypedDict):
     scopes: list[str]
     client: Literal["pre-registered", "metadata-document", "dynamic"]
 
 
-class SaveMcpServerResponseOauth(_SaveMcpServerResponseOauthRequired, total=False):
+class SaveMcpServerResponseObject1Oauth(_SaveMcpServerResponseObject1OauthRequired, total=False):
     expires_at: str
     client_id: str
 
 
-class _SaveMcpServerResponseToolsItemRequired(TypedDict):
+class _SaveMcpServerResponseObject1ToolsItemRequired(TypedDict):
     name: str
     input_schema: dict[str, Any]
 
 
-class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, total=False):
+class SaveMcpServerResponseObject1ToolsItem(_SaveMcpServerResponseObject1ToolsItemRequired, total=False):
     title: str
     description: str
     resource: Literal["list", "templates", "read"]
@@ -5849,7 +5926,34 @@ class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, to
     permissions: list[Literal["allow", "ask", "deny"]]
 
 
-class SaveMcpServerResponseComposio(TypedDict):
+class SaveMcpServerResponseObject1Composio(TypedDict):
+    removed: bool
+    note: str
+
+
+class _SaveMcpServerResponseObject2Required(TypedDict):
+    name: str
+    kind: Literal["composio", "url"]
+    url: str
+    auth: SaveMcpServerResponseObject2Auth
+    toolkit: str | None
+    tools: list[str]
+    secret: SecretMeta
+
+
+class SaveMcpServerResponseObject2(_SaveMcpServerResponseObject2Required, total=False):
+    composio: SaveMcpServerResponseObject2Composio
+
+
+class _SaveMcpServerResponseObject2AuthRequired(TypedDict):
+    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
+
+
+class SaveMcpServerResponseObject2Auth(_SaveMcpServerResponseObject2AuthRequired, total=False):
+    api_key_env: Literal["COMPOSIO_API_KEY"]
+
+
+class SaveMcpServerResponseObject2Composio(TypedDict):
     removed: bool
     note: str
 

@@ -69,7 +69,23 @@ for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (b
 // The Composio preset takes the owner's API key and seals it as an MCP header: both routes are the owner's session alone,
 // whatever the body (the listing sends the key too, and only the session may type one).
 registerSecretWrite("listComposioTools", () => true);
-registerSecretWrite("saveComposioServer", () => true);
+registerSecretWrite("saveComposioServer", composioSaveSendsKey, composioSaveDropsSecret);
+// A save's body that sends a key's value, or anything but api_key_env alone in its place: a secret written.
+function composioSaveSendsKey(body: unknown): boolean {
+  return !(isObject(body) && body.api_key === undefined && body.api_key_env !== undefined);
+}
+/** A Composio save that names its key by api_key_env (the server keeps the variable's name, never its value) writes no
+ *  secret only on an API-only server, which has no owner to save the key from the console: its token's own save, landing
+ *  only while the row still has the credential read here (request.seen), and refused over a row that seals one, which it
+ *  would drop. Anywhere else the owner saves keys from the console, so the token's is the one refusal as before. */
+export async function composioSaveDropsSecret(_body: unknown, request: SecretRequest): Promise<boolean> {
+  if (!request.apiOnly) return true;
+  const [name] = request.params;
+  if (!name) return true;
+  const was = await (request.store as SavedServers).mcp.server(name);
+  request.seen = credentialMark(was);
+  return !!was && was.sealed !== null && was.sealed !== undefined;
+}
 // A Composio server's webhook subscription (composio-triggers.ts): a rotate seals its new secret, a delete drops it.
 registerSecretWrite("rotateComposioSecret", () => true);
 registerSecretWrite("deleteComposioSubscription", () => true);

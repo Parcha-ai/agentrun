@@ -27,6 +27,8 @@
 //
 // A per-run Composio server (composio-made.ts composioPerRun) is bound by each run's caller ({composio_user_id,
 // connected_account_id?} in mcp_auth, sealed in its launch): its entry carries them as `query` (mcp-gateway.ts).
+// A Composio server saved with api_key_env (composio-made.ts key_env) seals no key: each open reads the variable's value
+// now. Unset, the claim is refused before the loop starts (pinOf), in words naming it.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again
@@ -54,7 +56,7 @@ import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent,
 import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
 import { type PinListing, pinFirst } from "../mcp-pin-first.js";
 import { mcpNameOf } from "../tool-names.js";
-import { composioMadeKey, composioPerRun } from "../composio-made.js";
+import { composioKeyFromEnv, composioKeyUnset, composioMadeKey, composioPerRun, recordedMade } from "../composio-made.js";
 import { composioRunQuery } from "../composio-preset.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { resourceToolProblem } from "../mcp-resources.js";
@@ -281,6 +283,12 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     const account = row.auth === "headers" ? await composioAccount(name, row) : undefined;
     if (account && "unopened" in account) return entry({ unopened: account.unopened }), { awaited: false };
     const query = account?.query;
+    // Its key read from the environment (api_key_env): the variable's value now, or its calls refused unsent, naming it.
+    const keyEnv = await keyEnvOf(store, name, row);
+    if (keyEnv) {
+      const key = composioKeyFromEnv(keyEnv);
+      return entry(key ? { headers: { "x-api-key": key }, ...(query ? { query } : {}) } : { unopened: composioKeyUnset(name, keyEnv) }), { awaited: false };
+    }
     if (row.sealed === null) return entry({ ...(query ? { query } : {}) }), { awaited: false };
     // A seal problem first: no refresh is ever sent for a credential this runner cannot open.
     const opened = openMcpRow(sealKey, row);
@@ -529,9 +537,19 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     // A server moved to a provider's host since the save: its pinned tool is a meta tool there.
     for (const tool of tools) if (row && metaToolOf(row.url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
     offGithub(server, url, row?.auth);
+    // A Composio server whose key variable is unset: the run never starts without its tools.
+    const keyEnv = row ? await keyEnvOf(store, server, row) : undefined;
+    if (keyEnv && !composioKeyFromEnv(keyEnv)) throw new McpClaimRefused(`${composioKeyUnset(server, keyEnv)} Nothing was sent.`);
   }
   // As plain JSON, as the stored pin reads (the harnesses and the run's directory take it as such).
   return JSON.parse(JSON.stringify(pinned)) as McpPin;
+}
+
+/** The variable a Composio server saved with api_key_env reads its key from (its record's key_env): a headers row that
+ *  seals none. None for every other row. */
+async function keyEnvOf(store: Pick<Store, "settings">, name: string, row: Pick<McpServerRow, "auth" | "sealed" | "createdAt">) {
+  if (row.auth !== "headers" || row.sealed !== null) return undefined;
+  return recordedMade(await store.settings.get(composioMadeKey(name)), row.createdAt)?.key_env;
 }
 
 /** The claim still the run's: its epoch unchanged, else Fenced. */

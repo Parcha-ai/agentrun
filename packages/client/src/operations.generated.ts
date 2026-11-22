@@ -3365,12 +3365,13 @@ export type SaveCalendarResponse = {
 
 /** Have Composio make a managed MCP server for a toolkit's chosen actions, and save it as an MCP server (PUT /settings/mcp-servers/{name}/composio). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type SaveComposioServerBody = {
-  api_key: string;
   toolkit: string;
   tools: Array<string>;
   user_id?: string;
   auth_config_id?: string;
   price_usd?: number;
+  api_key?: string;
+  api_key_env?: "COMPOSIO_API_KEY";
 };
 export type SaveComposioServerResponse = {
   server: {
@@ -3381,6 +3382,7 @@ export type SaveComposioServerResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -3415,6 +3417,17 @@ export type SaveComposioServerResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
+  } | {
+    name: string;
+    kind: "composio" | "url";
+    url: string;
+    auth: {
+      type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
+      api_key_env?: "COMPOSIO_API_KEY";
+    };
+    toolkit: string | null;
+    tools: Array<string>;
+    secret: SecretMeta;
   };
   connect_url?: string;
   not_served?: Array<string>;
@@ -3687,6 +3700,7 @@ export type GetMcpServerResponse = {
   auth: {
     type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
     headers?: Array<string>;
+    api_key_env?: "COMPOSIO_API_KEY";
   };
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: {
@@ -3721,6 +3735,17 @@ export type GetMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
+} | {
+  name: string;
+  kind: "composio" | "url";
+  url: string;
+  auth: {
+    type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
+    api_key_env?: "COMPOSIO_API_KEY";
+  };
+  toolkit: string | null;
+  tools: Array<string>;
+  secret: SecretMeta;
 };
 
 /** The remote MCP servers saved here, with their tools; never a credential (GET /settings/mcp-servers). */
@@ -3733,6 +3758,7 @@ export type ListMcpServersResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -3767,6 +3793,17 @@ export type ListMcpServersResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
+  } | {
+    name: string;
+    kind: "composio" | "url";
+    url: string;
+    auth: {
+      type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
+      api_key_env?: "COMPOSIO_API_KEY";
+    };
+    toolkit: string | null;
+    tools: Array<string>;
+    secret: SecretMeta;
   }>;
 };
 
@@ -3827,6 +3864,7 @@ export type RefreshMcpServerResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -3883,6 +3921,7 @@ export type SaveMcpServerResponse = {
   auth: {
     type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
     headers?: Array<string>;
+    api_key_env?: "COMPOSIO_API_KEY";
   };
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: {
@@ -3917,6 +3956,21 @@ export type SaveMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
+  composio?: {
+    removed: boolean;
+    note: string;
+  };
+} | {
+  name: string;
+  kind: "composio" | "url";
+  url: string;
+  auth: {
+    type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
+    api_key_env?: "COMPOSIO_API_KEY";
+  };
+  toolkit: string | null;
+  tools: Array<string>;
+  secret: SecretMeta;
   composio?: {
     removed: boolean;
     note: string;

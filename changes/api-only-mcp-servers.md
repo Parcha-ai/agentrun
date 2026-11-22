@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+An API-only server (`AGENTRUN_API_ONLY=1`) lists, reads, saves and deletes its MCP servers with the server's token, and never writes a secret doing it. A Composio server is saved with `"api_key_env": "COMPOSIO_API_KEY"` in place of `api_key`: the server keeps the variable's name, never its value, and reads it at each use (the save's calls to Composio, each run's connection, a delete's), so a new value is used from the next run. Any other name is `422 invalid` under `api_key_env`, an unset or blank variable `422 missing`, and a run of a server whose variable is unset is refused before it starts (`409 agent_not_runnable`), naming it. Any other server is saved with `auth.type` `per_run` at an `https` address alone. The reads there answer each server's brief: name, kind (`composio` or `url`), auth type, toolkit and tools by name, never a credential. `api_key` from the token stays `403`, as does the token's `api_key_env` on the full server, where the owner's signed-in session saves a Composio server either way.

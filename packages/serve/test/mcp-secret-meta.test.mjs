@@ -69,6 +69,9 @@ test("the document's MCP server read takes its secret from the one SecretMeta sc
   const { openapiDocument } = await import("../dist/openapi.js");
   const doc = openapiDocument(() => undefined);
   const read = doc.paths["/settings/mcp-servers/{name}"].get.responses["200"].content["application/json"].schema;
-  const view = read.$ref ? doc.components.schemas[read.$ref.split("/").pop()] : read;
-  assert.equal(view.properties.secret.$ref, "#/components/schemas/SecretMeta");
+  const resolved = (schema) => (schema.$ref ? doc.components.schemas[schema.$ref.split("/").pop()] : schema);
+  // The full view, and an API-only server's brief of it (api-only-mcp.test.mjs).
+  const views = (resolved(read).oneOf ?? [read]).map(resolved);
+  assert.equal(views.length, 2, "the view and the brief");
+  for (const view of views) assert.equal(view.properties.secret.$ref, "#/components/schemas/SecretMeta");
 });
