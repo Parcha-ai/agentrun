@@ -9,9 +9,10 @@
 // again under the name is.
 // The record also says who saved the row: `by: "token"` when the API token saved it (a request the secret-write gate read,
 // server.ts), for the gate's check that the token deletes only a server it saved (mcp-secret-writes.ts), and, for a per_run
-// server an API-only server's token saved at a listed origin (`listed`), for each claim to check that origin against the
-// operator's list again (mcp-token-origins.ts). A row the owner saved has no mark, and stays the owner's: the token's
-// save over it leaves it unmarked, and the owner's save over the token's row drops the mark before it writes the row.
+// server an API-only server's token saved at a listed origin (`listed`), for each run's start and claim to check that
+// origin against the operator's list again (mcp-token-origins.ts). A row the owner saved has no mark, and stays the
+// owner's: the token's save over it leaves it unmarked (on an API-only server, the gate refuses that save), and the
+// owner's save over the token's row drops the mark before it writes the row.
 import type { InputIssue } from "./errors.js";
 import { tokenOriginGone, tokenOriginListed } from "./mcp-token-origins.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
@@ -51,14 +52,15 @@ export const storedSource = (record: SourceRecord, row: { createdAt: number }, s
 export const savedByToken = (value: unknown, createdAt: number | undefined): boolean => isObject(value) && createdAt !== undefined && value.of === createdAt && value.by === "token";
 
 /** Whether the stored record `value`, read for the server row created at `createdAt`, says an API-only server's token saved
- *  that row at an origin its operator listed (AGENTRUN_MCP_TOKEN_ORIGINS): the one row each claim checks that origin of
- *  again. The token's other rows (a Composio server, held to Composio's origin; a full server's non-secret
+ *  that row at an origin its operator listed (AGENTRUN_MCP_TOKEN_ORIGINS): the one row each run's start and claim check
+ *  that origin of again. The token's other rows (a Composio server, held to Composio's origin; a full server's non-secret
  *  save) are not. */
 export const savedAtListedOrigin = (value: unknown, createdAt: number | undefined): boolean => savedByToken(value, createdAt) && isObject(value) && value.listed === true;
 
 /** Why the server `row`, its stored record `value`, is not used where `origins` are listed: the token saved it at a listed
  *  origin (savedAtListedOrigin) and its origin is none of them now (tokenOriginListed). Undefined for every other row. The
- *  one check of the server's reads of the row (McpServersOverStore) and a runner's claim. */
+ *  one check of the server's reads of the row (McpServersOverStore), a run's start (server.ts runnable) and a runner's
+ *  claim. */
 export const tokenOriginRefusal = (value: unknown, row: { name: string; url: string; createdAt: number }, origins: readonly string[]): string | undefined => (savedAtListedOrigin(value, row.createdAt) && !tokenOriginListed(row.url, origins) ? tokenOriginGone(row.name) : undefined);
 
 /** A stored record as it stands once the owner saves over the token's row: the same, without the token's marks. */

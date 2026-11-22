@@ -5,7 +5,8 @@
 // at each use (the save's own calls to Composio, a run's connection, the delete's), and only ever sends it to Composio's
 // origin, whatever a stored row says. Its generic save takes a per_run server alone, at an origin the operator listed in
 // AGENTRUN_MCP_TOKEN_ORIGINS (exactly: https, or the one loopback origin with its port under AGENTRUN_MCP_ALLOW_LOOPBACK),
-// keeping no credential and recording its toolkit; each claim of a server it saved checks that origin again. The list and
+// keeping no credential and recording its toolkit, over no row but its own; each run's start and claim of a server it saved
+// check that origin again. The list and
 // the read stay refused there. The full profile is as before: its token's `api_key_env` is the one secret-write refusal.
 // Fake Composio on loopback (fixtures/fake-composio.mjs, its MCP origin the composioMcpOrigin seam), fake MCP servers on
 // loopback (one behind TLS with a certificate this process trusts), the faux MCP model (fixtures/faux-mcp.mjs). No key,

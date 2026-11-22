@@ -3,8 +3,8 @@
 // (SHAPE below spells each form). A loopback entry counts only where AGENTRUN_MCP_ALLOW_LOOPBACK is on. An entry
 // that is not one of these is refused in words at the start (a TypeError), never skipped. Unset, none: the token's save of
 // a server at an address is refused. The token saves a per_run server alone there (server.ts saveMcpServer), which keeps
-// no credential; each claim of a server it saved checks its origin again against the runner's own list (runner/mcp-claim.ts),
-// with the one check below (tokenOriginListed).
+// no credential; each run's start checks the origin of a server it saved again against the server's list (server.ts
+// runnable), and each claim against the runner's own (runner/mcp-claim.ts), with the one check below (tokenOriginListed).
 // Imports nothing: the CLI and the runner read it at their start, before the server loads.
 
 /** The variable that lists the origins. */
@@ -65,7 +65,8 @@ export function tokenOriginsNow(loopback: boolean, env: NodeJS.ProcessEnv = proc
 }
 
 /** Whether `url` is at one of `origins` exactly: its origin (scheme, host and port, as URL normalises them) equal to one
- *  listed, and no user or password in it. The one check: a token's save, and each claim of a server it saved. */
+ *  listed, and no user or password in it. The one check: a token's save, and each run's start and claim of a server it
+ *  saved. */
 export function tokenOriginListed(url: string, origins: readonly string[]): boolean {
   const parsed = URL.parse(url);
   if (!parsed || parsed.username !== "" || parsed.password !== "") return false;

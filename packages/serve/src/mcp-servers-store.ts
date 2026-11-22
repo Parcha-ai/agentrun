@@ -306,7 +306,8 @@ export class McpServersOverStore {
    *  config): refused, nothing written. `byToken`: the API token makes the save (a request the secret-write gate read), so
    *  a row it makes is recorded as the token's (mcp-sources.ts savedByToken), for its delete. On an API-only server, which
    *  has no owner, the token's ordinary save (no `made`) is held to a per_run server at an origin its operator listed
-   *  (tokenOrigins), and recorded as saved there (savedAtListedOrigin): each claim checks that origin again. */
+   *  (tokenOrigins), over no row but its own, and recorded as saved there (savedAtListedOrigin): each run's start and
+   *  claim check that origin again. */
   async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord, stands?: ComposioMade, dropped?: (left: ComposioDropped) => void, guard?: SaveGuard, byToken = false) {
     nameOf(name);
     const was = await this.store.mcp.server(name);
@@ -404,6 +405,9 @@ export class McpServersOverStore {
       const recorded = was ? await this.store.settings.get(mcpSourceKey(name)) : undefined;
       const wasToken = was !== undefined && savedByToken(recorded, was.createdAt);
       const mark = byToken && (was === undefined || wasToken);
+      // The API-only token's save lands only on a row it saved, or none: one another wrote since the gate read it
+      // (mcp-secret-writes.ts mcpSaveWritesSecret) is refused, unwritten, never rewritten unmarked.
+      if (held && !mark) changedMeanwhile(name, undefined);
       if (wasToken && !byToken) await this.store.settings.put(mcpSourceKey(name), ownersRecord(recorded as Record<string, unknown>));
       const saved = keeping
         // Re-applied only onto a row that still holds a credential of this auth type, at the address this save read: never

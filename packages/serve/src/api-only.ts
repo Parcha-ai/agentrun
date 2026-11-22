@@ -33,8 +33,9 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    (COMPOSIO_API_KEY, on the launcher's list of secrets, read at each use through secrets.ts secret, sent to
  *    Composio's origin alone: composio-made.ts composioEnvKey), and its body names no address or headers. Its generic save
  *    (saveMcpServer) takes a per_run server alone, which keeps no credential, at an origin the operator listed exactly in
- *    AGENTRUN_MCP_TOKEN_ORIGINS (mcp-token-origins.ts; unset, none), checked again at each claim of it; any other auth is
- *    the secret-write refusal (mcp-secret-writes.ts mcpSaveWritesSecret). There is no list or read of the servers here (listMcpServerNames above is the listing).
+ *    AGENTRUN_MCP_TOKEN_ORIGINS (mcp-token-origins.ts; unset, none), checked again at each run's start and claim; any
+ *    other auth, or a save over a server the token did not save, is the secret-write refusal (mcp-secret-writes.ts
+ *    mcpSaveWritesSecret). There is no list or read of the servers here (listMcpServerNames above is the listing).
  *    Previews, refreshes, sign-ins and Composio's triggers stay refused. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",

@@ -171,7 +171,7 @@ import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, c
 import { ComposioTriggers, composioNoPublicUrl } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
-import type { SourceRecord } from "./mcp-sources.js";
+import { mcpSourceKey, tokenOriginRefusal, type SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute, saveServerOwn } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -1394,12 +1394,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // save lists its granted servers live and pins their tools on its revision (saveable, mcpListingOf); the runner reads
   // that pin and the credentials from the store at a run's claim (runner/mcp-claim.ts); this server hands a run no MCP
   // source. Each with what it is (its source and toolkit, mcp-sources.ts), which a template's apply maps its MCP needs on,
-  // and the variable a Composio server saved with api_key_env reads its key from (`keyEnv`), which a run's start checks.
-  let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[]; source: SourceRecord; keyEnv?: string }>();
+  // and the variable a Composio server saved with api_key_env reads its key from (`keyEnv`), which a run's start checks, as
+  // it checks `originGone`: why a server an API-only server's token saved at a listed origin is not used, its origin off
+  // this server's list now (mcp-sources.ts tokenOriginRefusal; each claim checks the runner's own list again).
+  let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[]; source: SourceRecord; keyEnv?: string; originGone?: string }>();
   const refreshMcpMeta = async (): Promise<void> => {
     mcpMeta = new Map(await Promise.all((await listMcpServers(store)).map(async (row) => {
       const keyEnv = await mcpServers.keyEnvOf(row);
-      return [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [], source: await mcpServers.sourceOf(row), ...(keyEnv ? { keyEnv } : {}) }] as const;
+      const originGone = tokenOriginRefusal(await store.settings.get(mcpSourceKey(row.name)), row, tokenOrigins);
+      return [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [], source: await mcpServers.sourceOf(row), ...(keyEnv ? { keyEnv } : {}), ...(originGone ? { originGone } : {}) }] as const;
     })));
   };
   await refreshMcpMeta();
@@ -2967,6 +2970,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return got && "refused" in got ? [{ field: `definition.tools[${index}]`, reason: got.reason, message: got.refused, tool, keyEnv: keyEnv!, unset: got.reason === "missing" }] : [];
       });
       if (unset.length) throw new ApiError("agent_not_runnable", [...new Set(unset.map((one) => one.message))].join(" "), { fields: unset.map(({ tool: _tool, keyEnv: _keyEnv, unset: _unset, ...issue }) => issue), details: { unbound: [], missing: Object.fromEntries(unset.filter((one) => one.unset).map((one) => [one.tool, [one.keyEnv]])) } });
+      // A granted tool of a per_run server an API-only server's token saved at a listed origin, that origin off this
+      // server's list now (originGone): refused by its name before the run starts, as the claim refuses it, nothing sent.
+      const gone = ((revision.body as { tools?: readonly string[] }).tools ?? []).flatMap((tool, index) => {
+        const named = mcpToolOf(tool);
+        const why = named ? mcpMeta.get(named.server)?.originGone : undefined;
+        return why ? [{ field: `definition.tools[${index}]`, reason: "not_an_option", message: why }] : [];
+      });
+      if (gone.length) throw new ApiError("agent_not_runnable", [...new Set(gone.map((one) => one.message))].join(" "), { fields: gone, details: { unbound: [], missing: {} } });
     }
     const pinnedTools = (server: string) => {
       const saved = mcpMeta.get(server);

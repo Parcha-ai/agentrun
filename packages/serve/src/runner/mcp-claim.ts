@@ -34,7 +34,8 @@
 // A server an API-only server's token saved at a listed origin (its record marked so, mcp-sources.ts savedAtListedOrigin)
 // is used only while its origin is one this runner's AGENTRUN_MCP_TOKEN_ORIGINS lists, read at each claim and each open
 // (mcp-token-origins.ts, the save's own check): else the claim is refused before the loop starts, naming the server, and
-// nothing is sent.
+// nothing is sent. The server refuses such a run at its start already (server.ts runnable, against its own list); this
+// check is the backstop for a runner whose list differs, or one changed since.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again

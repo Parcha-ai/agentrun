@@ -58,12 +58,20 @@ export async function mcpSaveDropsSecret(body: unknown, request: SecretRequest):
 
 /** A save of the server its path names on an API-only server, which has no owner to save a credential from the console:
  *  its token saves a per_run server alone (each run hands its own credential; the save keeps none), so any other auth,
- *  or none named, is the one secret-write refusal. Anywhere else, and for a per_run save there, mcpSaveDropsSecret. */
+ *  or none named, is the one secret-write refusal, as is a save over a server the token did not save (its source record
+ *  has no token's mark, savedByToken): a row the owner wrote stays the owner's, and is never rewritten unmarked, out of
+ *  reach of the origin checks (McpServers.save checks again). Anywhere else, and for a per_run save there,
+ *  mcpSaveDropsSecret. */
 export async function mcpSaveWritesSecret(body: unknown, request: SecretRequest): Promise<boolean> {
   const dropped = await mcpSaveDropsSecret(body, request);
   if (!request.apiOnly) return dropped;
   const auth = isObject(body) ? body.auth : undefined;
-  return dropped || !isObject(auth) || auth.type !== "per_run";
+  if (dropped || !isObject(auth) || auth.type !== "per_run") return true;
+  const [name] = request.params;
+  if (!name) return false;
+  const store = request.store as SavedServers;
+  const was = await store.mcp.server(name);
+  return !!was && !savedByToken(await store.settings.get(mcpSourceKey(name)), was.createdAt);
 }
 
 /** Whether removing the server its path names is refused to the token: it holds a sealed credential, or the token did not
