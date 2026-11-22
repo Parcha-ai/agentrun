@@ -49,6 +49,21 @@ test("it has Chromium as chrome, FFmpeg and FFprobe, title fonts and the HyperFr
   assert.match(RUNS, /npm install --global --ignore-scripts --before=\S+ hyperframes@\d+\.\d+\.\d+ /, "an exact version, no install script, the registry as it was");
 });
 
+test("its Debian packages come from snapshot.debian.org over https at one instant, the instant npm's --before names, never from the live mirror", () => {
+  const sources = [...RUNS.matchAll(/URIs: https:\/\/snapshot\.debian\.org\/archive\/\\1\/(\d{8}T\d{6}Z)#/g)].map((match) => match[1]);
+  assert.equal(sources.length, 1, "one sed rewrites both archives' URIs to one snapshot, over https");
+  assert.doesNotMatch(RUNS, /http:\/\/snapshot\.debian\.org/, "never the snapshot over plain http");
+  assert.match(RUNS, /s#\^URIs: http:\/\/deb\\\.debian\\\.org\/\(debian\|debian-security\)\$#/, "the archive and the security archive");
+  assert.match(RUNS, /! grep -q 'deb\\\.debian\\\.org' \/etc\/apt\/sources\.list\.d\/debian\.sources/, "the step fails if a source still names the live mirror");
+  const update = RUNS.indexOf("apt-get -o Acquire::Check-Valid-Until=false update");
+  assert.ok(update > RUNS.indexOf("snapshot.debian.org"), "the sources are rewritten before the first update");
+  assert.equal([...RUNS.matchAll(/apt-get (?:-o \S+ )*update/g)].length, 1, "one update, the snapshot's");
+  const [, d, t] = sources[0].match(/^(\d{8})T(\d{6})Z$/);
+  const instant = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}T${t.slice(0, 2)}:${t.slice(2, 4)}:${t.slice(4)}Z`;
+  const before = RUNS.match(/--before=(\S+)/)[1];
+  assert.equal(new Date(before).toISOString(), new Date(instant).toISOString(), "apt and npm are pinned to one instant");
+});
+
 test("it holds no key and picks nothing: no ENV, ARG or secret mount, and its build command names AGENTRUN_DOCKER_IMAGE", () => {
   assert.deepEqual(INSTRUCTIONS.filter((line) => /^(ENV|ARG|ENTRYPOINT|CMD|USER) /.test(line)), []);
   assert.doesNotMatch(DOCKERFILE, /--mount=type=secret|KEY|TOKEN/);

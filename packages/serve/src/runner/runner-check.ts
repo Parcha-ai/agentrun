@@ -29,6 +29,7 @@ import { bootSealKey } from "../seal-key.js";
 import { SECRET_NAMES } from "../secrets.js";
 import type { Settings, Store } from "../store/store.js";
 import { SEAL_KEY_ENV } from "../tool-keys.js";
+import { LAUNCH_HOOK_SECRET_ENV } from "../trigger-launch-hook.js";
 
 /** The store.settings key a server keeps the names of its run-facing environment under at each start: `{ v: 1, names }`. */
 export const RUN_ENV_KEY = "server.run_env";
@@ -37,7 +38,7 @@ export const STORE_URL_ENV = "AGENTRUN_STORE_URL";
 const POOL_SIZE_ENV = "AGENTRUN_STORE_POOL_SIZE";
 
 /** The server's own secrets: never a runner's (runner/main.ts RUNNER_ONLY keeps them from its runs, too). */
-const SERVER_ONLY: readonly string[] = ["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY"];
+const SERVER_ONLY: readonly string[] = ["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", LAUNCH_HOOK_SECRET_ENV];
 /** Names that are neither the server's run-facing environment nor the runner's: its own store and key (checked on their
  *  own), the server's secrets, and a client's address of the server. */
 const NOT_RUN_FACING = new Set([...SERVER_ONLY, STORE_URL_ENV, SEAL_KEY_ENV, "AGENTRUN_BASE_URL"]);

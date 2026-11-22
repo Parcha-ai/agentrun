@@ -21,6 +21,7 @@ import { ApiError } from "./errors.js";
 import { LearningInFlight } from "./learn/delete.js";
 import { FINAL_STATES, type PurgeKept, type RunState, RunsMadeFromLeft, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
 import { forgetServed } from "./store-view.js";
+import { requireSourceIOIdle } from "./source-sync/io.js";
 
 /** The delete of an agent's learning: the server's is the learning module's deleteLearning over the agent's learning
  *  folder, and its folder on each Archil disk a launch of its runs named, a purged run's included (learn/delete.ts;
@@ -98,6 +99,7 @@ export async function deleteExternalAgent(host: AgentDeleteHost, agentId: string
   await host.refuse(agentId);
   await stopRuns(host, agentId);
   await host.at?.("after_step_1", agentId);
+  await requireSourceIOIdle(host.store, agentId);
 
   // 2. Its learning.
   await learningGone(host, agentId);
@@ -129,6 +131,7 @@ export async function purgeAgent(host: AgentDeleteHost, agentId: string): Promis
   // Marked before anything goes, and kept until its tombstone is written: a purge stopped part way leaves the agent
   // refusing an unarchive and every write (server.ts agentWrite) until a DELETE finishes it.
   await host.store.settings.put(purgingKey(agentId), true);
+  await requireSourceIOIdle(host.store, agentId);
   await learningGone(host, agentId);
   await host.at?.("after_step_2", agentId);
   await thingsGone(host, agentId);
@@ -159,24 +162,14 @@ export async function purgeAgent(host: AgentDeleteHost, agentId: string): Promis
 /** The setting that marks agent `agentId`'s purge begun and not finished (purgeAgent). */
 export const purgingKey = (agentId: string): string => `agent.purging.${agentId}`;
 
-/** A DELETE of a run, or of agent `agentId`, already purged: 204 with no purge, but what a purge that committed and then
- *  threw left undone (its scrub's marker not written, sqlite/store.ts #purged): the scrub arranged again (store
- *  purgeScrub), and the agent's purge mark dropped (purgeAgent removes it only after its store purge returns). */
-export async function purgedAgain(host: AgentDeleteHost, agentId?: string): Promise<void> {
-  await host.store.purgeScrub();
-  if (agentId !== undefined) await host.store.settings.remove(purgingKey(agentId));
-}
-
 /** Purges run `runId` with every run made from it, as the header says. 404 not_found when it is not there; 409
- *  run_not_final, nothing purged, while it or a run made from it is live. A purged run's only work is purgedAgain and
- *  forgetCopies again, which find nothing left once a purge finished it. */
+ *  run_not_final, nothing purged, while it or a run made from it is live. A purged run's only work is forgetCopies again,
+ *  which finds nothing left once a purge finished it; its store scrub was marked before the purge changed a row
+ *  (sqlite/store.ts #purging). */
 export async function purgeRun(host: AgentDeleteHost, runId: string): Promise<void> {
   const run = await host.store.runs.get(runId);
   if (!run) throw new ApiError("not_found", `no run ${runId}`);
-  if (run.purgedAt !== null) {
-    await purgedAgain(host);
-    return host.forgetCopies(run.agentId, runId);
-  }
+  if (run.purgedAt !== null) return host.forgetCopies(run.agentId, runId);
   const made = await madeFromAll(host, runId);
   const live = await liveOf(host, [run, ...made]);
   if (live.length) throw notFinal(runId, live);
@@ -200,14 +193,13 @@ async function purgeOneOrRefuse(host: AgentDeleteHost, agentId: string, runId: s
     // A replay or shadow made from it after the runs made from it were read: named, for the next DELETE to purge first.
     if (error instanceof RunsMadeFromLeft) throw notFinal(purged, error.runs);
     if (error instanceof StoreConstraint) throw notFinal(purged, [runId]);
+    // A purge can commit and still throw (a Postgres commit unanswered), and a retried DELETE skips a purged run: what
+    // the process served of it goes now unless the store reads it not purged.
+    if ((await host.store.runs.get(runId).catch(() => undefined))?.purgedAt !== null) forgetServed(host.store, runId);
     throw error;
-  } finally {
-    // Its answer and input as this process last served them, dropped whatever the purge answered: every route of it is 410
-    // once it committed, so none is read again. A purge can commit and still throw (its checkpoint held back and the
-    // scrub's marker not written, sqlite/store.ts #purged), and no later DELETE comes back here (purgeRun: a purged run is
-    // only purgedAgain). One that did not commit loses a cache its next read fills again.
-    forgetServed(host.store, runId);
   }
+  // Its answer and input as this process last served them: every route of it is 410 from here, so none is read again.
+  forgetServed(host.store, runId);
 }
 
 /** Every run made from run `runId` that is there and not purged, each one's own before it (deepest first), never `runId`. */

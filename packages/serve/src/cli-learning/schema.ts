@@ -1,3 +1,4 @@
+import { SOURCE_LOCAL_CONSENT } from '../native/schema.js';
 import { SDK_PATHS, SDK_RUN } from '../sdk/schema.js';
 const text={type:'string'};
 const object=(properties:Record<string,unknown>,required=Object.keys(properties))=>({type:'object',additionalProperties:false,properties,required});
@@ -16,7 +17,7 @@ const completionSchema=completion.requestBody.content['application/json'].schema
 const receipt=SDK_PATHS['/agents/{agent_id}/sdk-runs'].post.responses[201];
 export const CLI_LEARNING_PATHS:Record<string,Record<string,unknown>>={
  '/cli-learning/connections':{
-  post:{...owner,operationId:'enrollCliLearning',summary:'Enable learning for an existing local CLI without launching it',description:'Owner authenticated, source server bound to loopback without a public URL. Verifies native sign-in without a model call. Repeated enrollment preserves the same agent and learned files, and keeps its current Learning Off setting. Store the returned connection token privately, never give it to a model.',requestBody:body(object({runtime:{enum:['codex','claude-code']},project:text,name:text},['runtime','project'])),responses:{201:response(object({...connection.properties,token:text},[...connection.required,"token"]))}},
+  post:{...owner,operationId:'enrollCliLearning',summary:'Enable learning for an existing local CLI without launching it',description:'Owner authenticated, source server bound to loopback without a public URL. Verifies native sign-in without a model call. Repeated enrollment preserves the same agent and learned files, and keeps its current Learning Off setting. Store the returned connection token privately, never give it to a model.',requestBody:body(object({runtime:{enum:['codex','claude-code']},project:text,name:text,source_sync:SOURCE_LOCAL_CONSENT},['runtime','project'])),responses:{201:response(object({...connection.properties,token:text},[...connection.required,"token"]))}},
   get:{...owner,operationId:'listCliLearning',summary:'Read enrolled CLI learning connections',responses:{200:response(object({connections:{type:'array',items:connection}}))}}
  },
  '/cli-learning/connections/{connection_id}':{delete:{...owner,operationId:'revokeCliLearning',summary:'Revoke CLI capture and guidance delivery, retaining history and learned files',parameters:[id('connection_id')],responses:{200:response(connection)}}},

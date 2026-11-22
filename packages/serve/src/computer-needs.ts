@@ -1,5 +1,6 @@
 // What a sandbox must have for its agent's work: `computer.needs`, the programs its box must have on its PATH, such as
-// ["chrome", "ffmpeg", "ffprobe", "hyperframes"] for an agent that renders video. It says what the box must hold and
+// ["chrome", "ffmpeg", "ffprobe", "hyperframes"] for an agent that renders video, or the libraries its python3 or node
+// must load, such as ["python-pptx", "pptxgenjs"] for one that makes decks. It says what the box must hold and
 // never which image it is: the image is the provider's own (a Docker box's is AGENTRUN_DOCKER_IMAGE's, else the
 // default recipe's). The claim checks them in the box it started (computer-for-claim.ts), before the run's first model
 // request; a box that lacks one, or that cannot be asked, is let go and the claim refuses it, so the run ends failed
@@ -17,10 +18,16 @@ export const MAX_NEEDS = 32;
 export const NEEDS_CHECK_MS = 30_000;
 /** The media image's recipe in the computer package, as the words of a Docker box's fix name it. */
 export const MEDIA_RECIPE_PATH = "packages/computer/media/Dockerfile";
+/** The documents image's recipe folder in the computer package: its Dockerfile and documents.sh, the layer Daytona's
+ *  documents snapshot runs on the box image too. */
+export const DOCUMENTS_RECIPE_DIR = "packages/computer/documents";
+/** What the documents image has that the default image lacks: Python's libraries by the names pip installs them by,
+ *  Node's by theirs. */
+export const DOCUMENTS_NEEDS: readonly string[] = ["python-pptx", "python-docx", "openpyxl", "pptxgenjs", "docx", "exceljs"];
 
 /** What is wrong with `value` as a sandbox's needs, at `field`. */
 export function needsIssues(value: unknown, field: string): InputIssue[] {
-  const rule = `${field} is a list of 1 to ${MAX_NEEDS} program names the box must have on its PATH, each once, such as ["ffmpeg", "ffprobe"]`;
+  const rule = `${field} is a list of 1 to ${MAX_NEEDS} program names the box must have on its PATH (or libraries its python3 or node loads, by their pip or npm names), each once, such as ["ffmpeg", "ffprobe"]`;
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_NEEDS || !value.every((name) => typeof name === "string")) return [{ field, reason: "wrong_type", message: rule }];
   const bad = value.find((name) => !NEED_NAME.test(name));
   if (bad !== undefined) return [{ field, reason: "bad_format", message: `${field} holds ${JSON.stringify(bad)}, not a program's name: letters, digits, dots, underscores, plus signs and dashes, starting with a letter or digit, no path` }];
@@ -28,9 +35,18 @@ export function needsIssues(value: unknown, field: string): InputIssue[] {
   return [];
 }
 
-/** The script the box runs: each argument it cannot find on its PATH, one a line. The names are arguments, never text
- *  of the script. */
-const CHECK = 'for name do command -v "$name" >/dev/null 2>&1 || printf "%s\\n" "$name"; done';
+/** Whether the box's python3 has the distribution `sys.argv[1]` installed, by the name pip installs it by (pip's own
+ *  normalization: case, dots, dashes and underscores alike). */
+const PYTHON_HAS = "import importlib.metadata, sys; importlib.metadata.distribution(sys.argv[1])";
+/** Whether a script of the box's node requires the name it is given (its one argument, the last of process.argv), from the folder the check runs in: node_modules of
+ *  that folder and of each folder above it, up to /node_modules (where the documents image links its libraries), and
+ *  node's global folders. */
+const NODE_HAS = 'require("module").createRequire(process.cwd() + "/").resolve(process.argv.at(-1))';
+
+/** The script the box runs: each argument it finds neither as a program on its PATH, nor as a library its python3 has
+ *  installed, nor as a package its node requires, one a line. A box with no python3 or no node lacks the libraries that
+ *  would need it. The names are arguments, never text of the script. */
+const CHECK = `for name do command -v "$name" >/dev/null 2>&1 || python3 -c '${PYTHON_HAS}' "$name" >/dev/null 2>&1 || node -e '${NODE_HAS}' "$name" >/dev/null 2>&1 || printf "%s\\n" "$name"; done`;
 
 /** What the box answered: the needs it lacks (none: it has them all), or why it could not be asked. */
 export type NeedsAnswer = { readonly missing: readonly string[] } | { readonly unchecked: string };
@@ -52,12 +68,20 @@ export async function missingNeeds(client: ComputerClient, needs: readonly strin
   return { missing };
 }
 
+/** How to give a box the documents image: on Docker, its build and AGENTRUN_DOCKER_IMAGE; on Daytona, its snapshot. */
+const DOCUMENTS_DOCKER_FIX = `Build the documents image: docker build -t agentrun-documents:<first 12 hex of the sha256 of its Dockerfile and documents.sh> ${DOCUMENTS_RECIPE_DIR}, name that tag in AGENTRUN_DOCKER_IMAGE and restart the server.`;
+
 /** How to give the Docker box an image that has the programs a sandbox needs. */
 export const DOCKER_IMAGE_FIX = `Set AGENTRUN_DOCKER_IMAGE to an image that has them and restart the server. For video (chrome, ffmpeg, ffprobe, hyperframes), build the media image: docker build -t agentrun-media:<first 12 hex of its sha256> - < ${MEDIA_RECIPE_PATH}, and name that tag.`;
 
 /** How to give `entry`'s box an image that has the programs: a Docker box's is AGENTRUN_DOCKER_IMAGE (the media image
  *  for video tools), a provider that names its image by a setting (imageEnv) by that one, any other its own image. */
-function fixFor(entry: Pick<ProviderEntry, "label" | "local" | "imageEnv"> | undefined): string {
+function fixFor(entry: Pick<ProviderEntry, "label" | "local" | "imageEnv"> | undefined, missing: readonly string[]): string {
+  // What the documents image alone has: its own words, its build named.
+  if (missing.length > 0 && missing.every((name) => DOCUMENTS_NEEDS.includes(name))) {
+    if (entry?.local) return DOCUMENTS_DOCKER_FIX;
+    if (entry?.imageEnv === "AGENTRUN_DAYTONA_SNAPSHOT") return "Build the documents snapshot (the box image with the documents image's libraries): python3 packages/computer/box/build-daytona.py --documents, then set AGENTRUN_DAYTONA_SNAPSHOT to the agentrun-documents-<hash> snapshot it prints and restart the server.";
+  }
   if (entry?.local) return DOCKER_IMAGE_FIX;
   if (entry?.imageEnv) return `Set ${entry.imageEnv} to an image of ${entry.label}'s that has them and restart the server, or run this agent on the Docker box with an image that has them (AGENTRUN_DOCKER_IMAGE).`;
   return `Give this agent a computer whose image has them: on the Docker box, set AGENTRUN_DOCKER_IMAGE to such an image (the media image, ${MEDIA_RECIPE_PATH}, has chrome, ffmpeg, ffprobe and hyperframes).`;
@@ -76,5 +100,5 @@ export function needsWords(answer: NeedsAnswer, needs: readonly string[], entry:
   const box = `This agent's sandbox${entry ? ` on ${entry.label}` : ""}`;
   if ("unchecked" in answer) return `${box} could not be checked for the programs it needs (${needs.join(", ")}): ${answer.unchecked.replace(/[.!?]+$/, "")}. Nothing ran.`;
   const list = new Intl.ListFormat("en", { type: "conjunction" }).format(answer.missing);
-  return `${box} lacks ${list}, which the agent needs (computer.needs), so nothing ran. ${fixFor(entry)}`;
+  return `${box} lacks ${list}, which the agent needs (computer.needs), so nothing ran. ${fixFor(entry, answer.missing)}`;
 }

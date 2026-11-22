@@ -23,9 +23,8 @@ import { answersPair, recordPromotion } from "../dist/learn/promote.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { decideCheck } from "../dist/runner/promotion.js";
 import { dropSchema, freshSchema, onPostgres, PG_URL, raw } from "./store-target.mjs";
-import { FAUX, follow, serve, startInProcessRunner, startRun, withEnv } from "./support.mjs";
+import { FAUX, follow, serve, startInProcessRunner, startRun, WINDOW, withEnv } from "./support.mjs";
 
-const WINDOW = "from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z";
 const STORE = onPostgres ? "Postgres" : "SQLite";
 
 /** A server whose runner `halt()` closes, on this run's store: on Postgres a schema of the test's own, which the server,

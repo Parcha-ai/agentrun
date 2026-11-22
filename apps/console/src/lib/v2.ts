@@ -53,9 +53,9 @@ export type InputIssue = components["InputIssue"];
 export type TemplateView = Answer<"listTemplates">["templates"][number];
 /** Applying a template (POST /v2/templates/{name}/apply): its parameters, and the gate names of the tools the owner grants. */
 export type TemplateApply = Body<"applyTemplate">;
-/** What an apply made: the agent, its triggers, and its warnings. */
-export type TemplateApplied = Answer<"applyTemplate">;
-/** A package read from GitHub (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
+/** What an apply made: the agent, its triggers, and its warnings. The console sends no dry_run, so never the plan answer. */
+export type TemplateApplied = Exclude<Answer<"applyTemplate">, { plan: unknown }>;
+/** A package read from GitHub or uploaded (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
 export type TemplateImported = Answer<"importTemplate">;
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present while `usd` is null, and beside `upper_bound` (its exact

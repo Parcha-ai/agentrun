@@ -33,7 +33,7 @@ import { vendorsOver } from "../sign-ins.js";
 import { decisionProvidersIn, fauxFetch } from "../decisions.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { runnerSecrets } from "./redact.js";
+import { carryTo, cutDeep, heldRedactor, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
@@ -80,6 +80,14 @@ import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.j
 import { SUBAGENT_TOOL } from "./subagent.js";
 import type { AlsoRow, JournalReads, Store } from "../store/store.js";
 import type { Tier } from "../model.js";
+import { sourceSyncOf } from "../source-sync/types.js";
+import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
+import { beginSourceIO, type SourceIOReceipt } from "../source-sync/io.js";
+import type { ProjectCheckpoint, ProjectUncertain } from "../source-sync/checkpoints.js";
+import type { ClaimComputer } from "../workspace/computer-for-claim.js";
+import { runTools, type RunTools } from "../workspace/run-tools.js";
+import { ProjectHostGate } from "./project-host.js";
+import { runProjectCheckpoint } from "./project-checkpoint.js";
 
 /** The image's helper that starts a run's process as its slot's uid (packages/serve/runas). */
 export const RUNAS_HELPER = "/usr/local/bin/agentrun-runas";
@@ -374,18 +382,7 @@ export function dataOnly(value: unknown, seen = new Set<object>()): unknown {
   }
 }
 
-/** Every string inside `value` cut by `cut`: what the run's process writes, as the runner's redactor would cut it in a
- *  loop of its own (rule three: no secret the runner holds is written). */
-export function cutDeep<T>(value: T, cut: (text: string) => string): T {
-  if (typeof value === "string") return cut(value) as T;
-  if (value === null || typeof value !== "object") return value;
-  if (ArrayBuffer.isView(value) || value instanceof Date || value instanceof RegExp || value instanceof ArrayBuffer) return value;
-  if (Array.isArray(value)) return value.map((item) => cutDeep(item, cut)) as T;
-  if (value instanceof Map) return new Map([...value].map(([k, v]) => [k, cutDeep(v, cut)])) as T;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) Object.defineProperty(out, key, { value: cutDeep((value as Record<string, unknown>)[key], cut), enumerable: true, writable: true, configurable: true });
-  return out as T;
-}
+export { cutDeep };
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The store, as the run's process reads it: bound to the claim.
@@ -589,6 +586,7 @@ interface ClaimReads {
   readonly launch: import("../run-launch.js").RunLaunch;
   readonly revision: { readonly kind: string; readonly body: Record<string, unknown> };
   readonly claimed: NodeJS.ProcessEnv;
+  readonly signal?: AbortSignal;
 }
 
 /** The email tools a revision may grant. */
@@ -597,13 +595,53 @@ const grantsEmail = (granted: readonly string[]): boolean => granted.some((tool)
 /** Held (held.ts) for one claim, on the runner: each answer the claim's own, read with the runner's seal key from the
  *  runner's own reads of the claim; every argument from the run's process is checked or ignored. `bigs`: the run's pieced
  *  writes (big-writes.ts), let go at the claim's release and, by the caller, when the run's channel ends. */
-export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: (text: string) => string, log: (line: string) => void, bigs: RunBigWrites = runBigWrites()): { held: Held; inputs(): Promise<void>; release(): Promise<void> } {
+export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: (text: string) => string, log: (line: string) => void, bigs: RunBigWrites = runBigWrites()): { held: Held; inputs(): Promise<void>; release(): Promise<void>; projectEnd?(): Promise<void> } {
   const { claim, run, launch, revision, claimed } = reads;
   const sealKey = deps.sealKey;
   const store = deps.store;
   const granted = ((revision.body as { tools?: unknown }).tools as readonly string[] | undefined) ?? [];
+  const admitAuxiliary = sourceAuxiliaryAdmitter(store, { data: deps.data, sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
   const keys = { store, sealKey, env: deps.env };
   const releases: (() => Promise<void> | void)[] = [() => bigs.close()];
+  const source = sourceSyncOf(revision.body), placed = launch.sourceProject;
+  const moved = !!source && !!placed && source.id === placed.sourceId && source.project === placed.digest && placed.baselineRevision === run.revisionId;
+  const projectGate = moved ? new ProjectHostGate() : undefined;
+  const projectStop = new AbortController();
+  const projectSignal = reads.signal ? AbortSignal.any([reads.signal, projectStop.signal]) : projectStop.signal;
+  let projectIO: Promise<SourceIOReceipt> | undefined, projectCapture: Promise<ProjectCheckpoint> | undefined;
+  let projectComputer: ClaimComputer | undefined, projectWorkspace: Workspace | undefined, projectMode: 1 | 2 = 1;
+  let projectFailed = false, projectReleased = false, projectClosing = false, projectCaptureDone = false;
+  let projectRelease: Promise<void> | undefined;
+  let projectCleanup: Promise<unknown> | undefined;
+  const projectOwns = async (settlingAudit = false): Promise<void> => {
+    projectSignal.throwIfAborted();
+    const row = await store.runs.get(claim.runId);
+    // A never-waiting audit journals its Ask/cap as parked before terminalizing under this same claim. Only its
+    // checkpoint may finish from that state; ordinary held calls still require running, and claim identity is exact.
+    const settlingParkedAudit = settlingAudit && launch.audit !== undefined && row?.state === "parked";
+    if (!row || row.agentId !== run.agentId || row.revisionId !== run.revisionId || row.epoch !== claim.epoch || row.runner !== claim.runner || row.state !== "running" && !settlingParkedAudit)
+      throw new ClaimRefused("This project checkpoint no longer holds its original run claim.");
+  };
+  const ownProject = async (settlingAudit = false): Promise<void> => {
+    if (!projectGate) return;
+    await projectOwns(settlingAudit);
+    await (projectIO ??= beginSourceIO(store, run.agentId, "snapshot"));
+  };
+  const projectCall = <T>(work: () => Promise<T>): Promise<T> => projectGate ? projectGate.run(async () => { await ownProject(); return work(); }) : work();
+  const projectWorkSettled = async (): Promise<void> => { await projectCapture; await projectGate?.drain(); };
+  const projectSettled = async (): Promise<void> => { await projectWorkSettled(); await projectCleanup?.catch(() => undefined); };
+  /** Cleanup closes capture admission synchronously. A capture already admitted finishes first; one arriving later
+   *  cannot use resources being relinquished. Cleanup itself remains owned and is awaited by the host's release. */
+  const cleanProject = <T>(work: () => Promise<T>): Promise<T> => {
+    if (!projectGate) return work();
+    if (projectReleased) return Promise.reject(new ClaimRefused("This claim's project resources have already been released."));
+    projectClosing = true; projectGate.close();
+    const previous = projectCleanup;
+    const pending = (async () => { await previous?.catch(() => undefined); await projectWorkSettled(); return work(); })();
+    projectCleanup = pending;
+    void pending.catch(() => { projectFailed = true; });
+    return pending;
+  };
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
   const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
   /** Mode 2's Archil claim, made once for the claim on the runner, its folder the run's. */
@@ -636,6 +674,45 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   /** The claim's one learned first choice: its promotion's writes are made once, however often the process asks. */
   let chosen: Promise<LearnedFirst> | undefined;
   const held: Held = {
+    projectCheckpoint: (...args: [AbortSignal?]) => {
+      if (args.length > 1 || args[0] !== undefined && !(args[0] instanceof AbortSignal)) throw new ClaimRefused("A project checkpoint accepts only its cancellation signal.");
+      if (!projectGate || !placed || !source) throw new ClaimRefused("This claim has no matching placed source project.");
+      if (projectReleased) throw new ClaimRefused("This claim's project resources have already been released.");
+      if (projectCapture) return projectCapture;
+      if (projectClosing) throw new ClaimRefused("This claim's project resources are closing for cleanup.");
+      projectGate.close();
+      const signal = args[0] ? AbortSignal.any([projectSignal, args[0], AbortSignal.timeout(60_000)]) : AbortSignal.any([projectSignal, AbortSignal.timeout(60_000)]);
+      const uncertain = (): ProjectUncertain => ({ version: 1, status: "uncertain", sourceId: source.id, runId: claim.runId, epoch: claim.epoch, reason: "project_not_settled", stage: "drain" });
+      projectCapture = (async () => {
+        let checkpoint: ReturnType<typeof runProjectCheckpoint> | undefined;
+        let tools: RunTools | undefined;
+        let result: ProjectCheckpoint;
+        try {
+          await projectGate.drain();
+          await ownProject(true);
+          signal.throwIfAborted(); await projectOwns(true);
+          if (projectGate.uncertain) throw new ClaimRefused("An earlier project operation has an unresolved outcome.");
+          if (!projectComputer || !projectWorkspace) throw new ClaimRefused("The project's held execution resources are unavailable.");
+          checkpoint = runProjectCheckpoint({ store, agentId: run.agentId, claim, launch, computer: projectComputer, ioHeld: true,
+            tools: { get workspace() { if (!tools) throw new ClaimRefused("Project settlement has not opened its workspace."); return tools.workspace; },
+              settleProject: async () => { tools = await runTools(projectWorkspace!, projectComputer!.computer, { mode: projectMode, context: BACKGROUND_CONTEXT }); return tools.settleProject(); } },
+            workspace: { data: deps.data, sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },
+            secrets: async () => runnerSecrets(deps.env, [...runnerSecrets(claimed), ...await storeSecrets(store, sealKey, deps.data)]),
+          });
+          result = await checkpoint.capture(signal);
+          signal.throwIfAborted(); await projectOwns(true);
+          if (result.status !== "candidate" && result.status !== "discarded" && !checkpoint.refusalSettled()) projectFailed = true;
+        } catch {
+          projectFailed = true;
+          result = checkpoint?.uncertain() ?? uncertain();
+        } finally {
+          try { await tools?.end(); }
+          catch { projectFailed = true; result = { ...uncertain(), reason: "project_capture_failed", stage: "cleanup" }; }
+        }
+        return result;
+      })().finally(() => { projectCaptureDone = true; });
+      return projectCapture;
+    },
     plan: async () => {
       const plan = planOf(claimed);
       if (!plan) return undefined;
@@ -647,14 +724,15 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       return runSignIn(store, sealKey, claim, String(resolution), { vendors: vendorsOver(() => claimed, vendorFetch), log });
     },
     verifySignIn: (kept, at) => verifyRunSignIn(store, sealKey, claim, kept, Number(at)),
-    mcp: async (ask) => {
+    mcp: (ask) => projectCall(async () => {
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
       const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach, capped: launch.maxCostUsd !== undefined, media: { env: deps.env, web: deps.evalFakes?.(run.agentId)?.web, slots: deps.saveSlots } });
       if (!made) return undefined;
       releases.push(() => made.release());
-      return heldMcpOf(made, cut);
-    },
+      const exposed = heldMcpOf(made, cut);
+      return projectGate ? projectGate.capability(exposed) : exposed;
+    }),
     githubAppAccess: async () => {
       // A run's process mints for one thing alone: its revision's pull-request checkout (pr-checkout.ts), of the pull
       // request its launch's payload names, contents read. Its MCP mints on the runner (mcp above). So the mint handed
@@ -728,7 +806,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // install from before installs were shared too.
       await shareInstall(installDirOf(deps.data, harness));
     },
-    computer: async (ask: HeldComputerAsk) => {
+    computer: (ask: HeldComputerAsk) => projectCall(async () => {
       const made = await archilOf();
       const mode: 1 | 2 = made === undefined ? 1 : 2;
       const ws = made === undefined
@@ -755,16 +833,24 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // its channel never calls its release. Idempotent with the process's own release and with its park (which keeps it).
       const claimed = got as { release?: (why?: "ended") => Promise<void> } | undefined;
       if (typeof claimed?.release === "function") releases.push(() => claimed.release!("ended"));
+      if (projectGate) {
+        projectComputer = got as ClaimComputer; projectWorkspace = ws.workspace; projectMode = mode;
+        const { syncProject: _sync, ...exposed } = got as ClaimComputer;
+        return { ...exposed, ...(exposed.computer ? { computer: projectGate.capability(exposed.computer) } : {}),
+          release: (...args: Parameters<ClaimComputer["release"]>) => cleanProject(() => exposed.release(...args)),
+          ...(exposed.park ? { park: (...args: Parameters<NonNullable<ClaimComputer["park"]>>) => cleanProject(() => exposed.park!(...args)) } : {}) };
+      }
       return got;
-    },
-    archil: async () => {
+    }),
+    archil: () => projectCall(async () => {
       const made = await archilOf();
       if (made === undefined) return undefined;
       const ws = await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: made, log });
       releases.push(() => ws.end());
       // A write bigger than the channel's frame is pulled in pieces and written here, on this Workspace (big-writes.ts).
-      return { workspace: ws.workspace, pieces: bigs.pieces(ws.workspace), revoke: () => made.revoke(), inherit: async () => made.inherit(), release: async () => {} };
-    },
+      return { workspace: projectGate ? projectGate.capability(ws.workspace) : ws.workspace, pieces: projectGate ? projectGate.capability(bigs.pieces(ws.workspace)) : bigs.pieces(ws.workspace),
+        revoke: () => cleanProject(() => made.revoke()), inherit: () => projectCall(async () => made.inherit()), release: async () => {} };
+    }),
     endOfRun: async (input) => {
       // The step as the run's spec builds it in a runner (adapter-run-spec.ts), over the runner's reads of the claim: what
       // the run must never learn is every secret this runner holds, the keys its claim handed it, every secret the server
@@ -795,7 +881,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         log,
         decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys(keys, DECISION_PROVIDER_KEYS)) }),
         learningFolder: made === undefined ? (agentId: string) => learningFolderOf(deps.data, agentId) : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil: made }),
-      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, folder: await folderNow(), shown, log, sealKey, spendOff, launch, redact: cut });
+      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, folder: await folderNow(), shown, log, sealKey, spendOff, launch, redact: cut, admitAuxiliary });
       if (!step) return undefined;
       // keptOf is the run's process's, asked over the channel: read once, for the round learningEndOfRun reads (the
       // round after the newest the run kept), before the step reads it at once.
@@ -822,10 +908,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // workflows).
       const start = learningStartOf(launch);
       const folder = await folderNow();
-      const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ?await workflowsAt({ folder, shown }, start.seed).catch(() => []) : [];
+      const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ?await workflowsAt({ folder, store, shown }, start.seed).catch(() => []) : [];
       const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
       const outputSchema = (revision.body as { outputSchema?: unknown }).outputSchema;
-      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, folder, shown, spendOff }, laid);
+      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, folder, shown, spendOff, admitAuxiliary }, laid);
       learnedFlows = got.workflows;
       return cutDeep(dataOnly(got) as LearnedFirst, cut);
     })()),
@@ -838,7 +924,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   };
   return {
     held,
-    inputs: async () => {
+    inputs: () => projectCall(async () => {
       // The run's uploads and its opening message (uploads.ts placeRunInputs), placed by this runner before the run's
       // process starts: their hold is the server's alone.
       const made = await archilOf();
@@ -850,10 +936,19 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       } finally {
         await ws.end();
       }
-    },
-    release: async () => {
-      for (const release of releases.reverse()) await Promise.resolve(release()).catch((error: unknown) => log(`run ${claim.runId}: a release on its runner failed: ${(error as Error)?.message ?? error}`));
-    },
+    }),
+    release: () => projectRelease ??= (async () => {
+      projectReleased = true; projectGate?.close();
+      await projectSettled();
+      let failed = false;
+      for (const release of releases.reverse()) await Promise.resolve(release()).catch((error: unknown) => { failed = true; log(`run ${claim.runId}: a release on its runner failed: ${(error as Error)?.message ?? error}`); });
+      if (projectIO && !failed && !projectFailed && !projectGate?.uncertain && !projectSignal.aborted) await (await projectIO).settled();
+    })(),
+    ...(projectGate ? { projectEnd: async () => {
+      if (projectCapture && !projectCaptureDone) projectStop.abort(new Error("The project host is ending."));
+      projectReleased = true;
+      projectGate.close(); await projectSettled();
+    } } : {}),
   };
 }
 
@@ -1059,9 +1154,14 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // in this process has it laid (harness-loops.ts): the run's process reads no store row of it and holds no seal key.
         const claimDeps = await withSavedGatewayDeps(deps);
         const claimEnv = claimDeps.env ?? {};
+        // Refuse before taking a slot: even a slot's final reap normalizes modes in its run folders.
+        if (launch.sourceProject && isolation.kind === "uid" && !await loadArchilSettings(deps.store, claimEnv)) {
+          ready();
+          throw new ClaimRefused("project_mode_fidelity: This runner rewrites local project file permissions for per-user isolation. A moved project needs a destination that preserves its original permissions.");
+        }
         const savedGateway = savedGatewayIn(claimEnv);
         // The run's own keys: those its claim opens (claim-secrets.ts), the one list its loop in this process read.
-        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, revisionRow as never, launch);
+        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, ...(loopDeps.redact ? { carry: carryTo(heldRedactor(loopDeps.redact), claim.runId) } : {}) }, revisionRow as never, launch, claim.runId);
         // With them, its revision's own model's (a launch pinned at its start to another model, a --faux start's, is still
         // handed its agent's model's key, as a run's own process was handed it before: run-secrets.ts secretsFor).
         const ofRevision = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}) });
@@ -1099,7 +1199,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         const tops = runTops(deps.data, runRow.agentId, claim.runId);
         // The run's pieced writes (big-writes.ts): let go when its channel ends, or at the claim's release.
         const bigs = runBigWrites();
-        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed }, cut, log, bigs);
+        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed, signal: loopDeps.signal }, cut, log, bigs);
         try {
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];
@@ -1188,6 +1288,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           }
         } finally {
           ready();
+          await heldSide.projectEnd?.();
           const reaped = await end(slot, tops).catch((error: unknown) => {
             log(`run ${claim.runId}: its process's end failed: ${(error as Error)?.message ?? error}`);
             return false;

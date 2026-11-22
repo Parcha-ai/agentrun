@@ -17,7 +17,7 @@ export type AcpRefusal = { readonly says: string; readonly code: string; readonl
 export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/=,[\]-]{0,199}$/;
 /** A refusal's code: capitals, digits and `_`. */
 const CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
-/** A sign-in method's id as an agent lists one in authMethods (`oauth-personal`, `gemini-api-key`). */
+/** A sign-in method's id as an agent lists one in authMethods (`gemini-api-key`). */
 const AUTH_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export interface AcpRecipe {
@@ -39,7 +39,7 @@ export interface AcpRecipe {
    *  key's own name, so a value the host holds under the handed name never reaches the agent. */
   readonly keyEnv?: Readonly<Record<string, string>>;
   /** The sign-in method the agent is told with ACP `authenticate` after initialize and before any session opens (its
-   *  authMethods id: Antigravity's `gemini-api-key`, or `oauth-personal` on an attended run). One its initialize does
+   *  authMethods id: Antigravity's `gemini-api-key`; on its owner's sign-in, none, the agent reading its own). One its initialize does
    *  not list is refused with ACP_CODES.authUnlisted, one it refuses with ACP_CODES.authFailed. Absent: none is sent. */
   readonly authMethod?: string;
   /** `none`: nothing the agent prints on stderr is read or kept, nor the words of an error it answers; a failure says

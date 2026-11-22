@@ -20,7 +20,8 @@ import { createHash } from "node:crypto";
 import { CORRECTIONS_CAP, draftProblems, frontKeys, isHeld, LEARNED_KEYS, learnedPlace, learnedStatus, type Problem, printable, released, restorable, restoredLearned, retiredLearned, UNCLEAR_FRONT, unclearFront, unstorable, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { readmeProblems, type DraftDecisions } from "./learn/workflow-draft.js";
 import { forgetRunText, putCorrections, readCorrections } from "./learn/commit.js";
-import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, runDiffKey, type SnapChange, type SnapHistory, type SnapLearned, type Snapshot, textsAt, writeLearning } from "./learn/folder.js";
+import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type RunDiff, runDiffKey, type SnapChange, type SnapHistory, type SnapLearned, type Snapshot, snapshotAt, textsAt, writeLearning } from "./learn/folder.js";
+import { purgedRun, purgedWorkflows } from "./purged-workflow.js";
 import { ApiError, invalid } from "./errors.js";
 import type { ServingState } from "./learn/promote.js";
 import { type ItemStatus, detailShown, filesView, type Learning, learningFolderOf, reasonShown, type Shown, withAgentRepo } from "./learning.js";
@@ -317,21 +318,19 @@ export async function workflowRevisions(data: string, agentId: string, name: str
 /** Learned workflow `name`'s text at `digest` (a champion's, as its promotion records name it), read by that digest and
  *  never by paging the workflow's history: at `commits` (the records' learning commits, newest first), then at main, the
  *  first commit whose workflow.json is that digest's text, with the commit it was read at. Undefined when none is (no
- *  main yet, or no commit read holds it). A purged run's merge is never read (`purgedOf`), known by the run its log names
- *  for it, and neither is main while the workflow's last change there is a purged run's: a commit after it that left the
- *  file as it was (the purge's own) reads it no more than the merge. A commit older than the log's newest LOG_KEEP
- *  changes is not known so. One read-only exec per commit tried (textsAt). */
-export async function workflowAtDigest(data: string, agentId: string, name: string, digest: string, commits: readonly string[], purgedOf: PurgedOf): Promise<{ text: string; commit: string } | undefined> {
+ *  main yet, or no commit read holds it). A commit whose text a purged run wrote is never read (purged-workflow.ts),
+ *  however old. One read-only exec per commit tried (textsAt), and one more for the commit that holds the digest, unless
+ *  it is main (snapshotAt). */
+export async function workflowAtDigest(data: string, agentId: string, name: string, digest: string, commits: readonly string[], store: Pick<Store, "runs">): Promise<{ text: string; commit: string } | undefined> {
   if (!WORKFLOW_NAME.test(name)) return undefined;
   const path = `${WORKFLOWS_DIR}/${name}/workflow.json`;
   return reading(data, agentId, async ({ ws, snapshot }) => {
-    const served = await servedIn(snapshot, purgedOf);
-    const purged = new Set(snapshot.log.filter((change) => !served(change)).map(({ commit }) => commit));
-    const last = snapshot.log.find((change) => change.files.includes(path));
     for (const commit of new Set([...commits, snapshot.main])) {
-      if (purged.has(commit) || (commit === snapshot.main && last && !served(last))) continue;
       const raw = (await textsAt(ws, commit, [path]).catch(() => undefined))?.[path];
-      if (raw !== undefined && createHash("sha256").update(raw).digest("hex").slice(0, 16) === digest) return { text: raw, commit };
+      if (raw === undefined || createHash("sha256").update(raw).digest("hex").slice(0, 16) !== digest) continue;
+      const at = commit === snapshot.main ? snapshot : await snapshotAt(ws, commit).catch(() => undefined);
+      if (!at || (await purgedWorkflows(at, store)).has(name)) continue;
+      return { text: raw, commit };
     }
     return undefined;
   }, () => undefined);
@@ -362,12 +361,18 @@ function fileOf(raw: string, use: "read" | "approve" | "retire" | "restore"): st
 }
 
 /** GET /agents/{id}/learning/files/{file}: a draft's file on main as text, its ETag, and its type (workflow.json is
- *  JSON). */
-export async function readLearnedFile(data: string, agentId: string, raw: string, shown: Shown): Promise<{ text: string; etag: string; type?: string }> {
+ *  JSON). A purged run's workflow left main with its purge (learn/commit.ts forgetRunText), so its files are the 404
+ *  any missing file is. A workflow.json still on main whose writer is purged (a run purged before purges took its
+ *  workflows off, until its DELETE is sent again) is 410 purged, as every route of that run is (purged-workflow.ts). */
+export async function readLearnedFile(data: string, agentId: string, raw: string, shown: Shown, store: Pick<Store, "runs">): Promise<{ text: string; etag: string; type?: string }> {
   const file = fileOf(raw, "read");
+  const place = learnedPlace(file)!;
   const found = await reading(data, agentId, async ({ snapshot, body }) => {
     const oid = blobIn(snapshot, file);
-    return oid === undefined ? undefined : { oid, text: await body(file, oid) };
+    if (oid === undefined) return undefined;
+    const purged = place.kind === "workflow" ? (await purgedWorkflows(snapshot, store)).get(place.name) : undefined;
+    if (purged) throw purgedRun(purged);
+    return { oid, text: await body(file, oid) };
   }, () => undefined);
   if (!found) throw new ApiError("not_found", "the agent's learning folder has no such file on main");
   return { text: shown.text(found.text), etag: etagOf(found.oid), ...(file.endsWith(".json") ? { type: "application/json; charset=utf-8" } : {}) };
@@ -540,9 +545,42 @@ export async function runDiffOverStore(data: string, store: Store, runId: string
   };
   if (end?.merged) {
     const folder = learningFolderOf(data, row.agentId);
-    const diff = await readRunDiff(folder.workspace, runDiffKey(runId, kept?.round)).catch((error: unknown) => Promise.reject(routeFailure(error))).finally(() => folder.end());
-    if (!diff || diff.merge !== end.merged) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
+    const diff = await readRunDiff(folder.workspace, runDiffKey(runId, kept?.round)).then((read) => (read && read.merge === end.merged ? againstPurged(folder.workspace, read, store) : undefined)).catch((error: unknown) => Promise.reject(routeFailure(error))).finally(() => folder.end());
+    if (!diff) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
     return { base: diff.parent, head: diff.merge, files: diff.files.map((entry) => ("patch" in entry ? file(entry.path, entry.status, entry.patch) : { path: shown.name(entry.path), status: entry.status, withheld: entry.withheld })) };
   }
   return { base: start?.seed ?? null, head: null, files: [] };
+}
+
+/** `diff` with each file of a learned workflow whose text at its parent a purged run wrote (purged-workflow.ts), its
+ *  whole `workflows/<name>/` folder (README.md too), diffed against nothing, so its patch never shows that text: its
+ *  text at the merge as an added file, or, deleted there, no file. One more read-only exec when the merge changed such
+ *  a file (snapshotAt), and one per file served so. */
+async function againstPurged(ws: Workspace, diff: RunDiff, store: Pick<Store, "runs">): Promise<RunDiff> {
+  const replaced = (path: string, status: string) => {
+    const [dir, name, ...rest] = path.split("/");
+    return status !== "added" && dir === WORKFLOWS_DIR && rest.length ? name : undefined;
+  };
+  if (!diff.files.some(({ path, status }) => replaced(path, status))) return diff;
+  const purged = await purgedWorkflows(await snapshotAt(ws, diff.parent), store);
+  const files: RunDiff["files"] = [];
+  for (const entry of diff.files) {
+    const name = replaced(entry.path, entry.status);
+    if (name === undefined || !purged.has(name)) files.push(entry);
+    else if (entry.status === "modified") {
+      const text = (await textsAt(ws, diff.merge, [entry.path]))?.[entry.path];
+      if (text !== undefined) files.push({ path: entry.path, status: "added", patch: addedPatch(text) });
+    }
+  }
+  return { ...diff, files };
+}
+
+/** `text` as git's unified diff writes an added file, its hunk alone (as the learning script keeps a patch): no hunk for
+ *  an empty file, a one-line hunk's count left out, and a last line with no newline marked so. */
+function addedPatch(text: string): string {
+  if (text === "") return "";
+  const lines = text.split("\n");
+  const ended = text.endsWith("\n");
+  if (ended) lines.pop();
+  return `@@ -0,0 +1${lines.length === 1 ? "" : `,${lines.length}`} @@\n${lines.map((line) => `+${line}\n`).join("")}${ended ? "" : "\\ No newline at end of file\n"}`;
 }

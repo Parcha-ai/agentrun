@@ -22,56 +22,69 @@
 //   MODEL_AGENT_WANT_ARG  an argument it must be started with (a registry's per-platform args): without it, it exits 2.
 //   MODEL_AGENT_MODELS    model ids, comma-separated: session/new lists them (the first current), session/set_model
 //                         picks one, and its vendor requests name the one picked.
-//   MODEL_AGENT_AUTH      set: it signs in as Antigravity does, answering session/new and session/load only after
-//                         `authenticate` with one of the two methods it lists. `model-agent-api-key`: its key
-//                         MODEL_AGENT_API_KEY. `model-agent-login`: a person's own sign-in, kept in token.json in the
-//                         folder MODEL_AGENT_HOME names, whose text it then sends as its vendor key; with none there, it
-//                         signs in as Google's installed-app flow does: it listens on loopback, says on stderr the URL to
-//                         open (whose redirect_uri is that listener), and writes the file once the browser's redirect
-//                         lands there with a code.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer, request as httpRequest } from "node:http";
+//   MODEL_AGENT_AUTH      set: it signs in as Google's agy CLI does. `authenticate` with `model-agent-api-key` signs
+//                         it in on its key MODEL_AGENT_API_KEY; a person's own sign-in is kept in token.json in the
+//                         folder `--model-agent-dir DIR` names (agy's --gemini-dir), and once there it is signed in from
+//                         its start, no `authenticate` asked, and sends that file's text as its vendor key. Signed in
+//                         neither way, session/new and session/load answer -32000 (Authentication required).
+// `--login` with `--model-agent-dir DIR` (agy's `acp --login`): no ACP at all. It prints on stdout the address to open and
+// asks for the code, reads that code on its stdin, writes `signed-<code>` to DIR/token.json and exits 0; given no code it
+// exits 1. On Linux it says on stderr whether its stdin is its parent's own (`stdin: the caller's`), so a test shows that
+// nothing sits between the person's terminal and the agent.
+import { existsSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import { Readable, Writable } from "node:stream";
 import { agent, ndJsonStream, RequestError } from "@agentclientprotocol/sdk";
 
 const mode = process.env.MODEL_AGENT_MODE ?? "good";
 const loads = mode !== "no-load";
+const argv = process.argv.slice(2);
 const wantArg = process.env.MODEL_AGENT_WANT_ARG;
-if (wantArg && !process.argv.slice(2).includes(wantArg)) {
+if (wantArg && !argv.includes(wantArg)) {
   process.stderr.write(`model-agent: started without ${wantArg}\n`);
   process.exit(2);
 }
+const dirAt = argv.indexOf("--model-agent-dir");
+const signInFile = dirAt >= 0 && argv[dirAt + 1] ? join(argv[dirAt + 1], "token.json") : undefined;
+
+if (argv.includes("--login")) {
+  if (!signInFile) {
+    process.stderr.write("model-agent: --login needs --model-agent-dir DIR\n");
+    process.exit(2);
+  }
+  if (process.platform === "linux") {
+    const mine = readlinkSync("/proc/self/fd/0");
+    const theirs = readlinkSync(`/proc/${process.ppid}/fd/0`);
+    process.stderr.write(`model-agent: stdin: ${mine === theirs ? "the caller's" : "another"}\n`);
+  }
+  process.stdout.write("Open this link in a browser to log in:\n\n  https://accounts.example.invalid/o/oauth2/auth?client_id=model-agent\n\nThen paste the authorization code and press Enter:\n");
+  const lines = createInterface({ input: process.stdin });
+  const code = await new Promise((resolve) => {
+    lines.once("line", (line) => resolve(line.trim()));
+    lines.once("close", () => resolve(""));
+  });
+  lines.close();
+  if (!code) {
+    process.stderr.write("login cancelled: no authorization code was entered\n");
+    process.exit(1);
+  }
+  mkdirSync(dirname(signInFile), { recursive: true });
+  writeFileSync(signInFile, `signed-${code}\n`, { mode: 0o600 });
+  process.stdout.write("Logged in.\n");
+  process.exit(0);
+}
+
 const listed = (process.env.MODEL_AGENT_MODELS ?? "").split(",").filter(Boolean);
 const auth = Boolean(process.env.MODEL_AGENT_AUTH);
 /** The variable it reads its own key from: MODEL_AGENT_READS names another (GEMINI_API_KEY, as Antigravity reads). */
 const keyEnv = process.env.MODEL_AGENT_READS ?? "MODEL_AGENT_API_KEY";
-const signInFile = process.env.MODEL_AGENT_HOME ? join(process.env.MODEL_AGENT_HOME, "token.json") : undefined;
-/** The method `authenticate` took, where it signs in at all. */
-let signedIn;
-/** The vendor key: the person's sign-in's text when it signed in with one, else its own key. */
+/** How it is signed in, where it signs in at all: on a person's sign-in from its start when its folder holds one. */
+let signedIn = auth && signInFile && existsSync(signInFile) ? "model-agent-login" : undefined;
+/** The vendor key: the person's sign-in's text when it runs on one, else its own key. */
 const vendorKey = () => (signedIn === "model-agent-login" ? readFileSync(signInFile, "utf8").trim() : process.env[keyEnv] ?? "");
-
-/** Signs in as an installed-app OAuth flow does on a machine with no browser: a listener on loopback, the URL to open
- *  said on stderr, and the code the browser's redirect brings written to the sign-in file. */
-const signIn = () => new Promise((resolve, reject) => {
-  const listener = createServer((req, res) => {
-    const code = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("code");
-    if (!code) return void (res.writeHead(400), res.end("no code"));
-    mkdirSync(dirname(signInFile), { recursive: true });
-    writeFileSync(signInFile, `signed-${code}\n`, { mode: 0o600 });
-    res.writeHead(200, { "content-type": "text/plain" });
-    res.end("The authentication flow has completed. You may close this window.");
-    listener.close();
-    resolve();
-  });
-  listener.on("error", reject);
-  listener.listen(0, "127.0.0.1", () => {
-    const redirect = `http://127.0.0.1:${listener.address().port}/`;
-    process.stderr.write(`Please visit this URL to authorize this application: https://accounts.example.invalid/o/oauth2/auth?client_id=model-agent&redirect_uri=${encodeURIComponent(redirect)}\n`);
-  });
-});
 const store = join(process.env.HOME ?? "/nonexistent", ".model-agent", "sessions");
 const sessions = new Map();
 const save = (session) => {
@@ -246,8 +259,7 @@ const app = agent({ name: "model-agent" })
     if (params.methodId === "model-agent-api-key") {
       if (!process.env[keyEnv]) throw RequestError.authRequired({ methodId: params.methodId });
     } else if (params.methodId === "model-agent-login") {
-      if (!signInFile) throw RequestError.authRequired({ methodId: params.methodId });
-      if (!existsSync(signInFile)) await signIn();
+      if (!signInFile || !existsSync(signInFile)) throw RequestError.authRequired({ methodId: params.methodId });
     } else throw RequestError.invalidParams({ methodId: params.methodId });
     signedIn = params.methodId;
     return {};

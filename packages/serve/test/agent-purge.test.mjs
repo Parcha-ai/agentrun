@@ -14,9 +14,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { shadowRunId } from "../dist/learn/audit.js";
 import { agentHomeFolder, runFolder } from "../dist/workspace/paths.js";
-import { agent, FAUX, follow, serve, startInProcessRunner } from "./support.mjs";
-
-const WINDOW = "from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z";
+import { agent, FAUX, follow, serve, startInProcessRunner, WINDOW } from "./support.mjs";
 
 /** A server with a runner of the test's own beside it, which `halt()` closes: a run the test writes to the store after
  *  that is claimed by the test alone, never raced by a runner. */

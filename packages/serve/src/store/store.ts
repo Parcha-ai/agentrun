@@ -76,7 +76,8 @@ export interface RunAttemptRow {
 }
 
 /** Each claim of a run, its turn and attempt (RunAttemptRow): written in the claim's own transaction, its `cut` in its
- *  release's. Data only: nothing reads it to decide what a run does. */
+ *  release's. The source-project recovery read also uses the actual claim identity and journal boundary to report a
+ *  terminal attempt with no checkpoint; it never infers a completed capture or retries work from these rows. */
 export interface RunAttempts {
   /** The claim at `epoch` lost its lease while its runner was there (runner.ts loseClaim): its cut, and the cause of the
    *  claim that took the run over from it if that one was read as a crash. Unfenced and idempotent: a cut already said, or
@@ -126,6 +127,11 @@ export interface TemplatePackage {
    *  parameters, one of which may be a credential: a later fresh apply of the same package whose parameters give the same
    *  digest warns of this agent. Absent on a revision applied before it was kept. */
   readonly parameters_digest?: string;
+  /** The names of the keys the package declared (its `secrets`, and those of the model choice the apply took), sorted,
+   *  never their values: what an export of the agent names, whatever version of the package the server holds later, and
+   *  the tool keys a run of the revision may carry (run-keys.ts; under the run-keys setting one that does not is refused).
+   *  Absent on a revision applied before it was kept. */
+  readonly secrets?: readonly string[];
 }
 
 export interface NewRevision {
@@ -377,6 +383,13 @@ export interface LaunchSealedWrite {
   readonly launchSealed?: LaunchSealed;
 }
 
+/** Internal authorization fence: lock this settings row and compare its named JSON fields before a guarded write.
+ * All guards are locked in key order before the agent row; a missing row or changed field refuses the whole write. */
+export interface SettingsGuard {
+  readonly key: string;
+  readonly fields: Readonly<Record<string, unknown>>;
+}
+
 /** A run imported from another harness's session: an ended run with where it came from, its launch (built from the
  *  session), its cost and metrics, and its transcript as journal batches — the whole thing written in one transaction.
  *  `transcript` is the session as pi-durable write batches (a root conversation and its entries), each batch a commit. */
@@ -398,10 +411,21 @@ export interface ImportRunInput {
   /** Internal authorization fences for an outbound historical import. These settings rows are locked and their
    * named fields checked in the same transaction as the terminal run and journal, so a completed revocation or
    * disconnect cannot be followed by another imported run. Ordinary local imports leave this absent. */
-  readonly settingsGuards?: readonly { readonly key: string; readonly fields: Readonly<Record<string, unknown>> }[];
+  readonly settingsGuards?: readonly SettingsGuard[];
   /** Remote history is admitted only while its agent remains active. Lock and check the agent in the import's
    * transaction, ordering the write against archive; ordinary local imports leave this guard absent. */
   readonly requireActiveAgent?: true;
+}
+
+/** Private preparation fence for the MCP registry. Sealed bytes are compared in memory, never persisted in a revision
+ *  or exposed to its readers. Exact bytes distinguish credential replacement within the same clock millisecond. */
+export interface McpGuard {
+  readonly name: string;
+  readonly url: string;
+  readonly auth: string;
+  readonly credentialChangedAt: number | null;
+  readonly tools: unknown;
+  readonly sealed: Uint8Array | null;
 }
 
 /** Rows written in the same commit as a run's update (runs.update, or a journal commit's staged patch): a channel post the
@@ -635,7 +659,9 @@ export interface Firing {
 
 export type FiringStatus = "due" | "started" | "sent" | "skipped" | "failed" | "missed" | "ignored";
 /** A trigger's firing as its row keeps it. `shown`: in the trigger's history (the newest HISTORY_KEPT); false, kept only
- *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: the run whose turn end wakes a due firing. */
+ *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: the run whose turn end wakes a due firing.
+ *  `startBy`: a firing its launch hook's host took with no run (sent), the time until which the host may still start
+ *  its run (triggers.ts handedStart); null on any other. */
 export interface FiringRow {
   readonly triggerId: string;
   readonly key: string;
@@ -649,6 +675,7 @@ export interface FiringRow {
   readonly count: number | null;
   readonly attempts: number;
   readonly retryAt: number | null;
+  readonly startBy: number | null;
   readonly payload: string | null;
   readonly attrs: unknown;
   readonly notified: boolean;
@@ -694,7 +721,8 @@ export interface NewTrigger {
 /** `ifAgent`: it is still that agent's (a PATCH may move it to another meanwhile). */
 export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown; readonly ifAgent?: string };
 export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns" | "templateId">>;
-/** A firing's new state. Out of due, a firing keeps no retry, wait, payload nor the reason its last try gave (unless given). */
+/** A firing's new state. Out of due, a firing keeps no retry, wait, payload, attrs (unless `keepAttrs`) nor the reason its
+ *  last try gave (unless given), and no time but a sent firing's `startBy`. */
 export interface FiringChange {
   readonly status?: FiringStatus;
   readonly runId?: string;
@@ -704,6 +732,13 @@ export interface FiringChange {
   readonly retryAt?: number | null;
   readonly waitsOn?: string | null;
   readonly notified?: boolean;
+  /** Settled, the firing keeps its attrs: one its launch hook's host took with no run yet, whose run, started late
+   *  (triggers.ts handedStart), is tagged and titled from them as one started first is. */
+  readonly keepAttrs?: boolean;
+  /** Settled `sent`: the time until which its launch hook's host may still start its run (FiringRow.startBy). It is kept
+   *  in the firing's retry_at column, which only a due firing holds otherwise, and is never read back as a retry. Any
+   *  other status keeps none. */
+  readonly startBy?: number;
 }
 /** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
  *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */
@@ -791,8 +826,12 @@ export interface Agents {
    *  none), only while that is still the agent's current revision, compared in the same transaction under the agent row's
    *  lock: RevisionMoved, and nothing written, when another writer (this server's, or another server's on the same store)
    *  moved it first. `description` (a string, or null for none), when given, is the agent's new description, written in the
-   *  same commit: a revision refused by `ifCurrent` leaves it as it was. Absent, the description stays. */
-  addRevision(revision: NewRevision & { agentId: string; ifCurrent?: string | null; description?: string | null }): Promise<void>;
+   *  same commit: a refused revision leaves it as it was. Absent, the description stays. `advance: false` appends a
+   *  revision whose parent is current without moving current; the same guards and optional description still apply.
+   *  `ifNoActiveRuns` refuses with ActiveRuns while any queued, running or parked run exists, checked under the agent
+   *  lock. `settingsGuards` are locked first, then sorted `mcpGuards` registry rows, then the agent. Every guard must match before any revision or description is written. */
+  addRevision(revision: NewRevision & { agentId: string; ifCurrent?: string | null; description?: string | null;
+    advance?: false; ifNoActiveRuns?: true; settingsGuards?: readonly SettingsGuard[]; mcpGuards?: readonly McpGuard[] }): Promise<void>;
   /** Makes `revisionId`, one of the agent's own, its current one. StoreConstraint when it is not a revision of `agentId`. */
   setCurrent(agentId: string, revisionId: string): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
@@ -811,8 +850,12 @@ export interface Agents {
    *  apply kept naming it, its revisions' content (body, skills, package, note, pins) and its own name and description
    *  blanked, and its purge time set last. Only once each of its runs is purged (Runs.purge) and no trigger is left:
    *  refused while a run is not (StoreConstraint) or a trigger is (TriggersLeft), nothing written. Its row and its
-   *  revisions' ids stay, so its runs' tombstones and every total over them read as before. An agent with no row, or one
-   *  purged already, is no write. On SQLite, once it commits, a WAL checkpoint (Runs.purge). */
+   *  revisions' ids stay, so its runs' tombstones and every total over them read as before. In the same write, each
+   *  uploaded package (`upload:<name>`, imported_templates) a revision of it was applied from is removed when no revision
+   *  of another agent not purged (an archived one too) was, each read and removed holding its id; a package imported from
+   *  GitHub stays. The server stops serving what it removed (template-import.ts dropRemovedUploads). An agent with no
+   *  row, or one purged already, is no write. On SQLite, the scrub's marker first and a WAL checkpoint once it commits
+   *  (Runs.purge). */
   purge(agentId: string): Promise<void>;
 }
 
@@ -850,8 +893,11 @@ export interface Triggers {
   /** The firing starts a run: the queued run, the `started` firing that names it (the due firing's row, or a new one) and
    *  the trigger's last_run_id, with its failure streak reset, in one transaction; with `launch`, the run's launch row in
    *  that same transaction (the store's one writeLaunch). A run of an archived agent is refused in it (AgentArchived),
-   *  nothing written: a firing claimed before the archive committed starts no run after it. */
-  fire(firing: Firing, run: { id: string; agentId: string; revisionId: string }, options?: { launch?: RunLaunchInput }): Promise<RunRow>;
+   *  nothing written: a firing claimed before the archive committed starts no run after it. Settings guards are locked
+   *  before the agent, then the trigger. The locked trigger must still belong to the prepared run's agent.
+   *  `expectedCurrent` is checked under the agent lock (RevisionMoved on mismatch), independently of revisionId. */
+  fire(firing: Firing, run: { id: string; agentId: string; revisionId: string; expectedCurrent?: string | null;
+    settingsGuards?: readonly SettingsGuard[] }, options?: { launch?: RunLaunchInput }): Promise<RunRow>;
   /** The enabled triggers listening on (`kind`, `scope`): its scope rows. */
   scoped(kind: string, scope: string): Promise<string[]>;
   /** `firings` recorded and the trigger's `patch` applied, in one transaction; a key already there is not recorded again
@@ -882,8 +928,9 @@ export interface Triggers {
   activeRuns(triggerId: string): Promise<number>;
   /** The history kept to `history` shown firings: older ones a sender's key names (manual, pushed) are kept for their day
    *  (shown 0), others removed; shown-0 rows past `dayMs` removed, then the oldest past `kept` of them. Never a due
-   *  firing, a failure not yet told, nor a started firing whose run has not ended. Answers how many went past `kept`. */
-  prune(triggerId: string, options: { history: number; dayMs: number; keepByKey: (by: string) => boolean; kept?: number }): Promise<number>;
+   *  firing, a failure not yet told, a started firing whose run has not ended, nor a sent one whose startBy is not before
+   *  `now` (the triggers' clock, which stamped it). Answers how many went past `kept`. */
+  prune(triggerId: string, options: { history: number; dayMs: number; keepByKey: (by: string) => boolean; kept?: number; now: number }): Promise<number>;
 }
 
 export interface Runs {
@@ -891,8 +938,11 @@ export interface Runs {
    *  in the same transaction, so a retry under the same key finds this run (runOfOrigin); a key already used is refused
    *  (StoreConstraint), and nothing is written. With `launch`, its launch row is written in the same transaction too (all
    *  or nothing). A launch made from another run (its body's `replay.of`, `audit.of`) takes that run's row lock and
-   *  reads it in the same transaction: made from a purged run, it is refused (RunPurged), nothing written. */
-  create(run:{ id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels }, launch?: RunLaunchInput): Promise<RunRow>;
+   *  reads it in the same transaction: made from a purged run, it is refused (RunPurged), nothing written.
+   *  `expectedCurrent` checks the agent's current revision under its lock (RevisionMoved on mismatch); this is separate
+   *  from the pinned revisionId. Settings guards are locked before the agent. Refusal writes no run, origin or launch. */
+  create(run:{ id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels;
+    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[] }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
@@ -917,6 +967,16 @@ export interface Runs {
   usageMetadata(runId: string, options: { completion: boolean }): Promise<{
     cli: Readonly<Record<string, unknown>>; completionUsage?: unknown;
   } | undefined>;
+  /** Source-project recovery fields in run/id order: committed terminal root entries, including an absent checkpoint
+   *  for a placed run. A terminal placed run's latest actual claim with no terminal root entry follows its real rows
+   *  with entryId:null and attemptEpoch, never an invented journal ID. Active/queued/parked and unclaimed runs gain no
+   *  synthetic row. A real row's optional attemptEpoch is its owning claim, derived from persisted journal boundaries,
+   *  never trusted from its receipt; absent attempt metadata cannot prove a placed receipt. A run may have reopened
+   *  since an earlier terminal receipt; its immutable candidate remains discoverable and cannot conceal a later claimed
+   *  attempt lacking its end. Purged content is excluded.
+   *  Projects only named checkpoint fields; no model output, replay, input or sealed launch content. Ordinary-store
+   *  scope: the PostgreSQL Unicode compatibility fallback cannot run inside an already failed snapshot transaction. */
+  projectCheckpoints(filter: { agentId: string; runId?: string }): Promise<{ runId: string; revisionId: string; entryId: number | null; attemptEpoch?: number; checkpoint: unknown }[]>;
   /** The learning start (the launch body's `learning` member, as stored: undefined when the body names none) of every run of
    *  agent `agentId` (no built-in learning run's) that has a launch row, in one read: what an agent-wide read (its cost per
    *  run, its learning view) needs of its runs at once, never a read a run. Only that member is read: no run's input, no
@@ -985,12 +1045,12 @@ export interface Runs {
    *  stays as a tombstone (id, agent, revision, state, outcome, times, cost, metrics with `kept` folded in), its purge
    *  time set last, which every total sums as before. Refused (StoreConstraint), nothing written, while it is not final
    *  or a runner holds it, and while a run made from it is not purged (RunsMadeFromLeft); Runs.create makes none under
-   *  the same lock once it is purged. A run with no row, or purged already, is no write. On SQLite a WAL checkpoint
-   *  (TRUNCATE) follows the commit, so with secure_delete neither the file nor its WAL keeps the bytes; one another
-   *  connection holds back leaves the scrub's marker for the next start's scrub, and a marker that can't be written
-   *  throws, the purge committed, for the retried DELETE to arrange again (Store.purgeScrub). Postgres keeps old row
-   *  versions until its VACUUM. The run's text in its agent's learning folder is the server's to take off
-   *  (agent-delete.ts forgetCopies), and the purge time set here is what the folder's history reads skip its merges by. */
+   *  the same lock once it is purged. A run with no row, or purged already, is no write. On SQLite the scrub's marker
+   *  comes first (one that can't be written, a full disk, throws with nothing purged), and a WAL checkpoint (TRUNCATE)
+   *  follows the commit, so with secure_delete neither the file nor its WAL keeps the bytes; a checkpoint another
+   *  connection holds back keeps the marker for the next start's scrub. Postgres keeps old row versions until its
+   *  VACUUM. The run's text in its agent's learning folder is the server's to take off (agent-delete.ts forgetCopies),
+   *  and the purge time set here is what the folder's history reads skip its merges by. */
   purge(runId: string, kept: PurgeKept): Promise<void>;
   /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
    *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,
@@ -1232,8 +1292,10 @@ export interface Settings {
   /** Saves `value` under `key` only while its row still holds `was` (as get read it), in one statement: a compare-and-set,
    *  so of two writers that read one row only one replaces it. True when it was replaced; false, with nothing written,
    *  when the row changed since or is gone. With `claim`, holds the run's shared row lock and checks its epoch/lease in
-   *  the same transaction as the setting update; a stale claim throws Fenced without changing the setting. */
-  replaceIf(key: string, was: unknown, value: unknown, claim?: Claim): Promise<boolean>;
+   *  the same transaction as the setting update; a stale claim throws Fenced without changing the setting.
+   *  With source guards, lock their keys and this destination key in sorted order, compare the guards, then perform
+   *  the same CAS. A changed/missing guard refuses the transaction; a stale destination still answers false. */
+  replaceIf(key: string, was: unknown, value: unknown, claim?: Claim, guards?: readonly SettingsGuard[]): Promise<boolean>;
   /** The key's row goes only while it still holds `was`, in one statement: true when it went. */
   removeIf(key: string, was: unknown): Promise<boolean>;
   /** The key's row goes; a key with no row is left as it is. */
@@ -1516,10 +1578,15 @@ export interface Runners {
   capacity(windowMs: number): Promise<RunCapacity>;
 }
 
+/** The id prefix of a package uploaded whole (POST /v2/templates/import {files}): `upload:<name>`. */
+export const UPLOAD_PREFIX = "upload:";
+
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
  *  (`github:<owner>/<repo>[/<path>]`), its source as given, the commit SHA read, its publisher (the GitHub account), and
- *  its files as they were read, by path, base64. The server checks them again (templates.ts readPackage) as it loads them
- *  at its start, so a package this build no longer takes is never served. */
+ *  its files as they were read, by path, base64. An uploaded one's id and source are `upload:<name>`, its sha the
+ *  package's sha256, its publisher empty; it goes with the last agent applied from it (Agents.purge). The server checks
+ *  them again (templates.ts readPackage) as it loads them at its start, so a package this build no longer takes is never
+ *  served. */
 export interface ImportedTemplateRow {
   readonly id: string;
   readonly source: string;
@@ -1533,6 +1600,8 @@ export interface ImportedTemplateRow {
 export interface ImportedTemplates {
   /** Every imported package, by id. */
   list(): Promise<ImportedTemplateRow[]>;
+  /** Every imported package's id, sorted, with none of its files read. */
+  ids(): Promise<string[]>;
   /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it). */
   put(row: Omit<ImportedTemplateRow, "importedAt">): Promise<void>;
   /** Removes the package: false when none had that id. */
@@ -1762,12 +1831,6 @@ export interface Store {
    *  done; `left` says why it was kept, for the next start to finish. Postgres: `work` alone (a replaced row version is
    *  the database's until its vacuum). */
   secureRewrite?(work: () => Promise<number>, options?: SecureRewriteOptions): Promise<SecureRewrite>;
-  /** A DELETE of a run or agent already purged (agent-delete.ts): a purge can commit and then fail to write the scrub's
-   *  marker (Runs.purge), and its retry finds the row purged. SQLite with a file, when no marker is there: the purge's
-   *  WAL checkpoint again, and the marker when another connection still holds the log back; with the marker there, no
-   *  write, but the marker is the purge's too, so a rewrite under way that wrote it removes it only after a checkpoint
-   *  that truncates the log. Postgres and a store with no file: nothing. */
-  purgeScrub(): Promise<void>;
   /** Reads the store's schema version and its runner floor now, without a lock or a write: a runner reads it at each
    *  renewal (runner/main.ts), and stops once the floor is above the version its build knows. */
   schemaState?(): Promise<StoreSchemaState>;
@@ -2053,12 +2116,20 @@ export class RunPurged extends Error {
   }
 }
 
-/** An agent's current revision is not the one a conditional write expected (addRevision's `ifCurrent`): another write
+/** An agent's current revision is not the one a conditional revision or run admission expected: another write
  *  moved it first. `current` is the agent's current revision now. Nothing was written. */
 export class RevisionMoved extends Error {
   constructor(readonly agentId: string, readonly current: string | null) {
     super(`the current revision of agent ${agentId} moved (now ${current ?? "none"})`);
     this.name = "RevisionMoved";
+  }
+}
+
+/** A conditional revision refused while the agent has queued, running or parked runs. Nothing was written. */
+export class ActiveRuns extends Error {
+  constructor(readonly agentId: string, readonly runIds: readonly string[]) {
+    super(`agent ${agentId} has active runs (${runIds.join(", ")})`);
+    this.name = "ActiveRuns";
   }
 }
 

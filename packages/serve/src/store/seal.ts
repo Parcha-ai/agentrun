@@ -101,24 +101,37 @@ export type RunMcpAuth = Readonly<Record<string, RunMcpEntry>>;
  *  of the gateway it was handed for (AGENT_MODEL_BASE_URL's then), so a gateway moved since never receives it. */
 export type RunModelKey = { readonly key: string; readonly origin: string };
 
-/** What a run's launch holds sealed: its handed MCP credentials and its own model key, each when it has one. */
-export type RunLaunchSecrets = { readonly mcp?: RunMcpAuth; readonly model?: RunModelKey };
+/** A run's own tool keys (`keys` at its start or with a message, run-keys.ts), by name. */
+export type RunToolKeys = Readonly<Record<string, string>>;
+
+/** What a run's launch holds sealed: its handed MCP credentials, its own model key and its own tool keys, each when it
+ *  has one. */
+export type RunLaunchSecrets = { readonly mcp?: RunMcpAuth; readonly model?: RunModelKey; readonly keys?: RunToolKeys };
 
 /** Seals a run's launch secrets as its launch's sealed column (AAD run_launch|<run_id>|sealed); null when it holds none. */
 export function sealRunLaunch(key: Buffer, runId: string, secrets: RunLaunchSecrets): Uint8Array | null {
   const mcp = secrets.mcp && Object.keys(secrets.mcp).length ? secrets.mcp : undefined;
-  if (!mcp && !secrets.model) return null;
-  return sealColumn(key, sealedAt.runLaunch(runId), JSON.stringify({ ...(mcp ? { mcp } : {}), ...(secrets.model ? { model: secrets.model } : {}) }));
+  const keys = secrets.keys && Object.keys(secrets.keys).length ? secrets.keys : undefined;
+  if (!mcp && !secrets.model && !keys) return null;
+  return sealColumn(key, sealedAt.runLaunch(runId), JSON.stringify({ ...(mcp ? { mcp } : {}), ...(secrets.model ? { model: secrets.model } : {}), ...(keys ? { keys } : {}) }));
 }
+
+/** The tool keys of an opened launch: each name with text for its value, none else. */
+const toolKeysOf = (keys: unknown): RunToolKeys | undefined => {
+  if (typeof keys !== "object" || keys === null || Array.isArray(keys)) return undefined;
+  const out = Object.fromEntries(Object.entries(keys).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  return Object.keys(out).length ? out : undefined;
+};
 
 /** A run's launch secrets, opened: none when its launch holds none; undefined when the bytes do not open under `key` for
  *  this run (sealed for another run, or under another key). */
 export function openRunLaunch(key: Buffer, runId: string, sealed: Uint8Array | null): RunLaunchSecrets | undefined {
   if (sealed === null) return {};
   try {
-    const opened = JSON.parse(unsealColumn(key, sealedAt.runLaunch(runId), sealed).toString("utf8")) as { mcp?: RunMcpAuth; model?: { key?: unknown; origin?: unknown } };
+    const opened = JSON.parse(unsealColumn(key, sealedAt.runLaunch(runId), sealed).toString("utf8")) as { mcp?: RunMcpAuth; model?: { key?: unknown; origin?: unknown }; keys?: unknown };
     const model = typeof opened.model?.key === "string" && typeof opened.model.origin === "string" ? { key: opened.model.key, origin: opened.model.origin } : undefined;
-    return { ...(opened.mcp ? { mcp: opened.mcp } : {}), ...(model ? { model } : {}) };
+    const keys = toolKeysOf(opened.keys);
+    return { ...(opened.mcp ? { mcp: opened.mcp } : {}), ...(model ? { model } : {}), ...(keys ? { keys } : {}) };
   } catch {
     return undefined;
   }
