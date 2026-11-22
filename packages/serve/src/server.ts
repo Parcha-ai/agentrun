@@ -164,10 +164,10 @@ import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
-import { COMPOSIO_KEY_ENV, composioKeyFromEnv, composioKeyUnset, composioMadeKey, composioPerRun } from "./composio-made.js";
+import { type COMPOSIO_KEY_ENV, composioEnvKey, composioMadeKey, composioPerRun } from "./composio-made.js";
 import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers, composioNoPublicUrl } from "./composio-triggers.js";
-import { apiOnlyMcpSave, type ComposioDropped, loopbackWords, mcpServerBrief, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
+import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
@@ -464,6 +464,9 @@ export type ServeOptions = {
   githubApi?: string;
   /** A test's seam: the origin a github_app MCP server may have (default GitHub's hosted MCP: github.ts GITHUB_MCP_ORIGIN). */
   githubMcpOrigin?: string;
+  /** A test's seam: the one origin a Composio key read from the environment is sent to (default Composio's:
+   *  composio-made.ts COMPOSIO_ORIGIN). */
+  composioMcpOrigin?: string;
   /** A test's seam: how long a hook's body has to arrive, whole (default 30 s: push-handler.ts HOOK_BODY_MS). */
   hookBodyMs?: number;
   /** A test's seam: awaited by a message (a person's, or a trigger's firing) once its checks have passed and just before its
@@ -1328,6 +1331,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   toolKeys.view();
   const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
+  if (options.composioMcpOrigin) mcpServers.composioOrigin = options.composioMcpOrigin;
   mcpServers.standIns = options.mcpStandIns === true;
   // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the checks read in step (which
   // servers are saved, a workflow's grants, the template apply): the server is the one writer of these rows (a save,
@@ -2893,13 +2897,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       });
       if (unpinned.length) throw new ApiError("agent_not_runnable", unpinned.map((one) => one.message).join(" "), { fields: unpinned.map(({ tool: _tool, ...issue }) => issue), details: { unbound: unpinned.map((one) => one.tool), missing: {} } });
       // A granted tool of a Composio server that reads its key from the environment (api_key_env) while that variable is
-      // unset: refused by its name before the run starts, never launched without the server's tools.
+      // unset, or whose address is off Composio's origin: refused by its name before the run starts, never launched
+      // without the server's tools, and nothing sent (composioEnvKey).
       const unset = ((revision.body as { tools?: readonly string[] }).tools ?? []).flatMap((tool, index) => {
         const named = mcpToolOf(tool);
-        const keyEnv = named ? mcpMeta.get(named.server)?.keyEnv : undefined;
-        return named && keyEnv && !composioKeyFromEnv(keyEnv as typeof COMPOSIO_KEY_ENV) ? [{ field: `definition.tools[${index}]`, reason: "missing", message: composioKeyUnset(named.server, keyEnv), tool, keyEnv }] : [];
+        const saved = named ? mcpMeta.get(named.server) : undefined;
+        const keyEnv = saved?.keyEnv as typeof COMPOSIO_KEY_ENV | undefined;
+        const got = named && saved && keyEnv ? composioEnvKey(named.server, saved.url, keyEnv, mcpServers.composioOrigin) : undefined;
+        return got && "refused" in got ? [{ field: `definition.tools[${index}]`, reason: got.reason, message: got.refused, tool, keyEnv: keyEnv!, unset: got.reason === "missing" }] : [];
       });
-      if (unset.length) throw new ApiError("agent_not_runnable", [...new Set(unset.map((one) => one.message))].join(" "), { fields: unset.map(({ tool: _tool, keyEnv: _keyEnv, ...issue }) => issue), details: { unbound: [], missing: Object.fromEntries(unset.map((one) => [one.tool, [one.keyEnv]])) } });
+      if (unset.length) throw new ApiError("agent_not_runnable", [...new Set(unset.map((one) => one.message))].join(" "), { fields: unset.map(({ tool: _tool, keyEnv: _keyEnv, unset: _unset, ...issue }) => issue), details: { unbound: [], missing: Object.fromEntries(unset.filter((one) => one.unset).map((one) => [one.tool, [one.keyEnv]])) } });
     }
     const pinnedTools = (server: string) => {
       const saved = mcpMeta.get(server);
@@ -5419,30 +5426,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
-      // An API-only server's token reads each server brief (mcpServerBrief): no credential, no address past its origin.
-      case "listMcpServers": {
-        const listed = await mcpServers.list();
-        return send(res, 200, options.apiOnly ? { servers: listed.servers.map(mcpServerBrief) } : listed);
-      }
+      case "listMcpServers":
+        return send(res, 200, await mcpServers.list());
       // Names only: no URL, auth type, header, tool or Composio record, so a token that may not read the list may read this.
       case "listMcpServerNames":
         return send(res, 200, { names: (await listMcpServers(store)).map((row) => row.name).sort() });
-      case "getMcpServer": {
-        const one = await mcpServers.get(id);
-        return send(res, 200, options.apiOnly ? mcpServerBrief(one) : one);
-      }
+      case "getMcpServer":
+        return send(res, 200, await mcpServers.get(id));
       case "previewMcpServer":
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
       case "saveMcpServer": {
         const body = await bodyOf(req);
-        // An API-only server saves a per_run server at an https address alone, before anything is listed.
-        if (options.apiOnly) apiOnlyMcpSave(body);
-        const shown = <T extends Parameters<typeof mcpServerBrief>[0]>(saved: T) => (options.apiOnly ? mcpServerBrief(saved) : saved);
         // A server that isn't a Composio preset's is saved at once, as ever: no save waits on another's listing.
         if (!(await mcpServers.composioPreset(id))) {
           const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined);
           await refreshMcpMeta();
-          return send(res, 200, shown(saved));
+          return send(res, 200, saved);
         }
         // A preset server's: listed as any save is, at once; then its write and cleanup in the Composio turn and its
         // project's. A save that moves it off Composio is refused while Composio triggers use it, in the delete's words;
@@ -5459,7 +5458,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         };
         const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, (left) => (over.dropped = left), guard);
         await refreshMcpMeta();
-        return send(res, 200, over.note ? { ...shown(saved), composio: over.note } : shown(saved));
+        return send(res, 200, over.note ? { ...saved, composio: over.note } : saved);
       }
       // Composio makes the managed MCP server; what is kept is the ordinary MCP save, so the key is a sealed header.
       case "listComposioTools":
@@ -5474,14 +5473,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // that one's now, and said too. A save as another user or auth config is refused while Composio triggers use the
         // server, in the delete's words, checked in its project's turn before the row is written. An API-only server's token
         // saves one that names its key by api_key_env (the secret-write gate), landing only while the row still has the
-        // credential the gate read (secretSeen), and reads the server brief.
+        // credential the gate read (secretSeen). The body names no address or headers (composioSave refuses them).
         const answer = await inComposioTurn(async () => {
           const over: { dropped?: ComposioDropped } = {};
           const guard: SaveGuard = { turn: (work) => composioTriggers.inTurnOf(id, work), inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS) };
           const saved = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, secretSeen as McpCredentialMark | undefined, made, stands, (left) => (over.dropped = left), guard), id, stopping.signal, async () => (await mcpServers.get(id)).url);
           await refreshMcpMeta();
-          const shown = options.apiOnly ? { ...saved, server: mcpServerBrief(saved.server) } : saved;
-          return over.dropped ? { ...shown, composio: await composioLeft(id, over.dropped) } : shown;
+          return over.dropped ? { ...saved, composio: await composioLeft(id, over.dropped) } : saved;
         });
         return send(res, 200, answer, { "cache-control": "no-store" });
       }

@@ -25,6 +25,9 @@ export type ComposioMade = { user: string; auth_config: (Made & { named?: true }
 /** The one variable a Composio save may name for its key (`api_key_env`). Composio's host is fixed in code, so no other
  *  secret of the server's environment is ever sent there. */
 export const COMPOSIO_KEY_ENV = "COMPOSIO_API_KEY";
+/** Composio's origin: its API's base (composio-preset.ts) and where its MCP servers are (a preset save's address). The one
+ *  place a key read from the environment is ever sent. */
+export const COMPOSIO_ORIGIN = "https://backend.composio.dev";
 /** What a delete does at Composio beyond the MCP server: what it removes, in order (the accounts before the auth config
  *  they are under), and what it keeps, each with whose it stays (`by`: the saved server that uses it too; none: this
  *  server didn't make it). */
@@ -82,6 +85,25 @@ export function composioKeyFromEnv(name: typeof COMPOSIO_KEY_ENV = COMPOSIO_KEY_
 /** Why the server `server`, which reads its key from `name`, can't be used now: the variable is unset. */
 export const composioKeyUnset = (server: string, name: string = COMPOSIO_KEY_ENV): string =>
   `The MCP server ${server} reads its Composio key from the environment variable ${name}, which is not set: set it where AgentRun runs, then try again.`;
+
+/** Why the server `server`, which reads its key from `name`, is never sent it: its address is not on Composio's origin. */
+const composioKeyOffOrigin = (server: string, url: string, name: string, origin: string): string =>
+  `The MCP server ${server} reads its Composio key from the environment variable ${name}, and its address (${originOf(url)}) is not Composio's (${origin}): that key is only ever sent to Composio. Save it again with the Composio preset.`;
+
+const originOf = (url: string): string => {
+  try { return new URL(url).origin; } catch { return "not a URL"; }
+};
+
+/** The key the server `server` (its address `url`) reads from `name`, its record's key_env, for a request to that address:
+ *  the variable's value now, only while the address is on Composio's origin (`origin`, COMPOSIO_ORIGIN; a test's fake
+ *  through the server's and runner's seam). Otherwise why not, in words, and the caller sends nothing: `not_allowed`, an
+ *  address no preset save writes (a row written by hand); `missing`, the variable unset. Every read of such a key for a
+ *  request to the server's address goes through here: a save's and a refresh's listing, a run's start, a claim. */
+export function composioEnvKey(server: string, url: string, name: typeof COMPOSIO_KEY_ENV, origin: string = COMPOSIO_ORIGIN): { key: string } | { refused: string; reason: "not_allowed" | "missing" } {
+  if (originOf(url) !== new URL(origin).origin) return { refused: composioKeyOffOrigin(server, url, name, origin), reason: "not_allowed" };
+  const key = composioKeyFromEnv(name);
+  return key ? { key } : { refused: composioKeyUnset(server, name), reason: "missing" };
+}
 
 /** The records of the other saved servers (`others`, by name) that say they made the auth config `id`, each as it is to
  *  be written once the owner named that config in a save: made by none of them, so none of their deletes removes it. */

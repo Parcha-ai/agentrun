@@ -41,6 +41,7 @@ interface ChildInit {
   readonly githubApi?: string;
   readonly githubWeb?: string;
   readonly githubMcpOrigin?: string;
+  readonly composioMcpOrigin?: string;
 }
 
 registerRunErrors();
@@ -207,6 +208,7 @@ function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held):
     ...(init.githubApi ? { githubApi: init.githubApi } : {}),
     ...(init.githubWeb ? { githubWeb: init.githubWeb } : {}),
     ...(init.githubMcpOrigin ? { githubMcpOrigin: init.githubMcpOrigin } : {}),
+    ...(init.composioMcpOrigin ? { composioMcpOrigin: init.composioMcpOrigin } : {}),
     ...(init.mcpLoopback ? { mcpLoopback: true, mcpOwn: init.mcpOwn ?? [] } : {}),
   };
 }

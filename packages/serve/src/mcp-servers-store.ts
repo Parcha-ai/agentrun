@@ -18,7 +18,7 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
-import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, composioKeyFromEnv, composioKeyUnset, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
+import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
 import { COMPOSIO_PER_RUN, COMPOSIO_USER, composioListingAddress, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
@@ -127,6 +127,9 @@ export class McpServersOverStore {
   /** The one origin a github_app server may have (GITHUB_MCP_ORIGIN; a test's fake through the server's seam): the App's
    *  tokens are minted for, and sent to, nothing else. */
   appOrigin = GITHUB_MCP_ORIGIN;
+  /** The one origin a key read from the environment is sent to (COMPOSIO_ORIGIN; a test's fake through the server's
+   *  seam): a Composio server saved with api_key_env at any other address is refused (composioEnvKey). */
+  composioOrigin = COMPOSIO_ORIGIN;
   private readonly sealKey: Buffer;
   private readonly signIns: McpSignIns;
   /** The callbacks under way, which close() waits out before the server lets its data go. */
@@ -345,6 +348,10 @@ export class McpServersOverStore {
     } else if (auth.type !== "none" && !stands?.key_env) {
       // A Composio key read from the environment (`stands.key_env`) only lists the tools now: the row seals none.
       credential = { type: "headers", headers: headers! };
+    } else if (stands?.key_env) {
+      // ...and only at Composio's origin: an address Composio answered elsewhere is refused, and the key is not sent there.
+      const got = composioEnvKey(name, url.href, stands.key_env, this.composioOrigin);
+      if ("refused" in got) throw invalid([{ field: "url", reason: got.reason, message: got.refused }]);
     }
     // A per-run Composio server, made so now (`stands`) or saved so and kept at its address by an ordinary save.
     const perRun = Boolean(stands?.per_run) || (!made && was !== undefined && auth.type === "headers" && was.url === url.href && (await this.perRunComposio(name, was)));
@@ -661,11 +668,12 @@ export class McpServersOverStore {
    *  (its address check, a listing) must never have that credential sent to the old address. */
   private async opened(name: string, row: McpServerRow, field: string): Promise<Opened> {
     // A Composio server saved with api_key_env: its key is its variable's value now, refused by name when unset.
+    // Sent to Composio's origin alone (composioEnvKey): a row at any other address is refused by name, and nothing is sent.
     const keyEnv = await this.keyEnvOf(row);
     if (keyEnv) {
-      const key = composioKeyFromEnv(keyEnv);
-      if (!key) throw invalid([{ field, reason: "missing", message: composioKeyUnset(name, keyEnv) }]);
-      const headers = { "x-api-key": key };
+      const got = composioEnvKey(name, row.url, keyEnv, this.composioOrigin);
+      if ("refused" in got) throw invalid([{ field, reason: got.reason, message: got.refused }]);
+      const headers = { "x-api-key": got.key };
       return { headers, credential: { type: "headers", headers, origin: new URL(row.url).origin }, env: keyEnv };
     }
     // No credential kept: none for a server that takes none, nor for a github_app server with no static headers, nor for a
@@ -825,29 +833,6 @@ export const loopbackWords = (host: string) => `${host} is this machine; ${resta
  *  the OAuth state), so a read is always current. */
 export function mcpServersOverStore(store: McpServersStore, env: NodeJS.ProcessEnv, version: string, network?: OAuthNetwork): McpServersOverStore {
   return new McpServersOverStore(store, env, version, network);
-}
-
-/** A saved server as an API-only server's token reads it (api-only.ts): its name, its kind (a Composio preset server or a
- *  URL), its auth type, the Composio toolkit, its tools by name, the variable a Composio key is read from, and its key as
- *  every secret is read. Its address is its origin alone (shownUrl: a Composio address names a user in its query); no
- *  credential, prices or grant marks. */
-export type McpServerBrief = { name: string; kind: "composio" | "url"; url: string; auth: { type: string; api_key_env?: string }; toolkit: string | null; tools: string[]; secret: SecretMeta };
-export function mcpServerBrief(view: Awaited<ReturnType<McpServersOverStore["get"]>>): McpServerBrief {
-  const kind = view.source === "composio" ? "composio" : "url";
-  const keyEnv = (view.auth as { api_key_env?: string }).api_key_env;
-  return { name: view.name, kind, url: view.url, auth: { type: view.auth.type, ...(keyEnv ? { api_key_env: keyEnv } : {}) }, toolkit: kind === "composio" ? view.toolkit : null, tools: view.tools.map((tool) => tool.name), secret: view.secret };
-}
-
-/** An API-only server's ordinary save (PUT /settings/mcp-servers/{name}): a per_run server at an https address alone, so
- *  its token saves no credential (each run hands its own, mcp_auth) and nothing a run sends goes in the clear. Anything
- *  else is refused before anything is listed: a Composio server is saved by its preset, with api_key_env. */
-export function apiOnlyMcpSave(body: unknown): void {
-  const issues: InputIssue[] = [];
-  const auth = isObject(body) && isObject(body.auth) ? body.auth.type : undefined;
-  if (auth !== "per_run") issues.push({ field: "auth.type", reason: "not_allowed", message: `An API-only server saves an MCP server with auth.type "per_run" only, whose runs each hand their own credential (mcp_auth): a Composio server is saved with PUT /settings/mcp-servers/{name}/composio and api_key_env.` });
-  const url = isObject(body) && typeof body.url === "string" ? URL.parse(body.url) : null;
-  if (url && url.protocol !== "https:") issues.push({ field: "url", reason: "not_allowed", message: `An API-only server saves an MCP server at an https address only: ${url.protocol.slice(0, -1)} would carry each run's credential in the clear.` });
-  if (issues.length) throw invalid(issues);
 }
 
 /** The server's credential as every secret is read (SECRETS-PLAN.md): set or not, how it came ("console": pasted, a

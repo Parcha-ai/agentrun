@@ -7,16 +7,18 @@
 // is never logged, echoed or put in an error. A save may name it instead by a variable of the server's environment
 // (`api_key_env`, COMPOSIO_API_KEY only): the server then keeps the name, seals nothing, and reads the value at each use.
 import { randomBytes } from "node:crypto";
-import { COMPOSIO_KEY_ENV, composioKeyFromEnv, type Cleanup, type ComposioMade, type Made, type Thing } from "./composio-made.js";
+import { COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioKeyFromEnv, type Cleanup, type ComposioMade, type Made, type Thing } from "./composio-made.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { priceValid } from "./mcp-probe.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
-import { isObject, type Json } from "./validate.js";
+import { isObject, type Json, unknownFields } from "./validate.js";
 
 /** Another Composio than the real one, and its fetch: a test's fake (the same seam as `archilControl`). */
 export type ComposioControl = { readonly baseUrl?: string; readonly fetch?: typeof fetch };
 
-const BASE = "https://backend.composio.dev";
+const BASE = COMPOSIO_ORIGIN;
+/** The fields a Composio save takes (composioSave): no `url`, no `headers`. */
+const SAVE_FIELDS = ["api_key", "api_key_env", "toolkit", "tools", "user_id", "auth_config_id", "price_usd"] as const;
 /** The one Composio user a server's actions run as, unless the owner names another. */
 export const COMPOSIO_USER = "agentrun";
 /** A Composio toolkit's slug, as a save takes it once trimmed and lower-cased. */
@@ -208,6 +210,12 @@ export const composioRunQuery = (binding: { readonly user_id: string; readonly c
  *  it, for its delete to remove what was made. The key is the body's `api_key`, or COMPOSIO_API_KEY's value when the body
  *  sends `api_key_env` (head): then `stands.key_env` names it, and the store seals no credential. */
 export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> }; prices?: Record<string, number> }, made: { source: "composio"; toolkit: string | null }, stands: ComposioMade) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
+  // No address and no headers of the caller's own: Composio makes the server and answers its address, and the key is the
+  // one header sent. Any field the save does not take is refused before anything is sent, never ignored.
+  if (isObject(body)) {
+    const extra = unknownFields(body, SAVE_FIELDS);
+    if (extra.length) throw invalid(extra);
+  }
   const { key, toolkit, rest, keyEnv } = head(body, { keyEnv: true });
   const tools = Array.isArray(rest.tools) ? rest.tools : [];
   const user = rest.user_id === undefined ? COMPOSIO_USER : typeof rest.user_id === "string" ? rest.user_id : "";

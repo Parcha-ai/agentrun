@@ -3417,17 +3417,6 @@ export type SaveComposioServerResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
-  } | {
-    name: string;
-    kind: "composio" | "url";
-    url: string;
-    auth: {
-      type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
-      api_key_env?: "COMPOSIO_API_KEY";
-    };
-    toolkit: string | null;
-    tools: Array<string>;
-    secret: SecretMeta;
   };
   connect_url?: string;
   not_served?: Array<string>;
@@ -3735,17 +3724,6 @@ export type GetMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
-} | {
-  name: string;
-  kind: "composio" | "url";
-  url: string;
-  auth: {
-    type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
-    api_key_env?: "COMPOSIO_API_KEY";
-  };
-  toolkit: string | null;
-  tools: Array<string>;
-  secret: SecretMeta;
 };
 
 /** The remote MCP servers saved here, with their tools; never a credential (GET /settings/mcp-servers). */
@@ -3793,17 +3771,6 @@ export type ListMcpServersResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
-  } | {
-    name: string;
-    kind: "composio" | "url";
-    url: string;
-    auth: {
-      type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
-      api_key_env?: "COMPOSIO_API_KEY";
-    };
-    toolkit: string | null;
-    tools: Array<string>;
-    secret: SecretMeta;
   }>;
 };
 
@@ -3956,21 +3923,6 @@ export type SaveMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
-  composio?: {
-    removed: boolean;
-    note: string;
-  };
-} | {
-  name: string;
-  kind: "composio" | "url";
-  url: string;
-  auth: {
-    type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
-    api_key_env?: "COMPOSIO_API_KEY";
-  };
-  toolkit: string | null;
-  tools: Array<string>;
-  secret: SecretMeta;
   composio?: {
     removed: boolean;
     note: string;
