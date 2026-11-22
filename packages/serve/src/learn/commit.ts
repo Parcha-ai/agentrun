@@ -278,7 +278,7 @@ async function forgetRunWorkflows(ws: Workspace, runId: string, purged: (run: st
     if (!history) throw unread();
     const writes: { path: string; text: string }[] = [];
     const deletes: string[] = [];
-    const written: Record<string, string> = {};
+    const written: Record<string, string | null> = {};
     for (const item of mine) {
       // Newest first: the first writer no purged run is the version to put back, as it stood just before the next
       // writer took the file over.
@@ -292,7 +292,8 @@ async function forgetRunWorkflows(ws: Workspace, runId: string, purged: (run: st
         if (!at) throw unread();
         const files = at.snapshot.workflows.find((one) => one.name === item.name)?.files ?? [];
         back = files.map(({ path, oid }) => ({ path, text: at.blobs.get(oid)!.toString("utf8") }));
-        if (back.length && run !== null) written[item.name] = run;
+        // Named even when `back` is main's bytes already, so the writer still moves (folder.ts writtenIn).
+        if (back.length) written[item.name] = run;
         break;
       }
       writes.push(...back);

@@ -545,7 +545,8 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
 /** The newest records, at most PROMOTIONS_KEPT, in order, with each workflow's champion (championOf) the same after as
  *  before, whatever was dropped: championOf reads the digest promoted last and its newest record, so the trim keeps both
  *  (a held last revision is never trimmed into handing the champion back), read over every record and again past those
- *  `refused` names (the purge gate's: a champion its readers skip, so the earlier one they serve is kept), and a
+ *  `refused` names (the purge gate's: a champion its readers skip, so the earlier one they serve is kept), and once
+ *  more past that champion too (a purge landing after the gate answered refuses it: the one before still serves), and a
  *  replaying revision's newest record (what its settle, its runs' claims and the one-check-at-a-time rule read: dropped,
  *  a newer revision would start a second check while its runs run, and its verdict would never land). The rest is the
  *  newest records. */
@@ -554,12 +555,17 @@ export function trimPromotions(items: readonly PromotionRecord[], refused: Refus
   const keep = new Set<number>();
   for (const workflow of new Set(items.map((one) => one.workflow))) {
     for (const one of replayingOf(items, workflow, null)) keep.add(items.lastIndexOf(one));
-    for (const skip of [NONE_REFUSED, refused]) {
+    const passes: Refused[] = [NONE_REFUSED, refused];
+    for (let pass = 0; pass < passes.length; pass++) {
+      const skip = passes[pass]!;
       const own = (one: PromotionRecord) => one.workflow === workflow && !skip(one);
       const last = items.findLast((one) => own(one) && one.decided === "promote")?.digest;
       if (last === undefined) continue;
       keep.add(items.findLastIndex((one) => own(one) && one.digest === last && one.decided === "promote"));
       keep.add(items.findLastIndex((one) => own(one) && one.digest === last));
+      // The champion before the one `refused` leaves: a purge that lands between the write's ask of the gate and its
+      // write refuses that one, and the guard (the records read) never sees it, so its readers serve this one.
+      if (pass === 1) passes.push((one) => skip(one) || (one.workflow === workflow && one.digest === last));
     }
   }
   for (let i = items.length - 1, room = PROMOTIONS_KEPT - keep.size; i >= 0 && room > 0; i--) {
