@@ -102,6 +102,8 @@ export type Scan = {
   read?: { status: "completed" | "failed" | "cancelled"; at: number; app?: string; commit?: string; found: number; dropped: string[]; skipped: number; error?: string };
   /** A new scan of the repository being started, on any server sharing the store; the row is that scan's once it has. */
   starting?: Claim;
+  /** A reader writing this scan's suggestions, on any server sharing the store; taken off when it marks the scan read. */
+  settling?: Claim;
 };
 /** A run of the scout, as its view says. */
 export type ScanRun = { status: string; output?: unknown; error?: string; endedAt?: number };
@@ -613,6 +615,16 @@ export class Suggestions {
     if (run.status !== "completed") return this.mark(scan, { status: run.status as "failed" | "cancelled", at: run.endedAt ?? this.now(), found: 0, dropped: [], skipped: 0, ...(run.error ? { error: run.error } : {}) });
     const answer = readScoutAnswer(run.output, scan.repo);
     if ("invalid" in answer) return this.mark(scan, { status: "failed", at: run.endedAt ?? this.now(), found: 0, dropped: [], skipped: 0, error: run.error ?? `The scan ended without an answer to read: ${answer.invalid}.` });
+    // The row is claimed before any suggestion is written, and each write first checks the claim is still this reader's:
+    // a reader that resumes after another settled this scan, or after a newer scan replaced it, writes nothing.
+    if (this.held(scan.settling, SCAN_CLAIM_MS)) return scan;
+    const claimed: Scan = { ...scan, settling: { at: this.now(), by: randomUUID() } };
+    const current = async () => ((await this.deps.settings.get(scanKey(scan.repo))) as Scan | undefined) ?? scan;
+    if (!(await this.deps.settings.replaceIf(scanKey(scan.repo), scan, claimed))) return current();
+    const owns = async () => {
+      const row = await this.deps.settings.get(scanKey(scan.repo));
+      return isObject(row) && row.run_id === scan.run_id && isObject(row.settling) && row.settling.by === claimed.settling!.by;
+    };
     const at = run.endedAt ?? this.now();
     const kept = new Set<string>();
     let skipped = 0;
@@ -621,6 +633,7 @@ export class Suggestions {
       kept.add(id);
       const fresh: Item = { id, repo: scan.repo, key: suggestion.key, status: "open", suggestion, scan: { run_id: scan.run_id, commit: answer.commit, at } };
       for (let tries = 0; tries < 3; tries++) {
+        if (!(await owns())) return current();
         const was = await this.item(id);
         // Decided stays decided; an open one from a newer scan than this, one being created, or one whose create pushed
         // and did not finish (`pushed`, which the next create recovers its agent by) is left too.
@@ -634,14 +647,16 @@ export class Suggestions {
     // The older scans' open suggestions this answer no longer holds.
     for (const item of await this.items()) {
       if (item.repo.toLowerCase() !== scan.repo.toLowerCase() || item.status !== "open" || kept.has(item.id) || item.scan.at > at || this.held(item.creating, CREATE_CLAIM_MS) || item.pushed) continue;
+      if (!(await owns())) return current();
       await this.deps.settings.removeIf(`${ITEM}${item.id}`, item);
     }
     // `found`: the ones open now, never those a person had decided (counted apart, as `skipped`).
-    return this.mark(scan, { status: "completed", at, found: answer.suggestions.length - skipped, dropped: answer.dropped, skipped, ...(answer.app ? { app: answer.app } : {}), ...(answer.commit ? { commit: answer.commit } : {}) });
+    return this.mark(claimed, { status: "completed", at, found: answer.suggestions.length - skipped, dropped: answer.dropped, skipped, ...(answer.app ? { app: answer.app } : {}), ...(answer.commit ? { commit: answer.commit } : {}) });
   }
 
   private async mark(scan: Scan, read: NonNullable<Scan["read"]>): Promise<Scan> {
-    const next = { ...scan, read };
+    const { settling: _, ...unclaimed } = scan;
+    const next = { ...unclaimed, read };
     // Another reader marked it first: theirs stands, as read.
     if (!(await this.deps.settings.replaceIf(scanKey(scan.repo), scan, next))) return ((await this.deps.settings.get(scanKey(scan.repo))) as Scan | undefined) ?? next;
     return next;

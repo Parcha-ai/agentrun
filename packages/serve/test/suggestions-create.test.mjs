@@ -4,7 +4,8 @@
 // the pull request alone; a file the repository already has stops the create before anything is written; and the one
 // token each create mints holds contents and pull requests write on that one repository, and is revoked. A create and a
 // scan each claim their row in the store every server shares before they start: two servers asked at once make one agent,
-// one pull request and one run. The package is kept before its apply and taken back when the apply refuses.
+// one pull request and one run. The package is kept before its apply and taken back when the apply refuses. A reader that settles a scan late,
+// after another settled it or a newer scan replaced it, writes nothing: it claims the scan's row before any write.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { suggestionsFor } from "./fixtures/faux-scout.mjs";
@@ -305,4 +306,37 @@ test("a suggested agent's package is kept before its apply, registered after it,
   const removedMeanwhile = async () => { rows.delete(id); refuse(); };
   await assert.rejects(applyImported(deps(removedMeanwhile), id, origin("f".repeat(40)), files));
   assert.deepEqual([order, rows.has(id)], [[`put ${"f".repeat(40)}`, "apply"], false], "a row deleted meanwhile is not put back");
+});
+
+test("a reader that settles a scan late, after a newer scan removed one of its suggestions, writes nothing: the newest scan's answer stands", async (t) => {
+  const { deps, store } = await service(t, { makeAgent: async () => assert.fail("no agent is made") });
+  const other = "faux-org/other";
+  const answer = (suggestions, endedAt) => ({ status: "completed", output: { repository: other, commit: "", app: "An app.", suggestions }, endedAt });
+  const ended = Date.now();
+  let starts = 0;
+  // run_1's first read waits until it is let go: by then a second reader has settled run_1 and run_2 has replaced it.
+  let letGo;
+  const held = new Promise((resolve) => { letGo = resolve; });
+  let reads = 0;
+  const s = new Suggestions({ ...deps, startScan: async () => `run_${++starts}`, readRun: async (id) => {
+    if (id === "run_2") return answer(suggestionsFor().slice(1), ended + 1);
+    if (++reads === 1) await held;
+    return answer(suggestionsFor(), ended);
+  } });
+  await s.scan({ repo: other });
+  const late = s.list({ repo: other });
+  while (reads < 1) await new Promise((resolve) => setImmediate(resolve));
+  // Another reader settles run_1, and run_2 starts and ends without the first suggestion.
+  await s.list({ repo: other });
+  assert.equal((await s.scan({ repo: other })).body.run_id, "run_2");
+  await s.list({ repo: other });
+  const removed = suggestionId(other, suggestionsFor()[0].key);
+  assert.equal(await store.get(`suggestions.item.${removed}`), undefined, "run_2 removed it");
+  const kept = new Map([...store.rows].filter(([key]) => key.startsWith("suggestions.")));
+
+  letGo();
+  await late;
+  assert.equal(await store.get(`suggestions.item.${removed}`), undefined, "the late reader of run_1 does not bring it back");
+  assert.deepEqual(new Map([...store.rows].filter(([key]) => key.startsWith("suggestions."))), kept, "nor changes any row");
+  assert.equal((await store.get(`suggestions.scan.${other}`)).run_id, "run_2");
 });
