@@ -42,12 +42,14 @@
 //         rewrites it as an agent refreshing its token does. `key` {method, env}: that method reads the key in the
 //         variable `env`. `leak`: at session/new, say the token or key it signed in with: "exit" on stderr, then exit 1;
 //         "answer" in the words of the error it answers, alive.
+//   grow: {bytes}: at each save of a session, append `bytes` random bytes to <sessions>/store.db-wal and rewrite a
+//         store.db-shm beside it: a store that grows each turn, as Cursor's SQLite WAL does.
 // A script step {hang: true} is a model that never answers (until a cancel the agent heeds).
 // The step the model takes is the number it took before: its session's history (calls, native calls, answers), plus the
 // calls a recovery or context note names that its history does not hold, as a resumed model reads its conversation.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { Readable, Writable } from "node:stream";
@@ -79,6 +81,13 @@ const save = (session) => {
   if (!loads) return;
   mkdirSync(store, { recursive: true });
   writeFileSync(join(store, `${session.id}.json`), JSON.stringify({ id: session.id, history: session.history }));
+  if (config.grow) {
+    // A store that grows by appending, as SQLite's WAL does: `bytes` more at each save, and its shared-memory index
+    // rewritten beside it.
+    const wal = join(store, "store.db-wal");
+    appendFileSync(wal, randomBytes(config.grow.bytes));
+    writeFileSync(join(store, "store.db-shm"), randomBytes(32 * 1024));
+  }
 };
 const sessions = new Map();
 // What it was started with: the names in its environment (never their values), its HOME and its directory.

@@ -10,8 +10,8 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test as nodeTest } from 'node:test';
-import { ACP_CODES, recipeProblems, STATE_STREAM } from '@parcha/agentrun-harness-acp';
-import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords } from './helpers.mjs';
+import { ACP_CODES, recipeProblems, STATE_STREAM, stateFiles } from '@parcha/agentrun-harness-acp';
+import { fakeEvents, fakeRecipe, openSession, resolvedRecords, scratch } from './helpers.mjs';
 
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
 const sha = (text) => createHash('sha256').update(text).digest('hex');
@@ -71,7 +71,7 @@ test("an attended run on a person's sign-in: authenticate before session/new, th
   assert.equal(auth.sha, sha(TOKEN), "the person's own sign-in, read by the agent where it left it");
   assert.ok(said.findIndex((e) => e.type === 'authenticate') < said.findIndex((e) => e.type === 'new'));
   await session.close();
-  const mirrored = (await streamRecords(store, STATE_STREAM)).map((r) => r.path);
+  const mirrored = [...stateFiles(await resolvedRecords(store, STATE_STREAM)).keys()];
   assert.ok(mirrored.length > 0, 'the session store was mirrored');
   assert.equal(JSON.stringify(mirrored).includes('token'), false, mirrored.join(', '));
   assert.equal((await leftBehind(store, events, lines)).includes(TOKEN), false, 'no record, event or log line holds the token');

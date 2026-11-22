@@ -6,8 +6,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { crc32, deflateRawSync } from "node:zlib";
 import { scratch } from "./support.mjs";
+import { zipOf } from "./fixtures/zip-of.mjs";
 
 const [{ installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, RecipeRefused, firstSeenOf }, { ARCHIVE_CODES, archivePlatform, ArchiveInstallFailed }] = await Promise.all([
   import("../dist/harness-recipe.js"), import("../dist/harness-archive.js"),
@@ -21,50 +21,6 @@ const URL_OF = "https://releases.example.invalid/model-agent-1.0.0.tar.bz2";
 const MODEL = "anthropic/claude-haiku-4-5";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const linux = process.platform === "linux" ? false : "the agent's environment and its kill are read from /proc";
-
-/** A .zip of `entries` (`{ name, bytes, mode?, link? }`), each deflated, with its Unix mode in the central directory as
- *  Info-ZIP writes it: how the registry's .zip releases (Google Antigravity's) are packed. `link`: a symbolic link,
- *  `bytes` its target. */
-function zipOf(entries) {
-  const locals = [];
-  const centrals = [];
-  let offset = 0;
-  for (const { name, bytes, mode = 0o644, link = false } of entries) {
-    const data = deflateRawSync(bytes);
-    const crc = crc32(bytes);
-    const path = Buffer.from(name);
-    const local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(20, 4);
-    local.writeUInt16LE(8, 8);
-    local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(data.length, 18);
-    local.writeUInt32LE(bytes.length, 22);
-    local.writeUInt16LE(path.length, 26);
-    const central = Buffer.alloc(46);
-    central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt16LE(0x031e, 4);
-    central.writeUInt16LE(20, 6);
-    central.writeUInt16LE(8, 10);
-    central.writeUInt32LE(crc, 16);
-    central.writeUInt32LE(data.length, 20);
-    central.writeUInt32LE(bytes.length, 24);
-    central.writeUInt16LE(path.length, 28);
-    central.writeUInt32LE((((link ? 0o120000 : 0o100000) | mode) << 16) >>> 0, 38);
-    central.writeUInt32LE(offset, 42);
-    locals.push(local, path, data);
-    centrals.push(central, path);
-    offset += local.length + path.length + data.length;
-  }
-  const directory = Buffer.concat(centrals);
-  const end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(entries.length, 8);
-  end.writeUInt16LE(entries.length, 10);
-  end.writeUInt32LE(directory.length, 12);
-  end.writeUInt32LE(offset, 16);
-  return Buffer.concat([...locals, directory, end]);
-}
 
 /** A release of the stand-in agent: `./agent`, a script that runs it, packed in a .tar.bz2 (or a .tar.gz or a .zip: `pack`
  *  "gz" or "zip"). `extra` changes its bytes; `sidecar`, the text of a second executable beside it (`./sidecar`), as

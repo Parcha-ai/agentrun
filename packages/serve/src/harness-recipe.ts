@@ -63,9 +63,6 @@ export const AGENT_VARS: Readonly<Record<"inherited" | "reserved" | "proxy", rea
 export type RecipeModel =
   | { readonly billing: "proxy"; readonly wire: "anthropic-messages"; readonly env: string; readonly hostEnv?: "ANTHROPIC_HOST" | "ANTHROPIC_BASE_URL" }
   | { readonly billing: "plan"; readonly maxTurns: number; readonly maxToolCalls: number; readonly hosts?: readonly string[]; readonly id?: string };
-
-/** A model id as an agent lists one (run-adapters-acp's MODEL_ID: `gpt-5.4-nano[reasoning=medium]`). */
-const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/=,[\]-]{0,199}$/;
 /** A sign-in method's id as an agent lists it (keyMethod's `gemini-api-key`). */
 const SIGN_IN_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** A long flag as signIn.homeArg names one (`--gemini-dir`): its value is the next argument, never after an `=`. */
@@ -270,7 +267,10 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
     if (!Number.isInteger(model.maxToolCalls) || (model.maxToolCalls as number) < 0) say(RECIPE_CODES.invalid, "plan billing needs maxToolCalls, a whole number of calls");
     if (!entries?.length && r.signIn === undefined) say(RECIPE_CODES.invalid, "a plan-billed agent runs on its vendor's key or its owner's sign-in: name the key in keys or the sign-in in signIn");
     if (model.hosts !== undefined && (!strings(model.hosts) || model.hosts.length > 16 || !model.hosts.every(vendorHost))) say(RECIPE_CODES.invalid, "model.hosts lists at most 16 hosts the vendor's model is on, each a host name with an optional :port from 1 to 65535 (default 443)");
-    if (model.id !== undefined && (typeof model.id !== "string" || !MODEL_ID.test(model.id))) say(RECIPE_CODES.invalid, "model.id, when given, is the model's id as the agent lists it (session/new's availableModels): one word, no spaces");
+    // A model id as an agent lists one (`gpt-5.4-nano[reasoning=medium]`): the ACP package's MODEL_ID, the one definition.
+    // Without that package no recipe runs (harness-table.ts refuses it by name), so its form goes unchecked here.
+    const listedId = acpPackage()?.MODEL_ID;
+    if (model.id !== undefined && (typeof model.id !== "string" || (listedId !== undefined && !listedId.test(model.id)))) say(RECIPE_CODES.invalid, "model.id, when given, is the model's id as the agent lists it (session/new's availableModels): one word, no spaces");
     for (const field of Object.keys(model)) if (!["billing", "maxTurns", "maxToolCalls", "hosts", "id"].includes(field)) say(RECIPE_CODES.invalid, `model.${field} is not a field of plan billing`);
   } else say(RECIPE_CODES.invalid, 'model.billing is "proxy" or "plan"');
 

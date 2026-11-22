@@ -839,7 +839,7 @@ export interface Agents {
    *  blanked, and its purge time set last. Only once each of its runs is purged (Runs.purge) and no trigger is left:
    *  refused while a run is not (StoreConstraint) or a trigger is (TriggersLeft), nothing written. Its row and its
    *  revisions' ids stay, so its runs' tombstones and every total over them read as before. An agent with no row, or one
-   *  purged already, is no write. On SQLite, once it commits, a WAL checkpoint (Runs.purge). */
+   *  purged already, is no write. On SQLite, the scrub's marker first and a WAL checkpoint once it commits (Runs.purge). */
   purge(agentId: string): Promise<void>;
 }
 
@@ -1028,12 +1028,12 @@ export interface Runs {
    *  stays as a tombstone (id, agent, revision, state, outcome, times, cost, metrics with `kept` folded in), its purge
    *  time set last, which every total sums as before. Refused (StoreConstraint), nothing written, while it is not final
    *  or a runner holds it, and while a run made from it is not purged (RunsMadeFromLeft); Runs.create makes none under
-   *  the same lock once it is purged. A run with no row, or purged already, is no write. On SQLite a WAL checkpoint
-   *  (TRUNCATE) follows the commit, so with secure_delete neither the file nor its WAL keeps the bytes; one another
-   *  connection holds back leaves the scrub's marker for the next start's scrub, and a marker that can't be written
-   *  throws, the purge committed, for the retried DELETE to arrange again (Store.purgeScrub). Postgres keeps old row
-   *  versions until its VACUUM. The run's text in its agent's learning folder is the server's to take off
-   *  (agent-delete.ts forgetCopies), and the purge time set here is what the folder's history reads skip its merges by. */
+   *  the same lock once it is purged. A run with no row, or purged already, is no write. On SQLite the scrub's marker
+   *  comes first (one that can't be written, a full disk, throws with nothing purged), and a WAL checkpoint (TRUNCATE)
+   *  follows the commit, so with secure_delete neither the file nor its WAL keeps the bytes; a checkpoint another
+   *  connection holds back keeps the marker for the next start's scrub. Postgres keeps old row versions until its
+   *  VACUUM. The run's text in its agent's learning folder is the server's to take off (agent-delete.ts forgetCopies),
+   *  and the purge time set here is what the folder's history reads skip its merges by. */
   purge(runId: string, kept: PurgeKept): Promise<void>;
   /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
    *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,
@@ -1808,12 +1808,6 @@ export interface Store {
    *  done; `left` says why it was kept, for the next start to finish. Postgres: `work` alone (a replaced row version is
    *  the database's until its vacuum). */
   secureRewrite?(work: () => Promise<number>, options?: SecureRewriteOptions): Promise<SecureRewrite>;
-  /** A DELETE of a run or agent already purged (agent-delete.ts): a purge can commit and then fail to write the scrub's
-   *  marker (Runs.purge), and its retry finds the row purged. SQLite with a file, when no marker is there: the purge's
-   *  WAL checkpoint again, and the marker when another connection still holds the log back; with the marker there, no
-   *  write, but the marker is the purge's too, so a rewrite under way that wrote it removes it only after a checkpoint
-   *  that truncates the log. Postgres and a store with no file: nothing. */
-  purgeScrub(): Promise<void>;
   /** Reads the store's schema version and its runner floor now, without a lock or a write: a runner reads it at each
    *  renewal (runner/main.ts), and stops once the floor is above the version its build knows. */
   schemaState?(): Promise<StoreSchemaState>;
