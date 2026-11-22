@@ -622,8 +622,9 @@ export class Suggestions {
       const fresh: Item = { id, repo: scan.repo, key: suggestion.key, status: "open", suggestion, scan: { run_id: scan.run_id, commit: answer.commit, at } };
       for (let tries = 0; tries < 3; tries++) {
         const was = await this.item(id);
-        // Decided stays decided; an open one from a newer scan than this, or one being created, is left too.
-        if (was && (was.status !== "open" || was.scan.at > at || this.held(was.creating, CREATE_CLAIM_MS))) {
+        // Decided stays decided; an open one from a newer scan than this, one being created, or one whose create pushed
+        // and did not finish (`pushed`, which the next create recovers its agent by) is left too.
+        if (was && (was.status !== "open" || was.scan.at > at || this.held(was.creating, CREATE_CLAIM_MS) || was.pushed)) {
           if (was.status !== "open") skipped++;
           break;
         }
@@ -632,7 +633,7 @@ export class Suggestions {
     }
     // The older scans' open suggestions this answer no longer holds.
     for (const item of await this.items()) {
-      if (item.repo.toLowerCase() !== scan.repo.toLowerCase() || item.status !== "open" || kept.has(item.id) || item.scan.at > at || this.held(item.creating, CREATE_CLAIM_MS)) continue;
+      if (item.repo.toLowerCase() !== scan.repo.toLowerCase() || item.status !== "open" || kept.has(item.id) || item.scan.at > at || this.held(item.creating, CREATE_CLAIM_MS) || item.pushed) continue;
       await this.deps.settings.removeIf(`${ITEM}${item.id}`, item);
     }
     // `found`: the ones open now, never those a person had decided (counted apart, as `skipped`).

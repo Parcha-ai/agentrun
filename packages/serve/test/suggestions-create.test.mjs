@@ -118,9 +118,9 @@ test("a pull request GitHub refuses after the agent was made keeps the agent; th
   assert.equal((await s.create(id, {})).status, 200, "created: answered as it is");
 });
 
-test("a create whose agent was made but whose row could not be kept reuses that agent next time: one agent, one branch, one pull request", async (t) => {
+test("a create whose agent was made but whose row could not be kept reuses that agent next time, whatever scans ran meanwhile: one agent, one branch, one pull request", async (t) => {
   let applies = 0;
-  const { s, store, state, id } = await service(t, { makeAgent: async () => ({ agentId: `agent_${++applies}`, warnings: [] }) });
+  const { s, deps, store, state, id } = await service(t, { makeAgent: async () => ({ agentId: `agent_${++applies}`, warnings: [] }) });
   // The store refuses the write that would say the suggestion was created, once.
   const put = store.put;
   let refused = 0;
@@ -132,6 +132,14 @@ test("a create whose agent was made but whose row could not be kept reuses that 
   assert.equal(applies, 1, "the agent was made");
   const kept = await store.get(`suggestions.item.${id}`);
   assert.deepEqual([kept.status, kept.creating, kept.pushed?.branch], ["open", undefined, "agentrun/ticket-triage"], "open, unclaimed, and naming its push");
+  // Newer scans meanwhile, one answering the suggestion again and one leaving it out: neither replaces nor removes a row
+  // whose create has not finished, so its push and the agent found by it are not lost.
+  for (const [run, suggestions] of [["run_2", suggestionsFor().map((x) => ({ ...x, title: `${x.title}, again` }))], ["run_3", suggestionsFor().slice(1)]]) {
+    const newer = new Suggestions({ ...deps, startScan: async () => run, readRun: async () => ({ status: "completed", output: { repository: REPO, commit: "", app: "An app.", suggestions }, endedAt: Date.now() + 1 }) });
+    await newer.scan({ repo: REPO });
+    await newer.list({});
+    assert.deepEqual(await store.get(`suggestions.item.${id}`), kept, `${run} left the unfinished create's row as it was`);
+  }
 
   const again = await s.create(id, {});
   assert.equal(again.status, 201);
