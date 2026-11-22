@@ -302,7 +302,8 @@ test("what cannot travel is named: a local or unsaved MCP server and one with it
   t.after(() => slack.close());
   for (const name of ["post", "search"]) slack.tools[name] = { description: `slack's ${name}.`, input: { type: "object", properties: {}, additionalProperties: true }, run: () => ({ content: [{ type: "text", text: "{}" }] }) };
   assert.equal((await api("PUT", "/settings/mcp-servers/slack", { url: slack.url, auth: { type: "none" }, source: "composio", toolkit: "slack" })).status, 200);
-  const toolSettings = { "mcp:slack/post": { pin: { channel: "C0STATUS", api_key: leak("pin") } }, "mcp:slack/search": { pin: { channel: "C0STATUS" } } };
+  // search's keys pin holds names (the fields a call may give), not values: it is no credential, though `keys` reads as one.
+  const toolSettings = { "mcp:slack/post": { pin: { channel: "C0STATUS", api_key: leak("pin") } }, "mcp:slack/search": { pin: { channel: "C0STATUS", properties: { keys: ["hs_lead_score"] } } } };
   await server.store.agents.create({ id: "leaky", name: "Leaky" }, { id: "leaky-rev", kind: "agentic", body: { instructions: "Say what changed.", tools: ["read", "mcp:slack/post", "mcp:slack/search"], toolSettings, maxCostUsd: 1 } });
   const words = ["token", "key", "secret", "sig", "password"];
   const triggers = [
@@ -324,7 +325,7 @@ test("what cannot travel is named: a local or unsaved MCP server and one with it
   // What holds none still travels: the feed whose query is a page, and the tool whose pin is a channel.
   const kept = asPackage(leaky.body);
   assert.deepEqual(kept.triggers.map((trigger) => [trigger.name, trigger.source.urls]), [["Paged feed", ["https://status.example.com/feed.xml?page=2"]]]);
-  assert.deepEqual(kept.mcp.map((need) => [need.toolkit, need.tools, need.pin]), [["slack", ["post", "search"], { search: { channel: "C0STATUS" } }]]);
+  assert.deepEqual(kept.mcp.map((need) => [need.toolkit, need.tools, need.pin]), [["slack", ["post", "search"], { search: { channel: "C0STATUS", properties: { keys: ["hs_lead_score"] } } }]]);
 });
 
 test("what the agent may not do here, it may not do from the package: a tool its own settings deny, by the tool's key, its server's wildcard or bash's, is not granted; a trigger that messages one of its runs, and the keys a template version no longer held named, are remade", { timeout: 120_000 }, async (t) => {
