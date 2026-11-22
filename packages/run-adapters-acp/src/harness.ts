@@ -274,8 +274,20 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       .join("\n")
       .trim()
       .slice(-300);
-  /** Why an agent that ended did: its last words on stderr, else the error's, else that it said nothing. */
-  const whyEnded = (agent: { stderrTail(): string }, error: unknown): string => lastWords(agent.stderrTail()) || lastWords(message(error)) || "it said nothing";
+  /** A recipe whose agent's words are kept nowhere (recipe.stderr `none`: an agent on a person's sign-in, whose token no
+   *  key cut knows): a failure says its exit status and the adapter's own codes, never a word the agent printed or
+   *  answered. */
+  const hushed = recipe.stderr === "none";
+  /** An error's words for a failure: on a hushed run, an error the agent answered says its JSON-RPC code alone. */
+  const agentSaid = (error: unknown): string => {
+    if (!hushed) return said(error);
+    const code = (error as { code?: unknown } | undefined)?.code;
+    return typeof code === "number" ? `the agent answered error ${code}; its words are kept nowhere on this run` : said(error);
+  };
+  /** Why an agent that ended did: its last words on stderr, else the error's, else that it said nothing. On a hushed run,
+   *  its exit status alone. */
+  const whyEnded = (agent: { stderrTail(): string; ended(): string | undefined }, error: unknown): string =>
+    hushed ? `${agent.ended() ?? "its end is not known yet"}; what it printed is kept nowhere on this run` : lastWords(agent.stderrTail()) || lastWords(message(error)) || "it said nothing";
 
   /** Mirror the agent's session store into `journal` (the caller flushes). A failure is said and never thrown: the next
    *  point takes the mirror again, and a turn's outcome is never lost to it. */
@@ -539,8 +551,10 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const keyEnv: Record<string, string> = {};
     const absent: string[] = [];
     for (const name of recipe.keys ?? []) {
+      // Read by its own name, handed under the one the agent reads (recipe.keyEnv): a value the host holds under that
+      // name is never the agent's.
       const value = hostEnv[name];
-      if (typeof value === "string" && value !== "") keyEnv[name] = value;
+      if (typeof value === "string" && value !== "") keyEnv[recipe.keyEnv?.[name] ?? name] = value;
       else absent.push(name);
     }
     if (absent.length) throw new Error(`${ACP_CODES.keyMissing}: ${recipe.label ?? recipe.id} runs on ${absent.join(" and ")}, which this host does not hold; the agent was not started`);
@@ -639,6 +653,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         ...(options.confine ? { confine: options.confine } : {}),
         ...(options.parentWatch ? { parentWatch: options.parentWatch } : {}),
         keys: Object.values(keyEnv),
+        ...(hushed ? { stderr: "none" as const } : {}),
         signal,
         onUpdate: (notification) => onUpdate(rt, notification),
         onPermission: (request, connection) => onPermission(rt, request, connection),
@@ -654,7 +669,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
           const named = refusalIn(`${live.stderrTail()}\n${message(error)}`);
           if (named) throw new Error(named);
           if (!live.alive() || live.connection.signal.aborted) throw new Error(`${ACP_CODES.agentExited}: the agent ended during ${what}: ${whyEnded(live, error)}`);
-          throw new Error(`acp: ${what} failed: ${said(error)}`);
+          throw new Error(`acp: ${what} failed: ${agentSaid(error)}`);
         });
       const init: InitializeResponse = await ask("initialize", () =>
         live.connection.agent.request("initialize", { protocolVersion: PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "agentrun", version: "1" } }),
@@ -665,6 +680,17 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       if (recipe.declares.load && !caps.loadSession) missing.push("session/load (agentCapabilities.loadSession)");
       if (recipe.declares.mcp === "http" && !caps.mcpCapabilities?.http) missing.push("MCP over http (agentCapabilities.mcpCapabilities.http)");
       if (missing.length) throw new Error(`${ACP_CODES.capabilityMismatch}: the recipe declares ${missing.join(" and ")}, which the agent's initialize does not advertise`);
+      // The recipe's sign-in method, told before any session opens: one the agent lists, or none is tried.
+      if (recipe.authMethod) {
+        const methods = (init.authMethods ?? []).map((method) => method.id);
+        if (!methods.includes(recipe.authMethod)) throw new Error(`${ACP_CODES.authUnlisted}: ${recipe.label ?? recipe.id} signs in with ${recipe.authMethod}, which its initialize does not list (${methods.join(", ") || "it lists none"}); no session was opened`);
+        try {
+          await ask("authenticate", () => live.connection.agent.request("authenticate", { methodId: recipe.authMethod! }));
+        } catch (error) {
+          if (signal.aborted || !live.alive()) throw error;
+          throw new Error(`${ACP_CODES.authFailed}: ${recipe.label ?? recipe.id} refused its sign-in method ${recipe.authMethod}: ${message(error).replace(/^acp: authenticate failed: /, "")}; no session was opened`);
+        }
+      }
 
       const server: AcpMcpServer =
         recipe.declares.mcp === "http"
@@ -684,7 +710,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
           rt.fresh = false;
         } catch (error) {
           if (signal.aborted || !live.alive()) throw error;
-          log("acp: the agent did not load its session; a new one starts with the conversation so far", { error: said(error) });
+          log("acp: the agent did not load its session; a new one starts with the conversation so far", { error: agentSaid(error) });
         } finally {
           rt.loading = false;
         }
@@ -857,7 +883,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       if (turn.limitHit) outcome = { status: "failed", error: turn.limitHit };
       else if (failure !== undefined) {
         const named = refusalIn(`${agent.agent.stderrTail()}\n${message(failure)}`);
-        outcome = { status: "failed", error: named ?? (agent.agent.alive() && !agent.agent.connection.signal.aborted ? `acp: session/prompt failed: ${said(failure)}` : `${ACP_CODES.agentExited}: the agent ended during the turn: ${whyEnded(agent.agent, failure)}`) };
+        outcome = { status: "failed", error: named ?? (agent.agent.alive() && !agent.agent.connection.signal.aborted ? `acp: session/prompt failed: ${agentSaid(failure)}` :`${ACP_CODES.agentExited}: the agent ended during the turn: ${whyEnded(agent.agent, failure)}`) };
       } else {
         const reason = answer?.stopReason;
         if (reason === "end_turn") outcome = { status: "completed" };
