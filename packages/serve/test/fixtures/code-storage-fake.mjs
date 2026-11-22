@@ -203,7 +203,8 @@ export function codeStorageFake({ name = "example-org", publicKey } = {}) {
       const before = treeOf(repo, commit.parent);
       const files = changedPaths(repo, commit).map((one) => {
         const raw = rawDiff(one, before.get(one), commit.tree.get(one));
-        return { path: one, state: !before.has(one) ? "added" : !commit.tree.has(one) ? "deleted" : "modified", old_path: null, raw, bytes: raw.length, is_eof: true };
+        // Each file's state is git's own letter (A, M, D; R and C carry a score), as the real API sends it.
+        return { path: one, state: !before.has(one) ? "A" : !commit.tree.has(one) ? "D" : "M", old_path: null, raw, bytes: raw.length, is_eof: true };
       });
       return json(200, { sha: commit.sha, base_sha: commit.parent ?? undefined, stats: { files: files.length, additions: 0, deletions: 0, changes: 0 }, files, filtered_files: [] });
     }

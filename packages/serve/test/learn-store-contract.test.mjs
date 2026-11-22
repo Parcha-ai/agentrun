@@ -12,13 +12,18 @@
 // agentrun-<that id>-agent-one-g<N>; every generation is deleted (each by its exact id, no listing) when the case ends.
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { codeStorageFake } from "./fixtures/code-storage-fake.mjs";
 
+/** The variable the capture path's check (the case at the end) hands its child the fake's public key in: set, the live
+ *  cases run against a fake keyed with it, never the network. */
+const FAKE_PEM = "LEARN_STORE_CONTRACT_FAKE_PEM";
 const HEX = /^[0-9a-f]{40}$/;
 /** The fakes' server id: 12 hex digits, as archil-settings.ts serverIdOf makes one. */
 const SRV = "0123456789ab";
@@ -104,8 +109,13 @@ const STORES = {
       const { codeStorageFromEnv } = await import("../dist/learn/store-of.js");
       const settings = codeStorageFromEnv(process.env, (name) => process.env[name]);
       const serverId = randomBytes(6).toString("hex");
-      const store = codeStorageLearningStore({ ...settings, serverId: async () => serverId }, "agent-one");
-      t.after(() => store.remove({ erase: true }));
+      // The capture path's own check (the case at the end) runs these cases against a fake keyed with the settings' key.
+      const fake = process.env[FAKE_PEM] ? codeStorageFake({ name: settings.name, publicKey: process.env[FAKE_PEM] }) : undefined;
+      const store = codeStorageLearningStore({ ...settings, ...(fake ? { fetch: fake.fetch } : {}), serverId: async () => serverId }, "agent-one");
+      t.after(async () => {
+        await store.remove({ erase: true });
+        if (fake) assert.deepEqual([...fake.repos.keys()], [], "every generation the case made is erased");
+      });
       return store;
     },
   } : {}),
@@ -538,3 +548,30 @@ test("code.storage: every repository id the whole suite sent is agentrun-<12 hex
   assert.deepEqual(sent.filter((call) => /^repos\/?$/.test(call.path) && call.method === "GET"), [], "no repository listing");
   assert.deepEqual([...new Set(sent.filter((call) => call.method === "DELETE").map((call) => call.path))], ["repos/delete"]);
 });
+
+// The live cases' settings are read before any of dist is: its secrets module takes every key out of the environment as
+// it loads (secrets.ts), so a read inside a case finds the name alone. Checked in CI in a process of this file's own,
+// started with the three settings and the fake's public key: every live case runs, against the fake, and passes.
+if (!process.env.AGENTRUN_CODE_STORAGE_NAME) {
+  test("code.storage live: started with its settings, every live case runs and passes (here against the fake, keyed with the settings' key), each erasing what it made", { timeout: 180_000 }, async () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    // NODE_TEST_CONTEXT left out: under `node --test` the child would report to this runner's pipe, not as TAP.
+    const { NODE_TEST_CONTEXT: _, ...parent } = process.env;
+    const env = {
+      ...parent,
+      AGENTRUN_CODE_STORAGE_NAME: "example-org",
+      AGENTRUN_CODE_STORAGE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }),
+      AGENTRUN_CODE_STORAGE_API_URL: "https://api.example-org.code.storage.invalid",
+      [FAKE_PEM]: publicKey.export({ type: "spki", format: "pem" }),
+    };
+    const file = fileURLToPath(import.meta.url);
+    const out = await promisify(execFile)(process.execPath, ["--test-reporter=tap", "--test-name-pattern=^code\\.storage live: ", file], { env, maxBuffer: 16 << 20, timeout: 170_000 }).catch((error) => error);
+    const said = `${out.stdout ?? ""}${out.stderr ?? ""}`;
+    const live = (said.match(/^ok \d+ - code\.storage live: /gm) ?? []).length;
+    // One live case for each case every store runs.
+    const each = (readFileSync(file, "utf8").match(/^ {2}test\(`\$\{kind\}: /gm) ?? []).length;
+    assert.equal((said.match(/^not ok /gm) ?? []).length, 0, said);
+    assert.ok(each > 0);
+    assert.equal(live, each, said);
+  });
+}
