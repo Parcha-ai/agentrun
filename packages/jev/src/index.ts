@@ -175,36 +175,41 @@ const isTimerMs = (n: number, allowZero = false): boolean => Number.isSafeIntege
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const isTokenCount = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
 /** A bounded machine token, never free text. Provider `error_type` values are lower-case identifiers. */
-function providerToken(value: unknown, lowerCase = false): string | undefined {
-  if (typeof value !== "string" || value.length === 0 || value.length > 128) return undefined;
-  return (lowerCase ? /^[a-z][a-z0-9_.-]*$/ : /^[A-Za-z0-9][A-Za-z0-9_.:/-]*$/).test(value) ? value : undefined;
+function providerToken(value: unknown, lowerCase = false, sensitiveValue?: string): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || value.length > 64 ||
+      (sensitiveValue && value.includes(sensitiveValue))) return undefined;
+  return (lowerCase ? /^[a-z][a-z0-9_.-]*$/ : /^[A-Za-z0-9][A-Za-z0-9_.-]*$/).test(value) ? value : undefined;
 }
 /** Read typed fields from one JSON object, without accepting free text as a field value. */
-function providerFields(body: Record<string, unknown>): JevProviderDiagnostic {
+function providerFields(body: Record<string, unknown>, sensitiveValue?: string): JevProviderDiagnostic {
   const nested = isRecord(body.error) ? body.error : undefined;
   const detail = isRecord(body.detail) ? body.detail : undefined;
   return {
-    type: providerToken(body.type ?? nested?.type),
-    code: providerToken(body.code ?? nested?.code),
-    errorType: providerToken(detail?.error_type, true),
+    type: providerToken(body.type ?? nested?.type, false, sensitiveValue),
+    code: providerToken(body.code ?? nested?.code, false, sensitiveValue),
+    errorType: providerToken(detail?.error_type, true, sensitiveValue),
   };
 }
 /** A broker can put the vendor's JSON object in `message`; read only its typed fields, never the message itself. */
-function wrappedProviderFields(message: unknown): JevProviderDiagnostic | undefined {
+function wrappedProviderFields(message: unknown, sensitiveValue?: string): JevProviderDiagnostic | undefined {
   if (typeof message !== "string" || message.length < 2 || message.length > 16_384) return undefined;
   try {
     const body: unknown = JSON.parse(message);
-    return isRecord(body) ? providerFields(body) : undefined;
+    return isRecord(body) ? providerFields(body, sensitiveValue) : undefined;
   } catch {
     return undefined;
   }
 }
-function providerDiagnostic(error: APIError): JevProviderDiagnostic | undefined {
+function directProviderErrorType(error: APIError, sensitiveValue?: string): string | undefined {
+  return isRecord(error.body) ? providerFields(error.body, sensitiveValue).errorType : undefined;
+}
+function providerDiagnostic(error: APIError, sensitiveValue?: string): JevProviderDiagnostic | undefined {
   const body = error.body;
   if (!isRecord(body)) return undefined;
-  const direct = providerFields(body);
+  const direct = providerFields(body, sensitiveValue);
   const nested = isRecord(body.error) ? body.error : undefined;
-  const wrapped = wrappedProviderFields(nested?.message) ?? wrappedProviderFields(body.message);
+  const wrapped = wrappedProviderFields(nested?.message, sensitiveValue) ??
+    wrappedProviderFields(body.message, sensitiveValue);
   const diagnostic = {
     type: direct.type ?? wrapped?.type,
     code: direct.code ?? wrapped?.code,
@@ -470,13 +475,14 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
   const model = options.model ?? (provider === "openrouter" ? OPENROUTER_DEFAULT_MODEL : "jev-latest");
   requireConfig(typeof model === "string" && model.trim().length > 0, "model must be a nonempty string.");
   let client: JevClient;
+  let apiKey: string | undefined;
   try {
-    const key = options.apiKey ?? (provider === "openrouter" ? process.env[keyVariable.openrouter] : undefined);
-    // A blank key is refused on either provider: the SDK would send it as an empty bearer token. Given no key, the SDK falls back to
-    // TYPESAFE_API_KEY, so for OpenRouter an absent key is refused too: that would send one provider's key to another.
-    if ((key !== undefined || provider === "openrouter") && (typeof key !== "string" || key.trim().length === 0)) throw new Error("no key");
+    apiKey = options.apiKey ?? process.env[keyVariable[provider]];
+    // A blank key is refused on either provider: the SDK would send it as an empty bearer token. The provider-specific lookup also keeps
+    // an OpenRouter request from falling back to TYPESAFE_API_KEY, and lets diagnostics redact whichever runner key is in use.
+    if ((apiKey !== undefined || provider === "openrouter") && (typeof apiKey !== "string" || apiKey.trim().length === 0)) throw new Error("no key");
     client = hostClient ?? new TypeSafeClient({
-      apiKey: key, baseURL: options.baseURL ?? (provider === "openrouter" ? OPENROUTER_BASE_URL : undefined), fetch: options.fetch,
+      apiKey, baseURL: options.baseURL ?? (provider === "openrouter" ? OPENROUTER_BASE_URL : undefined), fetch: options.fetch,
       defaultModel: model, retry: { maxRetries: 0 }, timeout: timeoutMs ?? undefined, logLevel: "off",
       // Bodies go as they always have: uncompressed JSON, which a host's own fetch, a gateway and OpenRouter all read.
       compression: false,
@@ -517,12 +523,13 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           // the deadline ended the call. A timed-out request may have been billed, and its code is what says so.
           if (signal.aborted || (timeoutMs !== null && error instanceof APITimeoutError)) throw abortError();
           const status = error instanceof APIError ? error.status : undefined;
-          const provider = error instanceof APIError ? providerDiagnostic(error) : undefined;
+          const provider = error instanceof APIError ? providerDiagnostic(error, apiKey) : undefined;
+          const directErrorType = error instanceof APIError ? directProviderErrorType(error, apiKey) : undefined;
           const before = error instanceof APIConnectionError && neverSent(error);
           // A request that was sent may have been answered and billed: unless the host asked for retries after sending, it is not sent again.
           if (!retryAfterSend && (status === 408 || (status !== undefined && status >= 500 && status <= 599) || (error instanceof APIConnectionError && !before))) {
             const safeStatus = status !== undefined && Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
-            const capacity = provider?.errorType === "max_tokens_exceeded";
+            const capacity = directErrorType === "max_tokens_exceeded";
             const what = safeStatus === undefined ? "Jev's connection was lost" : `Jev returned HTTP ${safeStatus}`;
             // Only the structured reason is named, as on any HTTP failure; the provider's body text never reaches the message.
             throw new JevError("outcome_unknown", capacity
@@ -555,7 +562,7 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
             : new JevError("http", `Jev returned HTTP ${billable.status}.`, attempt, billable.status, undefined, undefined, billable.provider);
           if (status !== undefined) {
             const safeStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
-            const capacity = provider?.errorType === "max_tokens_exceeded";
+            const capacity = directErrorType === "max_tokens_exceeded";
             // Only the structured reason is named; the provider's body text never reaches the message.
             const returned = safeStatus === undefined ? "Jev returned an HTTP failure" : `Jev returned HTTP ${safeStatus}`;
             throw new JevError("http", capacity

@@ -138,19 +138,19 @@ test('outcome_unknown and final retry failures retain typed provider fields', as
 });
 
 test('provider diagnostics enforce token and wrapped JSON length boundaries', async () => {
-  const token128 = 'a'.repeat(128);
-  const token129 = 'b'.repeat(129);
+  const token64 = 'a'.repeat(64);
+  const token65 = 'b'.repeat(65);
   const constructorError = new JevError('http', 'fixed', 1, 400, undefined, undefined,
-    { type: token128, code: token129, errorType: token128 });
+    { type: token64, code: token65, errorType: token64 });
   assert.deepEqual([constructorError.providerType, constructorError.providerCode, constructorError.providerErrorType],
-    [token128, undefined, token128]);
+    [token64, undefined, token64]);
   safe(constructorError);
 
   const run = createJevRunner({ maxAttempts: 1, client: { async systemOne() {
-    throw new APIError(400, { type: token128, code: token129 }, new Headers());
+    throw new APIError(400, { type: token64, code: token65 }, new Headers());
   } } });
   await assert.rejects(run(params), error => {
-    assert.equal(error.providerType, token128);
+    assert.equal(error.providerType, token64);
     assert.equal(error.providerCode, undefined);
     safe(error);
     return true;
@@ -175,6 +175,36 @@ test('provider diagnostics enforce token and wrapped JSON length boundaries', as
   });
   await assert.rejects(wrappedRun(rejected)(params), error => {
     assert.equal(error.providerErrorType, undefined);
+    safe(error);
+    return true;
+  });
+});
+
+test('provider tokens reject URLs and any value containing the runner API key', async () => {
+  const apiKey = 'runner-api-key-sentinel';
+  for (const code of ['https://example.invalid/error', apiKey, `prefix-${apiKey}-suffix`]) {
+    const run = createJevRunner({ apiKey, baseURL: 'https://fictional.invalid', maxAttempts: 1,
+      fetch: async () => new Response(JSON.stringify({ code, detail: { error_type: 'billing_error' } }), { status: 400,
+        headers: { 'content-type': 'application/json' } }) });
+    await assert.rejects(run(params), error => {
+      assert.equal(error.code, 'http');
+      assert.equal(error.providerCode, undefined);
+      safe(error);
+      return true;
+    });
+  }
+});
+
+test('a wrapped capacity code remains diagnostic data, not a direct protocol hint', async () => {
+  const run = createJevRunner({ maxAttempts: 1, client: { async systemOne() {
+    throw new APIError(400, { error: { type: 'request_error', code: 'invalid_request',
+      message: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }) } }, new Headers());
+  } } });
+  await assert.rejects(run(params), error => {
+    assert.equal(error.code, 'http');
+    assert.equal(error.responseDiagnostic, undefined);
+    assert.equal(error.providerErrorType, 'max_tokens_exceeded');
+    assert.equal(error.message, 'Jev returned HTTP 400.');
     safe(error);
     return true;
   });
