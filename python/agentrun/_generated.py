@@ -2639,6 +2639,8 @@ class RunSummary(_RunSummaryRequired, total=False):
     native: RunSummaryNative
     console_url: str
     labels: dict[str, str]
+    stopped_for: Literal["budget"] | None
+    budget_refused_calls: int
     effort: Effort
     error: RunError | None
     learning: RunSummaryLearning | None
@@ -5493,6 +5495,8 @@ class Run(_RunRequired, total=False):
     native: RunNative
     console_url: str
     labels: dict[str, str]
+    stopped_for: Literal["budget"] | None
+    budget_refused_calls: int
     approvals: Literal["ask", "never"]
     last_progress_at: str | None
     recordings: list[RunRecordingsItem]
