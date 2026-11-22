@@ -77,7 +77,7 @@ const pick = (from: Json, keys: readonly string[]): Json => Object.fromEntries(k
  *  (trigger-composio.ts configSecrets: a field named like a credential, at any depth, and an address that carries one,
  *  such as a query's token). The field, never the value. */
 const clearIn = (value: unknown, at: string): string[] => configSecrets(value).map((secret) => [at, ...secret.path].join("."));
-const IN_THE_CLEAR = "It holds a credential in the clear, which a package never carries: take it out here (a key the agent uses is saved in Settings on the target and named under the package's secrets), then export again.";
+const IN_THE_CLEAR = "It holds a credential in the clear, and a package carries no credential: take it out of this field here, then export again.";
 
 /** `schema`, a compiled input schema, as the manifest's `inputs` that compile to it again; undefined for one that is not a
  *  closed object of fields. Whether it compiles back the same is checked once the package is read. */
