@@ -210,7 +210,8 @@ export const HAND_BACKS_KEPT_MS = 24 * 60 * 60_000;
  *  was cut (`cause`: drain, crash, lease_lapse, retry; null on a turn's first), why this one let the run go unfinished
  *  (`cut`), its runner, the run's state it took the run from, the first journal entry id it could write
  *  (`journal_from`) and when it claimed. Written in the claim's own transaction, its cut in its release's. Data only:
- *  the usage read (run-usage.ts) splits a run's cost by it, and nothing decides what a run does on it. In STORE_DDL, and
+ *  the usage read (run-usage.ts) splits a run's cost by it; source-project recovery uses the actual claim and journal
+ *  boundary to report a terminal attempt with no checkpoint, never to replay work or invent a capture. In STORE_DDL, and
  *  added at a server open to a store an earlier build of this version made, as COMPUTER_INTERVALS is: a claim made before
  *  it has no row. */
 export const RUN_ATTEMPTS = `CREATE TABLE IF NOT EXISTS run_attempts (

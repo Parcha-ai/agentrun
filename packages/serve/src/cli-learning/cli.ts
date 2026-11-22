@@ -6,8 +6,11 @@ import { defaultData } from '../server-fs.js';
 import { takeHold, releaseHold } from '../harness-install.js';
 import { cliLearningUrl, installCliLearning, removeCliLearning, statusCliLearning, type CliLearningRuntime } from './install.js';
 import { connectionFile, readConnection, saveConnection, type CliLearningConnection } from './state.js';
+import { sourceLocalConsent, type SourceLocalConsent } from '../source-sync/local.js';
+import { selectedNative } from '../native/connection.js';
+import { nativeEnvironment } from '../native/environment.js';
 
-const USAGE = 'usage: agentrun-serve learning connect|status|disconnect|retry --runtime codex|claude-code [--project PATH] [--url LOOPBACK_URL] [--data SERVER_DATA]';
+const USAGE = 'usage: agentrun-serve learning connect|status|disconnect|retry --runtime codex|claude-code [--project PATH] [--url LOOPBACK_URL] [--data SERVER_DATA] [--no-sync]';
 type CliIO = {
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
@@ -15,6 +18,7 @@ type CliIO = {
   fetch?: typeof fetch;
   /** Test/packaging boundary: executable plus arguments, never evaluated while installing. */
   command?: string[];
+  sourceConsent?: (runtime: CliLearningRuntime, project: string) => Promise<SourceLocalConsent>;
 };
 
 async function ownerToken(data: string): Promise<string> {
@@ -81,7 +85,7 @@ export async function learningMain(argv: string[], io: CliIO = {}): Promise<numb
   try {
     const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
       project: { type: 'string' }, runtime: { type: 'string' }, data: { type: 'string' }, url: { type: 'string' },
-      json: { type: 'boolean' }, help: { type: 'boolean' },
+      json: { type: 'boolean' }, help: { type: 'boolean' }, 'no-sync': { type: 'boolean' },
     } });
     if (values.help) { output(USAGE); return 0; }
     const operation = positionals[0];
@@ -148,6 +152,10 @@ export async function learningMain(argv: string[], io: CliIO = {}): Promise<numb
     }
 
     const url = await serverUrl(values.url, dataDir);
+    const sourceSync = values['no-sync'] ? undefined : await (io.sourceConsent ?? (async (runtime, project) => {
+      const env = nativeEnvironment(); return sourceLocalConsent(await selectedNative({ runtime, project }, env), env);
+    }))(runtime, project);
+    if (sourceSync) errorOutput('Setup sync copies this project’s instructions, authored skills and assets, supported tools/settings, project files and bounded Git history to AgentRun. Native credentials stay here. Future changes keep syncing until disabled; use --no-sync to connect capture only.');
     const before = await statusCliLearning(options);
     if (before.state === 'partial') throw new Error('AgentRun hooks were changed or disabled. Run learning disconnect before reconnecting.');
     if (existing) {
@@ -165,11 +173,15 @@ export async function learningMain(argv: string[], io: CliIO = {}): Promise<numb
       } catch { throw new Error('Cannot verify the existing learning connection. Retry when the local server is available.'); }
       if (!active) throw new Error('This learning connection is inactive. Run learning disconnect, then learning connect to enroll again.');
       const installation = await installCliLearning({ ...options, url, command: io.command });
+      if (sourceSync) {
+        const synced = await request(fetcher, url, '/v2/cli-learning/connections', await ownerToken(dataDir), 'POST', { project, runtime, source_sync: sourceSync });
+        if (!synced.ok) throw new Error(`Capture is connected, but setup sync was refused (HTTP ${synced.status}). Check the source and server are on the same machine, then retry connect.`);
+      }
       output(JSON.stringify({ ...installation, connection_id: existing.connection_id, agent_id: existing.agent_id }, null, 2));
       return 0;
     }
     const token = await ownerToken(dataDir);
-    const response = await request(fetcher, url, '/v2/cli-learning/connections', token, 'POST', { project, runtime });
+    const response = await request(fetcher, url, '/v2/cli-learning/connections', token, 'POST', { project, runtime, ...(sourceSync ? { source_sync: sourceSync } : {}) });
     if (!response.ok) throw new Error(`Server refused the learning connection (HTTP ${response.status}).`);
     const body = await response.json() as Record<string, unknown>;
     if (!body || typeof body.connection_id !== 'string' || typeof body.agent_id !== 'string' || typeof body.token !== 'string'

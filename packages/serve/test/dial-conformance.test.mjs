@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { connect, createServer } from "node:net";
@@ -15,7 +16,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { conformanceCases, MACHINE_TOKEN_SOURCE, newMachineToken, readPng, runConformance } from "@parcha/agentrun-computer";
 import { fakeDevices, fakeFetch, testClock } from "../../computer/test/fake-device.mjs";
-import { driftedVersion, fixtureFor, frameLines, patchVersion, reachesThisRun, scrubMachineTokens } from "../scripts/dial-conformance.mjs";
+import { driftedVersion, fixtureFor, frameLines, listenConformance, patchVersion, reachesThisRun, scrubMachineTokens } from "../scripts/dial-conformance.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/dial-conformance.mjs", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("./fixtures/dial-fake-provider.mjs", import.meta.url));
@@ -44,7 +45,7 @@ async function freePort() {
  * child.
  */
 function run(args, env, onLine = () => {}, { exit = true } = {}) {
-  const child = spawn(process.execPath, [SCRIPT, ...args, ...(exit ? ["--exit"] : [])], { env: { PATH: process.env.PATH, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [SCRIPT, ...args, ...(exit ? ["--exit"] : [])], { env: { PATH: process.env.PATH, AGENTRUN_BIND_HOST: "127.0.0.1", ...env }, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   let partial = "";
@@ -67,6 +68,22 @@ function reportOf(stdout) {
   assert.ok(begin >= 0 && end > begin, `the markers, in order: ${stdout.slice(0, 500)}`);
   return JSON.parse(lines.slice(begin + 1, end).join("\n"));
 }
+
+test("the conformance listener binds an explicitly local interface while preserving the unset public default", async () => {
+  const local = createHttpServer();
+  try {
+    await listenConformance(local, 0, "127.0.0.1");
+    assert.equal(local.address().address, "127.0.0.1", "the actual socket is not a wildcard listener");
+  } finally {
+    await new Promise((done) => local.close(done));
+  }
+  // Observe Node's listen boundary for the public default without publishing a test listener on the host.
+  const listener = new EventEmitter();
+  let supplied;
+  listener.listen = (options) => { supplied = options; listener.emit("listening"); };
+  await listenConformance(listener, 7340);
+  assert.deepEqual(supplied, { port: 7340 }, "unset host leaves Node's existing wildcard default intact");
+});
 
 test(
   "the script stands up serve's attach routes on $PORT and runs Core with --long over a dial host whose machines dial it: every case it runs passes, provider.deadline, drift.arch and drift.version among them, the report lands between the markers, and no token is written",

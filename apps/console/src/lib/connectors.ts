@@ -1,7 +1,7 @@
 import type { NativeRuntime, NativeTarget } from "./native";
 
 export type RemoteConnectionIntent = "live" | "history" | "both";
-export type ConnectorEnrollmentCapabilities = { native_execution: boolean; history_import: boolean };
+export type ConnectorEnrollmentCapabilities = { native_execution: boolean; history_import: boolean; config_sync?: boolean };
 
 /** Public connector metadata only. Enrollment credentials are returned by a separate owner action. */
 export type RemoteConnector = {
@@ -10,7 +10,7 @@ export type RemoteConnector = {
   status: "online" | "offline" | "revoked";
   last_seen_at: string | null;
   created_at: string;
-  capabilities: { observe: true; native_execution: boolean; history_import?: boolean };
+  capabilities: { observe: true; native_execution: boolean; history_import?: boolean; config_sync?: boolean };
   targets: {
     target_id: string;
     agent_id: string | null;
@@ -21,6 +21,7 @@ export type RemoteConnector = {
     issues: string[];
     capabilities: NativeTarget["capabilities"];
     history_only?: boolean;
+    sync_only?: boolean;
   }[];
 };
 

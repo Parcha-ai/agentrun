@@ -1,4 +1,5 @@
 // A local owner enrolls one installed CLI. Its hook credential can only submit prompt windows for this agent.
+import {cliCaptureOf} from "../source-sync/capture.js";
 import {createHash,createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
 import {basename} from 'node:path';
 import {createAgent,getAgent} from '../agents-store.js';
@@ -45,6 +46,6 @@ export class CliLearningConnections {
   }
   throw new ApiError("home_busy","The connection changed concurrently; retry this prompt-window acknowledgement.");
  }
- async list(){const result=[];for(const agent of await this.store.agents.list()){const entry=await getAgent(this.store,agent.id),binding=cliLearningOf(entry?.revision?.body);if(binding){const row=await this.get(binding.connection_id).catch(()=>undefined);if(row)result.push(this.view(row));}}return {connections:result};}
+ async list(){const result=[];for(const agent of await this.store.agents.list()){const entry=await getAgent(this.store,agent.id),binding=entry?(await cliCaptureOf(this.store,entry))?.binding:undefined;if(binding){const row=await this.get(binding.connection_id).catch(()=>undefined);if(row)result.push(this.view(row));}}return {connections:result};}
  async revoke(id:string){for(let attempt=0;attempt<20;attempt++){const row=await this.get(id);if(!row.active)return this.view(row);const next={...row,active:false};if(await this.store.settings.replaceIf(key(id),row,next))return this.view(next);}throw new ApiError('home_busy','The connection changed concurrently; retry disconnecting it.');}
 }

@@ -240,7 +240,8 @@ test('CLI reconnect migrates a live enrollment without issuing or revoking its c
   const connection = { connection_id: 'fixture-connection', agent_id: 'fixture-agent', token: 'fake-scoped-token', active: true };
   const io = { command: o.command, stdout: (line) => output.push(line), stderr: (line) => errors.push(line),
     fetch: async (_url, init) => { methods.push(init.method); return Response.json(init.method === 'GET' ? { connections: [connection] } : connection); } };
-  const args = ['connect', '--project', o.project, '--runtime', o.runtime, '--data', o.dataDir, '--url', o.url];
+  // This migration exercises capture enrollment alone; setup-sync consent has its own CLI coverage.
+  const args = ['connect', '--project', o.project, '--runtime', o.runtime, '--data', o.dataDir, '--url', o.url, '--no-sync'];
   await rename(join(o.project, '.git'), join(o.project, '.git.saved'));
   try { assert.equal(await learningMain(args, io), 0); }
   finally { await rename(join(o.project, '.git.saved'), join(o.project, '.git')); }
