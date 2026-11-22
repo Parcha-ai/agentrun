@@ -825,7 +825,7 @@ export async function releaseSdkCheck(deps: DecideDeps, record: PromotionRecord,
   // A hold, never `stopped`: it asks a compile for a revision (learn/compile.ts heldNamesOf) after compile_after more runs
   // (runner/learning-end.ts compileAskOf), checked afresh.
   if (released >= SDK_CHECK_RELEASES)
-    return holdUnchecked(deps, record.workflow, record.digest, bar, `the connected agent gave back ${plural(released, "reserved native turn")} in a row with no answer to check it against (the last: ${why}). It is not promoted; the agent's next compile after ${plural(bar.compile_after, "more run")} revises it, and the revision is checked afresh`, still, { extra: sdkExtra(record) });
+    return holdUnchecked(deps, record.workflow, record.digest, bar, `the connected agent gave back ${plural(released, "reserved native turn")} in a row with no answer to check it against (the last: ${why}). It is not promoted; the agent's next compile after ${plural(bar.compile_after, "more run")} revises it, and the revision is checked afresh`, still, { check: bar.turns?.disagreements?.length ? { disagreements: bar.turns.disagreements } : {}, extra: sdkExtra(record) });
   const kept = await waitAgain(deps, record, bar, `Waiting for a native turn of the connected agent that it takes: ${why}, so that turn was given back${counted ? ` (${released} of ${SDK_CHECK_RELEASES} in a row before it is held for a recompile)` : ""}. Nothing was promoted.`);
   if (kept.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest} waits for another native turn: ${why}`);
   return kept;
