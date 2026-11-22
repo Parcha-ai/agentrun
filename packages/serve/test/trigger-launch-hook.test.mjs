@@ -379,13 +379,13 @@ test("a sent firing waiting on its host's start is never driven or handed again:
 
 /** A server with the launch hook and AGENTRUN_RUN_KEYS=1, holding no Parallel key, whose agent (a template's, applied)
  *  declares PARALLEL_API_KEY; a schedule trigger on it, at 00:10. `answer` is the host's. Its seal key, to open what a
- *  run's claim gets (run-keys-claim). */
-async function keyedHook(t, answer) {
+ *  run's claim gets (run-keys-claim). `manifest`: more lines of the template's manifest. */
+async function keyedHook(t, answer, { manifest = [] } = {}) {
   const sealKey = randomBytes(32);
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey.toString("base64") }, ["PARALLEL_API_KEY", "AGENTRUN_RUN_KEYS"]);
   const dir = join(await scratch(t), "templates", "searcher");
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "agent.md"), ["---", "name: searcher", "version: 1.0.0", "description: Searches the web for what it is asked.", "model: { tier: strong }", "tools: [web_search, read]", "secrets: [PARALLEL_API_KEY]", "---", "Search the web for what you are asked, then answer.", ""].join("\n"));
+  await writeFile(join(dir, "agent.md"), ["---", "name: searcher", "version: 1.0.0", "description: Searches the web for what it is asked.", "model: { tier: strong }", "tools: [web_search, read]", "secrets: [PARALLEL_API_KEY]", ...manifest, "---", "Search the web for what you are asked, then answer.", ""].join("\n"));
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const hook = await hookServer(t, answer);
   // No runner: the host's run stays queued, its launch holding the keys it carried.
@@ -395,7 +395,7 @@ async function keyedHook(t, answer) {
   const agentId = applied.body.agent_id;
   const created = await server.api("POST", "/triggers", schedule(agentId, { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  return { ...server, clock, hook, sealKey, agentId, triggerId: created.body.id };
+  return { ...server, clock, hook, sealKey, agentId, applied: applied.body, triggerId: created.body.id };
 }
 
 /** The tool keys run `runId`'s claim lays over its tools' environment (claim-secrets.ts), on a host with none of its own. */
@@ -406,6 +406,20 @@ async function claimedKeys(store, sealKey, runId) {
 }
 
 const runKey = () => ["not-a-secret", "run-key", randomBytes(8).toString("hex")].join("-");
+
+test("AGENTRUN_RUN_KEYS=1 with the launch hook: the template's own schedule trigger is made, as one through the API is, since each firing goes to the host that brings the key; a message_run trigger at one of the agent's runs is still 409 naming the key, nothing made", { timeout: 120_000 }, async (t) => {
+  const morning = ["budget: { per_run_usd: 0.5 }", "triggers:", "  - name: morning", "    source: { kind: schedule, cron: \"0 9 * * *\", timezone: UTC }", "    target: { kind: start_run, input: { content: \"Search.\" } }"];
+  const keyed = await keyedHook(t, (res) => answerJson(res, 202, {}), { manifest: morning });
+  const { api, store, agentId } = keyed;
+  assert.deepEqual(keyed.applied.triggers.map((one) => one.name), ["morning"], JSON.stringify(keyed.applied));
+  assert.ok(!keyed.applied.warnings.some((one) => /^triggers\./.test(one.field)), JSON.stringify(keyed.applied.warnings));
+
+  const run = await api("POST", `/agents/${agentId}/runs`, { input: { content: "Search." }, max_cost_usd: 0.5, keys: { PARALLEL_API_KEY: runKey() } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const poke = await api("POST", "/triggers", { name: "poke", source: { kind: "schedule", every_s: 3600 }, target: { kind: "message_run", run_id: run.body.run_id, input: { content: "Once more." } } });
+  assert.deepEqual([poke.status, poke.body.error?.code, poke.body.error?.fields?.map((one) => [one.field, one.reason])], [409, "agent_not_runnable", [["keys.PARALLEL_API_KEY", "not_set_up_here"]]], JSON.stringify(poke.body));
+  assert.deepEqual((await store.triggers.list(agentId)).map((one) => one.name).sort(), ["morning", "nightly"], "the template's and the API's start_run triggers, and no other");
+});
 
 test("AGENTRUN_RUN_KEYS=1: the host's trigger_firing start carrying the key its agent declares is taken, the firing started, and the run's claim gets the key", { timeout: 120_000 }, async (t) => {
   const key = runKey();

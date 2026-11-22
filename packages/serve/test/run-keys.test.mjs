@@ -22,11 +22,11 @@ const newKey = () => ["not-a-secret", "run-key", randomBytes(8).toString("hex")]
 const SEARCHER = (id, tools = ["web_search"]) => agent(id, { tools, tool_settings: { web_search: { provider: "parallel" } } });
 
 /** A server whose fake Parallel files the key each request carried, and every log line it and its runner wrote. */
-async function setup(t, options = {}) {
+async function setup(t, { env = {}, ...options } = {}) {
   const dir = await scratch(t);
   const keyLog = join(dir, "parallel-keys.ndjson");
   writeFileSync(keyLog, "");
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_PARALLEL_KEYS: keyLog }, CLEARED);
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_PARALLEL_KEYS: keyLog, ...env }, CLEARED);
   const logs = [];
   const server = await serve(t, { fauxParallel: KEYED_PARALLEL, log: (line) => logs.push(String(line)), ...options });
   const sent = () => readFileSync(keyLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
@@ -139,8 +139,9 @@ test("keys names only the tool keys the run's revision reads, each a value of 8 
   assert.deepEqual([inline.status, inline.body.error?.fields?.map((one) => one.field)], [422, ["keys.PARALLEL_API_KEY"]], JSON.stringify(inline.body));
 });
 
-/** A template package that searches the web and declares the Parallel key, in a folder of its own. */
-function searcherTemplate(root) {
+/** A template package that searches the web and declares the Parallel key, in a folder of its own; `extra`, more lines of
+ *  its manifest. */
+function searcherTemplate(root, extra = []) {
   const dir = join(root, "templates", "searcher");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "agent.md"), [
@@ -151,12 +152,78 @@ function searcherTemplate(root) {
     "model: { tier: strong }",
     "tools: [web_search, read]",
     "secrets: [PARALLEL_API_KEY]",
+    ...extra,
     "---",
     "Search the web for what you are asked, then answer.",
     "",
   ].join("\n"));
   return join(root, "templates");
 }
+
+/** The searcher's manifest lines for a schedule trigger, `morning`, and the per-run cap its runs take. */
+const MORNING = ["budget: { per_run_usd: 0.5 }", "triggers:", "  - name: morning", "    source: { kind: schedule, cron: \"0 9 * * *\", timezone: UTC }", "    target: { kind: start_run, input: { content: \"Search the web for widgets.\" } }"];
+
+/** The apply's warnings for the triggers it skipped: field and reason, and the words. */
+const skippedOf = (body) => body.warnings.filter((one) => /^triggers\.\d+$/.test(one.field)).map((one) => [one.field, one.reason, one.message]);
+
+test("AGENTRUN_RUN_KEYS=1 with no launch hook: a template's schedule trigger, whose firings would start runs without the key its agent owes, is not made: skipped at triggers.0, not_set_up_here, saying so and the fix, in the plan as in the apply, which stays 201", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const { api, store } = await setup(t, { templates: searcherTemplate(dir, MORNING), runKeys: true, runner: false });
+  const planned = await api("POST", "/templates/searcher/apply", { dry_run: true });
+  assert.equal(planned.status, 200, JSON.stringify(planned.body));
+  assert.deepEqual(planned.body.plan.triggers.map((one) => [one.name, one.kind, one.action]), [["morning", "schedule", "skip"]], JSON.stringify(planned.body.plan.triggers));
+
+  const applied = await api("POST", "/templates/searcher/apply", {});
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  assert.deepEqual(applied.body.triggers, [], "no trigger is made");
+  assert.deepEqual(await store.triggers.list(applied.body.agent_id), [], "the store holds none");
+  const skipped = skippedOf(applied.body);
+  assert.deepEqual(skipped.map(([field, reason]) => [field, reason]), [["triggers.0", "not_set_up_here"]], JSON.stringify(applied.body.warnings));
+  const [[, , words]] = skipped;
+  assert.equal(planned.body.plan.triggers[0].reason, words, "the plan skips it in the apply's words");
+  for (const said of [/PARALLEL_API_KEY/, /AGENTRUN_RUN_KEYS=1/, /keys/, /AGENTRUN_LAUNCH_HOOK_URL/]) assert.match(words, said);
+});
+
+test("AGENTRUN_RUN_KEYS=1 on a server that holds the key, or the setting off: the template's schedule trigger is made, planned as made", { timeout: 60_000 }, async (t) => {
+  for (const runKeys of [true, false]) {
+    await t.test(`runKeys ${runKeys}`, async (t) => {
+      const dir = await scratch(t);
+      const { api, store } = await setup(t, { templates: searcherTemplate(dir, MORNING), runKeys, runner: false, env: { PARALLEL_API_KEY: newKey() } });
+      const planned = await api("POST", "/templates/searcher/apply", { dry_run: true });
+      assert.deepEqual(planned.body.plan?.triggers?.map((one) => [one.name, one.action]), [["morning", "create"]], JSON.stringify(planned.body));
+      const applied = await api("POST", "/templates/searcher/apply", {});
+      assert.equal(applied.status, 201, JSON.stringify(applied.body));
+      assert.deepEqual(skippedOf(applied.body), [], "nothing skipped");
+      assert.deepEqual((await store.triggers.list(applied.body.agent_id)).map((one) => one.name), ["morning"]);
+    });
+  }
+});
+
+test("AGENTRUN_RUN_KEYS=1 with no launch hook: a trigger made or moved through the API to start runs of an agent that owes a key it can't carry, or to message one of its runs, is 409 agent_not_runnable naming the key, nothing made or changed", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const { api, store } = await setup(t, { templates: searcherTemplate(dir), runKeys: true, runner: false });
+  const applied = await api("POST", "/templates/searcher/apply", {});
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const owing = applied.body.agent_id;
+  const refusedAt = (answer, what) => assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.fields?.map((one) => [one.field, one.reason])], [409, "agent_not_runnable", [["keys.PARALLEL_API_KEY", "not_set_up_here"]]], `${what}: ${JSON.stringify(answer.body)}`);
+
+  const start = { kind: "start_run", agent_id: owing, input: { content: "Search the web for widgets." }, max_cost_usd: 0.5 };
+  refusedAt(await api("POST", "/triggers", { name: "nightly", source: { kind: "schedule", every_s: 3600 }, target: start }), "a start_run trigger");
+  const run = await api("POST", `/agents/${owing}/runs`, { input: { content: "Search the web for widgets." }, max_cost_usd: 0.5, keys: { PARALLEL_API_KEY: newKey() } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const poke = { kind: "message_run", run_id: run.body.run_id, input: { content: "Once more." } };
+  refusedAt(await api("POST", "/triggers", { name: "poke", source: { kind: "schedule", every_s: 3600 }, target: poke }), "a message_run trigger");
+  assert.deepEqual(await store.triggers.list(owing), [], "none made");
+
+  // A trigger on an agent that owes nothing, moved to one that does: refused, left as it was.
+  assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
+  const plain = await api("POST", "/triggers", { name: "nightly", source: { kind: "schedule", every_s: 3600 }, target: { ...start, agent_id: "plain" } });
+  assert.equal(plain.status, 201, JSON.stringify(plain.body));
+  refusedAt(await api("PATCH", `/triggers/${plain.body.id}`, { target: start }), "a start_run trigger moved");
+  refusedAt(await api("PATCH", `/triggers/${plain.body.id}`, { target: poke }), "a trigger moved to message the run");
+  assert.equal((await api("GET", `/triggers/${plain.body.id}`)).body.target.agent_id, "plain", "left as it was");
+  assert.equal((await api("PATCH", `/triggers/${plain.body.id}`, { name: "renamed" })).status, 200, "a change that keeps its target is taken");
+});
 
 test("off by default: a template's apply that needs a tool key this server does not hold is refused, nothing made", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
