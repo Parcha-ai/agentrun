@@ -196,7 +196,7 @@ export type Package = {
   /** The computers it prefers, in order (`[shell, none]`): apply takes the first this server meets now (pickComputer)
    *  and writes it as the agent's computer. Absent (or `default` in the manifest): where this server puts a new agent. */
   computer?: ComputerEntry[];
-  /** The programs its sandbox must have on its PATH (`needs`, beside `computer: [shell]` alone): apply writes them onto
+  /** The programs its sandbox must have on its PATH, or libraries its code loads (`needs`, beside `computer: [shell]` alone): apply writes them onto
    *  the sandbox it picks as the agent's `computer.needs`, which each run checks in its box before any model request
    *  (computer-needs.ts); it names no image, which stays the server's (AGENTRUN_DOCKER_IMAGE). */
   needs?: string[];
@@ -1230,7 +1230,7 @@ export function pickComputer(p: Pick<Package, "name" | "computer" | "tools" | "n
   if (p.needs && !(shell && shell.computer.kind === "sandbox")) {
     const why = shell ? `the shell here is ${shell.words}, which is no sandbox` : lack;
     const list = new Intl.ListFormat("en", { type: "conjunction" }).format(p.needs);
-    return { refused: `The ${p.name} template needs a sandbox that has ${list} on its PATH, and ${why}. Nothing was created. ${NEEDS_FIX}`, fix: NEEDS_FIX };
+    return { refused: `The ${p.name} template needs a sandbox that has ${list}, and ${why}. Nothing was created. ${NEEDS_FIX}`, fix: NEEDS_FIX };
   }
   const entry = p.computer.find((one) => one === "none" || shell);
   if (!entry) return { refused: `The ${p.name} template needs a shell, and ${lack}. Nothing was created.` };
