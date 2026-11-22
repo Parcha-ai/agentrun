@@ -59,6 +59,19 @@ test("its HyperFrames reports nothing home and checks for no update, unless the 
   }
 });
 
+// With no network HyperFrames embeds a system font it can't fetch from Google Fonts, compressed to WOFF2 in WASM: about a
+// minute of CPU for Noto Color Emoji alone, on every render, since a box's cache starts empty. The image compresses each
+// of its fonts once, at build, into the cache HyperFrames reads by HYPERFRAMES_FONT_CACHE_DIR, by HyperFrames' own
+// fontToDataUri (its key and its bytes, never a copy of its scheme), and its script points HyperFrames there.
+test("its system fonts are compressed for HyperFrames at build, and its script points HyperFrames' font cache at them", () => {
+  const dir = "/usr/local/share/hyperframes/fonts";
+  assert.match(RUNS, new RegExp(`export HYPERFRAMES_FONT_CACHE_DIR="\\$\\{HYPERFRAMES_FONT_CACHE_DIR:-${dir}\\}"`), "the script names the baked cache unless the caller names one");
+  const fill = INSTRUCTIONS.findIndex((line) => line.startsWith("RUN ") && line.includes("fontToDataUri") && line.includes(`${dir}/local-compression-v1`));
+  assert.ok(fill > 0, "a RUN fills the cache with HyperFrames' fontToDataUri");
+  assert.ok(fill > INSTRUCTIONS.findIndex((line) => /npm install --global .*hyperframes@/.test(line)), "after HyperFrames is installed");
+  assert.match(INSTRUCTIONS[fill], /\/usr\/share\/fonts/, "from the image's own fonts");
+});
+
 test("the package ships it", () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.ok(pkg.files.includes("media"), JSON.stringify(pkg.files));
