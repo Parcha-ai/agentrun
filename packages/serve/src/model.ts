@@ -11,7 +11,7 @@ import type { ModelCost, Provider, ProviderStreams } from "@earendil-works/pi-ai
 import type { Wire } from "@parcha/agentrun-kernel";
 import type { ThinkingLevelMap } from "./port-models.js";
 import { DEFAULT_HARNESS, PLAN_HARNESSES } from "./harness.js";
-import { builtinHarness, factsOf, HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, type HarnessEntry, harnessIds, harnessOf } from "./harness-table.js";
+import { builtinHarness, factsOf, HARNESS_MODULES_ENV, HARNESS_RECIPES_ENV, HARNESS_TABLE_ENV, type HarnessEntry, harnessIds, harnessOf } from "./harness-table.js";
 import type { Revision } from "./agent-rows.js";
 import { gatewayBase, modelGatewayBase } from "./provider.js";
 import { modelFormWhy } from "./model-form.js";
@@ -26,12 +26,12 @@ import { LOGIN_DEFAULT_MODEL, onClaudeLogin } from "./claude-login.js";
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
 /** Every test hook's name starts so (AGENTRUN_SERVE_FAUX, AGENTRUN_SERVE_FAUX_WEB, ...), but the harness table's
  *  (harness-table.ts HARNESS_TABLE_ENV), which withoutFaux drops by name, as it drops the resolved harness modules list
- *  (HARNESS_MODULES_ENV). */
+ *  (HARNESS_MODULES_ENV) and recipes list (HARNESS_RECIPES_ENV). */
 export const FAUX_PREFIX = "AGENTRUN_SERVE_FAUX";
-/** `env` without a test hook's name or the resolved harness modules list: serve sets those from startServe's options
- *  alone, so a name the server's own environment holds (an operator's export, a leftover) never gives its runs fake
- *  answers or loads a module. */
-export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith(FAUX_PREFIX) && name !== HARNESS_TABLE_ENV && name !== HARNESS_MODULES_ENV));
+/** `env` without a test hook's name or the resolved harness modules or recipes list: serve sets those from startServe's
+ *  options alone, so a name the server's own environment holds (an operator's export, a leftover) never gives its runs
+ *  fake answers, loads a module or runs a recipe. */
+export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith(FAUX_PREFIX) && name !== HARNESS_TABLE_ENV && name !== HARNESS_MODULES_ENV && name !== HARNESS_RECIPES_ENV));
 /** Under `--faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through (the
  *  tests' fake upstream), in place of their APIs. With it they are registered beside the faux model, for a tool's own
  *  request to the provider the revision's model names (web_search's, hosted-search.ts); the run's turns stay faux. */

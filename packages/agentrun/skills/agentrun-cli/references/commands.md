@@ -533,7 +533,7 @@ Route: none, it runs on this machine.
 
 ### `agentrun harness sign-in`
 
-Sign a recipe's agent in to your own account with the agent's own sign-in, in this terminal (Antigravity's agy acp --login); runs on this server then use it when the recipe's keys are not set.
+Sign a recipe's agent in to your own account with the agent's own sign-in, in this terminal (Antigravity's agy acp --login); a server you start with --harness-sign-in on your own machine then runs your own runs on it.
 
 Route: none, it runs on this machine.
 

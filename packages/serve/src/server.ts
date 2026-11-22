@@ -63,7 +63,7 @@ import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessTable, tableIds } from "./harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessRecipesEnv, harnessTable, recipeHarness, tableIds } from "./harness-table.js";
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, runsThatFit } from "./host.js";
 import { DEFAULT_HOST, elsewhereOf, listenOn, minFreeMibOf, takeOver, urlOf } from "./listen-first.js";
@@ -147,7 +147,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { recordDataRoot } from "./runner/disk-free.js";
@@ -404,6 +404,12 @@ export type ServeOptions = {
   /** The owner's harness modules (harness-table.ts HARNESS_MODULES_ENV): packages or paths, each exporting a
    *  HarnessTableModule whose entries add harnesses of their own, for this server and its runs. Never a built-in one. */
   harnessModules?: readonly string[];
+  /** The owner's harness recipes (harness-table.ts HARNESS_RECIPES_ENV): recipe files installed into `data`, each adding
+   *  the harness it describes to this server and its runs once a harness-check of it passed there (HARNESS.md#a-recipe). */
+  harnessRecipes?: readonly string[];
+  /** The owner's say-so (--harness-sign-in) that a plan-billed recipe with a sign-in runs a person's runs on the owner's
+   *  own sign-in: a start refuses it unless this server is one owner's own, on their own machine (harnessSignInRefusal). */
+  harnessSignIn?: boolean;
   /** With `faux` only: Docker answers, so docker is available, and nothing asks Docker (place-offers.ts). */
   fauxDocker?: boolean;
   /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
@@ -517,7 +523,7 @@ const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_E
  *  startInProcessRunner). */
 export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
   // The owner's harness modules too (not a test switch): a run's process reads the same table as the server.
-  const env: NodeJS.ProcessEnv = { ...harnessModulesEnv(options.harnessModules ?? [], options.data), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
+  const env: NodeJS.ProcessEnv = { ...harnessModulesEnv(options.harnessModules ?? [], options.data), ...harnessRecipesEnv(options.harnessRecipes ?? [], options.data, { signIn: options.harnessSignIn === true }), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
   for (const [option, name] of FAUX_SWITCHES) if (options[option]) env[name] = resolve(options[option]);
@@ -1117,6 +1123,31 @@ function integerParam(value: string | null, name: string, max: number): number {
   return Number(value);
 }
 
+/** A start with --harness-sign-in on a server that is not one owner's own, on their own machine. */
+export const HARNESS_SIGN_IN_NOT_LOCAL = "HARNESS_SIGN_IN_NOT_LOCAL";
+
+/** Why `options` on `data` may not run a recipe on its owner's own sign-in (--harness-sign-in), in words; undefined when
+ *  it may. One owner's own server on their own machine: it listens on loopback alone, with no public address; its store
+ *  is the SQLite one in its data directory (no AGENTRUN_STORE_URL, which servers elsewhere share); its runs run beside
+ *  it as its own user (`ownUser`: runIsolationOf's `process`), never under --no-runner or a user of their own; and one
+ *  person starts them, as Claude Code's login on this machine asks (claude-login.ts whyNotOneOwner): an owner, and one
+ *  API token. A check, a schedule and a shared server run on a key (HARNESS.md#sign-in). */
+export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string | undefined {
+  const host = options.host ?? DEFAULT_HOST;
+  // Every token the server takes (acceptedTokens): AGENTRUN_TOKEN's as `default` beside the list's, or else DIR/.token's alone.
+  const tokens = (options.token === undefined ? 0 : 1) + (options.tokens?.length ?? 0);
+  const why = [
+    ...(loopback(host) ? [] : [`listens on ${host}, past loopback`]),
+    ...(options.publicUrl ? [`has a public address (${options.publicUrl})`] : []),
+    ...(options.apiOnly ? ["has no owner (the API-only profile), so anyone with its token starts runs"] : []),
+    ...(tokens > 1 ? [`takes ${tokens} API tokens (AGENTRUN_TOKEN and AGENTRUN_TOKENS together), so more than one person starts runs`] : []),
+    ...(storeTarget(data).kind === "sqlite" ? [] : ["keeps its store in Postgres (AGENTRUN_STORE_URL), which servers elsewhere share"]),
+    ...(options.runnerApart ? ["runs no runner beside it (--no-runner)"] : []),
+    ...(ownUser ? [] : ["runs each run as a user of its own (unset AGENTRUN_RUN_USER=slot, or set AGENTRUN_RUN_USER=same)"]),
+  ];
+  return why.length ? `${HARNESS_SIGN_IN_NOT_LOCAL}: --harness-sign-in runs a recipe on its owner's own sign-in on one owner's own machine alone, and this server ${why.join("; ")}. Start it without --harness-sign-in: its plan-billed recipes run on keys.` : undefined;
+}
+
 // A data directory an earlier version wrote (old agent homes, an old runs/ layout, or an earlier store version) is refused
 // by the store itself when it opens (StoreFromEarlierVersion), in words, to start fresh: no pre-open scan, no migration.
 
@@ -1129,9 +1160,16 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // So is the harness modules list, from `harnessModules` alone (an operator names them with --harness-module or
   // AGENTRUN_SERVE_HARNESS_MODULES, which the CLI reads into the option).
   delete process.env[HARNESS_MODULES_ENV];
+  // And the recipes, from `harnessRecipes` alone (--harness-recipe or AGENTRUN_SERVE_HARNESS_RECIPES).
+  delete process.env[HARNESS_RECIPES_ENV];
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a computer's mount source below it must then be its own canonical path, through no link.
   const data = await realpath(resolve(options.data));
+  if (options.harnessSignIn) {
+    const { runsAsOwnUser } = await import("./runner/run-child-host.js");
+    const refused = harnessSignInRefusal(options, data, runsAsOwnUser(process.env));
+    if (refused) throw new Error(refused);
+  }
   const tokenRefused = options.token === undefined ? undefined : tokenProblem(options.token);
   if (tokenRefused) throw new Error(tokenRefused);
   for (const entry of options.tokens ?? []) {
@@ -1216,7 +1254,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // shown nowhere.
   let secretStores: ServerSecrets | undefined;
   let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
-  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data), ...harnessRecipesEnv(options.harnessRecipes ?? [], data, { signIn: options.harnessSignIn === true }) };
   // The table, loaded once here: a harness module that is missing, names a built-in harness or gives half an entry refuses
   // the start, in words, before anything else opens.
   // The harness ids a definition may name here: the table's, the built-in ones and those the modules add, and one the
@@ -1290,7 +1328,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // runner/runner-check.ts): this data root's id, and the names (never the values) of the run-facing environment this
   // server holds, each said in the store at every start, replacing the last start's.
   await recordDataRoot(store, data);
-  await recordRunEnv(store, runFacingNames((name) => secret(name) ?? (base as NodeJS.ProcessEnv)[name], Object.keys(base)));
+  // Harness modules and recipes this start was given as options (--harness-module, --harness-recipe) are said under the
+  // setting a runner apart reads them from, as an exported setting is: a runner without them would claim their runs and
+  // have no harness to run them on.
+  const startedWith: Record<string, string | undefined> = {
+    [HARNESS_MODULES_SETTING]: options.harnessModules?.length ? options.harnessModules.join(",") : undefined,
+    [HARNESS_RECIPES_SETTING]: options.harnessRecipes?.length ? options.harnessRecipes.join(",") : undefined,
+  };
+  await recordRunEnv(store, runFacingNames((name) => startedWith[name] ?? secret(name) ?? (base as NodeJS.ProcessEnv)[name], Object.keys(base)));
   // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
   // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled. A hosted machine a runner in a
   // process of its own made is relayed to that runner's attach listener the same way (dial-relay.ts).
@@ -2003,6 +2048,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     getAgent: async (agentId: string) => (await getAgent(store, agentId)) ?? undefined,
     needAgent,
     momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    // A trigger never messages a run on a plan-billed recipe: its turn would run on its owner's own sign-in.
+    planRecipe: (harness: string) => recipeHarness(base, harness) === "plan",
     // Read when a firing's message is sent (declared below, with the delete turn).
     runWrite: (agentId, runId, work) => runWrite(agentId, runId, work),
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
