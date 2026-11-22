@@ -12,6 +12,8 @@ import { createServer, request } from "node:http";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { serve } from "../../serve/test/support.mjs";
+import { packageSha256 } from "../lib/deploy.mjs";
 import { cli as agentrun, scratch as scratchOf, server as serverOf } from "./support.mjs";
 
 const scratch = () => scratchOf("deploy");
@@ -571,4 +573,104 @@ test("--to names a target: cloud is api.agentrun.ai (AGENTRUN_CLOUD_URL override
     assert.match(refused.err, /--to must be an http or https URL/, bad);
     assert.doesNotMatch(refused.err, /pw/, "the URL is never echoed");
   }
+});
+
+/** An API-only AgentRun (AGENTRUN_API_ONLY=1, as a hosted install runs) in this process, no runner. */
+const apiOnly = (t) => serve(t, { runner: false, apiOnly: true });
+
+/** pr-alert with a webhook trigger beside its daily schedule. */
+const HOOKED = AGENT({}).replace("---\nYou check", `  - name: inbound
+    source: { kind: webhook }
+    target: { kind: start_run, input: { content: "A push arrived." } }
+---
+You check`);
+
+test("agentrun deploy DIR to an API-only install with its token: the upload, plan and apply make the agent, each trigger it can't make is printed as skipped with its reason, and rollback and delete work there", { timeout: 180_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const hosted = await apiOnly(t);
+  const pkg = folder(dir);
+  writeFileSync(join(pkg, "agent.md"), HOOKED);
+  const lockFile = join(pkg, ".agentrun", "deploy.json");
+  const key = { AGENTRUN_API_KEY: hosted.token };
+
+  const first = await cli(env, ["deploy", pkg, "--to", hosted.baseUrl, "--yes"], key);
+  assert.equal(first.code, 0, first.err);
+  const done = first.json();
+  assert.equal(done.status, "deployed");
+  const made = await hosted.api("GET", `/agents/${done.agent_id}`);
+  assert.equal(made.status, 200, JSON.stringify(made.body));
+  assert.deepEqual([made.body.revision, made.body.template.id], [done.revision_id, "upload:pr-alert"]);
+  // Neither trigger is made there, and the plan says each, with the server's reason.
+  assert.match(first.err, /! trigger\s+daily\s+schedule skipped: The pr-alert template's trigger daily \(schedule\) was not made: this server serves the run API only \(AGENTRUN_API_ONLY=1\) and has no launch hook/);
+  assert.match(first.err, /! trigger\s+inbound\s+webhook skipped: The pr-alert template's trigger inbound \(webhook\) was not made: this server serves the run API only \(AGENTRUN_API_ONLY=1\), which serves no route or setting a webhook trigger needs/);
+  assert.deepEqual(await hosted.store.triggers.list(done.agent_id), [], "no trigger made there");
+
+  // A changed skill is the agent's next revision there, and rollback makes the first current again.
+  writeFileSync(join(pkg, "skills", "check", "SKILL.md"), SKILL("Say what changed, and who changed it."));
+  const changed = await cli(env, ["deploy", pkg, "--yes"], key);
+  assert.equal(changed.code, 0, changed.err);
+  assert.deepEqual([changed.json().agent_id, changed.json().agent_change], [done.agent_id, "updated"]);
+  const back = await cli(env, ["deploy", "rollback", pkg], key);
+  assert.equal(back.code, 0, back.err);
+  assert.equal(back.json().revision_id, done.revision_id);
+  assert.equal((await hosted.api("GET", `/agents/${done.agent_id}`)).body.revision, done.revision_id);
+
+  // Delete: archived, then deleted there, and the lock gone here.
+  const gone = await cli(env, ["deploy", "delete", pkg, "--yes"], key);
+  assert.equal(gone.code, 0, gone.err);
+  assert.equal((await hosted.api("GET", `/agents/${done.agent_id}`)).status, 410);
+  assert.equal(existsSync(lockFile), false);
+});
+
+/** The CLI signed in to `base` with `token` (its config file, 0600): how it reaches an install it does not run. */
+function signedIn(dir, base, token) {
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true });
+  writeFileSync(join(dir, ".config", "agentrun", "config.json"), `${JSON.stringify({ base_url: base, api_key: token })}\n`, { mode: 0o600 });
+}
+
+/** An install's export of pr-alert (GET /agents/{id}/package): its files, their sha256, nothing blocked or remade. */
+function exportOf() {
+  const files = new Map([["agent.md", Buffer.from(AGENT({}))], ["skills/check/SKILL.md", Buffer.from(SKILL())]]);
+  return { name: "pr-alert", files: [...files].map(([path, data]) => ({ path, encoding: "utf8", content: data.toString("utf8") })), sha256: packageSha256(files), report: { blocked: [], remade: [] } };
+}
+
+test("agentrun deploy AGENT_ID from an install that refuses its trigger routes: the deploy is done and exits 0, the agent's schedules there are said unread (or unpaused), never paused; an API-only install exports nothing, so a deploy from it stops before it sends anything", { timeout: 180_000 }, async (t) => {
+  const hosted = await apiOnly(t);
+
+  // An API-only source: its agent's export is not served there, so the deploy stops at it, nothing sent to the target.
+  const imported = await hosted.api("POST", "/templates/import", { files: exportOf().files });
+  assert.equal(imported.status, 201, JSON.stringify(imported.body));
+  const applied = await hosted.api("POST", `/templates/${encodeURIComponent(imported.body.template.id)}/apply`, { parameters: {} });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const elsewhere = await fakeTarget(t, {});
+  const fromHosted = scratch();
+  signedIn(fromHosted.dir, hosted.baseUrl, hosted.token);
+  const refused = await cli(fromHosted.env, ["deploy", applied.body.agent_id, "--base-url", hosted.baseUrl, "--to", elsewhere.base, "--yes"], { AGENTRUN_API_KEY: "not-a-secret" });
+  assert.equal(refused.code, 2, refused.err);
+  assert.match(refused.err, /does not export .*this server serves the run API only \(AGENTRUN_API_ONLY=1\).*Nothing was sent/);
+  assert.deepEqual(elsewhere.seen, [], "nothing sent to the target");
+
+  // A source that exports the agent and refuses its trigger routes (the fake's 404), deployed to the API-only install.
+  const AGENT_ID = "agt_source";
+  const answers = { [`GET /agents/${AGENT_ID}/package`]: [200, exportOf()] };
+  const source = await fakeTarget(t, answers);
+  const { dir, env } = scratch();
+  signedIn(dir, source.base, "not-a-secret");
+  const deploy = (...args) => cli(env, ["deploy", AGENT_ID, "--base-url", source.base, "--to", hosted.baseUrl, "--yes", ...args], { AGENTRUN_API_KEY: hosted.token });
+  for (const pause of [[], ["--pause-source"]]) {
+    const result = await deploy(...pause);
+    assert.equal(result.code, 0, `${pause}: ${result.err}`);
+    assert.equal(result.json().status, "deployed");
+    assert.equal((await hosted.api("GET", `/agents/${result.json().agent_id}`)).status, 200);
+    assert.match(result.err, new RegExp(`the agent's schedules on ${source.base} could not be read ${pause.length ? "or paused " : ""}\\(404: Not found\\.\\)`), `${pause}`);
+    assert.doesNotMatch(result.err, /Paused/, `${pause}`);
+  }
+  // It lists a live schedule of the agent's and refuses to change it: said unpaused, the deploy done all the same.
+  answers["GET /triggers"] = [200, { triggers: [{ id: "trg_daily", name: "daily", agent_id: AGENT_ID, enabled: true, source: { kind: "schedule", cron: "0 8 * * *" } }] }];
+  const unpaused = await deploy("--pause-source");
+  assert.equal(unpaused.code, 0, unpaused.err);
+  assert.equal(unpaused.json().status, "deployed");
+  assert.ok(source.seen.includes("PATCH /triggers/trg_daily"), source.seen.join("\n"));
+  assert.match(unpaused.err, new RegExp(`daily could not be paused on ${source.base} \\(404: Not found\\.\\): it still runs there`));
+  assert.doesNotMatch(unpaused.err, /Paused/);
 });
