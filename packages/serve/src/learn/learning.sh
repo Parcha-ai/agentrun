@@ -246,9 +246,18 @@ case $op in
     ;;
   init)
     old=
-    if [ ! -d "$GIT_DIR" ]; then
-      # Without GIT_DIR and GIT_WORK_TREE, so the repository records no path of this machine's.
-      (unset GIT_DIR GIT_WORK_TREE && g init -q --template= --initial-branch=main . > /dev/null) || die "git init failed"
+    if [ ! -f "$GIT_DIR/HEAD" ]; then
+      # Without GIT_DIR and GIT_WORK_TREE, so the repository records no path of this machine's. A first save racing
+      # another fails its init on the other's config lock: it waits (up to 5 s) for that init to finish, then commits
+      # from no main as the other did, and exactly one of them lands (the other is stale).
+      (unset GIT_DIR GIT_WORK_TREE && g init -q --template= --initial-branch=main . > /dev/null 2> "$tmp/init.err") || {
+        waited=0
+        until [ -f "$GIT_DIR/HEAD" ] && [ ! -e "$GIT_DIR/config.lock" ] && g rev-parse -q --git-dir > /dev/null 2>&1; do
+          waited=$((waited + 1))
+          [ "$waited" -le 50 ] || { cat "$tmp/init.err" >&2; die "git init failed"; }
+          sleep 0.1
+        done
+      }
     fi
     commit
     ;;
