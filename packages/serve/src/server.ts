@@ -33,7 +33,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
+import { API_ONLY_HOOKED_KINDS, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
 import { declaredKeys, keysOwed, packageKeysOf, RUN_KEYS_ENV, type RunKeys, runKeysOf, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
@@ -196,6 +196,7 @@ import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
 import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
 import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
 import { deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
@@ -343,6 +344,9 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
+  /** The launch hook (AGENTRUN_LAUNCH_HOOK_URL and _SECRET, trigger-launch-hook.ts): each trigger firing that would start
+   *  a run is handed to the host instead, which starts it through the API. None, firings start their runs here. */
+  launchHook?: LaunchHook;
   /** The run-keys setting (AGENTRUN_RUN_KEYS=1, run-keys.ts): a template's apply makes its agent though a tool key it
    *  declares is not set here, and a run of it that does not carry that key in `keys` is refused. */
   runKeys?: boolean;
@@ -2214,6 +2218,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     // A Composio trigger's instance, and the project's subscription, are made and kept on Composio with its server's key.
     upstream: (kind) => (kind === "composio" ? composioTriggers : undefined),
+    ...(options.launchHook ? { launchHook: options.launchHook } : {}),
   });
   const composioTriggers = new ComposioTriggers({
     control: options.composioControl ?? {},
@@ -3244,7 +3249,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // On an API-only server, skipped in the apply's own words (prepareApply).
       const hostSkip = p.hostless.get(i);
       if (hostSkip) {
-        planned.push({ name, kind, action: "skip", reason: hostSkip });
+        planned.push({ name, kind, action: "skip", reason: hostSkip.message });
         continue;
       }
       if (p.emptyFeeds.has(i)) {
@@ -3366,16 +3371,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // by the triggers' own clock, the one POST /triggers checks by and they fire by (a template eval case's `now`).
     // A feed trigger whose urls are one array parameter given empty reads no feed: skipped, never the apply (feedLeftEmpty).
     const emptyFeeds = new Set(made.triggers.flatMap((trigger, i) => (feedLeftEmpty(trigger) ? [i] : [])));
-    // On an API-only server no trigger is made, and each is said (api-only.ts). Each stays listed, so a trigger the agent
-    // has by its name is left as it is, never removed.
-    const hostless = new Map(options.apiOnly ? made.triggers.map((trigger, i) => [i, apiOnlyTriggerSkipped(pkg.name, trigger)] as const) : []);
+    // On an API-only server a trigger is made only when its firings have somewhere to go: a schedule or a feed with the
+    // launch hook set. Each other is said (api-only.ts), and stays listed, so a trigger the agent has by its name is left
+    // as it is, never removed.
+    const hostless = new Map(options.apiOnly ? made.triggers.flatMap((trigger, i) => {
+      const skip = apiOnlyTriggerSkipped(pkg.name, trigger, options.launchHook !== undefined);
+      return skip ? [[i, skip] as const] : [];
+    }) : []);
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
     const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
     // The package's triggers by name, as this apply makes them (a feed it left empty is not made, so not listed either,
-    // except on an API-only server, which makes none and leaves each the agent has: hostless above).
+    // except one an API-only server does not make, which leaves each the agent has: hostless above).
     const listed = new Set(made.triggers.flatMap((trigger, i) => (emptyFeeds.has(i) && !hostless.has(i) ? [] : [String(trigger.name).trim()])));
     // The triggers to remove: each of the agent's that an apply of this package marked as its own (TriggerRow.templateId)
     // and whose name the package no longer lists. A trigger the owner made, one a PATCH moved here from another agent (or
@@ -3557,8 +3566,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     });
     // Each feed trigger it skipped for want of a feed: which, and the parameter to set.
     const feedsSkipped: InputIssue[] = [...emptyFeeds].filter((i) => !hostless.has(i)).map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: feedTriggerEmpty(pkg.name, made.triggers[i]!, isObject(pkg.triggers[i]?.source) ? pkg.triggers[i]!.source.urls : undefined) }));
-    // Each trigger an API-only server does not make: nothing set up here makes it, so not_an_option.
-    const hostSkipped: InputIssue[] = [...hostless].map(([i, message]) => ({ field: `triggers.${i}`, reason: "not_an_option", message }));
+    // Each trigger an API-only server does not make: not_set_up_here when the launch hook would make it, else not_an_option.
+    const hostSkipped: InputIssue[] = [...hostless].map(([i, { reason, message }]) => ({ field: `triggers.${i}`, reason, message }));
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
@@ -3725,6 +3734,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needRunnableAgent(agentId);
     const { body, handed } = handedLaunchSecrets(await bodyOf(req));
+    // The host's run for a firing the launch hook handed it: the firing's own run, under the firing's key (a second start
+    // answers that run), with the trigger, input origin and title a start here would give it, and capped as a trigger's
+    // run is. The firing is its key, so it takes no Idempotency-Key, whose check across a restart is the run's origin.
+    if (body.trigger_firing !== undefined) {
+      if (req.headers["idempotency-key"] !== undefined) throw invalid([{ field: "trigger_firing", reason: "not_allowed", message: "A run for a trigger firing is keyed by the firing, and a second start answers its run: send it without Idempotency-Key." }]);
+      const { trigger_firing: given, ...rest } = body;
+      const firing = await triggers.handedStart(given, agentId);
+      if ("run_id" in firing) return { status: 202, body: await viewOverStore(store, firing.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${firing.run_id}`, "idempotent-replayed": "true" } };
+      const secrets = await handed();
+      const seal = startSeal(secrets);
+      const run = await startRunOf(entry, rest, { origin: { key: firing.key }, trigger: firing.trigger, from: firing.from, title: firing.title, capped: !nativeOf(entry.revision?.body), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+      // A host that answered its hook first started this run after: the firing is started with it now.
+      await triggers.handedRan(firing.trigger.id, firing.key, run.id);
+      return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
+    }
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
       const first = origin && (await agents.request(() => agents.store.runOfOrigin(origin.key)));
@@ -4884,7 +4908,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
         // In the agent's delete turn (agentWrite): an unarchive sent while its purge runs waits for it and is 410, so no
         // run of it starts between the purge's live check and its tombstone.
-        const triggersOff = await agentWrite(id, () => (found.name === "archiveAgent" ? triggers.agentArchived(id) : triggers.agentUnarchived(id)));
+        // On an API-only server with the launch hook, which serves no trigger route to turn one on, the unarchive turns its
+        // schedule and feed triggers on again (the ones its apply makes there).
+        const turnOn = options.apiOnly && options.launchHook ? (source: { kind: string }) => API_ONLY_HOOKED_KINDS.has(source.kind) : undefined;
+        const triggersOff = await agentWrite(id, () => (found.name === "archiveAgent" ? triggers.agentArchived(id) : triggers.agentUnarchived(id, turnOn)));
         // An archived agent's own computer is deleted (an unarchived one gets a new one at its next persistent run).
         if (found.name === "archiveAgent") reconcileComputer(id);
         const entry = await needAgent(id);

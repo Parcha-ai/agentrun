@@ -748,12 +748,10 @@ dependencies from the registry as it stood at that instant (by date, not by cont
 the same Debian packages. It is about 2.7 GB on disk. An agent that needs it says so with
 [`computer.needs`](#computers), so a server on another image fails its runs in words instead of running them.
 
-**The documents image.** For an agent that writes decks, documents and sheets, the computer package keeps a third
-recipe, the folder `packages/computer/documents`: the default image's base, by the same digest, and its programs, with
-its Debian packages from snapshot.debian.org at one instant, plus python-pptx, python-docx and openpyxl for `python3`
-(each with every package it needs, pinned by version and sha256, wheels only) and pptxgenjs, docx and exceljs for `node`
-(at exact versions, their dependencies as the registry stood at that same instant, no install script run). The Node
-libraries are linked as `/node_modules`, so a script in any folder requires or imports them. They are the folder's
+**The documents image.** For an agent that writes decks, documents and sheets, `packages/computer/documents` is the
+default image plus the Python and Node libraries that write Office files (python-pptx, python-docx and openpyxl for
+`python3`; pptxgenjs, docx and exceljs for `node`), pinned as its header says. The Node libraries are linked as
+`/node_modules`, so a script in any folder requires or imports them. The libraries are the folder's
 `documents.sh`, the one layer both builds run. Build it and name its tag in `AGENTRUN_DOCKER_IMAGE`:
 
 ```sh
@@ -762,11 +760,11 @@ docker build -t "$tag" packages/computer/documents
 AGENTRUN_DOCKER_IMAGE=$tag AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
-It is about 920 MB on disk. On Daytona, `python3 packages/computer/box/build-daytona.py --documents` builds the box
+On Daytona, `python3 packages/computer/box/build-daytona.py --documents` builds the box
 image with the same layer on top as the snapshot `agentrun-documents-<hash>` (the box recipe's snapshot,
 `agentrun-box-<hash>`, is unchanged); name it in `AGENTRUN_DAYTONA_SNAPSHOT`. An agent that needs them says so in
-`computer.needs` (`["python-pptx", "pptxgenjs"]`), and a box without them ends its runs in words naming this image's
-build, before any model request. Neither is published, and no agent setting picks one: a server's Docker image, or its
+`computer.needs` (`["python-pptx", "pptxgenjs"]`), and a box without them ends its runs before any model request; on
+Docker, the words name this image's build. Neither is published, and no agent setting picks one: a server's Docker image, or its
 Daytona snapshot, is one for every agent.
 
 ### In the published image
@@ -882,7 +880,7 @@ the provider's words.
 32 names (letters, digits, `.`, `_`, `+` and `-`; no path), each once. A name may also be a library the agent's code
 loads: a Python package by the name pip installs it by (`python-pptx`), which the box's `python3` has installed, or a
 Node package (`pptxgenjs`), which a script of the box's `node` requires (from `node_modules` of the folder the check
-runs in or any folder above it, up to `/node_modules`). It says what the box must have, never which
+runs in or any folder above it, up to `/node_modules`). A scoped npm package (`@scope/name`) can't be named. It says what the box must have, never which
 image it is: a Docker box's image is still `AGENTRUN_DOCKER_IMAGE`'s, and another provider's is its own. Each run's
 claim asks the box it started, before the run's first model request: one `sh` with the names as its arguments, which
 prints those that are neither a program `command -v` finds nor such a library, searching the folders the agent's shell searches (`/usr/local/sbin`,
@@ -3218,11 +3216,13 @@ serves these routes alone:
 - a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
   (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
-  is what its delete (`DELETE /agents/{id}`) needs first. The apply makes no trigger of any source: a run here starts
-  through the backend's API calls alone, on its keys and budget, never on this server's own clock and model key (a
-  schedule or a feed) or from a hook or setting this profile refuses (a webhook, GitHub, Composio or email). The answer
-  says so for each under `warnings` (`triggers.<i>`, `not_an_option`), and the dry run (`dry_run: true`) plans each as
-  `skip` in the same words. The backend starts those runs through the API instead;
+  is what its delete (`DELETE /agents/{id}`) needs first. A run here starts through the backend, on its keys and
+  budget, never on this server's own model key. So with the [launch hook](#launch-hook) set, the apply makes the
+  package's schedule and feed triggers, and each firing goes to the backend, which starts its run through the API; the
+  unarchive turns them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set
+  the hook, or start those runs through the API). A webhook, GitHub, Composio or email trigger is never made here, hook
+  or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
+  under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
@@ -3237,6 +3237,43 @@ whole server, as before; any value other than these and `1` or `true` stops the 
 
 So on an API-only server a run is launched inline (`POST /runs` with its definition), on an agent a template's apply
 made, or on an agent made before the profile was turned on.
+
+### Launch hook
+
+For an install that hosts agents for other people, where the host decides who pays for each run and with which keys,
+set `AGENTRUN_LAUNCH_HOOK_URL` to the host's address and `AGENTRUN_LAUNCH_HOOK_SECRET` to a Standard Webhooks secret
+(`whsec_` and 32 random bytes in base64; it is one of the server's own secrets, never a run's). Each trigger firing that
+would start a run (a schedule, a feed, a webhook, Composio, GitHub or email trigger, or Run now) is then POSTed to the
+host, and this server starts no run for it:
+
+```json
+{ "firing_id": "fir_...", "trigger_id": "trg_...", "agent_id": "digest", "revision_id": "rev_...",
+  "input": { "content": "Summarize yesterday's issues.\n\n(Started by the schedule ...)" },
+  "fired_at": "2026-06-01T00:10:00Z" }
+```
+
+The POST carries `webhook-id` (the firing's id, the same if it is handed again), `webhook-timestamp` and
+`webhook-signature` as [webhooks](#webhooks) do: check them with any Standard Webhooks library before reading the
+body. The host starts the run with `POST /v2/agents/{agent_id}/runs`, giving the input, its own `model_key`, `keys` and
+`max_cost_usd`, and `"trigger_firing": { "trigger_id": ..., "firing_id": ... }` as it was sent, and answers 2xx within
+10 s. It can start the run before it answers or after: a firing it answered 2xx with no run yet reads `sent` with
+`start_by`, 10 minutes after that answer, takes that one start until then, and is refused with 422 `not_due` after.
+The 10 minutes run from the answer, not from `fired_at`, so a firing that reaches the host late (a catch-up, one that
+waited on `max_active_runs`, one handed again after a restart) gets the same time; the server never hands a `sent`
+firing over again. That run is
+the firing's, as one this server started would be: it names the trigger and the firing, carries the trigger's title and
+input origin, is capped, and the firing reads `started` with it, so the trigger's overlap check and `max_active_runs`
+count it. The firing is the run's key, so a second start for the same firing answers the same run and the request
+takes no `Idempotency-Key` (422 with one); a firing that is not being handed over (skipped, or one of another agent's
+triggers) is refused with 422. Until its run starts, a `sent` firing is one the overlap check cannot see. Any other
+answer, a redirect included (it is not followed), no answer in 10 s, or no connection, and the firing reads `skipped`
+with why, unless the host started its run by then; a skip is no failure and never turns the trigger off, and the
+server does not try that firing again. A firing the server's stop cuts short stays due and is handed again at the next
+start, under the same `webhook-id`. A `message_run` target starts no run and is unchanged. The start prints the hook's
+origin, never its path or the secret. The hook is `https`: a firing's input can carry a person's data, and the
+signature proves who sent it, not that no one else read it, so plain `http` is taken only for 127.0.0.0/8, `::1` or
+`localhost`. One of the two set without the other, a URL that is not https (or http to this machine) or holds a user
+or password, or a secret that is not a `whsec_` one of 24 bytes or more stops the start, in words.
 
 ## Uploads
 
