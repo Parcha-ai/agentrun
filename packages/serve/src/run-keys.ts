@@ -5,7 +5,7 @@
 // sealed with the run's launch, until its turn ends; never logged or answered: only their names are read before the seal,
 // for the checks a start makes.
 //
-// AGENTRUN_RUN_KEYS=1 (api-only.ts switchFrom): an install whose runs bring the tool keys it does not hold. A template's
+// AGENTRUN_RUN_KEYS=1 (env-switch.ts): an install whose runs bring the tool keys it does not hold. A template's
 // apply then makes its agent though a tool key the template declares is not set here, and says so in a warning; a run of
 // that revision that does not carry the key is refused (409 agent_not_runnable, at keys.<NAME>), and no trigger is made
 // whose firings could not carry it (firingsOwe). Off, nothing changes.
@@ -17,7 +17,7 @@ import { needsOf, type RunNeeds, unlockedFields } from "./run-secrets.js";
 import type { TemplatePackage } from "./store/store.js";
 import { TOOL_FIELDS } from "./tool-keys.js";
 import { isObject } from "./validate.js";
-import { RUN_KEYS_ENV } from "./api-only.js";
+import { RUN_KEYS_ENV } from "./env-switch.js";
 
 /** A run's own tool keys, by name. */
 export type RunKeys = Readonly<Record<string, string>>;

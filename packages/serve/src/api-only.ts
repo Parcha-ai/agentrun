@@ -2,16 +2,10 @@
 // deploy's routes alone, and refuses every other address before anything else reads the request: the console at "/" and
 // its assets, sign-in and setup, settings, MCP, triggers and their webhook hooks, the rest of agents and templates.
 // Off by default.
+import { API_ONLY_ENV } from "./env-switch.js";
+import { NOT_SET_UP } from "./runnable.js";
 import type { Route } from "./server.js";
 import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
-
-/** runnable.ts NOT_SET_UP, spelled here: the CLI reads this module before the server loads, so it imports no more. */
-const NOT_SET_UP = "not_set_up_here";
-
-/** The variable that turns the profile on. */
-export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
-/** The variable that turns the run-keys setting on (run-keys.ts), read here with the profile's (switchFrom). */
-export const RUN_KEYS_ENV = "AGENTRUN_RUN_KEYS";
 
 /** The routes (server.ts ROUTES, by name) an API-only server serves. Past a run's own, why each group is here:
  *  - a run's hosted machine fetches computerd with the token its create minted, not the server's;
@@ -59,16 +53,6 @@ export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unk
   if (!API_ONLY_HOOKED_KINDS.has(kind)) return { reason: "not_an_option", message: `${named}, which serves no route or setting a ${kind} trigger needs. Start its runs through the API instead.` };
   if (hooked) return undefined;
   return { reason: NOT_SET_UP, message: `${named} and has no launch hook, so its firings have nowhere to go. Start its runs through the API, or set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}) and apply again: each firing then goes to your backend, which starts its run.` };
-}
-
-/** Whether `env` turns switch `name` (API_ONLY_ENV, RUN_KEYS_ENV) on: `1` or `true` on; unset, empty, `0` or `false`
- *  off. Any other value is refused in words that say what each means (`on`, `off`), a TypeError, so a typo never leaves
- *  the console open on a server meant to be API-only. */
-export function switchFrom(env: NodeJS.ProcessEnv, name: string, on: string, off?: string): boolean {
-  const given = env[name]?.trim().toLowerCase() ?? "";
-  if (given === "1" || given === "true") return true;
-  if (given === "" || given === "0" || given === "false") return false;
-  throw new TypeError(`${name} is 1 (${on}) or 0${off === undefined ? "" : ` (${off})`}, not ${JSON.stringify(env[name])}`);
 }
 
 /** A run's computer live view: its page, files and socket, which take the viewer credential alone here (server.ts). */
