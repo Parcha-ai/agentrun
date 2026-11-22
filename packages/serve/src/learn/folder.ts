@@ -355,11 +355,11 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
  * as `rewritten` maps it (one mapped to null was dropped: its change goes too) with the files it changes now
  * (`changed`, by the old commit: a scrubbed merge may change corrections.md no more), run `runId`'s changes given the reason
  * its scrubbed message gives ("merged"), corrections.md's blob as `corrections` (undefined: the commit holds none), and
- * `parent` its new parent, `gone` the workflow files its rebuilt tree holds no more (the purged run's): each draft
- * keeps its other files, and one without its README.md or workflow.json is listed no more (it reads incomplete). `text` is the file; `snapshot` what a reader of the new commit reads, its own commit the
+ * `parent` its new parent, `restored` the workflow files the purge gave back (Restored): each such draft listed again
+ * from the rebuilt tree, none without its README.md or workflow.json (it reads incomplete). `text` is the file; `snapshot` what a reader of the new commit reads, its own commit the
  * placeholder still (`landed` puts it).
  */
-export function rewrittenSnapshot(file: StoreFile | undefined, commit: { sha: string; parent: string | null }, rewritten: ReadonlyMap<string, string | null>, changed: ReadonlyMap<string, string[]>, runId: string, corrections: SnapFile | undefined, parent: string | null, gone: ReadonlySet<string>): { text: string; landed: (sha: string) => Snapshot } | undefined {
+export function rewrittenSnapshot(file: StoreFile | undefined, commit: { sha: string; parent: string | null }, rewritten: ReadonlyMap<string, string | null>, changed: ReadonlyMap<string, string[]>, runId: string, corrections: SnapFile | undefined, parent: string | null, restored: Restored): { text: string; landed: (sha: string) => Snapshot } | undefined {
   const kept = keptSnapshot(file, commit.sha, commit.parent);
   if (!kept) return undefined;
   const log = kept.log.flatMap((change) => {
@@ -369,17 +369,44 @@ export function rewrittenSnapshot(file: StoreFile | undefined, commit: { sha: st
     return [{ ...change, commit: sha ?? change.commit, ...(files ? { files } : {}), ...("run" in change.by && change.by.run === runId ? { reason: SCRUBBED_REASON } : {}) }];
   });
   const { corrections: _was, ...rest } = kept;
-  const snapshot: Snapshot = { ...rest, main: PLACEHOLDER, ...(corrections ? { corrections } : {}), workflows: rest.workflows.flatMap((item) => keptItem(item, gone)), log };
+  const snapshot: Snapshot = { ...rest, main: PLACEHOLDER, ...(corrections ? { corrections } : {}), workflows: restoredItems(rest.workflows, restored, kept.at), log };
   return { text: snapshotText(snapshot, parent), landed: (sha) => withMain(snapshot, sha) };
 }
 
-/** Draft `item` without the files in `gone`: none when its README.md or workflow.json is one (learnedItem lists it no more). */
-function keptItem(item: SnapLearned, gone: ReadonlySet<string>): SnapLearned[] {
-  if (gone.has(keyFile(item.name)) || gone.has(viewFile(item.name))) return [];
-  const links = (item.links ?? []).filter((path) => !gone.has(path));
-  const { links: _links, ...rest } = item;
-  return [{ ...rest, files: item.files.filter(({ path }) => !gone.has(path)), ...(links.length ? { links } : {}) }];
+/** A purge's given-back workflow files at one rebuilt commit (learn/purge.ts): `files`, each path the purged run wrote
+ *  last there, given back as the rebuilt parent of its merge held it (or absent), with `owner`, its writer before the
+ *  purged run (null: none, or a hand commit's); `tree`, the rebuilt commit's files; `before`, each such workflow's entry
+ *  in that rebuilt parent's snapshot. */
+export type Restored = { files: ReadonlyMap<string, { owner: string | null }>; tree: readonly StoreFile[]; before: ReadonlyMap<string, SnapLearned | undefined> };
+
+/** `items` with each workflow a purge gave files back to listed again from the rebuilt tree: its files and links as the
+ *  tree holds them, its writer (`run`, which follows workflow.json) the given-back workflow.json's prior writer, its
+ *  history the prior entry's when its README.md was given back; none when the tree holds no README.md or workflow.json
+ *  for it (learnedItem: it reads incomplete). Every other entry stays. */
+function restoredItems(items: readonly SnapLearned[], restored: Restored, at: string): SnapLearned[] {
+  const names = new Set([...restored.files.keys()].map(folderOf).filter((name): name is string => name !== undefined));
+  const out = items.filter((item) => !names.has(item.name));
+  for (const name of names) {
+    const now = items.find((item) => item.name === name);
+    const was = restored.before.get(name);
+    const prefix = `${WORKFLOWS_DIR}/${name}/`;
+    const held = restored.tree.filter(({ path }) => path.startsWith(prefix));
+    const files = held.filter(({ mode }) => mode !== LINK_MODE).map(({ path, body }) => ({ path, oid: blobOid(body), bytes: body.length }));
+    const links = held.filter(({ mode }) => mode === LINK_MODE).map(({ path }) => path);
+    const view = restored.files.get(viewFile(name));
+    const keyBack = restored.files.has(keyFile(name));
+    const text = (path: string) => held.find((one) => one.path === path)?.body.toString("utf8");
+    const item = learnedItem(name, files, links, text, {
+      order: now?.order ?? was?.order ?? 0,
+      history: (keyBack ? was?.history : now?.history) ?? now?.history ?? was?.history ?? { at },
+      run: view ? view.owner : (now?.run ?? null),
+    }, !keyBack && now ? { description: now.description, status: now.status, ...(now.retired_from ? { retired_from: now.retired_from } : {}) } : undefined);
+    if (item) out.push(item);
+  }
+  return out.sort(byName);
 }
+/** Git's mode of a symbolic link. */
+const LINK_MODE = "120000";
 
 /** The reason a purged run's scrubbed merge gives, in its message and in every snapshot: messageOf's own for none. */
 const SCRUBBED_REASON = "merged";

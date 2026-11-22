@@ -9,8 +9,8 @@
 # plumbing:
 #   1. the commit: `git fast-import` writes the blobs and ONE commit on a temporary ref, then
 #      `update-ref refs/heads/main <new> <old>`, the compare and swap. A lost race exits 3 and writes nothing;
-#   2. the working tree brought in line with the new main (read-tree -u --reset), for a person who works in the folder
-#      by hand. No read goes through it: every read is git's.
+#   2. the working tree brought in line with main as it stands (read-tree -u --reset, again while main moved: a purge
+#      landing between), for a person who works in the folder by hand. No read goes through it: every read is git's.
 # A run's merge carries the marker file `.agentrun/runs/<key>` and a purge's scrub `.agentrun/purged/<key>`, in its
 # own commit: a merge of a key whose marker (either) is on <old>, or a scrub whose marker is, exits 6 naming the commit
 # that added it, and writes nothing. Two racing on one <old> both pass that check; the compare and swap lets one land.
@@ -93,6 +93,33 @@ floor=$(printf '%s\n' "$version" | awk '{ split($3, v, "."); print (v[1] > 2 || 
 main_now() {
   [ -d "$GIT_DIR" ] || return 0
   g rev-parse -q --verify 'refs/heads/main^{commit}' 2>/dev/null || true
+}
+
+# The working tree brought to main as it stands, from $1 (the main this op put or read): checked out, then again at main
+# while main moved meanwhile (a purge or another save landed between; a save checking out its own commit after a purge
+# moved main would put the purged text back), at most CHECKOUT_TRIES times. 1, its error on stderr, when a checkout of a
+# main that did not move failed, or main never held still.
+CHECKOUT_TRIES=20
+checkout_main() {
+  at=$1
+  tries=0
+  while [ "$tries" -lt "$CHECKOUT_TRIES" ]; do
+    tries=$((tries + 1))
+    if ! g read-tree -u --reset "$at" 2> "$tmp/checkout"; then
+      now=$(main_now)
+      if [ -n "$now" ] && [ "$now" != "$at" ]; then
+        at=$now
+        continue
+      fi
+      cat "$tmp/checkout" >&2
+      return 1
+    fi
+    now=$(main_now)
+    [ -z "$now" ] || [ "$now" = "$at" ] && return 0
+    at=$now
+  done
+  printf '%s\n' "main kept moving while the working tree was brought to it ($CHECKOUT_TRIES checkouts)" >&2
+  return 1
 }
 
 hex40() {
@@ -239,8 +266,7 @@ commit() {
     cat "$tmp/cas" >&2
     exit 2
   fi
-  if ! g read-tree -u --reset "$new" 2> "$tmp/checkout"; then
-    cat "$tmp/checkout" >&2
+  if ! checkout_main "$new"; then
     printf '%s\n' "$new"
     exit 5
   fi
@@ -268,10 +294,10 @@ op=${1:-}
 TIDY=$GIT_DIR/agentrun-tidy
 tidy_history() {
   at_main=$(main_now)
-  if [ -n "$at_main" ] && ! g read-tree -u --reset "$at_main" 2> "$tmp/checkout"; then
-    cat "$tmp/checkout" >&2
+  if [ -n "$at_main" ] && ! checkout_main "$at_main"; then
     die "the working tree could not be brought to main, so the old history stays marked for a purge sent again"
   fi
+  at_main=$(main_now)
   # An earlier release kept each merge's diff outside git (.agentrun/diffs/<run>.json, a run's text in each): host
   # copies no checkout or prune reaches, so they go too (never through a link: a linked .agentrun is left alone, and a
   # linked diffs folder goes as the link).
@@ -288,6 +314,11 @@ tidy_history() {
   done < "$tmp/refs"
   g reflog expire --expire=now --expire-unreachable=now --all || die "the reflog could not be expired"
   g gc --prune=now --quiet || die "git gc failed"
+  # A save that checked out its own commit while this ran (its compare and swap before main moved here) is put back to main.
+  at_main=$(main_now)
+  if [ -n "$at_main" ] && ! checkout_main "$at_main"; then
+    die "the working tree could not be brought to main, so the old history stays marked for a purge sent again"
+  fi
   rm -f "$TIDY"
 }
 

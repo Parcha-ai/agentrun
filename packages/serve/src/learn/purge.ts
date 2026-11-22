@@ -1,7 +1,7 @@
 // A purged run's text taken out of its agent's learning, history and all (agent-delete.ts purgeRun, through the server's
 // forgetCopies): main's whole history rebuilt without it, the same way on every store (learn/store.ts rewrite).
 import { CORRECTIONS_FILE } from "./corrections.js";
-import { blobOid, forgetHistory, hostCommitOf, isHostPath, rewrittenSnapshot, scrubbedMessage, SNAPSHOT_FILE, type Snapshot } from "./folder.js";
+import { blobOid, forgetHistory, hostCommitOf, isHostPath, type Restored, rewrittenSnapshot, scrubbedMessage, SNAPSHOT_FILE, type SnapLearned, type Snapshot } from "./folder.js";
 import { type ChainCommit, type LearningStore, MOVED_FILE, purgedMarker, type StoreCommit, type StoreFile } from "./store.js";
 import { WORKFLOWS_DIR } from "./workflow-draft.js";
 
@@ -13,11 +13,14 @@ const ATTEMPTS = 4;
 /**
  * Run `runId`'s text taken out of `store`: each commit of main's history, oldest first, rebuilt with corrections.md
  * keeping, of each line text the run's merges added (as the store diffs each merge), only as many copies as the other
- * runs' merges added up to that commit (the first ones), without each workflow file the run's merge changed last there (a hand commit
- * changes no owner), the run's merge commits kept with their reason cut (`learning: <run>: merged`, its Run-Id trailer) and so empty of its text, and
- * each commit's snapshot rebuilt (learn/folder.ts rewrittenSnapshot: the new commit ids, the run's reasons cut). A
- * commit left with nothing of its own is dropped. One host commit on top marks `.agentrun/purged/<run>`: no merge of the
- * run lands after (learn/store.ts save), and a purge run again finds it and does nothing. The store moves main to the
+ * runs' merges added up to that commit (the first ones); each workflow file the run's merge changed last there (a hand
+ * commit changes no owner) given back as the rebuilt parent of that merge held it, absent when it was absent there, so a
+ * purge takes off only what the run's revisions put there and never another run's file; the run's merge commits kept
+ * with their reason cut (`learning: <run>: merged`, its Run-Id trailer) and so empty of its text; and each commit's
+ * snapshot rebuilt (learn/folder.ts rewrittenSnapshot: the new commit ids, the run's reasons cut, a given-back
+ * workflow's entry its prior writer's). A commit left with nothing of its own is dropped. One host commit on top marks
+ * `.agentrun/purged/<run>`, its body the commit map (`moved`, commit ids alone): no merge of the run lands after
+ * (learn/store.ts save), and a purge run again finds it, rewrites nothing and hands the map back. The store moves main to the
  * new chain by compare and swap and leaves no byte of the old one (learn/store.ts rewrite); a run merging meanwhile
  * finds main moved, as after a reset. Every commit id changes; every other run's history and diffs stay. `commit`: the
  * new main, when the purge rewrote it; `moved`: each old commit's new one, the commit whose tree it now is (one dropped
@@ -35,7 +38,24 @@ export async function forgetRunText(store: LearningStore, runId: string): Promis
 /** Why a purge rewrote nothing: `empty`, the agent has learned nothing (no main); `purged`, the run was purged
  *  already (its marker is at main); `unmerged`, no commit of main's history carries the run's Run-Id trailer. */
 export type Nothing = "empty" | "purged" | "unmerged";
-export type Forgot = { commit: string; moved: ReadonlyMap<string, string> } | { nothing: Nothing };
+export type Forgot = { commit: string; moved: ReadonlyMap<string, string> } | { nothing: Nothing; moved?: ReadonlyMap<string, string> };
+
+/** The purge marker's body: the commit map its purge made (old commit id to new), commit ids alone, so a purge sent
+ *  again after one that moved main and then failed (its cleanup) still hands it back and the records naming an old
+ *  commit move (learning-routes.ts moveRecordCommits). */
+const markerBody = (moved: ReadonlyMap<string, string>): Buffer => Buffer.from(`${JSON.stringify({ v: 1, moved: Object.fromEntries(moved) })}\n`, "utf8");
+/** The commit map a purge marker holds (markerBody), or undefined for one without (an earlier release's, empty). */
+function movedOf(body: Buffer): ReadonlyMap<string, string> | undefined {
+  try {
+    const held = JSON.parse(body.toString("utf8")) as { v?: unknown; moved?: unknown };
+    if (held.v !== 1 || !held.moved || typeof held.moved !== "object") return undefined;
+    const entries = Object.entries(held.moved as Record<string, unknown>);
+    return entries.every(([from, to]) => SHA.test(from) && typeof to === "string" && SHA.test(to)) ? new Map(entries as [string, string][]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+const SHA = /^[0-9a-f]{40}$/;
 
 async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | "stale"> {
   const old = await store.head();
@@ -45,7 +65,8 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
   // Purged already: what a rewrite stopped after moving main kept of the old history goes now, or this throws, retryable.
   if (marked.length) {
     await store.tidy();
-    return { nothing: "purged" };
+    const moved = movedOf(marked[0]!.body);
+    return { nothing: "purged", ...(moved ? { moved } : {}) };
   }
   const runOf = (message: string): string | undefined => message.split("\n").find((line) => line.startsWith("Run-Id: "))?.slice("Run-Id: ".length);
   const merges = new Set(newestFirst.filter(({ message }) => runOf(message) === runId).map(({ sha }) => sha));
@@ -75,9 +96,14 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
   const moved = new Map<string, string>();
   const oldBodies = new Set<string>();
   // Each workflow file's owner as the old history stood at the commit, by path: the run whose merge last changed its
-  // bytes (or mode, or took it out); a hand commit changes no owner. The run's own files go from every tree, so a kept
-  // run's workflow loses any file only the purged run wrote.
+  // bytes (or mode, or took it out); a hand commit changes no owner. Where the purged run owns a file, the rebuilt tree
+  // holds it as the rebuilt parent of the purged run's merge that took it held it (`back`; absent there, absent), so a
+  // purge takes off only what the run's revisions put there: never another run's file. `prior`: the file's owner before
+  // the purged run took it, whom a given-back workflow.json's entry names again; `entries`: each such workflow's entry
+  // in that rebuilt parent's snapshot.
   const owners = new Map<string, string>();
+  const back = new Map<string, { file: StoreFile | null; prior: string | null }>();
+  const entries = new Map<string, SnapLearned | undefined>();
   let held = new Map<string, Buffer>();
   let tree: readonly StoreFile[] = [];
   let tip: string | null = null;
@@ -96,12 +122,21 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
       const run = runOf(one.message);
       const now = new Map(files.flatMap(({ path, mode, body }) => (folderOf(path) ? [[path, Buffer.concat([Buffer.from(`${mode}\0`), body])] as const] : [])));
       if (run) {
-        for (const [path, body] of now) if (!held.get(path)?.equals(body)) owners.set(path, run);
-        for (const path of held.keys()) if (!now.has(path)) owners.set(path, run);
+        const take = (path: string) => {
+          // A file the purged run owns already keeps what it gives back (its rebuilt parent holds that now).
+          if (run === runId && owners.get(path) !== runId) {
+            back.set(path, { file: tree.find((file) => file.path === path) ?? null, prior: owners.get(path) ?? null });
+            const name = folderOf(path)!;
+            entries.set(name, landed?.workflows.find((item) => item.name === name));
+          }
+          owners.set(path, run);
+        };
+        for (const [path, body] of now) if (!held.get(path)?.equals(body)) take(path);
+        for (const path of held.keys()) if (!now.has(path)) take(path);
       }
       held = now;
-      const gone = new Set([...owners].filter(([, owner]) => owner === runId).map(([path]) => path));
-      const built = rebuilt(one, files, { keep, gone }, runId, { rewritten, changed, tree }, tip, oldBodies);
+      const owned = new Map([...owners].filter(([, owner]) => owner === runId).map(([path]) => [path, back.get(path)!] as const));
+      const built = rebuilt(one, files, { keep, owned, entries }, runId, { rewritten, changed, tree }, tip, oldBodies);
       // A commit with nothing of its own left (its tree the one before's) is no commit: a store refuses one that
       // changes nothing.
       if (!merges.has(one.sha) && sameTree(built.files, tree)) {
@@ -116,7 +151,7 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
       landed = built.snapshot?.(tip);
     }
     const host = hostCommitOf(SCRUB, landed, tip!, Math.floor(Date.now() / 1000));
-    const files = [...tree.filter(({ path }) => path !== SNAPSHOT_FILE), { path: purgedMarker(runId), mode: "100644" as const, body: Buffer.alloc(0) }, ...(host.snapshot ? [{ path: SNAPSHOT_FILE, mode: "100644" as const, body: Buffer.from(host.snapshot, "utf8") }] : [])];
+    const files = [...tree.filter(({ path }) => path !== SNAPSHOT_FILE), { path: purgedMarker(runId), mode: "100644" as const, body: markerBody(moved) }, ...(host.snapshot ? [{ path: SNAPSHOT_FILE, mode: "100644" as const, body: Buffer.from(host.snapshot, "utf8") }] : [])];
     return commit({ parent: tip, message: host.message, at: Math.floor(Date.now() / 1000), files: sorted(files) });
   }).catch((error: unknown) => (error instanceof Moved ? ({ stale: null } as const) : Promise.reject(error)));
   if ("stale" in saved) return "stale";
@@ -131,13 +166,15 @@ class Moved extends Error {}
 /** Commit `one` (its files `files`) rebuilt on the chain so far (`rewritten`, `changed` and the tree of its tip, `tree`):
  *  corrections.md with at most `keep`'s count (as it stands at this commit) of copies of each text it names (its first ones), no workflow file named in `gone`, its message scrubbed when it is a merge of `runId`, the paths it changes now set in
  *  `changed`, its snapshot as rewrittenSnapshot rebuilds it on `parent`. `oldBodies` gains the blobs it no longer holds. */
-function rebuilt(one: StoreCommit, files: readonly StoreFile[], { keep, gone }: { keep: ReadonlyMap<string, number>; gone: ReadonlySet<string> }, runId: string, chain: { rewritten: ReadonlyMap<string, string | null>; changed: Map<string, string[]>; tree: readonly StoreFile[] }, parent: string | null, oldBodies: Set<string>) {
+function rebuilt(one: StoreCommit, files: readonly StoreFile[], { keep, owned, entries }: { keep: ReadonlyMap<string, number>; owned: ReadonlyMap<string, { file: StoreFile | null; prior: string | null }>; entries: ReadonlyMap<string, SnapLearned | undefined> }, runId: string, chain: { rewritten: ReadonlyMap<string, string | null>; changed: Map<string, string[]>; tree: readonly StoreFile[] }, parent: string | null, oldBodies: Set<string>) {
   const out: StoreFile[] = [];
   let corrections: { path: string; oid: string; bytes: number } | undefined;
+  // The purged run's files given back as they were before its merge took them (none: absent then).
+  for (const { file } of owned.values()) if (file) out.push(file);
   for (const file of files) {
     if (file.path === SNAPSHOT_FILE) continue;
-    if (gone.has(file.path)) {
-      oldBodies.add(blobOid(file.body));
+    if (owned.has(file.path)) {
+      if (!owned.get(file.path)!.file?.body.equals(file.body)) oldBodies.add(blobOid(file.body));
       continue;
     }
     const lines = file.path === CORRECTIONS_FILE ? file.body.toString("utf8").split("\n") : [];
@@ -164,7 +201,8 @@ function rebuilt(one: StoreCommit, files: readonly StoreFile[], { keep, gone }: 
   const was = new Map(chain.tree.map((file) => [file.path, file]));
   const now = new Set(out.map(({ path }) => path));
   chain.changed.set(one.sha, [...new Set([...out.filter((file) => !was.get(file.path)?.body.equals(file.body) || was.get(file.path)?.mode !== file.mode).map(({ path }) => path), ...[...was.keys()].filter((path) => !now.has(path))])].filter((path) => !isHostPath(path)).sort());
-  const snapshot = rewrittenSnapshot(files.find(({ path }) => path === SNAPSHOT_FILE), one, chain.rewritten, chain.changed, runId, corrections, parent, gone);
+  const restored: Restored = { files: new Map([...owned].map(([path, { prior }]) => [path, { owner: prior }])), tree: out, before: entries };
+  const snapshot = rewrittenSnapshot(files.find(({ path }) => path === SNAPSHOT_FILE), one, chain.rewritten, chain.changed, runId, corrections, parent, restored);
   const all = sorted([...out, ...(snapshot ? [{ path: SNAPSHOT_FILE, mode: "100644" as const, body: Buffer.from(snapshot.text, "utf8") }] : [])]);
   return {
     files: all,
