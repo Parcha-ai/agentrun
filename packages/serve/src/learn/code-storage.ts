@@ -8,6 +8,7 @@
 // - head: main's newest commit (GET repos/commits?branch=main&limit=1); a repository or main not there is null;
 // - read: the paths at a commit (GET repos/files), then each body (GET repos/file), in parallel;
 // - log: main's history, a page at a time, from the commit asked (every commit here is on main's first-parent line);
+//   a listing gives each commit's subject line alone, so each message is read whole (GET repos/commit), once a commit;
 // - diff: GET repos/diff of the commit, each file's raw diff cut to its hunks;
 // - save: the preconditions and markers read at `old` (each a read at that commit), then ONE commit
 //   (POST repos/commit-pack) on main with expected_target_sha `old` (40 zeros before main), the marker file in it. A stale `old` is a 409
@@ -133,6 +134,8 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
   const doFetch = settings.fetch ?? fetch;
   const generations = settings.generations ?? kept(settings);
   let server: Promise<string> | undefined;
+  /** Each commit's whole message, by its id, as read by itself (on's whole()). */
+  const messages = new Map<string, string>();
   const idOf = async (n: number) => repoIdOf(await (server ??= settings.serverId()), agentId, n);
 
   /** The ops on one repository, `repo`. */
@@ -251,15 +254,40 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
       } while (cursor);
     }
 
+    /** `commits` with each one's whole message: a listing gives its subject line alone (no body, no trailers), so each
+     *  is read by itself (GET repos/commit), PARALLEL at a time, and kept (`messages`: a commit never changes). One the
+     *  store no longer holds (a reset or purge since) is undefined. */
+    async function whole(commits: StoreCommit[]): Promise<StoreCommit[] | undefined> {
+      let next = 0;
+      let gone = false;
+      const worker = async () => {
+        while (next < commits.length && !gone) {
+          const { sha } = commits[next++]!;
+          if (messages.has(sha)) continue;
+          const view = await holds(sha);
+          if (!view) return void (gone = true);
+          messages.set(sha, view.message ?? "");
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(PARALLEL, commits.length) }, worker));
+      return gone ? undefined : commits.map((commit) => ({ ...commit, message: messages.get(commit.sha)! }));
+    }
+
     async function log(ref: string, options: { limit?: number; path?: string } = {}): Promise<StoreCommit[] | undefined> {
       if (!COMMIT.test(ref)) throw new Error(`${JSON.stringify(ref)} is not a commit`);
       const limit = options.limit && options.limit > 0 ? options.limit : Infinity;
       const own = await holds(ref);
       if (!own) return undefined;
+      messages.set(own.sha, own.message ?? "");
       if (limit === 1 && !options.path) return [commitOf(own)];
+      return whole(await listed(ref, own, limit, options.path));
+    }
+
+    /** log's commits as listed (each message its subject line alone). */
+    async function listed(ref: string, own: CommitView, limit: number, path: string | undefined): Promise<StoreCommit[]> {
       // The commits on main newer than `ref`, which its own history leaves out.
       const newer = new Set<string>();
-      if (!options.path) {
+      if (!path) {
         const out: StoreCommit[] = [];
         let found = false;
         for await (const commit of history()) {
@@ -275,7 +303,7 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
         newer.add(commit.sha);
       }
       const out: StoreCommit[] = [];
-      for await (const commit of history(options.path)) {
+      for await (const commit of history(path)) {
         if (newer.has(commit.sha)) continue;
         out.push(commit);
         if (out.length >= limit) break;
