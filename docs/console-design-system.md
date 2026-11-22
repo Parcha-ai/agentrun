@@ -257,6 +257,9 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
     settings on the right. Every box on every Settings page starts at one edge and has one width. One that is a
     table (Tools) is full width.
   - A reading column (a run's report and timeline) is centred, at most `max-w-4xl`.
+  - A run's Screen tab is the reading column's width while its screen is alone. With the run's steps beside the screen
+    (from `xl`) it is at most `max-w-7xl`: wider by about the list, so the screen keeps the size it had alone and
+    grows no further.
   - A line of prose is at most `max-w-prose`. Never write a width as a number (`max-w-[1100px]`).
 - A page works at 390px wide with no sideways scroll. A wide table scrolls inside its own panel, and so does a row
   of tabs (`tabListClass`).
