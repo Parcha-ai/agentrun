@@ -14,6 +14,7 @@ import { fakeClock, firings, made, schedule, until } from "./trigger-support.mjs
 
 const { mintSecret, signatureOf, verify } = await import("../dist/standard-webhooks.js");
 const { LAUNCH_HOOK_LATE_START_MS, LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
+const { uuidv7 } = await import("../dist/ids.js");
 
 /** A host's hook on 127.0.0.1: each request kept (its headers and body), answered by `answer`. One the sender cut short
  *  (its bound passed mid-body, or the test's end) is answered 400, never left to throw in the test. */
@@ -239,6 +240,69 @@ test("a firing the server's stop cut short is handed again at the next start, 30
   const late = await hostStart(second.api, "nightly", id, handed.key);
   assert.equal(late.status, 202, JSON.stringify(late.body));
   assert.equal((await second.api("GET", `/triggers/${id}/firings`)).body.firings[0].status, "started");
+});
+
+/** What a stop between a host's late start and its firing's start leaves (the run is written first, then the firing is
+ *  started with it): a queued run under the firing's key, and the firing still sent with no run. Answers the run's id. */
+async function unlinkedRun(store, agentId, key) {
+  const agent = await store.agents.get(agentId);
+  return (await store.runs.create({ id: uuidv7(), agentId, revisionId: agent.currentRevision, origin: { key } })).id;
+}
+
+test("a sent firing whose host's run was written but never linked (a stop between the two) is started with it by the host's repeated start, and the overlap check counts it", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const hook = await hookServer(t, (res) => answerJson(res, 200, {}));
+  // No runner: the host's run stays queued, so it is still active at the next time.
+  const { api, store } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } });
+  await made(api, "nightly");
+  const created = await api("POST", "/triggers", schedule("nightly", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.id;
+  clock.to("2026-06-01T00:10:00Z");
+  const [sent] = await firings(api, id, 1);
+  assert.equal(sent.status, "sent", JSON.stringify(sent));
+  const runId = await unlinkedRun(store, "nightly", sent.key);
+
+  clock.to("2026-06-01T00:12:00Z");
+  const again = await hostStart(api, "nightly", id, sent.key);
+  assert.deepEqual([again.status, again.body.run_id, again.headers.get("idempotent-replayed")], [202, runId, "true"], JSON.stringify(again.body));
+  const [linked] = (await api("GET", `/triggers/${id}/firings`)).body.firings;
+  assert.deepEqual([linked.status, linked.run_id, linked.start_by], ["started", runId, undefined], JSON.stringify(linked));
+
+  clock.to("2026-06-01T00:20:00Z");
+  const [next] = await firings(api, id, 2);
+  assert.deepEqual([next.status, next.run_id], ["skipped", null], JSON.stringify(next));
+  assert.match(next.reason, new RegExp(runId), "skipped naming the host's run");
+  assert.equal(hook.got.length, 1, "the time its run overlapped was never handed to the host");
+});
+
+test("a sent firing whose host's run was written but never linked (a stop between the two) is started with it at the next server's start, and the overlap check counts it", { timeout: 180_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const secret = mintSecret();
+  const hook = await hookServer(t, (res) => answerJson(res, 200, {}));
+  const first = await serve(t, { data, triggerClock: clock, runner: false, launchHook: { url: hook.url, secret } });
+  await made(first.api, "nightly");
+  const created = await first.api("POST", "/triggers", schedule("nightly", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.id;
+  clock.to("2026-06-01T00:10:00Z");
+  const [sent] = await firings(first.api, id, 1);
+  assert.equal(sent.status, "sent", JSON.stringify(sent));
+  const runId = await unlinkedRun(first.store, "nightly", sent.key);
+  await first.close();
+
+  clock.to("2026-06-01T00:12:00Z");
+  const second = await serve(t, { data, triggerClock: clock, runner: false, launchHook: { url: hook.url, secret } });
+  const read = async () => (await second.api("GET", `/triggers/${id}/firings`)).body.firings[0];
+  assert.ok(await until(async () => (await read()).status === "started"), JSON.stringify(await read()));
+  assert.deepEqual([(await read()).run_id, hook.got.length], [runId, 1], "started with the host's run, never handed again");
+
+  clock.to("2026-06-01T00:20:00Z");
+  const [next] = await firings(second.api, id, 2);
+  assert.deepEqual([next.status, next.run_id], ["skipped", null], JSON.stringify(next));
+  assert.match(next.reason, new RegExp(runId), "skipped naming the host's run");
+  assert.equal(hook.got.length, 1, "the time its run overlapped was never handed to the host");
 });
 
 test("a firing that waited on its trigger's max_active_runs is handed when its room comes, 30 minutes after its fired_at, and its host gets its 10 minutes from that answer", { timeout: 180_000 }, async (t) => {

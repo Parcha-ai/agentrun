@@ -135,7 +135,8 @@ test("a firing its launch hook's host took with no run keeps its start_by (never
   await store.triggers.record("trg-1", [due("fir-pushed", "webhook", { attrs: { event: "push" } }), due("fir-clock")]);
   for (const key of ["fir-pushed", "fir-clock"]) {
     const sent = await store.triggers.settle("trg-1", key, { status: "sent", reason: "handed", keepAttrs: true, startBy }, { reset: true });
-    assert.deepEqual([sent.firing.status, sent.firing.startBy, sent.firing.retryAt, sent.firing.attempts], ["sent", startBy, null, 0], `${key}: its start_by kept, never read as a retry`);
+    // Its reason and its attrs both kept in one write: on Postgres, an update that names a column twice is refused.
+    assert.deepEqual([sent.firing.status, sent.firing.reason, sent.firing.startBy, sent.firing.retryAt, sent.firing.attempts], ["sent", "handed", startBy, null, 0], `${key}: its reason and start_by kept, never read as a retry`);
   }
   assert.deepEqual((await store.triggers.pending()).map((f) => f.key), [], "neither is pending: never driven, never handed again");
   assert.equal(await store.triggers.soonest(), T0 + 60_000, "the soonest time is the trigger's next one, never a start_by");
