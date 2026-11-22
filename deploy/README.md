@@ -318,9 +318,10 @@ recordings, which the runner writes on its own disk where the server does not se
 
 An agent's learning is in the server's local folder unless the server and its runners keep it on code.storage
 (`AGENTRUN_CODE_STORAGE_NAME` and `AGENTRUN_CODE_STORAGE_KEY` set on both; [learning](../packages/serve/README.md)).
-A runner on a disk of its own without them runs its runs but learns nothing: each run's start reads no learned workflow
-and its end merges nothing, saying on the run's log that the runner can't reach the server's learning and naming the two
-settings.
+A runner on a disk of its own without them runs its runs at once but learns nothing: a learning agent's run is laid no
+seed (no `# Learned` section, no learned workflow), asks no compile turn and writes nothing at its end, and its learning
+reads `seed_failed`, saying the runner can't reach the server's learning and naming the two settings. With them, every
+runner learns into the one code.storage store.
 
 ### The runner's environment: `runner --check`
 

@@ -22,7 +22,7 @@ import { type HostedDial, PROVIDERS } from "@parcha/agentrun-computer";
 import { type RunnerRelay, startRunnerRelay } from "../dial-relay.js";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { ArchilSettingsEnvInvalid, archilSettingsFromEnv, serverIdOf } from "../archil-settings.js";
-import { CodeStorageEnvInvalid, codeStorageFromEnv, learningStoreFromEnv } from "../learn/store-of.js";
+import { CodeStorageEnvInvalid, codeStorageFromEnv, learningApart, learningStoreFromEnv } from "../learn/store-of.js";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
@@ -220,7 +220,7 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   };
   // `isolation`: each run a process of its own (run-child-host.ts), as the runner subcommand runs them; none, in this one
   // (a test's runner).
-  const createLoop = isolation ? childLoops({ deps, isolation, log: deps.log }) : createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) });
+  const createLoop = isolation ? childLoops({ deps, isolation, log: deps.log }) : createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps), apart: () => learningApart(deps.data) });
   return { createLoop, computers: computers.computerDeps, env: runs };
 }
 

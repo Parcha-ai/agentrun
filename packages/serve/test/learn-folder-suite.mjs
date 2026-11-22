@@ -202,6 +202,23 @@ export function folderSuite(backend, make, { skew = 0 } = {}) {
     assert.equal((await store.log(after.main))[1].sha, hand.saved, "the hand's commit is main's history");
   });
 
+  test(`${backend}: a commit with no snapshot (a hand commit that deleted it) is never trusted for one: rebuilt from its tree and history, its main the head`, async (t) => {
+    const store = await make(t);
+    await learningInit(store);
+    await commitChange(store, await readSnapshot(store), { by: { run: "run-1", reason: "A draft." }, writes: draft("weekly-report") });
+    const old = await readSnapshot(store);
+    const hand = await store.save({ old: old.main, message: "by hand", at: Math.floor(Date.now() / 1000), writes: [{ path: CORRECTIONS, text: UNITS }], deletes: [SNAPSHOT_FILE] });
+    assert.match(hand.saved, HEX);
+    assert.deepEqual((await store.read(hand.saved, [SNAPSHOT_FILE])) ?? [], [], "the hand's commit holds no snapshot");
+    forgetBodies();
+    const read = await readSnapshot(store);
+    assert.equal(read.main, hand.saved, "main is the head");
+    assert.equal(read.corrections.oid, blobOid(UNITS));
+    assert.deepEqual(read.workflows.map((w) => w.name), ["weekly-report"]);
+    assert.deepEqual(read.log.map((c) => c.by), [{ run: "run-1" }], "the log names the learning's own commits, rebuilt from history");
+    await matchesMain(store);
+  });
+
   test(`${backend}: a person's corrections edit, and a draft's approve, retire and restore, are each one save, and each snapshot is main's`, async (t) => {
     const store = await make(t);
     await learningInit(store);

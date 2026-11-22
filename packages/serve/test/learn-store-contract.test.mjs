@@ -3,8 +3,14 @@
 // (src/learn/code-storage.ts, fixtures/code-storage-fake.mjs). Each case starts from an empty store. What a store
 // holds is files at paths; a save is one commit on main by compare and swap on the head it read; a run's merge and a
 // purge leave marker files (.agentrun/runs/<key>, .agentrun/purged/<key>) in the same commit.
+//
+// Against the real code.storage too, when this process is started with its settings (CI never sets them):
+//   AGENTRUN_CODE_STORAGE_NAME=<org> AGENTRUN_CODE_STORAGE_KEY="$(cat key.pem)" [AGENTRUN_CODE_STORAGE_API_URL=<url>] \
+//     node --test packages/serve/test/learn-store-contract.test.mjs
+// Each case there is a repository of its own, agentrun-smoke<random hex>-agent-one, deleted (by its exact id) when the
+// case ends.
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +26,9 @@ const text = (files, path) => {
 const paths = (files) => (files ?? []).map((file) => file.path).sort();
 const save = (store, old, writes, extra = {}) => store.save({ old, message: extra.message ?? "a change", at: at(), writes, ...extra });
 
+/** Every code.storage fake the suite made: the repository ids each was sent are checked at its end. */
+const FAKES = [];
+
 /** Each store, made empty for one case: its `store`, and `done` to clean up. */
 const STORES = {
   local: async (t) => {
@@ -33,8 +42,20 @@ const STORES = {
     const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
     const fake = codeStorageFake({ name: "example-org", publicKey });
     const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => "srv1" }, "agent-one");
+    FAKES.push(fake);
     return Object.assign(store, { fake });
   },
+  ...(process.env.AGENTRUN_CODE_STORAGE_NAME ? {
+    "code.storage live": async (t) => {
+      const { codeStorageLearningStore } = await import("../dist/learn/code-storage.js");
+      const { codeStorageFromEnv } = await import("../dist/learn/store-of.js");
+      const settings = codeStorageFromEnv(process.env, (name) => process.env[name]);
+      const serverId = `smoke${randomBytes(6).toString("hex")}`;
+      const store = codeStorageLearningStore({ ...settings, serverId: async () => serverId }, "agent-one");
+      t.after(() => store.remove());
+      return store;
+    },
+  } : {}),
 };
 
 for (const [kind, make] of Object.entries(STORES)) {
@@ -218,10 +239,51 @@ test("code.storage: a delete answered 409 is no removal: remove fails retryable 
   const { codeStorageLearningStore } = await import("../dist/learn/code-storage.js");
   const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const fake = codeStorageFake({ name: "example-org", publicKey });
+  FAKES.push(fake);
   const conflicted = async (url, init) => (init?.method === "DELETE" ? new Response(JSON.stringify({ error: "conflict" }), { status: 409, headers: { "content-type": "application/json" } }) : fake.fetch(url, init));
   const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: conflicted, serverId: async () => "srv1" }, "agent-one");
   const one = (await save(store, null, [{ path: "corrections.md", text: "- one\n" }])).saved;
   await assert.rejects(store.remove(), (error) => error.name === "FolderUnreadable" && error.link === false);
   assert.equal(await store.head(), one);
   assert.ok(fake.repos.has("agentrun-srv1-agent-one"));
+});
+
+test("code.storage: the repository id is agentrun-<server id>-<agent id> whatever the ids: a forged agent id (a slash, ../, empty) maps under agentrun-, and a server id that can't name one, or any id outside agentrun-, is refused before a request goes out", async () => {
+  const { agentrunRepo, codeStorageLearningStore, repoIdOf, RepoIdRefused } = await import("../dist/learn/code-storage.js");
+  for (const agent of ["../etc", "a/b", "", "x".repeat(65), "..", "agent one", "h-x-0123456789abcdef01234567"]) {
+    const id = repoIdOf("srv1", agent);
+    assert.match(id, /^agentrun-srv1-h-[A-Za-z0-9_-]*-[0-9a-f]{24}$/, JSON.stringify(agent));
+    assert.ok(!id.includes("/") && !id.includes(".."), id);
+  }
+  assert.equal(repoIdOf("srv1", "agent-one"), "agentrun-srv1-agent-one");
+  for (const server of ["", "a/b", "../x", "a-b", "x".repeat(65), undefined]) assert.throws(() => repoIdOf(server, "agent-one"), RepoIdRefused, JSON.stringify(server));
+  for (const id of ["grep-prod", "other", "agentrun-", "agentrun-a/b", "agentrun-../x", "xagentrun-a", ""]) assert.throws(() => agentrunRepo(id), RepoIdRefused, id);
+  // A store whose server id can't name a repository sends nothing at all.
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const fake = codeStorageFake({ name: "example-org", publicKey });
+  const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => "" }, "agent-one");
+  for (const call of [() => store.head(), () => store.read("a".repeat(40)), () => store.log("a".repeat(40)), () => store.diff("a".repeat(40)), () => save(store, null, [{ path: "corrections.md", text: "x\n" }]), () => store.remove()]) await assert.rejects(call(), RepoIdRefused);
+  assert.deepEqual(fake.calls, [], "no request went out");
+});
+
+test("code.storage: each token is signed by its key's kind, as the SDK signs: an RSA key RS256, an Ed25519 key EdDSA (EC is ES256, the suite's)", async () => {
+  const { codeStorageLearningStore } = await import("../dist/learn/code-storage.js");
+  for (const [kind, options] of [["rsa", { modulusLength: 2048 }], ["ed25519", {}]]) {
+    const { privateKey, publicKey } = generateKeyPairSync(kind, options);
+    const fake = codeStorageFake({ name: "example-org", publicKey });
+    FAKES.push(fake);
+    const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => "srv1" }, "agent-one");
+    const one = (await save(store, null, [{ path: "corrections.md", text: "- one\n" }])).saved;
+    assert.match(one, HEX, kind);
+    assert.equal(text(await store.read(one), "corrections.md"), "- one\n", kind);
+    assert.ok(fake.calls.every((call) => call.repo === "agentrun-srv1-agent-one"), "each token verified under the key's own alg");
+  }
+});
+
+test("code.storage: every repository id the whole suite sent starts agentrun- (no other repository of the org is created, read, written or deleted), and no call listed repositories", () => {
+  const sent = FAKES.flatMap((fake) => fake.calls);
+  assert.ok(sent.length > 50, `the suite's calls: ${sent.length}`);
+  for (const call of sent) assert.match(String(call.repo), /^agentrun-[A-Za-z0-9_-]+$/, JSON.stringify(call));
+  assert.deepEqual(sent.filter((call) => /^repos\/?$/.test(call.path) && call.method === "GET"), [], "no repository listing");
+  assert.deepEqual([...new Set(sent.filter((call) => call.method === "DELETE").map((call) => call.path))], ["repos/delete"]);
 });

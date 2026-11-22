@@ -21,6 +21,9 @@ export interface DispatchDeps {
    *  this runner does not run it (the run fails in words). pi is the adapter loop with adapterRunSpecFromLaunch; the CLI
    *  harnesses name their own. May be async (the revision read). */
   resolve(harness: string, launch: RunLaunch, runId: string): LoopFactory | undefined | Promise<LoopFactory | undefined>;
+  /** Whether this runner is apart from its server's local learning folder (learn/store-of.ts learningApart): each run
+   *  runs with nothing learned (launchOnItsDisk `apart`). */
+  apart?: () => boolean;
 }
 
 /** A launch naming a harness this runner does not run. */
@@ -75,9 +78,10 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
 
   async function begin(claim: Claim): Promise<LoopEnd> {
     const row = await deps.launchOf(claim.runId);
-    // The launch as this run runs it: on a named disk, with nothing learned on another disk (launchOnItsDisk).
+    // The launch as this run runs it: on a named disk, or on a runner apart from the server's learning, with nothing
+    // learned (launchOnItsDisk).
     const read = readLaunchBody(row.body);
-    const launch = read && launchOnItsDisk(read);
+    const launch = read && launchOnItsDisk(read, deps.apart?.() ?? false);
     if (!launch) throw new LaunchUnreadable(claim.runId);
     const harness = harnessOfBody(row.body as { harness?: string });
     const factory = await deps.resolve(harness, launch, claim.runId);

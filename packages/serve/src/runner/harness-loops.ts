@@ -25,6 +25,7 @@ import { noServerKeyFor } from "../run-model-key.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { askRouteOf } from "./sdk-ask.js";
+import { learningApart } from "../learn/store-of.js";
 import { ClaimRefused, type LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
@@ -125,6 +126,7 @@ export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
   return createDispatchLoop({
     launchOf: (runId) => deps.store.runs.launch(runId),
     resolve: resolveRunnerLoop(deps),
+    apart: () => learningApart(deps.data),
   });
 }
 

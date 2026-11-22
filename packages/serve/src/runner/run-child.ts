@@ -36,6 +36,9 @@ interface ChildInit {
   readonly data: string;
   readonly signal: AbortSignal;
   readonly where?: unknown;
+  /** The runner is apart from its server's local learning folder (learn/store-of.ts learningApart): the run runs with
+   *  nothing learned. */
+  readonly learningApart?: true;
   readonly mcpLoopback?: true;
   readonly mcpOwn?: readonly string[];
   readonly githubApi?: string;
@@ -238,7 +241,7 @@ channel.expose("loop", async (method, args) => {
         live: (reader) => void (read = reader),
         redact: heldRedactor(processSecretRedactor()),
       };
-      loop = createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) })(loopDeps);
+      loop = createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps), apart: () => init.learningApart === true })(loopDeps);
       made(loop);
       // The loop's held state and whether a plain stop keeps its computer, posted when either moved.
       let last = "";

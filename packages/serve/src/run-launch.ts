@@ -197,12 +197,16 @@ function readLearning(value: unknown): NonNullable<RunLaunch["learning"]> | unde
 /** The launch a runner runs (runner/dispatch.ts, run-child-host.ts): on a disk the launch names as its own (kind
  *  "launch"), its learning start holds no seed, # Learned section or learned workflow, whatever the body says (a start
  *  made before its run's disk was read, or written by hand), as the server's seed is the default disk's, never that
- *  disk's (learn/learning-of.ts): the run starts with nothing learned (`other_disk`), its flags kept. Any other launch as
- *  read. readLaunchBody keeps the body as written: a finished run's views show what it ran. */
-export function launchOnItsDisk(launch: RunLaunch): RunLaunch {
-  if (!launch.learning || launch.archilDisk?.kind !== "launch") return launch;
+ *  disk's (learn/learning-of.ts): the run starts with nothing learned (`other_disk`), its flags kept. On a runner `apart`
+ *  from its server's local learning folder (learn/store-of.ts learningApart) likewise (`apart`): the run runs at once,
+ *  with no seed laid and nothing written at its end, and its learning says why. Any other launch as read.
+ *  readLaunchBody keeps the body as written: a finished run's views show what it ran. */
+export function launchOnItsDisk(launch: RunLaunch, apart = false): RunLaunch {
+  if (!launch.learning) return launch;
+  const failed: SeedFailed | undefined = launch.archilDisk?.kind === "launch" ? "other_disk" : apart && launch.learning.seedFailed === undefined ? "apart" : undefined;
+  if (!failed) return launch;
   const { noWorkflows, model, use } = launch.learning;
-  return { ...launch, learning: { seed: null, section: "", seedFailed: "other_disk", ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}) } };
+  return { ...launch, learning: { seed: null, section: "", seedFailed: failed, ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}) } };
 }
 
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
@@ -257,9 +261,11 @@ export const learningStartOfStored = (stored: unknown): RunLaunch["learning"] =>
 /** Why a learning run starts with nothing learned, as main says it: its agent's learning folder could not be read
  *  (`unreadable`, STOPPED.unreadable), what was read could not be made into its start (`not_copied`,
  *  STOPPED.notCopied), or its launch names a disk of its own, whose learning folder the server does not read
- *  (`other_disk`, STOPPED.otherDisk): a run on a named disk learns nothing (learn/learning-of.ts). */
-export type SeedFailed = "unreadable" | "not_copied" | "other_disk";
-const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied", "other_disk"];
+ *  (`other_disk`, STOPPED.otherDisk): a run on a named disk learns nothing (learn/learning-of.ts); or its runner's data
+ *  directory is not the server's, with no code.storage set, so the runner can't reach the server's local learning
+ *  folder (`apart`, STOPPED.apart; learn/store-of.ts LEARNING_APART). */
+export type SeedFailed = "unreadable" | "not_copied" | "other_disk" | "apart";
+const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied", "other_disk", "apart"];
 
 /** A learning start with no seed (no commit of main, runs-over-store.ts learningStartFor): the run learns nothing, is
  *  never asked what to keep, and so is never told it learns. Why is its `seedFailed`, when its start records one. */

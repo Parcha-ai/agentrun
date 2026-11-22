@@ -3807,8 +3807,9 @@ never gets one. The server and its runners are its only writers. Two stores keep
 - **The local folder** (the default, no setting): `learning/` in the agent's folder on the disk
   (`DATA/disk/agents/<key>/learning/`), plain git with `main` checked out. Every git call runs with the folder's hooks
   and fsmonitor off, no replace refs, no lazy fetch and no system or global config. A runner on a disk of its own
-  ([deploy](../../deploy/README.md#a-runner-on-a-disk-of-its-own)) can't reach it, so its runs learn nothing and say
-  why.
+  ([deploy](../../deploy/README.md#a-runner-on-a-disk-of-its-own)) can't reach it: its runs run at once with nothing
+  learned and nothing written, and their learning (`seed_failed`) names the code.storage settings that would let them
+  learn.
 - **code.storage**, when the server and each runner are started with `AGENTRUN_CODE_STORAGE_NAME` (the org's name) and
   `AGENTRUN_CODE_STORAGE_KEY` (its signing key, a PEM, held as every secret is: never logged, never in a command line),
   and `AGENTRUN_CODE_STORAGE_API_URL` when the API is not `https://api.<org>.code.storage`: one repository an agent,

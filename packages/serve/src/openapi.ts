@@ -851,7 +851,7 @@ const LEARNING_REASON = {
   enum: [...LEARNING_REASONS, null],
   description: [
     "Set only when `state` is `dropped`, from a closed list; a new reason is announced before it ships.",
-    "`seed_failed`: the agent's learning folder could not be read or made, so the run started with nothing learned.",
+    "`seed_failed`: the agent's learning could not be read or made, or its runner can't reach it (a runner on a disk of its own with no code.storage set), so the run started with nothing learned and keeps nothing.",
     "`no_budget`: the run's cap left no room for the compile turn, or refused its request. `unknown_cost`: a capped run whose spend is unknown.",
     "`cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_failed`: the compile turn ended on an error.",
     "`empty`: the compile turn kept no workflow and the owner gave no correction, or the run was not asked its compile turn because its only tool work was its learned workflows, each answering, with nothing said after its first message (its `detail` says so). `checker`: the checks (or the workflow's dry run) refused it, or the owner's correction would pass corrections.md's cap, and nothing was written to git.",

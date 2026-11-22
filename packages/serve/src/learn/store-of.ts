@@ -59,6 +59,13 @@ export function useLearningStore(data: string, settings: CodeStorageSettings | {
   else stores.delete(data);
 }
 
+/** Whether data directory `data`'s learning is refused: a runner apart from its server's disk, with no code.storage set.
+ *  Its runs run with nothing learned (run-launch.ts launchOnItsDisk `apart`). */
+export function learningApart(data: string): boolean {
+  const settings = stores.get(data);
+  return settings !== undefined && "refused" in settings;
+}
+
 /** The words a runner apart from its server's disk refuses learning with, naming the settings that would let it learn. */
 export const LEARNING_APART =
   `this runner's data directory is not the server's, and the server keeps its agents' learning in its own local folder, which this runner can't reach: start the server and this runner with ${CODE_STORAGE_ENV.name} and ${CODE_STORAGE_ENV.key} to keep learning on code.storage, or start the runner on the server's data directory.`;

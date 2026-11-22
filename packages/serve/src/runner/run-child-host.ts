@@ -43,7 +43,7 @@ import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import type { LearningStore } from "../learn/store.js";
-import { learningStoreOf } from "../learn/store-of.js";
+import { learningApart, learningStoreOf } from "../learn/store-of.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
@@ -935,6 +935,7 @@ export function childLoops(options: ChildLoopsOptions): LoopFactory {
   return createDispatchLoop({
     launchOf: (runId) => options.deps.store.runs.launch(runId),
     resolve: async (harness, launch, runId) => ((await staysInRunner(options.deps, harness, launch, runId, options.isolation)) ? here(harness, launch, runId) : own),
+    apart: () => learningApart(options.deps.data),
   });
 }
 
@@ -1022,9 +1023,10 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
       return (started ??= (async (): Promise<LoopEnd> => {
         const runRow = await deps.store.runs.get(claim.runId);
         if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
-        // The launch as this run runs it: on a named disk, with nothing learned on another disk (launchOnItsDisk).
+        // The launch as this run runs it: on a named disk, or on a runner apart from the server's learning, with nothing
+        // learned (launchOnItsDisk).
         const read = readLaunchBody((await deps.store.runs.launch(claim.runId)).body);
-        const launch = read && launchOnItsDisk(read);
+        const launch = read && launchOnItsDisk(read, learningApart(deps.data));
         if (!launch) throw new Error(`run ${claim.runId}: its launch record could not be read as a launch`);
         const revisionRow = await deps.store.agents.revision(runRow.revisionId);
         if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);
@@ -1140,6 +1142,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           const reach = await mcpReachOf(deps);
           const init = {
             claim, data: deps.data, signal: loopDeps.signal, where: deps.store.where,
+            ...(learningApart(deps.data) ? { learningApart: true } : {}),
             ...(reach.loopback ? { mcpLoopback: true, mcpOwn: reach.own ?? [] } : {}),
             ...(deps.githubApi ? { githubApi: deps.githubApi } : {}),
             ...(deps.githubWeb ? { githubWeb: deps.githubWeb } : {}),

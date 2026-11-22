@@ -33,12 +33,31 @@ const NO_COMMIT = "0".repeat(40);
 
 type Scope = "git:read" | "git:write" | "repo:write";
 
-/** The repository of agent `agentId` on server `serverId`: agentrun-<server id>-<agent id> for an id of letters,
- *  digits, dashes and underscores (at most 64); any other is `h-<its first 21 such characters>-<24 hex digits of its
- *  SHA-256>`, so no id's name is another's. */
+/** A repository id this server may create, read, write or delete: `agentrun-` and letters, digits, dashes and
+ *  underscores. The org's other repositories are never touched: every call checks the id its token names (token()),
+ *  and no call lists repositories or deletes any but one agent's, by its exact id. */
+const AGENTRUN_REPO = /^agentrun-[A-Za-z0-9_-]{1,160}$/;
+
+/** A repository id refused before any request goes out: one not of this server's agents (AGENTRUN_REPO), or a server
+ *  id that can't make one. */
+export class RepoIdRefused extends Error {
+  override readonly name = "RepoIdRefused";
+}
+
+/** `id`, when it is a repository id this server may touch (AGENTRUN_REPO); else RepoIdRefused. */
+export function agentrunRepo(id: string): string {
+  if (typeof id !== "string" || !AGENTRUN_REPO.test(id)) throw new RepoIdRefused(`code.storage repository ${JSON.stringify(id)} is not one of this server's agents' (agentrun-...): nothing is sent for it`);
+  return id;
+}
+
+/** The repository of agent `agentId` on server `serverId` (letters, digits and underscores, at most 64; else
+ *  RepoIdRefused): agentrun-<server id>-<agent id> for an agent id of letters, digits, dashes and underscores (at most
+ *  64); any other (empty, a slash, a dot) is `h-<its first 21 such characters>-<24 hex digits of its SHA-256>`, so no
+ *  id's name is another's and none leaves agentrun-. */
 export function repoIdOf(serverId: string, agentId: string): string {
-  if (/^[A-Za-z0-9_-]{1,64}$/.test(agentId) && !/^h-.*-[0-9a-f]{24}$/.test(agentId)) return `agentrun-${serverId}-${agentId}`;
-  return `agentrun-${serverId}-h-${agentId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 21)}-${createHash("sha256").update(agentId).digest("hex").slice(0, 24)}`;
+  if (typeof serverId !== "string" || !/^[A-Za-z0-9_]{1,64}$/.test(serverId)) throw new RepoIdRefused(`a code.storage repository is named by this server's id, and ${JSON.stringify(serverId)} is not one: nothing is sent`);
+  if (/^[A-Za-z0-9_-]{1,64}$/.test(agentId) && !/^h-.*-[0-9a-f]{24}$/.test(agentId)) return agentrunRepo(`agentrun-${serverId}-${agentId}`);
+  return agentrunRepo(`agentrun-${serverId}-h-${String(agentId).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 21)}-${createHash("sha256").update(String(agentId)).digest("hex").slice(0, 24)}`);
 }
 
 /** A call code.storage answered with a failure: its HTTP status and what its body said. */
@@ -77,11 +96,19 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
   const repoId = () => (repo ??= settings.serverId().then((id) => repoIdOf(id, agentId)));
 
   const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  /** Every call's token, the one place a repository id is sent (each call names its repository by its token alone):
+   *  checked again here (agentrunRepo), so no request goes out for any other. Signed by the key's own kind, as
+   *  code.storage's SDK chooses: an EC key ES256, an RSA key RS256, an Ed25519 key EdDSA. */
   async function token(scopes: readonly Scope[]): Promise<string> {
+    const repo = agentrunRepo(await repoId());
     const now = Math.floor(Date.now() / 1000);
-    const head = b64({ alg: "ES256", typ: "JWT" });
-    const body = b64({ iss: settings.name, sub: "@agentrun/serve", repo: await repoId(), scopes, iat: now, exp: now + TOKEN_SECONDS });
-    const signature = sign("sha256", Buffer.from(`${head}.${body}`), { key: keyOf(), dsaEncoding: "ieee-p1363" }).toString("base64url");
+    const key = keyOf();
+    const kind = key.asymmetricKeyType;
+    const alg = kind === "rsa" ? "RS256" : kind === "ed25519" ? "EdDSA" : "ES256";
+    const head = b64({ alg, typ: "JWT" });
+    const body = b64({ iss: settings.name, sub: "@agentrun/serve", repo, scopes, iat: now, exp: now + TOKEN_SECONDS });
+    const data = Buffer.from(`${head}.${body}`);
+    const signature = (kind === "ed25519" ? sign(null, data, key) : kind === "rsa" ? sign("sha256", data, key) : sign("sha256", data, { key, dsaEncoding: "ieee-p1363" })).toString("base64url");
     return `${head}.${body}.${signature}`;
   }
 

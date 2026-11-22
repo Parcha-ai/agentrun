@@ -1,7 +1,8 @@
 // An in-memory code.storage, at its HTTP API, as the learning store's adapter (src/learn/code-storage.ts) calls it: a
 // `fetch` the adapter is given in place of the network. It follows what the spike against the real API observed:
-// - the repo is taken from the bearer JWT's `repo` claim, never from the request; the JWT is ES256, signed with the
-//   org's key, and its `iss` is the org (a token for another org, or a bad signature, is 401);
+// - the repo is taken from the bearer JWT's `repo` claim, never from the request; the JWT is signed with the org's key
+//   by its kind (EC ES256, RSA RS256, Ed25519 EdDSA), and its `iss` is the org (a token for another org, or a bad
+//   signature, is 401); `calls` records the repo id of every request, so a test can check none left agentrun-;
 // - a commit (POST /repos/commit-pack, ndjson: one metadata line, then base64 blob chunks) moves `target_branch` only
 //   from `expected_target_sha` (40 zeros for a branch not made yet; `expected_head_sha`, its deprecated name, alike): a
 //   stale head is 409 with result.status "conflict" and writes nothing; a metadata field the API does not name is 400
@@ -35,8 +36,12 @@ export function codeStorageFake({ name = "example-org", publicKey } = {}) {
     if (!h || !p || !s) return undefined;
     try {
       const head = JSON.parse(Buffer.from(h, "base64url").toString("utf8"));
-      if (head.alg !== "ES256") return undefined;
-      if (key && !verify("sha256", Buffer.from(`${h}.${p}`), { key, dsaEncoding: "ieee-p1363" }, Buffer.from(s, "base64url"))) return undefined;
+      // Its alg is its key's kind (EC ES256, RSA RS256, Ed25519 EdDSA), as code.storage's SDK signs.
+      const algs = { ec: "ES256", rsa: "RS256", ed25519: "EdDSA" };
+      if (!Object.values(algs).includes(head.alg) || (key && algs[key.asymmetricKeyType] !== head.alg)) return undefined;
+      const data = Buffer.from(`${h}.${p}`);
+      const signature = Buffer.from(s, "base64url");
+      if (key && !(head.alg === "EdDSA" ? verify(null, data, key, signature) : head.alg === "RS256" ? verify("sha256", data, key, signature) : verify("sha256", data, { key, dsaEncoding: "ieee-p1363" }, signature))) return undefined;
       const body = JSON.parse(Buffer.from(p, "base64url").toString("utf8"));
       if (body.iss !== name || typeof body.repo !== "string" || !Array.isArray(body.scopes)) return undefined;
       if (typeof body.exp !== "number" || body.exp * 1000 < Date.now()) return undefined;

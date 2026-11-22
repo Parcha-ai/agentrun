@@ -67,11 +67,12 @@ export const STOPPED = {
   notChecked: "what it learned could not be checked",
   refuseUnread: "what the run must never learn (its agent's browser sign-in, the server's secrets) could not be read back, so nothing it learned is kept",
   otherDisk: "the run is on a disk its start named, and a run there learns nothing yet: it started without what the agent learned, and what it does is not learned",
+  apart: "its runner's data directory is not the server's, so it can't reach the agent's learning: it started without what the agent learned, and what it does is not learned. Start the server and its runners with AGENTRUN_CODE_STORAGE_NAME and AGENTRUN_CODE_STORAGE_KEY to keep learning on code.storage, which every runner reaches",
 } as const;
 
 /** Why a run whose start has no seed started with nothing learned (run-launch.ts SeedFailed), in words. */
 export const seedStopped = (failed: string | undefined): string =>
-  failed === "unreadable" ? STOPPED.unreadable : failed === "not_copied" ? STOPPED.notCopied : failed === "other_disk" ? STOPPED.otherDisk : STOPPED.noSeed;
+  failed === "unreadable" ? STOPPED.unreadable : failed === "not_copied" ? STOPPED.notCopied : failed === "other_disk" ? STOPPED.otherDisk : failed === "apart" ? STOPPED.apart : STOPPED.noSeed;
 
 /** A run's learning, in words, by where it stands. */
 export const said = {
