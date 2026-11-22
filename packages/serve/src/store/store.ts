@@ -126,6 +126,10 @@ export interface TemplatePackage {
    *  parameters, one of which may be a credential: a later fresh apply of the same package whose parameters give the same
    *  digest warns of this agent. Absent on a revision applied before it was kept. */
   readonly parameters_digest?: string;
+  /** The names of the keys the package declared (its `secrets`, and those of the model choice the apply took), sorted,
+   *  never their values: what an export of the agent names, whatever version of the package the server holds later.
+   *  Absent on a revision applied before it was kept. */
+  readonly secrets?: readonly string[];
 }
 
 export interface NewRevision {
@@ -1518,7 +1522,8 @@ export interface Runners {
 
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
  *  (`github:<owner>/<repo>[/<path>]`), its source as given, the commit SHA read, its publisher (the GitHub account), and
- *  its files as they were read, by path, base64. The server checks them again (templates.ts readPackage) as it loads them
+ *  its files as they were read, by path, base64. An uploaded one's id and source are `upload:<name>`, its sha the
+ *  package's sha256, its publisher empty. The server checks them again (templates.ts readPackage) as it loads them
  *  at its start, so a package this build no longer takes is never served. */
 export interface ImportedTemplateRow {
   readonly id: string;

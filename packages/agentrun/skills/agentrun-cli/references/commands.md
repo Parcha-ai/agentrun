@@ -116,6 +116,12 @@ Each learned workflow revision's promotion: its replay's numbers and whether it 
 
 Route: `GET /agents/{agent_id}/learning/promotions`.
 
+### `agentrun agents package AGENT_ID`
+
+The agent's current revision as a template package.
+
+Route: `GET /agents/{agent_id}/package`.
+
 ### `agentrun agents runs AGENT_ID`
 
 The agent's runs index.
@@ -326,6 +332,37 @@ Revoke a source connector and stop its outstanding commands.
 
 Route: `DELETE /connectors/{connector_id}`.
 
+## deploy
+
+### `agentrun deploy SOURCE`
+
+Deploy an agent's package to another AgentRun: upload, plan, apply, lock (deploy rollback, deploy delete).
+
+Route: none, it runs on this machine.
+
+- `--to URL` (string, this CLI's own): where: cloud (the hosted AgentRun; AGENTRUN_CLOUD_URL overrides its address), or an AgentRun's address; left out after the first deploy, the lock's target (a folder's, only where this CLI deployed it, or cloud)
+- `--yes` (boolean, this CLI's own): apply without asking (needed off a terminal)
+- `--force` (boolean, this CLI's own): replace an agent edited on the target since the last deploy
+- `--params FILE` (string, this CLI's own): the package's parameters, a JSON object
+- `--pause-source` (boolean, this CLI's own): an install agent: turn its schedules off on this install once deployed (else they fire in both places)
+
+### `agentrun deploy delete SOURCE`
+
+Delete the deployed agent from its target (archived first), and the lock here.
+
+Route: none, it runs on this machine.
+
+- `--to URL` (string, this CLI's own): the target, in place of the lock's
+- `--yes` (boolean, this CLI's own): delete without asking (needed off a terminal)
+
+### `agentrun deploy rollback SOURCE`
+
+Make the deployed agent's previous revision current on its target, and the lock follow.
+
+Route: none, it runs on this machine.
+
+- `--to URL` (string, this CLI's own): the target, in place of the lock's
+
 ## doctor
 
 ### `agentrun doctor`
@@ -336,6 +373,16 @@ Route: none, it runs on this machine.
 
 - `--data DIR` (string, this CLI's own): the data directory whose server it checks (default ~/.agentrun)
 - `--json` (boolean, this CLI's own): print the checks as JSON: {exit, server, checks: [{id, status, summary, fix, docs}]}
+
+## export
+
+### `agentrun export AGENT`
+
+Write an agent's current revision as a template package folder, and say what the target sets up again.
+
+Route: none, it runs on this machine.
+
+- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one
 
 ## files
 
@@ -1201,7 +1248,10 @@ Apply a template package: make its agent, with its skills, then its triggers.
 Route: `POST /templates/{template}/apply`.
 
 - `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
+- `--dry-run` (boolean): True: answer the apply's plan (200 `{plan}`) from the same reads and checks, writing nothing and keeping no Idempotency-Key record. Missing keys and MCP servers are listed in the plan where the apply would be 409; any other refusal is the apply's own.
 - `--agent-id STRING` (string): An agent this package made here (GET /agents `template.id` is the package's id): the apply writes a new revision of it in place of making another, answered 200 with the same id. Its runs and its learning (corrections and workflows) stay. The parameters and grants are checked as a fresh apply checks them. Its triggers are reconciled by name: one of a name it has is changed in place (its id, a feed trigger's seen items, a webhook trigger's secret and whether it is on are kept; a `catchup_window_s` or `max_active_runs` the package leaves out goes back to its default, as a fresh apply makes it; a source the package leaves as it was is not rewritten, so a schedule keeps its next time, and an `every_s` one with no `start_at` the grid its first apply set), a new name is made, and one this package's apply made or kept that the package no longer lists is removed (a feed trigger whose feeds are left empty is not listed). Which triggers are the package's is kept on each trigger, never in an API body: one the owner made, one moved to the agent from another (or away and back), and one made before this was kept are never removed. A Composio trigger it removes (the package dropped it, or makes it again) goes at Composio first: one whose instance Composio does not delete is kept here as it was (on or off, the package's, its config sealed), and the next apply removes it; a dropped one is said in `warnings` under `triggers`, naming it and what is left at Composio. Such an unmarked trigger with a package trigger's name is adopted only when it can be changed in place (the same kind, and for a Composio trigger the same server, event and config), and is the package's from then on; one that would have to be made again, or one another package made, is 409 name_taken under `triggers.<i>.name` before anything is written: rename or delete it, then apply again. A trigger moved to another agent while the update runs is neither changed nor removed; its name is made anew. A Composio trigger it keeps keeps its sealed config when the package sends the same values; one whose server, event or config the package changes (another key too) is made again, as one whose source kind changed is: the old trigger and its Composio instance are removed first, and the new one is off where the owner turned the old one off. When Composio does not delete the old instance, the new one is not made, and the apply is 424 upstream_failed with the new revision standing and the old trigger kept as it was (remove the instance at Composio, or wait, and apply again: the old trigger's off carries to the new one). What the package owns and its new version leaves out (an input or answer schema, a checkout, a default cap, learning) is gone from the agent; what the host set (its harness, computer, sdk and native references) is kept. Updates of one agent run one after the other on a server, and each writes only onto the revision it read: one whose read went stale meanwhile (an edit, or an update elsewhere) is 412 precondition_failed, with nothing changed. An agent made otherwise, or from another package, is 422 under `agent_id`, saying which; an unknown id is 404; an archived agent is 409 agent_archived.
+- `--revision STRING` (string): With `agent_id`: the agent's revision as you read it (GET /agents/{agent_id} `revision`, or a plan's `current_revision_id`). The apply, or its plan, writes only while it is the agent's current one: another is 412 precondition_failed, nothing changed. Without `agent_id` it is 422.
+- `--sha STRING` (string): The package's sha as you read it (GET /templates `sha`, or an import's answer): the apply, or its plan, is 412 precondition_failed when the package stored under this id is another (an upload of the same name replaced it), nothing changed.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -1226,11 +1276,11 @@ Route: none, it runs on this machine.
 
 ### `agentrun template import`
 
-Import a template package from a public GitHub repository, or preview it (dry_run).
+Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run).
 
 Route: `POST /templates/import`.
 
-- `--source STRING` (string, required): Where the package is: `github:<owner>/<repo>[/<path>][@<ref>]` (the ref, a branch, tag or commit, defaults to the default branch), or the folder's https://github.com/<owner>/<repo>/tree/<ref>/<path> URL. A public repository on github.com alone.
+- `--source STRING` (string): Where the package is: `github:<owner>/<repo>[/<path>][@<ref>]` (the ref, a branch, tag or commit, defaults to the default branch), or the folder's https://github.com/<owner>/<repo>/tree/<ref>/<path> URL. A public repository on github.com alone. Not with `files`; refused on a server that serves the API alone.
 - `--dry-run` (boolean): True: read and check the package and answer it, storing nothing (the install preview). Absent or false: store it, listed by GET /templates.
 - `--trust-publisher` (boolean): The owner's "I trust <publisher>": needed (true) for the first import this server stores from a GitHub account, and remembered for that account. Never needed for a dry run.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.

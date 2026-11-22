@@ -1782,6 +1782,29 @@ export type ListLearningPromotionsResponse = {
   }>;
 };
 
+/** The agent's current revision as a template package (GET /agents/{agent_id}/package). */
+export type GetAgentPackageResponse = {
+  name: string;
+  files: Array<{
+    path: string;
+    encoding: "utf8" | "base64";
+    content: string;
+  }>;
+  sha256: string;
+  report: {
+    blocked: Array<{
+      kind: string;
+      name: string;
+      reason: string;
+    }>;
+    remade: Array<{
+      kind: string;
+      name: string;
+      reason: string;
+    }>;
+  };
+};
+
 /** The agent's runs index (GET /agents/{agent_id}/runs). */
 export interface ListRunsParams {
   limit?: number;
@@ -4475,6 +4498,7 @@ export type GetStatsResponse = {
 
 /** Apply a template package: make its agent, with its skills, then its triggers (POST /templates/{template}/apply). */
 export type ApplyTemplateBody = {
+  dry_run?: boolean;
   parameters?: Record<string, unknown>;
   servers?: Record<string, string>;
   grants?: Array<string>;
@@ -4484,6 +4508,8 @@ export type ApplyTemplateBody = {
     choice?: string;
     approvals?: "ask" | "never";
   };
+  revision?: string;
+  sha?: string;
 };
 export interface ApplyTemplateParams {
   "Idempotency-Key"?: string;
@@ -4492,6 +4518,51 @@ export type ApplyTemplateResponse = {
   template: string;
   version: string;
   agent_id: string;
+  revision_id: string | null;
+  revision_version: number;
+  agent_change: "made" | "updated" | "unchanged";
+  servers: Record<string, string | null>;
+  triggers: Array<{
+    trigger_id: string;
+    name: string;
+    kind: "schedule" | "webhook" | "github" | "composio" | "email" | "feed";
+    enabled: boolean;
+  }>;
+  warnings: Array<InputIssue>;
+  webhook_secrets?: Array<{
+    trigger_id: string;
+    secret: SecretMeta;
+    signing_secret?: string;
+    secret_set?: true;
+    note?: string;
+  }>;
+} | {
+  plan: {
+    action: "create" | "revise";
+    agent_id: string | null;
+    current_revision_id: string | null;
+    missing_secrets: Array<string>;
+    unmatched_mcp: Array<{
+      source: string;
+      toolkit: string;
+      required: boolean;
+    }>;
+    triggers: Array<{
+      name: string;
+      kind: string;
+      action: "create" | "update" | "remove" | "skip";
+      reason?: string;
+    }>;
+    computer: {
+      kind: string;
+      provider: string | null;
+    } | null;
+  };
+} | {
+  template: string;
+  version: string;
+  agent_id: string;
+  revision_id: string | null;
   revision_version: number;
   agent_change: "made" | "updated" | "unchanged";
   servers: Record<string, string | null>;
@@ -4513,9 +4584,14 @@ export type ApplyTemplateResponse = {
 
 /** Remove an imported template package (DELETE /templates/{template}). */
 
-/** Import a template package from a public GitHub repository, or preview it (dry_run) (POST /templates/import). */
+/** Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run) (POST /templates/import). */
 export type ImportTemplateBody = {
-  source: string;
+  source?: string;
+  files?: Array<{
+    path: string;
+    encoding: "utf8" | "base64";
+    content: string;
+  }>;
   dry_run?: boolean;
   trust_publisher?: boolean;
 };
@@ -6049,6 +6125,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listAgents: {"method":"GET","path":"/agents","pathParams":[],"multiSegment":[],"query":["limit","cursor","archived"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listLearningAudits: {"method":"GET","path":"/agents/{agent_id}/learning/audits","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listLearningPromotions: {"method":"GET","path":"/agents/{agent_id}/learning/promotions","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getAgentPackage: {"method":"GET","path":"/agents/{agent_id}/package","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRuns: {"method":"GET","path":"/agents/{agent_id}/runs","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor","status","label"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   updateDefinition: {"method":"PUT","path":"/agents/{agent_id}/definition","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
@@ -6248,6 +6325,8 @@ export function resources(call: Call) {
       listLearningAudits: (agentId: string, options?: RequestOptions): Promise<ListLearningAuditsResponse> => call("listLearningAudits", [agentId], undefined, undefined, options),
       /** Each learned workflow revision's promotion: its replay's numbers and whether it serves (GET /agents/{agent_id}/learning/promotions). */
       listLearningPromotions: (agentId: string, options?: RequestOptions): Promise<ListLearningPromotionsResponse> => call("listLearningPromotions", [agentId], undefined, undefined, options),
+      /** The agent's current revision as a template package (GET /agents/{agent_id}/package). */
+      package: (agentId: string, options?: RequestOptions): Promise<GetAgentPackageResponse> => call("getAgentPackage", [agentId], undefined, undefined, options),
       /** The agent's runs index (GET /agents/{agent_id}/runs). */
       runs: (agentId: string, params?: ListRunsParams, options?: RequestOptions): Promise<ListRunsResponse> => call("listRuns", [agentId], undefined, params, options),
       /** Show the archived agent in the lists again (POST /agents/{agent_id}/unarchive). */
@@ -6550,7 +6629,7 @@ export function resources(call: Call) {
       apply: (template: string, body: ApplyTemplateBody, params?: ApplyTemplateParams, options?: RequestOptions): Promise<ApplyTemplateResponse> => call("applyTemplate", [template], body, params, options),
       /** Remove an imported template package (DELETE /templates/{template}). */
       delete: (template: string, options?: RequestOptions): Promise<void> => call("deleteTemplate", [template], undefined, undefined, options),
-      /** Import a template package from a public GitHub repository, or preview it (dry_run) (POST /templates/import). */
+      /** Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run) (POST /templates/import). */
       import: (body: ImportTemplateBody, options?: RequestOptions): Promise<ImportTemplateResponse> => call("importTemplate", [], body, undefined, options),
       /** The template packages this server ships, and those imported here: each makes an agent, its skills and its triggers (GET /templates). */
       list: (options?: RequestOptions): Promise<ListTemplatesResponse> => call("listTemplates", [], undefined, undefined, options),

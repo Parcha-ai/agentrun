@@ -96,7 +96,7 @@ const allowedExtraFiles = {
   // the published image by it, which Agent37 registers as a template). And the media image's recipe (media/Dockerfile),
   // which an operator builds for a Docker box that renders video.
   computer: ['package/media/Dockerfile', 'package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/install.sh', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/recipe.mjs', 'package/box/recipe.d.mts', 'package/box/README.md'],
-  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/device.mjs', 'package/lib/target.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs', 'package/lib/service.mjs', 'package/lib/tailscale.mjs', 'package/lib/harness.mjs', 'package/lib/public-url.mjs', 'package/lib/doctor.mjs', 'package/install.sh'],
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/device.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs', 'package/lib/export.mjs', 'package/lib/service.mjs', 'package/lib/tailscale.mjs', 'package/lib/harness.mjs', 'package/lib/public-url.mjs', 'package/lib/doctor.mjs', 'package/lib/deploy.mjs', 'package/lib/target.mjs', 'package/install.sh'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
