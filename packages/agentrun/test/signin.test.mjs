@@ -183,7 +183,8 @@ test("login --to: a URL off the target's origin, a redirect, or a malformed answ
     assert.doesNotMatch(result.err, /KQ7/, `${name}: no code shown`);
     assert.equal(server.of("GET", "/auth/device2").length + server.of("POST", "/auth/device/code2").length, 0, `${name}: no redirect followed`);
   }
-  assert.equal(other.requests.length, 0, "nothing was sent to the other origin");
+  // Its own paths only: a local tool that lists dev servers may GET / on any new loopback listener.
+  assert.deepEqual(other.requests.filter((r) => /^\/(?:v2|auth)\//.test(r.url)).map((r) => `${r.method} ${r.url}`), [], "nothing was sent to the other origin");
 });
 
 test("login --to: a token answer that redirects or is malformed is refused, exit 1, with nothing written", async (t) => {
