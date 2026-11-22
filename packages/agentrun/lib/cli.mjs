@@ -11,7 +11,7 @@
 import { spawn } from "node:child_process";
 import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir, constants as osConstants } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve, win32 } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { ALL, FLAGS, MAX_PAGES, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
@@ -581,7 +581,7 @@ export function external(file, args, env, io, platform = process.platform) {
   // Node runs a .bat or .cmd only through cmd.exe, which reads the arguments again (% expands; " ^ & | < > ! are its
   // own), and no quoting holds for every argument: none is run.
   if (platform === "win32" && /\.(?:bat|cmd)$/i.test(file)) {
-    io.stderr.write(`${file} is a batch file, which Node runs only through cmd.exe, and cmd.exe would read the arguments again: agentrun runs no command through a shell. Run it yourself, or install agentrun-NAME as an .exe.\n`);
+    io.stderr.write(`${file} is a batch file, which Node runs only through cmd.exe, and cmd.exe would read the arguments again: agentrun runs no command through a shell. Run it yourself, or install ${win32.basename(file).replace(/\.(?:bat|cmd)$/i, "")}.exe.\n`);
     return Promise.resolve(126);
   }
   return new Promise((resolve) => {

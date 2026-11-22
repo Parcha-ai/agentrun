@@ -146,6 +146,7 @@ test("external on Windows: a batch file is refused before anything runs, exit 12
     assert.equal(await external(file, ["a & calc", "%PATH%"], {}, io, "win32"), 126);
     assert.match(err, /is a batch file/);
     assert.match(err, /cmd\.exe/);
+    assert.match(err, /install agentrun-hello\.exe\.$/m, "the refusal names the command's own .exe");
   }
   err = "";
   assert.equal(await external("/nowhere/agentrun-\0hello", [], {}, io, "linux"), 126);
