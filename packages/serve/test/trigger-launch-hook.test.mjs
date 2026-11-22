@@ -104,6 +104,8 @@ test("the host starts the firing's run through the API with trigger_firing: the 
   assert.equal(created.status, 201, JSON.stringify(created.body));
   clock.to("2026-06-01T00:10:00Z");
   const [first] = await firings(api, created.body.id, 1);
+  // The host's start links the firing as it lands, before its answer reaches the host.
+  assert.ok(await until(() => starts.length === 1), "the host started the firing's run");
   assert.equal(starts[0]?.status, 202, JSON.stringify(starts[0]?.body));
   const runId = starts[0].body.run_id;
   assert.deepEqual([first.status, first.run_id], ["started", runId], JSON.stringify(first));

@@ -3696,8 +3696,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const entry = await needRunnableAgent(agentId);
     const { body, handed } = handedLaunchSecrets(await bodyOf(req));
     // The host's run for a firing the launch hook handed it: the firing's own run, under the firing's key (a second start
-    // answers that run), with the trigger, input origin and title a start here would give it, and capped as a trigger's
-    // run is. The firing is its key, so it takes no Idempotency-Key, whose check across a restart is the run's origin.
+    // answers that run), started by the trigger's target policy as a firing here starts one (its cap, which the host's may
+    // lower, its effort, its previous result, its trigger, origin and title), with the host's body and launch secrets
+    // over it. The firing is its key, so it takes no Idempotency-Key, whose check across a restart is the run's origin.
     if (body.trigger_firing !== undefined) {
       if (req.headers["idempotency-key"] !== undefined) throw invalid([{ field: "trigger_firing", reason: "not_allowed", message: "A run for a trigger firing is keyed by the firing, and a second start answers its run: send it without Idempotency-Key." }]);
       const { trigger_firing: given, ...rest } = body;
@@ -3705,10 +3706,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if ("run_id" in firing) return { status: 202, body: await viewOverStore(store, firing.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${firing.run_id}`, "idempotent-replayed": "true" } };
       const secrets = await handed();
       const seal = startSeal(secrets);
-      const run = await startRunOf(entry, rest, { origin: { key: firing.key }, trigger: firing.trigger, from: firing.from, title: firing.title, capped: !nativeOf(entry.revision?.body), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
-      // A host that answered its hook first started this run after: the firing is started with it now.
-      await triggers.handedRan(firing.trigger.id, firing.key, run.id);
-      return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
+      const run = await targets.start(firing.target, rest.input, firing.trigger, firing.from, firing.title, firing.previous, { body: rest, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+      // A host that answered its hook first, or whose hook timed out, started this run after: the firing is started with it now.
+      await triggers.handedRan(firing.trigger.id, firing.key, run.run_id);
+      return { status: 202, body: await viewOverStore(store, run.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.run_id}` } };
     }
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.

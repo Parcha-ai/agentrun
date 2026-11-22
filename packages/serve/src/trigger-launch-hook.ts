@@ -1,16 +1,17 @@
 // The launch hook: a server started with AGENTRUN_LAUNCH_HOOK_URL and AGENTRUN_LAUNCH_HOOK_SECRET hands each trigger firing
 // that would start a run to the host behind it instead (triggers.ts drive), and starts no run of its own for it. The host
 // starts the run through the API (POST /v2/agents/{agent_id}/runs with `trigger_firing` and its own model_key, keys and
-// max_cost_usd: the firing's run, under its key, triggers.ts handedStart) and answers 2xx, before or after that start
-// (after: within LAUNCH_HOOK_LATE_START_MS of that 2xx, the firing's start_by); any other answer, or none within
-// LAUNCH_HOOK_TIMEOUT_MS, and the firing is skipped with why, unless the host started its run. Unset, nothing changes.
+// max_cost_usd: the firing's run, under its key, on its trigger's target, triggers.ts handedStart) and answers 2xx,
+// before or after that start (after: within LAUNCH_HOOK_LATE_START_MS of that 2xx, the firing's start_by). Any other
+// answer, or none within LAUNCH_HOOK_TIMEOUT_MS, is a failed try of the firing under its trigger's retry policy
+// (HookFailed), unless the host started its run. Unset, nothing changes.
 // Off this machine the hook is https: a firing's input can carry a person's data, and the signature proves who sent it,
 // not that no one else read it.
 // The POST is signed as the outbound webhook's messages are (standard-webhooks.ts): `webhook-id` (the firing's id, the
 // same each time it is handed), `webhook-timestamp` (Unix seconds) and `webhook-signature: v1,<base64 HMAC-SHA256 of
 // "{id}.{timestamp}.{body}">` under the secret's key, so a host checks it with any Standard Webhooks library.
 import { fetch as undiciFetch } from "undici";
-import { keyBytes, MIN_KEY_BYTES, SECRET_PREFIX, signatureOf } from "./standard-webhooks.js";
+import { answerOf, keyBytes, MIN_KEY_BYTES, SECRET_PREFIX, signedRequest } from "./standard-webhooks.js";
 import type { Json } from "./validate.js";
 
 export const LAUNCH_HOOK_URL_ENV = "AGENTRUN_LAUNCH_HOOK_URL";
@@ -35,9 +36,23 @@ export type LaunchHook = { readonly url: string; readonly secret: string; readon
  *  run would start on now, the run's input as the trigger gives it, and the firing's time. */
 export type HookFiring = { firing_id: string; trigger_id: string; agent_id: string; revision_id: string | null; input: Json; fired_at: string };
 
-/** The host's answer: taken (2xx); or why the firing is skipped; or `stopped`, the server's stop cut it short and the
- *  firing is left as it was. */
-export type Handed = { taken: true } | { skipped: string } | { stopped: true };
+/** The host's answer: taken (2xx); or `stopped`, the server's stop cut it short and the firing is left as it was. Any
+ *  other answer, or none, is a HookFailed. */
+export type Handed = { taken: true } | { stopped: true };
+
+/** Why the hook did not take a firing, a failed try of it (triggers.ts answered): `failure` is the status the host
+ *  answered, `timeout` or `unreachable`. No answer, no connection, a 5xx or a 429 is `retryable`, tried again under the
+ *  trigger's retry policy; any other answer fails the firing. Its code is hook_failed, and its words begin with it and
+ *  the failure, so a firing's error and reason say which. */
+export class HookFailed extends Error {
+  override name = "HookFailed";
+  readonly code = "hook_failed";
+  readonly retryable: boolean;
+  constructor(readonly failure: number | "timeout" | "unreachable", why: string) {
+    super(`hook_failed (${failure}): the launch hook ${why}, so its host did not take this firing.`);
+    this.retryable = typeof failure !== "number" || failure >= 500 || failure === 429;
+  }
+}
 
 /** The launch hook `given` sets (the URL from the environment, the secret as the server holds its own), or undefined when
  *  neither is set. Throws, in words that never hold the secret, when one is set without the other, the URL is not https
@@ -67,30 +82,25 @@ export function launchHookFrom(given: { url?: string | undefined; secret?: strin
 /** Where `hook` sends, for the start's banner: its origin alone, never a path or query that may hold a token. */
 export const hookOrigin = (hook: LaunchHook): string => new URL(hook.url).origin;
 
-/** `firing` handed to `hook`: one signed POST of it, within the hook's bound and cut by `stop`. A redirect is not followed. */
+/** `firing` handed to `hook`: one signed POST of it, within the hook's bound and cut by `stop`. A redirect is not
+ *  followed. Throws HookFailed when the host does not take it. */
 export async function handToHost(hook: LaunchHook, firing: HookFiring, stop: AbortSignal): Promise<Handed> {
   const timeoutMs = hook.timeoutMs ?? LAUNCH_HOOK_TIMEOUT_MS;
   const body = JSON.stringify(firing);
   const timestamp = String(Math.floor(Date.now() / 1000));
-  const headers = {
-    "content-type": "application/json",
-    "user-agent": "agentrun-serve-launch-hook/1",
-    "webhook-id": firing.firing_id,
-    "webhook-timestamp": timestamp,
-    "webhook-signature": signatureOf(hook.secret, firing.firing_id, timestamp, body),
-  };
+  const headers = signedRequest(hook.secret, firing.firing_id, timestamp, body, "agentrun-serve-launch-hook/1");
   const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), stop]);
+  let res: Awaited<ReturnType<typeof undiciFetch>>;
   try {
-    const res = await undiciFetch(hook.url, { method: "POST", redirect: "manual", signal, headers, body });
-    // The answer's body is not read: the run the host started is found by the firing's key, never by what it says.
-    await res.body?.cancel().catch(() => undefined);
-    if (res.status >= 200 && res.status <= 299) return { taken: true };
-    const said = res.status >= 300 && res.status < 400 ? `answered ${res.status}: a redirect is not followed` : `answered ${res.status}`;
-    return { skipped: `The launch hook ${said}, so the host did not take this firing.` };
+    res = await undiciFetch(hook.url, { method: "POST", redirect: "manual", signal, headers, body });
   } catch (error) {
     if (stop.aborted) return { stopped: true };
-    if ((error as Error).name === "TimeoutError" || signal.aborted) return { skipped: `The launch hook did not answer in ${timeoutMs / 1000} s, so the host did not take this firing.` };
+    if ((error as Error).name === "TimeoutError" || signal.aborted) throw new HookFailed("timeout", `did not answer in ${timeoutMs / 1000} s`);
     const code = (error as { cause?: { code?: unknown } }).cause?.code;
-    return { skipped: `The launch hook was not reached${typeof code === "string" ? ` (${code})` : ""}, so the host did not take this firing.` };
+    throw new HookFailed("unreachable", `was not reached${typeof code === "string" ? ` (${code})` : ""}`);
   }
+  // The answer's body is not read: the run the host started is found by the firing's key, never by what it says.
+  const failure = await answerOf(res);
+  if (failure === undefined) return { taken: true };
+  throw new HookFailed(res.status, failure);
 }

@@ -3269,26 +3269,49 @@ host, and this server starts no run for it:
 
 The POST carries `webhook-id` (the firing's id, the same if it is handed again), `webhook-timestamp` and
 `webhook-signature` as [webhooks](#webhooks) do: check them with any Standard Webhooks library before reading the
-body. The host starts the run with `POST /v2/agents/{agent_id}/runs`, giving the input, its own `model_key`, `keys` and
+body.
+
+The host starts the run with `POST /v2/agents/{agent_id}/runs`, giving the input, its own `model_key`, `keys` and
 `max_cost_usd`, and `"trigger_firing": { "trigger_id": ..., "firing_id": ... }` as it was sent, and answers 2xx within
-10 s. It can start the run before it answers or after: a firing it answered 2xx with no run yet reads `sent` with
+10 s. That run is the firing's, as one this server started would be: it names the trigger and the firing, carries the
+trigger's title and input origin, and the firing reads `started` with it, so the trigger's overlap check and
+`max_active_runs` count it.
+
+The run starts on the trigger's target, as the run this server would start for the firing:
+
+- Its cap is the target's `max_cost_usd`, which the host's `max_cost_usd` may lower and never raise. A target capped at
+  0.5 runs at 0.5 when the host sends 10, and at 0.2 when the host sends 0.2. A target with no cap takes the host's,
+  else the agent's default.
+- Its effort is the target's, else the agent's. The host's `effort` is not taken.
+- Its input is the host's, followed by the trigger's last completed result when its source hands one on (a schedule
+  does), as a run this server starts for it is.
+
+The host can start the run before it answers or after. A firing it answered 2xx with no run yet reads `sent` with
 `start_by`, 10 minutes after that answer, takes that one start until then, and is refused with 422 `not_due` after.
 The 10 minutes run from the answer, not from `fired_at`, so a firing that reaches the host late (a catch-up, one that
-waited on `max_active_runs`, one handed again after a restart) gets the same time; the server never hands a `sent`
-firing over again. That run is
-the firing's, as one this server started would be: it names the trigger and the firing, carries the trigger's title and
-input origin, is capped, and the firing reads `started` with it, so the trigger's overlap check and `max_active_runs`
-count it. The firing is the run's key, so a second start for the same firing answers the same run and the request
-takes no `Idempotency-Key` (422 with one); a firing that is not being handed over (skipped, or one of another agent's
-triggers) is refused with 422. Until its run starts, a `sent` firing is one the overlap check cannot see. Any other
-answer, a redirect included (it is not followed), no answer in 10 s, or no connection, and the firing reads `skipped`
-with why, unless the host started its run by then; a skip is no failure and never turns the trigger off, and the
-server does not try that firing again. A firing the server's stop cuts short stays due and is handed again at the next
-start, under the same `webhook-id`. A `message_run` target starts no run and is unchanged. The start prints the hook's
-origin, never its path or the secret. The hook is `https`: a firing's input can carry a person's data, and the
-signature proves who sent it, not that no one else read it, so plain `http` is taken only for 127.0.0.0/8, `::1` or
-`localhost`. One of the two set without the other, a URL that is not https (or http to this machine) or holds a user
-or password, or a secret that is not a `whsec_` one of 24 bytes or more stops the start, in words.
+waited on `max_active_runs`, one handed again after a restart) gets the same time. The server never hands a `sent`
+firing over again, and until its run starts, the overlap check cannot see it.
+
+The firing is the run's key, so a second start for the same firing answers the same run, and the request takes no
+`Idempotency-Key` (422 with one). A firing that is neither due nor taken by its host (failed, skipped, or one of
+another agent's triggers) is refused with 422.
+
+A hook that does not take the firing is a failed try of it, as a refused run is, unless the host started its run by
+then. The firing's `error.code` is `hook_failed`, and its `reason` names the cause: the status the host answered,
+`timeout` (no answer in 10 s) or `unreachable` (no connection). No answer, no connection, a 5xx or a 429 leaves the
+firing due with `retry_at`, tried again on the trigger's backoff under the same `webhook-id`; any other answer, a
+redirect included (it is not followed), fails it at once. Each try counts toward the trigger's failure streak, which
+turns the trigger off after 5 in a row, and a firing that fails sends `trigger.failed`. A host whose start lands while
+its firing waits on a retry (it answered too late) has that run made the firing's, `started`.
+
+A firing the server's stop cuts short stays due and is handed again at the next start, under the same `webhook-id`. A
+`message_run` target starts no run and is unchanged.
+
+The start prints the hook's origin, never its path or the secret. The hook is `https`: a firing's input can carry a
+person's data, and the signature proves who sent it, not that no one else read it, so plain `http` is taken only for
+127.0.0.0/8, `::1` or `localhost`. One of the two set without the other, a URL that is not https (or http to this
+machine) or holds a user or password, or a secret that is not a `whsec_` one of 24 bytes or more stops the start, in
+words.
 
 ## Uploads
 

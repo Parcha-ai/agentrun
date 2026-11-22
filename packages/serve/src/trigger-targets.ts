@@ -5,14 +5,14 @@
 // which are skipped — is the store's trigger side (store.triggers), not this policy; this says only which runs a
 // trigger may touch and what each refusal answers with.
 import { ApiError, type InputIssue, unsupported } from "./errors.js";
-import { message, type RunMoment, type RunsStore, startRun, type StartDeps, WAITS_ON_A_PERSON } from "./runs-over-store.js";
+import { message, type RunMoment, type RunsStore, startRun, type StartDeps, type StartOptions, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { runOfOrigin } from "./store-reads/runs.js";
 import type { Store } from "./store/index.js";
 import type { AgentEntry } from "./agents-store.js";
 import { NATIVE_CAP_UNSUPPORTED, NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
 import { firingsOwe, keysOwedRefusal } from "./run-keys.js";
 import type { MessageOrigin } from "./timeline/index.js";
-import type { Json } from "./validate.js";
+import { isObject, type Json } from "./validate.js";
 import type { RunTrigger, Target } from "./triggers.js";
 
 /** Why a trigger may not message a run with no cap (server.ts NO_CAP). */
@@ -156,12 +156,25 @@ function carriedEntryBytes(entry: unknown): number {
   return 4 + Buffer.byteLength(json) + 4 * lines;
 }
 
+/** What a launch hook's host lays over the run it starts for a firing it was handed (RunCreate `trigger_firing`): its
+ *  create body (its input, which the trigger's previous result follows, the run's other fields, and its own
+ *  max_cost_usd: handedCap), and the launch secrets it carries (`sealed`: its model_key, keys and mcp_auth, sealed for
+ *  the run; `keys`: the keys' names). The effort is the target's: a host's is not taken. */
+export type HostStart = { readonly body: Json; readonly sealed?: StartOptions["sealed"]; readonly keys?: StartOptions["keys"] };
+
+/** A handed run's cap: the target's, which a host's own may lower and never raise; with none on the target, the host's,
+ *  else the agent's default (startRun's). A host's value that is no number is passed on, for the run's checks to refuse. */
+function handedCap(target: number | undefined, host: unknown): unknown {
+  if (target === undefined || host === undefined) return target ?? host;
+  return typeof host === "number" ? Math.min(target, host) : host;
+}
+
 /** The trigger-facing run policy: the subset of the trigger engine's deps this module owns. The engine's other deps (an
  *  adapter's sealed settings, the failed-firing webhook) stay server-wired. */
 export type TriggerTargets = {
   targetIssues(target: Target): Promise<InputIssue[]>;
   targetRefusal(target: Target): Promise<ApiError | undefined>;
-  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string | undefined, previous: boolean): Promise<{ run_id: string }>;
+  start(target: Extract<Target, { kind: "start_run" }>, input: unknown, origin: RunTrigger, from: MessageOrigin, title: string | undefined, previous: boolean, host?: HostStart): Promise<{ run_id: string }>;
   message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin, bound: { max: number; reason: string }): Promise<void | { skipped: string }>;
   statusOf(runId: string): Promise<string | null>;
   runOf(key: string): Promise<{ run_id: string } | null>;
@@ -206,24 +219,27 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const wrong = revision ? await deps.start.explainRun(await deps.start.inputIssuesOf(revision, target.input), { input: target.input }, revision) : [];
       return [...start, ...wrong.map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
-    async start(target, given, trigger, from, title, previous) {
+    async start(target, given, trigger, from, title, previous, host) {
       const entry = await deps.needAgent(target.agent_id);
       // An agentic run is handed its trigger's previous result after its message (previousResultOf), so a repeat run
       // (a weekly digest) leaves out what the last one reported. A workflow's input is its own schema's: nothing is added.
       // `previous` is its adapter's previousResult (carriesPrevious).
-      const content = (given as { content?: unknown }).content;
+      const content = isObject(given) ? given.content : undefined;
       const handed = previous && entry.revision?.kind === "agentic" && typeof content === "string" ? await previousResultOf(store, deps, trigger) : "";
-      const input = handed ? { ...given, content: `${content}${handed}` } : given;
-      // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped (capped),
-      // but a connected agent's, which its own CLI's limits keep and AgentRun can't cap (NATIVE_CAP_UNSUPPORTED).
+      const input = handed ? { ...(given as Json), content: `${content}${handed}` } : given;
+      // The target's cap (a host's may lower it), else the agent's default as it stands now: a run a trigger starts is
+      // never uncapped (capped), but a connected agent's, which its own CLI's limits keep and AgentRun can't cap
+      // (NATIVE_CAP_UNSUPPORTED). The effort is the target's alone.
       const native = Boolean(nativeOf(entry.revision?.body));
+      const { effort: _hostEffort, max_cost_usd: hostCap, ...overlay } = host?.body ?? {};
+      const cap = handedCap(target.max_cost_usd, hostCap);
       const run = await startRun(
         store,
         deps.start,
         entry,
-        { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) },
+        { ...overlay, ...(input !== undefined ? { input } : {}), ...(cap !== undefined ? { max_cost_usd: cap } : {}), ...(target.effort ? { effort: target.effort } : {}) },
         // Titled from the trigger (the engine's titleOf: "<Source> <name>"), never from its input, a sender's markup.
-        { trigger, origin: { key: trigger.firing_key }, capped: !native, from, ...(title ? { title } : {}) },
+        { trigger, origin: { key: trigger.firing_key }, capped: !native, from, ...(title ? { title } : {}), ...(host?.sealed ? { sealed: host.sealed } : {}), ...(host?.keys ? { keys: host.keys } : {}) },
       );
       return { run_id: run.id };
     },
