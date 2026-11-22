@@ -1,9 +1,14 @@
-// Device sign-in (RFC 8628) for `agentrun login --to`, used when the target's GET /v2/capabilities offers it:
+// Device sign-in (RFC 8628) for `agentrun login`, used when the target's GET /v2/capabilities offers it:
 // `sign_in.device`, the metadata's URL and the scope to ask for. The person opens the address printed, enters the code
 // and approves there; the token endpoint then answers a token, which login keeps where it keeps a pasted one. Every URL
 // fetched is on the target's own origin, over https unless the target is on this machine; no redirect is followed; each
-// answer's size and shape are checked before any of it is used. The device code and the token are never printed, never
-// in an error and never in argv.
+// answer's size and shape are checked before any of it is used. Every request names this CLI and its version
+// (User-Agent), so the page that approves a code can say what asked for it. The device code and the token are never
+// printed, never in an error and never in argv.
+import { readFileSync } from "node:fs";
+
+/** What each request of the flow names itself: this package and its version. */
+const USER_AGENT = `agentrun-cli/${JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version}`;
 
 /** A sign-in that stopped: its exit code (cli.mjs's), and words of this CLI's own, never a server's answer. */
 export class SignInError extends Error {
@@ -66,13 +71,14 @@ async function capped(response, max) {
 }
 
 /** One request, never redirected: `{ status, redirect }` for a 3xx, else `{ status, body, retryAfter }`, body the answer's
- *  JSON object (undefined when it holds none or is past `max`). A request that fails throws as fetch does. */
-async function ask(url, { form, max = ANSWER_BYTES, ms = REQUEST_MS } = {}) {
+ *  JSON object (undefined when it holds none or is past `max`), retryAfter its Retry-After from `now`. A request that
+ *  fails throws as fetch does. */
+async function ask(url, { form, max = ANSWER_BYTES, ms = REQUEST_MS, now = Date.now } = {}) {
   const response = await fetch(url, {
     method: form ? "POST" : "GET",
     redirect: "manual",
     signal: AbortSignal.timeout(ms),
-    headers: { accept: "application/json", ...(form ? { "content-type": "application/x-www-form-urlencoded" } : {}) },
+    headers: { accept: "application/json", "user-agent": USER_AGENT, ...(form ? { "content-type": "application/x-www-form-urlencoded" } : {}) },
     ...(form ? { body: new URLSearchParams(form).toString() } : {}),
   });
   if (response.status >= 300 && response.status < 400) return await response.body?.cancel(), { status: response.status, redirect: true };
@@ -83,7 +89,7 @@ async function ask(url, { form, max = ANSWER_BYTES, ms = REQUEST_MS } = {}) {
   } catch {
     body = undefined;
   }
-  return { status: response.status, body: OBJECT(body) ? body : undefined, retryAfter: retryAfterMs(response.headers.get("retry-after")) };
+  return { status: response.status, body: OBJECT(body) ? body : undefined, retryAfter: retryAfterMs(response.headers.get("retry-after"), now()) };
 }
 
 /** A Retry-After header's wait in ms from `now` (RFC 9110 10.2.3: delay seconds, or an HTTP date), 0 for anything else
@@ -135,33 +141,34 @@ export function deviceOffer(capabilities, base) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The device flow for `offer` on the target `base`, its lines to the person on `io.stderr`: the token, once the person
- *  approved. Every refusal is a SignInError that says nothing was written. */
-export async function deviceSignIn(base, offer, io) {
+ *  approved. Every wait is `wait(ms)`'s and every reading of the time `now()`'s (a test's fake clock). Every refusal is a
+ *  SignInError that says nothing was written. */
+export async function deviceSignIn(base, offer, io, { wait = sleep, now = Date.now } = {}) {
   const target = new URL(base);
   const unreached = (url, error) => refuse(3, `Cannot reach ${url.origin} for the device sign-in (${why(error)}); ${NOTHING}.`);
 
   let meta;
   try {
-    meta = await ask(offer.metadata);
+    meta = await ask(offer.metadata, { now });
   } catch (error) {
     throw unreached(offer.metadata, error);
   }
   if (meta.redirect) throw bad(`metadata answered with a redirect (${meta.status}), which this CLI never follows`);
   if (meta.status !== 200 || !meta.body) throw bad(`metadata answered ${meta.status}${meta.body ? "" : ", not a JSON object (or one too large)"}`);
+  // Only the fields the flow uses: the scope it asks for is the capabilities' (offer.scope), and no issuer is read.
   const m = meta.body;
-  if (["issuer", "client_id", "device_authorization_endpoint", "token_endpoint", "resource"].some((field) => typeof m[field] !== "string" || !VISIBLE.test(m[field])) || typeof m.scope !== "string" || !/^[\x20-\x7e]{1,1024}$/.test(m.scope)) {
+  if (["client_id", "device_authorization_endpoint", "token_endpoint", "resource"].some((field) => typeof m[field] !== "string" || !VISIBLE.test(m[field]))) {
     throw bad("metadata lacks a field it needs, or holds one this CLI does not take");
   }
-  const issuer = urlOf(m.issuer, target);
   const authorization = urlOf(m.device_authorization_endpoint, target);
   const tokenAt = urlOf(m.token_endpoint, target);
-  if (!issuer || !authorization || !tokenAt) throw bad("metadata names an issuer or endpoint that is off the server's own origin or not over https");
+  if (!authorization || !tokenAt) throw bad("metadata names an endpoint that is off the server's own origin or not over https");
   if (m.verification_uri != null && !urlOf(m.verification_uri, target, { query: true, elsewhere: true })) throw bad("metadata's verification_uri is not an https URL");
 
-  const started = Date.now();
+  const started = now();
   let granted;
   try {
-    granted = await ask(authorization, { form: { client_id: m.client_id, scope: offer.scope, audience: m.resource } });
+    granted = await ask(authorization, { form: { client_id: m.client_id, scope: offer.scope, audience: m.resource }, now });
   } catch (error) {
     throw unreached(authorization, error);
   }
@@ -186,16 +193,16 @@ export async function deviceSignIn(base, offer, io) {
   io.stderr.write(`Waiting for the sign-in to be approved there; the code expires in ${Math.ceil(g.expires_in / 60)} min.\n`);
 
   const deadline = started + g.expires_in * 1000;
-  const expired = () => refuse(4, `The code expired before the sign-in was approved; ${NOTHING}. Run agentrun login --to again.`);
+  const expired = () => refuse(4, `The code expired before the sign-in was approved; ${NOTHING}. Run agentrun login again.`);
   let every = interval * 1000;
   let delay = every;
   for (;;) {
-    if (Date.now() >= deadline) throw expired();
-    await sleep(Math.min(delay, deadline - Date.now()));
-    if (Date.now() >= deadline) throw expired();
+    if (now() >= deadline) throw expired();
+    await wait(Math.min(delay, deadline - now()));
+    if (now() >= deadline) throw expired();
     let answer;
     try {
-      answer = await ask(tokenAt, { form: { grant_type: GRANT_TYPE, device_code: g.device_code, client_id: m.client_id, audience: m.resource }, ms: Math.max(1, Math.min(REQUEST_MS, deadline - Date.now())) });
+      answer = await ask(tokenAt, { form: { grant_type: GRANT_TYPE, device_code: g.device_code, client_id: m.client_id, audience: m.resource }, ms: Math.max(1, Math.min(REQUEST_MS, deadline - now())), now });
     } catch {
       // Not reached this time (a dropped connection, a timeout): wait longer, until the code expires.
       delay = Math.max(every, Math.min(BACKOFF_MS, delay * 2));
