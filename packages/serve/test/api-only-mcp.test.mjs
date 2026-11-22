@@ -395,6 +395,13 @@ test("claim: a per_run server the token saved, whose origin the runner no longer
   const step = await claimOf("run-3");
   t.after(() => step.release());
   assert.doesNotMatch(String(step.credentials.mail?.unopened ?? ""), /AGENTRUN_MCP_TOKEN_ORIGINS/);
+  // Taken off the list mid-run: the resumed loop's fresh() opens the server again, and its calls are refused by its name,
+  // unsent.
+  process.env[ORIGINS_ENV] = "https://elsewhere.example";
+  await step.fresh();
+  assert.match(String(step.credentials.mail?.unopened ?? ""), /mail.*AGENTRUN_MCP_TOKEN_ORIGINS/);
+  assert.equal(step.credentials.mail?.headers, undefined, "no headers to carry");
+  assert.equal(listed.log.length, sent, "that host got nothing after the save");
 });
 
 test("API-only: a Composio save takes no url or headers from its body: each is 422 not_allowed, nothing is sent to Composio or the address", async (t) => {
