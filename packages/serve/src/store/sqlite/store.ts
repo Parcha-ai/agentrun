@@ -663,15 +663,14 @@ async function dropAgentPrivate(tx: SqliteExecutor, agentId: string): Promise<vo
   await tx.run("DELETE FROM sign_in_tombstones WHERE agent_id = ?", agentId);
 }
 
-/** The suffix, after the database file's name, of the marker secureRewrite writes before a rewrite (and a purge, when its
- *  checkpoint could not truncate the log) and removes once no file of the store keeps the bytes they replaced: a start
- *  that finds it finishes the scrub. */
+/** The suffix, after the database file's name, of the marker secureRewrite writes before a rewrite (and a purge before its
+ *  transaction) and removes once no file of the store keeps the bytes they replaced: a start that finds it finishes the
+ *  scrub. */
 const SCRUB_SUFFIX = ".scrub";
 /** How long the scrub's VACUUM waits, once its busy wait ran out on another connection's write, before its one retry. */
 const VACUUM_RETRY_MS = 400;
 
-/** The marker at `path`, written and synced (its directory too): before the rewrite it marks changes a byte, or once a
- *  purge's checkpoint left the log. */
+/** The marker at `path`, written and synced (its directory too): before the rewrite or purge it marks changes a byte. */
 function markScrub(path: string): void {
   const fd = openSync(path, "w", 0o600);
   try {
@@ -731,10 +730,10 @@ class SqliteStore implements Store {
   readonly #released = new Map<string, number>();
   /** secureRewrite's marker (SCRUB_SUFFIX): set on a SQLite store with a file, never on a snapshot. */
   readonly #scrubMarker: string | undefined;
-  /** How many times a purge left the marker (#purged), or a retried purge found it there (purgeScrub). The marker has two owners: secureRewrite removes it only when no
-   *  purge left it since the step that covers that purge's log (its own start, or the checkpoint it asked), so a marker a
-   *  purge left is never removed without a checkpoint that truncated the purge's frames. */
-  #purgeMarks = 0;
+  /** How many times a purge (#purging) or a rewrite (secureRewrite) wrote the marker. The marker has many writers: each
+   *  removes it only when no other wrote it since the step that covers that writer's log (its own start, or the checkpoint
+   *  it asked), so a marker is never removed without a checkpoint that truncated every writer's frames. */
+  #scrubMarks = 0;
 
   constructor(db: StoreConnection, now: () => number, origin?: Store, scrubMarker?: string) {
     this.#db = db;
@@ -951,10 +950,11 @@ class SqliteStore implements Store {
         });
       },
       purge: async (agentId) => {
-        const removed = await db.transaction(async (tx) => {
+        let gone: string[] = [];
+        await this.#purging(() => db.transaction(async (tx) => {
           await d.lockRow(tx, "agents", "id", agentId);
           const agent = await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM agents WHERE id = ?", agentId);
-          if (!agent || agent.purged_at !== null) return undefined;
+          if (!agent || agent.purged_at !== null) return false;
           // Each run a tombstone first (Runs.purge): a run started past the delete's listing keeps the agent for the next one.
           const left = await tx.get<{ id: string }>("SELECT id FROM runs WHERE agent_id = ? AND purged_at IS NULL LIMIT 1", agentId);
           if (left) throw new StoreConstraint(`agent ${agentId} still has run ${left.id} not purged: each is purged first (runs.purge)`);
@@ -967,22 +967,22 @@ class SqliteStore implements Store {
           // else owns one, and a server that serves no template route (API-only) could never remove it.
           const packageId = (alias: string) => d.jsonText(`${alias}.package`, ["id"]);
           const applied = await tx.all<{ id: string | null }>(`SELECT DISTINCT ${packageId("r")} AS id FROM revisions r WHERE r.agent_id = ? AND r.package IS NOT NULL`, agentId);
-          const gone: string[] = [];
+          const removed: string[] = [];
           for (const { id } of applied) {
             if (!id?.startsWith(UPLOAD_PREFIX)) continue;
             const kept = await tx.get<{ id: string }>(`SELECT r.id FROM revisions r JOIN agents a ON a.id = r.agent_id WHERE r.agent_id <> ? AND a.purged_at IS NULL AND ${packageId("r")} = ? LIMIT 1`, agentId, id);
             if (kept) continue;
             await tx.run("DELETE FROM imported_templates WHERE id = ?", id);
-            gone.push(id);
+            removed.push(id);
           }
           // Each revision's content; its id, kind, parent and time stay, which its runs' tombstones name.
           await tx.run("UPDATE revisions SET body = '{}', skills = NULL, package = NULL, note = NULL, mcp_pin = NULL, monid_pin = NULL WHERE agent_id = ?", agentId);
           // Its purge time last, in the same write as its name and description.
           await tx.run("UPDATE agents SET name = '', description = NULL, purged_at = ? WHERE id = ?", now(), agentId);
-          return gone;
-        });
-        if (removed) await this.#purged();
-        return removed ?? [];
+          gone = removed;
+          return true;
+        }));
+        return gone;
       },
     };
 
@@ -1500,8 +1500,8 @@ class SqliteStore implements Store {
         )).map((row) => row.id);
         return [...new Set([...(await launchedFrom(db, runId)), ...learning])].sort();
       },
-      purge: async (runId, kept) => {
-        const purged = await db.transaction(async (tx) => {
+      purge: (runId, kept) =>
+        this.#purging(() => db.transaction(async (tx) => {
           // Held as a run's end holds it: a write under a claim of it is either in before this, or finds it final.
           await d.lockRow(tx, "runs", "id", runId, "update");
           const run = await tx.get<{ state: RunState; runner: string | null; metrics: string | null; purged_at: number | null }>("SELECT state, runner, metrics, purged_at FROM runs WHERE id = ?", runId);
@@ -1535,9 +1535,7 @@ class SqliteStore implements Store {
           // Its listing, and its purge time last: no list shows it, and no lister builds it again.
           await tx.run("UPDATE runs SET listing = NULL, list_status = NULL, listing_mark = list_mark, listing_live = 0, listing_until = NULL, listing_flags = 0, purged_at = ? WHERE id = ?", now(), runId);
           return true;
-        });
-        if (purged) await this.#purged();
-      },
+        })),
       remove: async (runId) => {
         await db.transaction(async (tx) => {
           // Held as a run's end holds it: a write under a claim of it is either in before this, or finds no row.
@@ -2425,37 +2423,46 @@ class SqliteStore implements Store {
     };
   }
 
-  /** After a purge committed (runs.purge, agents.purge), on a SQLite store with a file: a WAL checkpoint (TRUNCATE).
-   *  secure_delete (worker.ts open) zeroed the purged bytes in the pages the purge wrote, but those pages are new frames
-   *  in the WAL: the file keeps its earlier images of them, and the WAL its earlier frames, until a checkpoint copies the
-   *  zeroed pages into the file and truncates the log. A reader in another connection (a runner's read, a backup) may hold
-   *  the log back: the checkpoint waits PURGE_CHECKPOINT_BUSY_MS for it, not the connection's own busy wait, since every
-   *  request of the store's one connection queues behind it (the purge already committed). One it held back (or that
-   *  failed) leaves secureRewrite's marker, so the next start's scrub truncates the log, a crash between included. A marker
-   *  that cannot be written (a full disk) throws, the purge committed: its caller answers it as the fault it is (a 500 the
-   *  server logs), and drops what it served of the purged run all the same (agent-delete.ts purgeOneOrRefuse); the
-   *  client's retry finds the row purged and runs this again through purgeScrub. */
-  async #purged(): Promise<void> {
+  /** A purge (runs.purge, agents.purge, `work` its transaction, true when it purged), on a SQLite store with a file:
+   *  secureRewrite's marker first, then the purge, then a WAL checkpoint (TRUNCATE). secure_delete (worker.ts open) zeroes
+   *  the purged bytes in the pages the purge writes, but those pages are new frames in the WAL: the file keeps its earlier
+   *  images of them, and the WAL its earlier frames, until a checkpoint copies the zeroed pages into the file and truncates
+   *  the log. The marker is written before any byte changes, as secureRewrite's is: one that cannot be written (a full
+   *  disk) throws with nothing purged, so the client's retry purges whole; a server that dies past it leaves it, and its
+   *  next start's scrub truncates the log. A reader in another connection (a runner's read, a backup) may hold the log
+   *  back: the checkpoint waits PURGE_CHECKPOINT_BUSY_MS for it, not the connection's own busy wait, since every request of
+   *  the store's one connection queues behind it. One it held back (or that failed) keeps the marker for the next start.
+   *  The marker goes once no file keeps what the purge changed (the log truncated, or nothing committed: a purge refused or
+   *  failed rolled back), under secureRewrite's own rule: only one that was not there before this purge wrote it (a
+   *  rewrite's or an earlier start's needs that start's VACUUM), and that no other writer wrote since (#scrubMarks). */
+  async #purging(work: () => Promise<boolean>): Promise<void> {
     const marker = this.#scrubMarker;
     const db = this.#db;
-    if (marker === undefined || !(db instanceof Connection)) return;
-    const checkpoint = await db.checkpoint(PURGE_CHECKPOINT_BUSY_MS).catch(() => undefined);
-    if (checkpoint?.busy === 0) return;
-    this.#purgeMarks++;
+    if (marker === undefined || !(db instanceof Connection)) return void (await work());
+    const pending = existsSync(marker);
+    const mine = ++this.#scrubMarks;
     try {
       markScrub(marker);
     } catch (error) {
-      throw new Error(`The purge committed, but its WAL checkpoint was held back and the scrub's marker could not be written (${(error as Error).message}): the log may keep the purged bytes until a later checkpoint truncates it.`, { cause: error });
+      throw new Error(`The purge's scrub marker could not be written (${(error as Error).message}): nothing was purged.`, { cause: error });
     }
-  }
-
-  async purgeScrub(): Promise<void> {
-    const marker = this.#scrubMarker;
-    if (marker === undefined) return;
-    // A marker there may be a rewrite's, under way (secureRewrite): counted as one a purge left, so that rewrite keeps it
-    // unless a checkpoint asked after this truncates the log.
-    if (existsSync(marker)) return void this.#purgeMarks++;
-    await this.#purged();
+    const done = () => {
+      if (pending || this.#scrubMarks !== mine) return;
+      try {
+        rmSync(marker, { force: true });
+      } catch {
+        // Left for the next start's scrub, which costs it a VACUUM: never a failure of a purge that committed.
+      }
+    };
+    let purged: boolean;
+    try {
+      purged = await work();
+    } catch (error) {
+      done();
+      throw error;
+    }
+    if (purged && (await db.checkpoint(PURGE_CHECKPOINT_BUSY_MS).catch(() => undefined))?.busy !== 0) return;
+    done();
   }
 
   async secureRewrite(work: () => Promise<number>, options: SecureRewriteOptions = {}): Promise<SecureRewrite> {
@@ -2465,13 +2472,13 @@ class SqliteStore implements Store {
     // Written before any byte changes: a server that dies after the rewrite committed, and before the scrub below is done,
     // leaves it, and its next start scrubs though no row is left in the clear.
     const pending = existsSync(marker);
-    const purgesBefore = this.#purgeMarks;
+    const mine = ++this.#scrubMarks;
     markScrub(marker);
     // secure_delete is on for the connection's whole life (worker.ts open): a rewritten row's old bytes are zeroed in its page.
     const rewritten = await work();
-    // Nothing rewritten, and the marker is this call's alone: no purge left it while the work ran (#purgeMarks). One that
-    // did needs the checkpoint below, or the next start's scrub.
-    if (rewritten === 0 && !pending && this.#purgeMarks === purgesBefore) {
+    // Nothing rewritten, and the marker is this call's alone: no purge or other rewrite wrote it while the work ran
+    // (#scrubMarks). One that did needs the checkpoint below, or the next start's scrub.
+    if (rewritten === 0 && !pending && this.#scrubMarks === mine) {
       rmSync(marker, { force: true });
       return { rewritten };
     }
@@ -2487,12 +2494,12 @@ class SqliteStore implements Store {
         await new Promise((resolve) => setTimeout(resolve, VACUUM_RETRY_MS));
         await this.#db.all("VACUUM");
       });
-      const purgesBefore = this.#purgeMarks;
+      const marksBefore = this.#scrubMarks;
       const checkpoint = await db.checkpoint();
       // A reader in another connection (a runner, a backup) held the log back: the old frames are there until a
-      // checkpoint is done, so the marker stays. So does one a purge left after this checkpoint was asked: its frames may
-      // be past it.
-      if (checkpoint?.busy !== 0 || this.#purgeMarks !== purgesBefore) return { rewritten, left: "busy" };
+      // checkpoint is done, so the marker stays. So does one a purge or another rewrite wrote after this checkpoint was
+      // asked: its frames may be past it.
+      if (checkpoint?.busy !== 0 || this.#scrubMarks !== marksBefore) return { rewritten, left: "busy" };
     } catch (error) {
       return { rewritten, left: error instanceof StoreBusy ? "busy" : "failed" };
     }

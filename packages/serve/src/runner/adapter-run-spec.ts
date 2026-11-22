@@ -519,11 +519,13 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const currentSkills = movedProject ? await movedSkillFiles(ws.workspace, body.skills ?? {}, settingOfDefinition(body)?.computer.kind) : [...Object.keys(body.skills ?? {}), ...kindSkills];
   // A learning run's seed, read once from its learning folder where the run's place keeps it (runner/learning-seed.ts):
   // its learned workflows, cut of the server's secrets, the ones its learned_workflow tool runs. Read before the run's
-  // tools are bound. A learning fault, or a seed that failed (seedFailed), gives none.
+  // tools are bound. A learning fault, or a seed that failed (seedFailed), gives none. None a purged run wrote, by the
+  // store's runs; a run's own process (no seal key) reads no other run, and its runner reads the seed again
+  // (learned-first.ts learnedFirstWhereHeld).
   const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
   const learningFolder = () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil }));
   const seedLaid = start && !seedFailed(start)
-    ? await layLearningSeed({ seed: start.seed, folder: learningFolder, shown, log, ...(start.noWorkflows ? { workflows: false as const } : {}) })
+    ? await layLearningSeed({ seed: start.seed, folder: learningFolder, store: deps.sealKey ? deps.store : null, shown, log, ...(start.noWorkflows ? { workflows: false as const } : {}) })
     : undefined;
 
   // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin, the one its revision's save made, read, its

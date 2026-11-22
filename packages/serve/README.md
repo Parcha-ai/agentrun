@@ -743,7 +743,9 @@ AGENTRUN_DOCKER_IMAGE=$tag AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
 The tag is the recipe's hash, so an edit to the recipe is a new tag, and a tag already on this machine is used as it is
-(nothing is pulled). It is about 2.7 GB on disk. An agent that needs it says so with
+(nothing is pulled). Its Debian packages come from snapshot.debian.org at one instant, and the CLI's npm dependencies
+from the registry as it stood at that instant (by date, not by content), so two builds of one tag install the same
+Debian packages. It is about 2.7 GB on disk. An agent that needs it says so with
 [`computer.needs`](#computers), so a server on another image fails its runs in words instead of running them.
 
 ### In the published image
@@ -2023,8 +2025,8 @@ its charge unknown, as any cut call's) and given back when monid refused it unru
 which `maxCost` 0 lets through) is the call, settled at its charge. Under a cap, a read that ends with its charge unknown
 (no answer, or `FAILED` with no cost) stops the run at once, "monid may have charged for <name> and did not say how
 much, so this run's cap can't be kept; the run stopped": its $0 hold bounds nothing. Its charge can pass the estimate: then it is booked
-as charged, and the run stops at once, failed, in the words "monid charged $X, more than the $Y held; the run stopped".
-A run's spend cap is a hard stop for everything but that one charge. A mark a crash left unsettled leaves the run's cost unknown, as a
+as charged and logged ("monid charged $X, more than the $Y held"), and the run goes on while its charges fit its cap; one
+that takes them past it stops the run at once in the cap's words ([Spend cap](#spend-cap)). A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
 never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as
@@ -3157,6 +3159,14 @@ serves these routes alone:
 - a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
   minted;
 - `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
+- a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
+  its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
+  (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
+  is what its delete (`DELETE /agents/{id}`) needs first. The apply makes no trigger of any source: a run here starts
+  through the backend's API calls alone, on its keys and budget, never on this server's own clock and model key (a
+  schedule or a feed) or from a hook or setting this profile refuses (a webhook, GitHub, Composio or email). The answer
+  says so for each under `warnings` (`triggers.<i>`, `not_an_option`), and the dry run (`dry_run: true`) plans each as
+  `skip` in the same words. The backend starts those runs through the API instead;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
@@ -3164,12 +3174,13 @@ Here a run's computer routes take the server's token. `POST /runs/{id}/computer/
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
 assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
-`POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no
-page to sign in to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or
-`false` serve the whole server, as before; any value other than these and `1` or `true` stops the start, in words.
+`POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
+template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
+to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the
+whole server, as before; any value other than these and `1` or `true` stops the start, in words.
 
-Its routes for agents are refused too, so on an API-only server a run is launched inline (`POST /runs` with its
-definition), or on an agent made before the profile was turned on.
+So on an API-only server a run is launched inline (`POST /runs` with its definition), on an agent a template's apply
+made, or on an agent made before the profile was turned on.
 
 ## Uploads
 
@@ -3551,9 +3562,12 @@ stays in every total.
   folder's history no longer serves its merge; the bytes stay in the folder's `.git` until a learning reset
   (`DELETE /v2/agents/{id}/learning`) or the agent's purge, which delete the folder whole. Each merge's feedback line goes in
   one commit by the host (none when nothing is left to remove), a line a person edited since stays, and another
-  merge's diff that shows the line as context is written without it. The log, a workflow's revisions and a champion read by
-  its digest leave out its merges, known by the run the log names for each (its newest 200 changes), and a champion
-  whose workflow it changed last is not read at main either. Each merge's scrub lands once, so a `DELETE` sent again
+  merge's diff that shows the line as context is written without it. The log and a workflow's revisions leave out its
+  merges, known by the run the log names for each (its newest 200 changes). A learned workflow whose `workflow.json` the
+  run changed last (by the commits' run trailers over the whole history, past those 200) is refused by every read: its
+  file read is `410 purged`, a champion read by its digest reads no commit, a later merge's diff shows the file as added
+  (never the purged text), an SDK start sent again whose receipt pinned it is `410 purged`, and no run lays or serves
+  it, so the agent takes the run as when no champion serves. Each merge's scrub lands once, so a `DELETE` sent again
   after a stop takes no other run's same line, and a merge of the run made since is scrubbed by it. A second `DELETE`
   does this again. It covers the learning folder on this
   server; a Mode 2 agent's folder on an Archil disk keeps the run's text until a learning reset or the agent's purge.
@@ -3987,8 +4001,10 @@ A start reserves a check only on a turn that can be its baseline: a JSON object 
 schema (a prose task's input is resolved by the bridge), and a start whose task or instructions held a protected value
 reserves nothing. A reserved turn that still cannot be the baseline (cancelled or failed, incomplete, redacted or
 workflow-assisted evidence, no `workflow_check` report, or a shadow that `failed` or `skipped_write`) gives the
-reservation back: the record stays `replaying` with no `runs`, counts it in `check.released`, and the next turn the
-draft takes is checked. The fifth given-back turn stops the check with nothing checked (no recompile). A turn the
+reservation back: the record stays `replaying` with no `runs`, counts it in `check.released` (a cancel is never
+counted), and the next turn the draft takes is checked. A turn that lands starts the count again; five counted
+give-backs in a row hold the draft, never promoted and never stopped for good: the agent's next compile, after
+`compile_after` more runs, revises it, and the revision is checked afresh. A turn the
 backend never completes within an hour is decided as one failed input through the same check, so its hold asks the
 one recompile and a recompile's check that ends the same way stops. Connected checks' records say `via: "sdk"`;
 `check.fresh_reads` counts the shadow's `shadowReadFallback` reads.
@@ -4334,10 +4350,10 @@ spend limit. A workflow definition keeps one the same way. The cap is checked in
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 what each request still in flight is held at, plus the most this request can cost must stay within it, or the
 request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). The cap is a hard stop for everything but
-two charges that can pass what they were held at: a monid call priced by usage, which can pass monid's estimate (when
-it does, the run stops at once, [monid](#monid)), and a fal job, booked at the units its output states, which can pass
-those its input asked for (when that takes the run past its cap, the run stops at once in the cap's words, nothing
-run after it). An MCP tool counts only at the price saved for it (its server's `prices`); one with none is
+two charges that can pass what they were held at: a monid call priced by usage, which can pass monid's estimate
+([monid](#monid)), and a fal job, booked at the units its output states, which can pass those its input asked for. Either
+is booked as charged; when that takes the run past its cap, the run stops at once in the cap's words, nothing run after
+it, and below the cap the run goes on. An MCP tool counts only at the price saved for it (its server's `prices`); one with none is
 not metered and bills its own account outside the cap. fal is counted: a job sent to a fal server (one saved with the
 toolkit `fal`, or at `mcp.fal.ai`) through `run_model`, `submit_job` or `submit_jobs` is priced before it is sent, at
 fal's unit price for its endpoint (the server's own `get_pricing`, read with the run's credential and kept five

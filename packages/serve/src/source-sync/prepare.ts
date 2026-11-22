@@ -1,6 +1,6 @@
 // Translate a complete source through the server's actual destination registry. Names, URLs and native permission
 // spellings alone are not authority to grant tools, select an account or weaken a policy.
-import { uuidv7 } from "../agents-store.js";
+import { uuidv7 } from "../ids.js";
 import type { InputIssue } from "../errors.js";
 import type { SourceSnapshot, SourceSnapshotBlocker, SourceSnapshotTool } from "../native/source-snapshot-types.js";
 import { bodyOf, canonical, type AgenticBody } from "../store/agent-body.js";

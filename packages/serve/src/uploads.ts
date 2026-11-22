@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { copyFile, type FileHandle, link, lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
 import { DISK_DIR } from "./server-fs.js";
 import { dirname, join } from "node:path";
-import { uuidv7 } from "./agents-store.js";
+import { uuidv7 } from "./ids.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { typeOf } from "./file-types.js";
 import { readJson, serialBy, tempOf, writeDurable } from "./files.js";

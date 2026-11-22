@@ -8,8 +8,8 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test as nodeTest } from 'node:test';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
-import { ACP_CODES, recipeFile, STATE_STREAM, TOOLS_STREAM } from '@parcha/agentrun-harness-acp';
-import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool, toolEffects, until } from './helpers.mjs';
+import { ACP_CODES, recipeFile, STATE_STREAM, stateFiles, TOOLS_STREAM } from '@parcha/agentrun-harness-acp';
+import { fakeEvents, fakeRecipe, openSession, resolvedRecords, scratch, streamRecords, tool, toolEffects, until } from './helpers.mjs';
 
 /** Whether the process `pid` is still there (signal 0 checks, and sends nothing). */
 const running = (pid) => {
@@ -70,7 +70,7 @@ test('the credential the agent derives from its key is never written: it runs on
   assert.deepEqual(holdingCredential(homeOf(sessionsDir)), [], 'no file in its HOME holds it while it runs');
   await session.close();
   assert.equal(existsSync(homeOf(sessionsDir)), false, 'the private HOME is gone whole after the session');
-  const mirrored = (await streamRecords(store, STATE_STREAM)).map((r) => r.path);
+  const mirrored = [...stateFiles(await resolvedRecords(store, STATE_STREAM)).keys()];
   assert.ok(mirrored.length > 0, 'the session store was mirrored');
   assert.equal(mirrored.some((path) => path.includes('auth')), false, mirrored.join(', '));
 });
@@ -112,7 +112,7 @@ test('a credential the recipe names is never written nor mirrored, even inside a
   assert.equal((await session.turnEnd()).status, 'completed');
   assert.deepEqual(holdingCredential(homeOf(sessionsDir)), [], 'the agent could not write it');
   await session.close();
-  const mirrored = (await streamRecords(store, STATE_STREAM)).map((r) => r.path);
+  const mirrored = [...stateFiles(await resolvedRecords(store, STATE_STREAM)).keys()];
   assert.ok(mirrored.length > 0, 'the session store was mirrored');
   assert.equal(mirrored.some((path) => path.startsWith('.agent/login.json')), false, mirrored.join(', '));
   assert.equal(existsSync(homeOf(sessionsDir)), false, 'the private HOME is gone whole');

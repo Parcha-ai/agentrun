@@ -919,7 +919,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // workflows).
       const start = learningStartOf(launch);
       const folder = await folderNow();
-      const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ?await workflowsAt({ folder, shown }, start.seed).catch(() => []) : [];
+      const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ?await workflowsAt({ folder, store, shown }, start.seed).catch(() => []) : [];
       const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
       const outputSchema = (revision.body as { outputSchema?: unknown }).outputSchema;
       const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, folder, shown, spendOff, admitAuxiliary }, laid);

@@ -164,7 +164,10 @@ Every other command is the server's API, from a second terminal: `npx @parcha/ag
 `runs get RUN_ID`, `runs message RUN_ID --content "..."`, and one command for each route the server serves
 (`npx @parcha/agentrun help` lists them; `api METHOD PATH` calls any route). It finds the server started with the same
 `--data` on its own: the server writes its address and where its token is to `DIR/.server.json` once it listens. For
-another server, set `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY`. The response's JSON goes to stdout and an error's to
+another server, set `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY`, or sign in once with `agentrun login --to URL`
+(`--to cloud` for AgentRun cloud): when the server offers a device sign-in, it prints an address and a code to approve
+there, then keeps the token in `$XDG_CONFIG_HOME/agentrun/config.json` (0600); else it reads the token from stdin, as
+`agentrun login --base-url URL < FILE` does. The response's JSON goes to stdout and an error's to
 stderr; the exit code is 0 when it worked, 1 when the server refused, 2 for bad usage, 3 when the server cannot be
 reached, 4 for a missing or refused token and 5 when the server does not offer the command here (a 501,
 `unsupported_here`, its error saying why). The token is never a flag and never printed. A list command (`agents list`,
