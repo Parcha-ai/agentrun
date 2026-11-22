@@ -57,6 +57,7 @@ import { mcpNameOf } from "../tool-names.js";
 import { composioMadeKey, composioPerRun } from "../composio-made.js";
 import { composioRunQuery } from "../composio-preset.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
+import { resourceToolProblem } from "../mcp-resources.js";
 import { credentialInQuery, credentialInQueryWords, shownUrl } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
@@ -506,7 +507,11 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
   const saved = (found ?? {}) as McpPin;
   // Every tool the revision pinned, granted or not, against the meta tools known now (the list grows after a save).
   for (const [server, { url, tools }] of Object.entries(saved)) {
-    for (const tool of tools) if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+    for (const tool of tools) {
+      if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+      const problem = resourceToolProblem(tool);
+      if (problem) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${problem}. Save the agent again. Nothing was sent.`);
+    }
   }
   // The granted tools alone, keyed by server with no prototype (a server named `constructor` is a server like any other).
   const pinned: McpPin = Object.create(null);

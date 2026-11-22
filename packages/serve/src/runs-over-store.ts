@@ -1,3 +1,6 @@
+import { reconcileProjectCheckpoints } from "./source-sync/checkpoints.js";
+import { requireSavedProject } from "./source-sync/checkpoint-gate.js";
+import type { SourceIOReceipt } from "./source-sync/io.js";
 import { NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
 import { launchNative } from "./native/connection.js";
 // The write half of the run's server cut (design 2.1, "the runner takes every run"): the functions the v2 routes call to
@@ -27,14 +30,15 @@ import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
 import { githubTargetOf } from "./github.js";
 import { type RepoBinding, repoOf } from "./run-repo.js";
-import { type LaunchDisk, launchBody, type RunLaunch } from "./run-launch.js";
+import { type LaunchDisk, launchBody, sourceProjectOf, type RunLaunch } from "./run-launch.js";
 import { learningDiskOf } from "./learn/learning-of.js";
 import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { refuseWhileNoRunner } from "./runner/presence.js";
-import { AgentDeleting, AnswerTaken, ExternalBodyConflict, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
+import { RevisionMoved, AgentDeleting, AgentPurged, AgentArchived, AnswerTaken, ExternalBodyConflict, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
 import { canonical } from "./store/agent-body.js";
+import { sourceSyncOf } from "./source-sync/types.js";
 import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import { declaredKeys, undeclaredKeys, withCarried } from "./run-keys.js";
@@ -457,6 +461,13 @@ export interface StartDeps {
      *  the files are held (hold) for the claim to copy. */
     place?(runId: string, agentId: string, launch: RunLaunch): Promise<{ readonly launch: RunLaunch; undo(): Promise<void> } | undefined>;
   };
+  /** Complete a moved project's placement before admission. Upload placement has already pinned its destination disk.
+   *  `undo` may remove only this exclusively prepared run and must await outstanding writes. The caller invokes it only
+   *  after a definite admission refusal; unknown admission keeps the preparation for explicit reconciliation. */
+  readonly project?: {
+    hold?(input: { runId: string; agentId: string }): Promise<SourceIOReceipt>;
+    place(input: { hold?: SourceIOReceipt; runId: string; agentId: string; revision: Pick<NewRevision, "id" | "kind" | "body">; launch: RunLaunch }): Promise<{ readonly launch: RunLaunch; undo(): Promise<void>; admitted?(): Promise<void> } | undefined>;
+  };
   /** Where a revision naming these tools and no place runs here (server.ts fallbackPlace). */
   fallbackPlace(kind: "agentic" | "workflow", tools: readonly unknown[]): Place;
   /** The Archil disk the run's launch record keeps (server.ts launchDiskOf): the one its body's `archil_disk` names, else
@@ -552,7 +563,21 @@ export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revis
  *  (store.runs.create), which a runner reads at its claim. No process, no door, no setup file: where the run runs is the
  *  runner's. Under `origin`, a key that already started a run gets that run (the store's one-run-per-key), so a retry never
  *  starts a second. */
-export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed, keys }: StartOptions = {}): Promise<RunRow> {
+export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed, keys }: StartOptions = {}): Promise<RunRow> {
+  if (sourceSyncOf(entry.revision?.body)) {
+    // Re-delivery of a firing that already admitted a run is not a new start and needs no new project preparation.
+    if (origin) {
+      const found = await store.runOfOrigin(origin.key);
+      const existing = found && found.fingerprint === (origin.fingerprint ?? null) ? await store.runs.get(found.runId) : undefined;
+      if (existing?.agentId === entry.agent.id) return existing;
+    }
+    await reconcileProjectCheckpoints(store, entry.agent.id);
+    const current = await getAgent(store, entry.agent.id);
+    if (!current) throw new ApiError("not_found", "The agent no longer exists.");
+    // The body still pins any explicitly requested revision; refresh the current pointer used by admission's CAS.
+    entry = current;
+    await requireSavedProject(store, entry.agent.id);
+  }
   if ((entry.revision?.body as {cli_learning?:unknown})?.cli_learning) throw new ApiError("agent_not_runnable", "Start the next prompt in your existing CLI session. AgentRun records its learning; it does not launch this connection.");
   if ((entry.revision?.body as {sdk?:unknown})?.sdk) throw new ApiError("agent_not_runnable", "This agent runs in your backend SDK. Start it through its SDK learning wrapper; AgentRun does not launch its tools or credentials.");
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}), ...(keys ? { keys } : {}) });
@@ -560,8 +585,9 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
   const runId = (deps.newRunId ?? uuidv7)();
   try {
     const labels = labelsOf(body.labels);
-    return await withHeldFiles(deps, runId, entry.agent.id, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, revision.kind) } : {}) }));
+    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, revision.kind) } : {}) }));
   } catch (error) {
+    if (error instanceof RevisionMoved) throw new ApiError("precondition_failed", "The agent changed while this run was prepared. Start again using its current setup.");
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
     if (origin && error instanceof StoreConstraint) {
       const existing = await store.runOfOrigin(origin.key);
@@ -583,7 +609,59 @@ function keyedOrRefused(deps: StartDeps, launch: RunLaunch, kind: Revision["kind
  *  hold that fails part way, a write that fails, or one that answers another run (an origin key's run started before),
  *  lets go of the hold. In Mode 2 they are placed in the run's folder instead (StartDeps.files.place), and the run is
  *  written with the launch that says so; the same failures undo the placing. */
-async function withHeldFiles(deps: StartDeps, runId: string, agentId: string, launch: RunLaunch, write: (launch: RunLaunch) => Promise<RunRow>): Promise<RunRow> {
+export async function withHeldFiles(store: Pick<Store, "runs">, deps: Pick<StartDeps, "files" | "project">, runId: string, agentId: string, revision: Pick<NewRevision, "id" | "kind" | "body">, launch: RunLaunch, write: (launch: RunLaunch) => Promise<RunRow>): Promise<RunRow> {
+  const source = sourceSyncOf(revision.body);
+  if (!source) return withUploads(deps, runId, agentId, launch, write);
+  if (!deps.project) throw new ApiError("agent_not_runnable", "This project must be prepared before its run can start.");
+  const ownership = await deps.project.hold?.({ runId, agentId });
+  let projectSettled = false;
+  const preparationOwnership = ownership ? { settled: async () => { projectSettled = true; } } : undefined;
+  const undos: (() => Promise<void>)[] = [];
+  const undo = async (settled = false): Promise<void> => {
+    let complete = true;
+    for (const release of [...undos].reverse()) try { await release(); } catch { complete = false; }
+    if ((settled || projectSettled) && complete) await ownership?.settled();
+  };
+  let prepared = launch, admitted: (() => Promise<void>) | undefined;
+  try {
+    const ids = launch.files ?? [];
+    if (ids.length && deps.files) {
+      const uploaded = await deps.files.place?.(runId, agentId, prepared);
+      if (uploaded) { prepared = uploaded.launch; undos.push(() => uploaded.undo()); }
+      else { undos.push(() => deps.files!.release(runId)); await deps.files.hold(runId, ids); }
+    }
+    const placed = await deps.project.place({ runId, agentId, revision, launch: prepared, ...(preparationOwnership ? { hold: preparationOwnership } : {}) });
+    if (!placed) throw new ApiError("agent_not_runnable", "This project has no completed placement for its run.");
+    undos.push(() => placed.undo());
+    admitted = placed.admitted;
+    prepared = placed.launch;
+    const receipt = sourceProjectOf(prepared.sourceProject);
+    if (!receipt || receipt.sourceId !== source.id || receipt.digest !== source.project || receipt.baselineRevision !== revision.id)
+      throw new ApiError("agent_not_runnable", "The prepared project does not match this run's pinned revision.");
+  } catch (error) { await undo(); throw error; }
+  try {
+    const row = await write(prepared);
+    if (row.id !== runId) await undo(true);
+    else { if (ownership) await ownership.settled(); else await admitted?.(); }
+    return row;
+  } catch (error) {
+    // A transport/COMMIT answer can be lost after admission. Never erase a runner's files on that evidence. Even a
+    // successful absent-row read does not prove an in-flight commit cannot land later: unknown admissions stay retained.
+    let knownAbsent = false;
+    try {
+      const row = await store.runs.get(runId);
+      if (row) {
+        const kept = await store.runs.launch(runId);
+        if (row.agentId === agentId && row.revisionId === revision.id && kept && canonical(kept.body) === canonical(launchBody(prepared))) { if (ownership) await ownership.settled(); else await admitted?.(); return row; }
+      } else knownAbsent = true;
+    } catch { /* preserve preparation until the admission can be resolved */ }
+    if (knownAbsent && (error instanceof StoreConstraint || error instanceof RevisionMoved || error instanceof AgentDeleting
+      || error instanceof AgentPurged || error instanceof AgentArchived || error instanceof ExternalBodyConflict || error instanceof ApiError)) await undo(true);
+    throw error;
+  }
+}
+
+async function withUploads(deps: Pick<StartDeps, "files">, runId: string, agentId: string, launch: RunLaunch, write: (launch: RunLaunch) => Promise<RunRow>): Promise<RunRow> {
   const ids = launch.files ?? [];
   if (!ids.length || !deps.files) return await write(launch);
   const placed = await deps.files.place?.(runId, agentId, launch);
@@ -683,7 +761,7 @@ async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agen
   const runId = (deps.newRunId ?? uuidv7)();
   const labels = labelsOf(body.labels);
   try {
-    return await withHeldFiles(deps, runId, entry.agent.id, launch, (launch) => store.runs.createInline({
+    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.createInline({
       agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
       revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}), ...(revision.mcpPin !== undefined ? { mcpPin: revision.mcpPin } : {}), ...(revision.monidPin !== undefined ? { monidPin: revision.monidPin } : {}) },
       run: { id: runId, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) },

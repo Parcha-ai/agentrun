@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from http.client import HTTPException
 from urllib.error import HTTPError
 from urllib.request import Request, build_opener
 from uuid import uuid4
@@ -28,6 +29,7 @@ from uuid import uuid4
 from . import __version__
 from .network import APIError, NoRedirect, origin, read_credential
 from .state import State
+from .source_sync import SourcePublisher, SnapshotExportError, SNAPSHOT_BYTES, CONSENT as SYNC_CONSENT, approved_roots, adoption
 
 MAX_BYTES = 4_000_000
 CANCEL_WRITE_SECONDS = .25
@@ -40,10 +42,12 @@ def identifier(value):
     return value
 
 
-def request(api_origin, credential, method, route, body=None):
+def request(api_origin, credential, method, route, body=None, *, max_bytes=MAX_BYTES):
     """No redirect and no observer response coercion; this is the versioned OSS protocol."""
     raw = None if body is None else json.dumps(body, separators=(',', ':'), ensure_ascii=False).encode()
-    if raw is not None and len(raw) > MAX_BYTES:
+    if max_bytes not in (MAX_BYTES, SNAPSHOT_BYTES) or (max_bytes != MAX_BYTES and not route.endswith('/sync')):
+        raise ValueError('Only the source-sync endpoint accepts a snapshot envelope.')
+    if raw is not None and len(raw) > max_bytes:
         raise ValueError('Remote request exceeds its size limit.')
     if not route.startswith('/v2/connectors') or '\n' in route or '\r' in route:
         raise ValueError('Invalid connector route.')
@@ -61,9 +65,13 @@ def request(api_origin, credential, method, route, body=None):
     except HTTPError as error:
         try:
             detail = json.loads(error.read(65536))
-        except ValueError:
+        except (ValueError, HTTPException, OSError):
             detail = {}
         raise APIError(error.code, detail) from None
+    except HTTPException:
+        # A partial response cannot acknowledge a durable payload. Keep it retryable without
+        # letting source-sync transport failure terminate unrelated native execution.
+        raise OSError('The remote response was incomplete or invalid.') from None
 
 
 def epoch(value):
@@ -81,7 +89,10 @@ def epoch(value):
 
 class Bridge:
     """One source bridge preserves native session identity across task and reflection turns."""
-    def __init__(self, path=None, on_event=None):
+    def __init__(self, path=None, on_event=None, *, max_bytes=MAX_BYTES):
+        if max_bytes not in (MAX_BYTES, SNAPSHOT_BYTES):
+            raise ValueError('Invalid source bridge bound.')
+        self.max_bytes = max_bytes
         command = ['node', str(Path(path).expanduser().resolve())] if path else ['agentrun-serve', 'remote-bridge']
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.DEVNULL, text=True, bufsize=1)
@@ -96,10 +107,10 @@ class Bridge:
             while not self.stopped.is_set():
                 # Bound bytes before decoding or waiting for a newline: a malformed
                 # peer must not accumulate an unbounded text line in the reader.
-                line = self.process.stdout.buffer.readline(MAX_BYTES + 1)
+                line = self.process.stdout.buffer.readline(self.max_bytes + 1)
                 if not line:
                     break
-                if len(line) > MAX_BYTES:
+                if len(line) > self.max_bytes:
                     raise ValueError('Source bridge response exceeds its limit.')
                 message = json.loads(line.decode('utf-8'))
                 if not isinstance(message, dict):
@@ -159,6 +170,8 @@ class Bridge:
             self.write(command, cancelled=cancelled)
             result = waiting.get(timeout=timeout)
             if 'error' in result:
+                if command.get('type') == 'source-snapshot':
+                    raise SnapshotExportError(result.get('code'))
                 raise ValueError(str(result['error']))
             if 'result' not in result:
                 raise ValueError('Source bridge omitted its result.')
@@ -372,7 +385,13 @@ def upload_history(args, state, *, approved_inventory=None):
 def connect(args, state):
     api_origin = origin(args.origin)
     history = args.history or args.history_only
-    native_execution = not args.history_only
+    sync_only = getattr(args, 'sync_only', False)
+    config_sync = not getattr(args, 'no_sync', False)
+    native_execution = not (args.history_only or sync_only)
+    if sync_only and not config_sync:
+        raise ValueError('--sync-only needs setup sync; remove --no-sync.')
+    if config_sync:
+        print(SYNC_CONSENT, file=sys.stderr)
     if history and args.selector_kind != 'project':
         raise ValueError('History belongs to a project and runtime. Select --selector-kind project for history; connect named agents or profiles separately for live runs.')
     if state.data.get('connector_id') and state.data.get('disconnected'):
@@ -383,8 +402,9 @@ def connect(args, state):
     if pending_import:
         if state.data['origin'] != api_origin:
             raise ValueError('This pending connection belongs to another destination.')
-        if state.data.get('native_execution', True) != native_execution or state.data.get('history_import', False) != history:
-            raise ValueError('Retry the pending connection with the same live/history choice.')
+        if (state.data.get('native_execution', True) != native_execution or state.data.get('history_import', False) != history
+                or state.data.get('config_sync', False) != config_sync):
+            raise ValueError('Retry the pending connection with the same execution/history/setup-sync choices.')
         target_id, target = next(iter(state.data['targets'].items()))
         selector = {'kind': args.selector_kind, **({'name': args.selector_name} if args.selector_name else {})}
         if target['project'] != str(Path(args.project).expanduser().resolve()) or target['runtime'] != args.runtime or target['selector'] != selector:
@@ -426,25 +446,36 @@ def connect(args, state):
         state.save()
         registered = request(api_origin, credential, 'POST', '/v2/connectors', {
             'installation_id': state.data['installation_id'], 'label': args.name,
-            'capabilities': {'native_execution': native_execution, 'history_import': history}, 'operation_id': operation,
+            'capabilities': {'native_execution': native_execution, 'history_import': history, 'config_sync': config_sync}, 'operation_id': operation,
         })
         connector = registered.get('connector', {})
+        if config_sync and connector.get('capabilities', {}).get('config_sync') is not True:
+            raise ValueError('The destination did not grant setup sync. Update it or explicitly connect with --no-sync.')
         connector_id = identifier(connector.get('id') or connector.get('connector_id'))
         token = registered.get('credential')
         if not isinstance(token, str) or not token or len(token) > 8192 or '\n' in token or '\r' in token:
             raise ValueError('Invalid connector credential response.')
         target_id = str(uuid4())
+        if sync_only:
+            target = {**target, 'sync_only': True, 'capabilities': {**target['capabilities'], 'launch': False}}
         state.data.update(origin=api_origin, connector_id=connector_id, credential=token,
                           credential_expires_at=registered.get('credential_expires_at'),
                           remote=True, disconnected=False, targets={target_id: target},
                           native_execution=native_execution, history_import=history,
+                          config_sync=config_sync, sync_roots=approved_roots(target) if config_sync else [],
                           bridge=str(Path(args.bridge).resolve()) if args.bridge else None)
         state.data.pop('remote_registration_operation', None)
         state.save()
+    cli_adoption = adoption(target, api_origin, state.data['connector_id'], target_id) if config_sync else None
+    if sync_only and cli_adoption is None:
+        raise ValueError('Enable CLI capture for this exact project and destination first, then retry sync-only connection. An observed session without that verified association is not silently duplicated.')
     imported = request(api_origin, state.data['credential'], 'POST', f"/v2/connectors/{identifier(state.data['connector_id'])}/import", {
         'target_id': target_id, 'name': args.agent_name or Path(target['project']).name,
         'target': target, 'history_only': args.history_only,
+        **({'cli_adoption': cli_adoption} if cli_adoption else {}),
     })
+    if cli_adoption and imported.get('agent_id') != 'cli-' + cli_adoption['connection_id']:
+        raise ValueError('The destination did not preserve the associated CLI agent identity; source import was not accepted locally.')
     state.data['agent_id'] = imported['agent_id']
     state.save()
     result = {'status': 'connected', 'connector_id': state.data['connector_id'], 'agent_id': imported['agent_id'], 'runtime': target['runtime'], 'worker': 'stopped'}
@@ -453,10 +484,78 @@ def connect(args, state):
             result['history'] = upload_history(args, state, approved_inventory=preview['inventory'])
         except (ValueError, OSError, APIError) as error:
             raise ValueError(safe_message(error) + ' The setup is connected and its worker is stopped. Resume with remote import-history using the same --state-dir; earlier imports are deduplicated.') from None
-    if native_execution and not args.no_start:
+    if (native_execution or config_sync) and not args.no_start:
         start(state, args.bridge)
         result['worker'] = 'running'
     return result
+
+
+def enable_sync(args, state):
+    """A fresh owner-issued enrollment is required; the old scoped token cannot upgrade itself."""
+    if (not state.data.get('remote') or state.data.get('disconnected') or not state.data.get('credential')
+            or not state.data.get('agent_id') or len(state.data.get('targets', {})) != 1):
+        raise ValueError('Enable sync only for an existing imported source connection. Its target and agent identity must be retained.')
+    api_origin = state.data['origin']
+    if args.origin and origin(args.origin) != api_origin:
+        raise ValueError('Enable sync uses only the saved destination; use another state directory for another server.')
+    # No cooperative idle/stop proof exists for this daemon. Do not rotate its credential while
+    # it may own native work. The operating-system lock proves it has fully stopped.
+    try:
+        held = lock_worker(state)
+    except ValueError:
+        raise ValueError('Stop the existing source worker through its supervisor after its native jobs finish, then enable sync. No running job was interrupted.') from None
+    try:
+        print(SYNC_CONSENT, file=sys.stderr)
+        if not args.yes and input('Authorize setup sync for this saved source and destination? [y/N] ').strip().lower() not in {'y', 'yes'}:
+            return {'status': 'cancelled'}
+        if args.credential_file:
+            enrollment = read_credential(args.credential_file, api_origin)
+        elif sys.stdin.isatty():
+            enrollment = getpass.getpass('Fresh one-use enrollment token for this existing connector: ')
+        else:
+            raise ValueError('Use a private origin-bound --credential-file containing a new owner enrollment for this existing connector.')
+        if not enrollment or len(enrollment) > 8192 or '\n' in enrollment or '\r' in enrollment:
+            raise ValueError('Invalid enrollment credential.')
+        enrollment_hash = hashlib.sha256(enrollment.encode()).hexdigest()
+        pending = state.data.get('sync_registration')
+        if pending and pending.get('enrollment_hash') != enrollment_hash:
+            # An explicitly supplied fresh owner code can recover an expired uncertain registration.
+            # Preserve the old receipt, but never reuse its operation or its queued snapshot bytes.
+            history = state.data.get('sync_registration_history', [])
+            if not isinstance(history, list) or len(history) >= 100:
+                raise ValueError('Retained source authorization receipts need review before another enrollment.')
+            state.data['sync_registration_history'] = [*history, pending]
+            pending = None
+        capabilities = {'native_execution': state.data.get('native_execution', True),
+                        'history_import': state.data.get('history_import', False), 'config_sync': True}
+        if pending is None:
+            pending = {'operation_id': str(uuid4()), 'enrollment_hash': enrollment_hash, 'capabilities': capabilities}
+            state.data['sync_registration'] = pending
+            state.save()
+        elif pending.get('capabilities') != capabilities:
+            raise ValueError('The pending source authorization belongs to different capabilities; its receipt was preserved.')
+        reply = request(api_origin, enrollment, 'POST', '/v2/connectors', {
+            'installation_id': state.data['installation_id'], 'label': args.name,
+            'capabilities': capabilities, 'operation_id': pending['operation_id'],
+        })
+        connector = reply.get('connector', {})
+        if (connector.get('id', connector.get('connector_id')) != state.data['connector_id']
+                or connector.get('capabilities', {}).get('config_sync') is not True):
+            raise ValueError('The owner enrollment did not authorize setup sync for this exact existing connector; no source identity was replaced.')
+        credential = reply.get('credential')
+        if not isinstance(credential, str) or not credential or len(credential) > 8192 or '\n' in credential or '\r' in credential:
+            raise ValueError('Invalid connector credential response.')
+        target = next(iter(state.data['targets'].values()))
+        state.data.update(credential=credential, credential_expires_at=reply.get('credential_expires_at'),
+                          config_sync=True, sync_roots=approved_roots(target))
+        state.data.pop('sync_registration', None)
+        state.save()
+    finally:
+        os.close(held)
+    if not args.no_start:
+        start(state, args.bridge)
+    return {'status': 'sync_enabled', 'connector_id': state.data['connector_id'], 'agent_id': state.data['agent_id'],
+            'worker': 'stopped' if args.no_start else 'running'}
 
 
 def lock_worker(state, blocking=False):
@@ -479,7 +578,7 @@ def running(state):
 
 
 def start(state, bridge=None):
-    if state.data.get('native_execution') is False:
+    if state.data.get('native_execution') is False and state.data.get('config_sync') is not True:
         raise ValueError('This is a history-only connection. Create a new live connection to run an agent.')
     if running(state):
         return
@@ -502,7 +601,7 @@ def start(state, bridge=None):
 
 
 def worker(state, bridge_path=None, once=False):
-    if state.data.get('native_execution') is False:
+    if state.data.get('native_execution') is False and state.data.get('config_sync') is not True:
         raise ValueError('This is a history-only connection. Create a new live connection to run an agent.')
     if not state.data.get('remote') or state.data.get('disconnected') or not state.data.get('credential'):
         raise ValueError('Connect an explicit source target before starting the remote worker.')
@@ -513,6 +612,9 @@ def worker(state, bridge_path=None, once=False):
     pool = ThreadPoolExecutor(max_workers=8)
     network = ThreadPoolExecutor(max_workers=8)
     heartbeats = ThreadPoolExecutor(max_workers=1)
+    sync_pool = ThreadPoolExecutor(max_workers=1)
+    publisher = SourcePublisher(state, lambda path: Bridge(path, max_bytes=SNAPSHOT_BYTES), request) if state.data.get('config_sync') is True else None
+    sync_future, next_sync = None, 0
     polling = None
     poll_started = 0
     poll_generation = 0
@@ -653,9 +755,17 @@ def worker(state, bridge_path=None, once=False):
     try:
         while not stopping.is_set():
             now = time.time()
-            if now >= next_poll or polling is not None:
+            if publisher is not None and sync_future is None and now >= next_sync:
+                sync_future = sync_pool.submit(publisher.once)
+            if sync_future is not None and sync_future.done():
+                try:
+                    sync_future.result()
+                except (ValueError, OSError, APIError):
+                    pass  # Its exact private payload remains pending; source execution is independent.
+                sync_future, next_sync = None, time.time() + 30
+            if state.data.get('native_execution') is not False and (now >= next_poll or polling is not None):
                 poll()
-            if time.time() - last_poll >= 30:
+            if state.data.get('native_execution') is not False and time.time() - last_poll >= 30:
                 raise ValueError('The destination stopped renewing this worker; source sessions were closed.')
             drain_events()
             for command_id, record in list(active.items()):
@@ -750,7 +860,7 @@ def worker(state, bridge_path=None, once=False):
                         raise ValueError('The destination rejected the active command lease; execution stopped.') from None
                 except OSError:
                     pass
-            if once and polled and not active:
+            if once and (polled or state.data.get('native_execution') is False) and not active and sync_future is None and (publisher is None or next_sync > 0):
                 break
             stopping.wait(.1)
         return {'status': 'stopped', 'connector_id': connector_id}
@@ -761,6 +871,7 @@ def worker(state, bridge_path=None, once=False):
         pool.shutdown(wait=True, cancel_futures=True)
         network.shutdown(wait=True, cancel_futures=True)
         heartbeats.shutdown(wait=True, cancel_futures=True)
+        sync_pool.shutdown(wait=True, cancel_futures=True)
         journal.close()
         os.close(lock)
         for sig, previous in previous_handlers.items():
@@ -783,7 +894,7 @@ def safe_message(error):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='agentrun remote', description='Explicitly connect a source-machine native setup to an OSS AgentRun server.')
-    parser.add_argument('action', choices=['discover', 'history-preview', 'connect', 'import-history', 'worker', 'status', 'disconnect'])
+    parser.add_argument('action', choices=['discover', 'history-preview', 'connect', 'enable-sync', 'import-history', 'worker', 'status', 'disconnect'])
     parser.add_argument('--state-dir', default=str(Path.home() / '.agentrun-remote'))
     parser.add_argument('--origin')
     parser.add_argument('--project')
@@ -796,17 +907,19 @@ def main(argv=None):
     parser.add_argument('--agent-name')
     parser.add_argument('--yes', action='store_true')
     parser.add_argument('--no-start', action='store_true')
+    parser.add_argument('--no-sync', action='store_true', help='Do not grant setup/project export for this new connection')
     history_mode = parser.add_mutually_exclusive_group()
     history_mode.add_argument('--history', action='store_true', help='Connect for live runs and explicitly import this project/runtime history')
-    history_mode.add_argument('--history-only', action='store_true', help='Import this project/runtime history without enabling execution or starting a worker')
+    history_mode.add_argument('--history-only', action='store_true', help='Import project/runtime history without native execution; setup sync remains enabled unless --no-sync')
+    history_mode.add_argument('--sync-only', action='store_true', help='Sync the existing verified CLI profile without enabling remote native execution')
     parser.add_argument('--foreground', action='store_true')
     parser.add_argument('--once', action='store_true')
     args = parser.parse_args(argv)
     try:
         if args.action in ('discover', 'history-preview', 'connect') and (not args.project or not args.runtime):
             raise ValueError('Choose an explicit --project and --runtime on this source machine.')
-        if (args.history or args.history_only) and args.action != 'connect':
-            raise ValueError('--history and --history-only are connect options. Use history-preview for a dry run, or import-history for an existing connection.')
+        if (args.history or args.history_only or args.sync_only or args.no_sync) and args.action != 'connect':
+            raise ValueError('--history, --history-only, --sync-only and --no-sync are connect options. Use history-preview for a dry run, or import-history for an existing connection.')
         if args.action not in ('discover', 'history-preview', 'connect') and (args.project or args.runtime or args.selector_kind != 'project' or args.selector_name):
             raise ValueError('This command uses only the exact source target in --state-dir; do not supply another project or runtime.')
         if (args.selector_kind == 'project') != (args.selector_name is None):
@@ -824,7 +937,11 @@ def main(argv=None):
         else:
             state = State(args.state_dir)
             if args.action == 'connect':
-                result = connect(args, state)
+                with state.connection():
+                    result = connect(args, state)
+            elif args.action == 'enable-sync':
+                with state.connection():
+                    result = enable_sync(args, state)
             elif args.action == 'import-history':
                 result = upload_history(args, state)
             elif args.action == 'worker':
@@ -836,15 +953,21 @@ def main(argv=None):
             elif args.action == 'status':
                 result = {'connected': bool(state.data.get('remote') and not state.data.get('disconnected')), 'worker_running': running(state),
                           'connector_id': state.data.get('connector_id'), 'agent_id': state.data.get('agent_id'), 'origin': state.data.get('origin'), 'native_execution': state.data.get('native_execution', True), 'history_import': state.data.get('history_import', False)}
+                result['config_sync'] = state.data.get('config_sync', False)
             else:
-                if not state.data.get('connector_id'):
-                    result = {'status': 'disconnected'}
-                else:
-                    request(state.data['origin'], state.data['credential'], 'DELETE', '/v2/connectors/' + identifier(state.data['connector_id']))
-                    state.data.update(disconnected=True)
-                    state.data.pop('credential', None)
-                    state.save()
-                    result = {'status': 'disconnected', 'message': 'The destination revoked this connector. Its worker stops on the next poll.'}
+                with state.connection():
+                    if not state.data.get('connector_id'):
+                        result = {'status': 'disconnected'}
+                    else:
+                        # Stop source export locally even if the destination cannot receive revocation.
+                        # Keep the scoped credential only until its revocation has been acknowledged.
+                        state.data.update(disconnected=True, config_sync=False)
+                        state.save()
+                        if state.data.get('credential'):
+                            request(state.data['origin'], state.data['credential'], 'DELETE', '/v2/connectors/' + identifier(state.data['connector_id']))
+                            state.data.pop('credential', None)
+                            state.save()
+                        result = {'status': 'disconnected', 'message': 'Source sync is disabled locally and the destination revoked this connector. Pending snapshots remain private.'}
         print(json.dumps(result))
         return 0
     except KeyboardInterrupt:

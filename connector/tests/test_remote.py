@@ -40,6 +40,7 @@ const emit=x=>process.stdout.write(JSON.stringify(x)+'\n');
 for await (const line of readline.createInterface({input:process.stdin})){
  const m=JSON.parse(line);fs.appendFileSync(process.env.REMOTE_TEST_LOG,JSON.stringify(m)+'\n');
  if(m.type==='discover')emit({id:m.id,result:{targets:[{...target,project:m.payload.project}]}});
+ else if(m.type==='source-snapshot')emit({id:m.id,result:{version:1,source:Object.fromEntries(['runtime','machine_id','project','selector'].map(k=>[k,m.target[k]])),digest:'a'.repeat(64),complete:true,blobs:{}}});
  else if(m.type==='prepare')emit({id:m.id,result:{target:m.target,instructions:{text:'Standing policy',files:[],truncated:false}}});
  else if(m.type==='history-preview'){const previews=fs.readFileSync(process.env.REMOTE_TEST_LOG,'utf8').trim().split('\n').map(JSON.parse).filter(row=>row.type==='history-preview').length;const changed=process.env.REMOTE_TEST_HISTORY_AFTER_PREVIEW;emit({id:m.id,result:{sessions:[],skipped:[],total:changed&&previews===1?1:2,next_cursor:null,inventory:changed&&previews>1?'b'.repeat(64):'a'.repeat(64)}});}
  else if(m.type==='history-export'){const i=m.payload.cursor,inventory=process.env.REMOTE_TEST_HISTORY_AFTER_PREVIEW?'b'.repeat(64):'a'.repeat(64);if(m.payload.inventory!==inventory){emit({id:m.id,error:'History inventory missing or changed; restart import.'});continue;}const item={source:'codex',id:`fixture-${i}`,startedAt:'2026-01-01T00:00:00Z',endedAt:'2026-01-01T00:01:00Z',state:'completed',firstPrompt:'Selected project only',activeMs:60000,turns:[]};if(process.env.REMOTE_TEST_HISTORY_OVERSIZE)item.firstPrompt='x'.repeat(2000000);emit({id:m.id,result:{sessions:[item],skipped:[],total:2,next_cursor:i===0?1:null,...(i>0&&process.env.REMOTE_TEST_HISTORY_INVENTORY==='missing'?{}:{inventory:i>0&&process.env.REMOTE_TEST_HISTORY_INVENTORY==='changed'?'b'.repeat(64):inventory})}});}
@@ -53,12 +54,18 @@ class Peer:
         self.requests=[];self.commands=[];self.completed=[];self.events=[];self.redirect=None;self.target=None;self.history=[]
         self.event_attempts=[];self.event_batches={};self.lose_event_reply=False;self.before_lost_event_reply=None
         self.on_request=None
+        self.truncated_sync_reply=False;self.truncated_sync_status=200
         peer=self
         class Handler(BaseHTTPRequestHandler):
             def log_message(self,*args): pass
             def do_POST(self):
                 body=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))) or b'{}')
                 peer.requests.append((self.path,self.headers.get('Authorization'),body))
+                if self.path.endswith('/sync') and peer.truncated_sync_reply:
+                    peer.truncated_sync_reply=False
+                    self.send_response(peer.truncated_sync_status);self.send_header('Transfer-Encoding','chunked');self.end_headers()
+                    self.wfile.write(b'20\r\n{');self.wfile.flush();self.close_connection=True
+                    return
                 if peer.on_request:
                     response=peer.on_request(self.path,body)
                     if response is not None:
@@ -71,9 +78,13 @@ class Peer:
                 if peer.redirect:
                     self.send_response(302);self.send_header('Location',peer.redirect);self.end_headers();return
                 if self.path=='/v2/connectors':
-                    result={'connector':{'id':'connector-1'},'credential':'narrow-test-credential','credential_expires_at':'2099-01-01T00:00:00Z'}
+                    result={'connector':{'id':'connector-1','capabilities':body['capabilities']},'credential':'narrow-test-credential','credential_expires_at':'2099-01-01T00:00:00Z'}
                 elif self.path.endswith('/import'):
                     peer.target=body;result={'agent_id':'remote-agent'}
+                elif self.path.endswith('/sync/grant'):
+                    target=peer.target['target'];result={'agent_id':'remote-agent','source':{key:target[key] for key in ('runtime','machine_id','project','selector')},'enabled':True,'generation':'source-generation','sequence':-1}
+                elif self.path.endswith('/sync'):
+                    result={'agent_id':'remote-agent','generation':body['generation'],'sequence':body['sequence'],'attempt':{'digest':body['snapshot']['digest']}}
                 elif self.path.endswith('/history'):
                     peer.history.extend(body['sessions']);result={'agent_id':'remote-agent','runs':[{'session_id':s['id'],'run_id':'run-'+s['id'],'already':False} for s in body['sessions']],'imported':len(body['sessions']),'already':0}
                 elif self.path.endswith('/poll'):
@@ -117,7 +128,7 @@ class RemoteBoundary(unittest.TestCase):
     def cli(self,*arguments):
         return subprocess.run([sys.executable,'-m','agentrun_cli','remote',*arguments],env=self.env,text=True,capture_output=True,timeout=20)
     def connect(self,*extra):
-        result=self.cli('connect','--origin',self.peer.origin,'--project',str(self.project),'--runtime','codex','--credential-file',str(self.credential),'--bridge',str(self.bridge),'--state-dir',str(self.state),'--yes','--no-start',*extra)
+        result=self.cli('connect','--origin',self.peer.origin,'--project',str(self.project),'--runtime','codex','--credential-file',str(self.credential),'--bridge',str(self.bridge),'--state-dir',str(self.state),'--yes','--no-start','--no-sync',*extra)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         return json.loads((self.state/'config.json').read_text())
     def command(self,target_id,command_id='command-1'):
@@ -133,6 +144,135 @@ class RemoteBoundary(unittest.TestCase):
         self.assertEqual(self.peer.requests[1][1],'Bearer narrow-test-credential')
         calls=[json.loads(line) for line in self.log.read_text().splitlines()]
         self.assertEqual([row['type'] for row in calls],['discover','prepare'])
+    def test_new_connections_default_to_explicit_setup_sync_and_worker_upload(self):
+        result=self.cli('connect','--origin',self.peer.origin,'--project',str(self.project),'--runtime','codex','--credential-file',str(self.credential),'--bridge',str(self.bridge),'--state-dir',str(self.state),'--yes','--no-start')
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('tracked/dirty/untracked nonignored files',result.stderr)
+        state=json.loads((self.state/'config.json').read_text())
+        self.assertTrue(state['config_sync'])
+        self.assertIn(str(self.project),state['sync_roots'])
+        self.assertTrue(self.peer.requests[0][2]['capabilities']['config_sync'])
+        worked=self.cli('worker','--once','--state-dir',str(self.state))
+        self.assertEqual(worked.returncode,0,worked.stdout+worked.stderr)
+        self.assertEqual(len([r for r in self.peer.requests if r[0].endswith('/sync')]),1)
+        calls=[json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual(len([r for r in calls if r['type']=='source-snapshot']),1)
+
+    def test_truncated_sync_reply_preserves_pending_bytes_and_does_not_stop_native_worker(self):
+        result=self.cli('connect','--origin',self.peer.origin,'--project',str(self.project),'--runtime','codex','--credential-file',str(self.credential),'--bridge',str(self.bridge),'--state-dir',str(self.state),'--yes','--no-start')
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        state=json.loads((self.state/'config.json').read_text())
+        self.peer.commands=[self.command(next(iter(state['targets'])))];self.peer.truncated_sync_reply=True
+        first=self.cli('worker','--once','--state-dir',str(self.state))
+        self.assertEqual(first.returncode,0,first.stdout+first.stderr)
+        pending=list((self.state/'source-sync').glob('*/pending.json'))
+        self.assertEqual(len(pending),1)
+        held=pending[0].read_bytes()
+        uploads=[body for path,_auth,body in self.peer.requests if path.endswith('/sync')]
+        self.assertEqual(json.loads(held),uploads[0])
+        self.assertEqual(len(self.peer.completed),1,'a source-sync response failure must not terminate unrelated native work')
+        second=self.cli('worker','--once','--state-dir',str(self.state))
+        self.assertEqual(second.returncode,0,second.stdout+second.stderr)
+        uploads=[body for path,_auth,body in self.peer.requests if path.endswith('/sync')]
+        self.assertEqual(uploads,[json.loads(held),json.loads(held)],'retry must use the original generation, sequence and content')
+        self.assertFalse(pending[0].exists(),'only exact acknowledgment clears the retained payload')
+        calls=[json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual(sum(row['type']=='source-snapshot' for row in calls),1)
+        self.assertEqual(sum(row['type']=='send' for row in calls),1,'the completed native task is never replayed')
+
+    def test_truncated_http_error_body_preserves_known_authorization_status(self):
+        self.peer.truncated_sync_reply=True;self.peer.truncated_sync_status=403
+        with self.assertRaises(APIError) as caught:
+            request(self.peer.origin,'test-only-fixture','POST','/v2/connectors/fixture/targets/fixture/sync',{})
+        self.assertEqual(caught.exception.status,403)
+        self.assertEqual(caught.exception.payload,{})
+
+    def test_sync_only_adopts_verified_cli_identity_without_native_authentication_or_poll(self):
+        proof={'connection_id':'fixture-connection','credential_epoch':'a'*64,'proof':'b'*64}
+        self.peer.on_request=lambda path,body:(200,{'agent_id':'cli-fixture-connection'}) if path.endswith('/import') else None
+        output=io.StringIO()
+        with mock.patch('agentrun_cli.remote.adoption',return_value=proof), mock.patch.dict(os.environ,self.env), contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+            code=main(['remote','connect','--origin',self.peer.origin,'--project',str(self.project),'--runtime','codex','--credential-file',str(self.credential),'--bridge',str(self.bridge),'--state-dir',str(self.state),'--yes','--no-start','--sync-only'])
+        self.assertEqual(code,0,output.getvalue())
+        saved=json.loads((self.state/'config.json').read_text());self.assertEqual(saved['agent_id'],'cli-fixture-connection')
+        self.assertFalse(saved['native_execution']);self.assertTrue(saved['config_sync'])
+        imported=self.peer.requests[-1][2];self.assertEqual(imported['cli_adoption'],proof)
+        self.assertTrue(imported['target']['sync_only']);self.assertFalse(imported['target']['capabilities']['launch'])
+        calls=[json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([row['type'] for row in calls],['discover'])
+        def sync_reply(path,body):
+            if path.endswith('/grant'):
+                target=next(iter(saved['targets'].values()))
+                return 200,{'agent_id':saved['agent_id'],'source':{k:target[k] for k in ('runtime','machine_id','project','selector')},'enabled':True,'generation':'sync-only-generation','sequence':-1}
+            if path.endswith('/sync'):
+                return 200,{'agent_id':saved['agent_id'],'generation':body['generation'],'sequence':body['sequence'],'attempt':{'digest':body['snapshot']['digest']}}
+        self.peer.on_request=sync_reply
+        result=self.cli('worker','--once','--state-dir',str(self.state))
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertFalse(any(path.endswith('/poll') for path,_,_ in self.peer.requests))
+
+    def test_network_peer_cannot_request_a_source_snapshot_or_choose_export_roots(self):
+        saved=self.connect();command=self.command(next(iter(saved['targets'])))
+        command.update(type='source-snapshot',payload={'authorized_roots':['/unapproved-root']})
+        self.peer.commands=[command]
+        result=self.cli('worker','--once','--state-dir',str(self.state))
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('Unsupported source operation',self.peer.completed[-1]['error'])
+        calls=[json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertNotIn('source-snapshot',[row['type'] for row in calls])
+
+    def test_enable_sync_requires_new_bound_enrollment_and_preserves_target_and_agent(self):
+        state=self.connect(); before=len(self.peer.requests)
+        result=self.cli('enable-sync','--state-dir',str(self.state),'--yes','--no-start')
+        self.assertEqual(result.returncode,1);self.assertEqual(len(self.peer.requests),before)
+        result=self.cli('enable-sync','--state-dir',str(self.state),'--credential-file',str(self.credential),'--yes','--no-start')
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        saved=json.loads((self.state/'config.json').read_text())
+        self.assertEqual(saved['targets'],state['targets']);self.assertEqual(saved['agent_id'],state['agent_id'])
+        self.assertEqual(saved['connector_id'],state['connector_id']);self.assertTrue(saved['config_sync'])
+        self.assertEqual(self.peer.requests[-1][0],'/v2/connectors')
+        self.assertEqual(self.peer.requests[-1][1],'Bearer broad-enrollment-test')
+        self.assertTrue(self.peer.requests[-1][2]['capabilities']['config_sync'])
+        self.assertNotIn('broad-enrollment-test',json.dumps(saved))
+
+    def test_enable_sync_new_owner_code_recovers_expired_uncertain_registration_without_reusing_operation(self):
+        state = self.connect()
+        self.peer.on_request = lambda path, body: (None, {}) if path == '/v2/connectors' else None
+        first = self.cli('enable-sync', '--state-dir', str(self.state), '--credential-file', str(self.credential), '--yes', '--no-start')
+        self.assertEqual(first.returncode, 1)
+        pending = json.loads((self.state / 'config.json').read_text())['sync_registration']
+        self.credential.write_text(json.dumps({'origin': self.peer.origin, 'api_key': 'not-a-secret'}))
+        self.peer.on_request = None
+        retried = self.cli('enable-sync', '--state-dir', str(self.state), '--credential-file', str(self.credential), '--yes', '--no-start')
+        self.assertEqual(retried.returncode, 0, retried.stdout + retried.stderr)
+        saved = json.loads((self.state / 'config.json').read_text())
+        self.assertEqual(saved['sync_registration_history'], [pending])
+        self.assertNotEqual(self.peer.requests[-1][2]['operation_id'], pending['operation_id'])
+        self.assertEqual(saved['targets'], state['targets']); self.assertEqual(saved['agent_id'], state['agent_id'])
+        self.assertNotIn('not-a-secret', json.dumps(saved))
+
+    def test_enable_sync_does_not_rotate_a_running_worker_or_choose_another_connector(self):
+        from agentrun_cli.remote import lock_worker
+        self.connect(); current=State(self.state); held=lock_worker(current); before=len(self.peer.requests)
+        try:
+            result=self.cli('enable-sync','--state-dir',str(self.state),'--credential-file',str(self.credential),'--yes','--no-start')
+            self.assertEqual(result.returncode,1);self.assertIn('No running job was interrupted',result.stdout)
+            self.assertEqual(len(self.peer.requests),before)
+        finally:os.close(held)
+        self.peer.on_request=lambda path,body:(200,{'connector':{'id':'other','capabilities':{'config_sync':True}},'credential':'other-fixture'}) if path=='/v2/connectors' else None
+        result=self.cli('enable-sync','--state-dir',str(self.state),'--credential-file',str(self.credential),'--yes','--no-start')
+        self.assertEqual(result.returncode,1)
+        saved=json.loads((self.state/'config.json').read_text())
+        self.assertEqual(saved['connector_id'],'connector-1');self.assertFalse(saved['config_sync'])
+
+    def test_offline_disconnect_disables_source_sync_locally_before_revocation(self):
+        self.connect(); current=State(self.state);current.data['config_sync']=True;current.save()
+        result=self.cli('disconnect','--state-dir',str(self.state))  # fixture peer refuses DELETE
+        self.assertEqual(result.returncode,1)
+        saved=json.loads((self.state/'config.json').read_text())
+        self.assertTrue(saved['disconnected']);self.assertFalse(saved['config_sync'])
+        self.assertIn('credential',saved,'retain the narrow credential for the explicit revocation retry')
+
     def test_slow_event_upload_cannot_delay_source_lease_expiry(self):
         state=self.connect();command=self.command(next(iter(state['targets'])))
         started=time.monotonic();command['lease_expires_at']=time.time()+1
@@ -712,7 +852,7 @@ class RemoteBoundary(unittest.TestCase):
         self.assertEqual([json.loads(line)['type'] for line in self.log.read_text().splitlines()],['discover','history-preview'])
     def test_history_only_imports_selected_pages_without_native_auth_or_worker(self):
         state=self.connect('--history-only')
-        self.assertEqual(self.peer.requests[0][2]['capabilities'],{'native_execution':False,'history_import':True})
+        self.assertEqual(self.peer.requests[0][2]['capabilities'],{'native_execution':False,'history_import':True,'config_sync':False})
         self.assertTrue(self.peer.target['history_only'])
         self.assertFalse(state['native_execution'])
         self.assertTrue(state['history_import'])
@@ -759,7 +899,7 @@ class RemoteBoundary(unittest.TestCase):
         state=self.connect('--history')
         self.assertTrue(state['native_execution'])
         self.assertFalse(self.peer.target['history_only'])
-        self.assertEqual(self.peer.requests[0][2]['capabilities'],{'native_execution':True,'history_import':True})
+        self.assertEqual(self.peer.requests[0][2]['capabilities'],{'native_execution':True,'history_import':True,'config_sync':False})
         self.assertIn('prepare',[json.loads(line)['type'] for line in self.log.read_text().splitlines()])
         self.assertTrue(all(auth=='Bearer narrow-test-credential' for path,auth,_ in self.peer.requests if path.endswith('/history')))
     def test_live_only_connection_cannot_import_history_or_dispatch_history_from_server(self):

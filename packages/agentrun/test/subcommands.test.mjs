@@ -11,6 +11,7 @@ import { removeAtEnd } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
+const CLI = new URL("../lib/cli.mjs", import.meta.url).pathname;
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
 
 function scratch() {
@@ -65,14 +66,15 @@ test("agentrun NAME runs agentrun-NAME from PATH with the rest of the arguments,
   assert.deepEqual([over.code, over.out], [7, "x\n"]);
 });
 
-test("agentrun NAME: a SIGTERM or SIGHUP sent to the CLI reaches the command, a terminal's Ctrl-C reaches it once, and the CLI waits for it to exit and passes on its code", async () => {
+test("agentrun NAME: a SIGINT, SIGQUIT, SIGTERM or SIGHUP sent to the CLI alone reaches the command, a terminal's Ctrl-C reaches it too, and the CLI waits for it to exit and passes on its code", async () => {
   const { dir, env } = scratch();
   const mark = join(dir, "mark");
   const tools = bin(join(dir, "tools"), {
     "agentrun-wait": [
-      'trap \'echo TERM >> "$MARK"; sleep 0.3; exit 42\' TERM',
-      'trap \'echo HUP >> "$MARK"; sleep 0.3; exit 43\' HUP',
-      'trap \'echo INT >> "$MARK"; sleep 0.3; exit 44\' INT',
+      'trap \'echo INT >> "$MARK"; sleep 0.3; exit 42\' INT',
+      'trap \'echo QUIT >> "$MARK"; sleep 0.3; exit 43\' QUIT',
+      'trap \'echo TERM >> "$MARK"; sleep 0.3; exit 44\' TERM',
+      'trap \'echo HUP >> "$MARK"; sleep 0.3; exit 45\' HUP',
       "echo ready",
       "while :; do sleep 0.1; done",
     ].join("\n"),
@@ -82,7 +84,7 @@ test("agentrun NAME: a SIGTERM or SIGHUP sent to the CLI reaches the command, a 
   const signalled = (signal, group) => new Promise((resolve) => {
     rmSync(mark, { force: true });
     const child = spawn(process.execPath, [BIN, "wait"], { env: { ...env, PATH: `${tools}${delimiter}${env.PATH}`, MARK: mark }, stdio: ["ignore", "pipe", "pipe"], detached: true });
-    const timer = setTimeout(() => process.kill(-child.pid, "SIGKILL"), 15_000);
+    const timer = setTimeout(() => process.kill(-child.pid, "SIGKILL"), 8_000);
     let out = "";
     child.stdout.on("data", (chunk) => {
       out += chunk;
@@ -90,11 +92,62 @@ test("agentrun NAME: a SIGTERM or SIGHUP sent to the CLI reaches the command, a 
     });
     child.once("close", (code, killed) => (clearTimeout(timer), resolve({ code, killed, mark: existsSync(mark) ? readFileSync(mark, "utf8") : "" })));
   });
-  assert.deepEqual(await signalled("SIGTERM", false), { code: 42, killed: null, mark: "TERM\n" });
-  assert.deepEqual(await signalled("SIGHUP", false), { code: 43, killed: null, mark: "HUP\n" });
-  // Ctrl-C reaches every process of the group: the command gets it from the terminal, once, and the CLI does not exit
-  // before it.
-  assert.deepEqual(await signalled("SIGINT", true), { code: 44, killed: null, mark: "INT\n" });
+  for (const [signal, code] of [["SIGINT", 42], ["SIGQUIT", 43], ["SIGTERM", 44], ["SIGHUP", 45]]) {
+    assert.deepEqual(await signalled(signal, false), { code, killed: null, mark: `${signal.slice(3)}\n` }, `${signal} sent to the CLI alone`);
+  }
+  // Ctrl-C reaches every process of the group, and the CLI passes it on too, so the command may get it twice; the CLI
+  // does not exit before it, and exits with its code.
+  const group = await signalled("SIGINT", true);
+  assert.deepEqual([group.code, group.killed], [42, null], group.mark);
+  assert.match(group.mark, /^(?:INT\n){1,2}$/);
+});
+
+test("externalOf on Windows: each PATHEXT extension in its order, in any case, in each absolute PATH folder, with no execute bit; elsewhere no extension is added", async () => {
+  const { externalOf } = await import(CLI);
+  const { dir } = scratch();
+  const folder = (name, files) => {
+    mkdirSync(join(dir, name));
+    for (const file of files) writeFileSync(join(dir, name, file), "");
+    return join(dir, name);
+  };
+  // Files of mode 0644: Windows has no execute bit, a file is a program by its extension.
+  const both = folder("both", ["agentrun-hello.CMD", "agentrun-hello.exe", "agentrun-hello"]);
+  const later = folder("later", ["agentrun-hello.com"]);
+  const windows = (env) => externalOf("hello", env, "win32");
+  // PATHEXT unset is .COM;.EXE;.BAT;.CMD: .exe comes before .CMD, matched in any case.
+  assert.equal(windows({ PATH: both }), join(both, "agentrun-hello.exe"));
+  assert.equal(windows({ PATH: both, PATHEXT: ".cmd;.exe" }), join(both, "agentrun-hello.CMD"), "PATHEXT's own order");
+  assert.equal(windows({ PATH: both, PATHEXT: ";;exe;.\\x;" }), join(both, "agentrun-hello.exe"), "no usable entry: the default");
+  // Folders in PATH's order, each folder's extensions in PATHEXT's.
+  assert.equal(windows({ PATH: [later, both].join(delimiter) }), join(later, "agentrun-hello.com"));
+  assert.equal(windows({ PATH: [both, later].join(delimiter) }), join(both, "agentrun-hello.exe"));
+  // No extension PATHEXT does not name, not the bare name, not a folder of the name, not a relative PATH entry.
+  assert.equal(windows({ PATH: both, PATHEXT: ".BAT" }), undefined);
+  mkdirSync(join(dir, "dirs", "agentrun-hello.exe"), { recursive: true });
+  assert.equal(windows({ PATH: [join(dir, "dirs"), later].join(delimiter) }), join(later, "agentrun-hello.com"));
+  assert.equal(windows({ PATH: "both" }), undefined);
+
+  // Off Windows nothing changes: agentrun-hello.exe, executable, is not agentrun-hello, and the execute bit counts.
+  const linux = bin(join(dir, "linux"), { "agentrun-hello.exe": "exit 0" });
+  assert.equal(externalOf("hello", { PATH: linux }, "linux"), undefined);
+  assert.equal(externalOf("hello", { PATH: both }, "linux"), undefined, "agentrun-hello there is not executable");
+  chmodSync(join(both, "agentrun-hello"), 0o755);
+  assert.equal(externalOf("hello", { PATH: both }, "linux"), join(both, "agentrun-hello"));
+});
+
+test("external on Windows: a batch file is refused before anything runs, exit 126, saying why; a spawn that throws is said, never a crash", async () => {
+  const { external } = await import(CLI);
+  let err = "";
+  const io = { stderr: { write: (chunk) => (err += chunk) } };
+  for (const file of ["C:\\tools\\agentrun-hello.cmd", "C:\\tools\\agentrun-hello.BAT"]) {
+    err = "";
+    assert.equal(await external(file, ["a & calc", "%PATH%"], {}, io, "win32"), 126);
+    assert.match(err, /is a batch file/);
+    assert.match(err, /cmd\.exe/);
+  }
+  err = "";
+  assert.equal(await external("/nowhere/agentrun-\0hello", [], {}, io, "linux"), 126);
+  assert.match(err, /^Cannot run /);
 });
 
 test("agentrun NAME: a built-in is never shadowed, and a name that is no plain word, one found only on a relative PATH entry, or none at all is today's unknown command", async () => {
