@@ -296,17 +296,18 @@ const exitOf = (status, code) => (status === 409 && code === "agent_not_runnable
 /** Requests to one AgentRun (`base`, else the one every command finds), with its token (the CLI's custody: targetOf,
  *  clientOf): `call(method, path, body?, allow?)` answers `{status, value}`, or prints the refusal as every command does
  *  (clientOf's refused) and stops with its exit code. A server not reached is exit 1 here: 3 is a package not
- *  runnable. */
+ *  runnable. `ask(method, path, body?)` is for a request the command carries on past: `{value}`, or `{why}` it got
+ *  none (the status and the error's message, or the server not reached), nothing printed. */
 function remote(cli, values, env, io, base) {
   const target = cli.targetOf(base === undefined ? values : { ...values, "base-url": base }, env);
   const client = cli.clientOf(target, io);
-  const call = async (method, path, body, allow = []) => {
+  const send = async (method, path, body) => {
     let response;
     try {
       response = await client.fetch(path, { method, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
     } catch (error) {
       // Only the cause's code: a fetch error's message can quote a header, the token's among them.
-      throw cli.fail(1, `Cannot reach ${target.base} (${error?.cause?.code ?? error?.name}).`);
+      return { unreached: error?.cause?.code ?? error?.name };
     }
     const bytes = Buffer.from(await response.arrayBuffer());
     let value;
@@ -315,6 +316,17 @@ function remote(cli, values, env, io, base) {
     } catch {
       value = undefined;
     }
+    return { response, bytes, value };
+  };
+  const ask = async (method, path, body) => {
+    const { response, value, unreached } = await send(method, path, body);
+    if (unreached !== undefined) return { why: `not reached: ${unreached}` };
+    if (response.ok) return { value };
+    return { why: `${response.status}${typeof value?.error?.message === "string" ? `: ${value.error.message}` : ""}` };
+  };
+  const call = async (method, path, body, allow = []) => {
+    const { response, bytes, value, unreached } = await send(method, path, body);
+    if (unreached !== undefined) throw cli.fail(1, `Cannot reach ${target.base} (${unreached}).`);
     if (response.ok || allow.includes(response.status)) {
       if (response.ok && response.status !== 204 && value === undefined) throw cli.fail(1, `${method} ${path} on ${target.base} answered ${response.status} with no JSON.`);
       return { status: response.status, value };
@@ -322,7 +334,7 @@ function remote(cli, values, env, io, base) {
     const exit = client.refused(response, bytes);
     throw new Stopped(exitOf(response.status, value?.error?.code) ?? exit);
   };
-  return { base: target.base, call };
+  return { base: target.base, call, ask };
 }
 
 const enc = encodeURIComponent;
@@ -401,15 +413,20 @@ async function sourceOf({ values, args, env, io, cli, releases }, fail) {
   };
 }
 
-/** The schedules of the install agent that still fire there: turned off with --pause-source, else warned of. */
+/** The schedules of the install agent that still fire there: turned off with --pause-source, else warned of. The deploy
+ *  is done by now, so an install that refuses its trigger routes (a front door without them) or is not reached is said
+ *  and the command goes on: a schedule it could not read or turn off is never said to be paused. */
 async function sourceSchedules(io, from, values) {
-  const { value } = await from.source.call("GET", "/triggers");
-  const live = (value?.triggers ?? []).filter((one) => (one.agent_id ?? one.target?.agent_id) === from.agentId && one.source?.kind === "schedule" && one.enabled);
+  const pause = values["pause-source"];
+  const where = from.source.base;
+  const listed = await from.source.ask("GET", "/triggers");
+  if (listed.why) return say(io, `Warning: the agent's schedules on ${where} could not be read ${pause ? "or paused " : ""}(${listed.why}): any it has still run there, so each fires in both places.`);
+  const live = (listed.value?.triggers ?? []).filter((one) => (one.agent_id ?? one.target?.agent_id) === from.agentId && one.source?.kind === "schedule" && one.enabled);
   if (!live.length) return;
-  if (!values["pause-source"]) return say(io, `Warning: the agent's schedules (${live.map((one) => one.name).join(", ")}) still run on ${from.source.base}, so each fires in both places. --pause-source turns them off there.`);
+  if (!pause) return say(io, `Warning: the agent's schedules (${live.map((one) => one.name).join(", ")}) still run on ${where}, so each fires in both places. --pause-source turns them off there.`);
   for (const one of live) {
-    await from.source.call("PATCH", `/triggers/${enc(one.id ?? one.trigger_id)}`, { enabled: false });
-    say(io, `Paused ${one.name} on ${from.source.base}.`);
+    const paused = await from.source.ask("PATCH", `/triggers/${enc(one.id ?? one.trigger_id)}`, { enabled: false });
+    say(io, paused.why ? `Warning: ${one.name} could not be paused on ${where} (${paused.why}): it still runs there, so it fires in both places.` : `Paused ${one.name} on ${where}.`);
   }
 }
 
