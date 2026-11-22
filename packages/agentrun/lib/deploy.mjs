@@ -115,31 +115,57 @@ function folderLock(dir, fail) {
   };
 }
 
-/** An install agent's lock: the CLI config's deploy.json (0600), one lock per `<install's address> <agent id>`. */
-function installLock(env, cli, source, agentId, fail) {
+/** The CLI's own deploy record, its config's deploy.json (0600): an install agent's lock per `<install's address> <agent
+ *  id>`, and under `targets` each address a deploy was sent to from here (a folder lock's target is trusted by it). */
+function privateRecord(env, cli, fail) {
   const file = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentrun", "deploy.json");
-  const key = `${source} ${agentId}`;
   const all = () => {
     const text = cli.privateFile(file);
     if (text === undefined) return {};
     try {
       const value = JSON.parse(text);
-      if (value && typeof value === "object" && !Array.isArray(value)) return value;
+      if (value && typeof value === "object" && !Array.isArray(value) && (value.targets === undefined || (Array.isArray(value.targets) && value.targets.every((one) => typeof one === "string")))) return value;
     } catch {
       // refused below
     }
-    throw fail(2, `${file} is not the CLI's deploy locks (an object of locks by install and agent): fix or remove it.`);
+    throw fail(2, `${file} is not the CLI's deploy record (an object of locks by install and agent, and its targets): fix or remove it.`);
   };
-  const save = (locks) => writeAtomic(file, `${JSON.stringify(locks, null, 2)}\n`, 0o600);
+  const save = (record) => writeAtomic(file, `${JSON.stringify(record, null, 2)}\n`, 0o600);
   return {
     file,
-    read: () => lockOf(all()[key], file, fail),
-    write: (lock) => save({ ...all(), [key]: lock }),
-    remove() {
-      const { [key]: _, ...rest } = all();
-      save(rest);
+    all,
+    save,
+    knows: (target) => (all().targets ?? []).includes(target),
+    learn(target) {
+      const record = all();
+      if (!(record.targets ?? []).includes(target)) save({ ...record, targets: [...(record.targets ?? []), target] });
     },
   };
+}
+
+/** An install agent's lock, in the CLI's own record (privateRecord). */
+function installLock(env, cli, source, agentId, fail) {
+  const record = privateRecord(env, cli, fail);
+  const key = `${source} ${agentId}`;
+  return {
+    file: record.file,
+    read: () => lockOf(record.all()[key], record.file, fail),
+    write: (lock) => record.save({ ...record.all(), [key]: lock }),
+    remove() {
+      const { [key]: _, ...rest } = record.all();
+      record.save(rest);
+    },
+  };
+}
+
+/** Where a deploy may send this CLI's key: an address `--to` names, else the lock's target. An install agent's lock is
+ *  the CLI's own; a folder's comes with the folder, so one from elsewhere can name any address: its target is used only
+ *  where this CLI has deployed before (privateRecord `targets`) or it is AgentRun cloud, else `--to` must name it. */
+function targetFor({ values, env, cli }, from, lock, fail) {
+  if (values.to !== undefined) return toOf(cli, values.to, env);
+  if (lock === undefined || from.kind !== "folder") return lock?.target;
+  if (lock.target === toOf(cli, "cloud", env) || privateRecord(env, cli, fail).knows(lock.target)) return lock.target;
+  throw fail(2, `${from.lock.file} names ${lock.target} as its target, an address this CLI has not deployed to: pass --to ${lock.target} to deploy there. Nothing was sent (a lock comes with its folder, and the deploy sends your API key to its target).`);
 }
 
 /** The exit code of a target's refusal: 3 for a package not runnable there, 2 for one it refused as given (its input,
@@ -218,7 +244,10 @@ async function sourceOf({ values, args, env, io, cli }, fail) {
   const dir = resolve(given);
   if (existsSync(dir) && statSync(dir).isDirectory()) {
     if (values["pause-source"]) throw fail(2, "--pause-source is for an agent deployed from an install (agentrun deploy AGENT_ID): a folder has no schedules running anywhere.");
-    return { kind: "folder", dir, lock: folderLock(dir, fail), files: () => readFolder(dir, fail) };
+    // A lock this CLI writes teaches it the target (privateRecord), so the next deploy of the folder needs no --to.
+    const lock = folderLock(dir, fail);
+    const write = (written) => (lock.write(written), privateRecord(env, cli, fail).learn(written.target));
+    return { kind: "folder", dir, lock: { ...lock, write }, files: () => readFolder(dir, fail) };
   }
   if (/[\\/]/.test(given) || given.startsWith(".")) throw fail(2, `${given} is not a folder: deploy takes a package folder or an agent id of this install.`);
   // The install the agent is on: --base-url, else as every command finds it; never with AGENTRUN_API_KEY, which is the
@@ -276,7 +305,7 @@ async function deploy(ctx) {
     if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) throw fail(2, `--params ${values.params} is not a JSON object of the package's parameters.`);
   }
   const prior = from.lock.read();
-  const base = values.to !== undefined ? toOf(cli, values.to, env) : prior?.target;
+  const base = targetFor(ctx, from, prior, fail);
   if (base === undefined) throw fail(2, `Where to? Pass --to URL (cloud, or an AgentRun's address); a deploy after the first reads it from ${from.lock.file}.`);
   const lock = prior && prior.target === base ? prior : undefined;
   if (prior && !lock) say(io, `The lock names ${prior.target}; this deploy is to ${base}, so it makes the agent there and the lock names it after.`);
@@ -337,8 +366,7 @@ async function locked(ctx) {
   const from = await sourceOf(ctx, cli.fail);
   const lock = from.lock.read();
   if (!lock) throw cli.fail(2, `Nothing deployed here: ${from.lock.file} does not exist.`);
-  const base = values.to !== undefined ? toOf(cli, values.to, env) : lock.target;
-  return { from, lock, to: remote(cli, values, env, ctx.io, base) };
+  return { from, lock, to: remote(cli, values, env, ctx.io, targetFor(ctx, from, lock, cli.fail)) };
 }
 
 async function rollback(ctx) {
@@ -418,7 +446,7 @@ const ending = (work) => async (ctx) => {
 };
 
 const SOURCE = ["SOURCE", "a package folder (default: the current one), or an agent id of this install (its export)"];
-const TO = ["--to URL", "where: cloud (the hosted AgentRun; AGENTRUN_CLOUD_URL overrides its address), or an AgentRun's address; left out after the first deploy, the lock's target"];
+const TO = ["--to URL", "where: cloud (the hosted AgentRun; AGENTRUN_CLOUD_URL overrides its address), or an AgentRun's address; left out after the first deploy, the lock's target (a folder's, only where this CLI deployed it, or cloud)"];
 const TOKEN = "The target's token: AGENTRUN_API_KEY, else api_key in the CLI config for that address. An install agent's own install is --base-url, else as every command finds it.";
 
 export const DEPLOY = {

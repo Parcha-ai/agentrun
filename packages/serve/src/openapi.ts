@@ -1451,7 +1451,7 @@ const TEMPLATE_PLAN = closed({
     action: { enum: ["create", "revise"], description: "`create`: the apply makes a new agent; `revise`: it writes a new revision of the agent `agent_id` names." },
     agent_id: { ...NULLABLE_STRING, description: "The agent a revise writes onto; null for a create." },
     current_revision_id: { ...NULLABLE_STRING, description: "That agent's current revision as the plan read it; null for a create." },
-    missing_secrets: { type: "array", items: { type: "string" }, description: "The keys the package (and the model choice asked for) names that this server does not hold: the apply refuses (409) until each is added." },
+    missing_secrets: { type: "array", items: { type: "string" }, description: "The keys the package (and the model choice asked for) names that this server does not hold, and MONID_API_KEY where a monid tool it grants is pinned when the agent is saved and no monid key is here: the apply refuses until each is added." },
     unmatched_mcp: { type: "array", items: closed({ source: { type: "string" }, toolkit: { type: "string" }, required: { type: "boolean", description: "True: the apply refuses (409) until a server of it is saved; false: the agent is made without its tools." } }), description: "The package's MCP needs no saved server here matches." },
     triggers: {
       type: "array",

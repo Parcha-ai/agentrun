@@ -340,7 +340,7 @@ Deploy an agent's package to another AgentRun: upload, plan, apply, lock (deploy
 
 Route: none, it runs on this machine.
 
-- `--to URL` (string, this CLI's own): where: cloud (the hosted AgentRun; AGENTRUN_CLOUD_URL overrides its address), or an AgentRun's address; left out after the first deploy, the lock's target
+- `--to URL` (string, this CLI's own): where: cloud (the hosted AgentRun; AGENTRUN_CLOUD_URL overrides its address), or an AgentRun's address; left out after the first deploy, the lock's target (a folder's, only where this CLI deployed it, or cloud)
 - `--yes` (boolean, this CLI's own): apply without asking (needed off a terminal)
 - `--force` (boolean, this CLI's own): replace an agent edited on the target since the last deploy
 - `--params FILE` (string, this CLI's own): the package's parameters, a JSON object

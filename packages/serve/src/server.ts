@@ -3102,6 +3102,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  the computer it picks. Any other refusal is the apply's own. */
   async function planTemplate(template: Package, body: Json) {
     const p = await prepareApply(template, body, { plan: true });
+    // A monid grant is pinned to monid's listing when the agent is saved (saveable: monidPinOf), read with the monid key:
+    // with none here the apply is refused, so the plan lists the key. A grant the agent's current pin carries reads
+    // nothing (pinMonid with no key answers before any request).
+    const definition = isObject(p.made.agent) && isObject(p.made.agent.definition) ? p.made.agent.definition : {};
+    const tools = Array.isArray(definition.tools) ? definition.tools.filter((tool): tool is string => typeof tool === "string") : [];
+    const was = p.onto?.revision?.kind === "agentic" ? p.onto.revision : undefined;
+    const unread = !env[MONID_KEY_ENV]?.trim() && (await pinMonid(tools, { key: undefined, ...(was ? { previous: { grants: (was.body as AgenticBody).tools ?? [], pin: was.monidPin ?? null } } : {}) }));
+    const missing = unread && "refused" in unread && !p.missing.includes(MONID_KEY_ENV) ? [...p.missing, MONID_KEY_ENV] : p.missing;
     const planned: { name: string; kind: string; action: "create" | "update" | "remove" | "skip"; reason?: string }[] = [];
     for (const [i, trigger] of p.made.triggers.entries()) {
       const name = String(trigger.name).trim();
@@ -3130,7 +3138,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         action: p.onto ? "revise" : "create",
         agent_id: p.onto?.agent.id ?? null,
         current_revision_id: p.onto?.revision?.id ?? null,
-        missing_secrets: p.missing,
+        missing_secrets: missing,
         unmatched_mcp: p.unsaved.map((need) => ({ source: need.source, toolkit: need.toolkit, required: need.required })),
         triggers: planned,
         computer: computer ? { kind: computer.kind, provider: computer.provider ?? null } : null,
