@@ -14,7 +14,7 @@
 // case): dist's secrets module takes each key out of the environment as it loads (secrets.ts).
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -306,6 +306,21 @@ for (const [kind, make] of Object.entries(STORES)) {
     assert.deepEqual(diff.files.map((file) => [file.path, file.patch?.includes(`+- ${shared}`)]), [["corrections.md", true]], "the later run's diff adds its line");
   });
 
+  test(`${kind}: a purge takes out the purged run's line after its owner moved it (the owner swaps two runs' lines): the other run's line stays`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText, putCorrections, readSnapshot } = await learn();
+    await merged(store, "ALPHA", "GONE", "KEPT");
+    const snap = await readSnapshot(store);
+    const text = (await store.read(snap.main, ["corrections.md"]))[0].body.toString("utf8");
+    const swapped = text.replace("- GONE line from the owner\n- KEPT line from the owner\n", "- KEPT line from the owner\n- GONE line from the owner\n");
+    assert.notEqual(swapped, text);
+    assert.equal((await putCorrections(store, { text: swapped, ifMatch: snap.corrections.oid })).ok, true);
+    assert.ok("commit" in (await forgetRunText(store, "run_gone")));
+    const main = (await store.read(await store.head(), ["corrections.md"]))[0].body.toString("utf8");
+    assert.equal(main, "- ALPHA line from the owner\n- KEPT line from the owner\n");
+    assert.doesNotMatch(await everything(store), /GONE line/);
+  });
+
   test(`${kind}: a purge takes run B's text out of every commit (no read, log message, diff or snapshot at any commit holds it), A's and C's diffs stay, B merges no more, and a purge again does nothing`, async (t) => {
     const store = await make(t);
     const { forgetRunText, readSnapshot, runMergeOf } = await learn();
@@ -426,6 +441,41 @@ test("local: a purge whose checkout fails (an index.lock left behind) is not don
   assert.doesNotMatch(corrections(), /BRAVO/);
   assert.match(corrections(), /ALPHA line/);
   assert.equal(existsSync(join(git, "agentrun-tidy")), false);
+});
+
+test("local: a purge through hand commits of a corrections.md far past its cap (20,000 lines, then the same lines reversed) finishes in a 256 MB heap and takes the run's line out", () => {
+  const dist = (file) => JSON.stringify(new URL(`../dist/learn/${file}`, import.meta.url).href);
+  const child = `
+    import { mkdtempSync, rmSync } from "node:fs";
+    import { tmpdir } from "node:os";
+    import { join } from "node:path";
+    const { localLearningStore } = await import(${dist("store-local.js")});
+    const { learningCommit } = await import(${dist("commit.js")});
+    const { forgetRunText } = await import(${dist("purge.js")});
+    const data = mkdtempSync(join(tmpdir(), "learn-store-"));
+    try {
+      const store = localLearningStore(data, "agent-one");
+      for (const runId of ["run_alpha", "run_gone"]) {
+        const done = await learningCommit(store, { runId, reason: runId + " reason", files: [], correction: runId + " line" });
+        if (!done.ok) throw new Error(JSON.stringify(done));
+      }
+      const many = Array.from({ length: 20000 }, (_, i) => "- hand line " + i);
+      const keep = "- run_alpha line\\n- run_gone line\\n";
+      for (const lines of [many, [...many].reverse()]) {
+        const head = await store.head();
+        const done = await store.save({ old: head, message: "by hand", at: Math.floor(Date.now() / 1000), writes: [{ path: "corrections.md", text: keep + lines.join("\\n") + "\\n" }] });
+        if (!done.saved) throw new Error(JSON.stringify(done));
+      }
+      const forgot = await forgetRunText(store, "run_gone");
+      if (!("commit" in forgot)) throw new Error(JSON.stringify(forgot));
+      const main = (await store.read(await store.head(), ["corrections.md"]))[0].body.toString("utf8");
+      if (main.includes("run_gone line") || !main.includes("run_alpha line") || !main.includes("- hand line 19999")) throw new Error("main: " + main.slice(0, 200));
+      process.stdout.write("purged\\n");
+    } finally {
+      rmSync(data, { recursive: true, force: true });
+    }`;
+  const out = spawnSync(process.execPath, ["--max-old-space-size=256", "--input-type=module", "-e", child], { encoding: "utf8", timeout: 120_000 });
+  assert.equal(out.stdout.trim(), "purged", `exit ${out.status} ${out.signal ?? ""}\n${out.stderr.slice(-2000)}`);
 });
 
 test("code.storage: the repo is agentrun-<server id>-<agent id>-g0, every call's token names it, and the key never travels", async (t) => {
