@@ -1,7 +1,7 @@
 {
   "id": "antigravity",
   "label": "Google Antigravity",
-  "description": "Google's agy CLI as an ACP agent (agy acp), as T3 Code runs it: on its owner's own Google sign-in, made by the agent itself with agy acp --login (agentrun harness sign-in), or on a Gemini API key from Google AI Studio saved for it alone. AgentRun never reads, refreshes or sends the sign-in (HARNESS.md#sign-in).",
+  "description": "Google's agy CLI as an ACP agent (agy acp), as T3 Code runs it: on a Gemini API key from Google AI Studio saved for it alone, or, on its owner's own machine alone, on their own Google sign-in, made by the agent itself with agy acp --login (agentrun harness sign-in). AgentRun never reads, refreshes or sends the sign-in (HARNESS.md#sign-in).",
   "release": {
     "version": "1.5.14",
     "archives": {
@@ -36,6 +36,6 @@
   "model": { "billing": "plan", "maxTurns": 20, "maxToolCalls": 40, "hosts": ["cloudcode-pa.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "generativelanguage.googleapis.com"] },
   "keys": [{ "name": "ANTIGRAVITY_GEMINI_API_KEY", "env": "GEMINI_API_KEY" }],
   "keyMethod": "gemini-api-key",
-  "signIn": { "args": ["--login"], "homeArg": "--gemini-dir" },
+  "signIn": { "args": ["--login"], "homeArg": "--gemini-dir", "terms": "https://antigravity.google/terms" },
   "declares": { "load": true, "mcp": "http" }
 }

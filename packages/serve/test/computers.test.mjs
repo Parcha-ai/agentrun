@@ -165,7 +165,7 @@ test("a kind no provider can serve here is not offered, and says why: in Mode 2 
 
 test("each kind says whether its runs can record their screen here: a desktop, phone or browser with ffmpeg on the PATH can; without it, each says ffmpeg is missing; a sandbox and none never can, in words", async (t) => {
   const { store } = await storeOn(t);
-  const viewOn = (path) => createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", path }).view();
+  const viewOn = (path) => createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", env: { PATH: path } }).view();
   const records = (view) => Object.fromEntries(view.kinds.map((one) => [one.kind, one.record]));
   const bin = await mkdtemp(join(tmpdir(), "record-path-"));
   t.after(() => rm(bin, { recursive: true, force: true }));
