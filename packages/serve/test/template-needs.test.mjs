@@ -2,8 +2,9 @@
 // image gives them: the image stays the server's (AGENTRUN_DOCKER_IMAGE for the Docker box). It is read only beside
 // `computer: [shell]`, so a template that needs them never falls back to no computer. Apply writes them onto the sandbox
 // it picks (`computer.needs`), which each run checks in its box before its first model request (computer-needs.ts);
-// where the shell here is no sandbox (Archil's serverless exec, or none), apply refuses in words naming the programs and
-// the image fix, and makes nothing. No Docker command runs here: a fake `docker` first on PATH answers the probe.
+// a template with needs prefers a sandbox that can hold them (Docker answering) to Archil's serverless exec, a pick of
+// the computer's kind, never of an image; where no sandbox answers, apply refuses in words naming the programs and the
+// image fix, and makes nothing. No Docker command runs here: a fake `docker` first on PATH answers the probe.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
@@ -17,6 +18,8 @@ SECRET_WRITE_PATHS.push({ methods: ["PUT"], path: /^\/workspace\/archil$/ });
 const ARCHIL = { region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "fake-test-key" } };
 /** A package that renders video: a shell in a sandbox that has hyperframes and ffmpeg, or nothing. */
 const FILM = "---\nname: film\nversion: 1.0.0\ndescription: Renders a video.\ntools: [read, bash]\ncomputer: [shell]\nneeds: [hyperframes, ffmpeg]\n---\nRender.\n";
+/** The same package with no needs: it takes the shell here as before. */
+const PLAIN = "---\nname: plain\nversion: 1.0.0\ndescription: Runs a command.\ntools: [read, bash]\ncomputer: [shell]\n---\nRun.\n";
 const NEEDS = ["hyperframes", "ffmpeg"];
 const DOCKER = { computer: { kind: "sandbox", provider: "docker" }, tools: ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"], words: "the docker sandbox" };
 const EXEC = { computer: { kind: "none" }, tools: ["bash"], words: "Archil's serverless exec" };
@@ -48,6 +51,8 @@ async function filmServer(t, { docker = false, archil = false } = {}) {
   const templates = join(await scratch(t), "templates");
   mkdirSync(join(templates, "film"), { recursive: true });
   writeFileSync(join(templates, "film", "agent.md"), FILM);
+  mkdirSync(join(templates, "plain"), { recursive: true });
+  writeFileSync(join(templates, "plain", "agent.md"), PLAIN);
   const bin = join(await scratch(t), "bin");
   mkdirSync(bin);
   writeFileSync(join(bin, "docker"), `#!/bin/sh\nif [ "$1" = version ]; then ${docker ? "echo 27.0.0-fake; exit 0" : "echo 'Cannot connect to the Docker daemon' >&2; exit 1"}; fi\nexit 0\n`);
@@ -107,7 +112,23 @@ test("Docker: GET /v2/templates shows a template's needs and the sandbox an appl
   assert.deepEqual([made.computer, made.tools], [{ kind: "sandbox", provider: "docker", needs: NEEDS }, ["read", "bash"]]);
 });
 
-test("Mode 2: the shell is Archil's serverless exec, no sandbox, so a template with needs is refused, 409, in words naming the programs and AGENTRUN_DOCKER_IMAGE, and nothing is made", async (t) => {
+test("Mode 2 with Docker answering: a template with needs takes the docker sandbox over Archil's exec; one without needs still takes the exec", async (t) => {
+  const { api, meets } = await filmServer(t, { docker: true, archil: true });
+  const listed = await api("GET", "/templates");
+  meets("/templates", "get", "200", listed.body);
+  const film = listed.body.templates.find((one) => one.name === "film");
+  assert.deepEqual(film.computer_here, { entry: "shell", computer: { kind: "sandbox", provider: "docker", needs: NEEDS }, shell: "the docker sandbox", dropped: [], note: null });
+  const plain = listed.body.templates.find((one) => one.name === "plain");
+  assert.deepEqual([plain.computer_here.computer, plain.computer_here.shell], [{ kind: "none" }, "Archil's serverless exec"]);
+  const applied = await api("POST", "/templates/film/apply", {});
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  assert.deepEqual((await api("GET", `/agents/${applied.body.agent_id}`)).body.definition.computer, { kind: "sandbox", provider: "docker", needs: NEEDS });
+  const other = await api("POST", "/templates/plain/apply", {});
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  assert.deepEqual((await api("GET", `/agents/${other.body.agent_id}`)).body.definition.computer, { kind: "none" });
+});
+
+test("Mode 2 without Docker: Archil's exec is no sandbox and none answers, so a template with needs is refused, 409, in words naming the programs, both shells and AGENTRUN_DOCKER_IMAGE, and nothing is made", async (t) => {
   const { api, meets } = await filmServer(t, { archil: true });
   const listed = await api("GET", "/templates");
   meets("/templates", "get", "200", listed.body);
@@ -118,6 +139,7 @@ test("Mode 2: the shell is Archil's serverless exec, no sandbox, so a template w
   const refused = await api("POST", "/templates/film/apply", {});
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.match(refused.body.error.message, NO_SANDBOX);
+  assert.match(refused.body.error.message, /Archil's serverless exec is no sandbox, and the docker box is unavailable here/);
   assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["computer", "not_set_up_here"]]);
   assert.match(refused.body.error.fields[0].fix, /AGENTRUN_DOCKER_IMAGE/);
   assert.equal((await api("GET", "/agents")).body.agents.length, before, "nothing made");
