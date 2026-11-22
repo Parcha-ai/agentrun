@@ -305,6 +305,9 @@ export type FolderChange = {
    *  correction alone included), named only when this folder held it as the run's end began (commit.ts mustHold): one a
    *  reset of the agent's learning removed refuses the merge. */
   seed?: string;
+  /** The host's scrub of one merge of a purged run (commit.ts forgetRunText), by its diff key (runDiffKey): lands once,
+   *  as a run's merge does (a second is FolderMerged, naming the first). */
+  purged?: string;
 };
 
 /** A commit's message and trailers, as git keeps them: a person's names their action and the file, with Changed-By (and
@@ -491,6 +494,14 @@ function keep(oid: string, text: string): void {
 export function forgetBodies(): void {
   bodies.clear();
   bodyBytes = 0;
+}
+
+/** Blob `oid`'s body forgotten, when it was kept: a text a purge took off main is held in this process no longer. */
+export function forgetBody(oid: string): void {
+  const held = bodies.get(oid);
+  if (held === undefined) return;
+  bodies.delete(oid);
+  bodyBytes -= held.length;
 }
 
 /** File `path`'s bytes, which must be blob `oid` (else Mismatch): through the file API, never git. */
@@ -707,6 +718,7 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
     ...(change?.absent ?? []).map((path) => `absent ${path}`),
     ...(change?.same ?? []).map(({ commit, path }) => `same ${commit} ${path}`),
     ...(change?.seed !== undefined ? [`seed ${change.seed}`] : []),
+    ...(change?.purged !== undefined ? [`purged ${change.purged}`] : []),
   ];
   const stream = importStream(ref, base?.main, writes, change?.deletes ?? [], messageOf(change?.by).message, seconds);
   const args = base ? ["commit", base.main, ...(run ? [run] : [])] : ["init"];
@@ -722,7 +734,7 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
     return { refused: { absent: lines.filter((line) => line.startsWith("absent ")).map((line) => line.slice(7)), same: lines.filter((line) => line.startsWith("same ")).map((line) => line.slice(5)), ...(seed !== undefined ? { seed } : {}) } };
   }
   if (result.code === 5 && /^[0-9a-f]{40,64}$/.test(said)) return { unaligned: true, main: said };
-  if (result.code === 6 && run && /^[0-9a-f]{40,64}$/.test(said)) return { merged: said };
+  if (result.code === 6 && (run || change?.purged !== undefined) && /^[0-9a-f]{40,64}$/.test(said)) return { merged: said };
   throw failed(args[0]!, result);
 }
 
