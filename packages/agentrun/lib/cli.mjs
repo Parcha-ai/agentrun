@@ -9,7 +9,7 @@
 // package folder) is export.mjs's, and deploy (an agent's package sent to another AgentRun, with its lock, rollback and
 // delete) is deploy.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
 import { spawn } from "node:child_process";
-import { accessSync, closeSync, constants, fstatSync, openSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir, constants as osConstants } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -533,11 +533,8 @@ async function local(entry, argv, env, io) {
 /** An external command's name: one plain word, so agentrun-NAME is a file in a folder of PATH, never a path below one. */
 const EXTERNAL_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
-/** The extensions Windows tries on a program's bare name: PATHEXT's entries (each `.WORD`), else its default. */
-const pathExtOf = (env) => {
-  const given = (env.PATHEXT ?? "").split(";").filter((ext) => /^\.[A-Za-z0-9]{1,16}$/.test(ext));
-  return given.length ? given : [".COM", ".EXE", ".BAT", ".CMD"];
-};
+/** The extensions a program has on Windows, tried in this order (.bat and .cmd to refuse them by name: external). */
+const WINDOWS_PROGRAMS = [".com", ".exe", ".bat", ".cmd"];
 
 const isFile = (file) => {
   try {
@@ -549,19 +546,18 @@ const isFile = (file) => {
 
 /** The program agentrun-NAME: the first regular file of that name this user may run, in PATH's folders in order. A
  *  relative or empty entry means the working directory, which any checkout can fill, so it is never searched. On
- *  Windows, which has no execute bit, it is agentrun-NAME with each extension of PATHEXT in turn, as git looks a command
- *  up there, matched in any case by the folder's own listing. `platform` is for the tests; the paths are this machine's. */
+ *  Windows, which has no execute bit, it is agentrun-NAME with .com, .exe, .bat or .cmd, in that order in each folder
+ *  (its file names match in any case there); PATHEXT is not read. `platform` is for the tests; the paths are this
+ *  machine's. */
 export function externalOf(name, env, platform = process.platform) {
   if (!EXTERNAL_NAME.test(name)) return undefined;
   const stem = `agentrun-${name}`;
-  const extensions = platform === "win32" ? pathExtOf(env).map((ext) => `${stem}${ext}`.toLowerCase()) : undefined;
   for (const dir of (env.PATH ?? "").split(delimiter)) {
     if (!isAbsolute(dir)) continue;
     try {
-      if (extensions) {
-        const named = new Map(readdirSync(dir).map((entry) => [entry.toLowerCase(), entry]));
-        const found = extensions.map((wanted) => named.get(wanted)).find((entry) => entry !== undefined && isFile(join(dir, entry)));
-        if (found !== undefined) return join(dir, found);
+      if (platform === "win32") {
+        const found = WINDOWS_PROGRAMS.map((ext) => join(dir, `${stem}${ext}`)).find(isFile);
+        if (found !== undefined) return found;
         continue;
       }
       const file = join(dir, stem);
@@ -590,13 +586,9 @@ export function external(file, args, env, io, platform = process.platform) {
   }
   return new Promise((resolve) => {
     let child;
-    try {
-      child = spawn(file, args, { stdio: "inherit", env, shell: false });
-    } catch (error) {
-      io.stderr.write(`Cannot run ${file} (${error.code ?? error.name}).\n`);
-      return resolve(126);
-    }
-    const pass = (signal) => child.kill(signal);
+    // The handlers are on before the command starts: it may print, and be sent a signal for it, before this process runs
+    // again after the spawn. A signal's handler runs only once this turn is over, so `child` is set by then.
+    const pass = (signal) => child?.kill(signal);
     const handlers = [["SIGINT", platform === "win32" ? () => {} : pass], ["SIGQUIT", pass], ["SIGTERM", pass], ["SIGHUP", pass]];
     for (const [signal, handler] of handlers) process.on(signal, handler);
     let done = false;
@@ -606,6 +598,12 @@ export function external(file, args, env, io, platform = process.platform) {
       for (const [signal, handler] of handlers) process.off(signal, handler);
       resolve(code);
     };
+    try {
+      child = spawn(file, args, { stdio: "inherit", env, shell: false });
+    } catch (error) {
+      io.stderr.write(`Cannot run ${file} (${error.code ?? error.name}).\n`);
+      return end(126);
+    }
     child.once("error", (error) => {
       io.stderr.write(`Cannot run ${file} (${error.code ?? error.name}).\n`);
       end(error.code === "ENOENT" ? 127 : 126);

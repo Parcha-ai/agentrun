@@ -197,7 +197,7 @@ import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
 import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
-import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
+import { deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
 import { templateInstallLink, templateLink, templatesLink } from "./console-links.js";
 import { GITHUB_HOSTS, IMPORT_LIMITS } from "./template-source.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, inputSchemaOf, isObject, type Json, stable, unknownFields } from "./validate.js";
@@ -4774,13 +4774,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteAgent": {
         // Another system's agent deleted whole; one made here purged once archived (agent-delete.ts). One delete of an agent
         // at a time, the agent read in its turn, so a DELETE after one that finished is 404 (deleted) or 204 (purged).
-        await deleteInTurn(id, async () => {
-          const { agent } = await needAgent(id);
-          if (agent.purgedAt !== null) return;
-          if (ownedElsewhere(agent)) return deleteExternalAgent(agentDeleteHost, id);
-          if (agent.archivedAt === null) throw new ApiError("agent_not_archived", `The agent ${id} is not archived: archive it first (POST /v2/agents/${id}/archive), which stops new runs and turns its triggers off, then send the DELETE again. Nothing was purged.`);
-          await purgeAgent(agentDeleteHost, id);
-        });
+        try {
+          await deleteInTurn(id, async () => {
+            const { agent } = await needAgent(id);
+            if (agent.purgedAt !== null) return;
+            if (ownedElsewhere(agent)) return deleteExternalAgent(agentDeleteHost, id);
+            if (agent.archivedAt === null) throw new ApiError("agent_not_archived", `The agent ${id} is not archived: archive it first (POST /v2/agents/${id}/archive), which stops new runs and turns its triggers off, then send the DELETE again. Nothing was purged.`);
+            await purgeAgent(agentDeleteHost, id);
+          });
+        } finally {
+          // An upload its purge took with it is no longer served: also after a purge that committed and then failed, and on
+          // the DELETE sent again. A store that cannot answer leaves it to the next DELETE, or the next start's load.
+          await dropRemovedUploads({ registry, store }).catch(() => undefined);
+        }
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
       }

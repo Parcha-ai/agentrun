@@ -2514,12 +2514,12 @@ export interface operations {
       sha256: string;
       report: {
         blocked: {
-          kind: string;
+          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
           name: string;
           reason: string;
         }[];
         remade: {
-          kind: string;
+          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
           name: string;
           reason: string;
         }[];
