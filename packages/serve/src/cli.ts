@@ -261,9 +261,9 @@ if (process.argv[2] === "install-harness") {
   }
 }
 
-// A person's own sign-in to a recipe's agent, by the agent itself in this terminal (harness-sign-in.ts): its address
-// printed by the agent, its redirect landing on the agent. 0 once its sign-in folder holds something, 1 when it did not
-// sign in (its code), 2 for usage. No key is read. `agentrun harness sign-in` runs it.
+// The owner's own sign-in to a recipe's agent, by the agent itself on this terminal (harness-sign-in.ts): the agent prints
+// the address and reads the code, this terminal its stdin, stdout and stderr. 0 once the agent's sign-in exits 0, 1 when
+// it did not sign in (its code), 2 for usage. No key is read. `agentrun harness sign-in` runs it.
 if (process.argv[2] === "sign-in-harness") {
   const usage = (message: string): never => (console.error(`agentrun-serve sign-in-harness: ${message}\n\n${USAGE}`), process.exit(2));
   const read = () => {
@@ -282,7 +282,7 @@ if (process.argv[2] === "sign-in-harness") {
     console.error(done.message);
     process.exit(1);
   }
-  console.log(`Signed in: the agent keeps its sign-in in ${done.home}, for runs you start and attend; every other run, harness-check's among them, runs on the recipe's keys.`);
+  console.log(`Signed in: the agent keeps its sign-in in ${done.home}, and runs on it on this server when the recipe's keys are not set. AgentRun never reads it.`);
   process.exit(0);
 }
 

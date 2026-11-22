@@ -29,10 +29,8 @@ export interface AgentProcessOptions {
   parentWatch?: ParentWatch;
   /** The key values in `env` (the recipe's keys): cut from its stderr before the tail is shortened. */
   keys?: readonly string[];
-  /** `tail` (default): its stderr's tail is kept for a failure's words. `none`: its stderr goes nowhere, never read.
-   *  `inherit`: its stderr is this process's own, never read (an attended sign-in in its owner's terminal, where the agent
-   *  itself prints where to sign in). */
-  stderr?: "tail" | "none" | "inherit";
+  /** `tail` (default): its stderr's tail is kept for a failure's words. `none`: its stderr goes nowhere, never read. */
+  stderr?: "tail" | "none";
   signal: AbortSignal;
   /** Each session/update the agent sends, in the order it sent them. */
   onUpdate(update: SessionNotification): void;
@@ -54,8 +52,8 @@ export interface AgentProcess {
 /** Start the agent and open the client connection over its stdio. */
 export function startAgent(options: AgentProcessOptions): AgentProcess {
   const run = confined(parentWatched({ command: options.command, args: [...options.args] }, options.parentWatch), options.confine);
-  const quiet = options.stderr === "none" || options.stderr === "inherit";
-  const errTo = options.stderr === "none" ? "ignore" : options.stderr === "inherit" ? "inherit" : "pipe";
+  const quiet = options.stderr === "none";
+  const errTo = quiet ? "ignore" : "pipe";
   const child = spawn(run.command, run.args, { cwd: options.cwd, env: childEnv(options.from ?? process.env, options.env), detached: true, stdio: ["pipe", "pipe", errTo] });
   // What it printed, raw, kept a key's length beyond the tail: a key split across chunks, or across the tail's start, is
   // still whole here, and cut whole (stderrTail). `cut`: whether its start was ever dropped.
