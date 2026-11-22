@@ -107,9 +107,12 @@ async function twoDisks(t, settings) {
 test("a runner apart from its server's disk with no code.storage set runs a learning agent's run at once with nothing learned: no seed or # Learned section laid, no compile turn, nothing written; its learning names the settings", async (t) => {
   const { serverData, runnerData, learning } = await twoDisks(t);
   const before = await learning.head();
-  // The runner's start (learningStoreFromEnv, apart, no code.storage settings).
-  learningStoreFromEnv(runnerData, {}, async () => "srv1", { apart: true, key: () => undefined });
+  // The runner's start (learningStoreFromEnv, apart, no code.storage settings): its log names the two settings, once.
+  const warned = [];
+  learningStoreFromEnv(runnerData, {}, async () => "srv1", { apart: true, key: () => undefined, warn: (line) => warned.push(line) });
   assert.equal(learningApart(runnerData), true);
+  assert.equal(warned.length, 1, JSON.stringify(warned));
+  assert.match(warned[0], /its runs run with nothing learned: .*AGENTRUN_CODE_STORAGE_NAME and AGENTRUN_CODE_STORAGE_KEY/);
   const out = await runApart(t, { serverData, runnerData });
   assert.equal(out.row.state, "ended");
   assert.ok(out.row.error == null, `the run itself is never refused: ${JSON.stringify(out.row)}`);
@@ -123,7 +126,7 @@ test("a runner apart from its server's disk with no code.storage set runs a lear
   assert.equal(out.proposal?.state, "dropped", JSON.stringify(out.proposal));
   assert.equal(out.proposal.reason, "seed_failed");
   assert.match(out.proposal.detail, /data directory is not the server's/);
-  assert.match(out.proposal.detail, /AGENTRUN_CODE_STORAGE_NAME and AGENTRUN_CODE_STORAGE_KEY/);
+  assert.match(out.proposal.detail, /Set code\.storage's name and key on the server and on its runners/, "in a person's words, naming the settings");
 });
 
 test("with code.storage set, a runner apart from its server's disk uses the one remote store: its run is laid what the server learned, learns, and the server reads the merge", async (t) => {

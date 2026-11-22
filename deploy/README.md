@@ -320,8 +320,8 @@ An agent's learning is in the server's local folder unless the server and its ru
 (`AGENTRUN_CODE_STORAGE_NAME` and `AGENTRUN_CODE_STORAGE_KEY` set on both; [learning](../packages/serve/README.md)).
 A runner on a disk of its own without them runs its runs at once but learns nothing: a learning agent's run is laid no
 seed (no `# Learned` section, no learned workflow), asks no compile turn and writes nothing at its end, and its learning
-reads `seed_failed`, saying the runner can't reach the server's learning and naming the two settings. With them, every
-runner learns into the one code.storage store.
+reads `seed_failed`, saying the runner can't reach the server's learning; the runner's start says so on its log, naming
+the two settings. With them, every runner learns into the one code.storage store.
 
 ### The runner's environment: `runner --check`
 

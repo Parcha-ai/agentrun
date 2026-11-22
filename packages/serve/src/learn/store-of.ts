@@ -91,9 +91,11 @@ function refusedStore(agentId: string, words: string): LearningStore {
 /** Data directory `data`'s learning as a start sets it from `env` (codeStorageFromEnv, its key read by `key`): on
  *  code.storage, its server id read once from `store` when first asked (archil-settings.ts serverIdOf); refused for a
  *  runner `apart` from its server's disk with no code.storage settings (LEARNING_APART); else in the local folder.
- *  `warn`: where a key set without the name is said. */
+ *  `warn`: where a key set without the name is said, and a runner apart's refusal, naming the settings, once at its
+ *  start (each run's learning says it in a person's words, learning-words.ts STOPPED.apart). */
 export function learningStoreFromEnv(data: string, env: NodeJS.ProcessEnv, serverId: () => Promise<string>, { apart = false, key = secret, warn }: { apart?: boolean; key?: (name: string) => string | undefined; warn?: (message: string) => void } = {}): void {
   const settings = codeStorageFromEnv(env, key, warn);
+  if (!settings && apart) warn?.(`its runs run with nothing learned: ${LEARNING_APART}`);
   let id: Promise<string> | undefined;
   useLearningStore(data, settings ? { ...settings, serverId: () => (id ??= serverId()) } : apart ? { refused: LEARNING_APART } : undefined);
 }
