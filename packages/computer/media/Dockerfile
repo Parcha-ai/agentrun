@@ -18,6 +18,7 @@
 # the image has it, else Chromium) unless the caller names one in HYPERFRAMES_BROWSER_PATH: HyperFrames would otherwise
 # try to download its pinned shell, which a box with no network cannot. The script also turns off HyperFrames' usage
 # reports and its update check unless the caller turns them on: a box with a network sends nothing of its work home.
+# And it gives HyperFrames a font cache in HOME whose compression folder links to the fonts compressed at build (below).
 FROM python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
 
 # The default image's tools (but its nodejs and npm, which Node's tarball brings), then Chromium, FFmpeg and the fonts.
@@ -67,8 +68,27 @@ RUN npm install --global --ignore-scripts --before=2026-11-21T20:42:00Z hyperfra
     'fi' \
     'export HYPERFRAMES_NO_TELEMETRY="${HYPERFRAMES_NO_TELEMETRY:-1}"' \
     'export HYPERFRAMES_NO_UPDATE_CHECK="${HYPERFRAMES_NO_UPDATE_CHECK:-1}"' \
+    'if [ -z "${HYPERFRAMES_FONT_CACHE_DIR:-}" ]; then' \
+    '  HYPERFRAMES_FONT_CACHE_DIR="${HOME:-/tmp}/.cache/hyperframes/fonts"' \
+    '  mkdir -p "$HYPERFRAMES_FONT_CACHE_DIR" 2>/dev/null && [ ! -e "$HYPERFRAMES_FONT_CACHE_DIR/local-compression-v1" ] && ln -s /usr/local/share/hyperframes/fonts/local-compression-v1 "$HYPERFRAMES_FONT_CACHE_DIR/local-compression-v1" 2>/dev/null' \
+    '  export HYPERFRAMES_FONT_CACHE_DIR' \
+    'fi' \
     'exec node /usr/local/lib/node_modules/hyperframes/bin/hyperframes.mjs "$@"' \
     > /usr/local/bin/hyperframes \
  && chmod 755 /usr/local/bin/hyperframes \
  && ln -s /usr/bin/chromium /usr/local/bin/chrome \
  && hyperframes --version
+
+# Each of the image's fonts compressed once, here, as HyperFrames compresses a system font it embeds when it can't fetch
+# the family from Google Fonts: with no network that is every render, and Noto Color Emoji alone takes about a minute of
+# CPU, since a box's own cache starts empty. HyperFrames' own fontToDataUri writes each here under HyperFrames' key, and
+# the script links the compression folder of the font cache it names in HOME to this one, so a render finds them while
+# its Google Fonts cache stays writable; a font it can't compress is said and left, as a render would embed it raw. The
+# faces of the CJK collections are not compressed here: about 90 s each, forty of them, reached only by a face's own name.
+RUN set -eu; \
+    chunk="$(grep -l 'async function fontToDataUri' /usr/local/lib/node_modules/hyperframes/dist/*.js)"; \
+    test "$(printf '%s\n' "$chunk" | wc -l)" -eq 1; \
+    find /usr/share/fonts -type f \( -name '*.ttf' -o -name '*.otf' \) -print0 | sort -z \
+    | HF_CHUNK="$chunk" xargs -0 -P "$(nproc)" -n 4 node --input-type=module -e 'const { fontToDataUri } = await import(process.env.HF_CHUNK); const { readFileSync } = await import("node:fs"); for (const path of process.argv.slice(1)) { const uri = await fontToDataUri(readFileSync(path), path.endsWith(".otf") ? "otf" : "ttf", { cacheDir: "/usr/local/share/hyperframes/fonts/local-compression-v1" }); if (!uri.startsWith("data:font/woff2;")) console.log(`left raw: ${path}`); }'; \
+    echo "$(ls /usr/local/share/hyperframes/fonts/local-compression-v1 | wc -l) fonts compressed"; \
+    chmod -R a+rX /usr/local/share/hyperframes
