@@ -246,10 +246,11 @@ test("a purge puts back the version another run wrote before the purged run's he
 });
 
 // The purged run's revision was the champion: `first` wrote `answer` v1, promoted; `gone` revised it to v2, promoted
-// after it. The purge puts v1 back on main. The champion record still names v2 at `gone`'s merge, a commit every read
-// refuses (purgeGate): the champion read reads no commit, no run is served v2 and none is served v1 either (it is not
-// the champion), so the agent takes the run, as when a champion can't be read. No byte of `gone`'s text reaches a read, a run or a compile ask.
-test("a purge of the champion's run puts back the version before it and serves none of the purged text: the agent takes the run", { timeout: 300_000 }, async (t) => {
+// after it. The purge puts v1 back on main. The champion record still names v2 at `gone`'s merge, a commit the purge
+// gate refuses (purgeGate), so championOf skips it: the newest promotion the gate lets through, v1's, is the champion
+// again. The promotions read names v1's commit, a run that fits it is served v1, and no byte of `gone`'s text reaches a
+// read, a run or a compile ask. A revision another run promotes after the purge wins over v1, as any newer one does.
+test("a purge of the champion's run puts back the version before it, and the earlier champion serves again: none of the purged text is served, and a later promotion still wins", { timeout: 300_000 }, async (t) => {
   const mark = `PURGED-CHAMPION-${randomBytes(6).toString("hex")}`;
   const { api, data, store } = await serve(t, { learning: "on" });
   const first = (await startRun(api, "crowned", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
@@ -258,6 +259,8 @@ test("a purge of the champion's run puts back the version before it and serves n
   await ended(api, gone);
   const q = await started(api, "crowned", "What is four?");
   await ended(api, q);
+  const later = await started(api, "crowned", "What is five?");
+  await ended(api, later);
 
   const path = "workflows/answer/workflow.json";
   const [v1, v2] = [answerAt("in whole numbers"), answerAt(mark)];
@@ -286,7 +289,14 @@ test("a purge of the champion's run puts back the version before it and serves n
   assert.deepEqual(await reads("What is six times seven?"), { holds: true, champion: crowned, served: digestOf(v2[path]) }, "before the purge, v2 is the champion and serves");
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
   assert.deepEqual(onMain(data, "crowned").files, v1, "main holds answer v1 again, both files as `first` wrote them");
-  assert.deepEqual(await reads("What is seven times six?"), { holds: false, champion: null, served: null }, "no read, run or compile ask holds v2; the champion read reads no commit for v2's record, so the agent takes the run");
+  assert.deepEqual(await reads("What is seven times six?"), { holds: false, champion: kept, served: digestOf(v1[path]) }, "no read, run or compile ask holds v2; the champion read names v1's commit, and a run that fits it is served v1");
+
+  // A revision `later` promotes after the purge is the champion over v1.
+  const v3 = answerAt("in tens");
+  const promoted = await learned(data, "crowned", (ws) => learningCommit(ws, { runId: later, reason: "It revised answer.", files: filesOf("in tens") }));
+  const { items } = await store.settings.get("learning.promotions.crowned");
+  await store.settings.put("learning.promotions.crowned", { v: 1, items: [...items, { workflow: "answer", digest: digestOf(v3[path]), at, decided: "promote", reason: "checked: promoted", commit: promoted }] });
+  assert.deepEqual(await reads("What is six times six?"), { holds: false, champion: promoted, served: digestOf(v3[path]) }, "a revision promoted after the purge is the champion and serves, not v1");
 });
 
 // The writer rule follows the bytes over runs that end cheaply (no runner): (c) a workflow the purged run wrote new

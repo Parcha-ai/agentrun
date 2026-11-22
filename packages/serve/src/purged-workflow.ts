@@ -3,8 +3,10 @@
 // (learn/commit.ts forgetRunText), and every read of the folder at a commit asks purgeGate, so a purged run's text is
 // never served or executed and none of its merges is shown.
 import { ApiError } from "./errors.js";
-import type { SnapChange, Snapshot } from "./learn/folder.js";
+import { type SnapChange, type Snapshot, snapshotAt } from "./learn/folder.js";
+import { championOf, type PromotionRecord, type Refused } from "./learn/promote.js";
 import type { RunRow, Store } from "./store/index.js";
+import type { Workspace } from "./workspace/index.js";
 
 const isoOrNull = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
 /** 410 purged for a route of a purged run (Runs.purge): its tombstone, what is kept of it. `tools_usd`: its paid tools'
@@ -46,4 +48,23 @@ export async function purgeGate(snapshot: Snapshot | undefined, store: Pick<Stor
       return !("run" in by && purged.has(by.run));
     },
   };
+}
+
+/** The promotion records of `workflows` that championOf skips (learn/promote.ts Refused), read through purgeGate at
+ *  each record's commit of the learning folder at `ws`: newest champion first, one the gate refuses at its commit (a
+ *  purged run wrote its workflow there) is skipped with every record of its workflow at that commit, until championOf
+ *  names one the gate lets through, or none is left. A commit that can't be read refuses none (reading its text fails on
+ *  its own); a record with no commit is let through. One read-only exec per commit asked. */
+export async function refusedOf(records: readonly PromotionRecord[], workflows: Iterable<string>, ws: Workspace, store: Pick<Store, "runs">): Promise<Refused> {
+  const refused = new Set<PromotionRecord>();
+  const skip: Refused = (one) => refused.has(one);
+  const reads = new Map<string, Promise<ReadonlyMap<string, RunRow>>>();
+  const gated = (commit: string) => reads.get(commit) ?? reads.set(commit, snapshotAt(ws, commit).catch(() => undefined).then(async (at) => (await purgeGate(at, store)).workflows)).get(commit)!;
+  for (const workflow of new Set(workflows)) {
+    for (let champion = championOf(records, workflow, skip); champion?.commit && !refused.has(champion) && (await gated(champion.commit)).has(workflow); champion = championOf(records, workflow, skip)) {
+      const { commit } = champion;
+      for (const one of records) if (one.workflow === workflow && one.commit === commit) refused.add(one);
+    }
+  }
+  return skip;
 }

@@ -59,7 +59,8 @@ import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayC
 import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset } from "../learn/compile.js";
-import { type CheckBar, type CheckDisagreement, type CheckRecord, type CheckTurns, checkPasses, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf } from "../learn/promote.js";
+import { type CheckBar, type CheckDisagreement, type CheckRecord, type CheckTurns, checkPasses, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type Refused, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf } from "../learn/promote.js";
+import { refusedOf } from "../purged-workflow.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
@@ -95,9 +96,12 @@ export interface PromotionDeps {
   readonly context: Context;
   readonly log: (line: string) => void;
   /** The learned workflow `name` as the learning folder held it active at `commit` (a champion's text), or undefined when
-   *  it held none by that name, or a purged run wrote it (learning.ts seedAt): a purged champion is no champion's text,
-   *  and the agent takes the run. Absent: no champion serves. */
+   *  it held none by that name, or a purged run wrote it (learning.ts seedAt): a purged run's text is never served (the
+   *  champion skips it first, `refused`). Absent: no champion serves. */
   readonly champion?: (name: string, commit: string) => Promise<LearnedWorkflow | undefined>;
+  /** The records of `workflow` championOf skips (purged-workflow.ts refusedOf over the learning folder): a champion the
+   *  purge gate refuses at its commit, so the newest promotion it lets through serves. Absent: none skipped. */
+  readonly refused?: (records: readonly PromotionRecord[], workflow: string) => Promise<Refused>;
   /** The digest of the learned workflow `name` the learning folder's main holds now (the newest revision), or undefined
    *  when it holds none by that name. Absent: every revision is the newest. */
   readonly newest?: (name: string) => Promise<string | undefined>;
@@ -126,6 +130,14 @@ export function claimPromotion(deps: Omit<PromotionDeps, "champion" | "kept"> & 
     ...deps,
     kept: async () => (deps.runId ? servedOf(await runEntries(deps.store, deps.runId, deps.context).catch(() => [])) : undefined),
     champion: async (name, commit) => (await workflowsAt({ folder: deps.folder, store: deps.store, shown: deps.shown }, commit)).find((one) => one.name === name),
+    refused: async (records, workflow) => {
+      const folder = deps.folder();
+      try {
+        return await refusedOf(records, [workflow], folder.workspace, deps.store);
+      } finally {
+        await folder.end().catch(() => undefined);
+      }
+    },
     newest: async (name) => {
       const folder = deps.folder();
       let main: string | undefined;
@@ -170,7 +182,7 @@ export function replayLaid(launch: RunLaunch, laid: readonly LearnedWorkflow[]):
  *  promoted yet, or the champion held): a revision replaying, held or never decided is never handed to the agent to run
  *  in its place. One the records never named is an unchecked draft and is not offered. A replay run's as
  *  laid (replayLaid). The records unread: only the chosen one, as the gate leaves a run to its agent. */
-export async function toolFlowsFor(deps: Pick<PromotionDeps, "store" | "agentId" | "champion" | "log">, launch: RunLaunch, laid: readonly LearnedWorkflow[], choice: FirstChoice): Promise<LearnedWorkflow[]> {
+export async function toolFlowsFor(deps: Pick<PromotionDeps, "store" | "agentId" | "champion" | "refused" | "log">, launch: RunLaunch, laid: readonly LearnedWorkflow[], choice: FirstChoice): Promise<LearnedWorkflow[]> {
   const chosen = laidFor(laid, choice);
   if (launch.replay || !chosen.length) return chosen;
   const name = choice.serve?.name ?? choice.revise?.workflow;
@@ -188,7 +200,7 @@ export async function toolFlowsFor(deps: Pick<PromotionDeps, "store" | "agentId"
       continue;
     }
     const digest = workflowDigest(one);
-    const { champion, text } = await championTextOf(records, one, deps.champion);
+    const { champion, text } = await championTextOf(records, one, deps.champion, deps.refused);
     if (text === one) out.push(one);
     else if (text) {
       deps.log(`workflow-first: the learned_workflow tool runs ${one.name}'s champion at ${champion!.digest}, not ${digest}, which is not promoted`);
@@ -200,10 +212,11 @@ export async function toolFlowsFor(deps: Pick<PromotionDeps, "store" | "agentId"
 
 /** `flow`'s champion (championOf) and the text it serves from: `flow` itself when it is the champion, else the
  *  champion's text read at its record's commit (`read`), kept only when its digest is the champion's. No text: none is
- *  promoted, or its text cannot be read. The one champion lookup a claim's gate (servingNow), the learned_workflow tool
- *  (toolFlowsFor) and a connected agent's start (sdk/runs.ts) share. */
-export async function championTextOf(records: readonly PromotionRecord[], flow: LearnedWorkflow, read?: (name: string, commit: string) => Promise<LearnedWorkflow | undefined>): Promise<{ champion?: PromotionRecord; text?: LearnedWorkflow }> {
-  const champion = championOf(records, flow.name);
+ *  promoted, or its text cannot be read. The champion skips what `refused` says the purge gate refuses (PromotionDeps
+ *  refused), so after a purge of its run the newest promotion the gate lets through serves. The one champion lookup a
+ *  claim's gate (servingNow), the learned_workflow tool (toolFlowsFor) and a connected agent's start (sdk/runs.ts) share. */
+export async function championTextOf(records: readonly PromotionRecord[], flow: LearnedWorkflow, read?: (name: string, commit: string) => Promise<LearnedWorkflow | undefined>, refused?: PromotionDeps["refused"]): Promise<{ champion?: PromotionRecord; text?: LearnedWorkflow }> {
+  const champion = championOf(records, flow.name, refused ? await refused(records, flow.name) : undefined);
   if (!champion) return {};
   if (champion.digest === workflowDigest(flow)) return { champion, text: flow };
   const text = champion.commit && read ? await read(flow.name, champion.commit).catch(() => undefined) : undefined;
@@ -256,7 +269,7 @@ export const promotionGate = (deps: PromotionDeps): Promoted => {
  *  serves: none promoted, the champion held, or its text cannot be read (the agent takes the run). */
 async function servingNow(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, laid: boolean): Promise<Serving | undefined> {
   const records = await promotionsOf(deps.store.settings, deps.agentId);
-  const { champion, text } = await championTextOf(records, workflow, deps.champion);
+  const { champion, text } = await championTextOf(records, workflow, deps.champion, deps.refused);
   const own = promotionOf(records, workflow.name, digest);
   if (!champion) {
     if (own?.decided === "promote") deps.log(`workflow-first: ${workflow.name} at ${digest} was promoted, but the revision promoted after it is held; no revision serves, the agent takes this run`);

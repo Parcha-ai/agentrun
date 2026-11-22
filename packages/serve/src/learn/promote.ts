@@ -396,12 +396,20 @@ export const promotionOf = (records: readonly PromotionRecord[], workflow: strin
 /** The champion of `workflow`: the newest record of the digest promoted last, while that digest's newest record still
  *  says promote. A newer revision replaying or held never stops it; it stops when a newer revision's check promotes that
  *  one (then the champion), or when its own newest record is a hold (a held revision its owner replays, askReplay, that
- *  promotes wins again). The money rule stops it on its own (runner/workflow-first.ts). Undefined: none. */
-export function championOf(records: readonly PromotionRecord[], workflow: string): PromotionRecord | undefined {
-  const last = lastPromotedOf(records, workflow);
-  const now = last === undefined ? undefined : promotionOf(records, workflow, last);
+ *  promotes wins again). The money rule stops it on its own (runner/workflow-first.ts). A record `refused` names is
+ *  skipped, as if absent: one whose commit holds its workflow as a purged run wrote it (purged-workflow.ts refusedOf), so
+ *  after a purge of the champion's run the newest promotion the purge gate lets through serves again. Undefined: none. */
+export function championOf(records: readonly PromotionRecord[], workflow: string, refused: Refused = NONE_REFUSED): PromotionRecord | undefined {
+  const kept = records.filter((one) => one.workflow === workflow && !refused(one));
+  const last = lastPromotedOf(kept, workflow);
+  const now = last === undefined ? undefined : promotionOf(kept, workflow, last);
   return now?.decided === "promote" ? now : undefined;
 }
+
+/** The promotion records championOf skips (purged-workflow.ts refusedOf: the purge gate refuses each at its commit). A
+ *  reader that serves or names the champion passes it; one that only keeps records (the trim) passes none. */
+export type Refused = (record: PromotionRecord) => boolean;
+const NONE_REFUSED: Refused = () => false;
 
 /** The newest promotion of `workflow` at `digest`: the promote record that began its newest run of promote records (its
  *  first, or the first after a record of that digest that was not promote: an owner's replay that promoted a held
@@ -437,11 +445,11 @@ export function replayingOf(records: readonly PromotionRecord[], workflow: strin
 
 /** What each learned workflow with a record serves, by name: `digest`, its champion's (championOf; null: none serves,
  *  the agent takes its runs), and `replaying`, the revision other than it whose check is at work (null: none). What the
- *  promotions list says beside the records (GET /agents/{id}/learning/promotions). */
-export function servingOf(records: readonly PromotionRecord[]): { workflow: string; digest: string | null; replaying: string | null }[] {
+ *  promotions list says beside the records (GET /agents/{id}/learning/promotions), its champion skipping `refused`. */
+export function servingOf(records: readonly PromotionRecord[], refused?: Refused): { workflow: string; digest: string | null; replaying: string | null }[] {
   const names = [...new Set(records.map((one) => one.workflow))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   return names.map((workflow) => {
-    const digest = championOf(records, workflow)?.digest ?? null;
+    const digest = championOf(records, workflow, refused)?.digest ?? null;
     return { workflow, digest, replaying: replayingOf(records, workflow, digest)[0]?.digest ?? null };
   });
 }
@@ -457,10 +465,10 @@ export type ServingState = "serving" | "checking" | "held" | "stopped";
 /** Whether the money rule stops `workflow` at `digest` from running first: runner/workflow-first.ts costStopOf over the
  *  agent's runs, the decision a run's claim reads (workflowFirstOf). */
 export type CostStop = (workflow: string, digest: string) => boolean;
-export function servingStateOf(records: readonly PromotionRecord[], workflow: string, costStop: CostStop): ServingState {
+export function servingStateOf(records: readonly PromotionRecord[], workflow: string, costStop: CostStop, refused?: Refused): ServingState {
   const newest = records.findLast((one) => one.workflow === workflow);
   if (newest === undefined || newest.decided === "replaying") return "checking";
-  const champion = championOf(records, workflow);
+  const champion = championOf(records, workflow, refused);
   if (champion) return costStop(workflow, champion.digest) ? "stopped" : "serving";
   return newest.decided === "hold" && (newest.check?.stopped || newest.audit?.stopped) ? "stopped" : "held";
 }
@@ -469,9 +477,9 @@ export function servingStateOf(records: readonly PromotionRecord[], workflow: st
  *  text in them cut by `shown` (learning.ts secretsShown, as the other learning reads cut theirs), at any depth and under
  *  any field, so a field added later is cut too: a workflow's name whole (`shown.name`), any other text of its part
  *  (`shown.text`: a reason, a digest, a run id). Numbers and the rest as they are. A replaying record's `launch` (a run
- *  launch: its notes, model and plane) never leaves: aggregates only. */
-export function promotionsShown(records: readonly PromotionRecord[], shown: { readonly text: (text: string) => string; readonly name: (name: string) => string }): { promotions: PromotionRecord[]; serving: ReturnType<typeof servingOf> } {
-  return { promotions: records.map(({ launch: _, ...one }) => shownDeep(one, shown) as PromotionRecord), serving: servingOf(records).map((one) => shownDeep(one, shown) as ReturnType<typeof servingOf>[number]) };
+ *  launch: its notes, model and plane) never leaves: aggregates only. Its champions skip `refused` (championOf). */
+export function promotionsShown(records: readonly PromotionRecord[], shown: { readonly text: (text: string) => string; readonly name: (name: string) => string }, refused?: Refused): { promotions: PromotionRecord[]; serving: ReturnType<typeof servingOf> } {
+  return { promotions: records.map(({ launch: _, ...one }) => shownDeep(one, shown) as PromotionRecord), serving: servingOf(records, refused).map((one) => shownDeep(one, shown) as ReturnType<typeof servingOf>[number]) };
 }
 
 /** `value` cut as the promotions read cuts its records (promotionsShown), at any depth and under any field: a workflow's

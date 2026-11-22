@@ -19,12 +19,12 @@ import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
 import { snapshotAt } from "../learn/folder.js";
-import { purgedRun, purgeGate } from "../purged-workflow.js";
+import { purgedRun, purgeGate, refusedOf } from "../purged-workflow.js";
 import type { RunRow } from "../store/index.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 import type { SdkWorkflowCheckEvent } from "./check.js";
-import { promotionOf, promotionsOf, resetAtOf } from "../learn/promote.js";
+import { promotionOf, type PromotionRecord, promotionsOf, resetAtOf } from "../learn/promote.js";
 import { championTextOf, releaseSdkCheck, reserveSdkCheck, type SdkWorkflowCheck } from "../runner/promotion.js";
 import { sdkTakes, workflowDigest } from "../runner/workflow-first.js";
 
@@ -457,8 +457,10 @@ export class SdkRuns {
       const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [], commits: Record<string, string> = {};
       const atCommit = async (name: string, commit: string) =>
         chooseWorkflows(await seedAt(folder.workspace, commit, this.store), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
+      // The champion skips a record the purge gate refuses at its commit (purged-workflow.ts refusedOf), as a claim's does.
+      const refused = (all: readonly PromotionRecord[], name: string) => refusedOf(all, [name], folder.workspace, this.store);
       for (const flow of flows) {
-        const { text: serving, champion } = await championTextOf(records, flow, atCommit);
+        const { text: serving, champion } = await championTextOf(records, flow, atCommit, refused);
         if (serving && compatible(serving)) {
           workflows.push(serving);
           commits[serving.name] = serving === flow ? seed.sha! : champion!.commit!;

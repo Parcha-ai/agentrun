@@ -38,7 +38,8 @@ import { isObject, type Json } from "../validate.js";
 import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
 import { lastRunsOf, sinceReset } from "../learn/compile.js";
 import { readLearning, writeLearning, type LearningFolder } from "../learn/folder.js";
-import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
+import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, type Refused, servingOf } from "../learn/promote.js";
+import { refusedOf } from "../purged-workflow.js";
 import { excerptShown } from "../learn/secrets.js";
 import type { Shown } from "../learning.js";
 import { auditRoomOf } from "./learning-end.js";
@@ -356,12 +357,21 @@ async function addLines(deps: AuditDeps, lines: readonly LedgerLine[], agreed?: 
   }
 }
 
-/** The hold rule over the ledger's rows `all` for each workflow that serves now (its champion's digest), whether or not
- *  a row was just added: idempotent (applyHold holds only a digest whose newest record still promotes it). */
+/** The hold rule over the ledger's rows `all` for each workflow that serves now (its champion's digest, skipping a
+ *  record the purge gate refuses as a claim's does: purged-workflow.ts refusedOf), whether or not a row was just added:
+ *  idempotent (applyHold holds only a digest whose newest record still promotes it). */
 async function holdByLedger(deps: AuditDeps, all: readonly AuditRow[]): Promise<void> {
   if (!all.length) return;
   const loop = await auditLoopOfRevision(deps.store, deps.revisionId);
-  for (const { workflow, digest } of servingOf(await promotionsOf(deps.store.settings, deps.agentId))) {
+  const records = await promotionsOf(deps.store.settings, deps.agentId);
+  const folder = deps.folder();
+  let refused: Refused;
+  try {
+    refused = await refusedOf(records, records.map((one) => one.workflow), folder.workspace, deps.store);
+  } finally {
+    await folder.end().catch(() => undefined);
+  }
+  for (const { workflow, digest } of servingOf(records, refused)) {
     if (digest !== null) await applyHold(deps, all, loop, workflow, digest);
   }
 }
