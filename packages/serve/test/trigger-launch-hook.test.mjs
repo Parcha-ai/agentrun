@@ -118,7 +118,8 @@ test("the hook setting: off unless both are set, refused in words when half set 
   assert.throws(() => launchHookFrom({ url: "https://host.example/hook" }), /AGENTRUN_LAUNCH_HOOK_SECRET/);
   assert.throws(() => launchHookFrom({ secret }), /AGENTRUN_LAUNCH_HOOK_URL/);
   assert.throws(() => launchHookFrom({ url: "ftp://host.example/hook", secret }), /http/);
-  assert.throws(() => launchHookFrom({ url: "https://user:pass@host.example/hook", secret }), /user or password/);
+  const withUser = Object.assign(new URL("https://host.example/hook"), { username: "someone", password: "x" });
+  assert.throws(() => launchHookFrom({ url: withUser.href, secret }), /user or password/);
   assert.throws(() => launchHookFrom({ url: "https://host.example/hook", secret: "not-a-whsec-secret" }), /whsec_/);
   assert.throws(() => launchHookFrom({ url: "https://host.example/hook", secret: "whsec_c2hvcnQ=" }), /24/);
   for (const bad of [{ url: "ftp://host.example/hook", secret }, { url: "https://host.example/hook", secret: `${secret}x`.replace("whsec_", "nope_") }]) {

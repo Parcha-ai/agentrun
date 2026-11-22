@@ -100,6 +100,9 @@ for n in $names; do
     AGENTRUN_TOKENS) value="custody:$canary-tokens-0123456789abcdef0123456789" ;;
     AGENTRUN_SEAL_KEY) [ -n "$seal" ] || continue; value=$seal ;;
     AGENTRUN_STORE_URL) [ -n "$store" ] || continue; value=$store ;;
+    # A whsec_ secret the server takes (a 32-byte key: 43 base64url characters) that still holds its canary, and the hook's
+    # URL it needs beside it (a port nothing answers: no trigger fires here).
+    AGENTRUN_LAUNCH_HOOK_SECRET) value="whsec_$(printf '%-43s' "$canary-$i" | tr ' ' k)"; secrets="$secrets -e AGENTRUN_LAUNCH_HOOK_URL=http://127.0.0.1:9/firings" ;;
     *) value="$canary-$i" ;;
   esac
   secrets="$secrets -e $n=$value"
