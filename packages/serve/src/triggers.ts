@@ -31,7 +31,7 @@ import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
 import { carriesPrevious, type Clock, PAYLOAD_KEPT_BYTES, type PollResult, second, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
-import { handToHost, type HookFiring, type LaunchHook } from "./trigger-launch-hook.js";
+import { handToHost, type HookFiring, LAUNCH_HOOK_LATE_START_MS, type LaunchHook } from "./trigger-launch-hook.js";
 import { MAX_EVERY_S } from "./trigger-schedule.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
 
@@ -1135,8 +1135,9 @@ export class Triggers {
 
   /** A start_run firing handed to the host by the launch hook, never started here. The run the host started for it
    *  (handedStart: under the firing's key) makes it started, as a run started here would, whatever the hook answered;
-   *  else a 2xx makes it sent, with no run, and any other answer or none skipped with why. The server's stop leaves it
-   *  due, so the next start hands it again under the same webhook-id (or finds the run the host started). */
+   *  else a 2xx makes it sent, with no run (its attrs kept for a run the host starts late: handedRan), and any other
+   *  answer or none skipped with why. The server's stop leaves it due, so the next start hands it again under the same
+   *  webhook-id (or finds the run the host started). */
   private async handed(trigger: Trigger, firing: FiringRow, hook: LaunchHook): Promise<void> {
     if (trigger.target.kind !== "start_run") return;
     const agentId = trigger.target.agent_id;
@@ -1154,14 +1155,20 @@ export class Triggers {
       this.deps.say({ condition: "trigger_hook_skipped", trigger: trigger.id, firing: firing.key });
       return;
     }
-    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", reason: HANDED_NO_RUN }, { reset: true });
+    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", reason: HANDED_NO_RUN, keepAttrs: true }, { reset: true });
+    // The host may start the run right after its answer: one it started between the read above and this write found the
+    // firing still due (handedRan left it), so it is read again here.
+    const after = await this.deps.runOf(firing.key);
+    if (this.closed) return;
+    if (after) return void (await this.started(trigger.id, firing.key, after.run_id));
     this.deps.say({ condition: "trigger_handed", trigger: trigger.id, firing: firing.key });
   }
 
   /** The run the host starts through the API for a firing the launch hook handed it (RunCreate `trigger_firing`): the
    *  firing's key (the run's origin key, so the firing finds it), and the trigger, input origin and title its own start
    *  would give the run; or the run already started under that key. Refused, in words, unless this server has the hook and
-   *  the firing is a due one of a start_run trigger on `agentId`. */
+   *  the firing, of a start_run trigger on `agentId`, is due (being handed over) or one its host took with no run, within
+   *  LAUNCH_HOOK_LATE_START_MS of its fired_at (the host may answer first and start the run after). */
   async handedStart(given: unknown, agentId: string): Promise<{ run_id: string } | { key: string; trigger: RunTrigger; from: MessageOrigin; title: string }> {
     const refused = (reason: string, message: string, field = "trigger_firing") => invalid([{ field, reason, message }]);
     if (!this.deps.launchHook) throw refused("not_allowed", "This server has no launch hook: a run starts as a trigger firing's only when the hook handed that firing to its host.");
@@ -1177,9 +1184,24 @@ export class Triggers {
     if (!firing) throw refused("not_found", `Trigger ${triggerId} has no firing ${key}.`, "trigger_firing.firing_id");
     const prior = await this.deps.runOf(key);
     if (prior) return prior;
-    if (firing.status !== "due") throw refused("not_due", `Firing ${key} is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}: only a firing the launch hook is handing over starts a run.`, "trigger_firing.firing_id");
+    const minutes = LAUNCH_HOOK_LATE_START_MS / 60_000;
+    const taken = firing.status === "sent" && firing.runId === null && firing.reason === HANDED_NO_RUN;
+    if (taken && this.clock.now() - firing.nominalAt > LAUNCH_HOOK_LATE_START_MS) {
+      throw refused("not_due", `Firing ${key}'s host answered without starting its run, and the ${minutes} minutes after its fired_at in which the host may still start it have passed.`, "trigger_firing.firing_id");
+    }
+    if (firing.status !== "due" && !taken) {
+      throw refused("not_due", `Firing ${key} is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}: a run starts only for a firing the launch hook is handing over, or one its host took within ${minutes} minutes of its fired_at.`, "trigger_firing.firing_id");
+    }
     const attrs = firing.attrs as Record<string, string> | null | undefined;
     return { key, trigger: { id: triggerId, firing_key: key, name: trigger.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, from: this.originOf(trigger), title: this.titleOf(trigger, firing) };
+  }
+
+  /** Run `runId`, which the host started for firing `key` (handedStart), started: one whose host answered first (sent,
+   *  with no run) is made started here, as handed() makes it when the run came first, so the overlap check and
+   *  max_active_runs count it. A firing still being handed is left to handed(), which reads its run after the answer. */
+  async handedRan(triggerId: string, key: string, runId: string): Promise<void> {
+    const firing = await this.store.triggers.firing(triggerId, key);
+    if (firing?.status === "sent" && firing.runId === null && firing.reason === HANDED_NO_RUN) await this.started(triggerId, key, runId);
   }
 
   private async started(triggerId: string, key: string, runId: string): Promise<void> {

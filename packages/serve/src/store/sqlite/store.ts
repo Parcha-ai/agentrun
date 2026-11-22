@@ -1057,10 +1057,12 @@ class SqliteStore implements Store {
           const was = await tx.get<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND key = ?`, triggerId, key);
           if (!was) return undefined;
           const settled = change.status !== undefined && change.status !== "due";
-          // Out of due, a firing keeps no retry, wait, payload or attrs, nor the reason its last try gave (unless it gives one).
+          // Out of due, a firing keeps no retry, wait, payload or attrs (unless keepAttrs), nor the reason its last try gave
+          // (unless it gives one).
           const set: [string, SqliteValue][] = [];
           if (change.status !== undefined) set.push(["status", change.status]);
-          if (settled) set.push(["retry_at", null], ["waits_on", null], ["payload", null], ["attrs", null], ["reason", change.reason ?? null], ["attempts", change.attempts ?? 0]);
+          if (settled) set.push(["retry_at", null], ["waits_on", null], ["payload", null], ["reason", change.reason ?? null], ["attempts", change.attempts ?? 0]);
+          if (settled && !change.keepAttrs) set.push(["attrs", null]);
           else if (change.reason !== undefined) set.push(["reason", change.reason]);
           if (change.runId !== undefined) set.push(["run_id", change.runId]);
           if (change.error !== undefined) set.push(["error", json(change.error)]);

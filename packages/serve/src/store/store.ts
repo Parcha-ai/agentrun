@@ -694,7 +694,8 @@ export interface NewTrigger {
 /** `ifAgent`: it is still that agent's (a PATCH may move it to another meanwhile). */
 export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown; readonly ifAgent?: string };
 export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns" | "templateId">>;
-/** A firing's new state. Out of due, a firing keeps no retry, wait, payload nor the reason its last try gave (unless given). */
+/** A firing's new state. Out of due, a firing keeps no retry, wait, payload, attrs (unless `keepAttrs`) nor the reason its
+ *  last try gave (unless given). */
 export interface FiringChange {
   readonly status?: FiringStatus;
   readonly runId?: string;
@@ -704,6 +705,9 @@ export interface FiringChange {
   readonly retryAt?: number | null;
   readonly waitsOn?: string | null;
   readonly notified?: boolean;
+  /** Settled, the firing keeps its attrs: one its launch hook's host took with no run yet, whose run, started late
+   *  (triggers.ts handedStart), is tagged and titled from them as one started first is. */
+  readonly keepAttrs?: boolean;
 }
 /** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
  *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */
