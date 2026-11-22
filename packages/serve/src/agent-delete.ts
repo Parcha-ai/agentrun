@@ -190,6 +190,9 @@ async function purgeOneOrRefuse(host: AgentDeleteHost, agentId: string, runId: s
     // A replay or shadow made from it after the runs made from it were read: named, for the next DELETE to purge first.
     if (error instanceof RunsMadeFromLeft) throw notFinal(purged, error.runs);
     if (error instanceof StoreConstraint) throw notFinal(purged, [runId]);
+    // A purge can commit and still throw (a Postgres commit unanswered), and a retried DELETE skips a purged run: what
+    // the process served of it goes now unless the store reads it not purged.
+    if ((await host.store.runs.get(runId).catch(() => undefined))?.purgedAt !== null) forgetServed(host.store, runId);
     throw error;
   }
   // Its answer and input as this process last served them: every route of it is 410 from here, so none is read again.
