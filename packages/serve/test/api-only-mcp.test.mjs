@@ -3,16 +3,25 @@
 // (GET /settings/mcp-server-names). A Composio save names its key by the server's own environment variable
 // (`api_key_env: "COMPOSIO_API_KEY"`, the one name taken): the server keeps that name, never the value, and reads the value
 // at each use (the save's own calls to Composio, a run's connection, the delete's), and only ever sends it to Composio's
-// origin, whatever a stored row says. The token saves no server at an address or with headers of its own: the generic save,
-// the list and the read stay refused there. The full profile is as before: its token's `api_key_env` is the one
-// secret-write refusal. Fake Composio on loopback (fixtures/fake-composio.mjs, its MCP origin the composioMcpOrigin seam),
-// the faux MCP model (fixtures/faux-mcp.mjs). No key, no network.
+// origin, whatever a stored row says. Its generic save takes a per_run server alone, at an origin the operator listed in
+// AGENTRUN_MCP_TOKEN_ORIGINS (exactly: https, or the one loopback origin with its port under AGENTRUN_MCP_ALLOW_LOOPBACK),
+// keeping no credential and recording its toolkit; each claim of a server it saved checks that origin again. The list and
+// the read stay refused there. The full profile is as before: its token's `api_key_env` is the one secret-write refusal.
+// Fake Composio on loopback (fixtures/fake-composio.mjs, its MCP origin the composioMcpOrigin seam), fake MCP servers on
+// loopback (one behind TLS with a certificate this process trusts), the faux MCP model (fixtures/faux-mcp.mjs). No key,
+// no network.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import tls from "node:tls";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { queued, registryPin, storeOn } from "./store-helpers.mjs";
-import { asOwner, follow, serve, serverLog, storeBytes, withEnv } from "./support.mjs";
+import { asOwner, follow, scratch, serve, serverLog, storeBytes, withEnv } from "./support.mjs";
 
 const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
 const { composioMadeKey, storedMade } = await import("../dist/composio-made.js");
@@ -60,6 +69,10 @@ test("API-only: the token saves a per-run Composio server by api_key_env (200); 
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.equal(saved.body.server?.name, "mail");
   assert.ok(s.composio.calls.length > 0 && s.composio.calls.every((call) => call.keyOk), "every call the save made to Composio carried the variable's value");
+  // Its answer carries no credential and no query: the address shown is its origin alone (shownUrl), never its user.
+  assert.equal(saved.body.server.credential, null, "no credential in the answer");
+  assert.match(saved.body.server.url, /^https?:\/\/[^/?#]+\/…?$/, `the address shown: ${saved.body.server.url}`);
+  for (const value of [KEY, "?", "user_id"]) assert.equal(JSON.stringify(saved.body).includes(value), false, `the answer holds no ${value}`);
 
   // Its one listing: the names route (GET /settings/mcp-server-names), the saved servers' names and nothing else.
   const names = await s.token("GET", "/settings/mcp-server-names");
@@ -190,18 +203,195 @@ test("full profile: the owner's Composio server saved with its key sealed is 403
   assert.ok(await s.server.store.mcp.server("mail"), "it stays");
 });
 
-test("API-only: the token saves no server at an address of its own: the generic save, the list and the read are refused (404), and the address gets nothing", async (t) => {
+const ORIGINS_ENV = "AGENTRUN_MCP_TOKEN_ORIGINS";
+/** A server's origin, as listed in AGENTRUN_MCP_TOKEN_ORIGINS. */
+const originOf = (url) => new URL(url).origin;
+/** A refusal's first issue as [status, field, reason]. */
+const issueOf = (answer) => [answer.status, answer.body.error?.fields?.[0]?.field, answer.body.error?.fields?.[0]?.reason];
+
+/** A self-signed certificate for 127.0.0.1, made with openssl in a folder of this test's (removed after it). */
+function certificate(t) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-tls-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", join(dir, "key.pem"), "-out", join(dir, "cert.pem"), "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore" });
+  return { key: readFileSync(join(dir, "key.pem"), "utf8"), cert: readFileSync(join(dir, "cert.pem"), "utf8") };
+}
+
+/** The fake MCP server behind TLS on loopback (this process trusting its certificate until the test ends): its https URL. */
+async function overTls(t, fake) {
+  const { key, cert } = certificate(t);
+  const trusted = tls.getCACertificates("default");
+  tls.setDefaultCACertificates([...trusted, cert]);
+  t.after(() => tls.setDefaultCACertificates(trusted));
+  const port = Number(new URL(fake.url).port);
+  const front = tls.createServer({ key, cert }, (socket) => {
+    const back = connect(port, "127.0.0.1");
+    socket.on("error", () => back.destroy());
+    back.on("error", () => socket.destroy());
+    socket.pipe(back).pipe(socket);
+  });
+  await new Promise((resolve) => front.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => front.close(resolve)));
+  const url = new URL(fake.url);
+  url.protocol = "https:";
+  url.port = String(front.address().port);
+  return url.href;
+}
+
+/** A fake MCP server, closed when the test ends, serving the notes tools a package's `url notes` need grants. */
+async function notesFake(t) {
+  const fake = await startFakeMcp({ name: "notes" });
+  t.after(() => fake.close());
+  for (const name of ["list_notes", "send_note"]) fake.tools[name] = { description: `The ${name} tool.`, input: { type: "object", properties: { to: { type: "string" } }, additionalProperties: true }, run: () => ({ content: [{ type: "text", text: "[]" }] }) };
+  return fake;
+}
+
+/** A templates folder with one package whose MCP need is `url notes` (not required). */
+async function notesTemplates(t) {
+  const root = join(await scratch(t), "templates");
+  mkdirSync(join(root, "notes-digest"), { recursive: true });
+  writeFileSync(join(root, "notes-digest", "agent.md"), `---
+name: notes-digest
+version: 1.0.0
+description: Reads your notes.
+mcp:
+  - source: url
+    toolkit: notes
+    tools: [list_notes]
+    required: false
+    reason: "Reads your notes."
+---
+Call mcp:notes/list_notes.
+`);
+  return root;
+}
+
+/** An API-only server with no runner (its options `options`) and its token's requests. */
+async function tokenServer(t, options = {}) {
+  const server = await serve(t, { apiOnly: true, runner: false, ...options });
+  return { server, token: (method, path, body) => server.api(method, path, body, { authorization: `Bearer ${server.token}` }) };
+}
+
+test("API-only, AGENTRUN_MCP_TOKEN_ORIGINS unset: the token's per_run save is 422 url not_an_option naming the variable, any other auth the secret-write refusal (403); no list or read (404); the address gets nothing", async (t) => {
+  withEnv(t, {}, [ORIGINS_ENV]);
   const elsewhere = await startFakeMcp();
   t.after(() => elsewhere.close());
   const s = await setup(t);
-  for (const auth of [{ type: "per_run" }, { type: "none" }, { type: "headers", headers: { "x-api-key": OTHER_KEY } }]) {
-    const refused = await s.token("PUT", "/settings/mcp-servers/gw", { url: elsewhere.url, auth });
-    assert.equal(refused.status, 404, `${auth.type}: ${JSON.stringify(refused.body)}`);
+  const perRun = await s.token("PUT", "/settings/mcp-servers/gw", { url: elsewhere.url, auth: { type: "per_run" } });
+  assert.deepEqual(issueOf(perRun), [422, "url", "not_an_option"], JSON.stringify(perRun.body));
+  assert.match(perRun.body.error.fields[0].message, /AGENTRUN_MCP_TOKEN_ORIGINS/);
+  for (const auth of [undefined, { type: "none" }, { type: "headers", headers: { "x-api-key": OTHER_KEY } }]) {
+    const refused = await s.token("PUT", "/settings/mcp-servers/gw", { url: elsewhere.url, ...(auth ? { auth } : {}) });
+    assert.equal(refused.status, 403, `${auth?.type}: ${JSON.stringify(refused.body)}`);
+    assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
   }
   assert.equal((await s.token("GET", "/settings/mcp-servers")).status, 404, "no list of its own");
   assert.equal((await s.token("GET", "/settings/mcp-servers/gw")).status, 404, "no read");
   assert.deepEqual(elsewhere.log, [], "the address got nothing");
   assert.deepEqual((await s.token("GET", "/settings/mcp-server-names")).body, { names: [] }, "nothing saved");
+});
+
+test("API-only: the token saves a per_run server at a listed https origin (200), keeping no credential and recording its toolkit; an apply's url notes need maps to it", async (t) => {
+  const fake = await notesFake(t);
+  const https = await overTls(t, fake);
+  withEnv(t, { [ORIGINS_ENV]: `https://second.example,${originOf(https)}` });
+  const { server, token } = await tokenServer(t, { templates: await notesTemplates(t) });
+  const saved = await token("PUT", "/settings/mcp-servers/my-notes", { url: https, auth: { type: "per_run" }, toolkit: "notes" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual([saved.body.name, saved.body.auth?.type, saved.body.toolkit, saved.body.credential], ["my-notes", "per_run", "notes", null], JSON.stringify(saved.body));
+  assert.ok(fake.log.some((entry) => entry.method === "tools/list"), "listed at its address");
+  assert.equal((await server.store.mcp.server("my-notes")).sealed, null, "no credential kept");
+  assert.deepEqual((await token("GET", "/settings/mcp-server-names")).body, { names: ["my-notes"] });
+
+  const applied = await token("POST", "/templates/notes-digest/apply", { parameters: {}, grants: ["mcp:notes/list_notes"] });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  assert.deepEqual(applied.body.servers, { notes: "my-notes" }, "the need {url, notes} maps to the server the token saved");
+  assert.ok((await token("GET", `/agents/${applied.body.agent_id}`)).body.definition.tools.includes("mcp:my-notes/list_notes"));
+});
+
+test("API-only: the one listed loopback origin with AGENTRUN_MCP_ALLOW_LOOPBACK is 200; the same host on another port is 422 not_an_option and gets nothing; without the switch it counts for nothing", async (t) => {
+  const listed = await startFakeMcp();
+  t.after(() => listed.close());
+  const otherPort = await startFakeMcp();
+  t.after(() => otherPort.close());
+  withEnv(t, { [ORIGINS_ENV]: originOf(listed.url) });
+  const local = await tokenServer(t);
+  const saved = await local.token("PUT", "/settings/mcp-servers/gw", { url: listed.url, auth: { type: "per_run" } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const refused = await local.token("PUT", "/settings/mcp-servers/other", { url: otherPort.url, auth: { type: "per_run" } });
+  assert.deepEqual(issueOf(refused), [422, "url", "not_an_option"], JSON.stringify(refused.body));
+  assert.deepEqual(otherPort.log, [], "the other port got nothing");
+
+  const hosted = await tokenServer(t, { mcpLoopback: false });
+  const from = listed.log.length;
+  const off = await hosted.token("PUT", "/settings/mcp-servers/gw", { url: listed.url, auth: { type: "per_run" } });
+  assert.deepEqual(issueOf(off), [422, "url", "not_an_option"], JSON.stringify(off.body));
+  assert.equal(listed.log.length, from, "nothing sent");
+});
+
+test("API-only: an address off the listed origins is 422 on url, naming no listed origin, before anything is sent: a lookalike, a sub- or superdomain, another port, a user, http to a listed https host, a path or query naming it", async (t) => {
+  withEnv(t, { [ORIGINS_ENV]: "https://listed.example,https://second.example" });
+  const { token } = await tokenServer(t);
+  for (const url of [
+    "https://listed.example.evil.test/mcp", "https://a.listed.example/mcp", "https://evillisted.example/mcp", "https://listed.example:8443/mcp",
+    "https://evil.test/https://listed.example/mcp", "https://evil.test/mcp?next=https://listed.example",
+  ]) {
+    const refused = await token("PUT", "/settings/mcp-servers/gw", { url, auth: { type: "per_run" } });
+    assert.deepEqual(issueOf(refused), [422, "url", "not_an_option"], `${url}: ${JSON.stringify(refused.body)}`);
+    assert.equal(JSON.stringify(refused.body).includes("second.example"), false, "no listed origin named");
+  }
+  // A user in the address, or http to a host listed for https: refused as the address it is, before the list is read.
+  for (const url of ["https://user@listed.example/mcp", "http://listed.example/mcp"]) {
+    const refused = await token("PUT", "/settings/mcp-servers/gw", { url, auth: { type: "per_run" } });
+    assert.deepEqual(issueOf(refused).slice(0, 2), [422, "url"], `${url}: ${JSON.stringify(refused.body)}`);
+    assert.equal(JSON.stringify(refused.body).includes("second.example"), false, "no listed origin named");
+  }
+  assert.deepEqual((await token("GET", "/settings/mcp-server-names")).body, { names: [] }, "nothing saved");
+});
+
+test("API-only: at a listed origin, any auth but per_run is the secret-write refusal (403), and the address gets nothing", async (t) => {
+  const listed = await startFakeMcp();
+  t.after(() => listed.close());
+  withEnv(t, { [ORIGINS_ENV]: originOf(listed.url) });
+  const { token } = await tokenServer(t);
+  for (const auth of [undefined, { type: "none" }, { type: "bearer", token: OTHER_KEY }, { type: "headers", headers: { "x-api-key": OTHER_KEY } }, { type: "oauth" }]) {
+    const refused = await token("PUT", "/settings/mcp-servers/gw", { url: listed.url, ...(auth ? { auth } : {}) });
+    assert.equal(refused.status, 403, `${auth?.type}: ${JSON.stringify(refused.body)}`);
+    assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
+  }
+  assert.deepEqual(listed.log, [], "the address got nothing");
+});
+
+test("claim: a per_run server the token saved, whose origin the runner no longer lists, refuses the run by name, and that host gets nothing; listed again, the claim goes on", async (t) => {
+  const listed = await startFakeMcp();
+  t.after(() => listed.close());
+  withEnv(t, { [ORIGINS_ENV]: originOf(listed.url) });
+  const { server, token } = await tokenServer(t);
+  assert.equal((await token("PUT", "/settings/mcp-servers/mail", { url: listed.url, auth: { type: "per_run" } })).status, 200);
+  const sent = listed.log.length;
+  const store = server.store;
+  const sealKey = Buffer.alloc(32, 7);
+  const claimOf = async (runId) => {
+    await queued(store, runId, { mcpPin: await registryPin(store) });
+    const claim = await store.claim(runId, "runner-a", { leaseMs: 60_000 });
+    return mcpClaim({ store, claim, grants: ["mcp:mail/add"], sealKey, signal: new AbortController().signal, loopback: true });
+  };
+  // The operator took its origin off the list (here, the runner's environment, read at each claim): the run is refused
+  // by the server's name.
+  process.env[ORIGINS_ENV] = "https://elsewhere.example";
+  await assert.rejects(claimOf("run-1"), (error) => {
+    assert.match(error.message, /mail.*AGENTRUN_MCP_TOKEN_ORIGINS/, error.message);
+    return true;
+  });
+  // Unset, the same.
+  delete process.env[ORIGINS_ENV];
+  await assert.rejects(claimOf("run-2"), /mail.*AGENTRUN_MCP_TOKEN_ORIGINS/);
+  assert.equal(listed.log.length, sent, "that host got nothing after the save");
+  // Listed again: the claim goes on (the run's own credential, none here, is what its calls would carry).
+  process.env[ORIGINS_ENV] = originOf(listed.url);
+  const step = await claimOf("run-3");
+  t.after(() => step.release());
+  assert.doesNotMatch(String(step.credentials.mail?.unopened ?? ""), /AGENTRUN_MCP_TOKEN_ORIGINS/);
 });
 
 test("API-only: a Composio save takes no url or headers from its body: each is 422 not_allowed, nothing is sent to Composio or the address", async (t) => {
