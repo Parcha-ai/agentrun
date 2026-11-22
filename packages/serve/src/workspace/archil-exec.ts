@@ -263,7 +263,7 @@ export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecRe
       };
     }
     case "link": throw new WorkspaceError("ESCAPE", `${show(job.cwd)} has a symbolic link on the way, and a workspace follows none`, { path });
-    case "nocwd": throw new WorkspaceError("NOT_FOUND", `${show(job.cwd)} is not there`, { path });
+    case "nocwd": throw new WorkspaceError("NOT_FOUND", `${show(job.cwd)} is not there (exec; Archil: no folder ${job.root}/${path} on disk ${disk.id})`, { path });
     case "notdir": throw new WorkspaceError("REFUSED", `${show(job.cwd)} is not a directory`, { path });
     case "noprog": throw new WorkspaceError("NOT_FOUND", `${JSON.stringify(job.argv[0])} is not a program here (PATH ${JSON.stringify(job.env.PATH ?? "")})`, { path });
     case "noroot": throw new WorkspaceError("UNAVAILABLE", `the workspace's folder ${job.root} or its spill folder was not mounted`, { path });
