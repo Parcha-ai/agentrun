@@ -3561,9 +3561,9 @@ stays in every total.
   commit it names, moved to the rewritten commit by a purge. A run's purge takes its text out of the learning's whole
   history, not only its current files: every commit of main is rebuilt, oldest first, keeping of each `corrections.md`
   line the run's merges added only as many copies as other runs' merges added of the same words (none, for words only
-  the run added), without each learned workflow whose `workflow.json`
-  the run's merge wrote last at that commit (its whole `workflows/<name>/` folder; a hand commit changes no owner, and
-  once another run's merge writes it again it is that run's), and without its merges' reasons (each merge kept, its
+  the run added), without each file of a learned workflow (`workflows/<name>/...`) whose bytes the run's merge changed
+  last at that commit (a hand commit changes no owner, and once another run's merge writes a file again it is that
+  run's; a kept run's workflow loses any file only the purged run wrote, and reads incomplete if it needed it), and without its merges' reasons (each merge kept, its
   message `learning: <run>: merged`, empty of its text), each snapshot rebuilt, and one commit by the host on top marks `.agentrun/purged/<run>`,
   so no round of the run merges again. No byte of the old history is kept: the local folder moves main to the new
   history, removes every other ref, expires its reflog and prunes; code.storage builds the new history in the agent's
