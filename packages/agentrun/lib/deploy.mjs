@@ -64,10 +64,13 @@ function readFolder(dir, fail) {
   return files;
 }
 
-/** The files as an upload sends them: text as it is, any other bytes base64. */
+/** The files as an upload sends them: text as it is, unless JSON's escapes make it longer than base64 would (a file of
+ *  newlines or control characters), and any other bytes base64. So the body stays within the base64 size the server's
+ *  upload limit allows for. */
 const filesBody = (files) => [...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([path, data]) => {
   const text = data.toString("utf8");
-  return Buffer.from(text, "utf8").equals(data) ? { path, encoding: "utf8", content: text } : { path, encoding: "base64", content: data.toString("base64") };
+  const base64 = data.toString("base64");
+  return Buffer.from(text, "utf8").equals(data) && Buffer.byteLength(JSON.stringify(text)) <= base64.length + 2 ? { path, encoding: "utf8", content: text } : { path, encoding: "base64", content: base64 };
 });
 
 /** A lock read back: its fields as written, or a refusal naming the file. */
@@ -281,26 +284,31 @@ async function deploy(ctx) {
   const to = remote(cli, values, env, io, base);
 
   // The lock's agent as the target has it now: gone (deployed anew), edited since (refused unless --force), or the same
-  // revision with the same package (up to date: nothing sent that writes).
+  // revision with the same package (up to date: nothing sent that writes, unless --params asks for parameters the lock
+  // can't vouch for; the apply then keeps the revision when they are the same).
   let onto;
   if (lock) {
     const { status, value: agent } = await to.call("GET", `/agents/${enc(lock.agent_id)}`, undefined, [404, 410]);
     if (status !== 200) say(io, `The agent ${lock.agent_id} is gone from ${to.base}: deploying it anew.`);
     else {
       if (agent.revision !== lock.revision_id && !values.force) throw fail(2, `The agent ${lock.agent_id} on ${to.base} was edited in the cloud; --force to replace it with this package (its current revision is not the one ${from.lock.file} names).`);
-      if (agent.revision === lock.revision_id && lock.package_sha256 === sha) {
+      if (agent.revision === lock.revision_id && lock.package_sha256 === sha && parameters === undefined) {
         say(io, `This package is up to date on ${to.base}: the agent ${lock.agent_id}, revision ${lock.revision_id}. Nothing was sent.`);
+        if (from.kind === "agent") await sourceSchedules(io, from, values);
         ctx.io.stdout.write(`${JSON.stringify({ status: "up_to_date", target: to.base, agent_id: lock.agent_id, revision_id: lock.revision_id, package_sha256: sha })}\n`);
         return 0;
       }
-      onto = lock.agent_id;
+      // Onto the revision read here: one written after this read (an edit, another deploy) makes the apply 412.
+      onto = { agent_id: lock.agent_id, revision: agent.revision };
     }
   }
 
   const { value: imported } = await to.call("POST", "/templates/import", { files: filesBody(files) });
   const template = imported.template;
   const grants = (template.mcp ?? []).flatMap((need) => (need.tools ?? []).map((tool) => tool.tool)).filter((tool) => typeof tool === "string");
-  const body = { grants, ...(parameters ? { parameters } : {}), ...(onto ? { agent_id: onto } : {}) };
+  // The plan and the apply both name the package uploaded here (its sha): another upload of the same name in between
+  // makes them 412, never applies a package this deploy did not plan.
+  const body = { grants, sha: template.sha, ...(parameters ? { parameters } : {}), ...(onto ?? {}) };
   const { value: planned } = await to.call("POST", `/templates/${enc(template.id)}/apply`, { ...body, dry_run: true });
   const plan = planned.plan;
   for (const line of planLines(to.base, template, sha, plan, grants)) say(io, line);
@@ -315,8 +323,7 @@ async function deploy(ctx) {
     return 2;
   }
   const { value: applied } = await to.call("POST", `/templates/${enc(template.id)}/apply`, body);
-  const { value: agent } = await to.call("GET", `/agents/${enc(applied.agent_id)}`);
-  const written = { target: to.base, workspace: null, agent_id: applied.agent_id, revision_id: agent.revision, package_sha256: sha, deployed_at: new Date().toISOString() };
+  const written = { target: to.base, workspace: null, agent_id: applied.agent_id, revision_id: applied.revision_id, package_sha256: sha, deployed_at: new Date().toISOString() };
   from.lock.write(written);
   for (const warning of applied.warnings ?? []) say(io, `Warning (${warning.field}): ${warning.message}`);
   say(io, `Deployed ${template.name} to ${to.base}: the agent ${applied.agent_id}, revision ${applied.revision_version} (${applied.agent_change}). Lock: ${from.lock.file}.`);
@@ -344,8 +351,14 @@ async function rollback(ctx) {
   const { io, cli } = ctx;
   const { from, lock, to } = await locked(ctx);
   const { value: agent } = await to.call("GET", `/agents/${enc(lock.agent_id)}`);
-  const { value: listed } = await to.call("GET", `/agents/${enc(lock.agent_id)}/revisions`);
-  const revisions = listed.revisions ?? [];
+  // Every page: the previous revision may be on any of them.
+  const revisions = [];
+  for (let cursor; ; ) {
+    const { value: listed } = await to.call("GET", `/agents/${enc(lock.agent_id)}/revisions${cursor ? `?cursor=${enc(cursor)}` : ""}`);
+    revisions.push(...(listed.revisions ?? []));
+    if (typeof listed.next_cursor !== "string" || !listed.next_cursor || listed.next_cursor === cursor) break;
+    cursor = listed.next_cursor;
+  }
   const current = revisions.find((one) => one.revision === agent.revision);
   const previous = revisions.filter((one) => current && one.version < current.version).sort((a, b) => b.version - a.version)[0];
   if (!previous) throw cli.fail(2, `The agent ${lock.agent_id} on ${to.base} has no revision before its current one: nothing to roll back to.`);
@@ -353,7 +366,7 @@ async function rollback(ctx) {
   // The lock follows: the revision now current, and the package that revision was made from, so deploying that package
   // again is up to date and any other writes the next revision.
   const sha = typeof after.template?.sha === "string" && /^[0-9a-f]{64}$/.test(after.template.sha) ? after.template.sha : null;
-  const written = { ...lock, revision_id: previous.revision, package_sha256: sha, deployed_at: new Date().toISOString() };
+  const written = { ...lock, target: to.base, revision_id: previous.revision, package_sha256: sha, deployed_at: new Date().toISOString() };
   from.lock.write(written);
   say(io, `Rolled back: the agent ${lock.agent_id} on ${to.base} runs revision ${previous.version} again (it was on ${current.version}).`);
   io.stdout.write(`${JSON.stringify({ status: "rolled_back", target: to.base, agent_id: lock.agent_id, revision_id: previous.revision, version: previous.version, from_revision_id: agent.revision })}\n`);

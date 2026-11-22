@@ -4485,6 +4485,8 @@ export type ApplyTemplateBody = {
     choice?: string;
     approvals?: "ask" | "never";
   };
+  revision?: string;
+  sha?: string;
 };
 export interface ApplyTemplateParams {
   "Idempotency-Key"?: string;
@@ -4493,6 +4495,7 @@ export type ApplyTemplateResponse = {
   template: string;
   version: string;
   agent_id: string;
+  revision_id: string | null;
   revision_version: number;
   agent_change: "made" | "updated" | "unchanged";
   servers: Record<string, string | null>;
@@ -4536,6 +4539,7 @@ export type ApplyTemplateResponse = {
   template: string;
   version: string;
   agent_id: string;
+  revision_id: string | null;
   revision_version: number;
   agent_change: "made" | "updated" | "unchanged";
   servers: Record<string, string | null>;

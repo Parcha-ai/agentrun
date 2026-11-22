@@ -156,6 +156,14 @@ test("agentrun deploy DIR --to B: plan, apply and lock; up to date sends nothing
   assert.match(same.err, /up to date/);
   assert.deepEqual(proxy.seen.filter((line) => WRITES.test(line)), [], proxy.seen.join("\n"));
   assert.equal((await b.api("GET", `/agents/${lock.agent_id}/revisions`)).body.revisions.length, 1);
+  // --params is never up to date (the lock holds no parameters): the apply runs, and keeps the revision when they are
+  // the ones it already has.
+  const params = join(dir, "params.json");
+  writeFileSync(params, "{}");
+  const given = await deploy(pkg, "--yes", "--params", params);
+  assert.equal(given.code, 0, given.err);
+  assert.deepEqual([given.json().status, given.json().agent_change, given.json().revision_id], ["deployed", "unchanged", lock.revision_id]);
+  assert.equal((await b.api("GET", `/agents/${lock.agent_id}/revisions`)).body.revisions.length, 1);
 
   // A changed skill: revision n+1 of the same agent.
   writeFileSync(join(pkg, "skills", "check", "SKILL.md"), SKILL("Say what changed, and who changed it."));

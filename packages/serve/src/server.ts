@@ -146,7 +146,7 @@ import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { composioMadeKey, composioPerRun } from "./composio-made.js";
 import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
-import { ComposioTriggers } from "./composio-triggers.js";
+import { ComposioTriggers, composioNoPublicUrl } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
 import type { SourceRecord } from "./mcp-sources.js";
@@ -3114,8 +3114,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         continue;
       }
       // Made (again), on unless the owner had turned the old one off: a connection this server lacks skips it, as the
-      // apply's create does (notSetUpYet), or refuses the apply.
-      const refusal = trigger.enabled !== false && !(was && !was.enabled) ? await triggerUnavailable(kind) : undefined;
+      // apply's create does (notSetUpYet), or refuses the apply. A Composio trigger is skipped for want of a public URL
+      // (any trigger, on or off), read here; its account and subscription are Composio's to answer, which a plan never asks.
+      const refusal = kind === "composio" && !options.publicUrl ? composioNoPublicUrl() : trigger.enabled !== false && !(was && !was.enabled) ? await triggerUnavailable(kind) : undefined;
       if (refusal && notSetUpYet(kind, refusal.code)) planned.push({ name, kind, action: "skip", reason: refusal.message });
       else if (refusal) throw refusal;
       else planned.push({ name, kind, action: "create", ...(was ? { reason: `The agent's ${name} trigger is removed and made again: its kind or its Composio server, event or config changed.` } : {}) });
@@ -3139,10 +3140,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (applyBodyOf), the agent agent_id names, the keys and MCP servers, the computer, the model, the agent and triggers it
    *  makes and how they meet the agent's, every refusal but the keys' and MCP servers' (which the plan lists). */
   async function prepareApply(template: Package, body: Json, { plan }: { plan: boolean }) {
-    const { parameters, grants: asked, servers: picks, model: override, choice, approvals, agentId } = applyBodyOf(template, body);
+    const { parameters, grants: asked, servers: picks, model: override, choice, approvals, agentId, revision: expected, sha } = applyBodyOf(template, body);
+    // The package the caller read (its sha): another stored under this id since (an upload of the same name) is not what
+    // they planned or confirmed.
+    if (sha !== undefined && (template.origin?.sha ?? null) !== sha) throw new ApiError("precondition_failed", `The ${template.name} template stored here is not the package of sha ${sha} (another was stored under ${template.id} since): nothing was changed. Read it again (GET /templates), then apply.`);
     // With agent_id, the apply writes a new revision of that agent (one this template made) in place of making another:
-    // everything below checks the package as a fresh apply does, through the same code.
+    // everything below checks the package as a fresh apply does, through the same code. With `revision`, only onto the
+    // revision the caller read: the write below is held to the revision read here (ifCurrent), so one written in between
+    // is 412 as well.
     const onto = agentId === undefined ? undefined : await templateAgentOf(agentId, template);
+    if (onto && expected !== undefined && (onto.revision?.id ?? null) !== expected) throw new ApiError("precondition_failed", `The agent ${onto.agent.id}'s current revision is ${onto.revision?.id ?? "none"}, not ${expected} (an edit, or another apply, wrote one since it was read): nothing was changed. Read it again, then apply.`);
     // An update's triggers are reconciled by name with the ones the agent has (below), read with the agent: each write to
     // one is made only while it is still this agent's (TriggerOwn.onAgent), so one a PATCH moves away meanwhile is left.
     const had = onto ? await store.triggers.list(onto.agent.id) : [];
@@ -3174,15 +3181,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}, so the agent was made without its tools (${need.tools.join(", ")}).`, fix: mcpSetUp(need) }));
     // A model choice the owner picked is its model on its harness, or a refusal naming the model: never the tier's model
-    // in its place. So is a package's `prefer` (packageModel's `refused`), outside a gateway.
-    const unrunnable = choice && (await choiceUnrunnable(env, choice, offers.find((offer) => offer.id === choice.harness)));
+    // in its place. So is a package's `prefer` (packageModel's `refused`), outside a gateway. A plan whose keys are
+    // missing lists them and goes on: a model refused for want of one of them is the same lack, and once they are added
+    // the next plan reads the model again.
+    const lacking = plan && missing.length > 0;
+    const unrunnable = choice && !lacking && (await choiceUnrunnable(env, choice, offers.find((offer) => offer.id === choice.harness)));
     if (choice && unrunnable) {
       const message = `The ${pkg.name} template's choice ${choice.label} runs ${choice.model} on ${choice.harness}, which this server can't run: ${unrunnable.replace(/\.$/, "")}. Nothing was created.`;
       throw new ApiError("agent_not_runnable", message, { fields: [{ field: "overrides.choice", reason: NOT_SET_UP, message, fix: "Apply with the default or another choice, or, where the model only wants a key, add it in Settings → Model keys." }] });
     }
     const harness = choice ? choice.harness : pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
     const picked = choice ? { model: choice.model } : override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
-    if ("refused" in picked && picked.refused) {
+    if ("refused" in picked && picked.refused && !lacking) {
       const message = `The ${pkg.name} template prefers ${pkg.model?.prefer}, which this server can't run on ${harness ?? DEFAULT_HARNESS}: ${picked.refused.why}. Nothing was created.`;
       throw new ApiError("agent_not_runnable", message, { fields: [{ field: "model", reason: NOT_SET_UP, message, fix: picked.refused.fix }] });
     }
@@ -3398,7 +3408,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // What the apply did to the agent: made it, wrote a new revision, or wrote none (an update whose package and
     // parameters the current revision already holds: commitAgent keeps that revision).
     const agentChange = !onto ? "made" : entry.revision?.id === onto.revision?.id ? "unchanged" : "updated";
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...warned, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_id: entry.revision?.id ?? null, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...warned, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
     return { applied, minted, updated: onto !== undefined };
   }
 

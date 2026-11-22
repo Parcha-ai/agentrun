@@ -176,6 +176,56 @@ test("an apply's dry run answers its plan and writes nothing: create or revise, 
   assert.equal(bad.body.error.fields[0].field, "dry_run");
 });
 
+test("an apply, and its plan, hold to what the caller read: the agent's revision and the package's sha (412 when another, nothing changed); the answer names the revision it wrote", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { runner: false });
+  const upload = async (files) => {
+    const answer = await api("POST", "/templates/import", { files: filesOf(files) });
+    assert.equal(answer.status, 201, JSON.stringify(answer.body));
+    return answer.body.template;
+  };
+  const first = await upload(pkg());
+  const path = `/templates/${enc(first.id)}/apply`;
+  const made = await api("POST", path, { parameters: {}, sha: first.sha });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const agentId = made.body.agent_id;
+  const read = (await api("GET", `/agents/${agentId}`)).body.revision;
+  assert.equal(made.body.revision_id, read, "the answer names the revision the agent runs");
+  (await documented(api))("/templates/{template}/apply", "post", "201", made.body);
+  const revisions = async () => (await api("GET", `/agents/${agentId}/revisions`)).body.revisions.length;
+
+  // Another upload of the same name since this caller read the package: its sha is not the one they planned.
+  const second = await upload(pkg(agentMd({ version: "0.2.0", extra: [...DAILY, ...HOURLY] })));
+  const count = await revisions();
+  for (const dry of [true, false]) {
+    const swapped = await api("POST", path, { parameters: {}, agent_id: agentId, revision: read, sha: first.sha, ...(dry ? { dry_run: true } : {}) });
+    assert.equal(swapped.status, 412, JSON.stringify(swapped.body));
+    assert.equal(swapped.body.error.code, "precondition_failed");
+  }
+  assert.equal(await revisions(), count, "nothing written");
+
+  // A revision written after this caller read the agent: theirs is stale.
+  const other = await api("POST", path, { parameters: {}, agent_id: agentId, sha: second.sha });
+  assert.equal(other.status, 200, JSON.stringify(other.body));
+  assert.notEqual(other.body.revision_id, read);
+  assert.equal(other.body.revision_id, (await api("GET", `/agents/${agentId}`)).body.revision);
+  const after = await revisions();
+  for (const dry of [true, false]) {
+    const stale = await api("POST", path, { parameters: {}, agent_id: agentId, revision: read, sha: second.sha, ...(dry ? { dry_run: true } : {}) });
+    assert.equal(stale.status, 412, JSON.stringify(stale.body));
+    assert.equal(stale.body.error.code, "precondition_failed");
+  }
+  assert.equal(await revisions(), after, "nothing written");
+  const fresh = await api("POST", path, { parameters: {}, agent_id: agentId, revision: other.body.revision_id, sha: second.sha });
+  assert.equal(fresh.status, 200, JSON.stringify(fresh.body));
+  assert.equal(fresh.body.agent_change, "unchanged");
+  assert.equal(fresh.body.revision_id, other.body.revision_id, "an apply that writes nothing names the revision it kept");
+
+  // A revision with no agent, and a sha that is not one.
+  const loose = await api("POST", path, { parameters: {}, revision: read, sha: "nope" });
+  assert.equal(loose.status, 422, JSON.stringify(loose.body));
+  assert.deepEqual(loose.body.error.fields.map((f) => f.field).sort(), ["revision", "sha"]);
+});
+
 test("an API-only server takes an upload ({files}) and refuses a GitHub source", { timeout: 60_000 }, async (t) => {
   const server = await serve(t, { apiOnly: true, runner: false });
   const post = async (body) => {

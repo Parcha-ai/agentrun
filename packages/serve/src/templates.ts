@@ -1086,15 +1086,20 @@ export class TemplateRegistry {
   }
 }
 
-/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, servers?, overrides?: {model?, choice?, approvals?}, agent_id?, dry_run?}`), checked
+/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, servers?, overrides?: {model?, choice?, approvals?}, agent_id?, revision?, sha?, dry_run?}`), checked
  *  against the package: the parameters as given (a blank one at its default), the MCP tools the owner allows (each one the
  *  package lists, by its gate name), and the model asked for in place of the package's: one of its own (`model`), or one
- *  of the package's model choices by id (`choice`), never both. 422 naming every field that is wrong. */
-export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; choice?: ModelChoice; approvals?: Approvals; agentId?: string; dryRun: boolean } {
-  const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides", "agent_id", "dry_run"]);
+ *  of the package's model choices by id (`choice`), never both. `revision` (with agent_id) and `sha` are what the caller
+ *  read: the agent's current revision and the package's sha, each held to them (412 when another). 422 naming every field
+ *  that is wrong. */
+export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; choice?: ModelChoice; approvals?: Approvals; agentId?: string; revision?: string; sha?: string; dryRun: boolean } {
+  const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides", "agent_id", "revision", "sha", "dry_run"]);
   if (body.dry_run !== undefined && typeof body.dry_run !== "boolean") issues.push({ field: "dry_run", reason: "wrong_type", message: "dry_run is true or false: true answers the apply's plan and writes nothing" });
   // The agent an update writes onto (the server checks it was made from this package): text, else a 422 with the rest.
   if (body.agent_id !== undefined && !(typeof body.agent_id === "string" && body.agent_id.trim())) issues.push({ field: "agent_id", reason: "wrong_type", message: `agent_id is the id of an agent the ${p.name} template made: the apply writes a new revision of it in place of making another` });
+  if (body.revision !== undefined && !(typeof body.revision === "string" && body.revision)) issues.push({ field: "revision", reason: "wrong_type", message: "revision is the id of the agent's revision you read (GET /agents/{agent_id} `revision`): the apply writes only while it is still the current one" });
+  else if (body.revision !== undefined && body.agent_id === undefined) issues.push({ field: "revision", reason: "not_allowed", message: "revision is the agent's current revision as you read it, so it goes with agent_id: an apply without one makes a new agent" });
+  if (body.sha !== undefined && !(typeof body.sha === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(body.sha))) issues.push({ field: "sha", reason: "bad_format", message: "sha is the package's sha as you read it (GET /templates `sha`): a commit's 40 hex characters, or an upload's 64" });
   const listed = p.mcp.flatMap(({ toolkit, tools }) => tools.map((tool) => mcpToolName(toolkit, tool)));
   const grants: string[] = [];
   if (body.grants !== undefined && !Array.isArray(body.grants)) issues.push({ field: "grants", reason: "wrong_type", message: "grants is a list of the package's MCP tools, by the package's own names (mcp:<toolkit>/<tool>), the owner allows" });
@@ -1135,7 +1140,7 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants:
     else if (overrides.choice !== undefined && !choice) issues.push({ field: "overrides.choice", reason: "not_an_option", message: choices.length ? `overrides.choice is one of ${choices.map((one) => one.id).join(", ")}: the package's model choices, by id.` : `The package ${p.name} offers no model choices: leave overrides.choice out.` });
   }
   if (issues.length) throw invalid(issues);
-  return { parameters, grants, servers, dryRun: body.dry_run === true, ...(typeof body.agent_id === "string" ? { agentId: body.agent_id.trim() } : {}), ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(choice ? { choice } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
+  return { parameters, grants, servers, dryRun: body.dry_run === true, ...(typeof body.agent_id === "string" ? { agentId: body.agent_id.trim() } : {}), ...(typeof body.revision === "string" ? { revision: body.revision } : {}), ...(typeof body.sha === "string" ? { sha: body.sha } : {}), ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(choice ? { choice } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
 }
 
 /** The model a package's agent gets here, as `{model?, warning?}`: its `prefer` when this server runs it on `harness`

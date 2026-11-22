@@ -1446,11 +1446,14 @@ export interface operations {
         choice?: string;
         approvals?: "ask" | "never";
       };
+      revision?: string;
+      sha?: string;
     };
     answer: {
       template: string;
       version: string;
       agent_id: string;
+      revision_id: string | null;
       revision_version: number;
       agent_change: "made" | "updated" | "unchanged";
       servers: Record<string, string | null>;
@@ -1494,6 +1497,7 @@ export interface operations {
       template: string;
       version: string;
       agent_id: string;
+      revision_id: string | null;
       revision_version: number;
       agent_change: "made" | "updated" | "unchanged";
       servers: Record<string, string | null>;

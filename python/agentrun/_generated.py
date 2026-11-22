@@ -7293,6 +7293,8 @@ class ApplyTemplateBody(TypedDict, total=False):
     grants: list[str]
     agent_id: str
     overrides: ApplyTemplateBodyOverrides
+    revision: str
+    sha: str
 
 
 class ApplyTemplateBodyOverrides(TypedDict, total=False):
@@ -7308,6 +7310,7 @@ class _ApplyTemplateResponseObject11Required(TypedDict):
     template: str
     version: str
     agent_id: str
+    revision_id: str | None
     revision_version: int
     agent_change: Literal["made", "updated", "unchanged"]
     servers: dict[str, str | None]
@@ -7376,6 +7379,7 @@ class _ApplyTemplateResponseObject2Required(TypedDict):
     template: str
     version: str
     agent_id: str
+    revision_id: str | None
     revision_version: int
     agent_change: Literal["made", "updated", "unchanged"]
     servers: dict[str, str | None]

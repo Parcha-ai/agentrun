@@ -114,6 +114,10 @@ function onField(error: unknown, field: string): unknown {
   return issue && (issue.field === "body" || issue.field === "toolkit") ? invalid([{ ...issue, field }]) : error;
 }
 
+/** A Composio trigger's refusal on a server with no public URL: made by make, and read by an apply's plan, which asks
+ *  Composio nothing. */
+export const composioNoPublicUrl = (): ApiError => new ApiError("composio_no_public_url", "Composio can't reach this server: set its public URL first (AGENTRUN_PUBLIC_URL, the https address Composio sends events to), then make the trigger.");
+
 export class ComposioTriggers implements TriggerUpstream {
   /** Each project's last step queued (serial), by a digest of its key. */
   private readonly queues = new Map<string, Promise<void>>();
@@ -123,7 +127,7 @@ export class ComposioTriggers implements TriggerUpstream {
   // ---- the trigger engine's (TriggerUpstream) ----------------------------------------------------------------------------
 
   async make<T>(source: Source, id: string, enabled: boolean, keep: (source: Source) => Promise<T>): Promise<T> {
-    if (!this.deps.publicUrl) throw new ApiError("composio_no_public_url", "Composio can't reach this server: set its public URL first (AGENTRUN_PUBLIC_URL, the https address Composio sends events to), then make the trigger.");
+    if (!this.deps.publicUrl) throw composioNoPublicUrl();
     for (const field of ["instance_id", "hook", SEALED_FIELD]) if (source[field] !== undefined) throw invalid([{ field: `source.${field}`, reason: "not_allowed", message: `${field} is set by this server when it makes the trigger on Composio: leave it out.` }]);
     const config = source.config as Json;
     // A credential below the config's top level is refused: a create seals one as a top-level field alone (and Composio's
