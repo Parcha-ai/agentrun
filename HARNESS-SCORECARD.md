@@ -64,8 +64,9 @@ Not rated: Claude Agent (`claude-acp`), Codex (`codex-acp`), OpenCode and pi, wh
 
 ## What would move the most rows
 
-- **A harness's own keys on a server.** A server runs a checked recipe on its proxy or on its owner's sign-in
-  ([Run it](HARNESS.md#run-it)); a plan-billed row on keys alone waits on the store for a harness's own keys.
+- **A harness's own keys on a server.** A server runs a checked recipe on its proxy, or on its owner's own machine on
+  their own sign-in (`--harness-sign-in`, [Run it](HARNESS.md#run-it)); every plan-billed row on a shared server waits
+  on the store for a harness's own keys.
 - **A live `harness-check` per row.** Eleven rows fit if facts hold that one check settles; Google Antigravity's recipe
   is written and waits only on a key.
 - **npm releases.** Ten rows ship only as an npm or uv package. A recipe would need the package's tarball with its

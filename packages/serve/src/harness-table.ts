@@ -30,6 +30,7 @@ import { modelWire, wireOf, WIRES } from "./wires.js";
 import type { SkillCheck } from "./skills.js";
 import type { RunnerHarness } from "./runner/adapters/index.js";
 import { PLAN_PROVIDER, signedIn } from "./chatgpt-plan.js";
+import { loadRecipe } from "./harness-recipe.js";
 import { recipeServerEntry } from "./harness-recipe-entry.js";
 
 /** A module of entries a test merges over the built-in ones (HarnessTableModule), by absolute path. */
@@ -593,22 +594,24 @@ function modulesOf(env: NodeJS.ProcessEnv): string[] {
 const harnessId = new RegExp(HARNESS_ID_PATTERN);
 
 /** The setting that names the recipes a server's table adds and the data directory they are installed in, as a run's
- *  process carries it (HARNESS_RECIPES_SETTING, `--harness-recipe`): JSON `{ "data": dir, "files": [absolute paths] }`. */
+ *  process carries it (HARNESS_RECIPES_SETTING, `--harness-recipe`): JSON `{ "data": dir, "files": [absolute paths],
+ *  "signIn": true }`, `signIn` only from a server whose start proved --harness-sign-in (server.ts harnessSignInRefusal),
+ *  never from the owner's setting, so a runner apart never runs a recipe on its owner's sign-in. */
 export const HARNESS_RECIPES_ENV = "AGENTRUN_HARNESS_RECIPES";
 
 /** The recipes `env` names (HARNESS_RECIPES_ENV): none when it names none. */
-function recipesOf(env: NodeJS.ProcessEnv): { data: string; files: string[] } | undefined {
+function recipesOf(env: NodeJS.ProcessEnv): { data: string; files: string[]; signIn: boolean } | undefined {
   const given = env[HARNESS_RECIPES_ENV];
   if (!given) return undefined;
-  const shape = `${HARNESS_RECIPES_ENV} is JSON { "data": the data directory, "files": recipe paths }`;
-  let parsed: { data?: unknown; files?: unknown } | null;
+  const shape = `${HARNESS_RECIPES_ENV} is JSON { "data": the data directory, "files": recipe paths, "signIn": true or absent }`;
+  let parsed: { data?: unknown; files?: unknown; signIn?: unknown } | null;
   try {
-    parsed = JSON.parse(given) as { data?: unknown; files?: unknown } | null;
+    parsed = JSON.parse(given) as { data?: unknown; files?: unknown; signIn?: unknown } | null;
   } catch {
     throw new Error(shape);
   }
-  if (!parsed || typeof parsed.data !== "string" || !Array.isArray(parsed.files) || !parsed.files.every((file) => typeof file === "string")) throw new Error(shape);
-  return parsed.files.length ? { data: parsed.data, files: parsed.files as string[] } : undefined;
+  if (!parsed || typeof parsed.data !== "string" || !Array.isArray(parsed.files) || !parsed.files.every((file) => typeof file === "string") || (parsed.signIn !== undefined && parsed.signIn !== true)) throw new Error(shape);
+  return parsed.files.length ? { data: parsed.data, files: parsed.files as string[], signIn: parsed.signIn === true } : undefined;
 }
 
 /** The owner's setting that names harness recipes when no option does: recipe files, comma-separated. */
@@ -618,9 +621,10 @@ export const HARNESS_RECIPES_SETTING = "AGENTRUN_SERVE_HARNESS_RECIPES";
 export const harnessRecipesOf = (given: readonly string[] | undefined, env: NodeJS.ProcessEnv): string[] =>
   given?.length ? [...given] : (env[HARNESS_RECIPES_SETTING] ?? "").split(",").map((name) => name.trim()).filter(Boolean);
 
-/** HARNESS_RECIPES_ENV for the recipe files `files` names, installed into `data`: none for none. */
-export const harnessRecipesEnv = (files: readonly string[], data: string): NodeJS.ProcessEnv =>
-  (files.length ? { [HARNESS_RECIPES_ENV]: JSON.stringify({ data: resolve(data), files: files.map((file) => resolve(file)) }) } : {});
+/** HARNESS_RECIPES_ENV for the recipe files `files` names, installed into `data`: none for none. `signIn` only where the
+ *  server's start proved --harness-sign-in. */
+export const harnessRecipesEnv = (files: readonly string[], data: string, { signIn = false }: { signIn?: boolean } = {}): NodeJS.ProcessEnv =>
+  (files.length ? { [HARNESS_RECIPES_ENV]: JSON.stringify({ data: resolve(data), files: files.map((file) => resolve(file)), ...(signIn ? { signIn: true } : {}) }) } : {});
 
 /** The table `env` runs on: the built-in entries; then, only under a test runner (node --test's NODE_TEST_CONTEXT, which a
  *  server's and a run's processes there carry), a test's module's (HARNESS_TABLE_ENV) merged over them by id; then the
@@ -656,10 +660,10 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
     // Then each recipe the owner names (HARNESS_RECIPES_ENV): loaded under its five rules, so a refused one, or one whose
     // id a module or another recipe already adds, refuses the start in words (a recipe never takes a built-in's id).
     for (const file of recipes?.files ?? []) {
-      const entry = recipeServerEntry(file, recipes!.data);
+      const entry = recipeServerEntry(file, recipes!.data, { signIn: recipes!.signIn });
       if (Object.hasOwn(built, entry.id)) throw new Error(`harness recipe ${file} names ${entry.id}, which a harness module or another recipe already adds`);
       built[entry.id] = entry;
-      madeByRecipe.add(entry);
+      madeByRecipe.set(entry, loadRecipe(file).recipe.model.billing);
     }
     table = Object.freeze(built);
     loaded.set(key, table);
@@ -667,14 +671,16 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
   return table;
 }
 
-/** The entries harnessTable made from a recipe (HARNESS_RECIPES_ENV). */
-const madeByRecipe = new WeakSet<HarnessEntry>();
+/** The entries harnessTable made from a recipe (HARNESS_RECIPES_ENV), with the recipe's billing. */
+const madeByRecipe = new WeakMap<HarnessEntry, "proxy" | "plan">();
 
-/** Whether `id` on `env`'s table is a recipe's harness: its install, its check's note and its owner's sign-in are the
- *  server user's alone (0700 and 0600 under `<data>/harnesses`), so its runs run as that user, never a slot's. */
-export const recipeHarness = (env: NodeJS.ProcessEnv, id: string): boolean => {
+/** How `id` on `env`'s table is billed when it is a recipe's harness, else undefined. A recipe's install, its check's
+ *  note and its owner's sign-in are the server user's alone (0700 and 0600 under `<data>/harnesses`), so its runs run as
+ *  that user, never a slot's; and a plan-billed one runs on keys saved for it or, for a person's run alone, its owner's
+ *  own sign-in (harness-recipe-entry.ts serverRoute). */
+export const recipeHarness = (env: NodeJS.ProcessEnv, id: string): "proxy" | "plan" | undefined => {
   const entry = Object.hasOwn(harnessTable(env), id) ? harnessTable(env)[id] : undefined;
-  return entry !== undefined && madeByRecipe.has(entry);
+  return entry === undefined ? undefined : madeByRecipe.get(entry);
 };
 
 /** The owner's setting that names harness modules when no option does: package names or paths, comma-separated. */

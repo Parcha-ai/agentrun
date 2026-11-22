@@ -38,9 +38,10 @@ export type RecipeArchive = ArchiveRelease & { readonly format: ArchiveFormat; r
  *  --gemini-dir DIR`), as T3 Code runs it. `args`: the flags that start that sign-in (`--login`), after the release's
  *  args. `homeArg`: the flag the agent takes the folder it keeps its sign-in in by (`--gemini-dir`), given the owner's
  *  folder (signInHomeOf) on the sign-in and on every run on it. AgentRun never reads, refreshes or sends the sign-in:
- *  the agent alone writes and reads what is in that folder (HARNESS.md#sign-in). Plan billing alone: a proxy-billed agent
- *  runs on the server's key. */
-export type RecipeSignIn = { readonly args: readonly string[]; readonly homeArg: string };
+ *  the agent alone writes and reads what is in that folder (HARNESS.md#sign-in). Plan billing alone, beside its keys: a
+ *  proxy-billed agent runs on the server's key. `terms`: the vendor's terms for it, named in the warning each sign-in
+ *  prints. */
+export type RecipeSignIn = { readonly args: readonly string[]; readonly homeArg: string; readonly terms?: string };
 
 /** The variables a proxy-billed agent may read the proxy's address from: Goose's, and the Anthropic SDKs'. */
 export const PROXY_HOST_ENVS: readonly string[] = Object.freeze(["ANTHROPIC_HOST", "ANTHROPIC_BASE_URL"]);
@@ -268,7 +269,7 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
   } else if (model.billing === "plan") {
     if (!Number.isInteger(model.maxTurns) || (model.maxTurns as number) < 1) say(RECIPE_CODES.invalid, "plan billing needs maxTurns, a whole number of turns of at least 1");
     if (!Number.isInteger(model.maxToolCalls) || (model.maxToolCalls as number) < 0) say(RECIPE_CODES.invalid, "plan billing needs maxToolCalls, a whole number of calls");
-    if (!entries?.length && r.signIn === undefined) say(RECIPE_CODES.invalid, "a plan-billed agent runs on its vendor's key or its owner's sign-in: name the key in keys or the sign-in in signIn");
+    if (!entries?.length) say(RECIPE_CODES.invalid, "a plan-billed agent runs on its vendor's key, the one route its check, a schedule and a shared server take: name the key in keys (a signIn is its owner's own sign-in beside it, on their own machine alone)");
     if (model.hosts !== undefined && (!strings(model.hosts) || model.hosts.length > 16 || !model.hosts.every(vendorHost))) say(RECIPE_CODES.invalid, "model.hosts lists at most 16 hosts the vendor's model is on, each a host name with an optional :port from 1 to 65535 (default 443)");
     // A model id as an agent lists one (`gpt-5.4-nano[reasoning=medium]`): the ACP package's MODEL_ID, the one definition.
     // Without that package no recipe runs (harness-table.ts refuses it by name), so its form goes unchecked here.
@@ -283,7 +284,8 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
   if (signIn !== undefined) {
     if (!isPlain(signIn)) say(RECIPE_CODES.invalid, 'signIn is { "args": the flags that start the agent\'s own sign-in (["--login"]), "homeArg": the flag it takes its sign-in folder by ("--gemini-dir") }');
     else {
-      for (const field of Object.keys(signIn)) if (!["args", "homeArg"].includes(field)) say(RECIPE_CODES.invalid, `signIn.${field} is not a sign-in field`);
+      for (const field of Object.keys(signIn)) if (!["args", "homeArg", "terms"].includes(field)) say(RECIPE_CODES.invalid, `signIn.${field} is not a sign-in field`);
+      if (signIn.terms !== undefined && (typeof signIn.terms !== "string" || URL.parse(signIn.terms)?.protocol !== "https:")) say(RECIPE_CODES.invalid, "signIn.terms, when given, is the https address of the vendor's terms for a person's own sign-in, said at each sign-in");
       if (!strings(signIn.args) || !signIn.args.length) say(RECIPE_CODES.invalid, 'signIn.args is a list of at least one string: the flags that start the agent\'s own sign-in (["--login"])');
       else if (signIn.args.some((arg) => EXPANDS.test(arg))) say(RECIPE_CODES.env, "signIn.args reads the host's environment ($NAME); write each argument out");
       if (typeof signIn.homeArg !== "string" || !LONG_FLAG.test(signIn.homeArg)) say(RECIPE_CODES.invalid, 'signIn.homeArg is the long flag the agent takes the folder it keeps its sign-in in by ("--gemini-dir"), its value given by AgentRun');
@@ -339,7 +341,7 @@ export function parseRecipe(text: string): Recipe {
     state: (r.state ?? []).map((path) => insideHome(path)!),
     declares: r.declares,
     quirks: r.quirks ?? {},
-    ...(r.signIn ? { signIn: Object.freeze({ args: Object.freeze([...r.signIn.args]), homeArg: r.signIn.homeArg }) } : {}),
+    ...(r.signIn ? { signIn: Object.freeze({ args: Object.freeze([...r.signIn.args]), homeArg: r.signIn.homeArg, ...(r.signIn.terms ? { terms: r.signIn.terms } : {}) }) } : {}),
   });
 }
 

@@ -2,14 +2,14 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { follow, scratch, serve, startRun } from "./support.mjs";
 import { zipOf } from "./fixtures/zip-of.mjs";
 
-const [{ installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, RecipeRefused, firstSeenOf }, { ARCHIVE_CODES, archivePlatform, ArchiveInstallFailed }] = await Promise.all([
+const [{ checkedNoteOf, installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, RecipeRefused, firstSeenOf, signedInNoteOf }, { ARCHIVE_CODES, archivePlatform, ArchiveInstallFailed }] = await Promise.all([
   import("../dist/harness-recipe.js"), import("../dist/harness-archive.js"),
 ]);
 const { fakeAnthropic } = await import(new URL("../../run-adapters-acp/test/fake-anthropic.mjs", import.meta.url).href);
@@ -594,14 +594,10 @@ const SIGN_IN_HOME = (data) => join(data, "harnesses", "model-agent.sign-in");
 /** The stand-in's sign-in as agy's is (`agy acp --login --gemini-dir DIR`): its own flag, and the flag naming its folder. */
 const SIGN_IN = { args: ["--login"], homeArg: "--model-agent-dir" };
 /** A plan-billed recipe for the stand-in agent as Antigravity's is: a key saved for it alone and handed as GEMINI_API_KEY
- *  (keyMethod), and its owner's own sign-in (signIn). */
-const signingIn = (origin, { keyed = true, env = {} } = {}) => {
+ *  (keyMethod), the route its check, a schedule and a shared server take, and its owner's own sign-in beside it (signIn). */
+const signingIn = (origin, { env = {} } = {}) => {
   const { keys: _, ...recipe } = planOn(origin, { env: { MODEL_AGENT_AUTH: "1", MODEL_AGENT_READS: "GEMINI_API_KEY", ...env } });
-  return {
-    ...recipe,
-    ...(keyed ? { keys: [{ name: "MODEL_AGENT_GEMINI_API_KEY", env: "GEMINI_API_KEY" }], keyMethod: "model-agent-api-key" } : {}),
-    signIn: SIGN_IN,
-  };
+  return { ...recipe, keys: [{ name: "MODEL_AGENT_GEMINI_API_KEY", env: "GEMINI_API_KEY" }], keyMethod: "model-agent-api-key", signIn: SIGN_IN };
 };
 
 /** `agentrun-serve sign-in-harness` on `file` and `data`, the test as the person at its terminal: the agent prints the
@@ -635,26 +631,29 @@ test("harness-check runs a recipe that also signs a person in on its key alone: 
   for (const [where, text] of [["the report on disk", run.written], ["stdout", run.stdout], ["stderr", run.stderr]]) {
     for (const secret of [SAVED_KEY, SERVER_KEY]) assert.equal(text.includes(secret), false, `${where} holds a key`);
   }
-  // Without its key and with no sign-in, the run is refused by its code before anything starts, naming both routes; the
-  // server's own GEMINI_API_KEY is neither.
+  // Without its key, the check is refused by its code, naming the key, before the vendor hears anything: signed in or
+  // not, a check never runs on its owner's sign-in, and the server's own GEMINI_API_KEY is no key of the harness's.
   const keyless = await installed(t, (o) => signingIn(o));
+  assert.equal((await signIn(keyless.file, keyless.data)).status, 0);
   const refused = await check(t, keyless.file, keyless.data, cliEnv({ GEMINI_API_KEY: SERVER_KEY }));
   assert.equal(refused.status, 1);
-  assert.equal(refused.report.refused.code, "HARNESS_NOT_SIGNED_IN");
-  assert.match(refused.report.refused.message, /set MODEL_AGENT_GEMINI_API_KEY[^"]*agentrun harness sign-in --recipe/);
-  assert.equal(keyless.origin.messages().length, 0);
+  assert.match(JSON.stringify(refused.report), /ACP_KEY_MISSING[^"]*MODEL_AGENT_GEMINI_API_KEY/);
+  assert.doesNotMatch(`${refused.stdout}\n${refused.stderr}`, /runs on its owner's sign-in/);
+  assert.equal(keyless.origin.messages().length, 0, "the vendor heard nothing: no key, and never the sign-in");
+  assert.equal(existsSync(checkedNoteOf(keyless.data, "model-agent")), false, "no pass is noted");
 });
 
-test("a person signs the agent in with `agentrun harness sign-in`: the agent's own --login on their terminal, its stdin theirs with nothing between, its sign-in in its folder alone; harness-check then runs on that sign-in, and no byte of it reaches the report or the output", { skip: linux, timeout: 120_000 }, async (t) => {
-  const { data, file, origin } = await installed(t, (o) => signingIn(o, { keyed: false }));
-  const before = await check(t, file, data, cliEnv());
-  assert.equal(before.status, 1);
-  assert.equal(before.report.refused.code, "HARNESS_NOT_SIGNED_IN", before.report.refused.message);
-  assert.match(before.report.refused.message, /agentrun harness sign-in --recipe/, "it names the sign-in");
-  assert.equal(origin.messages().length, 0);
-
+test("a person signs the agent in with `agentrun harness sign-in`: one line first warning that the vendor's terms, the recipe's signIn.terms, may not cover it, then the agent's own --login on their terminal, its stdin theirs with nothing between, its sign-in in its folder alone; harness-check never runs on it", { skip: linux, timeout: 120_000 }, async (t) => {
+  const TERMS = "https://vendor.example.invalid/terms";
+  const { data, file, origin } = await installed(t, (o) => {
+    const recipe = signingIn(o);
+    return { ...recipe, signIn: { ...recipe.signIn, terms: TERMS } };
+  });
   const signed = await signIn(file, data, { env: cliEnv({ MODEL_AGENT_GEMINI_API_KEY: SAVED_KEY }) });
   assert.equal(signed.status, 0, `${signed.stdout}\n${signed.stderr}`);
+  // A warning, never a refusal: the sign-in goes on.
+  const warning = `Model Agent's own sign-in: its vendor's terms may not cover use through AgentRun (${TERMS}). Your choice, on your own machine, at your own account's risk.`;
+  assert.equal(`${signed.stdout}\n${signed.stderr}`.split("\n").filter((line) => line.includes(warning)).length, 1, `${signed.stdout}\n${signed.stderr}`);
   assert.match(signed.stdout, /https:\/\/accounts\.example\.invalid\/o\/oauth2\/auth\?/, "the agent's own address, on the person's terminal");
   assert.match(signed.stderr, /model-agent: stdin: the caller's/, "the agent reads the person's own terminal: nothing of AgentRun's sits between");
   assert.match(signed.stdout, /Signed in/);
@@ -662,31 +661,28 @@ test("a person signs the agent in with `agentrun harness sign-in`: the agent's o
   assert.equal(readFileSync(join(SIGN_IN_HOME(data), "token.json"), "utf8").trim(), TOKEN, "the agent wrote its sign-in into its own folder");
   assert.equal(origin.messages().length, 0, "a sign-in prompts nothing");
 
-  // Signed in, the check runs on the owner's sign-in: no key, no `authenticate`, the agent reading its own folder.
-  const after = await check(t, file, data, cliEnv());
+  // Signed in, the check still runs on the recipe's key alone: the vendor hears the key, never the sign-in.
+  const after = await check(t, file, data, cliEnv({ MODEL_AGENT_GEMINI_API_KEY: SAVED_KEY }));
   assert.equal(after.status, 0, `${after.stdout}\n${after.stderr}\n${JSON.stringify(after.report?.stage3 ?? after.report?.refused)}`);
-  assert.match(after.stderr, /runs on its owner's sign-in/);
   assert.ok(origin.messages().length >= 4);
-  assert.ok(origin.messages().every((r) => r.headers["x-api-key"] === TOKEN), "the vendor heard the sign-in, from the agent");
+  assert.ok(origin.messages().every((r) => r.headers["x-api-key"] === SAVED_KEY), "the vendor heard the harness's key, never the sign-in");
   for (const [where, text] of [["the report on disk", after.written], ["stdout", after.stdout], ["stderr", after.stderr]]) assert.equal(text.includes(TOKEN), false, `${where} holds the sign-in`);
 
-  // An agent that prints its credential as it fails, on a sign-in: nothing it prints is kept (stderr "none").
-  const leaky = await installed(t, (o) => signingIn(o, { keyed: false, env: { MODEL_AGENT_MODE: "leak-key" } }));
-  assert.equal((await signIn(leaky.file, leaky.data)).status, 0);
-  const leaked = await check(t, leaky.file, leaky.data, cliEnv());
-  assert.equal(leaked.status, 1);
-  for (const [where, text] of [["the report on disk", leaked.written], ["stdout", leaked.stdout], ["stderr", leaked.stderr]]) assert.equal(text.includes(TOKEN), false, `${where} holds the sign-in`);
+  // A recipe that names no terms is warned all the same, naming none.
+  const plain = await installed(t, (o) => signingIn(o));
+  const bare = await signIn(plain.file, plain.data);
+  assert.match(`${bare.stdout}\n${bare.stderr}`, /Model Agent's own sign-in: its vendor's terms may not cover use through AgentRun\. Your choice, on your own machine, at your own account's risk\./);
 });
 
 test("`agentrun harness sign-in` says how the agent's own sign-in ended, and refuses a recipe with no signIn and an agent not installed, by their codes", { skip: linux, timeout: 120_000 }, async (t) => {
-  // The person gives no code: the agent's --login exits 1, and the check still finds no sign-in.
-  const cancelled = await installed(t, (o) => signingIn(o, { keyed: false }));
+  // The person gives no code: the agent's --login exits 1, and no sign-in is noted.
+  const cancelled = await installed(t, (o) => signingIn(o));
   const none = await signIn(cancelled.file, cancelled.data, { code: "" });
   assert.equal(none.status, 1);
   assert.match(none.stderr, /login cancelled/, "the agent's own words, on the person's terminal");
   assert.match(none.stderr, /HARNESS_SIGN_IN_FAILED: [^\n]*exit status 1/);
   assert.equal(existsSync(join(SIGN_IN_HOME(cancelled.data), "token.json")), false);
-  assert.equal((await check(t, cancelled.file, cancelled.data, cliEnv())).report.refused.code, "HARNESS_NOT_SIGNED_IN");
+  assert.equal(existsSync(signedInNoteOf(cancelled.data, "model-agent")), false);
 
   const keysOnly = await installed(t, (o) => planOn(o));
   const nothing = await signIn(keysOnly.file, keysOnly.data);
@@ -694,14 +690,14 @@ test("`agentrun harness sign-in` says how the agent's own sign-in ended, and ref
   assert.match(nothing.stderr, /HARNESS_NO_SIGN_IN: [^\n]*MODEL_AGENT_API_KEY/);
 
   const data = join(await scratch(t), "agents");
-  const file = await recipeFile(t, signingIn({ url: "http://127.0.0.1:9" }, { keyed: false }));
+  const file = await recipeFile(t, signingIn({ url: "http://127.0.0.1:9" }));
   const absent = await signIn(file, data);
   assert.equal(absent.status, 1);
   assert.match(absent.stderr, /HARNESS_NOT_INSTALLED: [^\n]*agentrun harness install --recipe/);
   assert.equal(existsSync(SIGN_IN_HOME(data)), false, "no folder for an agent not installed");
 
   // An agent that dies as it starts: its exit status and our code.
-  const dying = await installed(t, (o) => signingIn(o, { keyed: false, env: { MODEL_AGENT_WANT_ARG: "--never-given" } }));
+  const dying = await installed(t, (o) => signingIn(o, { env: { MODEL_AGENT_WANT_ARG: "--never-given" } }));
   const died = await signIn(dying.file, dying.data);
   assert.equal(died.status, 1);
   assert.match(died.stderr, /HARNESS_SIGN_IN_FAILED: [^\n]*exit status 2/);
@@ -715,7 +711,7 @@ test("a sign-in that runs out of time ends with everything it started: a launche
   const pidFile = join(dir, "child.pid");
   // The launcher starts a child of its own and waits on it, so killing the launcher alone would leave the child running.
   const built = await release(t, `sleep 300 & echo $! > '${pidFile}'; echo $$ > '${pidFile}.shell'; wait\n`);
-  const recipe = signingIn(origin, { keyed: false });
+  const recipe = signingIn(origin);
   const file = await recipeFile(t, { ...recipe, release: { ...recipe.release, archives: { [PLATFORM]: { ...recipe.release.archives[PLATFORM], sha256: built.archiveSha } } } });
   const data = join(dir, "agents");
   await installRecipe(loadRecipe(file).recipe, file, data, { fetch: servedFetch(built.bytes) });
@@ -749,9 +745,16 @@ test("a recipe's keys and sign-in are checked: keys handed under the name the ag
   assert.deepEqual(parsed.keyEnv, { [KEY.name]: KEY.env });
   assert.equal(parsed.keyMethod, "model-agent-api-key");
   assert.deepEqual(parsed.signIn, SIGN_IN);
-  assert.equal(parseRecipe(JSON.stringify(recipeOf(undefined, { model: plan, signIn: SIGN_IN }))).keys.length, 0, "a sign-in alone loads");
+  const TERMS = "https://vendor.example.invalid/terms";
+  assert.deepEqual(parseRecipe(JSON.stringify(both({}, { ...SIGN_IN, terms: TERMS }))).signIn, { ...SIGN_IN, terms: TERMS }, "the vendor's terms, said at each sign-in");
 
   const cases = [
+    // A plan-billed agent runs on its key, the one route a check, a schedule and a shared server take: a sign-in alone is
+    // no route of theirs.
+    ["a sign-in alone, with no key", recipeOf(undefined, { model: plan, signIn: SIGN_IN }), RECIPE_CODES.invalid],
+    ["terms not an https address", both({}, { ...SIGN_IN, terms: "http://vendor.example.invalid/terms" }), RECIPE_CODES.invalid],
+    ["terms not an address", both({}, { ...SIGN_IN, terms: "see the vendor's site" }), RECIPE_CODES.invalid],
+    ["terms not a string", both({}, { ...SIGN_IN, terms: ["https://vendor.example.invalid/terms"] }), RECIPE_CODES.invalid],
     ["proxy billing signs in with the server's key", recipeOf(undefined, { signIn: SIGN_IN }), RECIPE_CODES.invalid],
     // The shape before the agent's own --login: a method sent with ACP authenticate, a folder by variable, attended runs.
     ["the old method field", both({}, { ...SIGN_IN, method: "model-agent-login" }), RECIPE_CODES.invalid],
@@ -781,9 +784,9 @@ test("a recipe's keys and sign-in are checked: keys handed under the name the ag
     ["keyMethod with no keys", recipeOf(undefined, { model: plan, keyMethod: "model-agent-api-key", signIn: SIGN_IN }), RECIPE_CODES.invalid],
   ];
   for (const [why, recipe, code] of cases) assert.ok(refusalOf(recipe).codes.includes(code), `${why}: ${refusalOf(recipe).message}`);
-  const neither = refusalOf(recipeOf(undefined, { model: plan }));
+  const neither = refusalOf(recipeOf(undefined, { model: plan, signIn: SIGN_IN }));
   assert.equal(neither.code, RECIPE_CODES.invalid);
-  assert.match(neither.message, /in keys or the sign-in in signIn/);
+  assert.match(neither.message, /plan-billed agent runs on its vendor's key[^"]*name the key in keys/);
 });
 
 test("a key's handed name and env never name a variable that changes what the agent's process loads or runs", () => {
@@ -860,7 +863,7 @@ test("the Antigravity example recipe loads under the five rules: agy CLI 1.5.14 
   }
   assert.deepEqual(recipe.args, ["acp", "--disable-telemetry"]);
   assert.deepEqual(recipe.env, { AGY_CLI_DISABLE_AUTO_UPDATE: "1", AGY_ACP_FORCE_FILE_STORAGE: "1" });
-  assert.deepEqual(recipe.signIn, { args: ["--login"], homeArg: "--gemini-dir" });
+  assert.deepEqual(recipe.signIn, { args: ["--login"], homeArg: "--gemini-dir", terms: "https://antigravity.google/terms" });
   assert.equal(recipe.model.billing, "plan");
   assert.deepEqual(recipe.keys, ["ANTIGRAVITY_GEMINI_API_KEY"]);
   assert.deepEqual(Object.entries(recipe.keyEnv), [["ANTIGRAVITY_GEMINI_API_KEY", "GEMINI_API_KEY"]]);
@@ -921,19 +924,27 @@ test("a server takes a recipe it names only once its install is checked: hidden 
   writeFileSync(checkedNoteOf(proxy.data, "model-agent"), JSON.stringify({ ...note, binary: "0".repeat(64) }));
   assert.match(entry.hidden(env), /^HARNESS_NOT_CHECKED: .*changed since the last check that passed/);
 
-  // On its keys alone: never on a server, whatever its key, since a recipe's keys reach no run there.
+  // Plan-billed: on keys saved for its harness alone, which no server saves yet, whatever key the server's shell holds.
   const keyed = await installed(t, (o) => planOn(o));
   await noteChecked(keyed.data, keyed.file);
   const keyedEnv = { ...harnessRecipesEnv([keyed.file], keyed.data), MODEL_AGENT_API_KEY: "fake-test-key" };
-  assert.match(harnessOf(keyedEnv, "model-agent").hidden(keyedEnv), /^HARNESS_KEYS_UNSUPPORTED: /);
+  assert.match(harnessOf(keyedEnv, "model-agent").hidden(keyedEnv), /^HARNESS_KEYS_NOT_SAVED: .*MODEL_AGENT_API_KEY.*saved for this harness alone/);
 
-  // With a sign-in: hidden until its owner signs the agent in, naming the command; then listed.
-  const signing = await installed(t, (o) => signingIn(o, { keyed: false }));
+  // With a sign-in too: still its keys, signed in or not, on a server its owner did not start with --harness-sign-in
+  // (a shared one, a deployed one, a runner apart reading the owner's setting).
+  const signing = await installed(t, (o) => signingIn(o));
   await noteChecked(signing.data, signing.file);
-  const signingEnv = harnessRecipesEnv([signing.file], signing.data);
-  assert.match(harnessOf(signingEnv, "model-agent").hidden(signingEnv), /^HARNESS_NOT_SIGNED_IN: .*on a server.*sign its agent in with: agentrun harness sign-in --recipe/);
   writeFileSync(signedInNoteOf(signing.data, "model-agent"), "{}\n");
-  assert.equal(harnessOf(signingEnv, "model-agent").hidden(signingEnv), undefined);
+  const sharedEnv = harnessRecipesEnv([signing.file], signing.data);
+  assert.match(harnessOf(sharedEnv, "model-agent").hidden(sharedEnv), /^HARNESS_KEYS_NOT_SAVED: .*--harness-sign-in runs it on your own sign-in/);
+  // On its owner's own machine (--harness-sign-in): hidden until its owner signs the agent in, naming the command; then listed.
+  const ownEnv = harnessRecipesEnv([signing.file], signing.data, { signIn: true });
+  assert.equal(harnessOf(ownEnv, "model-agent").hidden(ownEnv), undefined);
+  rmSync(signedInNoteOf(signing.data, "model-agent"));
+  assert.match(harnessOf(ownEnv, "model-agent").hidden(ownEnv), /^HARNESS_NOT_SIGNED_IN: .*--harness-sign-in.*sign it in with: agentrun harness sign-in --recipe/);
+  // A proxy-billed recipe is the same on either: the model proxy.
+  await noteChecked(proxy.data, proxy.file);
+  assert.equal(harnessOf(harnessRecipesEnv([proxy.file], proxy.data, { signIn: true }), "model-agent").hidden(harnessRecipesEnv([proxy.file], proxy.data, { signIn: true })), undefined);
 
   // At the start: a recipe the loader refuses, or two recipes of one id, refuse it in words.
   const foo = await recipeFile(t, recipeOf(undefined, { keys: ["FOO_CRED"] }));
@@ -974,6 +985,69 @@ test("where each run is a user of its own, a run on a recipe's harness is refuse
   assert.equal(await host.staysInRunner(deps, "pi", launch, "run-own", { kind: "uid", helper: "/nonexistent/agentrun-runas", first: 0, slots: 1 }), false);
 });
 
+test("a run no person started (a schedule's, a trigger's) on a plan-billed recipe is refused at its claim on every path, even on its owner's own machine: it runs on keys saved for its harness, never the owner's sign-in", async (t) => {
+  const [host, loops, { harnessRecipesEnv }] = await Promise.all([import("../dist/runner/run-child-host.js"), import("../dist/runner/harness-loops.js"), import("../dist/harness-table.js")]);
+  const data = join(await scratch(t), "agents");
+  const own = harnessRecipesEnv([await recipeFile(t, signingIn({ url: "http://127.0.0.1:9" }))], data, { signIn: true });
+  const deps = { data, env: own, sealKey: Buffer.alloc(32), store: { settings: { get: async () => null } } };
+  const person = { input: {}, place: { mode: "runner" } };
+  const scheduled = { ...person, trigger: { triggerId: "trg_nightly", firingId: "fir_1" } };
+  const sameUser = { kind: "process", why: "AGENTRUN_RUN_USER=same" };
+  const refusedFor = (error) => {
+    assert.equal(error.name, "ClaimRefused", error.stack);
+    assert.equal(error.message, host.RECIPE_SIGN_IN_PERSON_ONLY);
+    assert.match(error.message, /never on its owner's own sign-in/);
+    return true;
+  };
+  await assert.rejects(host.staysInRunner(deps, "model-agent", scheduled, "run-nightly", sameUser), refusedFor);
+  // The runner's own dispatch (no process of its own per run) refuses it too, before any loop is made.
+  await assert.rejects(loops.resolveRunnerLoop(deps)("model-agent", scheduled, "run-nightly"), refusedFor);
+  assert.throws(() => loops.refuseRecipeTriggerRun(own, "model-agent", scheduled), refusedFor);
+  // A person's run is not, nor a scheduled run on a proxy-billed recipe (the model proxy) or a built-in harness.
+  assert.equal(await host.staysInRunner(deps, "model-agent", person, "run-own", sameUser), false);
+  const proxied = harnessRecipesEnv([await recipeFile(t, recipeOf())], data, { signIn: true });
+  loops.refuseRecipeTriggerRun(proxied, "model-agent", scheduled);
+  loops.refuseRecipeTriggerRun(own, "pi", scheduled);
+});
+
+test("--harness-sign-in starts only one owner's own server on their own machine: loopback with no public address, the SQLite store in its data directory, its runs beside it as its own user, an owner and one token; anything else refuses the start in words", async (t) => {
+  const { harnessSignInRefusal, HARNESS_SIGN_IN_NOT_LOCAL, startServe } = await import("../dist/server.js");
+  const { runsAsOwnUser } = await import("../dist/runner/run-child-host.js");
+  const data = join(await scratch(t), "agents");
+  assert.equal(harnessSignInRefusal({}, data, true), undefined, "the default start: 127.0.0.1, SQLite, a runner beside it");
+  assert.equal(harnessSignInRefusal({ host: "localhost" }, data, true), undefined);
+  const cases = [
+    [{ host: "0.0.0.0" }, true, /listens on 0\.0\.0\.0, past loopback/],
+    [{ publicUrl: "https://agents.example.invalid" }, true, /has a public address/],
+    [{ runnerApart: true }, true, /--no-runner/],
+    [{}, false, /runs each run as a user of its own/],
+    [{ apiOnly: true }, true, /no owner \(the API-only profile\)/],
+    [{ tokens: [{ id: "a", token: "x" }, { id: "b", token: "y" }] }, true, /takes 2 API tokens/],
+  ];
+  for (const [options, ownUser, words] of cases) {
+    const refused = harnessSignInRefusal(options, data, ownUser);
+    assert.match(refused ?? "", new RegExp(`^${HARNESS_SIGN_IN_NOT_LOCAL}: `), JSON.stringify(options));
+    assert.match(refused, words);
+    assert.match(refused, /Start it without --harness-sign-in/);
+  }
+  // A store in Postgres is shared by servers elsewhere: refused, by the variable that names it.
+  const before = process.env.AGENTRUN_STORE_URL;
+  process.env.AGENTRUN_STORE_URL = "postgres://agentrun.example.invalid/agentrun";
+  try {
+    assert.match(harnessSignInRefusal({}, data, true) ?? "", /keeps its store in Postgres \(AGENTRUN_STORE_URL\)/);
+  } finally {
+    if (before === undefined) delete process.env.AGENTRUN_STORE_URL;
+    else process.env.AGENTRUN_STORE_URL = before;
+  }
+  // Runs as the server's own user: AGENTRUN_RUN_USER=same, or no helper to switch with and slot not asked for.
+  assert.equal(runsAsOwnUser({ AGENTRUN_RUN_USER: "same" }, "/nonexistent/agentrun-runas"), true);
+  assert.equal(runsAsOwnUser({}, "/nonexistent/agentrun-runas"), true);
+  assert.equal(runsAsOwnUser({ AGENTRUN_RUN_USER: "slot" }, "/nonexistent/agentrun-runas"), false);
+  assert.equal(runsAsOwnUser({}, process.execPath), false, "a helper is there: each run a user of its own");
+  // And the start itself refuses, before it serves anything.
+  await assert.rejects(startServe({ data, port: 0, host: "0.0.0.0", harnessSignIn: true }), new RegExp(`${HARNESS_SIGN_IN_NOT_LOCAL}: .*past loopback`));
+});
+
 test("a server started with --harness-recipe says so in the store, so a runner apart without the recipe fails its check", async (t) => {
   const file = await recipeFile(t, recipeOf());
   const { store } = await serve(t, { harnessRecipes: [file], runner: false });
@@ -981,14 +1055,29 @@ test("a server started with --harness-recipe says so in the store, so a runner a
   assert.ok((await serverRunEnv(store)).includes("AGENTRUN_SERVE_HARNESS_RECIPES"), "the recipe setting is one a runner needs");
 });
 
-test("a server runs a recipe it names on its owner's sign-in: checked first, then each run's agent handed its folder alone, and the vendor hears the sign-in from the agent", { skip: linux, timeout: 180_000 }, async (t) => {
-  const { data, file, origin } = await installed(t, (o) => signingIn(o, { keyed: false }));
+test("a server its owner starts with --harness-sign-in on their own machine runs a recipe on the owner's sign-in: checked on its key first, then each person's run's agent handed its folder alone, and the vendor hears the sign-in from the agent; started without it, the run is refused for its keys", { skip: linux, timeout: 180_000 }, async (t) => {
+  const { data, file, origin } = await installed(t, (o) => signingIn(o));
   assert.equal((await signIn(file, data)).status, 0);
-  const checked = await check(t, file, data, cliEnv());
+  const checked = await check(t, file, data, cliEnv({ MODEL_AGENT_GEMINI_API_KEY: SAVED_KEY }));
   assert.equal(checked.status, 0, `${checked.stdout}\n${checked.stderr}`);
   assert.ok(existsSync(join(data, "harnesses", "model-agent.checked")), "the pass is noted");
+
+  // Without --harness-sign-in (a shared or deployed server): never the sign-in, signed in and checked as it is, so the
+  // run is refused for its keys and the vendor hears nothing.
+  const sharedCopy = await installed(t, (o) => signingIn(o));
+  assert.equal((await signIn(sharedCopy.file, sharedCopy.data)).status, 0);
+  await noteChecked(sharedCopy.data, sharedCopy.file);
+  const shared = await serve(t, { data: sharedCopy.data, harnessRecipes: [sharedCopy.file] });
+  const keysFirst = await startRun(shared.api, "shared", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" }).catch((error) => ({ error }));
+  if (keysFirst.run_id) {
+    const { last } = await follow(shared.api, keysFirst.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+    assert.equal(last.status, "failed", JSON.stringify(last));
+    assert.match(JSON.stringify(last), /HARNESS_KEYS_NOT_SAVED/);
+  } else assert.match(String(keysFirst.error?.message), /HARNESS_KEYS_NOT_SAVED/);
+  assert.equal(sharedCopy.origin.messages().length, 0, "the vendor heard nothing from a shared server");
   const before = origin.messages().length;
-  const { api } = await serve(t, { data, harnessRecipes: [file] });
+
+  const { api } = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true });
   const offer = (await api("GET", "/capabilities")).body.harnesses.find((each) => each.id === "model-agent");
   assert.deepEqual([offer?.label, offer?.available, offer?.promises?.billing], ["Model Agent", true, "plan"], JSON.stringify(offer));
   const started = await startRun(api, "on-sign-in", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
@@ -1000,12 +1089,12 @@ test("a server runs a recipe it names on its owner's sign-in: checked first, the
 
   // model.hosts holds on a run as on the check: an agent whose vendor is not among them never reaches it.
   const elsewhere = await installed(t, (o) => {
-    const recipe = signingIn(o, { keyed: false });
+    const recipe = signingIn(o);
     return { ...recipe, model: { ...recipe.model, hosts: ["vendor.example.invalid"] } };
   });
   assert.equal((await signIn(elsewhere.file, elsewhere.data)).status, 0);
   await noteChecked(elsewhere.data, elsewhere.file);
-  const second = await serve(t, { data: elsewhere.data, harnessRecipes: [elsewhere.file] });
+  const second = await serve(t, { data: elsewhere.data, harnessRecipes: [elsewhere.file], harnessSignIn: true });
   const refused = await startRun(second.api, "elsewhere", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
   const ended = await follow(second.api, refused.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
   assert.equal(ended.last.status, "failed", JSON.stringify(ended.last));

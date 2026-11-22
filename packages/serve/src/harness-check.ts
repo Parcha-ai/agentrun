@@ -28,7 +28,7 @@ import { ARCHIVE_CODES, archivePlatform, digestOf } from "./harness-archive.js";
 import { egressProxy, egressVars } from "./harness-egress.js";
 import { installDirOf } from "./harness-install.js";
 import { AGENT_VARS, loadRecipe, pinnedDigest, pinnedTree, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor, writeChecked } from "./harness-recipe.js";
-import { recipeEntryOf, recipeRoute } from "./harness-recipe-entry.js";
+import { recipeEntryOf } from "./harness-recipe-entry.js";
 import { providerModels } from "./model.js";
 import { capModelOf } from "./runner/cli-run-spec.js";
 import { keyShaped } from "./secret-name.js";
@@ -39,7 +39,6 @@ import { hostSecrets, SECRET_NAMES } from "./secrets.js";
 const SHELL_OWN = ["PWD", "OLDPWD", "SHLVL", "_"];
 
 export const CHECK_DEFAULT_CAP_USD = 0.25;
-export { HARNESS_NOT_SIGNED_IN } from "./harness-recipe-entry.js";
 const TURN_MS = 240_000;
 
 export interface HarnessCheckOptions {
@@ -201,14 +200,10 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   const head = { recipe: { id: recipe.id, label: recipe.label, file: loaded.file, sha256: loaded.sha256 }, checkedAt } as const;
   const refuse = (code: string, message: string): HarnessCheckReport => ({ ok: false, ...head, refused: { code, message: `${code}: ${message}` }, failures: [`${code}: ${message}`] });
   say(`${recipe.label}: the recipe holds the five rules (${loaded.file})`);
-  // What the agent runs on: the recipe's keys where every one is set here, else its owner's own sign-in where the agent's
-  // sign-in ended well on this data directory (as T3 Code runs Antigravity, on its owner's own install). On the sign-in the
-  // agent is handed its folder's path (signIn.homeArg) and nothing else: no key, no ACP authenticate, and none of its words
-  // kept (stderr "none"), since no cut knows its token. AgentRun never reads, refreshes or sends it (HARNESS.md#sign-in).
-  const route = recipeRoute(recipe, loaded.file, options.data, options.env, { keys: true });
-  if ("refused" in route) return refuse(route.refused, route.message);
-  const signInHome = route.on === "sign-in" ? route.home : undefined;
-  if (signInHome) say(`${recipe.label}: runs on its owner's sign-in, its agent handed ${recipe.signIn!.homeArg} ${signInHome}; AgentRun never reads it`);
+  // What the agent runs on: the recipe's keys, read from this shell, alone (a proxy-billed one's: none, the model proxy's).
+  // A check never runs on its owner's own sign-in, which a schedule, a check and a shared server never take
+  // (HARNESS.md#sign-in): a plan-billed recipe whose key is not set here is refused before its agent starts.
+  const route = { on: "keys" } as const;
 
   // Stage 2's pins: the installed binary, the one the owner's install put there. Nothing is downloaded here.
   const platform = options.platform ?? archivePlatform();
@@ -286,8 +281,8 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   // agent from here alone (the adapter's recipe.keys, as a run's do): a host without one is refused before the start.
   const hostEnv: NodeJS.ProcessEnv = Object.create(env, { HARNESS_CHECK_CANARY: { value: canary, enumerable: true } });
   // The values of every key the host holds, the server's own included: withSecrets keeps those off its enumeration, so
-  // each is read by name. On the owner's sign-in, the recipe's own keys reach the agent no more than the server's do.
-  const hostKeys = keyValues(env, signInHome ? [] : recipe.keys);
+  // each is read by name.
+  const hostKeys = keyValues(env, recipe.keys);
   const childVars: Record<string, string> = { ...recipe.env, ...egressVars(egress.url) };
   // The run's model id reaches a proxy-billed agent under the variable its recipe names.
   const modelVar = recipe.model.billing === "proxy" ? recipe.model.env : undefined;

@@ -65,7 +65,7 @@ import { workflowsAt } from "./learning-seed.js";
 import { heldMcpOf, mcpForClaim } from "./mcp-run.js";
 import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
-import { resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
+import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
 import { loginForRun } from "../claude-login.js";
 import type { Held, HeldComputerAsk } from "./held.js";
@@ -130,6 +130,11 @@ const execText = (file: string, args: readonly string[], timeoutMs: number): Pro
       resolve({ code: -1, stdout: "", stderr: (error as Error)?.message ?? String(error) });
     }
   });
+
+/** Whether runIsolationOf gives `env` on this host `process` (every run as the runner's own user), told before it is
+ *  asked: `same`, or no helper and not `slot`. A helper that is there but cannot switch refuses the runner instead. */
+export const runsAsOwnUser = (env: NodeJS.ProcessEnv, helper: string = RUNAS_HELPER): boolean =>
+  env[RUN_USER_ENV] === "same" || (!existsSync(helper) && env[RUN_USER_ENV] !== "slot");
 
 /** This host's isolation for `loops` runs at once, by `env` and the helper: the helper's own check that it can switch
  *  (its effective set holds what it needs) decides `uid`; none installed (a local install), `process`; `same`, `process`
@@ -1036,6 +1041,7 @@ export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "n
 export const LOGIN_NEEDS_SERVER_USER = `A run on Claude Code's login on this machine needs runs under the server's own user, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same, or give the run a model_key.`;
 /** The words a run on a harness recipe is refused in where each run is a user of its own (harness-table.ts recipeHarness). */
 export const RECIPE_NEEDS_SERVER_USER = `A run on a harness recipe needs runs under the server's own user, since its install, its check and its owner's sign-in are that user's alone, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same on this runner.`;
+export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
 
 /** Whether run `runId` stays in its runner's process: runsInRunner's, and a workflow run on a server with a documents
  *  directory (launch.documents), whose reads and writes (a pdf_pages call's pages) are rooted in a folder the server's
@@ -1046,10 +1052,12 @@ export const RECIPE_NEEDS_SERVER_USER = `A run on a harness recipe needs runs un
  *  the server's user. A run its caller handed a model key (model_key) runs on that key and never on the login
  *  (cli-run-spec.ts), so it is a process of its own like any other. */
 export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<boolean> {
-  if (runsInRunner(harness, launch)) return true;
   // A recipe's harness reads its install, its check's note and its owner's sign-in, each the server user's alone: never
-  // opened to a slot's user (the sign-in least of all), so where each run is a user of its own it is refused here.
+  // opened to a slot's user (the sign-in least of all), so where each run is a user of its own it is refused here. And a
+  // plan-billed one's run that no person started (a schedule's, a trigger's) never runs on its owner's sign-in.
   if (isolation.kind === "uid" && recipeHarness(deps.env ?? {}, harness)) throw new ClaimRefused(RECIPE_NEEDS_SERVER_USER);
+  refuseRecipeTriggerRun(deps.env ?? {}, harness, launch);
+  if (runsInRunner(harness, launch)) return true;
   if (launch.documents !== undefined) {
     const run = await deps.store.runs.get(runId);
     const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
