@@ -22,22 +22,37 @@ export function recordingStart(rows: readonly TimelineRow[], path: string): numb
   return undefined;
 }
 
-/** The run's steps (lib/timeline's `steps`, as the Timeline tab tells them) that began while `recording` was being
- *  made, each at its time on the video: its row's time less the recording's start. None when the timeline doesn't say
- *  when the recording began. A step's time is the timeline's, so the video shows it within about a second of there. The
+/** When a step happened, in ms. A tool's call row is dated when the model's turn began, which can be long before the
+ *  tool ran (the model thinking, or the call held while a person had the computer), so a tool step is placed when it
+ *  ran: at its first computer call's start where the server kept its calls (`computer_calls`), else when its result
+ *  came (its call's time and how long to its result). Any other step, and a call with no result yet, at its row's time. */
+function happenedAt(step: Step): number {
+  const called = step.row.computer_calls?.[0]?.started_at;
+  const at = called ? Date.parse(called) : Number.NaN;
+  return Number.isNaN(at) ? Date.parse(step.row.timestamp) + (step.ms ?? 0) : at;
+}
+
+/** The run's steps (lib/timeline's `steps`, as the Timeline tab tells them) that happened while `recording` was being
+ *  made, each at its time on the video (when it happened, less the recording's start), in the video's order: a call
+ *  that waited for a person's hand-back comes after the take-over it waited on. None when the timeline doesn't say when
+ *  the recording began. The times are the timeline's, so the video shows a step within about a second of there. The
  *  run's cost row is not a step of the screen and is left out. */
 export function videoSteps(rows: readonly TimelineRow[], recording: Pick<RunRecording, "path" | "seconds">): VideoStep[] {
   const start = recordingStart(rows, recording.path);
   if (start === undefined) return [];
   const end = start + recording.seconds * 1000;
-  return steps(rows).flatMap((step) => {
-    if (step.row.kind === "usage") return [];
-    const at = Date.parse(step.row.timestamp);
-    return Number.isNaN(at) || at < start || at > end ? [] : [{ step, at: (at - start) / 1000 }];
-  });
+  return steps(rows)
+    .flatMap((step) => {
+      if (step.row.kind === "usage") return [];
+      const at = happenedAt(step);
+      return Number.isNaN(at) || at < start || at > end ? [] : [{ step, at: (at - start) / 1000 }];
+    })
+    // By time, the timeline's order kept between steps of one instant (the sort is stable).
+    .sort((a, b) => a.at - b.at);
 }
 
-/** The step the video is at: the last that began at or before `seconds`, by its place in `told`; -1 before the first. */
+/** The step the video is at: the last that happened at or before `seconds`, by its place in `told` (in the video's
+ *  order, as videoSteps gives it); -1 before the first. */
 export function stepAt(told: readonly VideoStep[], seconds: number): number {
   let at = -1;
   for (let i = 0; i < told.length; i += 1) if (told[i]!.at <= seconds) at = i;
