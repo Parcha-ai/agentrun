@@ -87,6 +87,9 @@ export type Item = {
   created?: { agent_id: string; template_id: string; branch?: string; commit?: string; pull_request?: { number: number; url: string }; pull_error?: string };
   /** A create in flight, on any server sharing the store: `by` is that create's own id. Taken off when it ends. */
   creating?: Claim;
+  /** The branch a create pushed, kept before it makes the agent: a create after a failed write finds the agent made
+   *  from that template at that commit and reuses it, or deletes the branch when none was made. */
+  pushed?: { branch: string; commit: string; template_id: string; base: string };
 };
 /** A claim on a row in the shared store: when it was taken, and by which request (a random id of its own). */
 export type Claim = { at: number; by: string };
@@ -122,6 +125,8 @@ export type SuggestionsDeps = {
   /** The package (its files, under the id and origin given) made into an agent here: applied, then kept beside the other
    *  imported templates. Throws what the apply refuses (a missing model key, say), with nothing made. */
   makeAgent(id: string, origin: { source: string; sha: string; publisher: string }, files: ReadonlyMap<string, Buffer>): Promise<{ agentId: string; warnings: InputIssue[] }>;
+  /** The agent made here from the imported template `id` at commit `sha`, not archived; undefined when there is none. */
+  agentFrom(id: string, sha: string): Promise<string | undefined>;
   /** This server's public URL, which the pull request names as AGENTRUN_URL. */
   readonly publicUrl?: string;
   readonly now?: () => number;
@@ -821,6 +826,24 @@ export class Suggestions {
       let made = item.created;
       let warnings: InputIssue[] = [];
       let base: string | undefined;
+      // An earlier create pushed and may have made the agent, then could not keep it (a store write refused): its agent
+      // is found by the template it was made from, at the commit it pushed, and reused, never made a second time. An
+      // earlier push that made no agent is deleted, and this create starts clean.
+      if (!made && item.pushed) {
+        const was = item.pushed;
+        const agentId = await this.deps.agentFrom(was.template_id, was.commit);
+        if (agentId) {
+          made = { agent_id: agentId, template_id: was.template_id, branch: was.branch, commit: was.commit };
+          base = was.base;
+          const { pushed: _pushed, ...rest } = item;
+          item = { ...rest, status: "created", decided_at: this.now(), created: made };
+          await this.deps.settings.put(`${ITEM}${item.id}`, item);
+        } else {
+          await deleteBranch(api, token, item.repo, was.branch);
+          const { pushed: _pushed, ...rest } = item;
+          item = rest;
+        }
+      }
       if (!made) {
         const files = packageFiles(s, name);
         const client = clientFile(s, item.repo, item.scan.commit);
@@ -828,18 +851,26 @@ export class Suggestions {
         const pushed = await pushFiles(api, token, item.repo, { branch: `agentrun/${s.key}`, message: `Add the ${s.key} agent\n\n${s.summary}\n\nSuggested by AgentRun's agent scout.`, files: adds }, signal).catch((error: unknown) => { throw writeError(error); });
         base = pushed.base;
         const templateId = `github:${item.repo}/${PACKAGE_DIR}/${s.key}`;
+        const open = item;
         try {
+          // The push is kept before the agent is made: from here, a write that fails leaves a row the next create reads.
+          item = { ...open, pushed: { branch: pushed.branch, commit: pushed.commit, template_id: templateId, base: pushed.base } };
+          await this.deps.settings.put(`${ITEM}${item.id}`, item);
           const agent = await this.deps.makeAgent(templateId, { source: `${templateId}@${pushed.branch}`, sha: pushed.commit, publisher: owner }, files);
           warnings = agent.warnings;
           made = { agent_id: agent.agentId, template_id: templateId, branch: pushed.branch, commit: pushed.commit };
         } catch (error) {
-          // Nothing made here: the branch goes too, so a create sent again starts clean.
-          await deleteBranch(api, token, item.repo, pushed.branch);
+          // Nothing made here (makeAgent throws only before the agent exists): the branch goes too, and the row as it
+          // was, so a create sent again starts clean. A branch GitHub did not delete stays named in `pushed`, and the
+          // next create deletes it.
+          if (await deleteBranch(api, token, item.repo, pushed.branch)) await this.deps.settings.put(`${ITEM}${item.id}`, open).catch(() => {});
           throw error;
         }
-        // The agent stands: kept now, whatever else wrote the row meanwhile (this create holds it on this server), so a
-        // pull request that fails next is opened alone by the next create, never pushed and made twice.
-        item = { ...item, status: "created", decided_at: this.now(), created: made };
+        // The agent stands: kept now, whatever else wrote the row meanwhile (this create holds its claim), so a pull
+        // request that fails next is opened alone by the next create. A write that fails here leaves `pushed`, by which
+        // the next create finds this agent: never pushed and made twice.
+        const { pushed: _pushed, ...rest } = item;
+        item = { ...rest, status: "created", decided_at: this.now(), created: made };
         await this.deps.settings.put(`${ITEM}${item.id}`, item);
       }
       const text = pullText(s, { repo: item.repo, commit: item.scan.commit, agentId: made.agent_id, ...(this.deps.publicUrl ? { publicUrl: this.deps.publicUrl } : {}) });

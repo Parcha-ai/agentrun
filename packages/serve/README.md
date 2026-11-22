@@ -3079,7 +3079,9 @@ Create; no run ever holds a token that can write.
      and a client at the suggestion's path (TypeScript or JavaScript over `fetch`, Python over `urllib` taking the input
      as one dict, or a Markdown page of the HTTP calls for any other language; no dependency). It only adds files;
    - keeps that package as the imported template `github:<owner>/<repo>/.agentrun/agents/<key>` at the pushed commit,
-     then applies it here (an apply refused takes the package back, deletes the branch and makes nothing);
+     then applies it here (an apply refused takes the package back, deletes the branch and makes nothing). The push is
+     recorded on the suggestion first, so a create after a write that failed finds the agent made from that template at
+     that commit and reuses it, never making a second one;
    - opens the pull request, naming the agent's id and the variables the client reads (`AGENTRUN_URL`,
      `AGENTRUN_API_KEY`, `AGENTRUN_AGENT_<KEY>`). A pull request GitHub refuses keeps the agent (`502 github_failed`,
      `details.agent_id`), and the next create opens the pull request alone. A created suggestion answers `200` as it is.

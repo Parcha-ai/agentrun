@@ -38,6 +38,7 @@ async function service(t, { makeAgent }) {
   t.after(() => gh.close());
   const minted = [];
   const revoked = [];
+  const made = new Map();
   const store = settings();
   const deps = {
     settings: store,
@@ -56,7 +57,13 @@ async function service(t, { makeAgent }) {
     scoutAgent: async () => "scout",
     startScan: async () => "run_1",
     readRun: async () => ({ status: "completed", output: { repository: REPO, commit: "", app: "An app.", suggestions: suggestionsFor() }, endedAt: Date.now() }),
-    makeAgent,
+    // The agents made here, by the template and commit they were made from (agentFrom reads them).
+    makeAgent: async (id, origin, files) => {
+      const agent = await makeAgent(id, origin, files);
+      made.set(`${id}@${origin.sha}`, agent.agentId);
+      return agent;
+    },
+    agentFrom: async (id, sha) => made.get(`${id}@${sha}`),
   };
   const s = new Suggestions(deps);
   await s.scan({ repo: REPO });
@@ -107,6 +114,29 @@ test("a pull request GitHub refuses after the agent was made keeps the agent; th
   const after = await state();
   assert.deepEqual([Object.keys(after.branches).sort(), after.pulls.length], [["agentrun/ticket-triage", "main"], 1], "one branch, one pull request");
   assert.equal((await s.create(id, {})).status, 200, "created: answered as it is");
+});
+
+test("a create whose agent was made but whose row could not be kept reuses that agent next time: one agent, one branch, one pull request", async (t) => {
+  let applies = 0;
+  const { s, store, state, id } = await service(t, { makeAgent: async () => ({ agentId: `agent_${++applies}`, warnings: [] }) });
+  // The store refuses the write that would say the suggestion was created, once.
+  const put = store.put;
+  let refused = 0;
+  store.put = async (key, value) => {
+    if (value?.status === "created" && refused++ === 0) throw new Error("The store is read-only for a moment.");
+    return put(key, value);
+  };
+  await assert.rejects(s.create(id, {}), /read-only for a moment/);
+  assert.equal(applies, 1, "the agent was made");
+  const kept = await store.get(`suggestions.item.${id}`);
+  assert.deepEqual([kept.status, kept.creating, kept.pushed?.branch], ["open", undefined, "agentrun/ticket-triage"], "open, unclaimed, and naming its push");
+
+  const again = await s.create(id, {});
+  assert.equal(again.status, 201);
+  assert.deepEqual([applies, again.body.created.agent_id, again.body.created.pull_request.number], [1, "agent_1", 1], "the same agent, never a second");
+  const after = await state();
+  assert.deepEqual([Object.keys(after.branches).sort(), after.pulls.length], [["agentrun/ticket-triage", "main"], 1], "one branch, one pull request");
+  assert.equal((await store.get(`suggestions.item.${id}`)).pushed, undefined, "the push record is gone once created");
 });
 
 test("a file the repository already has stops the create before anything is written", async (t) => {
