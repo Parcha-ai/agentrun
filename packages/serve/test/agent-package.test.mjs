@@ -295,3 +295,40 @@ test("what cannot travel is named: a local or unsaved MCP server and one with it
   assert.deepEqual(pkg.triggers.map((trigger) => [trigger.name, trigger.source, trigger.target.agent_id]), [["Inbound", { kind: "webhook" }, undefined]]);
   assert.doesNotMatch(exported.body.files.map((file) => bytesOf(file).toString("utf8")).join("\n"), /whsec_|not-a-secret/, "no secret");
 });
+
+test("what the agent may not do here, it may not do from the package: a tool its own settings deny, by the tool's key, its server's wildcard or bash's, is not granted; a trigger that messages one of its runs, and the keys a template version no longer held named, are remade", { timeout: 120_000 }, async (t) => {
+  const server = await serve(t, { mcpStandIns: true });
+  const { api } = server;
+  const slack = await startFakeMcp({ name: "slack" });
+  t.after(() => slack.close());
+  for (const name of ["search", "fetch", "post"]) slack.tools[name] = { description: `slack's ${name}.`, input: { type: "object", properties: {}, additionalProperties: true }, run: () => ({ content: [{ type: "text", text: "{}" }] }) };
+  const saved = await api("PUT", "/settings/mcp-servers/slack", { url: slack.url, auth: { type: "none" }, source: "composio", toolkit: "slack" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  // The server's wildcard denies every tool of it but fetch, which its own key asks for (the most specific key holds); bash
+  // is denied, and so is every shell tool, which reads bash's setting.
+  const toolSettings = { "mcp:slack/*": { permission: "deny" }, "mcp:slack/fetch": { permission: "ask" }, bash: { permission: "deny" } };
+  await server.store.agents.create({ id: "guarded", name: "Guarded" }, { id: "guarded-rev", kind: "agentic", body: { instructions: "Read the channel.", tools: ["read", "bash", "mcp:slack/search", "mcp:slack/fetch", "mcp:slack/post"], toolSettings, maxCostUsd: 1 } });
+  // A trigger that messages a run of the agent: the run is this server's.
+  await server.store.triggers.create({ id: "trg-poke", agentId: "guarded", name: "Poke", enabled: false, source: { kind: "schedule", every_s: 3600 }, target: { kind: "message_run", run_id: "run-of-guarded", input: { content: "Poke." } }, nextAt: null, catchupWindowS: 3600 });
+
+  const exported = await api("GET", "/agents/guarded/package");
+  assert.equal(exported.status, 200, JSON.stringify(exported.body));
+  const pkg = asPackage(exported.body);
+  assert.deepEqual(pkg.tools, ["read"], "bash denied here is not granted there");
+  assert.deepEqual(pkg.mcp.map((need) => [need.toolkit, need.tools]), [["slack", ["fetch"]]], "search and post, denied by the server's wildcard, are not granted there");
+  assert.deepEqual(pkg.triggers, [], "a package names no run");
+  assert.ok(exported.body.report.remade.some((entry) => entry.kind === "trigger" && entry.name === "Poke"), JSON.stringify(exported.body.report));
+
+  // An agent applied from a version of a template this server no longer holds: the keys that version named are unknown.
+  const [kept] = readPackages();
+  for (const [id, template, words] of [["older", { id: kept.id, version: "0.0.1", sha: null }, /holds version/], ["orphan", { id: "retired-template", version: "1.0.0", sha: null }, /no longer holds it/]]) {
+    await server.store.agents.create({ id, name: id }, { id: `${id}-rev`, kind: "agentic", body: { instructions: "Do it.", tools: ["read"], maxCostUsd: 1 }, package: template });
+    const answer = await api("GET", `/agents/${id}/package`);
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    const note = answer.body.report.remade.find((entry) => entry.kind === "secrets");
+    assert.equal(note?.name, template.id, JSON.stringify(answer.body.report));
+    assert.match(note.reason, words);
+    assert.match(note.reason, new RegExp(`version ${template.version.replaceAll(".", "\\.")}`));
+    asPackage(answer.body);
+  }
+});

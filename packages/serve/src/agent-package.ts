@@ -9,6 +9,7 @@ import { stringify } from "yaml";
 import { LOOPBACK } from "./mcp-oauth.js";
 import { MANIFEST, memoryFiles, onServerNames, type Package, PackageError, readPackage } from "./templates.js";
 import { isMcpName, isMonidName, mcpToolName, parseToolName } from "./tool-names.js";
+import { permissionKeys, SHELL_FAMILY } from "./tool-gate.js";
 import { toolOf } from "./tools.js";
 import { SEALED_FIELD, SEALED_MASK } from "./trigger-composio.js";
 import { CATCHUP_WINDOW_S } from "./triggers.js";
@@ -32,7 +33,7 @@ export type ExportInput = {
   template: { id: string; version: string } | null;
   origin: Package | undefined;
   servers: ReadonlyMap<string, SavedServer>;
-  /** The agent's triggers as GET /triggers shows them. */
+  /** The agent's triggers as GET /triggers shows them: those that start its runs, and those that message one of them. */
   triggers: readonly Json[];
   /** The agent's saved browser sign-ins. */
   signIns: readonly { provider: string; name: string }[];
@@ -91,7 +92,9 @@ export function agentPackage(input: ExportInput): AgentPackage {
   const pkgName = origin?.name || (template ? slug(template.id.split(/[/:]/).at(-1) ?? "") : "") || slug(agent.name) || slug(agent.id) || "agent";
   const sameVersion = !!origin && !!template && origin.version === template.version;
   const settings = (isObject(definition.tool_settings) ? definition.tool_settings : {}) as Record<string, Json>;
-  const denied = (tool: string) => settings[tool]?.permission === "deny";
+  // Denied as the gate reads the agent's own settings: a shell tool by bash's, then the most specific key set (the tool's
+  // own, else its MCP server's or monid provider's wildcard).
+  const denied = (tool: string) => permissionKeys(Object.hasOwn(SHELL_FAMILY, tool) ? SHELL_FAMILY[tool]! : tool).map((key) => settings[key]).find((setting) => setting?.permission !== undefined)?.permission === "deny";
 
   // Its tools: plain and monid ones as they are; MCP ones by server, a wildcard read as the tools its server lists.
   // A tool denied here is left out, so no target grants it.
@@ -106,7 +109,10 @@ export function agentPackage(input: ExportInput): AgentPackage {
     for (const one of named) if (!list.includes(one) && !denied(mcpToolName(parsed.server, one))) list.push(one);
     byServer.set(parsed.server, list);
   }
-  const composioServers = new Set(input.triggers.flatMap((trigger) => (isObject(trigger.source) && trigger.source.kind === "composio" && typeof trigger.source.server === "string" ? [trigger.source.server] : [])));
+  // A trigger that messages one of its runs names a run of this server's, which no package can.
+  const starts = input.triggers.filter((view) => !(isObject(view.target) && view.target.kind === "message_run"));
+  for (const view of input.triggers.filter((one) => !starts.includes(one))) remade.push({ kind: "trigger", name: String(view.name), reason: "It sends a message to a run on this server, which a package can't name: make it again on the target, aimed at a run there." });
+  const composioServers = new Set(starts.flatMap((trigger) => (isObject(trigger.source) && trigger.source.kind === "composio" && typeof trigger.source.server === "string" ? [trigger.source.server] : [])));
   // Each saved server the agent is granted tools of, by source and toolkit; one saved nowhere here, on this machine's
   // loopback, or with its own credential in a header is blocked; one the owner signed in to is remade.
   const mcp: Json[] = [];
@@ -183,7 +189,7 @@ export function agentPackage(input: ExportInput): AgentPackage {
   // Its triggers, as POST /triggers bodies with no agent: a composio one's server read as its need's toolkit, and what
   // this server set on it (its instance, its hook, its sealed values) left out.
   const triggers: Json[] = [];
-  for (const view of input.triggers) {
+  for (const view of starts) {
     const target = isObject(view.target) ? view.target : {};
     const triggerName = String(view.name);
     let source = isObject(view.source) ? { ...view.source } : {};
@@ -255,6 +261,9 @@ export function agentPackage(input: ExportInput): AgentPackage {
   const inputs = inputSchema && inputsOf(inputSchema);
   if (inputSchema && !inputs) blocked.push({ kind: "input_schema", name: "inputs", reason: "Its input schema is not a closed object of fields, which is what a package's inputs are." });
   const secrets = [...new Set([...(sameVersion ? origin!.secrets : []), ...((plain ?? []).some(isMonidName) ? ["MONID_API_KEY"] : [])])].sort();
+  // The keys a package names are read from the package as this server holds it: one updated or removed since the apply
+  // may name others, so the ones the agent was applied with are unknown here.
+  if (template && !sameVersion) remade.push({ kind: "secrets", name: template.id, reason: `The keys version ${template.version} of ${template.id} names are not known here: ${origin ? `this server holds version ${origin.version}` : "this server no longer holds it"}. Save the keys the agent uses on the target, and name them under secrets in ${MANIFEST}.` });
   const bash = settings.bash?.policy;
   const description = (agent.description?.trim() || agent.name).slice(0, 1024);
   // A package's budget is a spend cap per run first, and one with triggers has one: what fires runs nobody watches.

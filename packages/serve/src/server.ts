@@ -4474,7 +4474,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const elsewhere = ownedElsewhere(agent) ? "another system's agent, which that system defines" : body.native ? "a native agent, which its project on its own machine defines" : body.cli_learning ? "a CLI learning agent, which its CLI's sessions define" : body.sdk ? "an SDK agent, which its application's code defines" : undefined;
         if (elsewhere) throw new ApiError("not_exportable", `The agent ${id} is ${elsewhere}: export it from there.`);
         if (!revision || revision.kind !== "agentic") throw new ApiError("not_exportable", `The agent ${id} ${revision ? "is a workflow, and a template package holds an agent" : "has no revision to export"}.`);
-        const views = (await triggers.list()).triggers.filter((view) => view.target.kind === "start_run" && view.target.agent_id === id) as unknown as Json[];
+        // Its triggers: those that start its runs and those that message one of them (each row names the agent it runs as).
+        const own = new Set((await store.triggers.list(id)).map((row) => row.id));
+        const views = (await triggers.list()).triggers.filter((view) => own.has(view.id)) as unknown as Json[];
         const answer = agentPackage({
           agent: { id, name: agent.name, description: agent.description ?? null },
           definition: definitionOf(agent, revision, entry.version),
