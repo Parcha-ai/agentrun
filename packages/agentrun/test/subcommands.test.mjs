@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { removeAtEnd } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
+const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
 
 function scratch() {
@@ -88,6 +89,26 @@ test("agentrun NAME: a built-in is never shadowed, and a name that is no plain w
   const none = await cli(env, ["no-such-command-here"]);
   assert.equal(none.code, 2);
   assert.match(none.err, /^agentrun has no command no-such-command-here\./);
+});
+
+test("demo: an external command gets this environment, so it reaches the same server through the API", async (t) => {
+  const { dir, env } = scratch();
+  const faux = join(dir, "faux.mjs");
+  writeFileSync(faux, 'export default (context, faux) => faux.message("The answer is 42.");\n');
+  const data = join(dir, "data");
+  const server = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", faux], { stdio: ["ignore", "pipe", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
+  t.after(() => server.exitCode === null && server.kill("SIGKILL"));
+  let err = "";
+  server.stdout.resume();
+  server.stderr.on("data", (chunk) => (err += chunk));
+  for (let i = 0; !existsSync(join(data, ".server.json")); i++) {
+    assert.ok(i < 600 && server.exitCode === null, `the server started: ${err}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const tools = bin(join(dir, "tools"), { "agentrun-count": '"$NODE" "$AGENTRUN_CLI" agents list --data "$AGENTRUN_DATA" | "$NODE" -e \'let s="";process.stdin.on("data",(c)=>s+=c).on("end",()=>console.log("agents:",JSON.parse(s).agents.length))\'' });
+  const count = await cli({ ...env, PATH: `${tools}${delimiter}${env.PATH}`, NODE: process.execPath, AGENTRUN_CLI: BIN, AGENTRUN_DATA: data }, ["count"]);
+  assert.equal(count.code, 0, count.err);
+  assert.match(count.out, /^agents: \d+\n$/);
 });
 
 test("help names external commands", async () => {
