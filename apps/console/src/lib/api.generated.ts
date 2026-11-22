@@ -1052,6 +1052,10 @@ export interface components {
     };
     hold?: boolean;
     hold_minutes?: number;
+    trigger_firing?: {
+      trigger_id: string;
+      firing_id: string;
+    };
   };
   RunCreateInline: {
     external: components["ExternalRef"];
@@ -2112,6 +2116,7 @@ export interface operations {
         count?: number;
         attempts?: number;
         retry_at?: string;
+        start_by?: string;
         catch_up?: true;
       } | null;
       last_check?: {
@@ -2398,6 +2403,7 @@ export interface operations {
       count?: number;
       attempts?: number;
       retry_at?: string;
+      start_by?: string;
       catch_up?: true;
     };
   };
@@ -3734,6 +3740,7 @@ export interface operations {
         count?: number;
         attempts?: number;
         retry_at?: string;
+        start_by?: string;
         catch_up?: true;
       } | null;
       last_check?: {
@@ -4742,6 +4749,7 @@ export interface operations {
         count?: number;
         attempts?: number;
         retry_at?: string;
+        start_by?: string;
         catch_up?: true;
       }[];
     };
@@ -4917,6 +4925,7 @@ export interface operations {
           count?: number;
           attempts?: number;
           retry_at?: string;
+          start_by?: string;
           catch_up?: true;
         } | null;
         last_check?: {
@@ -5298,6 +5307,7 @@ export interface operations {
       count?: number;
       attempts?: number;
       retry_at?: string;
+      start_by?: string;
       catch_up?: true;
     } | {
       ok: "ignored";
@@ -5318,6 +5328,7 @@ export interface operations {
       count?: number;
       attempts?: number;
       retry_at?: string;
+      start_by?: string;
       catch_up?: true;
     };
   };
@@ -5339,6 +5350,7 @@ export interface operations {
         count?: number;
         attempts?: number;
         retry_at?: string;
+        start_by?: string;
         catch_up?: true;
       } | {
         ok: "duplicate";
@@ -5361,6 +5373,7 @@ export interface operations {
         count?: number;
         attempts?: number;
         retry_at?: string;
+        start_by?: string;
         catch_up?: true;
       } | {
         ok: "duplicate";
@@ -5385,6 +5398,7 @@ export interface operations {
         count?: number;
         attempts?: number;
         retry_at?: string;
+        start_by?: string;
         catch_up?: true;
       } | {
         ok: "duplicate";
@@ -5407,6 +5421,7 @@ export interface operations {
         count?: number;
         attempts?: number;
         retry_at?: string;
+        start_by?: string;
         catch_up?: true;
       } | {
         ok: "duplicate";
@@ -6717,6 +6732,7 @@ export interface operations {
         count?: number;
         attempts?: number;
         retry_at?: string;
+        start_by?: string;
         catch_up?: true;
       } | null;
       last_check?: {

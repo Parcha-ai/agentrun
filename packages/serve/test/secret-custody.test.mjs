@@ -23,7 +23,7 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { STORE_FILE } from "../dist/store/sqlite/store.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, linkHarnesses, printed, responsesEndpoint, runDir, scratch } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, LAUNCH_HOOK_URL, launchHookCanary, linkHarnesses, printed, responsesEndpoint, runDir, scratch } from "./support.mjs";
 import { client as pgClient, PG_URL, postgresOnly } from "./store-target.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
@@ -154,14 +154,14 @@ function canaries() {
   // Each its own. The tokens' are the API's, 32 characters or more.
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
   // The seal key's must be a key the server takes (43 base64url characters: it never starts on a bad one), and is still a
-  // canary: the canary is base64url, padded to a key's length.
+  // canary: the canary is base64url, padded to a key's length. The launch hook's is a whsec_ one holding its canary.
   const sealKey = (value) => (assert.ok(value.length <= 43, value), value.padEnd(43, "k"));
   // code.storage's key must read as a PEM (a start with it alone, or with no PEM, stops), and is still a canary inside
   // one; its org's name (no secret) set beside it, so the start takes it. No learning is read here: code.storage is
   // never called.
   const armor = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" }).trim().split("\n");
   const pem = (value) => `${armor[0]}\n${value}\n${armor.at(-1)}\n`;
-  const secrets = Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_TOKENS" ? `rotation:${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : name === CODE_STORAGE_ENV.key ? pem(`${canary}-${i}`) : `${canary}-${i}`]));
+  const secrets = Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_TOKENS" ? `rotation:${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : name === "AGENTRUN_LAUNCH_HOOK_SECRET" ? launchHookCanary(`${canary}-${i}`) : name === CODE_STORAGE_ENV.key ? pem(`${canary}-${i}`) : `${canary}-${i}`]));
   return { canary, secrets: { ...secrets, [CODE_STORAGE_ENV.name]: "example-org" } };
 }
 
@@ -177,8 +177,10 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
   // The launcher's own temporary directory, where its FIFO is made: the test's, so it can see that nothing is left.
   const tmp = join(dir, "tmp");
   mkdirSync(tmp);
-  // The seal key the launcher makes when none is given goes in the test's own config directory, never the user's.
-  const child = spawn(LAUNCHER, typeof args === "function" ? await args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), ...env, TMPDIR: tmp } });
+  // The seal key the launcher makes when none is given goes in the test's own config directory, never the user's. The
+  // launch hook's secret takes its URL beside it.
+  const hook = env.AGENTRUN_LAUNCH_HOOK_SECRET ? LAUNCH_HOOK_URL : {};
+  const child = spawn(LAUNCHER, typeof args === "function" ? await args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), ...hook, ...env, TMPDIR: tmp } });
   // Whether the launcher's pid is still its own: once it exits and Node reaps it, that number, and so its group's id, can
   // be given to another process (on this box the PIDs wrap in minutes under test load, so another lane's), and a kill of
   // it or of the group, or a walk from it, would reach that process. Each is done only while it is alive.
