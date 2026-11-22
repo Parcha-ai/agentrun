@@ -18,7 +18,7 @@ import { GROUNDBOX, GROUNDBOX_OWN_IMAGE } from "./descriptors/groundbox.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { type FramedEvent, framedExec } from "./hosted/framed-exec.js";
-import { boundOf, orThrow, pause } from "./hosted/process.js";
+import { boundOf, orThrow, pause, seconds } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
 import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { PID_KILL } from "./hosted/scripts.js";
@@ -66,6 +66,8 @@ export async function create(options: GroundboxProviderOptions): Promise<Groundb
 export const conformance = () => import("./conformance/groundbox.js");
 
 const DEFAULT_API_URL = "https://api.groundbox.dev/v1";
+/** A loopback host as URL writes it (an IPv4 address in its four numbers, IPv6 in brackets): the one place http may go. */
+const LOOPBACK = /^(127(\.\d{1,3}){3}|\[::1\]|localhost)$/;
 /** The longest a resumable command may run, in seconds: 30 days (EXEC_STREAM_MAX_TIMEOUT_S in Groundbox's contracts). The sandbox's own timer ends it first. */
 const EXEC_STREAM_MAX_S = 30 * 24 * 3_600;
 /** The most timeout_minutes takes: 30 days (SANDBOX_MAX_TIMEOUT_MINUTES). */
@@ -117,34 +119,64 @@ const CODES: Readonly<Record<string, ComputerErrorCode>> = {
 	...{ not_found: "not_found", timeout: "timeout", bad_request: "invalid", conflict: "refused", idempotency_key_reused: "refused" },
 	...{ no_capacity: "vendor", not_available: "vendor", internal: "vendor" },
 };
-/** Where a command's stdin fifo is made, beside the record of its pid: the image's user's alone, in /tmp. */
-const FIFO_PREFIX = "/tmp/.agentrun-stdin-";
 /**
- * The sh every command starts under ($1 the fifo, then the argv): makes the fifo, records its own pid and start time
- * beside it (as PID_WRAPPER's line, for the kill; written whole and then renamed, so the kill never reads half of it),
- * and runs the argv with the fifo as its stdin, opened to read and write, so the fifo never reads end of file between
- * two writers. Then it removes both and exits as the argv did.
+ * Where each command's directory is made: in /tmp, under a name of the host's own that no one knows before the command
+ * starts, so its writes and its kill find it. The directory is the command's user's alone (0700) and holds its stdin
+ * fifo (`in`) and the record of its pid (`pid`): /tmp is anyone's, and once a command ended a fifo or a record left
+ * there by name could be anyone's too, so a write (which may carry a disk's token) or a kill would go where they say.
+ */
+const DIR_PREFIX = "/tmp/.agentrun-exec-";
+/**
+ * The sh every command starts under ($1 its directory, then the argv). It makes the directory with mode 0700, as
+ * mktemp -d does, and a path already there is never its own: the command does not start (exit 126). In it, the fifo
+ * and the record of its own pid and start time (as PID_WRAPPER's line, for the kill; written whole and then renamed,
+ * so the kill never reads half of it). It runs the argv with the fifo as its stdin, opened to read and write, so the
+ * fifo never reads end of file between two writers; then it removes the directory and exits as the argv did.
  */
 const START_SCRIPT = [
-	"f=$1; shift",
-	'mkfifo -m 600 "$f" || exit 126',
-	'echo "$$ $(s=$(cat /proc/$$/stat 2>/dev/null) && set -- ${s##*") "} && echo "${20}")" >"$f.new" && mv -f "$f.new" "$f.pid"',
-	'"$@" 0<>"$f"; c=$?',
-	'rm -f "$f" "$f.pid" "$f.new"; exit $c',
+	"d=$1; shift",
+	'mkdir -m 700 "$d" 2>/dev/null || { echo "agentrun: $d is already there, so it is not one this command made: the command did not start" >&2; exit 126; }',
+	'mkfifo -m 600 "$d/in" || exit 126',
+	'echo "$$ $(s=$(cat /proc/$$/stat 2>/dev/null) && set -- ${s##*") "} && echo "${20}")" >"$d/pid.new" && mv -f "$d/pid.new" "$d/pid"',
+	'"$@" 0<>"$d/in"; c=$?',
+	'rm -rf "$d"; exit $c',
 ].join("\n");
 /**
- * One write ($1 the fifo): its stdin into the fifo. A command Groundbox has just started may not have made its fifo
- * yet, so the write waits up to 5 s for it; with none by then the command has ended (its sh removed it): exit 3.
+ * The check a write and a kill make of a command's directory ($d) before they use what is in it, from inside it (cd,
+ * so the path can't be swapped after the check): the directory itself and not a link to another, owned by this user
+ * (the command's: Groundbox runs every command of a sandbox as one user) with mode 0700. Else exit 4, in words.
  */
-const WRITE_SCRIPT = 'i=0; until [ -p "$1" ]; do [ "$i" -lt 50 ] || exit 3; i=$((i + 1)); sleep 0.1; done; cat >"$1"';
+const OWN_DIR = `cd -P "$d" 2>/dev/null && [ "$(pwd -P)" = "$(cd -P "\${d%/*}" && pwd -P)/\${d##*/}" ] && [ "$(stat -c %u:%a .)" = "$(id -u):700" ] || { echo "$d is not the command's own directory" >&2; exit 4; }`;
+/** The check of one file in it ($1 its name): not a link, and this user's. */
+const ownFile = (name: string) => `[ ! -L ${name} ] && [ "$(stat -c %u ${name})" = "$(id -u)" ] || { echo "$d/${name} is not the command's own" >&2; exit 4; }`;
 /**
- * The kill ($1 the fifo, $2 PID_KILL): the shared pid kill of the recorded pid, as root, since a command that became
- * root through sudo is past its starter's signals, and Groundbox's own kill of a command is that user's. A command
- * Groundbox has just started may not have recorded its pid yet, so the kill waits up to 5 s for the record, as a write
- * waits for the fifo; with none by then the command has ended (its sh removed it). Then the fifo and the record are
+ * One write ($1 the command's directory): its stdin into the fifo there. A command Groundbox has just started may not
+ * have made its fifo yet, so the write waits up to 5 s for it; with none by then the command has ended (its sh removed
+ * it): exit 3. A fifo that went between the check and the write leaves a file of the write's own, removed: exit 3.
+ */
+const WRITE_SCRIPT = [
+	'd=$1; i=0; until [ -p "$d/in" ]; do [ "$i" -lt 50 ] || exit 3; i=$((i + 1)); sleep 0.1; done',
+	OWN_DIR,
+	ownFile("in"),
+	"cat >in",
+	'[ -p in ] || { rm -f in; cd / && rmdir "$d" 2>/dev/null; exit 3; }',
+].join("\n");
+/**
+ * The kill ($1 the command's directory, $2 PID_KILL): the shared pid kill of the recorded pid, as root, since a command
+ * that became root through sudo is past its starter's signals, and Groundbox's own kill of a command is that user's. A
+ * command Groundbox has just started may not have recorded its pid yet, so the kill waits up to 5 s for the record, as
+ * a write waits for the fifo; with none by then the command has ended (its sh removed it). Then the directory is
  * removed, as the killed sh could not.
  */
-const KILL_SCRIPT = ['f=$1; i=0; until [ -s "$f.pid" ]; do [ "$i" -lt 50 ] || exit 0; i=$((i + 1)); sleep 0.1; done', 'read -r pid start 2>/dev/null <"$f.pid" || exit 0', 'p=; [ "$(id -u)" = 0 ] || p="sudo -n"', '$p sh -c "$2" sh "$pid" "$start"', 'rm -f "$f" "$f.pid"'].join("\n");
+const KILL_SCRIPT = [
+	'd=$1; i=0; until [ -s "$d/pid" ]; do [ "$i" -lt 50 ] || exit 0; i=$((i + 1)); sleep 0.1; done',
+	OWN_DIR,
+	ownFile("pid"),
+	"read -r pid start 2>/dev/null <pid || exit 0",
+	'p=; [ "$(id -u)" = 0 ] || p="sudo -n"',
+	'$p sh -c "$2" sh "$pid" "$start"',
+	'cd / && rm -rf "$d"',
+].join("\n");
 /** One write's bytes: POST .../exec takes 512 KiB of stdin (EXEC_MAX_STDIN_BYTES). */
 const WRITE_BYTES = 256 * 1024;
 /** A write or a kill is one short command: its own bound in the sandbox, and the call's past it. */
@@ -152,12 +184,19 @@ const STEP_S = 60;
 const STEP_MS = 75_000;
 /** A resumable stream says `heartbeat` every 20 s (EXEC_STREAM_HEARTBEAT_S): one silent for this long is dead, and is opened again. */
 const SILENCE_MS = 70_000;
-/** The pauses between tries to read on, doubling from the first to the last; and how long with no socket before the stream fails. */
+/**
+ * The pauses between tries to read on, doubling from the first to the last; and how long with no socket Groundbox
+ * speaks on before the stream fails.
+ */
 const RESUME_MIN_MS = 500;
 const RESUME_MAX_MS = 10_000;
 const RESUME_GIVE_UP_MS = 5 * 60_000;
+/** The longest one try to read on waits for Groundbox to speak on its socket: past one heartbeat. */
+const ATTACH_MS = 30_000;
 /** The close code of a socket this host drops to open another (not 1000, which ends the command). */
 const DROP = 4000;
+/** The close code that ends the command: a start that failed or timed out leaves nothing running unseen. */
+const END = 1000;
 /**
  * The output read and not yet taken by framedExec that pauses reading: the socket is let go of, and a new one attaches
  * from the position read to once the queue is down to QUEUE_LOW, so a reader that stops never makes the host hold more.
@@ -166,11 +205,12 @@ const DROP = 4000;
 const QUEUE_HIGH = 8 * 1024 * 1024;
 const QUEUE_LOW = 2 * 1024 * 1024;
 
-/** The command stream's bounds: SILENCE_MS, QUEUE_HIGH and QUEUE_LOW unless a test gives others. */
+/** The command stream's bounds: SILENCE_MS, QUEUE_HIGH, QUEUE_LOW and RESUME_GIVE_UP_MS unless a test gives others. */
 export interface StreamBounds {
 	silenceMs: number;
 	queueHighBytes: number;
 	queueLowBytes: number;
+	resumeGiveUpMs: number;
 }
 
 /** A sandbox as the API answers it (Sandbox in Groundbox's contracts), as far as this host reads it. */
@@ -194,10 +234,11 @@ interface StreamMessage {
 	bytes?: unknown;
 }
 
-/** One resumable command: its id, its fifo, where its output has been read to, and what the stream has given. */
+/** One resumable command: its id, its directory, where its output has been read to, and what the stream has given. */
 interface Command {
 	sandbox: string;
-	fifo: string;
+	/** The directory of its stdin fifo and its pid record (DIR_PREFIX). */
+	dir: string;
 	/** The command's id once `started` came: what a new socket attaches to. */
 	execId?: string;
 	/** The position in the command's output just after the last chunk read. */
@@ -215,6 +256,8 @@ interface Command {
 	failure?: Error;
 	/** Wakes the events waiting for more. */
 	wake: () => void;
+	/** Stops the current socket's silence watchdog. */
+	quiet: () => void;
 }
 
 /** The bytes a chunk of base64 holds. */
@@ -270,7 +313,7 @@ class GroundboxHost implements MachineHost {
 		this.#webSocket = options.webSocket;
 		this.#diskGb = options.diskGb;
 		this.#kind = options.kind;
-		this.#bounds = { silenceMs: SILENCE_MS, queueHighBytes: QUEUE_HIGH, queueLowBytes: QUEUE_LOW, ...options.streamBounds };
+		this.#bounds = { silenceMs: SILENCE_MS, queueHighBytes: QUEUE_HIGH, queueLowBytes: QUEUE_LOW, resumeGiveUpMs: RESUME_GIVE_UP_MS, ...options.streamBounds };
 		this.#api = this.#client();
 	}
 
@@ -391,7 +434,8 @@ class GroundboxHost implements MachineHost {
 	 * in its own process group, with the longest timeout Groundbox takes (the sandbox's own timer ends it first), its
 	 * output as base64, so every byte comes as it was and a position in it is exact. A write is one call per WRITE_BYTES
 	 * that writes the command's fifo and answers once it has; there is no end of stdin (a fifo held open has none), which
-	 * nothing the adapter runs waits for. kill is KILL_SCRIPT's.
+	 * nothing the adapter runs waits for. kill is KILL_SCRIPT's. A write or a kill whose directory, fifo or pid record is
+	 * not the command's own is refused.
 	 */
 	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		return framedExec<Command>(
@@ -401,13 +445,17 @@ class GroundboxHost implements MachineHost {
 				write: async (command, text) => {
 					const bytes = Buffer.from(text, "utf8");
 					for (let at = 0; at < bytes.length; at += WRITE_BYTES) {
-						const code = await this.#step(command, [WRITE_SCRIPT, "sh", command.fifo], bytes.subarray(at, at + WRITE_BYTES));
+						const code = await this.#step(command, [WRITE_SCRIPT, "sh", command.dir], bytes.subarray(at, at + WRITE_BYTES));
 						if (code === 3) throw new Error("the process has ended");
 						// Its words never hold what was written: it may be a disk's token.
+						if (code === 4) throw new Error(`the command's stdin at ${command.dir} is not the command's own: the write was refused`);
 						if (code !== 0) throw new Error(`writing to the command failed (exit ${code})`);
 					}
 				},
-				kill: async (command) => void (await this.#step(command, [KILL_SCRIPT, "sh", command.fifo, PID_KILL])),
+				kill: async (command) => {
+					const code = await this.#step(command, [KILL_SCRIPT, "sh", command.dir, PID_KILL]);
+					if (code === 4) throw new Error(`the command's pid record at ${command.dir} is not the command's own: the kill was refused`);
+				},
 			},
 			argv,
 			ctx,
@@ -423,8 +471,8 @@ class GroundboxHost implements MachineHost {
 
 	/** Starts the command on a new socket and answers once Groundbox says it has started, within the call's bound. */
 	async #start(id: string, argv: readonly string[], ctx: HostCall): Promise<Command> {
-		const command: Command = { sandbox: id, fifo: `${FIFO_PREFIX}${randomBytes(8).toString("hex")}`, seq: 0, events: [], queued: 0, paused: false, resuming: false, ended: false, wake: () => {} };
-		const first = { type: "start", args: ["sh", "-c", START_SCRIPT, "sh", command.fifo, ...argv], resumable: true, encoding: "base64", timeout_s: EXEC_STREAM_MAX_S };
+		const command: Command = { sandbox: id, dir: `${DIR_PREFIX}${randomBytes(8).toString("hex")}`, seq: 0, events: [], queued: 0, paused: false, resuming: false, ended: false, wake: () => {}, quiet: () => {} };
+		const first = { type: "start", args: ["sh", "-c", START_SCRIPT, "sh", command.dir, ...argv], resumable: true, encoding: "base64", timeout_s: EXEC_STREAM_MAX_S };
 		try {
 			await this.#connect(command, first, ctx);
 		} catch (error) {
@@ -434,20 +482,25 @@ class GroundboxHost implements MachineHost {
 		return command;
 	}
 
-	/** The stream is over: nothing more is read, and its socket is closed (1000, which also ends a command still running). */
+	/**
+	 * The stream is over: nothing more is read, its socket's watchdog stops, and the socket is closed (1000, which also
+	 * ends a command still running).
+	 */
 	#end(command: Command, failure?: Error): void {
 		if (!command.ended) command.failure ??= failure;
 		command.ended = true;
-		command.socket?.close(1000);
+		command.quiet();
+		command.socket?.close(END);
 		command.wake();
 	}
 
 	/**
 	 * One socket of the command's stream: `first` is its start, or an attach from the position read to. It answers once
-	 * the socket is the command's (a start: Groundbox said `started`; an attach: it was sent), within the bound. From then
-	 * its messages are the command's events, and a close that is no end of the command opens another (#resume). A socket
-	 * that does not open says what the sandbox reads as: a refused upgrade carries its status and body where a WebSocket
-	 * client can't read them.
+	 * the socket is the command's (a start: Groundbox said `started`; an attach: Groundbox said anything on it, so a peer
+	 * that takes an attach and says nothing is no read-on), within the bound. From then its messages are the command's
+	 * events, and a close that is no end of the command opens another (#resume). A start that failed or timed out closes
+	 * with 1000, which ends the command should Groundbox have started it. A socket that does not open says what the
+	 * sandbox reads as: a refused upgrade carries its status and body where a WebSocket client can't read them.
 	 */
 	async #connect(command: Command, first: { type: string }, ctx: HostCall): Promise<void> {
 		const url = `${this.#apiUrl.replace(/^http/, "ws")}/sandboxes/${encodeURIComponent(command.sandbox)}/exec/stream`;
@@ -461,6 +514,7 @@ class GroundboxHost implements MachineHost {
 		let ready!: (failure?: Error) => void;
 		const readied = new Promise<Error | undefined>((done) => (ready = done));
 		let silence: ReturnType<typeof setTimeout> | undefined;
+		command.quiet = () => clearTimeout(silence);
 		/** This socket was given up on: nothing it says is read any more, and its close opens no other. */
 		let abandoned = false;
 		/**
@@ -479,7 +533,11 @@ class GroundboxHost implements MachineHost {
 				// Already closing: nothing more to do with it.
 			}
 			if (why === "full") command.paused = true;
-			else void this.#resume(command);
+			else {
+				// An attach Groundbox never spoke on fails its try (#resume's); a socket already read on is past this.
+				ready(new Error(`the command stream said nothing for ${seconds(this.#bounds.silenceMs)} after its ${first.type}`));
+				void this.#resume(command);
+			}
 		};
 		const heard = () => {
 			clearTimeout(silence);
@@ -489,7 +547,6 @@ class GroundboxHost implements MachineHost {
 		socket.addEventListener("open", () => {
 			try {
 				socket.send(JSON.stringify(first));
-				if (first.type === "attach") ready();
 				heard();
 			} catch (error) {
 				ready(new Error(`the command stream took no ${first.type}: ${(error as Error).message}`));
@@ -504,6 +561,8 @@ class GroundboxHost implements MachineHost {
 				return;
 			}
 			heard();
+			// Groundbox speaks on the attach (output, a heartbeat, the exit): the command is read on here.
+			if (first.type === "attach") ready();
 			if (message.type === "started" && typeof message.exec_id === "string") {
 				command.execId = message.exec_id;
 				// The watchdog arms only once there is a command to attach to: from here, a socket silent after `started` alone is let go too.
@@ -534,14 +593,15 @@ class GroundboxHost implements MachineHost {
 			// The command runs on in the sandbox: another socket reads on from where this one got to.
 			if (socket === command.socket && !abandoned && !command.ended && command.execId !== undefined) void this.#resume(command);
 		});
-		const bound = boundOf(ctx.timeoutMs, ctx.signal, "opening the command stream");
+		const bound = boundOf(ctx.timeoutMs, ctx.signal, first.type === "attach" ? "the command stream's attach" : "opening the command stream");
 		try {
 			const failed = await Promise.race([readied, bound.promise]);
 			if (failed !== undefined) throw failed;
 		} catch (error) {
 			abandoned = true;
 			clearTimeout(silence);
-			socket.close(DROP);
+			// A start with no `started` in time may still start in the sandbox: only 1000 ends it there. An attach's command runs on.
+			socket.close(first.type === "start" ? END : DROP);
 			const name = (error as { name?: unknown }).name;
 			if (error instanceof HostError || name === "AbortError" || name === "TimeoutError") throw error;
 			const read = await this.#api.json("GET", this.#api.url(`/sandboxes/${encodeURIComponent(command.sandbox)}`), { timeoutMs: ctx.timeoutMs }, ctx.signal);
@@ -556,7 +616,9 @@ class GroundboxHost implements MachineHost {
 
 	/**
 	 * Reads on after a socket closed with the command still running: a new socket attaches from the position read to,
-	 * tried again with doubling pauses. A sandbox that is gone, or no socket for RESUME_GIVE_UP_MS, fails the stream.
+	 * tried again with doubling pauses. A try succeeds once Groundbox speaks on its socket, so a peer that takes every
+	 * attach and says nothing never starts the clock again. A sandbox that is gone, or no socket Groundbox speaks on
+	 * within the give-up bound (RESUME_GIVE_UP_MS), fails the stream.
 	 */
 	async #resume(command: Command): Promise<void> {
 		// One at a time, and none while reading is paused (#events starts it again).
@@ -564,14 +626,18 @@ class GroundboxHost implements MachineHost {
 		command.resuming = true;
 		try {
 			const since = Date.now();
+			const giveUp = this.#bounds.resumeGiveUpMs;
 			for (let wait = RESUME_MIN_MS; !command.ended; wait = Math.min(wait * 2, RESUME_MAX_MS)) {
 				try {
-					await this.#connect(command, { type: "attach", exec_id: command.execId, seq: command.seq, encoding: "base64" } as { type: string }, { timeoutMs: 30_000 });
+					// Each try within what is left of the bound, and ATTACH_MS at most.
+					const timeoutMs = Math.max(1, Math.min(ATTACH_MS, since + giveUp - Date.now()));
+					await this.#connect(command, { type: "attach", exec_id: command.execId, seq: command.seq, encoding: "base64" } as { type: string }, { timeoutMs });
 					return;
 				} catch (error) {
 					const code = error instanceof HostError ? error.code : undefined;
 					if (code === "not_found" || code === "gone") return this.#end(command, error as Error);
-					if (Date.now() - since > RESUME_GIVE_UP_MS) return this.#end(command, new Error(`the command's stream could not be opened again for ${RESUME_GIVE_UP_MS / 1000} s: ${(error as Error).message}`));
+					// No try that would start past the bound: the stream fails with the last try's words.
+					if (Date.now() + wait - since >= giveUp) return this.#end(command, new Error(`the command's stream could not be read on again within ${seconds(giveUp)}: ${(error as Error).message}`));
 				}
 				await pause(wait);
 			}
@@ -647,7 +713,10 @@ export class GroundboxProvider extends HostedProvider {
 		} catch {
 			// Refused below, in words.
 		}
-		if (url === undefined || (url.protocol !== "https:" && url.protocol !== "http:")) throw new Error(`the Groundbox API URL must be an http(s) URL such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
+		// The key rides every call and the stream's upgrade: never in cleartext past this machine.
+		if (url === undefined || !(url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.test(url.hostname)))) {
+			throw new Error(`the Groundbox API URL must be https, or http to a loopback host (127.0.0.0/8, ::1 or localhost), such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
+		}
 		if (diskGb !== undefined && !(isWhole(diskGb) && diskGb >= 1 && diskGb <= MAX_DISK_GB)) throw new Error(`diskGb is a whole number of GB, 1 to ${MAX_DISK_GB}, not ${String(diskGb)}`);
 		if (Number(rest.daemonUser?.split(":")[0]) === IMAGE_UID) throw new Error(`the daemon user ${rest.daemonUser} is the uid of the sandbox's own user, whose processes init refuses to run beside; choose another, such as 2510:2510`);
 		super(

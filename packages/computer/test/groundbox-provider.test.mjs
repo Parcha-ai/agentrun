@@ -3,9 +3,10 @@
 // create, get, list, delete, exec, upload and extend, and how it reads the answers back. The adapter's lifecycle is
 // tested once, against its fake host (hosted-provider.test.mjs); Groundbox's own is proven live.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import test from "node:test";
-import { execFileSync } from "node:child_process";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import test, { after } from "node:test";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fakeCommands, recorder } from "./fake-groundbox.mjs";
 
 const { GroundboxProvider, create } = await import("../dist/groundbox.js");
@@ -27,8 +28,16 @@ const CAN_KILL = HAS_PROC && (process.getuid() === 0 || (() => { try { execFileS
 const sandbox = (fields = {}) => ({ id: ID, status: "running", metadata: LABELS, created_at: "2026-11-18T00:00:00.000Z", stop_reason: null, ...fields });
 const refusal = (code, message) => ({ error: { code, message } });
 
+/** Every fake command stream a host here was given: at the end, the directory each start named goes. */
+const allStreams = new Set();
+after(() => {
+	// A command the stand-in killed at a test's end (stopAll) is past removing its own directory, as a sandbox's would be.
+	for (const { opened } of allStreams) for (const { sent } of opened) if (sent[0]?.type === "start") rmSync(sent[0].args[4], { recursive: true, force: true });
+});
+
 /** A host over a recorder of the API and, for exec, the fake command stream. */
 function hostOf(route, streams = fakeCommands(), options = {}) {
+	allStreams.add(streams);
 	// POST .../exec is the stand-in's own: a write to a command's fifo, or its kill, run for real.
 	const { calls, fetch } = recorder((method, path, body, headers) => (method === "POST" && path.endsWith("/exec") && streams.exec ? streams.exec(body) : route(method, path, body, headers)));
 	const { host } = new GroundboxProvider({ apiKey: KEY, apiUrl: API, fetch, webSocket: streams.webSocket, daemonPath: "/nonexistent/computerd", ...options });
@@ -63,7 +72,7 @@ test("the descriptor: a sandbox under GROUNDBOX_API_KEY, every network form thro
 
 test("the options are checked in words that never hold the key: the key, the API URL, the disk, and a daemon user that is the sandbox's own", async () => {
 	assert.throws(() => new GroundboxProvider({}), /options\.apiKey, the Groundbox API key, is required/);
-	assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl: "api.groundbox.dev" }), (error) => /must be an http\(s\) URL/.test(error.message) && !error.message.includes(KEY));
+	assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl: "api.groundbox.dev" }), (error) => /must be https, or http to a loopback host/.test(error.message) && !error.message.includes(KEY));
 	assert.throws(() => new GroundboxProvider({ apiKey: KEY, diskGb: 500 }), /diskGb is a whole number of GB, 1 to 100/);
 	assert.throws(() => new GroundboxProvider({ apiKey: KEY, daemonUser: "1001:1001" }), /the uid of the sandbox's own user/);
 	assert.throws(() => new GroundboxProvider({ apiKey: KEY, maxLifetimeMs: 30 * 24 * 3_600_000 }), /at most 2591640000 ms/, "the cap may only lower the fact");
@@ -206,8 +215,8 @@ test("exec starts argv as a resumable command under the fifo's sh, its output as
 	assert.deepEqual(opened.headers, { Authorization: `Bearer ${KEY}` });
 	const { args, ...start } = opened.sent[0];
 	assert.deepEqual(start, { type: "start", resumable: true, encoding: "base64", timeout_s: 30 * 24 * 3600 });
-	const fifo = args[4];
-	assert.match(fifo, /^\/tmp\/\.agentrun-stdin-[0-9a-f]{16}$/);
+	const dir = args[4];
+	assert.match(dir, /^\/tmp\/\.agentrun-exec-[0-9a-f]{16}$/);
 	assert.deepEqual([args[0], args[1], args[3], ...args.slice(5)], ["sh", "-c", "sh", "sh", "-c", 'read -r line; echo "got $line and $1"; echo "to stderr" >&2; exit 7', "sh", "it's"]);
 	const text = "héllo \r wörld \u{1F600} ﻿ end\n";
 	await proc.write(Buffer.from(text));
@@ -215,8 +224,12 @@ test("exec starts argv as a resumable command under the fifo's sh, its output as
 	await proc.end();
 	assert.deepEqual([await textOf(proc.stdout), await textOf(proc.stderr), await proc.wait()], [`got ${text.trimEnd()} and it's\n`, "to stderr\n", 7]);
 	const writes = calls.filter((call) => call.path === `/v1/sandboxes/${ID}/exec`);
-	assert.deepEqual(writes.map((call) => call.body), [{ args: ["sh", "-c", 'i=0; until [ -p "$1" ]; do [ "$i" -lt 50 ] || exit 3; i=$((i + 1)); sleep 0.1; done; cat >"$1"', "sh", fifo], timeout_s: 60, stdin_base64: Buffer.from(text).toString("base64") }]);
-	assert.equal(existsSync(fifo) || existsSync(`${fifo}.pid`), false, "the sh removed its fifo and its pid record");
+	// The write's script, its directory and its stdin; what the script takes is tested by sh below.
+	assert.deepEqual(
+		writes.map(({ body: { args, ...rest } }) => [args.slice(0, 2), args.slice(3), rest]),
+		[[["sh", "-c"], ["sh", dir], { timeout_s: 60, stdin_base64: Buffer.from(text).toString("base64") }]],
+	);
+	assert.equal(existsSync(dir), false, "the sh removed its directory, with its fifo and its pid record");
 	assert.doesNotMatch(JSON.stringify(opened.sent), new RegExp(KEY));
 	await assert.rejects(proc.write(Buffer.from("a secret line\n")), (error) => !/secret/.test(error.message));
 });
@@ -321,18 +334,18 @@ test("a stream that does not start says why: the sandbox read for a refused upgr
 	}
 });
 
-test("kill is the shared pid kill of the sh's recorded pid, as root: the command and every process under it end, wait answers, and the fifo goes", async (t) => {
+test("kill is the shared pid kill of the sh's recorded pid, as root: the command and every process under it end, wait answers, and its directory goes", async (t) => {
 	if (!CAN_KILL) return t.skip("needs /proc and root (or passwordless sudo)");
 	const { calls, host, streams } = hostOf(() => undefined);
 	t.after(streams.stopAll);
 	const proc = await host.exec(ID, ["sh", "-c", "sleep 600 & sleep 600"], CTX);
-	const fifo = streams.opened[0].sent[0].args[4];
+	const dir = streams.opened[0].sent[0].args[4];
 	const { child } = [...streams.commands.values()][0];
 	await proc.kill();
 	assert.equal(await proc.wait(), 137);
 	const kill = calls.findLast((call) => call.path.endsWith("/exec")).body;
-	assert.deepEqual([kill.args.slice(0, 2), kill.args.slice(3, 5), kill.stdin_base64], [["sh", "-c"], ["sh", fifo], undefined]);
-	assert.equal(existsSync(fifo) || existsSync(`${fifo}.pid`), false);
+	assert.deepEqual([kill.args.slice(0, 2), kill.args.slice(3, 5), kill.stdin_base64], [["sh", "-c"], ["sh", dir], undefined]);
+	assert.equal(existsSync(dir), false, "the kill removed the command's directory");
 	assert.throws(() => process.kill(-child.pid, 0), "nothing of the command's process group is left");
 });
 
@@ -492,4 +505,225 @@ test("output the reader has not taken is bounded: past the high mark the socket 
 	second.say({ type: "exit", exit_code: 0 });
 	assert.equal(await proc.wait(), 0);
 	assert.equal(await reading, `${chunks.join("")}end`);
+});
+
+/** A fifo the test holds open to read and write: a write into it never blocks, and read() answers what it was given. */
+function heldFifo(path) {
+	execFileSync("mkfifo", ["-m", "666", path]);
+	const fd = openSync(path, constants.O_RDWR | constants.O_NONBLOCK);
+	return {
+		read: () => {
+			const bytes = Buffer.alloc(4096);
+			try {
+				return bytes.subarray(0, readSync(fd, bytes)).toString();
+			} catch (error) {
+				if (error.code === "EAGAIN") return "";
+				throw error;
+			}
+		},
+		close: () => closeSync(fd),
+	};
+}
+
+/** A process of the test's own and the pid record that names it, as a command's sh writes one: what a planted record would aim the kill at. */
+function victim() {
+	const child = spawn("sleep", ["600"], { stdio: "ignore" });
+	const stat = readFileSync(`/proc/${child.pid}/stat`, "utf8");
+	return { child, line: `${child.pid} ${stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19]}\n` };
+}
+
+/**
+ * A command the stream says has started but that never ran: nothing of its own is made at the path its start names, so
+ * whatever is there is the tool user's. Its writes and its kill run for real here (the stand-in's POST .../exec).
+ */
+async function unranCommand() {
+	const streams = { ...scriptedSockets(), exec: fakeCommands().exec };
+	const { host } = hostOf(() => undefined, streams);
+	const starting = host.exec(ID, ["cat"], CTX);
+	await until(() => streams.opened[0]?.sent.length === 1, "the start");
+	const path = streams.opened[0].sent[0].args[4];
+	streams.opened[0].say({ type: "started", exec_id: "ex_0123456789abcdef" });
+	return { path, proc: await starting };
+}
+
+test("a write never reaches a fifo the tool user planted at the path a command's start names: stdin of a command that ended, or never began, goes nowhere", async (t) => {
+	const plants = {
+		// The fifo's own path before this fix: free for anyone in /tmp once the command's sh removed its fifo.
+		"a fifo at the path": (path) => heldFifo(path),
+		"a directory open to all, a fifo in it": (path) => {
+			mkdirSync(path);
+			chmodSync(path, 0o755);
+			return heldFifo(join(path, "in"));
+		},
+		"a link to a 0700 directory of the same user, a fifo in it": (path) => {
+			const target = mkdtempSync("/tmp/agentrun-planted-");
+			t.after(() => rmSync(target, { recursive: true, force: true }));
+			symlinkSync(target, path);
+			return heldFifo(join(target, "in"));
+		},
+	};
+	for (const [what, plant] of Object.entries(plants)) {
+		const { path, proc } = await unranCommand();
+		t.after(() => rmSync(path, { recursive: true, force: true }));
+		const planted = plant(path);
+		t.after(planted.close);
+		await assert.rejects(proc.write(Buffer.from("a disk token\n")), (error) => !/token/.test(error.message), what);
+		assert.equal(planted.read(), "", `${what}: the planted fifo was written to`);
+	}
+});
+
+test("a kill never takes its target from a pid record the tool user planted at a command's path: the process it names lives on", async (t) => {
+	if (!CAN_KILL) return t.skip("needs /proc and root (or passwordless sudo)");
+	const plants = {
+		// The record's own path before this fix: beside the fifo, in /tmp.
+		"a record beside the path": (path, line) => writeFileSync(`${path}.pid`, line),
+		"a directory open to all, a record in it": (path, line) => {
+			mkdirSync(path);
+			chmodSync(path, 0o755);
+			writeFileSync(join(path, "pid"), line);
+		},
+		"a link to a 0700 directory of the same user, a record in it": (path, line) => {
+			const target = mkdtempSync("/tmp/agentrun-planted-");
+			t.after(() => rmSync(target, { recursive: true, force: true }));
+			writeFileSync(join(target, "pid"), line);
+			symlinkSync(target, path);
+		},
+	};
+	for (const [what, plant] of Object.entries(plants)) {
+		const { path, proc } = await unranCommand();
+		t.after(() => rmSync(path, { recursive: true, force: true }));
+		t.after(() => rmSync(`${path}.pid`, { force: true }));
+		const { child, line } = victim();
+		t.after(() => child.kill("SIGKILL"));
+		plant(path, line);
+		await proc.kill();
+		await settle();
+		assert.deepEqual([child.exitCode, child.signalCode], [null, null], `${what}: the planted record's process was killed`);
+	}
+});
+
+test("the scripts, run by sh against paths of the test's: the start refuses a path already there; the write and the kill take only a directory the command's user owns with mode 0700, not through a link, and a fifo or record there of that user's", async (t) => {
+	if (!HAS_PROC) return t.skip("needs /proc");
+	// The scripts as the host sends them: its writes and its kill answered here, never run.
+	const steps = [];
+	const streams = scriptedSockets();
+	const { host } = hostOf((method, path, body) => (method === "POST" && path.endsWith("/exec") ? (steps.push(body.args), [200, { exit_code: 0, timed_out: false }]) : undefined), streams);
+	const starting = host.exec(ID, ["true"], CTX);
+	await until(() => streams.opened[0]?.sent.length === 1, "the start");
+	const startScript = streams.opened[0].sent[0].args[2];
+	streams.opened[0].say({ type: "started", exec_id: "ex_0123456789abcdef" });
+	const proc = await starting;
+	await proc.write(Buffer.from("x"));
+	await proc.kill();
+	const [[, , writeScript], [, , killScript, , , pidKill]] = steps;
+	const root = realpathSync(mkdtempSync("/tmp/agentrun-groundbox-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	// `id` answering another uid stands in for a directory and files of another user's, which this test can't make.
+	mkdirSync(join(root, "bin"));
+	writeFileSync(join(root, "bin", "id"), "#!/bin/sh\necho 4242\n", { mode: 0o755 });
+	const sh = (script, args, { input = "", otherUser = false } = {}) =>
+		spawnSync("sh", ["-c", script, "sh", ...args], { input, encoding: "utf8", timeout: 20_000, env: { ...process.env, ...(otherUser ? { PATH: `${join(root, "bin")}:${process.env.PATH}` } : {}) } });
+	let n = 0;
+	const fresh = () => join(root, `c${++n}`);
+
+	// The start: a path already there is never its own; a path it makes is a 0700 directory, gone once the command ends.
+	const taken = fresh();
+	mkdirSync(taken, { mode: 0o700 });
+	const refused = sh(startScript, [taken, "sh", "-c", "echo ran"]);
+	assert.deepEqual([refused.status, refused.stdout], [126, ""]);
+	assert.match(refused.stderr, /is already there/);
+	const own = fresh();
+	const ran = sh(startScript, [own, "stat", "-c", "%u %a", own]);
+	assert.deepEqual([ran.status, ran.stdout], [0, `${process.getuid()} 700\n`]);
+	assert.equal(existsSync(own), false, "the start removed its directory");
+
+	/** A directory at a fresh path the way the tool user might leave it, with `file` made in it by make(path). */
+	const planted = (shape, file, make) => {
+		const dir = fresh();
+		const real = shape === "link" ? `${dir}-target` : dir;
+		mkdirSync(real, { mode: 0o700 });
+		if (shape === "open") chmodSync(real, 0o755);
+		if (shape === "link") symlinkSync(real, dir);
+		if (shape === "linked file") {
+			make(`${dir}-file`);
+			symlinkSync(`${dir}-file`, join(real, file));
+		} else make(join(real, file));
+		return dir;
+	};
+	const shapes = { open: {}, link: {}, "linked file": {}, "another user's": { otherUser: true } };
+
+	// The write: into the fifo of its own directory, and nowhere else.
+	const fifos = [];
+	const fifo = (path) => fifos.push(heldFifo(path));
+	t.after(() => fifos.forEach((one) => one.close()));
+	const written = sh(writeScript, [planted("own", "in", fifo)], { input: "abc" });
+	assert.equal(written.status, 0, written.stderr);
+	assert.equal(fifos.at(-1).read(), "abc");
+	for (const [shape, options] of Object.entries(shapes)) {
+		const wrote = sh(writeScript, [planted(shape, "in", fifo)], { input: "a disk token", ...options });
+		assert.equal(wrote.status, 4, `${shape}: ${wrote.stderr}`);
+		assert.match(wrote.stderr, /is not the command's own/, shape);
+		assert.equal(fifos.at(-1).read(), "", `${shape}: the planted fifo was written to`);
+	}
+
+	// The kill: refused before it reads a record that is not its own, so the process the record names lives on.
+	const { child, line } = victim();
+	t.after(() => child.kill("SIGKILL"));
+	for (const [shape, options] of Object.entries(shapes)) {
+		const killed = sh(killScript, [planted(shape, "pid", (path) => writeFileSync(path, line)), pidKill], options);
+		assert.equal(killed.status, 4, `${shape}: ${killed.stderr}`);
+		assert.match(killed.stderr, /is not the command's own/, shape);
+	}
+	await settle();
+	assert.deepEqual([child.exitCode, child.signalCode], [null, null], "a planted record's process was killed");
+});
+
+test("a start that does not hear `started` within its bound ends the command: its socket closes with 1000, so a late `started` leaves nothing running", async (t) => {
+	const streams = fakeCommands();
+	t.after(streams.stopAll);
+	streams.startedAfter(300);
+	const { host } = hostOf(() => undefined, streams);
+	// The bound's timer is unref'd, as a caller's would be: the test holds the event loop open while it waits.
+	const alive = setInterval(() => {}, 1_000);
+	try {
+		await assert.rejects(host.exec(ID, ["sleep", "600"], { timeoutMs: 100 }), (error) => error.name === "TimeoutError");
+	} finally {
+		clearInterval(alive);
+	}
+	const [opened] = streams.opened;
+	assert.equal(opened.closed, 1000, "a close that is not 1000 leaves the command running");
+	const [command] = streams.commands.values();
+	await until(() => command.exit !== undefined, "the command ended in the sandbox");
+});
+
+test("the API URL is https, or http to a loopback host alone, so the key never crosses a network in cleartext", async (t) => {
+	for (const apiUrl of ["http://api.groundbox.dev/v1", "http://10.0.0.5:8080/v1", "http://127.0.0.1.example.test/v1", "http://localhost.example.test/v1", "ws://api.groundbox.dev/v1", "api.groundbox.dev"]) {
+		assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), (error) => /must be https, or http to a loopback host/.test(error.message) && !error.message.includes(KEY), apiUrl);
+	}
+	for (const apiUrl of ["https://api.groundbox.dev/v1", "http://127.0.0.1:8080/v1", "http://127.9.8.7/v1", "http://[::1]:8080/v1", "http://localhost:8080/v1"]) {
+		assert.doesNotThrow(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), apiUrl);
+	}
+	// A loopback http URL's stream is ws: on the same host.
+	const streams = fakeCommands();
+	t.after(streams.stopAll);
+	const { host } = hostOf(() => undefined, streams, { apiUrl: "http://127.0.0.1:8080/v1" });
+	const proc = await host.exec(ID, ["true"], CTX);
+	assert.equal(await proc.wait(), 0);
+	assert.equal(streams.opened[0].url, `ws://127.0.0.1:8080/v1/sandboxes/${ID}/exec/stream`);
+});
+
+test("a peer that takes every attach and then says nothing fails wait() in words within the give-up bound, never hangs", async () => {
+	const streams = scriptedSockets();
+	const { host } = hostOf((method) => (method === "GET" ? [200, sandbox()] : undefined), streams, { streamBounds: { silenceMs: 100, resumeGiveUpMs: 500 } });
+	const starting = host.exec(ID, ["sleep", "600"], CTX);
+	await until(() => streams.opened.length === 1, "the first socket");
+	streams.opened[0].say({ type: "started", exec_id: "ex_0123456789abcdef" });
+	const proc = await starting;
+	// The first socket goes; each one after it opens, takes its attach, and never says a word.
+	streams.opened[0].emit("close", { code: 1006 });
+	const outcome = await Promise.race([proc.wait().then((code) => `answered ${code}`, (error) => error), new Promise((done) => setTimeout(() => done("still waiting after 5 s"), 5_000))]);
+	assert.ok(outcome instanceof Error, `wait() is ${outcome}`);
+	assert.match(outcome.message, /could not be read on again within 0\.5 s: the command stream said nothing for 0\.1 s after its attach/);
+	assert.ok(streams.opened.length >= 2, "it attached again");
+	assert.ok(streams.opened.slice(1).every((socket) => socket.sent[0]?.type === "attach"));
 });

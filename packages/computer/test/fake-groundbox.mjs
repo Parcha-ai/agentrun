@@ -33,13 +33,14 @@ export function recorder(route) {
  * One sandbox's commands. webSocket is the factory the provider takes, and exec answers POST .../exec for a recorder's
  * route. opened lists what each socket was opened with and sent; commands holds each resumable command by its exec id.
  * drop() closes every open socket as a lost connection does (the commands run on). refuse, when set, refuses every
- * upgrade from then on: the socket errors and closes before it opens.
+ * upgrade from then on: the socket errors and closes before it opens. startedAfter(ms) holds each `started` back that
+ * long, with the command already running, as a slow sandbox does.
  */
 export function fakeCommands() {
 	const opened = [];
 	const commands = new Map();
 	const sockets = new Set();
-	const state = { refuse: false };
+	const state = { refuse: false, startedAfterMs: 0 };
 	const killGroup = (command) => {
 		if (command.exit !== undefined) return;
 		try {
@@ -121,11 +122,14 @@ export function fakeCommands() {
 					if (message.type === "start") {
 						if (!message.resumable || message.encoding !== "base64" || !Array.isArray(message.args)) return refuse("this stand-in runs resumable commands given as args, their output as base64");
 						command = begin(message);
-						queueMicrotask(() => {
+						const started = () => {
+							if (readyState !== 1) return;
 							say({ type: "started", exec_id: command.id });
 							command.followers.add(follow);
 							follow();
-						});
+						};
+						if (state.startedAfterMs > 0) setTimeout(started, state.startedAfterMs);
+						else queueMicrotask(started);
 					} else {
 						command = commands.get(message.exec_id);
 						if (command === undefined) return refuse(`No command ${message.exec_id} in this sandbox`, "not_found");
@@ -169,6 +173,7 @@ export function fakeCommands() {
 			for (const socket of [...sockets]) socket.drop();
 		},
 		refuse: (on) => void (state.refuse = on),
+		startedAfter: (ms) => void (state.startedAfterMs = ms),
 		/** Ends every command still running: for a test's end. */
 		stopAll: () => {
 			for (const command of commands.values()) killGroup(command);
