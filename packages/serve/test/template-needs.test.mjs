@@ -2,9 +2,9 @@
 // image gives them: the image stays the server's (AGENTRUN_DOCKER_IMAGE for the Docker box). It is read only beside
 // `computer: [shell]`, so a template that needs them never falls back to no computer. Apply writes them onto the sandbox
 // it picks (`computer.needs`), which each run checks in its box before its first model request (computer-needs.ts);
-// a template with needs prefers a sandbox that can hold them (Docker answering) to Archil's serverless exec, a pick of
-// the computer's kind, never of an image; where no sandbox answers, apply refuses in words naming the programs and the
-// image fix, and makes nothing. No Docker command runs here: a fake `docker` first on PATH answers the probe.
+// a template with needs asks for a sandbox alone (a pick of the computer's kind, never of an image), never Archil's
+// serverless exec; where no sandbox answers (Mode 2's Docker box can't mount Archil's workspaces, so none does there),
+// apply refuses in words naming the programs, why, and the image fix, and makes nothing. No Docker command runs here: a fake `docker` first on PATH answers the probe.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
@@ -25,6 +25,8 @@ const DOCKER = { computer: { kind: "sandbox", provider: "docker" }, tools: ["bas
 const EXEC = { computer: { kind: "none" }, tools: ["bash"], words: "Archil's serverless exec" };
 const NONE = { none: "this server has no shell to give an agent now: no box" };
 /** The refusal's words where the shell here is no sandbox: the programs by name, and the image that gives them. */
+/** Why no sandbox answers in Mode 2, as the refusal says it: Archil's exec is none, and the docker box can't mount its workspaces. */
+const MODE2_WHY = /no sandbox answers here: Archil's serverless exec is no sandbox, and the docker box is unavailable here \(Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them/;
 const NO_SANDBOX = /^The film template needs a sandbox that has hyperframes and ffmpeg on its PATH, and .+\. Nothing was created\. .*AGENTRUN_DOCKER_IMAGE/;
 
 /** A folder holding `name`'s agent.md, `text`. */
@@ -112,17 +114,23 @@ test("Docker: GET /v2/templates shows a template's needs and the sandbox an appl
   assert.deepEqual([made.computer, made.tools], [{ kind: "sandbox", provider: "docker", needs: NEEDS }, ["read", "bash"]]);
 });
 
-test("Mode 2 with Docker answering: a template with needs takes the docker sandbox over Archil's exec; one without needs still takes the exec", async (t) => {
+test("Mode 2 with Docker answering: a template with needs is refused, 409, saying Archil's exec is no sandbox and why the docker box can't be one in Mode 2; one without needs still takes the exec", async (t) => {
   const { api, meets } = await filmServer(t, { docker: true, archil: true });
   const listed = await api("GET", "/templates");
   meets("/templates", "get", "200", listed.body);
   const film = listed.body.templates.find((one) => one.name === "film");
-  assert.deepEqual(film.computer_here, { entry: "shell", computer: { kind: "sandbox", provider: "docker", needs: NEEDS }, shell: "the docker sandbox", dropped: [], note: null });
+  assert.equal(film.computer_here.computer, null);
+  assert.match(film.computer_here.note, NO_SANDBOX);
+  assert.match(film.computer_here.note, MODE2_WHY);
   const plain = listed.body.templates.find((one) => one.name === "plain");
   assert.deepEqual([plain.computer_here.computer, plain.computer_here.shell], [{ kind: "none" }, "Archil's serverless exec"]);
-  const applied = await api("POST", "/templates/film/apply", {});
-  assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  assert.deepEqual((await api("GET", `/agents/${applied.body.agent_id}`)).body.definition.computer, { kind: "sandbox", provider: "docker", needs: NEEDS });
+  const before = (await api("GET", "/agents")).body.agents.length;
+  const refused = await api("POST", "/templates/film/apply", {});
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.match(refused.body.error.message, NO_SANDBOX);
+  assert.match(refused.body.error.message, MODE2_WHY);
+  assert.match(refused.body.error.fields[0].fix, /with Archil off .*AGENTRUN_DOCKER_IMAGE/);
+  assert.equal((await api("GET", "/agents")).body.agents.length, before, "nothing made");
   const other = await api("POST", "/templates/plain/apply", {});
   assert.equal(other.status, 201, JSON.stringify(other.body));
   assert.deepEqual((await api("GET", `/agents/${other.body.agent_id}`)).body.definition.computer, { kind: "none" });
