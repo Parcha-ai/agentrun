@@ -340,6 +340,10 @@ for (const [kind, make] of Object.entries(STORES)) {
       sh(["update-ref", "refs/agentrun/rewrite-0123456789abcdef", blob]);
       sh(["hash-object", "-w", "--stdin"], "BRAVO loose\n");
       writeFileSync(join(git, "agentrun-tidy"), "");
+      // Another rewrite that lost its compare and swap keeps that mark: it cleaned up nothing.
+      const lost = await store.rewrite(before, (commit) => commit({ parent: null, message: "a rewrite that loses", at: 1_700_000_000, files: [] }));
+      assert.ok("stale" in lost, JSON.stringify(lost));
+      assert.equal(existsSync(join(git, "agentrun-tidy")), true, "a lost rewrite keeps the mark another left");
       assert.deepEqual(await forgetRunText(store, "run_bravo"), {});
       const objects = execFileSync("git", ["--git-dir", git, "cat-file", "--batch-all-objects", "--batch"], { maxBuffer: 64 << 20 }).toString("utf8");
       assert.doesNotMatch(objects, /BRAVO/);
