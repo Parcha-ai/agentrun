@@ -799,7 +799,7 @@ test("a run's purge takes its text out of its agent's learning: its feedback lin
   assert.equal(looked.view.learning?.state, "merged", JSON.stringify(looked.view.learning));
   // Another run's look-back merged its own feedback line after (its diff shows the purged run's line as context). A later
   // round of the purged run merged two workflows, its reason holding the marker; a later round of the other run revised
-  // one of them, and no run the other ("solo", on main as the purged run left it). Promotion records name the purged
+  // one of them, and no run the other ("solo", which the purge takes off main). Promotion records name the purged
   // run's revisions by their digests and its merge.
   const kept = await started(api, "keeper", "What is two and two?");
   await ended(api, kept);
@@ -882,8 +882,8 @@ test("a run's purge takes its text out of its agent's learning: its feedback lin
   assert.match(other?.commit ?? "", /^[0-9a-f]{40}$/, JSON.stringify(other));
   assert.notEqual(other.commit, otherAt);
   assert.equal(git(repo, ["show", `${other.commit}:workflows/other/workflow.json`]), other1);
-  // A workflow it was the last to change reads so too, though main (the purge's commit) holds it as it left it.
-  assert.equal(git(repo, ["show", "main:workflows/solo/workflow.json"]), solo);
+  // A workflow it was the last to change reads so too: the purge took it off main.
+  assert.equal(git(repo, ["ls-tree", "-r", "--name-only", "main", "workflows/solo/"]), "");
   assert.deepEqual(championOf(after, "solo"), { digest: soloDigest, commit: null, nodes: null, check: null }, "nor at main after it");
 
   // A DELETE again re-runs the purge (a run purged before it): the purge is marked on main, so nothing is committed.

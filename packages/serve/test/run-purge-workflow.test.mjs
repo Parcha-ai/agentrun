@@ -1,9 +1,8 @@
-// A learned workflow whose text a purged run wrote is refused by every read (purged-workflow.ts): never served or
-// executed. A run of the agent merged two workflows ("answer" and "solo") and their promotion records name its merge;
-// another run revised "answer" after it; "solo" stays on main as the purged run left it (a purge takes the run's
-// corrections and reasons out of the history, learn/purge.ts, and leaves its workflows' text to this refusal). After the
-// purge:
-//   - the learned file read of solo's workflow.json is 410 purged, the run's tombstone, as every route of the run is;
+// A purged run's learned workflows leave every tree its purge rewrites (learn/purge.ts: each workflow folder whose
+// workflow.json the run's merge wrote last), and every read still refuses a workflow whose writer is purged
+// (purged-workflow.ts): never served or executed. A run of the agent merged two workflows ("answer" and "solo") and
+// their promotion records name its merge; another run revised "answer" after it. After the purge:
+//   - main no longer holds solo: its workflow.json reads 404;
 //   - the champion read by digest (GET .../promotions) reads no commit for either;
 //   - the revisions of "answer" leave the purged run's out, and the other run's merge diff serves the file against
 //     nothing (its text as an added file), never the purged text it replaced;
@@ -105,7 +104,7 @@ test("every read of a purged run's workflow refuses it: the file read is 410, th
   const nextNow = git(repoOf(data, "keeper"), ["log", "-1", "--format=%H", `--grep=^Run-Id: ${other}$`, "main"]);
   assert.notEqual(nextNow, next, "the purge rewrote the other run's merge");
   const refused = {
-    file: { status: 410, code: "purged", run: gone },
+    file: { status: 404, code: "not_found", run: undefined },
     champion: { answer: null, solo: null },
     revisions: [nextNow],
     diff: { holds: false, answer: { path: answerPath, status: "added", patch: added(v2) } },
@@ -119,7 +118,7 @@ test("every read of a purged run's workflow refuses it: the file read is 410, th
   }
   const snapshot = JSON.parse(await readFile(join(repoOf(data, "keeper"), ".agentrun", "snapshot.json"), "utf8"));
   assert.deepEqual([snapshot.log.length, snapshot.log_more, snapshot.log.some(({ commit }) => commit === merge || commit === next || commit === nextNow)], [200, true, false], "the purged merge and the next are out of the log's window");
-  assert.equal(git(repoOf(data, "keeper"), ["show", `main:${soloPath}`]), solo, "main still holds solo as the purged run left it");
+  assert.equal(git(repoOf(data, "keeper"), ["ls-tree", "-r", "--name-only", "main", "workflows/solo/"]), "", "main no longer holds solo: the purge took both its files off");
   const old = await reads("What is two times twenty-one?");
   // One assertion over both, so each read that serves the text shows: after the purge, and older than the window (where
   // no revision of answer is left in the log: 404).

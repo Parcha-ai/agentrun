@@ -358,7 +358,9 @@ function fileOf(raw: string, use: "read" | "approve" | "retire" | "restore"): st
 }
 
 /** GET /agents/{id}/learning/files/{file}: a draft's file on main as text, its ETag, and its type (workflow.json is
- *  JSON). A workflow.json a purged run wrote is 410 purged, as every route of that run is (purged-workflow.ts). */
+ *  JSON). A purged run's workflows leave main with its purge (learn/purge.ts), so their files are the 404 any missing
+ *  file is; a workflow.json on main whose writer is purged is 410 purged, as every route of that run is
+ *  (purged-workflow.ts). */
 export async function readLearnedFile(data: string, agentId: string, raw: string, shown: Shown, store: Pick<Store, "runs">): Promise<{ text: string; etag: string; type?: string }> {
   const file = fileOf(raw, "read");
   const place = learnedPlace(file)!;

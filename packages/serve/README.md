@@ -3559,9 +3559,11 @@ stays in every total.
     recycled or expire, and backups keep them for their retention.
 - Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id and the
   commit it names, moved to the rewritten commit by a purge. A run's purge takes its text out of the learning's whole
-  history, not only its current files: every commit of main is rebuilt, oldest first, without the feedback lines the
-  run's merges added to `corrections.md` and without its merges' reasons (each merge kept, its message `learning: <run>:
-  merged`, empty of its text), each snapshot rebuilt, and one commit by the host on top marks `.agentrun/purged/<run>`,
+  history, not only its current files: every commit of main is rebuilt, oldest first, without each `corrections.md` line
+  whose words the run's merges added and no other run's merge added, without each learned workflow whose `workflow.json`
+  the run's merge wrote last at that commit (its whole `workflows/<name>/` folder; a hand commit changes no owner, and
+  once another run's merge writes it again it is that run's), and without its merges' reasons (each merge kept, its
+  message `learning: <run>: merged`, empty of its text), each snapshot rebuilt, and one commit by the host on top marks `.agentrun/purged/<run>`,
   so no round of the run merges again. No byte of the old history is kept: the local folder moves main to the new
   history, removes every other ref, expires its reflog and prunes; code.storage builds the new history in the agent's
   next repository generation, moves the agent to it and deletes the old repository (a purge cut short leaves the live
@@ -3573,9 +3575,9 @@ stays in every total.
   before); on code.storage it takes about 0.3 s a commit (the local folder is fast), and the agent's learning waits
   meanwhile; a run of the agent in flight merges nothing, as after a reset; every other run's history and diffs are
   kept. The log and a workflow's revisions leave out its merges, known by the run the log names for each (its newest 200
-  changes). A learned workflow whose `workflow.json` the run changed last (by the commits' run trailers over the whole
-  history, past those 200) is refused by every read: its file read is `410 purged`, a champion read by its digest reads
-  no commit, a later merge's diff shows the file as added (never the purged text), an SDK start sent again whose receipt
+  changes). Its learned workflows leave main with the rebuild, so their files read `404`; a workflow still at a commit
+  whose `workflow.json` a purged run changed last (by the commits' run trailers over the whole history, past those 200)
+  is refused by every read too: its file read is `410 purged`, a champion read by its digest reads no commit, a later merge's diff shows the file as added (never the purged text), an SDK start sent again whose receipt
   delivered it is `410 purged`, and no run lays or serves it, so the agent takes the run as when no champion serves. A
   second `DELETE` finds the purge marked and only finishes removing the old history, if a purge was cut short. It covers
   the agent's one learning store, local or on code.storage.

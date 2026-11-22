@@ -1,7 +1,8 @@
 // What a purged run (DELETE /v2/runs/{id}, agent-delete.ts purgeRun) answers, and the one rule for a learned workflow
-// whose text it wrote: every read of that workflow refuses it, so it is never served or executed.
-//   - The learned file read (GET .../learning/files/workflows/<name>/workflow.json) is 410 purged with the run's
-//     tombstone, as every route of the run is (purgedRun).
+// whose text it wrote: its purge takes it out of every tree of the learning's history (learn/purge.ts), and every read
+// still refuses one whose writer is purged, so it is never served or executed.
+//   - The learned file read (GET .../learning/files/workflows/<name>/workflow.json) of one still on main is 410 purged
+//     with the run's tombstone, as every route of the run is (purgedRun).
 //   - The champion read by digest (GET .../learning/promotions) reads no commit for it.
 //   - A later merge's diff (GET /runs/{id}/learning/diff) serves that file against nothing: never the purged text.
 //   - An SDK start sent again (sdk/runs.ts receipt) whose receipt pinned it is 410 purged, as the file read.
