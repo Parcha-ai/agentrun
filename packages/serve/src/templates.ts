@@ -65,10 +65,11 @@ export const INPUT_TYPES = [...SCALAR_TYPES, "array"] as const;
  *  formats it knows. cron and timezone are for the form alone (a schedule picker, a zone choice); where a parameter fills
  *  a schedule, the schedule's own check reads the value at apply. */
 export const INPUT_FORMATS = ["uri", "email", "hostname", "date", "date-time", "uuid", "cron", "timezone"] as const;
-/** An input's or a parameter's keys: what a form and a JSON Schema say of one field. */
-const INPUT_KEYS = ["type", "required", "pattern", "enum", "format", "default", "description", "title", "examples", "minimum", "maximum", "minLength", "maxLength", "items"];
+/** An input's or a parameter's keys: what a form and a JSON Schema say of one field, in the order an export writes them
+ *  (agent-package.ts). */
+export const INPUT_KEYS = ["type", "title", "description", "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "enum", "examples", "default", "required", "items"] as const;
 /** A list input's `items`: a scalar's keys alone. */
-const ITEM_KEYS = ["type", "pattern", "enum", "format", "minimum", "maximum", "minLength", "maxLength"];
+export const ITEM_KEYS = ["type", "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "enum"] as const;
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
 /** The keys a package may need: those Settings saves (a tool's or a model provider's), each one a run is handed. */
