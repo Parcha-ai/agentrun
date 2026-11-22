@@ -1099,12 +1099,13 @@ class SqliteStore implements Store {
           const settled = change.status !== undefined && change.status !== "due";
           // Out of due, a firing keeps no retry, wait, payload or attrs (unless keepAttrs), nor the reason its last try gave
           // (unless it gives one). One exception: a sent firing keeps its startBy in retry_at (firingOf reads it back as
-          // startBy, never as a retry), so no migration adds a column for it.
+          // startBy, never as a retry), so no migration adds a column for it. Each column is set once: Postgres refuses an
+          // update that names one twice.
           const set: [string, SqliteValue][] = [];
           if (change.status !== undefined) set.push(["status", change.status]);
           if (settled) set.push(["retry_at", change.status === "sent" ? change.startBy ?? null : null], ["waits_on", null], ["payload", null], ["reason", change.reason ?? null], ["attempts", change.attempts ?? 0]);
           if (settled && !change.keepAttrs) set.push(["attrs", null]);
-          else if (change.reason !== undefined) set.push(["reason", change.reason]);
+          if (!settled && change.reason !== undefined) set.push(["reason", change.reason]);
           if (change.runId !== undefined) set.push(["run_id", change.runId]);
           if (change.error !== undefined) set.push(["error", json(change.error)]);
           if (!settled && change.attempts !== undefined) set.push(["attempts", change.attempts]);

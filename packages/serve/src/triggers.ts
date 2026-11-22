@@ -345,11 +345,13 @@ export class Triggers {
   }
 
   /** At the server's start: every enabled trigger whose source no longer reads turned off, each failure's trigger.failed
-   *  queued that is not yet, every firing an earlier server left due driven again (its origin key makes a run it already
-   *  started the same run), the times missed while it was down recorded, and the timer armed. */
+   *  queued that is not yet, each sent firing whose host's run is in the store started with it (relink), every firing an
+   *  earlier server left due driven again (its origin key makes a run it already started the same run), the times missed
+   *  while it was down recorded, and the timer armed. */
   async start(): Promise<void> {
     const now = this.clock.now();
     await this.offUnreadable((await this.all()).filter((t) => t.enabled && this.problem(t.source)), now);
+    await this.relink();
     await this.tick();
   }
 
@@ -1190,8 +1192,13 @@ export class Triggers {
     if (!trigger || trigger.target.kind !== "start_run" || trigger.target.agent_id !== agentId) throw refused("not_found", `This agent has no trigger ${triggerId} that starts its runs.`, "trigger_firing.trigger_id");
     const firing = await this.store.triggers.firing(triggerId, key);
     if (!firing) throw refused("not_found", `Trigger ${triggerId} has no firing ${key}.`, "trigger_firing.firing_id");
+    // The run already under its key is its run. A stop between that run's write and handedRan left the firing sent with
+    // no run, so a repeated start starts the firing with it.
     const prior = await this.deps.runOf(key);
-    if (prior) return prior;
+    if (prior) {
+      await this.handedRan(triggerId, key, prior.run_id);
+      return prior;
+    }
     const minutes = LAUNCH_HOOK_LATE_START_MS / 60_000;
     const taken = firing.status === "sent" && firing.runId === null && firing.reason === HANDED_NO_RUN;
     if (taken && (firing.startBy === null || this.clock.now() > firing.startBy)) {
@@ -1211,6 +1218,21 @@ export class Triggers {
   async handedRan(triggerId: string, key: string, runId: string): Promise<void> {
     const firing = await this.store.triggers.firing(triggerId, key);
     if (firing?.status === "sent" && firing.runId === null && firing.reason === HANDED_NO_RUN) await this.started(triggerId, key, runId);
+  }
+
+  /** Each sent firing whose host's run is in the store under its key, though the server stopped before the firing was
+   *  started with it (a late start writes the run, then handedRan): started with that run, so the overlap check and
+   *  max_active_runs count it. */
+  private async relink(): Promise<void> {
+    for (const trigger of await this.all()) {
+      if (trigger.target.kind !== "start_run") continue;
+      for (const firing of await this.store.triggers.firings(trigger.id)) {
+        if (firing.status !== "sent" || firing.runId !== null) continue;
+        const run = await this.deps.runOf(firing.key);
+        if (this.closed) return;
+        if (run) await this.handedRan(trigger.id, firing.key, run.run_id);
+      }
+    }
   }
 
   private async started(triggerId: string, key: string, runId: string): Promise<void> {
