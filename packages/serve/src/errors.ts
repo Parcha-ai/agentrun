@@ -87,6 +87,9 @@ export const ERROR_STATUS = {
   // PUT /runs/{id}/grade on a run that reads ended while it still learns from that end (its look-back: a fresh run's
   // end-of-run step, or a grade's round): graded once that ends. The same grade sent then is taken.
   run_learning: 409,
+  // GET /agents/{id}/package (agent-package.ts) of an agent whose source is elsewhere (a native, CLI learning, SDK or
+  // another system's agent), a workflow, or one with no revision: there is no package of it to write.
+  not_exportable: 409,
   // A run or an agent that was purged (DELETE /runs/{id}, /agents/{id}): every route of it reads its tombstone in the
   // error's details, and its DELETE answers 204 again.
   purged: 410,
