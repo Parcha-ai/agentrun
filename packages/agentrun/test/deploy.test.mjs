@@ -7,7 +7,7 @@
 // runs, and B, where it deploys.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -372,9 +372,11 @@ test("one command at a time per source: a deploy, rollback or delete of a folder
   const target = await fakeTarget(t, {});
   const { dir, env } = scratch();
   const pkg = folder(dir);
+  // A hold is a folder holding one file named for its process.
   const held = join(pkg, ".agentrun", "deploy.json.held");
-  mkdirSync(join(pkg, ".agentrun"));
-  writeFileSync(held, `${hostname()} ${process.pid}\n`);
+  mkdirSync(held, { recursive: true });
+  const live = `${hostname()}-${process.pid}`;
+  writeFileSync(join(held, live), "");
   const key = { AGENTRUN_API_KEY: "not-a-secret" };
   for (const args of [["deploy", pkg, "--to", target.base, "--yes"], ["deploy", "rollback", pkg, "--to", target.base], ["deploy", "delete", pkg, "--to", target.base, "--yes"]]) {
     const refused = await cli(env, args, key);
@@ -382,12 +384,68 @@ test("one command at a time per source: a deploy, rollback or delete of a folder
     assert.match(refused.err, new RegExp(`Another agentrun deploy of this source is running \\(process ${process.pid}\\)`));
   }
   assert.deepEqual(target.seen, [], "nothing sent");
-  assert.equal(readFileSync(held, "utf8"), `${hostname()} ${process.pid}\n`, "another's hold is kept");
+  assert.deepEqual(readdirSync(held), [live], "another's hold is kept");
   const ended = spawnSync(process.execPath, ["-e", ""]).pid;
-  writeFileSync(held, `${hostname()} ${ended}\n`);
+  rmSync(join(held, live));
+  writeFileSync(join(held, `${hostname()}-${ended}`), "");
   const taken = await cli(env, ["deploy", pkg, "--to", target.base, "--yes"], key);
   assert.ok(target.seen.includes("POST /templates/import"), `the deploy went on: ${taken.err}`);
   assert.equal(existsSync(join(pkg, ".agentrun")), false, "let go of when the command ended");
+});
+
+/** A target that answers each request 404 after `ms`, counting the requests in flight at once (`most`). */
+async function slowTarget(t, ms) {
+  const state = { seen: [], most: 0, now: 0 };
+  const fake = createServer((req, res) => {
+    state.seen.push(`${req.method} ${req.url.replace(/^\/v2/, "")}`);
+    state.most = Math.max(state.most, ++state.now);
+    req.resume();
+    setTimeout(() => {
+      state.now--;
+      res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "not_found", message: "Not found." } }));
+    }, ms);
+  });
+  await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (fake.closeAllConnections(), fake.close(resolve))));
+  return Object.assign(state, { base: `http://127.0.0.1:${fake.address().port}/v2` });
+}
+
+test("a hold is let go of only by its owner: a command that ends removes its own file, never a hold another process has made in its place", { timeout: 60_000 }, async (t) => {
+  const slow = await slowTarget(t, 2000);
+  const { dir, env } = scratch();
+  const pkg = folder(dir);
+  const held = join(pkg, ".agentrun", "deploy.json.held");
+  const key = { AGENTRUN_API_KEY: "not-a-secret" };
+  const running = cli(env, ["deploy", pkg, "--to", slow.base, "--yes"], key);
+  for (let i = 0; !slow.seen.length; i++) {
+    assert.ok(i < 400, "the deploy reached the target");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const [theirs] = readdirSync(held);
+  assert.ok(theirs.startsWith(`${hostname()}-`), theirs);
+  rmSync(join(held, theirs));
+  const live = `${hostname()}-${process.pid}`;
+  writeFileSync(join(held, live), "");
+  const ended = await running;
+  assert.equal(ended.code, 1, ended.err);
+  assert.deepEqual(readdirSync(held), [live], "the ended command removed only its own");
+  const refused = await cli(env, ["deploy", pkg, "--to", slow.base, "--yes"], key);
+  assert.equal(refused.code, 2, refused.err);
+});
+
+test("commands racing to take a hold left by an ended process never overlap: at most one is at the target at a time, and each lets go", { timeout: 120_000 }, async (t) => {
+  const slow = await slowTarget(t, 1500);
+  const { dir, env } = scratch();
+  const pkg = folder(dir);
+  const held = join(pkg, ".agentrun", "deploy.json.held");
+  mkdirSync(held, { recursive: true });
+  writeFileSync(join(held, `${hostname()}-${spawnSync(process.execPath, ["-e", ""]).pid}`), "");
+  const key = { AGENTRUN_API_KEY: "not-a-secret" };
+  const ended = await Promise.all(Array.from({ length: 8 }, () => cli(env, ["deploy", pkg, "--to", slow.base, "--yes"], key)));
+  for (const one of ended) assert.ok(one.code === 1 || one.code === 2, `the target's 404, or refused: ${one.code} ${one.err}`);
+  assert.ok(slow.seen.length >= 1, "the ended process's hold was taken");
+  assert.equal(slow.most, 1, "never two at the target at once");
+  assert.equal(existsSync(join(pkg, ".agentrun")), false, "each let go");
 });
 
 test("a folder whose .agentrun, or its deploy.json, is a symbolic link is refused with nothing sent: deploy, rollback and delete never act on another folder's lock", { timeout: 60_000 }, async (t) => {
@@ -429,11 +487,14 @@ test("the CLI's deploy record is changed under its lock: a deploy waits while an
   mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
   const before = { [`${source} agt_x`]: lockOf("agt_x"), [`${source} agt_y`]: lockOf("agt_y") };
   writeFileSync(record, `${JSON.stringify(before, null, 2)}\n`, { mode: 0o600 });
-  // Another CLI holds the record: it read it, and saves a lock of its own before it lets go.
+  // Another CLI (this process, live) holds the record: it read it, and saves a lock of its own before it lets go.
+  const holder = join(`${record}.lock`, `${hostname()}-${process.pid}`);
   mkdirSync(`${record}.lock`);
+  writeFileSync(holder, "");
   const deleting = cli(env, ["deploy", "delete", "agt_x", "--yes", "--data", data], { AGENTRUN_API_KEY: "not-a-secret" });
   await new Promise((resolve) => setTimeout(resolve, 1500));
   writeFileSync(record, `${JSON.stringify({ ...before, [`${source} agt_z`]: lockOf("agt_z") }, null, 2)}\n`, { mode: 0o600 });
+  rmSync(holder);
   rmdirSync(`${record}.lock`);
   const done = await deleting;
   assert.equal(done.code, 0, done.err);
