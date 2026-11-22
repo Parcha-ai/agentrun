@@ -87,9 +87,13 @@ test("a run carries the Parallel key its web search reads: the search goes out o
   assert.ok(!logs.join("\n").includes(key), "no log line holds the key");
 });
 
-test("a model that quotes the run's key in its thinking, its text, a tool call and its answer: no 8 characters of it in any answer, file or log line", { timeout: 120_000 }, async (t) => {
+test("a model that quotes the run's key in its thinking, its text, a tool call and its answer: no 8 characters of it in any answer, file or log line", { timeout: 120_000 }, (t) => quotedKey(t, newKey()));
+
+test("a key of 8 characters, the shortest taken, is cut the same when the model quotes it", { timeout: 120_000 }, (t) => quotedKey(t, `k-${randomBytes(3).toString("hex")}`));
+
+/** A run carries `key` and its model quotes it everywhere it writes: no 8 characters of it in an answer, file or log line. */
+async function quotedKey(t, key) {
   const { api, data, dir, logs } = await setup(t);
-  const key = newKey();
   const file = join(dir, "key.txt");
   writeFileSync(file, key);
   assert.equal((await api("POST", "/agents", SEARCHER("quotes", ["read", "web_search"]))).status, 201);
@@ -102,26 +106,32 @@ test("a model that quotes the run's key in its thinking, its text, a tool call a
   for (const form of [key, Buffer.from(key).toString("base64")]) assert.ok(!holdsRun(said, form), `an answer holds part of ${form.slice(0, 12)}…`);
   assert.deepEqual(filesHolding(data, key), [], "no file of the store holds the key");
   assert.ok(!holdsRun(logs.join("\n"), key), "no log line holds the key");
-});
+}
 
-test("keys names only the tool keys the run's revision reads: another tool's key, a name that is no tool key, a value that is not text or keys that is not an object is 422 by name, never echoed, and nothing starts", { timeout: 60_000 }, async (t) => {
+test("keys names only the tool keys the run's revision reads, each a value of 8 or more characters with no space or control character: another tool's key, a name that is no tool key, a value that is not text, too short or holds a space or a newline, or keys that is not an object is 422 by name, never echoed, and nothing starts", { timeout: 60_000 }, async (t) => {
   const { api } = await setup(t);
   assert.equal((await api("POST", "/agents", SEARCHER("searcher"))).status, 201);
   const key = newKey();
+  const short = randomBytes(4).toString("hex").slice(0, 7);
   const cases = [
-    [{ MONID_API_KEY: key }, "keys.MONID_API_KEY", "not_an_option"],
-    [{ NOT_A_TOOL_KEY: key }, "keys.NOT_A_TOOL_KEY", "not_an_option"],
-    [{ AGENTRUN_TOKEN: key }, "keys.AGENTRUN_TOKEN", "not_an_option"],
-    [{ PARALLEL_API_KEY: 42 }, "keys.PARALLEL_API_KEY", "wrong_type"],
-    [{ PARALLEL_API_KEY: "" }, "keys.PARALLEL_API_KEY", "bad_format"],
-    [key, "keys", "wrong_type"],
+    [{ MONID_API_KEY: key }, "keys.MONID_API_KEY", "not_an_option", key],
+    [{ NOT_A_TOOL_KEY: key }, "keys.NOT_A_TOOL_KEY", "not_an_option", key],
+    [{ AGENTRUN_TOKEN: key }, "keys.AGENTRUN_TOKEN", "not_an_option", key],
+    [{ PARALLEL_API_KEY: 42 }, "keys.PARALLEL_API_KEY", "wrong_type", key],
+    [{ PARALLEL_API_KEY: "" }, "keys.PARALLEL_API_KEY", "invalid", key],
+    [{ PARALLEL_API_KEY: short }, "keys.PARALLEL_API_KEY", "invalid", short],
+    [{ PARALLEL_API_KEY: `${key} x` }, "keys.PARALLEL_API_KEY", "invalid", key],
+    [{ PARALLEL_API_KEY: `${key}\n` }, "keys.PARALLEL_API_KEY", "invalid", key],
+    [key, "keys", "wrong_type", key],
   ];
-  for (const [keys, field, reason] of cases) {
+  for (const [keys, field, reason, value] of cases) {
     const answer = await api("POST", "/agents/searcher/runs", { input: { content: "Search the web for widgets." }, keys });
     assert.deepEqual([answer.status, answer.body.error?.code], [422, "input_invalid"], `${field}: ${JSON.stringify(answer.body)}`);
     assert.deepEqual(answer.body.error.fields.map((one) => [one.field, one.reason]), [[field, reason]], JSON.stringify(answer.body.error.fields));
-    assert.ok(!JSON.stringify(answer.body).includes(key), `${field}: the refusal never echoes the value`);
+    assert.ok(!JSON.stringify(answer.body).includes(value), `${field}: the refusal never echoes the value`);
   }
+  const tooShort = await api("POST", "/agents/searcher/runs", { input: { content: "x" }, keys: { PARALLEL_API_KEY: short } });
+  assert.match(tooShort.body.error.fields[0].message, /\b8\b/, "the refusal names the minimum");
   assert.match((await api("POST", "/agents/searcher/runs", { input: { content: "x" }, keys: { MONID_API_KEY: key } })).body.error.message, /MONID_API_KEY is a key no tool of this run's revision reads: it reads PARALLEL_API_KEY\./);
   assert.equal((await api("GET", "/runs?agent=searcher")).body.runs.length, 0, "no run was made");
   // An inline run's keys are checked against the revision its definition makes, as a stored agent's are.
