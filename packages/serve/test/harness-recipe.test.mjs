@@ -623,41 +623,44 @@ test("a plan-billed recipe names its model (model.id): chosen with session/set_m
   assert.equal(refusalOf(recipeOf(undefined, { model: { billing: "proxy", wire: "anthropic-messages", env: "MODEL_AGENT_MODEL", id: "vendor-model" } })).code, RECIPE_CODES.invalid);
 });
 
-/** The code the person's browser brings back to the agent: never a real one. The agent keeps `signed-<code>` as its
- *  sign-in. */
+/** The code Google's page shows the person, which they paste into the agent: never a real one. The agent keeps
+ *  `signed-<code>` as its sign-in. */
 const CODE = "Qz7Wv9Lm2Np4Rs6Tx8Yb3Kc5Hd";
 const TOKEN = `signed-${CODE}`;
 /** The key saved for this harness alone, and the server's own under the name the agent reads (GEMINI_API_KEY): fakes. */
 const SAVED_KEY = "fake-harness-gemini-key";
 const SERVER_KEY = "fake-server-gemini-key";
 const SIGN_IN_HOME = (data) => join(data, "harnesses", "model-agent.sign-in");
-/** A plan-billed recipe for the stand-in agent as Antigravity's is: it signs in with ACP `authenticate`, on a key saved
- *  for it alone and handed as GEMINI_API_KEY (keyMethod), and with a person's own sign-in on attended runs (signIn). */
-const signingIn = (origin, { keyed = true, method = "model-agent-login" } = {}) => {
-  const { keys: _, ...recipe } = planOn(origin, { env: { MODEL_AGENT_AUTH: "1", MODEL_AGENT_READS: "GEMINI_API_KEY" } });
+/** The stand-in's sign-in as agy's is (`agy acp --login --gemini-dir DIR`): its own flag, and the flag naming its folder. */
+const SIGN_IN = { args: ["--login"], homeArg: "--model-agent-dir" };
+/** A plan-billed recipe for the stand-in agent as Antigravity's is: a key saved for it alone and handed as GEMINI_API_KEY
+ *  (keyMethod), and its owner's own sign-in (signIn). */
+const signingIn = (origin, { keyed = true, env = {} } = {}) => {
+  const { keys: _, ...recipe } = planOn(origin, { env: { MODEL_AGENT_AUTH: "1", MODEL_AGENT_READS: "GEMINI_API_KEY", ...env } });
   return {
     ...recipe,
     ...(keyed ? { keys: [{ name: "MODEL_AGENT_GEMINI_API_KEY", env: "GEMINI_API_KEY" }], keyMethod: "model-agent-api-key" } : {}),
-    signIn: { method, homeEnv: "MODEL_AGENT_HOME", runs: "attended" },
+    signIn: SIGN_IN,
   };
 };
 
-/** `agentrun-serve sign-in-harness` on `file` and `data`, the test as the person at its terminal: the agent prints there
- *  the address to open (the command hands the agent its own stderr and reads none of it), and the person's browser
- *  (`visit`) ends on the redirect_uri that address names, the agent's own loopback server. */
-function signIn(file, data, { env = cliEnv(), visit = (redirect) => fetch(`${redirect}?state=fake&code=${CODE}`) } = {}) {
+/** `agentrun-serve sign-in-harness` on `file` and `data`, the test as the person at its terminal: the agent prints the
+ *  address to open there, and once it asks for the code the person types `code` and presses Enter. */
+function signIn(file, data, { env = cliEnv(), code = CODE } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, "sign-in-harness", "--recipe", file, "--data", data], { env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [CLI, "sign-in-harness", "--recipe", file, "--data", data], { env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
-    let visited;
-    child.stdout.on("data", (c) => (stdout += c));
-    child.stderr.on("data", (c) => {
-      stderr += c;
-      const found = /redirect_uri=([^&\s]+)/.exec(stderr);
-      if (found && !visited) visited = Promise.resolve(visit(decodeURIComponent(found[1]))).then((r) => r?.text()).catch((error) => String(error));
+    let typed = false;
+    child.stdout.on("data", (c) => {
+      stdout += c;
+      if (!typed && /paste the authorization code/.test(stdout)) {
+        typed = true;
+        child.stdin.end(`${code}\n`);
+      }
     });
-    child.on("close", async (status) => resolve({ status, stdout, stderr, page: await visited }));
+    child.stderr.on("data", (c) => (stderr += c));
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
 }
 
@@ -672,50 +675,63 @@ test("harness-check runs a recipe that also signs a person in on its key alone: 
   for (const [where, text] of [["the report on disk", run.written], ["stdout", run.stdout], ["stderr", run.stderr]]) {
     for (const secret of [SAVED_KEY, SERVER_KEY]) assert.equal(text.includes(secret), false, `${where} holds a key`);
   }
-  // Without its key, the run is refused by its code before a session opens.
+  // Without its key and with no sign-in, the run is refused by its code before anything starts, naming both routes; the
+  // server's own GEMINI_API_KEY is neither.
   const keyless = await installed(t, (o) => signingIn(o));
   const refused = await check(t, keyless.file, keyless.data, cliEnv({ GEMINI_API_KEY: SERVER_KEY }));
   assert.equal(refused.status, 1);
-  assert.match(JSON.stringify(refused.report), /ACP_KEY_MISSING[^"]*MODEL_AGENT_GEMINI_API_KEY/);
+  assert.equal(refused.report.refused.code, "HARNESS_NOT_SIGNED_IN");
+  assert.match(refused.report.refused.message, /set MODEL_AGENT_GEMINI_API_KEY[^"]*agentrun harness sign-in --recipe/);
   assert.equal(keyless.origin.messages().length, 0);
 });
 
-test("a person signs the agent in with `agentrun harness sign-in`: the agent's own address on their terminal, the browser back on the agent's own server, its sign-in in its folder alone; harness-check still runs on a key", { skip: linux, timeout: 120_000 }, async (t) => {
+test("a person signs the agent in with `agentrun harness sign-in`: the agent's own --login on their terminal, its stdin theirs with nothing between, its sign-in in its folder alone; harness-check then runs on that sign-in, and no byte of it reaches the report or the output", { skip: linux, timeout: 120_000 }, async (t) => {
   const { data, file, origin } = await installed(t, (o) => signingIn(o, { keyed: false }));
   const before = await check(t, file, data, cliEnv());
   assert.equal(before.status, 1);
-  assert.equal(before.report.refused.code, "HARNESS_SIGN_IN_ATTENDED", before.report.refused.message);
-  assert.match(before.report.refused.message, /"env": "GEMINI_API_KEY"/, "it names the key route");
+  assert.equal(before.report.refused.code, "HARNESS_NOT_SIGNED_IN", before.report.refused.message);
+  assert.match(before.report.refused.message, /agentrun harness sign-in --recipe/, "it names the sign-in");
+  assert.equal(origin.messages().length, 0);
 
   const signed = await signIn(file, data, { env: cliEnv({ MODEL_AGENT_GEMINI_API_KEY: SAVED_KEY }) });
   assert.equal(signed.status, 0, `${signed.stdout}\n${signed.stderr}`);
-  assert.match(signed.stderr, /https:\/\/accounts\.example\.invalid\/o\/oauth2\/auth\?/, "the agent's own address, on the person's terminal");
-  assert.match(signed.stderr, /ssh -L PORT:127\.0\.0\.1:PORT/, "the remote route said");
-  assert.match(signed.page, /authentication flow has completed/, "the browser landed on the agent's own server");
+  assert.match(signed.stdout, /https:\/\/accounts\.example\.invalid\/o\/oauth2\/auth\?/, "the agent's own address, on the person's terminal");
+  assert.match(signed.stderr, /model-agent: stdin: the caller's/, "the agent reads the person's own terminal: nothing of AgentRun's sits between");
   assert.match(signed.stdout, /Signed in/);
-  for (const [where, text] of [["stdout", signed.stdout], ["stderr", signed.stderr]]) assert.equal(text.includes(TOKEN), false, `${where} holds the sign-in`);
   assert.equal(statSync(SIGN_IN_HOME(data)).mode & 0o777, 0o700);
-  assert.ok(existsSync(join(SIGN_IN_HOME(data), "token.json")), "the agent wrote its sign-in into its own folder");
+  assert.equal(readFileSync(join(SIGN_IN_HOME(data), "token.json"), "utf8").trim(), TOKEN, "the agent wrote its sign-in into its own folder");
   assert.equal(origin.messages().length, 0, "a sign-in prompts nothing");
 
-  // Signed in, an unattended run still refuses the person's sign-in.
+  // Signed in, the check runs on the owner's sign-in: no key, no `authenticate`, the agent reading its own folder.
   const after = await check(t, file, data, cliEnv());
-  assert.equal(after.report.refused.code, "HARNESS_SIGN_IN_ATTENDED");
-  assert.equal(origin.messages().length, 0);
+  assert.equal(after.status, 0, `${after.stdout}\n${after.stderr}\n${JSON.stringify(after.report?.stage3 ?? after.report?.refused)}`);
+  assert.match(after.stderr, /runs on its owner's sign-in/);
+  assert.ok(origin.messages().length >= 4);
+  assert.ok(origin.messages().every((r) => r.headers["x-api-key"] === TOKEN), "the vendor heard the sign-in, from the agent");
   for (const [where, text] of [["the report on disk", after.written], ["stdout", after.stdout], ["stderr", after.stderr]]) assert.equal(text.includes(TOKEN), false, `${where} holds the sign-in`);
+
+  // An agent that prints its credential as it fails, on a sign-in: nothing it prints is kept (stderr "none").
+  const leaky = await installed(t, (o) => signingIn(o, { keyed: false, env: { MODEL_AGENT_MODE: "leak-key" } }));
+  assert.equal((await signIn(leaky.file, leaky.data)).status, 0);
+  const leaked = await check(t, leaky.file, leaky.data, cliEnv());
+  assert.equal(leaked.status, 1);
+  for (const [where, text] of [["the report on disk", leaked.written], ["stdout", leaked.stdout], ["stderr", leaked.stderr]]) assert.equal(text.includes(TOKEN), false, `${where} holds the sign-in`);
 });
 
-test("`agentrun harness sign-in` refuses a method the agent does not list, a recipe with no signIn, and an agent not installed, by their codes, and keeps nothing the agent said", { skip: linux, timeout: 120_000 }, async (t) => {
-  const unlisted = await installed(t, (o) => signingIn(o, { method: "another-login" }));
-  const refused = await signIn(unlisted.file, unlisted.data, { visit: () => assert.fail("no address is printed for a method the agent does not list") });
-  assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /ACP_AUTH_UNLISTED: [^\n]*another-login[^\n]*model-agent-login/);
-  assert.equal(existsSync(join(SIGN_IN_HOME(unlisted.data), "token.json")), false);
+test("`agentrun harness sign-in` says how the agent's own sign-in ended, and refuses a recipe with no signIn and an agent not installed, by their codes", { skip: linux, timeout: 120_000 }, async (t) => {
+  // The person gives no code: the agent's --login exits 1, and the check still finds no sign-in.
+  const cancelled = await installed(t, (o) => signingIn(o, { keyed: false }));
+  const none = await signIn(cancelled.file, cancelled.data, { code: "" });
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /login cancelled/, "the agent's own words, on the person's terminal");
+  assert.match(none.stderr, /HARNESS_SIGN_IN_FAILED: [^\n]*exit status 1/);
+  assert.equal(existsSync(join(SIGN_IN_HOME(cancelled.data), "token.json")), false);
+  assert.equal((await check(t, cancelled.file, cancelled.data, cliEnv())).report.refused.code, "HARNESS_NOT_SIGNED_IN");
 
   const keysOnly = await installed(t, (o) => planOn(o));
-  const none = await signIn(keysOnly.file, keysOnly.data);
-  assert.equal(none.status, 1);
-  assert.match(none.stderr, /HARNESS_NO_SIGN_IN: [^\n]*MODEL_AGENT_API_KEY/);
+  const nothing = await signIn(keysOnly.file, keysOnly.data);
+  assert.equal(nothing.status, 1);
+  assert.match(nothing.stderr, /HARNESS_NO_SIGN_IN: [^\n]*MODEL_AGENT_API_KEY/);
 
   const data = join(await scratch(t), "agents");
   const file = await recipeFile(t, signingIn({ url: "http://127.0.0.1:9" }, { keyed: false }));
@@ -724,21 +740,15 @@ test("`agentrun harness sign-in` refuses a method the agent does not list, a rec
   assert.match(absent.stderr, /HARNESS_NOT_INSTALLED: [^\n]*agentrun harness install --recipe/);
   assert.equal(existsSync(SIGN_IN_HOME(data)), false, "no folder for an agent not installed");
 
-  // An agent that dies as it signs in: its exit status and our code, none of its words on stdout (its stderr is the
-  // person's terminal, where they read it themselves).
-  const dying = await installed(t, (o) => {
-    const recipe = signingIn(o, { keyed: false });
-    return { ...recipe, env: { ...recipe.env, MODEL_AGENT_WANT_ARG: "--never-given" } };
-  });
+  // An agent that dies as it starts: its exit status and our code.
+  const dying = await installed(t, (o) => signingIn(o, { keyed: false, env: { MODEL_AGENT_WANT_ARG: "--never-given" } }));
   const died = await signIn(dying.file, dying.data);
   assert.equal(died.status, 1);
-  assert.match(died.stderr, /ACP_AGENT_EXITED: [^\n]*exit status 2/);
-  assert.equal(died.stdout.includes("started without"), false);
+  assert.match(died.stderr, /HARNESS_SIGN_IN_FAILED: [^\n]*exit status 2/);
 });
 
-test("a recipe's keys and sign-in are checked: keys handed under the name the agent reads, keyMethod with keys, signIn on plan billing and attended runs alone, its folder's variable its own", () => {
+test("a recipe's keys and sign-in are checked: keys handed under the name the agent reads, keyMethod with keys, signIn on plan billing alone, the agent's own sign-in flags and the one flag naming its folder", () => {
   const plan = { billing: "plan", maxTurns: 8, maxToolCalls: 8 };
-  const SIGN_IN = { method: "model-agent-login", homeEnv: "MODEL_AGENT_HOME", runs: "attended" };
   const KEY = { name: "MODEL_AGENT_GEMINI_API_KEY", env: "GEMINI_API_KEY" };
   const both = (over = {}, signIn = SIGN_IN) => recipeOf(undefined, { model: plan, keys: [KEY], keyMethod: "model-agent-api-key", signIn, ...over });
   const parsed = parseRecipe(JSON.stringify(both()));
@@ -746,16 +756,23 @@ test("a recipe's keys and sign-in are checked: keys handed under the name the ag
   assert.deepEqual(parsed.keyEnv, { [KEY.name]: KEY.env });
   assert.equal(parsed.keyMethod, "model-agent-api-key");
   assert.deepEqual(parsed.signIn, SIGN_IN);
-  assert.equal(parseRecipe(JSON.stringify(recipeOf(undefined, { model: plan, signIn: SIGN_IN }))).keys.length, 0, "a sign-in alone loads (harness-check refuses it)");
+  assert.equal(parseRecipe(JSON.stringify(recipeOf(undefined, { model: plan, signIn: SIGN_IN }))).keys.length, 0, "a sign-in alone loads");
 
   const cases = [
     ["proxy billing signs in with the server's key", recipeOf(undefined, { signIn: SIGN_IN }), RECIPE_CODES.invalid],
-    ["runs other than attended", both({}, { ...SIGN_IN, runs: "scheduled" }), RECIPE_CODES.invalid],
+    // The shape before the agent's own --login: a method sent with ACP authenticate, a folder by variable, attended runs.
+    ["the old method field", both({}, { ...SIGN_IN, method: "model-agent-login" }), RECIPE_CODES.invalid],
+    ["the old homeEnv field", both({}, { ...SIGN_IN, homeEnv: "MODEL_AGENT_HOME" }), RECIPE_CODES.invalid],
+    ["the old runs field", both({}, { ...SIGN_IN, runs: "attended" }), RECIPE_CODES.invalid],
     ["a field signIn has not", both({}, { ...SIGN_IN, files: [".gemini/oauth_creds.json"] }), RECIPE_CODES.invalid],
-    ["homeEnv a key's name", both({}, { ...SIGN_IN, homeEnv: "MODEL_AGENT_GEMINI_API_KEY" }), RECIPE_CODES.env],
-    ["homeEnv a server key's name", both({}, { ...SIGN_IN, homeEnv: "GEMINI_API_KEY" }), RECIPE_CODES.env],
-    ["homeEnv set in env", both({ env: { MODEL_AGENT_HOME: "/elsewhere" } }), RECIPE_CODES.env],
-    ["signIn.method also keyMethod", both({ keyMethod: "model-agent-login" }), RECIPE_CODES.invalid],
+    ["no sign-in args", both({}, { ...SIGN_IN, args: [] }), RECIPE_CODES.invalid],
+    ["sign-in args not strings", both({}, { ...SIGN_IN, args: [1] }), RECIPE_CODES.invalid],
+    ["a sign-in arg that reads the host's environment", both({}, { ...SIGN_IN, args: ["--login", "--home=$HOME"] }), RECIPE_CODES.env],
+    ["homeArg a variable, not a flag", both({}, { ...SIGN_IN, homeArg: "MODEL_AGENT_HOME" }), RECIPE_CODES.invalid],
+    ["homeArg with its value", both({}, { ...SIGN_IN, homeArg: "--model-agent-dir=/elsewhere" }), RECIPE_CODES.invalid],
+    ["homeArg a bare --", both({}, { ...SIGN_IN, homeArg: "--" }), RECIPE_CODES.invalid],
+    ["homeArg among the sign-in args", both({}, { args: ["--login", "--model-agent-dir"], homeArg: "--model-agent-dir" }), RECIPE_CODES.invalid],
+    ["homeArg among the recipe's args", both({ args: ["--model-agent-dir", "/elsewhere"] }), RECIPE_CODES.invalid],
     ["a key saved under the server's own name", both({ keys: [{ name: "GEMINI_API_KEY", env: "GEMINI_API_KEY" }] }), RECIPE_CODES.keys],
     ["two keys handed under one name", both({ keys: [KEY, { name: "MODEL_AGENT_OTHER_API_KEY", env: "GEMINI_API_KEY" }] }), RECIPE_CODES.keys],
     ["one saved key handed under two names", both({ keys: [KEY, { name: "MODEL_AGENT_GEMINI_API_KEY", env: "GOOGLE_API_KEY" }] }), RECIPE_CODES.keys],
@@ -776,54 +793,103 @@ test("a recipe's keys and sign-in are checked: keys handed under the name the ag
   assert.match(neither.message, /in keys or the sign-in in signIn/);
 });
 
-test("a key's handed name, signIn.homeEnv and env never name a variable that changes what the agent's process loads or runs, and homeEnv never one the adapter sets", () => {
+test("a key's handed name and env never name a variable that changes what the agent's process loads or runs", () => {
   const plan = { billing: "plan", maxTurns: 8, maxToolCalls: 8 };
-  const SIGN_IN = { method: "model-agent-login", homeEnv: "MODEL_AGENT_HOME", runs: "attended" };
   const KEY = { name: "MODEL_AGENT_GEMINI_API_KEY", env: "GEMINI_API_KEY" };
   const LAUNCHERS = ["PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONSTARTUP", "BASH_ENV", "ENV", "GIT_CONFIG_GLOBAL", "GIT_SSH_COMMAND"];
   for (const name of LAUNCHERS) {
     const handed = refusalOf(recipeOf(undefined, { model: plan, keys: [{ name: "MODEL_AGENT_GEMINI_API_KEY", env: name }] }));
     assert.ok(handed.codes.includes(RECIPE_CODES.env), `a key handed as ${name}: ${handed.message}`);
     assert.match(handed.message, /loads or runs|the adapter, the proxy or the server sets/);
-    const home = refusalOf(recipeOf(undefined, { model: plan, keys: [KEY], signIn: { ...SIGN_IN, homeEnv: name } }));
-    assert.ok(home.codes.includes(RECIPE_CODES.env), `signIn.homeEnv ${name}: ${home.message}`);
     const env = refusalOf(recipeOf(undefined, { model: plan, keys: [KEY], env: { [name]: "x" } }));
     assert.ok(env.codes.includes(RECIPE_CODES.env), `env setting ${name}: ${env.message}`);
   }
-  for (const name of ["HOME", "TMPDIR", "XDG_CONFIG_HOME", "GIT_CEILING_DIRECTORIES"]) {
-    assert.ok(refusalOf(recipeOf(undefined, { model: plan, keys: [KEY], signIn: { ...SIGN_IN, homeEnv: name } })).codes.includes(RECIPE_CODES.env), `signIn.homeEnv ${name}`);
-  }
 });
 
-// The Antigravity example (examples/harness-recipe/antigravity.json): the ACP registry's antigravity-acp 1.5.2 release
-// as the registry lists it, on a key saved for it alone and, on a run its owner attends, the owner's own sign-in.
-const ANTIGRAVITY_REGISTRY = {
-  "linux-x86_64": { url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.5.2-linux-x86_64.zip", sha256: "99dd8612450805011619d7b8447ce374c289e00549d8557f36790e1dd6256852", args: ["--uid="] },
-  "linux-aarch64": { url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.5.2-linux-arm64.zip", sha256: "e729e05ef54ef0763e48900032466b47fa7c9939cde257f93ba49410ab577acb", args: ["--uid="] },
-  "darwin-aarch64": { url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.5.2-darwin-arm64.zip", sha256: "123a16d5c40a8ac99e20f01a62b68dd860fd96b1c528dfb8eaa37ca8733d4845" },
-  "darwin-x86_64": { url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.5.2-darwin-x86_64.zip", sha256: "92addb5580577b5356d35484d72d1a113d9c5312ad766bcb304983aa8e3fbb06" },
+test("an archive is pinned by exactly one digest, its sha256 or its sha512 (as Google's agy CLI manifest lists it), and release.registry is optional", () => {
+  const SHA512 = "a".repeat(128);
+  const pinned = (archive) => {
+    const r = recipeOf();
+    r.release.archives[PLATFORM] = { ...r.release.archives[PLATFORM], ...archive };
+    return r;
+  };
+  const { sha256: _, ...unpinned } = recipeOf().release.archives[PLATFORM];
+  const by512 = recipeOf();
+  by512.release.archives[PLATFORM] = { ...unpinned, sha512: SHA512 };
+  assert.equal(parseRecipe(JSON.stringify(by512)).release.archives[PLATFORM].sha512, SHA512);
+  const noRegistry = recipeOf();
+  delete noRegistry.release.registry;
+  assert.equal(parseRecipe(JSON.stringify(noRegistry)).release.registry, undefined, "a release outside the ACP registry loads");
+
+  const neither = recipeOf();
+  neither.release.archives[PLATFORM] = unpinned;
+  for (const [why, recipe] of [["both digests", pinned({ sha512: SHA512 })], ["neither", neither], ["a sha512 not 128 hex digits", (() => {
+    const r = recipeOf();
+    r.release.archives[PLATFORM] = { ...unpinned, sha512: "A".repeat(128) };
+    return r;
+  })()], ["a registry id not one", (() => {
+    const r = recipeOf();
+    r.release.registry = "Not An Id";
+    return r;
+  })()]]) {
+    const refused = refusalOf(recipe);
+    assert.ok(refused.codes.includes(RECIPE_CODES.binary) || refused.codes.includes(RECIPE_CODES.invalid), `${why}: ${refused.message}`);
+  }
+  assert.equal(refusalOf(pinned({ sha512: SHA512 })).code, RECIPE_CODES.binary);
+});
+
+// The Antigravity example (examples/harness-recipe/antigravity.json): Google's agy CLI 1.5.14 as its release manifests
+// list it (https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/<target>.json), each archive
+// pinned by the manifest's sha512, as T3 Code installs it. It runs on its owner's own sign-in, or a key saved for it alone.
+const AGY = "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.14-5302690847260672";
+const ANTIGRAVITY_CLI = {
+  "linux-x86_64": { url: `${AGY}/linux-x64/cli_linux_x64.tar.gz`, sha512: "83311d3f354567612dc16c1ae2ea9b503d6f6833aa4e138d39aa229da3f3bb99b0e4d7cca0bce4796b0060d6a51d8113eb7449ed5dc0e7900bf217107ea5bff9" },
+  "linux-aarch64": { url: `${AGY}/linux-arm/cli_linux_arm64.tar.gz`, sha512: "c9b29bba475f63a1a80161ae93ba72b221c7a586d9851e4d0061546704bab66d6b2760b25d716d191724fc7564f3246456ee151e28aa37af48dbcd72bdc6c463" },
+  "darwin-x86_64": { url: `${AGY}/darwin-x64/cli_mac_x64.tar.gz`, sha512: "1b6a1fc6dbe46ba6d9d0405d1b6095189f35ebfc4c3c33ceb1fd1b6d0c9fd702b52ac10b64b8b52aed0d8d71ae02c5df3cffd5e3e3d37549c2daffcce2a853c7" },
+  "darwin-aarch64": { url: `${AGY}/darwin-arm/cli_mac_arm64.tar.gz`, sha512: "26830fd46bfb9200d073cf3e71bf94b707552557b4380ec01afd6e99f3a2b030e65422dab1867f77318078692defc859a7547d17ec4b0b1e9369f13c9c3caea6" },
 };
 
-test("the Antigravity example recipe loads under the five rules: the registry's 1.5.2 zips, its key handed as GEMINI_API_KEY with gemini-api-key, and oauth-personal on attended runs alone", () => {
+test("the Antigravity example recipe loads under the five rules: agy CLI 1.5.14 pinned by its manifests' sha512, `agy acp`, the agent's own --login with --gemini-dir, and a key handed as GEMINI_API_KEY with gemini-api-key", () => {
   const file = new URL("../../../examples/harness-recipe/antigravity.json", import.meta.url).pathname;
   const { recipe } = loadRecipe(file);
   assert.equal(recipe.id, "antigravity");
-  assert.deepEqual([recipe.release.registry, recipe.release.version], ["antigravity-acp", "1.5.2"]);
-  assert.deepEqual(Object.keys(recipe.release.archives).sort(), Object.keys(ANTIGRAVITY_REGISTRY).sort());
-  for (const [platform, want] of Object.entries(ANTIGRAVITY_REGISTRY)) {
+  assert.equal(recipe.release.registry, undefined, "the agy CLI is not in the ACP registry");
+  assert.equal(recipe.release.version, "1.5.14");
+  assert.deepEqual(Object.keys(recipe.release.archives).sort(), Object.keys(ANTIGRAVITY_CLI).sort());
+  for (const [platform, want] of Object.entries(ANTIGRAVITY_CLI)) {
     const archive = recipe.release.archives[platform];
     assert.equal(archive.url, want.url, platform);
-    assert.equal(archive.sha256, want.sha256, platform);
-    assert.equal(archive.format, "zip", platform);
-    assert.equal(archive.cmd, "./agy_acp_server.par", platform);
-    assert.deepEqual(archive.args, want.args, platform);
+    assert.equal(archive.sha512, want.sha512, platform);
+    assert.equal(archive.sha256, undefined, platform);
+    assert.equal(archive.format, "tar.gz", platform);
+    assert.equal(archive.cmd, "./antigravity", platform);
+    assert.equal(archive.args, undefined, platform);
   }
-  assert.deepEqual(recipe.args, []);
+  assert.deepEqual(recipe.args, ["acp", "--disable-telemetry"]);
+  assert.deepEqual(recipe.env, { AGY_CLI_DISABLE_AUTO_UPDATE: "1", AGY_ACP_FORCE_FILE_STORAGE: "1" });
+  assert.deepEqual(recipe.signIn, { args: ["--login"], homeArg: "--gemini-dir" });
   assert.equal(recipe.model.billing, "plan");
   assert.deepEqual(recipe.keys, ["ANTIGRAVITY_GEMINI_API_KEY"]);
   assert.deepEqual(Object.entries(recipe.keyEnv), [["ANTIGRAVITY_GEMINI_API_KEY", "GEMINI_API_KEY"]]);
   assert.equal(recipe.keyMethod, "gemini-api-key");
-  assert.deepEqual(recipe.signIn, { method: "oauth-personal", homeEnv: "GEMINI_HOME", runs: "attended" });
   assert.deepEqual(recipe.declares, { load: true, mcp: "http" });
-  assert.deepEqual(recipe.env, {}, "no switch the binary is not known to read");
+});
+
+test("AgentRun never reads, refreshes or sends an agent's sign-in, and has no usage reader: no harness source or ACP adapter source names a credential file or Google's account and quota APIs", () => {
+  const sources = (dir, pattern) => spawnSync("git", ["ls-files", pattern], { cwd: dir, encoding: "utf8" }).stdout.split("\n").filter(Boolean).map((name) => join(dir, name));
+  const serve = new URL("../src/", import.meta.url).pathname;
+  const files = [...sources(serve, "harness*.ts"), join(serve, "acp-package.ts"), ...sources(new URL("../../run-adapters-acp/src/", import.meta.url).pathname, "*.ts")];
+  assert.ok(files.length > 20, "the sources are listed");
+  for (const file of files) {
+    const text = readFileSync(file, "utf8");
+    for (const banned of ["oauth2.googleapis.com", "cloudcode-pa", "retrieveUserQuota", "loadCodeAssist", "refresh_token", "oauth_creds", "acp_token", "token.json"]) {
+      assert.equal(text.includes(banned), false, `${file} names ${banned}`);
+    }
+  }
+  // The sign-in folder's path is taken in two places: the sign-in that makes it for the agent, and the check that hands
+  // its path to the agent. Neither lists or opens what is in it.
+  const naming = files.filter((file) => readFileSync(file, "utf8").includes("signInHomeOf(")).map((file) => file.slice(serve.length));
+  assert.deepEqual(naming.sort(), ["harness-check.ts", "harness-sign-in.ts"]);
+  assert.doesNotMatch(readFileSync(join(serve, "harness-sign-in.ts"), "utf8"), /readdir|readFile|createReadStream|opendir/, "the sign-in reads nothing");
+  assert.doesNotMatch(readFileSync(join(serve, "harness-check.ts"), "utf8"), /(readdir|readFile|createReadStream|opendir|stat)\w*\([^)]*signInHome/, "the check hands the folder's path on and reads nothing in it");
 });

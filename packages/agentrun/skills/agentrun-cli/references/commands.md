@@ -533,11 +533,11 @@ Route: none, it runs on this machine.
 
 ### `agentrun harness sign-in`
 
-Sign a recipe's agent in to your own account with the agent's own sign-in, in this terminal (Antigravity's oauth-personal), for runs you start and attend.
+Sign a recipe's agent in to your own account with the agent's own sign-in, in this terminal (Antigravity's agy acp --login); runs on this server then use it when the recipe's keys are not set.
 
 Route: none, it runs on this machine.
 
-- `--recipe FILE` (string, this CLI's own): the recipe file, whose signIn names the method; its agent installed first with agentrun harness install --recipe FILE
+- `--recipe FILE` (string, this CLI's own): the recipe file, whose signIn names the agent's own sign-in flags; its agent installed first with agentrun harness install --recipe FILE
 - `--data DIR` (string, this CLI's own): the data directory the recipe's agent was installed into (default ~/.agentrun)
 
 ## harness-check

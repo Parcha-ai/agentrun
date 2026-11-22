@@ -1,21 +1,26 @@
-// `agentrun harness sign-in --recipe FILE`: a person signs a recipe's agent in to their own account (Google Antigravity's
-// `oauth-personal`), in their own terminal, with the agent's own sign-in. The installed binary (its pins checked, as a
-// check's are) is started with signIn.homeEnv pointing at <data>/harnesses/<id>.sign-in and told ACP `authenticate`
-// with signIn.method (run-adapters-acp's signInAgent): the agent prints where to sign in on the person's terminal, the
-// browser's redirect lands on the agent's own loopback server, and the agent writes its sign-in into that folder. This
-// command relays nothing: it reads none of what the agent prints and opens nothing the agent writes, and afterwards it
-// checks only that the folder holds something. Within the vendor's terms (HARNESS.md#vendor-terms): the unmodified
-// binary, its native sign-in, one person, at their terminal.
-import { chmodSync, existsSync, mkdirSync } from "node:fs";
+// `agentrun harness sign-in --recipe FILE`: the owner signs a recipe's agent in to their own account with the agent's own
+// sign-in, in their own terminal, as T3 Code signs Google Antigravity in (`agy acp --login --gemini-dir DIR`). The
+// installed binary (its pins checked, as a check's are) starts with its release's args, then signIn.args, then
+// signIn.homeArg naming <data>/harnesses/<id>.sign-in, on this terminal's own stdin, stdout and stderr: the agent prints
+// where to sign in, reads the code the person pastes, and writes its sign-in into that folder. Nothing of AgentRun's sits
+// between the person and the agent: this command reads none of what the agent prints or is given, never lists or opens
+// the folder, and judges the sign-in by the agent's exit status alone. AgentRun never reads, refreshes or sends the
+// sign-in (HARNESS.md#sign-in).
+import { spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
 import { ARCHIVE_CODES, archivePlatform, digestOf } from "./harness-archive.js";
 import { installDirOf } from "./harness-install.js";
-import { loadRecipe, pinnedDigest, pinnedTree, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor, signedIn, signInHomeOf } from "./harness-recipe.js";
+import { AGENT_VARS, loadRecipe, pinnedDigest, pinnedTree, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor, signedInNoteOf, signInHomeOf } from "./harness-recipe.js";
 
 /** A recipe with no signIn: it runs on its keys alone, and has nothing to sign in. */
 export const HARNESS_NO_SIGN_IN = "HARNESS_NO_SIGN_IN";
-/** The agent answered its sign-in and its folder holds nothing: it was not signed in. */
-export const HARNESS_SIGN_IN_EMPTY = "HARNESS_SIGN_IN_EMPTY";
+/** The agent's own sign-in did not end well: its exit status, a signal, or the time ran out. */
+export const HARNESS_SIGN_IN_FAILED = "HARNESS_SIGN_IN_FAILED";
+/** How long the person has to sign in. */
+export const SIGN_IN_MS = 10 * 60_000;
 
 export interface SignInHarnessOptions {
   recipe: string;
@@ -52,7 +57,7 @@ export async function signInHarness(options: SignInHarnessOptions): Promise<{ ok
   const treePin = pinnedTree(options.data, recipe, release, platform);
   if (!existsSync(binary) || !pin || !treePin) return refuse("HARNESS_NOT_INSTALLED", `${recipe.label} ${recipe.release.version} is not installed in ${installDirOf(options.data, recipe.id)}. Install it with: ${line}`);
   const acp = acpPackage();
-  if (!acp?.signInAgent) return refuse("HARNESS_NOT_INSTALLED", `the ACP adapter (${ACP_PACKAGE}) beside this server is ${acp ? "too old to sign an agent in" : "not installed"}`);
+  if (!acp) return refuse("HARNESS_NOT_INSTALLED", `the ACP adapter (${ACP_PACKAGE}) beside this server is not installed`);
   const found = await digestOf(binary).catch(() => undefined);
   const tree = await acp.treeDigest(installDirOf(options.data, recipe.id)).catch(() => undefined);
   if (found !== pin.sha256 || tree !== treePin.sha256) return refuse(ARCHIVE_CODES.binary, `${recipe.label}'s installed files are not the pinned ones. Install it again with: ${line}`);
@@ -60,14 +65,29 @@ export async function signInHarness(options: SignInHarnessOptions): Promise<{ ok
   const home = signInHomeOf(options.data, recipe.id);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
-  say(`${recipe.label} signs in with its own ${recipe.signIn.method}. It prints the address to open below; the port in its redirect_uri is where your browser comes back to it, on this machine.`);
-  say(`On a remote server, forward that port from your own machine first (ssh -L PORT:127.0.0.1:PORT this-server), then open the address there.`); // key-gate: loopback-rule the redirect host the agent itself listens on, told to the person
-  try {
-    await acp.signInAgent({ command: binary, args: release.args ?? recipe.args, method: recipe.signIn.method, homeEnv: recipe.signIn.homeEnv, home, env: recipe.env, from: options.env, ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) });
-  } catch (error) {
-    const message = (error as Error).message;
-    return { ok: false, code: message.split(":")[0] ?? "ACP_AUTH_FAILED", message };
-  }
-  if (!signedIn(options.data, recipe)) return refuse(HARNESS_SIGN_IN_EMPTY, `${recipe.label} answered its sign-in, and ${home} holds nothing: it is not signed in`);
+  // Its own HOME and TMPDIR for whatever else the agent writes, gone with it; its sign-in goes to `home` alone, by the flag.
+  const scratch = mkdtempSync(join(tmpdir(), "agentrun-sign-in-"));
+  const env: Record<string, string> = {};
+  for (const name of AGENT_VARS.inherited) if (options.env[name] !== undefined) env[name] = options.env[name]!;
+  Object.assign(env, recipe.env, { HOME: scratch, TMPDIR: scratch });
+  const args = [...(release.args ?? recipe.args), ...recipe.signIn.args, recipe.signIn.homeArg, home];
+  say(`${recipe.label} signs you in with its own sign-in, here: it prints the address to open and asks you for the code. AgentRun reads none of it.`);
+  const timeoutMs = options.timeoutMs ?? SIGN_IN_MS;
+  let timedOut = false;
+  const ended = await new Promise<{ code: number | null; signal: NodeJS.Signals | null } | { error: string }>((done) => {
+    const child = spawn(binary, args, { cwd: scratch, env, stdio: "inherit" });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+    }, timeoutMs);
+    child.once("error", (error) => (clearTimeout(timer), done({ error: (error as NodeJS.ErrnoException).code ?? error.message })));
+    child.once("exit", (code, signal) => (clearTimeout(timer), done({ code, signal })));
+  });
+  rmSync(scratch, { recursive: true, force: true });
+  if ("error" in ended) return refuse(HARNESS_SIGN_IN_FAILED, `${recipe.label} could not be started (${ended.error})`);
+  if (timedOut) return refuse(HARNESS_SIGN_IN_FAILED, `${recipe.label} was not signed in within ${Math.round(timeoutMs / 60_000)} minutes`);
+  if (ended.code !== 0) return refuse(HARNESS_SIGN_IN_FAILED, `${recipe.label}'s sign-in ended with ${ended.signal ? `signal ${ended.signal}` : `exit status ${ended.code}`}, so it is not signed in`);
+  writeFileSync(signedInNoteOf(options.data, recipe.id), `${JSON.stringify({ at: new Date().toISOString(), version: recipe.release.version })}\n`, { mode: 0o600 });
   return { ok: true, home };
 }

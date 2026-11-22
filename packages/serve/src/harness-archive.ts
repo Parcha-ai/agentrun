@@ -3,7 +3,8 @@
 // platform: its URL and sha256, and the sha256 of the binary it unpacks to), and it lands whole or not at all, as a
 // first-use install does (harness-install.ts):
 //   - the archive is downloaded with node's fetch into a fresh folder beside `<data>/harnesses/<harness>`, its sha256
-//     taken as it arrives, and refused unless it is the pin's before anything reads it;
+//     (or the sha512 a release is pinned by, as Google's agy CLI manifest lists it) taken as it arrives, and refused
+//     unless it is the pin's before anything reads it;
 //   - the verified archive is unpacked there by the system's tar (`tar -xjf` for Goose's tar.bz2, `-xzf` for Cursor's
 //     tar.gz; a fixed argument list, no shell, an environment of PATH alone): node has no bzip2 of its own, and the
 //     repository carries none. A zip (Google Antigravity's) is unpacked by node itself (harness-zip.ts), no tool needed;
@@ -31,7 +32,7 @@ export const ARCHIVE_CODES = Object.freeze({
   platform: "HARNESS_PLATFORM_UNSUPPORTED",
   /** The archive could not be downloaded: the network, a status other than 200, a size past the limit. */
   download: "HARNESS_DOWNLOAD_FAILED",
-  /** The archive downloaded is not the pin's: its sha256 differs. */
+  /** The archive downloaded is not the pin's: its sha256 (or sha512) differs. */
   archive: "HARNESS_ARCHIVE_MISMATCH",
   /** tar could not unpack the verified archive, or it holds no binary at the pin's path. */
   unpack: "HARNESS_UNPACK_FAILED",
@@ -42,9 +43,11 @@ export const ARCHIVE_CODES = Object.freeze({
 } as const);
 export type ArchiveCode = (typeof ARCHIVE_CODES)[keyof typeof ARCHIVE_CODES];
 
-/** One platform's release, as a pin holds it (the ACP registry's: acp's AcpArchivePin). `treeSha256`: the digest of
- *  every file it unpacks to (acp's treeDigest), for a binary that is a launcher of the code beside it (Cursor's). */
-export type ArchiveRelease = { readonly url: string; readonly format: string; readonly sha256: string; readonly cmd: string; readonly binarySha256?: string; readonly treeSha256?: string };
+/** One platform's release, as a pin holds it (the ACP registry's: acp's AcpArchivePin). The archive is pinned by one
+ *  digest: its `sha256`, else its `sha512` (Google's agy CLI manifest lists that one alone); a recipe's loader takes
+ *  exactly one. `treeSha256`: the digest of every file it unpacks to (acp's treeDigest), for a binary that is a launcher
+ *  of the code beside it (Cursor's). */
+export type ArchiveRelease = { readonly url: string; readonly format: string; readonly sha256?: string; readonly sha512?: string; readonly cmd: string; readonly binarySha256?: string; readonly treeSha256?: string };
 /** A harness installed from an archive: its id and name, its pin, and the command that installs it (said on every failure).
  *  `tree`: how a tree's digest is taken (acp's treeDigest), needed where a release pins one. */
 export type ArchiveHarness = { readonly id: string; readonly label: string; readonly retry: string; readonly pin: { readonly version: string; readonly archives: Readonly<Partial<Record<string, ArchiveRelease>>> }; readonly tree?: (root: string) => Promise<string> };
@@ -124,6 +127,10 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
   const platform = options.platform ?? archivePlatform();
   const release = platform ? harness.pin.archives[platform] : undefined;
   if (!platform || !release) throw fail(ARCHIVE_CODES.platform, `${named} has no release pinned for ${platform ?? `${process.platform}-${process.arch}`}`);
+  // The archive's one digest, by the algorithm its pin names: sha256, else sha512.
+  const algorithm = release.sha256 !== undefined ? "sha256" : "sha512";
+  const want = release.sha256 ?? release.sha512;
+  if (!want) throw fail(ARCHIVE_CODES.platform, `${named}'s archive on ${platform} has no sha256 or sha512 pinned, so it cannot be checked`);
   if (!release.binarySha256 && !options.binaryRecord) throw fail(ARCHIVE_CODES.platform, `${named}'s binary on ${platform} has no sha256 pinned, so what its archive unpacks to cannot be checked`);
   const flag = (UNPACK as Readonly<Record<string, string>>)[release.format];
   if (!flag || !Object.hasOwn(UNPACK, release.format)) throw fail(ARCHIVE_CODES.platform, `${named}'s archive on ${platform} is ${release.format}, and this installer unpacks ${ARCHIVE_FORMATS.slice(0, -1).join(", ")} and ${ARCHIVE_FORMATS.at(-1)} alone`);
@@ -160,8 +167,8 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
     const timeoutMs = options.timeoutMs ?? ARCHIVE_TIMEOUT_MS;
     const maxBytes = options.maxBytes ?? ARCHIVE_MAX_BYTES;
 
-    // The download, hashed as it is written; refused past its limit.
-    const hash = createHash("sha256");
+    // The download, hashed as it is written by its pin's algorithm; refused past its limit.
+    const hash = createHash(algorithm);
     let bytes = 0;
     try {
       const response = await (options.fetch ?? fetch)(release.url, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
@@ -185,7 +192,7 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
       throw fail(ARCHIVE_CODES.download, `${named}'s archive could not be downloaded from ${release.url}: ${(error as Error).message}${cause ? ` (${cause.code ?? cause.message})` : ""}`);
     }
     const got = hash.digest("hex");
-    if (got !== release.sha256) throw fail(ARCHIVE_CODES.archive, `${named}'s archive from ${release.url} has sha256 ${got}, and the pin is ${release.sha256}; it was not unpacked`);
+    if (got !== want) throw fail(ARCHIVE_CODES.archive, `${named}'s archive from ${release.url} has ${algorithm} ${got}, and the pin is ${want}; it was not unpacked`);
     await options.onStep?.("downloaded");
 
     // Unpacked, verified archive only, into a folder of its own inside the fresh one: a zip by node, a tarball by tar.

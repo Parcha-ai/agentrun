@@ -2,9 +2,9 @@
 // with a method its initialize lists, before any session opens. Two routes:
 //  - a key saved for this harness alone, handed under the name the agent reads (a server's own key under that name never
 //    reaches it), its method `gemini-api-key`;
-//  - on an attended run, a person's own sign-in (`oauth-personal`), which the agent reads from a folder of its own the
-//    recipe's env names. The adapter never reads, copies or mirrors it, and keeps no word the agent prints or answers
-//    (recipe.stderr "none"): a failure says the agent's exit status and the adapter's codes alone.
+//  - its owner's own sign-in, which the agent reads from a folder of its own the recipe names. The adapter never reads,
+//    copies or mirrors it, and keeps no word the agent prints or answers (recipe.stderr "none"): a failure says the
+//    agent's exit status and the adapter's codes alone.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -168,46 +168,7 @@ test("no key is handed as, and no env sets, a variable that changes what the age
   for (const name of ['GEMINI_API_KEY', 'GEMINI_HOME', 'MY_ENV', 'NODEJS_HOME', 'PATHS']) assert.equal(launchEnv(name), false, `${name} is not`);
 });
 
-test("a sign-in whose agent answers initialize with an error says its JSON-RPC code alone, none of its words", async () => {
-  const { signInAgent } = await import('@parcha/agentrun-harness-acp');
-  const dir = scratch();
-  const agent = join(dir, 'refuses-initialize.mjs');
-  writeFileSync(agent, [
-    "import { createInterface } from 'node:readline';",
-    'for await (const line of createInterface({ input: process.stdin })) {',
-    '  const { id } = JSON.parse(line);',
-    `  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32603, message: 'refused, signed in as ${TOKEN}' } }) + '\\n');`,
-    '}',
-  ].join('\n'));
-  const home = join(dir, 'home');
-  mkdirSync(home);
-  await assert.rejects(signInAgent({ command: process.execPath, args: [agent], method: LOGIN, homeEnv: 'FAKE_LOGIN_HOME', home }), (error) => {
-    assert.equal(error.message.includes(TOKEN), false, error.message);
-    assert.equal(error.message.includes('signed in as'), false, error.message);
-    assert.match(error.message, new RegExp(`^${ACP_CODES.authFailed}: [^\\n]*initialize[^\\n]*-32603`));
-    return true;
-  });
-});
-
-test("a sign-in never points the agent's folder variable at one that changes what it loads or runs, nor one the adapter sets: refused before it starts", async () => {
-  const { signInAgent } = await import('@parcha/agentrun-harness-acp');
-  const dir = scratch();
-  for (const homeEnv of [...LAUNCHERS, 'HOME', 'TMPDIR', 'XDG_CONFIG_HOME']) {
-    await assert.rejects(signInAgent({ command: join(dir, 'never-started'), args: [], method: LOGIN, homeEnv, home: dir }), (error) => error.message.startsWith(`${ACP_CODES.authFailed}: `) && error.message.includes(homeEnv), homeEnv);
-  }
-});
-
-test("a sign-in takes every folder variable the recipe loader takes (the kernel's one name rule): lowercase, _-led, long", async () => {
-  const { signInAgent } = await import('@parcha/agentrun-harness-acp');
-  const { ENV_NAME } = await import('@parcha/agentrun-kernel');
-  const dir = scratch();
-  for (const homeEnv of ['agent_home', '_AGENT_HOME', `AGENT_${'H'.repeat(100)}`]) {
-    assert.match(homeEnv, ENV_NAME, homeEnv);
-    // Past the name check, the sign-in goes on to start the agent, which is not there.
-    await assert.rejects(signInAgent({ command: join(dir, 'never-started'), args: [], method: LOGIN, homeEnv, home: dir }), (error) => !error.message.includes("sign-in folder's variable"), homeEnv);
-  }
-  for (const homeEnv of ['', '1HOME', 'AGENT-HOME', 'AGENT HOME', `A${'H'.repeat(128)}`]) {
-    assert.doesNotMatch(homeEnv, ENV_NAME, homeEnv);
-    await assert.rejects(signInAgent({ command: join(dir, 'never-started'), args: [], method: LOGIN, homeEnv, home: dir }), (error) => error.message.startsWith(`${ACP_CODES.authFailed}: `) && error.message.includes("sign-in folder's variable"), JSON.stringify(homeEnv));
-  }
+test("the adapter has no sign-in of its own: an agent's sign-in is the agent's, on its owner's terminal (serve's harness-sign-in)", async () => {
+  const acp = await import('@parcha/agentrun-harness-acp');
+  for (const name of ['signInAgent', 'SIGN_IN_MS']) assert.equal(name in acp, false, name);
 });

@@ -29,7 +29,7 @@ import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
 import type { AdapterNeeds } from "./adapters.js";
 import { ARCHIVE_CODES, archivePlatform, digestOf } from "./harness-archive.js";
 import { installDirOf } from "./harness-install.js";
-import { AGENT_VARS, loadRecipe, pinnedDigest, pinnedTree, type Recipe, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor } from "./harness-recipe.js";
+import { AGENT_VARS, loadRecipe, pinnedDigest, pinnedTree, type Recipe, recipeBinaryOf, recipeInstallLine, RecipeRefused, recipeSignInLine, releaseFor, signedIn, signInHomeOf } from "./harness-recipe.js";
 import { acpEntryOf } from "./harness-table.js";
 import { providerModels } from "./model.js";
 import { capModelOf } from "./runner/cli-run-spec.js";
@@ -44,9 +44,9 @@ const NO_PROXY_VARS = ["NO_PROXY", "no_proxy"];
 const SHELL_OWN = ["PWD", "OLDPWD", "SHLVL", "_"];
 
 export const CHECK_DEFAULT_CAP_USD = 0.25;
-/** A recipe that signs in with a person's own account alone (recipe.signIn, no keys): its vendor's terms allow that on
- *  attended runs alone, and a check is not one. */
-export const HARNESS_SIGN_IN_ATTENDED = "HARNESS_SIGN_IN_ATTENDED";
+/** A recipe with a sign-in whose keys are not all set here, and whose owner has not signed its agent in on this data
+ *  directory: neither route its agent runs on is there. */
+export const HARNESS_NOT_SIGNED_IN = "HARNESS_NOT_SIGNED_IN";
 const TURN_MS = 240_000;
 
 export interface HarnessCheckOptions {
@@ -251,11 +251,18 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   const head = { recipe: { id: recipe.id, label: recipe.label, file: loaded.file, sha256: loaded.sha256 }, checkedAt } as const;
   const refuse = (code: string, message: string): HarnessCheckReport => ({ ok: false, ...head, refused: { code, message: `${code}: ${message}` }, failures: [`${code}: ${message}`] });
   say(`${recipe.label}: the recipe holds the five rules (${loaded.file})`);
-  // A person's own sign-in runs on attended runs alone, as its vendor's terms allow (HARNESS.md#vendor-terms): a check is
-  // unattended, so it runs on the recipe's keys, and a recipe with none is refused here, before anything starts.
-  if (recipe.signIn && !recipe.keys.length) {
-    return refuse(HARNESS_SIGN_IN_ATTENDED, `${recipe.label} signs in with a person's own ${recipe.signIn.method}, which its vendor's terms allow on a run its one owner started by hand and is at; harness-check is not one. Check it on a key: name one saved for this harness alone in keys (for a Gemini agent, { "name": "${recipe.id.toUpperCase().replace(/-/g, "_")}_GEMINI_API_KEY", "env": "GEMINI_API_KEY" } with keyMethod "gemini-api-key", an AI Studio key)`);
+  // What the agent runs on: the recipe's keys where every one is set here, else its owner's own sign-in where the agent's
+  // sign-in ended well on this data directory (as T3 Code runs Antigravity, on its owner's own install). On the sign-in the
+  // agent is handed its folder's path (signIn.homeArg) and nothing else: no key, no ACP authenticate, and none of its words
+  // kept (stderr "none"), since no cut knows its token. AgentRun never reads, refreshes or sends it (HARNESS.md#sign-in).
+  const keysSet = recipe.keys.length > 0 && recipe.keys.every((name) => typeof options.env[name] === "string" && options.env[name] !== "");
+  const onSignIn = !keysSet && recipe.signIn !== undefined && signedIn(options.data, recipe);
+  if (recipe.signIn && !keysSet && !onSignIn) {
+    const keys = recipe.keys.length ? `set ${recipe.keys.join(" and ")} (saved for this harness alone), or ` : "";
+    return refuse(HARNESS_NOT_SIGNED_IN, `${recipe.label} runs on its keys or its owner's own sign-in, and neither is here: ${keys}sign its agent in with: ${recipeSignInLine(loaded.file, options.data, options.env)}`);
   }
+  const signInHome = onSignIn ? signInHomeOf(options.data, recipe.id) : undefined;
+  if (signInHome) say(`${recipe.label}: runs on its owner's sign-in, its agent handed ${recipe.signIn!.homeArg} ${signInHome}; AgentRun never reads it`);
 
   // Stage 2's pins: the installed binary, the one the owner's install put there. Nothing is downloaded here.
   const platform = options.platform ?? archivePlatform();
@@ -333,8 +340,8 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   // agent from here alone (the adapter's recipe.keys, as a run's do): a host without one is refused before the start.
   const hostEnv: NodeJS.ProcessEnv = Object.create(env, { HARNESS_CHECK_CANARY: { value: canary, enumerable: true } });
   // The values of every key the host holds, the server's own included: withSecrets keeps those off its enumeration, so
-  // each is read by name.
-  const hostKeys = keyValues(env, recipe.keys);
+  // each is read by name. On the owner's sign-in, the recipe's own keys reach the agent no more than the server's do.
+  const hostKeys = keyValues(env, signInHome ? [] : recipe.keys);
   const childVars: Record<string, string> = { ...recipe.env };
   for (const name of EGRESS_VARS) childVars[name] = egress.url;
   for (const name of NO_PROXY_VARS) childVars[name] = `${LOOPBACK},localhost`; // key-gate: loopback-rule the hosts the agent reaches without the refusing proxy: the model proxy and MCP on this machine
@@ -346,13 +353,18 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     id: recipe.id,
     label: recipe.label,
     command: binary,
-    // The platform's own arguments, where its release lists them (Antigravity's linux `--uid=`), else the recipe's.
-    args: [...(release.args ?? recipe.args)],
+    // The platform's own arguments, where its release lists them, else the recipe's; on the owner's sign-in, its folder.
+    args: [...(release.args ?? recipe.args), ...(signInHome ? [recipe.signIn!.homeArg, signInHome] : [])],
     env: { ...childVars, ...(modelVar && model !== undefined ? { [modelVar]: model } : {}) },
-    keys: [...recipe.keys],
-    // Each key under the name its agent reads (a key entry's env), and the method it signs in with on them.
-    ...(Object.keys(recipe.keyEnv).length ? { keyEnv: { ...recipe.keyEnv } } : {}),
-    ...(recipe.keyMethod ? { authMethod: recipe.keyMethod } : {}),
+    // On its keys: each under the name its agent reads (a key entry's env), and the method it signs in with on them. On the
+    // sign-in: none of them, and nothing the agent prints kept.
+    ...(signInHome
+      ? { keys: [], stderr: "none" as const }
+      : {
+          keys: [...recipe.keys],
+          ...(Object.keys(recipe.keyEnv).length ? { keyEnv: { ...recipe.keyEnv } } : {}),
+          ...(recipe.keyMethod ? { authMethod: recipe.keyMethod } : {}),
+        }),
     ...(planModel ? { model: planModel } : {}),
     files: { ...recipe.files },
     state: [...recipe.state],
