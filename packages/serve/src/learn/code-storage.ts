@@ -44,8 +44,8 @@ export type Scope = "git:read" | "git:write" | "repo:write";
 
 /** A repository id this server may create, read, write or delete: `agentrun-`, a server id (12 hex digits, archil-
  *  settings.ts serverIdOf), then letters, digits, dashes and underscores. The org's other repositories are never touched:
- *  every call checks the id its token names (token()), and no call lists repositories or deletes any but one agent's,
- *  by its exact id. */
+ *  every call checks the id its token names is its own server's (repoToken), and no call lists repositories or deletes
+ *  any but one agent's, by its exact id. */
 const AGENTRUN_REPO = /^agentrun-[0-9a-f]{12}-[A-Za-z0-9_-]{1,160}$/;
 
 /** A repository id refused before any request goes out: one not of this server's agents (AGENTRUN_REPO), or a server
@@ -74,10 +74,11 @@ export function repoIdOf(serverId: string, agentId: string, generation = 0): str
 
 /** A token for repository `repo` with `scopes`, as server `serverId` signs one with org `org.name`'s key (`org.key()`,
  *  read only after the id is checked): the one place a repository id is sent (each call names its repository by its
- *  token alone), so the id is checked here (agentrunRepo) and no request goes out for any other. Signed by the key's own
- *  kind, as code.storage's SDK chooses: an EC key ES256, an RSA key RS256, an Ed25519 key EdDSA. */
+ *  token alone), so the id is checked here and no request goes out for any other: it is one of this server's own agents'
+ *  (agentrun-<serverId>-..., agentrunRepo), never another server's. Signed by the key's own kind, as code.storage's SDK
+ *  chooses: an EC key ES256, an RSA key RS256, an Ed25519 key EdDSA. */
 export function repoToken(org: { name: string; key: () => KeyObject }, serverId: string, repo: string, scopes: readonly Scope[]): string {
-  agentrunRepo(repo);
+  if (typeof serverId !== "string" || !/^[0-9a-f]{12}$/.test(serverId) || !agentrunRepo(repo).startsWith(`agentrun-${serverId}-`)) throw new RepoIdRefused(`code.storage repository ${JSON.stringify(repo)} is not one of this server's (${JSON.stringify(serverId)}) agents': nothing is sent for it`);
   const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
   const now = Math.floor(Date.now() / 1000);
   const key = org.key();
