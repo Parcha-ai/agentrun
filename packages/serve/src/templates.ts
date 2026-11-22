@@ -610,9 +610,10 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   const problems: string[] = [];
   const bad = (where: string, message: string) => void problems.push(`${where}: ${message}`);
   /** The regular files under `sub`, by path from it with forward slashes; a link or any other kind of entry is a
-   *  problem (a package is read from disk, and a link would carry a file from outside it into an agent). */
+   *  problem (a package is read from disk, and a link would carry a file from outside it into an agent). A hidden file
+   *  or folder (.env, .DS_Store) is no part of a package: left out. */
   const files = (sub: string): string[] =>
-    src.entries(sub).sort((a, b) => (a.name < b.name ? -1 : 1)).flatMap((entry) => {
+    src.entries(sub).filter((entry) => !entry.name.startsWith(".")).sort((a, b) => (a.name < b.name ? -1 : 1)).flatMap((entry) => {
       const path = sub ? `${sub}/${entry.name}` : entry.name;
       if (entry.isDirectory()) return files(path);
       if (!entry.isFile()) return bad(path, "is not a regular file or a folder (links are refused)"), [];

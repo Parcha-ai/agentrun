@@ -80,7 +80,7 @@ function rootSchemaOf(manifest, { parseDocument }) {
 
 /** A folder's package by path, each file its bytes: agent.md, the skills/, rules/ and evals/ trees, and the answer's
  *  schema file the manifest names at the root. Nothing else of the folder is sent (a .env, a key, a README, another
- *  folder). No agent.md, a symbolic link, or anything that is neither a file nor a folder refuses the deploy with
+ *  folder), nor a hidden file or folder inside the trees. No agent.md, a symbolic link, or anything that is neither a file nor a folder refuses the deploy with
  *  nothing sent. */
 async function readFolder(dir, fail) {
   const files = new Map();
@@ -96,7 +96,8 @@ async function readFolder(dir, fail) {
   const take = (rel, entry) => {
     if (entry.isSymbolicLink()) throw fail(2, `${rel} is a symbolic link: a package holds files and folders alone, so nothing was sent.`);
     if (entry.isDirectory()) {
-      for (const one of readdirSync(join(dir, rel), { withFileTypes: true })) take(`${rel}/${one.name}`, one);
+      // A hidden file or folder (.env, .DS_Store) is never part of a package: the target leaves it out too.
+      for (const one of readdirSync(join(dir, rel), { withFileTypes: true })) if (!one.name.startsWith(".")) take(`${rel}/${one.name}`, one);
       return;
     }
     if (!entry.isFile()) throw fail(2, `${rel} is neither a file nor a folder: a package holds files and folders alone, so nothing was sent.`);
