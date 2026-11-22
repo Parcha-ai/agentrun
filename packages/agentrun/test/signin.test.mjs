@@ -118,6 +118,29 @@ function refusedClean(result, code, words) {
   for (const text of [result.error.message, result.said]) assert.ok(!text.includes(TOKEN) && !text.includes(DEVICE_CODE), "no token or device code shown");
 }
 
+/** What ends a run in this process at a line it would go on to wait after. */
+class Stopped extends Error {}
+
+/** The CLI in this process with stdin a terminal: its exit code and what it wrote, and the config's path. `stop`, a
+ *  pattern, ends the run at the first stderr line it matches (code null), so nothing after it waits on a real clock. */
+async function onTerminal(args, extra = {}, { stop } = {}) {
+  const { env, config } = scratch();
+  let out = "";
+  let err = "";
+  const said = (chunk) => {
+    err += chunk;
+    if (stop?.test(String(chunk))) throw new Stopped();
+    return true;
+  };
+  const io = { stdin: Object.assign(Readable.from([]), { isTTY: true }), stdout: { isTTY: false, write: (c) => ((out += c), true), on() {} }, stderr: { isTTY: false, write: said } };
+  try {
+    return { code: await main(args, { ...env, ...extra }, io), out, err, config };
+  } catch (error) {
+    if (!(error instanceof Stopped)) throw error;
+    return { code: null, out, err, config };
+  }
+}
+
 test("login --to cloud: the device flow asks the capabilities' scope, names this CLI and its version, shows the code, keeps the token where a pasted one goes, and the next command sends it", async (t) => {
   assert.equal(CLOUD_URL, "https://api.agentrun.ai");
   const { env, config } = scratch();
@@ -126,6 +149,7 @@ test("login --to cloud: the device flow asks the capabilities' scope, names this
   const login = await cli({ ...env, AGENTRUN_CLOUD_URL: server.origin }, ["login", "--to", "cloud"]);
   assert.equal(login.code, 0, login.err);
   assert.deepEqual(JSON.parse(login.out), { base_url: server.base, config_file: config });
+  assert.ok(login.err.startsWith(`Signing in to ${server.origin}.\n`), login.err);
   assert.ok(login.err.includes(`Open ${VERIFY} and enter the code KQ7-4MZ`), login.err);
   for (const text of [login.out, login.err]) assert.ok(!text.includes(TOKEN) && !text.includes(DEVICE_CODE), "no token or device code shown");
   assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { base_url: server.base, api_key: TOKEN });
@@ -323,14 +347,6 @@ test("login reads the token from stdin off a terminal: --to a server with no sig
 });
 
 test("login --base-url or AGENTRUN_BASE_URL on a terminal takes the device sign-in when the server offers one, else refuses a typed token as before", async (t) => {
-  /** The CLI in this process with stdin a terminal: its exit code and what it wrote, and the config's path. */
-  const onTerminal = async (args, extra = {}) => {
-    const { env, config } = scratch();
-    let out = "";
-    let err = "";
-    const io = { stdin: Object.assign(Readable.from([]), { isTTY: true }), stdout: { isTTY: false, write: (c) => ((out += c), true), on() {} }, stderr: { isTTY: false, write: (c) => ((err += c), true) } };
-    return { code: await main(args, { ...env, ...extra }, io), out, err, config };
-  };
   // Offered: the device flow runs (the person denies it here, before any wait).
   const offering = await deviceServer(t, { routes: () => ({ "POST /auth/device/code": () => json(400, { error: "access_denied" }) }) });
   const denied = await onTerminal(["login", "--base-url", offering.base]);
@@ -348,4 +364,38 @@ test("login --base-url or AGENTRUN_BASE_URL on a terminal takes the device sign-
     assert.deepEqual(server.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/capabilities"]);
     assert.equal(existsSync(refused.config), false);
   }
+});
+
+test("the device sign-in names the server it signs in to before anything else: --to, and --base-url from a terminal", async (t) => {
+  const server = await deviceServer(t);
+  for (const args of [["login", "--to", server.base], ["login", "--base-url", server.base]]) {
+    // Ended at the code's line: what follows it is the wait for approval.
+    const run = await onTerminal(args, {}, { stop: /enter the code/ });
+    assert.equal(run.code, null, run.err);
+    assert.ok(run.err.startsWith(`Signing in to ${server.origin}.\n`), run.err);
+    assert.match(run.err, /enter the code KQ7-4MZ/);
+  }
+});
+
+test("an address to open on another origin than the server's is said on a line of its own before the code, naming both origins; on the server's origin, no such line", async (t) => {
+  const crossed = (at, origins) => `The code is approved at ${origins}, not at ${at}. Approve it only if ${at} is the server you meant to sign in to.`;
+  const linesOf = (said) => said.split("\n");
+  // The metadata's verification_uri and the grant's complete one, on another origin.
+  const away = await deviceServer(t);
+  const shown = await signIn(away);
+  assert.equal(shown.token, TOKEN);
+  const lines = linesOf(shown.said);
+  const at = lines.indexOf(crossed(away.origin, "https://console.agentrun.example"));
+  assert.ok(at > 0, shown.said);
+  assert.ok(at < lines.findIndex((line) => line.includes("enter the code")), shown.said);
+  // Only the complete address elsewhere: that origin is named.
+  const split = await deviceServer(t, { routes: (o) => ({ "GET /auth/device": () => json(200, { ...metadataOf(o), verification_uri: `${o}/device` }), "POST /auth/device/code": () => json(200, { ...GRANT, verification_uri: `${o}/device` }) }) });
+  const half = await signIn(split);
+  assert.ok(linesOf(half.said).includes(crossed(split.origin, "https://console.agentrun.example")), half.said);
+  // Every address on the server's own origin: no such line.
+  const home = await deviceServer(t, { routes: (o) => ({ "GET /auth/device": () => json(200, { ...metadataOf(o), verification_uri: `${o}/device` }), "POST /auth/device/code": () => json(200, { ...GRANT, verification_uri: `${o}/device`, verification_uri_complete: `${o}/device?code=KQ7-4MZ` }) }) });
+  const quiet = await signIn(home);
+  assert.equal(quiet.token, TOKEN);
+  assert.ok(quiet.said.includes(`Open ${home.origin}/device and enter the code KQ7-4MZ`), quiet.said);
+  assert.doesNotMatch(quiet.said, /approved at/);
 });
