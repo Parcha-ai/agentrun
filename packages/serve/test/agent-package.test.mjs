@@ -240,7 +240,7 @@ test("nothing of this host is in a package: no box, no computer provider, no pla
   const { api } = server;
   const mcpPin = { docs: { url: "https://docs.example/mcp", tools: [{ name: "search", inputSchema: { type: "object" } }] } };
   const monidPin = { "apollo/people/match": { description: "Match a person.", input: { type: "object" }, usd: 0.1 } };
-  await server.store.agents.create({ id: "boxed", name: "Boxed" }, { id: "boxed-rev", kind: "agentic", body: { instructions: "Build it.", tools: ["read", "bash"], computer: { kind: "sandbox", provider: "box-provider-here" }, place: { mode: "sandbox", box: "box-provider-here" }, maxCostUsd: 1 }, mcpPin, monidPin });
+  await server.store.agents.create({ id: "boxed", name: "Boxed" }, { id: "boxed-rev", kind: "agentic", body: { instructions: "Build it.", tools: ["read", "bash"], computer: { kind: "sandbox", provider: "box-provider-here", needs: ["ffmpeg"] }, place: { mode: "sandbox", box: "box-provider-here" }, maxCostUsd: 1 }, mcpPin, monidPin });
   // A revision saved before the computer setting keeps its place alone: the computer the API shows is the place's.
   await server.store.agents.create({ id: "placed", name: "Placed" }, { id: "placed-rev", kind: "agentic", body: { instructions: "Build it.", tools: ["read", "bash"], place: { mode: "sandbox", box: "box-provider-here" } } });
   for (const id of ["boxed", "placed"]) {
@@ -252,6 +252,8 @@ test("nothing of this host is in a package: no box, no computer provider, no pla
     const manifest = manifestOf(exported.body);
     for (const key of ["place", "mcp_pin", "monid_pin", "provider"]) assert.equal(manifest[key], undefined, `${id}: no ${key}`);
     assert.deepEqual(manifest.computer, ["shell"], `${id}: a shell, whichever the target gives`);
+    // The programs its sandbox must have travel (computer.needs as the package's needs); the box that has them does not.
+    assert.deepEqual(manifest.needs, id === "boxed" ? ["ffmpeg"] : undefined, `${id}: its sandbox's needs`);
     assert.equal(manifest.approvals, "ask", `${id}: approvals, though the definition sets none`);
     assert.ok(manifest.model && manifest.model.tier, `${id}: the model, though the definition names none`);
     asPackage(exported.body);

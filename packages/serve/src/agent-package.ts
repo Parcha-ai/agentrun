@@ -162,9 +162,12 @@ export function agentPackage(input: ExportInput): AgentPackage {
   const computer = isObject(definition.computer) ? definition.computer : undefined;
   const shellTools = (plain ?? []).filter((tool) => toolOf(tool)?.sandboxOnly);
   let computers: string[] | undefined;
+  // The programs its sandbox must have (computer.needs), which a package names beside [shell] alone.
+  let needs: string[] | undefined;
   if (computer?.kind === "none") computers = shellTools.length ? ["shell", "none"] : ["none"];
   else if (computer?.kind === "sandbox") {
     computers = ["shell"];
+    if (Array.isArray(computer.needs) && computer.needs.length) needs = computer.needs.map(String);
     if (computer.image !== undefined || computer.gpu !== undefined || computer.persistent !== undefined) remade.push({ kind: "computer", name: "sandbox", reason: "Its sandbox's image, GPUs or persistence are set on this server: set them again on the target." });
   } else if (computer) remade.push({ kind: "computer", name: String(computer.kind), reason: `A ${String(computer.kind)} computer is this server's: give the agent one again on the target.` });
   if (typeof computer?.provider === "string" && computer.provider.startsWith(PAIRED_ID_PREFIX)) remade.push({ kind: "paired_computer", name: computer.provider, reason: "A computer paired with this server: pair one with the target." });
@@ -271,7 +274,7 @@ export function agentPackage(input: ExportInput): AgentPackage {
     ...(typeof definition.thinking === "string" ? { effort: definition.thinking } : {}),
     ...(plain ? { tools: plain } : {}), ...(mcp.length ? { mcp } : {}),
     ...(typeof bash === "string" && plain?.includes("bash") ? { tool_policy: { bash } } : {}),
-    ...(computers ? { computer: computers } : {}),
+    ...(computers ? { computer: computers } : {}), ...(needs ? { needs } : {}),
     ...(definition.checkout === "pull_request" ? { checkout: "pull_request" } : {}),
     ...(inputs ? { inputs } : {}), ...(secrets.length ? { secrets } : {}),
     ...(cost !== undefined ? { budget: { per_run_usd: cost, ...(requests !== undefined ? { max_requests: requests } : {}) } } : {}),
