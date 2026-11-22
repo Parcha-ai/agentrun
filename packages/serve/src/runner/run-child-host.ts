@@ -33,7 +33,7 @@ import { vendorsOver } from "../sign-ins.js";
 import { decisionProvidersIn, fauxFetch } from "../decisions.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { runnerSecrets } from "./redact.js";
+import { carryTo, cutDeep, heldRedactor, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
@@ -382,18 +382,7 @@ export function dataOnly(value: unknown, seen = new Set<object>()): unknown {
   }
 }
 
-/** Every string inside `value` cut by `cut`: what the run's process writes, as the runner's redactor would cut it in a
- *  loop of its own (rule three: no secret the runner holds is written). */
-export function cutDeep<T>(value: T, cut: (text: string) => string): T {
-  if (typeof value === "string") return cut(value) as T;
-  if (value === null || typeof value !== "object") return value;
-  if (ArrayBuffer.isView(value) || value instanceof Date || value instanceof RegExp || value instanceof ArrayBuffer) return value;
-  if (Array.isArray(value)) return value.map((item) => cutDeep(item, cut)) as T;
-  if (value instanceof Map) return new Map([...value].map(([k, v]) => [k, cutDeep(v, cut)])) as T;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) Object.defineProperty(out, key, { value: cutDeep((value as Record<string, unknown>)[key], cut), enumerable: true, writable: true, configurable: true });
-  return out as T;
-}
+export { cutDeep };
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The store, as the run's process reads it: bound to the claim.
@@ -1172,7 +1161,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         }
         const savedGateway = savedGatewayIn(claimEnv);
         // The run's own keys: those its claim opens (claim-secrets.ts), the one list its loop in this process read.
-        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, revisionRow as never, launch);
+        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, ...(loopDeps.redact ? { carry: carryTo(heldRedactor(loopDeps.redact), claim.runId) } : {}) }, revisionRow as never, launch, claim.runId);
         // With them, its revision's own model's (a launch pinned at its start to another model, a --faux start's, is still
         // handed its agent's model's key, as a run's own process was handed it before: run-secrets.ts secretsFor).
         const ofRevision = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}) });

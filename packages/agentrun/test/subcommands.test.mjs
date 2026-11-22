@@ -102,7 +102,7 @@ test("agentrun NAME: a SIGINT, SIGQUIT, SIGTERM or SIGHUP sent to the CLI alone 
   assert.match(group.mark, /^(?:INT\n){1,2}$/);
 });
 
-test("externalOf on Windows: each PATHEXT extension in its order, in any case, in each absolute PATH folder, with no execute bit; elsewhere no extension is added", async () => {
+test("externalOf on Windows: agentrun-NAME with .com, .exe, .bat or .cmd, in that order, in each absolute PATH folder, with no execute bit, whatever PATHEXT says; elsewhere no extension is added", async () => {
   const { externalOf } = await import(CLI);
   const { dir } = scratch();
   const folder = (name, files) => {
@@ -111,18 +111,20 @@ test("externalOf on Windows: each PATHEXT extension in its order, in any case, i
     return join(dir, name);
   };
   // Files of mode 0644: Windows has no execute bit, a file is a program by its extension.
-  const both = folder("both", ["agentrun-hello.CMD", "agentrun-hello.exe", "agentrun-hello"]);
+  const both = folder("both", ["agentrun-hello.cmd", "agentrun-hello.exe", "agentrun-hello.js", "agentrun-hello"]);
+  const batch = folder("batch", ["agentrun-hello.cmd", "agentrun-hello.bat"]);
   const later = folder("later", ["agentrun-hello.com"]);
   const windows = (env) => externalOf("hello", env, "win32");
-  // PATHEXT unset is .COM;.EXE;.BAT;.CMD: .exe comes before .CMD, matched in any case.
+  // .exe before .cmd, .bat before .cmd.
   assert.equal(windows({ PATH: both }), join(both, "agentrun-hello.exe"));
-  assert.equal(windows({ PATH: both, PATHEXT: ".cmd;.exe" }), join(both, "agentrun-hello.CMD"), "PATHEXT's own order");
-  assert.equal(windows({ PATH: both, PATHEXT: ";;exe;.\\x;" }), join(both, "agentrun-hello.exe"), "no usable entry: the default");
-  // Folders in PATH's order, each folder's extensions in PATHEXT's.
+  assert.equal(windows({ PATH: batch }), join(batch, "agentrun-hello.bat"));
+  // PATHEXT is never read: neither an extension it adds nor its order.
+  assert.equal(windows({ PATH: both, PATHEXT: ".JS;.CMD;.EXE" }), join(both, "agentrun-hello.exe"));
+  // Folders in PATH's order, each folder's extensions in turn.
   assert.equal(windows({ PATH: [later, both].join(delimiter) }), join(later, "agentrun-hello.com"));
   assert.equal(windows({ PATH: [both, later].join(delimiter) }), join(both, "agentrun-hello.exe"));
-  // No extension PATHEXT does not name, not the bare name, not a folder of the name, not a relative PATH entry.
-  assert.equal(windows({ PATH: both, PATHEXT: ".BAT" }), undefined);
+  // Not another extension, not the bare name, not a folder of the name, not a relative PATH entry.
+  assert.equal(windows({ PATH: folder("other", ["agentrun-hello.js", "agentrun-hello"]), PATHEXT: ".JS" }), undefined);
   mkdirSync(join(dir, "dirs", "agentrun-hello.exe"), { recursive: true });
   assert.equal(windows({ PATH: [join(dir, "dirs"), later].join(delimiter) }), join(later, "agentrun-hello.com"));
   assert.equal(windows({ PATH: "both" }), undefined);

@@ -148,6 +148,28 @@ test("an archive whose sha256 is not the pin's is refused before it is unpacked:
   assert.deepEqual(leftovers(harnesses), []);
 });
 
+test("an archive pinned by its sha512 (as Google's agy CLI manifest lists it) is checked by that digest: the right one installs, another is refused before it is unpacked", async (t) => {
+  const release = await fakeRelease(t);
+  const served = await origin(t, release.bytes);
+  const sha512 = createHash("sha512").update(release.bytes).digest("hex");
+  const { dir } = await place(t);
+  const { sha256: _, ...rest } = harnessOf(served.url, release).pin.archives[PLATFORM];
+  const pinned = (digest) => ({ ...harnessOf(served.url, release), pin: { version: "1.59.2", archives: { [PLATFORM]: { ...rest, sha512: digest } } } });
+  const done = await installArchive(pinned(sha512), dir, { platform: PLATFORM });
+  assert.equal(done.installed, "now");
+  assert.equal(sha256(readFileSync(done.binary)), release.binarySha);
+
+  const other = await place(t);
+  const steps = [];
+  await assert.rejects(installArchive(pinned("0".repeat(128)), other.dir, { platform: PLATFORM, onStep: (step) => void steps.push(step) }), (error) => {
+    failsWith("HARNESS_ARCHIVE_MISMATCH")(error);
+    assert.match(error.message, new RegExp(`has sha512 ${sha512}, and the pin is 0{128}`));
+    return true;
+  });
+  assert.deepEqual(steps, [], "never unpacked");
+  assert.equal(existsSync(other.dir), false);
+});
+
 test("a binary whose sha256 is not the pin's is refused before it is put in place: HARNESS_BINARY_MISMATCH, nothing in place", async (t) => {
   const release = await fakeRelease(t);
   const served = await origin(t, release.bytes);

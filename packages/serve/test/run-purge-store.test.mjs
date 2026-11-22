@@ -4,7 +4,7 @@
 // made, except its kept learning's rows, blanked to their state (the learning meter, learning.spend, reads them). A run
 // not final, or held by a runner, is refused, nothing written. agents.purge does the same for an archived agent once each
 // of its runs is a tombstone: its revisions' content, its name and description go, its row stays, and nothing of it is
-// written again (AgentPurged). Another agent's rows are never touched.
+// written again (AgentPurged). Another agent's rows are never touched. An upload goes with the last agent applied from it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -154,6 +154,24 @@ test("agents.purge refuses while a run of the agent is not a tombstone, or a tri
   // A second purge writes nothing.
   await store.agents.purge("agent-1");
   assert.equal((await store.agents.get("agent-1")).purgedAt, agent.purgedAt);
+});
+
+test("agents.purge removes an upload once no agent left was applied from it: the purges of two agents applied from one upload, at once, leave no upload behind; a package imported from GitHub stays", async (t) => {
+  const { store } = await storeOn(t);
+  const UPLOAD = "upload:pr-alert";
+  const GITHUB = "github:acme/agents/templates/watch";
+  for (const id of [UPLOAD, GITHUB]) await store.importedTemplates.put({ id, source: id, sha: "a".repeat(64), publisher: id === GITHUB ? "acme" : "", files: {} });
+  for (const [agentId, packageId] of [["agent-1", UPLOAD], ["agent-2", UPLOAD], ["agent-3", GITHUB]]) {
+    await store.agents.create({ id: agentId, name: agentId }, { id: `rev-${agentId}`, kind: "agentic", body: { instructions: "Answer." }, package: { id: packageId, version: "0.1.0", sha: "a".repeat(64) } });
+    await store.agents.archive(agentId, true);
+  }
+  // Each purge reads the other's agent before either commits, but for the upload's hold: the later one reads the
+  // earlier purged.
+  await Promise.all([store.agents.purge("agent-1"), store.agents.purge("agent-2")]);
+  assert.deepEqual(await store.importedTemplates.ids(), [GITHUB]);
+  await store.agents.purge("agent-3");
+  assert.deepEqual(await store.importedTemplates.ids(), [GITHUB]);
+  assert.deepEqual((await store.importedTemplates.list()).map((row) => row.id), [GITHUB], "ids() names what list() reads");
 });
 
 test("a purged agent takes no write: a revision (an edit's, an upgrade's), its current revision moved, its name or description, its archive, a run, a trigger or a pin of it, each refused (AgentPurged) or a no-op, nothing written", async (t) => {

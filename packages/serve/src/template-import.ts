@@ -2,11 +2,11 @@
 // as its files ({files}, by `agentrun deploy`), checked by the one checker (templates.ts readPackage, over the files held
 // in memory), stored (store `imported_templates`) and loaded beside the bundled packages at each start. The first import
 // stored from a GitHub account needs its owner's "I trust <account>", remembered server-side (settings
-// TRUSTED_PUBLISHERS); an upload needs none, as only this server's owner (its session or its token) sends one. Nothing in
-// a package runs.
+// TRUSTED_PUBLISHERS); an upload needs none, as only this server's owner (its session or its token) sends one, and it
+// goes with the last agent applied from it (store Agents.purge). Nothing in a package runs.
 import { packageSha256 } from "./agent-package.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
-import type { Store } from "./store/index.js";
+import { type Store, UPLOAD_PREFIX } from "./store/index.js";
 import { fetchPackageFiles, type GithubReach, type GithubSource, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
 import { MANIFEST, manifestName, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
 import { isObject, type Json, unknownFields } from "./validate.js";
@@ -15,7 +15,7 @@ import { isObject, type Json, unknownFields } from "./validate.js";
 export const TRUSTED_PUBLISHERS = "templates.trusted_publishers";
 
 /** An uploaded package's id is this and its manifest's name: the next upload of that name replaces it. */
-export const UPLOAD_PREFIX = "upload:";
+export { UPLOAD_PREFIX };
 
 export type TemplateImportDeps = {
   registry: TemplateRegistry;
@@ -91,6 +91,15 @@ export async function loadImported(deps: Pick<TemplateImportDeps, "registry" | "
       skipped(row.id, error instanceof PackageError ? error.problems.join("; ") : (error as Error).message);
     }
   }
+}
+
+/** The uploads served here whose row the store no longer keeps (an agent's purge removed it: Agents.purge), no longer
+ *  served. Only the package read before the store is removed, so an upload put in meanwhile stays served. */
+export async function dropRemovedUploads(deps: Pick<TemplateImportDeps, "registry" | "store">): Promise<void> {
+  const served = deps.registry.list().filter((pkg) => pkg.origin !== null && pkg.id.startsWith(UPLOAD_PREFIX));
+  if (!served.length) return;
+  const stored = new Set(await deps.store.importedTemplates.ids());
+  for (const pkg of served) if (!stored.has(pkg.id) && deps.registry.get(pkg.id) === pkg) deps.registry.remove(pkg.id);
 }
 
 /** Whether `publisher` is one the owner trusts (case-insensitive, as GitHub's account names are). */

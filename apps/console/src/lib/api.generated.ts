@@ -759,6 +759,7 @@ export interface components {
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     } | components["ComposioRunBinding"]>;
+    keys?: Record<string, string>;
   };
   MessageResult: {
     run_id: components["Id"];
@@ -1038,6 +1039,7 @@ export interface components {
     max_cost_usd?: number;
     quote_id?: string;
     model_key?: string;
+    keys?: Record<string, string>;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     } | components["ComposioRunBinding"]>;
@@ -1066,6 +1068,7 @@ export interface components {
     max_cost_usd?: number;
     quote_id?: string;
     model_key?: string;
+    keys?: Record<string, string>;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     } | components["ComposioRunBinding"]>;
@@ -2520,12 +2523,12 @@ export interface operations {
       sha256: string;
       report: {
         blocked: {
-          kind: string;
+          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
           name: string;
           reason: string;
         }[];
         remade: {
-          kind: string;
+          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
           name: string;
           reason: string;
         }[];
