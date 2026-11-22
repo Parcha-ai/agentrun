@@ -400,7 +400,7 @@ export class SdkRuns {
   private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; candidates: LearnedWorkflow[] }> {
     const folder = learningFolderOf(this.data, agentId);
     try {
-      const seed = await seedAt(folder.workspace, revision);
+      const seed = await seedAt(folder.workspace, revision, this.store);
       const { flows } = chooseWorkflows(seed, secretsShown(this.secrets(), { local: true }));
       const dsl = await import("@parcha/agentrun-dsl");
       const { tools, gated, deniedBy } = sdkDraftTools(binding.workflow_tools);
@@ -414,7 +414,7 @@ export class SdkRuns {
       };
       const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [];
       const atCommit = async (name: string, commit: string) =>
-        chooseWorkflows(await seedAt(folder.workspace, commit), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
+        chooseWorkflows(await seedAt(folder.workspace, commit, this.store), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
       for (const flow of flows) {
         const { text: serving } = await championTextOf(records, flow, atCommit);
         if (serving && compatible(serving)) workflows.push(serving);
