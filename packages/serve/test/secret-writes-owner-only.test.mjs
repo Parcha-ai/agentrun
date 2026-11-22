@@ -136,6 +136,19 @@ test("a server the token saved with no credential is the token's to remove (an e
   assert.equal(await savedAuth(page), undefined, "removed");
 });
 
+test("the owner's save over a server the token saved makes it the owner's: the token's delete is then 403, and it stays", async (t) => {
+  const server = await serve(t);
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  const refused = await token("DELETE", "/settings/mcp-servers/fake");
+  assert.equal(refused.status, 403, refused.text);
+  assert.ok(await savedAuth(page), "still saved");
+});
+
 test("a sign-in's start is the owner's alone: the token is refused, and gets no state cookie to finish one with", async (t) => {
   const { fake, token } = await withSavedServer(t);
   const started = await token("POST", "/settings/mcp-servers/fake/oauth/start", { url: fake.url });

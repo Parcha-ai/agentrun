@@ -10,7 +10,7 @@ import { storeOn } from "./store-helpers.mjs";
 const { McpServersOverStore } = await import("../dist/mcp-servers-store.js");
 const { saveMcpServer } = await import("../dist/mcp-store.js");
 const { credentialMark } = await import("../dist/mcp-secret-writes.js");
-const { mcpSourceKey, storedSource } = await import("../dist/mcp-sources.js");
+const { mcpSourceKey, ownersRecord, storedSource } = await import("../dist/mcp-sources.js");
 
 const KEY = Buffer.from(randomBytes(32));
 const SEAL = KEY.toString("base64").replace(/=+$/, "");
@@ -48,6 +48,21 @@ test("a removal that lands answers the handle of the row it removed, not one rea
   const mark = credentialMark(await preset(store, "srv_old"));
   const removed = await registry.remove("hn", mark);
   assert.deepEqual(removed, { composio: { id: "srv_old", key: COMPOSIO_KEY } });
+});
+
+test("the token's removal checks again that the row is the token's: one the owner saved over after the gate's check is refused (412) and stays; the token's own goes", async (t) => {
+  const { store, registry } = await servers(t);
+  const row = await plain(store);
+  const tokens = storedSource({ source: "url", toolkit: null }, row, false, true);
+  await store.settings.put(mcpSourceKey("hn"), tokens);
+  const mark = credentialMark(row);
+  // The owner's save over it lands after the gate read it as the token's: its record no longer carries the mark.
+  await store.settings.put(mcpSourceKey("hn"), ownersRecord(tokens));
+  await assert.rejects(registry.remove("hn", mark, true), (error) => error.code === "precondition_failed");
+  assert.ok(await store.mcp.server("hn"), "the owner's server stays");
+  await store.settings.put(mcpSourceKey("hn"), tokens);
+  assert.deepEqual(await registry.remove("hn", mark, true), {});
+  assert.equal(await store.mcp.server("hn"), undefined, "the token's own is removed");
 });
 
 test("a preset whose key does not open here is `unusable`, and a server that is no preset answers nothing", async (t) => {
