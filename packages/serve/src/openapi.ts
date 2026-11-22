@@ -3822,7 +3822,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         }),
         { type: "null" },
       ],
-      description: "The template package the agent was applied from (POST /templates/{template}/apply), as its first revision keeps it; null for an agent made otherwise.",
+      description: "The template package the agent's current revision came from (POST /templates/{template}/apply): as the apply that wrote it, or the nearest one before it in its line, kept it. An edit carries it; a restored revision answers its own. Null for an agent made otherwise.",
       ...TEMPLATE_MARK,
     },
     run_blockers: {
