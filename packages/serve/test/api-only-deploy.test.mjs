@@ -20,6 +20,7 @@ import { fakeClock } from "./trigger-support.mjs";
 
 const { apiOnlyTriggerSkipped } = await import("../dist/api-only.js");
 const { NOT_SET_UP } = await import("../dist/runnable.js");
+const { openapiDocument } = await import("../dist/openapi.js");
 const { mintSecret, verify } = await import("../dist/standard-webhooks.js");
 const { SOURCE_KINDS } = await import("../dist/triggers.js");
 
@@ -328,6 +329,15 @@ test("the profile's apply makes a schedule and a feed with the launch hook alone
       assert.deepEqual(hooked, bare, `${kind}: the hook makes it no more`);
     }
   }
+});
+
+test("the apply's API description names the reason each API-only skip gives: a schedule's without the hook, and a webhook's", () => {
+  const { description } = openapiDocument(() => undefined).paths["/templates/{template}/apply"].post;
+  const unhooked = apiOnlyTriggerSkipped("pkg", { name: "one", source: { kind: "schedule" } }, false);
+  const never = apiOnlyTriggerSkipped("pkg", { name: "one", source: { kind: "webhook" } }, true);
+  const said = (reason) => `(reason \`${reason}\`)`;
+  assert.ok(description.includes(`else a warning under \`triggers.<i>\` ${said(unhooked.reason)}`), `a schedule skipped for want of the hook: ${unhooked.reason}`);
+  assert.ok(description.includes(`is never made there ${said(never.reason)}`), `a webhook, never made here: ${never.reason}`);
 });
 
 test("an API-only server with the launch hook makes the template's schedule, and its firing goes to the backend, which starts the run through the API; the webhook and email stay skipped", { timeout: 120_000 }, async (t) => {
