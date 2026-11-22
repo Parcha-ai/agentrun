@@ -6,10 +6,10 @@
 // `deploy delete` removes the agent and the lock. Two real servers on loopback with a faux model: A, where the command
 // runs, and B, where it deploys.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { removeAtEnd } from "./support.mjs";
@@ -335,6 +335,85 @@ test("deploy delete takes a 404 as gone only when the agent is not there: a targ
     if (one.kept) assert.match(result.err, new RegExp(`did not (archive|delete) ${AGENT_ID}; nothing was deleted`), one.name);
     else assert.match(result.err, /Deleted/, one.name);
   }
+});
+
+/** watch: a feed trigger whose feeds are a parameter left empty by default, so an apply skips it. */
+const WATCH = `---
+name: watch
+version: 0.1.0
+description: Watches vendors' status feeds.
+budget: { per_run_usd: 0.25 }
+parameters:
+  status_feeds: { type: array, items: { type: string }, required: false, default: [], description: "each vendor's status feed" }
+triggers:
+  - name: status
+    source: { kind: feed, urls: "\${parameters.status_feeds}", every_s: 14400 }
+    target: { kind: start_run, input: { content: "Say what changed." } }
+---
+Say what changed.
+`;
+
+test("a deploy whose apply skipped a trigger names no package in its lock: the same files are applied again, never up to date, so the trigger is made once it can be", { timeout: 180_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const b = await server(t, dir, env, "b");
+  const pkg = folder(dir, { name: "watch" });
+  writeFileSync(join(pkg, "agent.md"), WATCH);
+  const key = { AGENTRUN_API_KEY: b.token };
+  const first = await cli(env, ["deploy", pkg, "--to", b.base, "--yes"], key);
+  assert.equal(first.code, 0, first.err);
+  assert.match(first.err, /Not made on .* yet: status/);
+  assert.equal(JSON.parse(readFileSync(join(pkg, ".agentrun", "deploy.json"), "utf8")).package_sha256, null, "the lock vouches for no package");
+  const again = await cli(env, ["deploy", pkg, "--yes"], key);
+  assert.equal(again.code, 0, again.err);
+  assert.deepEqual([again.json().status, again.json().agent_id], ["deployed", first.json().agent_id], "applied again to the same agent");
+});
+
+test("one command at a time per source: a deploy, rollback or delete of a folder another process holds exits 2 with nothing sent; a hold left by an ended process is taken", { timeout: 60_000 }, async (t) => {
+  const target = await fakeTarget(t, {});
+  const { dir, env } = scratch();
+  const pkg = folder(dir);
+  const held = join(pkg, ".agentrun", "deploy.json.held");
+  mkdirSync(join(pkg, ".agentrun"));
+  writeFileSync(held, `${hostname()} ${process.pid}\n`);
+  const key = { AGENTRUN_API_KEY: "not-a-secret" };
+  for (const args of [["deploy", pkg, "--to", target.base, "--yes"], ["deploy", "rollback", pkg, "--to", target.base], ["deploy", "delete", pkg, "--to", target.base, "--yes"]]) {
+    const refused = await cli(env, args, key);
+    assert.equal(refused.code, 2, `${args.join(" ")}: ${refused.err}`);
+    assert.match(refused.err, new RegExp(`Another agentrun deploy of this source is running \\(process ${process.pid}\\)`));
+  }
+  assert.deepEqual(target.seen, [], "nothing sent");
+  assert.equal(readFileSync(held, "utf8"), `${hostname()} ${process.pid}\n`, "another's hold is kept");
+  const ended = spawnSync(process.execPath, ["-e", ""]).pid;
+  writeFileSync(held, `${hostname()} ${ended}\n`);
+  const taken = await cli(env, ["deploy", pkg, "--to", target.base, "--yes"], key);
+  assert.ok(target.seen.includes("POST /templates/import"), `the deploy went on: ${taken.err}`);
+  assert.equal(existsSync(join(pkg, ".agentrun")), false, "let go of when the command ended");
+});
+
+test("a folder whose .agentrun, or its deploy.json, is a symbolic link is refused with nothing sent: deploy, rollback and delete never act on another folder's lock", { timeout: 60_000 }, async (t) => {
+  const target = await fakeTarget(t, {});
+  const { dir, env } = scratch();
+  const other = folder(dir, { name: "other" });
+  mkdirSync(join(other, ".agentrun"));
+  const otherLock = `${JSON.stringify({ target: target.base, workspace: null, agent_id: "agt_other", revision_id: "rev_1", package_sha256: null, deployed_at: new Date().toISOString() })}\n`;
+  writeFileSync(join(other, ".agentrun", "deploy.json"), otherLock);
+  const pkg = folder(dir);
+  const key = { AGENTRUN_API_KEY: "not-a-secret" };
+  const each = async (linked) => {
+    for (const args of [["deploy", pkg, "--to", target.base, "--yes"], ["deploy", "rollback", pkg, "--to", target.base], ["deploy", "delete", pkg, "--to", target.base, "--yes"]]) {
+      const refused = await cli(env, args, key);
+      assert.equal(refused.code, 2, `${args.join(" ")}: ${refused.err}`);
+      assert.match(refused.err, new RegExp(`${linked} is a symbolic link`));
+    }
+    assert.deepEqual(target.seen, [], "nothing sent");
+    assert.equal(readFileSync(join(other, ".agentrun", "deploy.json"), "utf8"), otherLock, "the other folder's lock is as it was");
+  };
+  symlinkSync(join(other, ".agentrun"), join(pkg, ".agentrun"));
+  await each("\\.agentrun");
+  rmSync(join(pkg, ".agentrun"));
+  mkdirSync(join(pkg, ".agentrun"));
+  symlinkSync(join(other, ".agentrun", "deploy.json"), join(pkg, ".agentrun", "deploy.json"));
+  await each("\\.agentrun/deploy\\.json");
 });
 
 test("the CLI's deploy record is changed under its lock: a deploy waits while another holds it, and what the holder saved is kept", { timeout: 60_000 }, async (t) => {
