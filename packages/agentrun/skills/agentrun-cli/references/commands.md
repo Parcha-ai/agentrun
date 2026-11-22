@@ -142,12 +142,6 @@ Route: `POST /agents/{agent_id}/source/move`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
-### `agentrun agents package AGENT_ID`
-
-The agent's current revision as a template package.
-
-Route: `GET /agents/{agent_id}/package`.
-
 ### `agentrun agents resolve-source-sync AGENT_ID`
 
 Use an explicitly reviewed source snapshot while retaining the prior managed revision in history.
@@ -427,7 +421,7 @@ Route: `POST /connectors/{connector_id}/targets/{target_id}/sync/status`.
 
 Deploy an agent's package to another AgentRun: upload, plan, apply, lock (deploy rollback, deploy delete).
 
-Route: none, it runs on this machine.
+Route: `POST /templates/import`, `POST /templates/{template}/apply`.
 
 - `--to URL` (string, this CLI's own): where: cloud (the hosted AgentRun; AGENTRUN_CLOUD_URL overrides its address), or an AgentRun's address; left out after the first deploy, the lock's target (a folder's, only where this CLI deployed it, or cloud)
 - `--yes` (boolean, this CLI's own): apply without asking (needed off a terminal)
@@ -439,7 +433,7 @@ Route: none, it runs on this machine.
 
 Delete the deployed agent from its target (archived first), and the lock here.
 
-Route: none, it runs on this machine.
+Route: `POST /agents/{agent_id}/archive`, `DELETE /agents/{agent_id}`.
 
 - `--to URL` (string, this CLI's own): the target, in place of the lock's
 - `--yes` (boolean, this CLI's own): delete without asking (needed off a terminal)
@@ -448,7 +442,7 @@ Route: none, it runs on this machine.
 
 Make the deployed agent's previous revision current on its target, and the lock follow.
 
-Route: none, it runs on this machine.
+Route: `GET /agents/{agent_id}/revisions`, `POST /agents/{agent_id}/current`.
 
 - `--to URL` (string, this CLI's own): the target, in place of the lock's
 
@@ -469,7 +463,7 @@ Route: none, it runs on this machine.
 
 Write an agent's current revision as a template package folder, and say what the target sets up again.
 
-Route: none, it runs on this machine.
+Route: `GET /agents/{agent_id}/package`.
 
 - `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one
 

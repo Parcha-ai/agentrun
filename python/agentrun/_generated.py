@@ -2962,13 +2962,13 @@ class GetAgentPackageResponseReport(TypedDict):
 
 
 class GetAgentPackageResponseReportBlockedItem(TypedDict):
-    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "secrets", "input_schema", "budget", "package"]
+    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"]
     name: str
     reason: str
 
 
 class GetAgentPackageResponseReportRemadeItem(TypedDict):
-    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "secrets", "input_schema", "budget", "package"]
+    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"]
     name: str
     reason: str
 
