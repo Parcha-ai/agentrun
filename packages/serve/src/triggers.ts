@@ -154,6 +154,9 @@ export type TriggerDeps = {
   credentials?(kind: string): Promise<unknown>;
   /** What keeps a target from starting runs here, by field (its agent, its kind, its input). */
   targetIssues(target: Target): Promise<InputIssue[]>;
+  /** The refusal of a trigger aimed at `target` whose firings could never start or message a run that has what it needs
+   *  (run-keys.ts firingsOwe), once its fields read; undefined, or no such dep, when there is none. */
+  targetRefusal?(target: Target): Promise<ApiError | undefined>;
   /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`, titled `title` (its
    *  trigger's, never its input's); its first message is the trigger's (`from`, never the person's); ApiError when
    *  refused. */
@@ -381,6 +384,8 @@ export class Triggers {
     // Checked as its runs are given it: the input, then the line saying what fired it (a name the trigger may yet take).
     if (target) issues.push(...(await this.deps.targetIssues(this.given(typeof body.name === "string" ? body.name.trim() : `trg_${"0".repeat(24)}`, source, target, now))));
     if (issues.length || !source || !target) throw invalid(issues);
+    const refused = await this.deps.targetRefusal?.(target);
+    if (refused) throw refused;
     const agentId = await this.agentOf(target);
     const id = `trg_${randomBytes(12).toString("hex")}`;
     const enabled = body.enabled !== false;
@@ -593,6 +598,8 @@ export class Triggers {
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
     if (target) issues.push(...(await this.deps.targetIssues(this.given(typeof body.name === "string" ? body.name.trim() : was.name, source ?? was.source, target, this.clock.now()))));
     if (issues.length || (body.source !== undefined && !source) || (body.target !== undefined && !target)) throw invalid(issues);
+    const refused = target ? await this.deps.targetRefusal?.(target) : undefined;
+    if (refused) throw refused;
     const trigger = await this.need(id, own.onAgent);
     if (source && source.kind !== trigger.source.kind) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "A trigger's source kind is fixed: make a new trigger for another." }]);
     // What its sender keeps of it stays as it was made (Composio's instance): only what reads it here changes.

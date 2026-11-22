@@ -52,6 +52,7 @@ const outputRetried = (entries: readonly { readonly kind?: string; readonly data
   return at >= 0 && entries.slice(at + 1).some((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
 };
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunKept, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
+import { type HeldRedact, heldRedactor } from "./redact.js";
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_PREFIX, reflectRequestId } from "./end-of-run.js";
@@ -417,9 +418,9 @@ export type AdapterRun = PiRun & {
    *  learned workflow's model nodes). Read from the spec's runCap once the spec is known. */
   readonly ledger: RunLedger;
   /** The runner's one redactor (LoopDeps.redact; runner.ts), the same instance: the spec gives it to every place a secret
-   *  could reach text (the session's model proxy, the model route's translation, its log lines). Absent where no runner
-   *  gave one (a spec built alone). */
-  readonly redact?: (text: string) => string;
+   *  could reach text (the session's model proxy, the model route's translation, its log lines), and its claim carries the
+   *  run's own tool keys into (claim-secrets.ts). Absent where no runner gave one (a spec built alone). */
+  readonly redact?: HeldRedact;
   /** The claim's signal (LoopDeps.signal): aborted on a lost claim or the runner's shutdown, never on a person's stop. A
    *  spec's per-claim resources let go of what they hold at once on it (the run's Archil mount credential). Absent where
    *  no loop gave one (a spec built alone). */
@@ -1813,7 +1814,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (passGate.sealed) return;
           passGate.expect(writesEntry(kind, test), { run: { summary } }).catch(() => undefined);
         };
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: deps.redact } : {}), signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: heldRedactor(deps.redact) } : {}), signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn };
         // The spec, its MCP claim step among it (mcpForClaim, before the session opens). A refusal there ends the run in its
         // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written. A claim the spec
         // refuses (ClaimRefused: a handed sign-in that won't read back) ends the run in its words too.
