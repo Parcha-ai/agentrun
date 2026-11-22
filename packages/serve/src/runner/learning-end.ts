@@ -575,8 +575,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const { agentId } = input;
   // A revision is asked only of a workflow its promotion holds, once per hold. The workflows whose newest revision other
   // than their champion (learn/promote.ts championOf: it serves while that one is held) is held: the run's own may be one.
+  // A record the purge gate refuses is skipped as the champion's readers skip it (purged-workflow.ts refusedOf); a gate
+  // that can't be asked skips none, and the text read below is gated again.
   const records: PromotionRecord[] = await promotionsOf(deps.store.settings, agentId).catch(() => []);
-  const heldNames = heldNamesOf(records);
+  const heldNames = heldNamesOf(records, records.length ? await refusedIn(() => deps.learningFolder(agentId), deps.store)(records).catch(() => undefined) : undefined);
   // The loop's numbers on the agent's definition (the revision this run runs): the first compile waits for compile_after
   // completed agent runs, the ending one counted.
   const { compile_after: compileAfter } = await loopOfRun(deps.store, input.runId);

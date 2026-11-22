@@ -613,7 +613,8 @@ const outcomesAdded = (a: ReplayOutcomes, b: ReplayOutcomes | undefined): Replay
   b ? { answered: a.answered + b.answered, handed_back: a.handed_back + b.handed_back, failed: a.failed + b.failed, skipped_write: a.skipped_write + b.skipped_write } : a;
 
 /** Decides a check on its rows, with a connected agent's turns checked before them (`before`), scored on its bar
- *  (scoreRows). Promoted when it clears the bar (checkPasses); else held with the inputs it did not agree on, which the
+ *  (scoreRows). Promoted when it clears the bar (checkPasses) and the purge gate lets its revision through at its commit
+ *  (`refused`: else held, a purged run's text); else held with the inputs it did not agree on, which the
  *  agent's next run's compile turn reads as data (its one recompile); a recompile's check that holds it too stops:
  *  nothing compiles again. No grade, refit, queue or second replay. Kept only while `still` holds of the digest's record
  *  (the one write: of two claims at once, one decides). */
@@ -654,8 +655,14 @@ export async function decideCheck(deps: DecideDeps, name: string, digest: string
   const verbatim = ok || bar.agree_on?.length ? "" : grader ? (differed > 0 ? `; ${differentDecisionWords(differed, score.alone, example)}` : "") : score.alone > 0 && score.agreed === 0 ? `; ${read.exactMismatchReason ?? NEVER_WORD_FOR_WORD}` : "";
   const reason = ok ? `${said}: promoted` : stopped ? `${said}: held${verbatim}, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts` : `${said}: held${verbatim}; the agent's next run recompiles it once with the inputs it did not agree on`;
   const check: CheckRecord = { ...bar, ...score, ...numbers, ...(disagreements.length ? { disagreements } : {}), ...(stopped ? { stopped: true as const } : {}), ...(grader ? { grader } : {}) };
-  const decided = await recordPromotion(deps.store.settings, deps.agentId, { workflow: name, digest, at: iso(now()), decided: ok ? "promote" : "hold", reason, check, ...seedOf(deps), ...extra }, still, deps.refused);
-  if (decided.won) deps.log(`workflow-first: ${name} at ${digest} ${ok ? "promoted" : "held"}: ${reason}`);
+  const record: PromotionRecord = { workflow: name, digest, at: iso(now()), decided: ok ? "promote" : "hold", reason, check, ...seedOf(deps), ...extra };
+  // A check that outlives its revision's run: the run's purge never stops it (it replays other runs' inputs), and the
+  // purge gate refuses the revision at the commit it was checked at (purged-workflow.ts refusedOf). It is held, never
+  // promoted, so no promotion of the purged run's text lands.
+  const gone = ok && deps.refused !== undefined && (await deps.refused([record], [name]))(record);
+  const kept: PromotionRecord = gone ? { ...record, decided: "hold", reason: `${said}: held, never promoted: a purged run wrote this revision, and its text is gone` } : record;
+  const decided = await recordPromotion(deps.store.settings, deps.agentId, kept, still, deps.refused);
+  if (decided.won) deps.log(`workflow-first: ${name} at ${digest} ${kept.decided === "promote" ? "promoted" : "held"}: ${kept.reason}`);
   return decided;
 }
 

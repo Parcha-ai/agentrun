@@ -267,9 +267,11 @@ test("a purge of the champion's run puts back the version before it, and the ear
   const kept = await learned(data, "crowned", (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: filesOf("in whole numbers") }));
   const crowned = await learned(data, "crowned", (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: filesOf(mark) }));
   const at = new Date().toISOString();
+  // Each promotion's check, on its own number of inputs, so the cost read names whose it reads.
+  const checked = (n) => ({ compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n, alone: n, agreed: n - 1 });
   await store.settings.put("learning.promotions.crowned", { v: 1, items: [
-    { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit: kept },
-    { workflow: "answer", digest: digestOf(v2[path]), at, decided: "promote", reason: "checked: promoted", commit: crowned },
+    { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit: kept, check: checked(10) },
+    { workflow: "answer", digest: digestOf(v2[path]), at, decided: "promote", reason: "checked: promoted", commit: crowned, check: checked(20) },
   ] });
   const { compileAskOf } = await import("../dist/runner/learning-end.js");
   const reads = async (question) => {
@@ -290,6 +292,10 @@ test("a purge of the champion's run puts back the version before it, and the ear
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
   assert.deepEqual(onMain(data, "crowned").files, v1, "main holds answer v1 again, both files as `first` wrote them");
   assert.deepEqual(await reads("What is seven times six?"), { holds: false, champion: kept, served: digestOf(v1[path]) }, "no read, run or compile ask holds v2; the champion read names v1's commit, and a run that fits it is served v1");
+  // The cost read names the champion the gate leaves: the serving check is v1's, and the bill says v1 serves, never v2.
+  const cost = (await api("GET", "/agents/crowned/learning/cost")).body;
+  const states = Object.fromEntries(cost.bill.revisions.filter(({ workflow }) => workflow === "answer").map(({ digest, state }) => [digest, state]));
+  assert.deepEqual({ replay: cost.summary.replay?.n ?? null, states }, { replay: 10, states: { [digestOf(v1[path])]: "serving", [digestOf(v2[path])]: "stopped" } }, "the cost read's serving check and the bill's states name v1, never the purged v2");
 
   // The PROMOTIONS_KEPT trim keeps the champion the gate leaves: a record written past the bound, through the same port
   // the runner hands recordPromotion, drops none of v1's records, so v1 still serves.
@@ -342,7 +348,199 @@ test("a promotion write that another writer pushes past the trim bound asks the 
   const done = await recordPromotion(settings, "racing", rec("other", "past", "hold"), (was) => was === undefined, refused);
   assert.equal(done.won, true);
   const after = JSON.parse(kept.get(key)).items;
-  assert.deepEqual({ length: after.length, asked, champion: championOf(after, "answer", skip)?.digest ?? null }, { length: PROMOTIONS_KEPT, asked: [PROMOTIONS_KEPT], champion: "v1" }, "the write asks the gate over the records it trims, and v1 is still the champion past the purged v2");
+  assert.deepEqual({ length: after.length, asked, champion: championOf(after, "answer", skip)?.digest ?? null }, { length: PROMOTIONS_KEPT, asked: [PROMOTIONS_KEPT + 1], champion: "v1" }, "the write asks the gate over the records it trims, the one it writes included, and v1 is still the champion past the purged v2");
+});
+
+/** Agent `agentId`'s champion of `answer` as the promotions read names it (its commit, or null), and the digest a run
+ *  that fits `answer` is served first (null: the agent takes it). */
+const servedNow = async (api, store, agentId, question) => {
+  const promotions = (await api("GET", `/agents/${agentId}/learning/promotions`)).body;
+  const run = await api("POST", `/agents/${agentId}/runs`, { input: { content: question, question } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await ended(api, run.body.run_id);
+  return { champion: promotions.serving.find((line) => line.workflow === "answer")?.champion?.commit ?? null, served: (await store.runs.get(run.body.run_id)).metrics?.workflow_digest ?? null };
+};
+/** Records of workflow `other`, held, after `items` up to the trim bound, so the next write trims. */
+const filledTo = (items, bound, at) => {
+  const out = [...items];
+  while (out.length < bound) out.push({ workflow: "other", digest: `other-${out.length}`, at, decided: "hold", reason: "held" });
+  return out;
+};
+
+// A check that outlives the purge: `gone`'s v2 replays on other runs' inputs, so its purge never stops it, and it decides
+// after the purge with the records at the trim bound. Its decision lands no promote for v2 (the gate refuses v2 at the
+// commit it was checked at), and a promote some writer lands for v2 is asked of the gate with the records it trims, so
+// v1's records stay and v1 still serves.
+test("a check that outlives the purge of its revision's run lands no promote for it, and past the trim the earlier champion still serves", { timeout: 300_000 }, async (t) => {
+  const mark = `PURGED-LATE-${randomBytes(6).toString("hex")}`;
+  const { api, data, store } = await serve(t, { learning: "on" });
+  const first = (await startRun(api, "late", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
+  await ended(api, first);
+  const gone = await started(api, "late", "What is three?");
+  await ended(api, gone);
+  const path = "workflows/answer/workflow.json";
+  const [v1, v2] = [answerAt("in whole numbers"), answerAt(mark)];
+  const kept = await learned(data, "late", (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: filesOf("in whole numbers") }));
+  const revised = await learned(data, "late", (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: filesOf(mark) }));
+  const { PROMOTIONS_KEPT, promotionOf, recordPromotion } = await import("../dist/learn/promote.js");
+  const { refusedIn } = await import("../dist/purged-workflow.js");
+  const { decideCheck } = await import("../dist/runner/promotion.js");
+  const { secretsShown } = await import("../dist/learning.js");
+  const at = new Date().toISOString();
+  const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+  const replay = { commit: revised, runs: ["late-replay-1"], replay_id: "late-replay" };
+  await store.settings.put("learning.promotions.late", { v: 1, items: filledTo([
+    { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit: kept },
+    { workflow: "answer", digest: digestOf(v2[path]), at, decided: "replaying", reason: "checking", check: bar, ...replay },
+  ], PROMOTIONS_KEPT, at) });
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+
+  // v2's check lands now, every input answered alone and agreed.
+  const refused = refusedIn(() => learningFolderOf(data, "late"), store);
+  const rows = ["a", "b", "c", "d", "e"].map((one) => ({ of: `late-input-${one}`, input: "What is six?", agent: "6", outcome: "answered", answer: "6" }));
+  const deps = { store, agentId: "late", log: () => {}, shown: async () => secretsShown([]), refused };
+  await decideCheck(deps, "answer", digestOf(v2[path]), bar, { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, (was) => was?.decided === "replaying", replay);
+  assert.deepEqual(await servedNow(api, store, "late", "What is six times seven?"), { champion: kept, served: digestOf(v1[path]) }, "past the late check's write, the champion read names v1's commit, and a run that fits it is served v1");
+  const late = promotionOf((await store.settings.get("learning.promotions.late")).items, "answer", digestOf(v2[path]));
+  assert.deepEqual({ decided: late?.decided, said: /purged/.test(late?.reason ?? "") }, { decided: "hold", said: true }, "the late check records no promote for v2: a hold that says its run was purged");
+
+  // A promote some writer lands for v2 past the bound: the gate is asked over the records the write keeps, that one
+  // included, so the trim keeps v1's.
+  const landed = await recordPromotion(store.settings, "late", { workflow: "answer", digest: digestOf(v2[path]), at, decided: "promote", reason: "checked: promoted", commit: revised }, () => true, refused);
+  assert.equal(landed.won, true);
+  assert.deepEqual(await servedNow(api, store, "late", "What is seven times six?"), { champion: kept, served: digestOf(v1[path]) }, "past a promote for the purged v2 and its trim, the champion read names v1's commit, and a run that fits it is served v1");
+});
+
+// A purged champion that was held since: `gone`'s v2 was promoted, then held (here by this release's DSL; an audit's hold
+// is the same record), so nothing served. The purge puts v1 back on main, and the gate walks the digest promoted last
+// whatever its newest decision: v2's records at `gone`'s commit are skipped, and v1 serves again, past the trim too.
+test("a purge of a champion's run that was held since puts the earlier champion back: it serves, and the trim keeps it", { timeout: 300_000 }, async (t) => {
+  const mark = `PURGED-REHELD-${randomBytes(6).toString("hex")}`;
+  const { api, data, store } = await serve(t, { learning: "on" });
+  const first = (await startRun(api, "reheld", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
+  await ended(api, first);
+  const gone = await started(api, "reheld", "What is three?");
+  await ended(api, gone);
+  const path = "workflows/answer/workflow.json";
+  const [v1, v2] = [answerAt("in whole numbers"), answerAt(mark)];
+  const kept = await learned(data, "reheld", (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: filesOf("in whole numbers") }));
+  const crowned = await learned(data, "reheld", (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: filesOf(mark) }));
+  const { DSL_REFUSES } = await import("../dist/runner/promotion.js");
+  const at = new Date().toISOString();
+  await store.settings.put("learning.promotions.reheld", { v: 1, items: [
+    { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit: kept },
+    { workflow: "answer", digest: digestOf(v2[path]), at, decided: "promote", reason: "checked: promoted", commit: crowned },
+    { workflow: "answer", digest: digestOf(v2[path]), at, decided: "hold", reason: `${DSL_REFUSES}: a node it names is gone`, commit: crowned },
+  ] });
+  assert.deepEqual(await servedNow(api, store, "reheld", "What is six times seven?"), { champion: null, served: null }, "before the purge, v2 is held and nothing serves");
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.deepEqual(onMain(data, "reheld").files, v1, "main holds answer v1 again");
+  assert.deepEqual(await servedNow(api, store, "reheld", "What is seven times six?"), { champion: kept, served: digestOf(v1[path]) }, "after the purge of the held champion's run, the champion read names v1's commit, and a run that fits it is served v1");
+
+  const { PROMOTIONS_KEPT, recordPromotion } = await import("../dist/learn/promote.js");
+  const { refusedIn } = await import("../dist/purged-workflow.js");
+  await store.settings.put("learning.promotions.reheld", { v: 1, items: filledTo((await store.settings.get("learning.promotions.reheld")).items, PROMOTIONS_KEPT, at) });
+  const trimmed = await recordPromotion(store.settings, "reheld", { workflow: "other", digest: "other-past", at, decided: "hold", reason: "held" }, (was) => was === undefined, refusedIn(() => learningFolderOf(data, "reheld"), store));
+  assert.equal(trimmed.won, true);
+  assert.deepEqual(await servedNow(api, store, "reheld", "What is seven times seven?"), { champion: kept, served: digestOf(v1[path]) }, "past the trim, the champion read still names v1's commit, and a run that fits it is served v1");
+});
+
+// The raw reads of a workflow a purged run wrote that is still on main (its run purged before its purge took the folder's
+// text, until its DELETE is sent again): its files read 410 purged, as every route of that run does, and a person's
+// approval of it is refused the same way.
+test("a workflow a purged run wrote, still on main, is refused at the raw reads: its files read 410 purged, and its approval is refused", { timeout: 120_000 }, async (t) => {
+  const { api, data, store } = await serve(t, { runner: false });
+  assert.equal((await api("POST", "/agents", agent("raw", { learning: true }))).status, 201);
+  const revisionId = (await store.agents.get("raw")).currentRevision;
+  await store.runs.create({ id: "raw-writer", agentId: "raw", revisionId }, { body: launchBody({ input: { content: "Q" }, title: "t", place: { mode: "runner" } }) });
+  await store.runs.update(await store.claim("raw-writer", "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 0.1 });
+  const flow = "workflows/drafted/workflow.json";
+  const readme = "workflows/drafted/README.md";
+  await learned(data, "raw", (ws) => learningCommit(ws, { runId: "raw-writer", reason: "It drafted one.", files: [{ path: flow, text: JSON.stringify(answerFlow("Draft it.")) }, { path: readme, text: "---\nname: drafted\ndescription: Answers a question; use when asked\nstatus: pending\n---\n" }] }));
+  await store.runs.purge("raw-writer", { meters: null, spend: { usd: 0.1, basis: "list" }, learning: null });
+  const file = async (path) => {
+    const res = await api("GET", `/agents/raw/learning/files/${encodeURIComponent(path)}`);
+    return { status: res.status, code: res.body?.error?.code ?? null, run: res.body?.error?.details?.run_id ?? null };
+  };
+  const { changeWorkflow } = await import("../dist/learning-routes.js");
+  const etag = `"${git(repoOf(data, "raw"), ["rev-parse", `main:${readme}`])}"`;
+  const approved = await changeWorkflow(data, "raw", readme, { action: "approve", ifMatch: etag, refuse: [], store }).then(() => ({ status: 200 }), (error) => ({ status: error.status, code: error.code }));
+  const refused = { status: 410, code: "purged", run: "raw-writer" };
+  assert.deepEqual({ flow: await file(flow), readme: await file(readme), approved }, { flow: refused, readme: refused, approved: { status: 410, code: "purged" } }, "the purged writer's files read 410 purged, and its approval is refused");
+  assert.match(git(repoOf(data, "raw"), ["show", `main:${readme}`]), /status: pending/, "nothing approved it");
+});
+
+// The pure readers of the records: the cost reads (the serving check, the bill's states) and the compile's held names
+// skip a record the gate refuses as championOf does, so none of them names the purged digest.
+test("the cost reads and the compile's held names skip a record the purge gate refuses: none names the purged digest", async () => {
+  const { heldNamesOf } = await import("../dist/learn/compile.js");
+  const { revisionLedgerOf, servingReplayOf } = await import("../dist/store-reads/learning.js");
+  const check = (n) => ({ compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n, alone: n, agreed: n - 1 });
+  const rec = (digest, decided, commit, extra = {}) => ({ workflow: "answer", digest, at: "t", decided, reason: "r", commit, ...extra });
+  const skip = (one) => one.commit === "c2";
+  const crowned = [rec("v1", "promote", "c1", { check: check(10) }), rec("v2", "promote", "c2", { check: check(20) })];
+  const held = [...crowned, rec("v2", "hold", "c2")];
+  const runs = [{ path: "workflow", workflow: "answer" }];
+  const states = (records) => Object.fromEntries(revisionLedgerOf(records, [], [], [], skip).revisions.map(({ digest, state }) => [digest, state]));
+  assert.deepEqual({ replay: servingReplayOf(crowned, runs, skip)?.n ?? null, states: states(crowned), held: [...heldNamesOf(held, skip)] }, { replay: 10, states: { v1: "serving", v2: "stopped" }, held: [] }, "the serving check is v1's, the bill says v1 serves, and no revision of the purged v2 is asked of the compile");
+});
+
+// Fail closed: a promotion write whose purge gate can't read a commit (the folder's backend fails) trims nothing, so no
+// record the gate would keep is dropped on a guess.
+test("a promotion write whose purge gate can't read a commit trims nothing: every record stays", async () => {
+  const { PROMOTIONS_KEPT, promotionsKey, recordPromotion } = await import("../dist/learn/promote.js");
+  const { refusedOf } = await import("../dist/purged-workflow.js");
+  const key = promotionsKey("unread");
+  const rec = (workflow, digest, decided, commit) => ({ workflow, digest, at: "t", decided, reason: "r", ...(commit ? { commit } : {}) });
+  const items = filledTo([rec("answer", "v1", "promote", "1".repeat(40)), rec("answer", "v2", "promote", "2".repeat(40))], PROMOTIONS_KEPT, "t");
+  const kept = new Map([[key, JSON.stringify({ v: 1, items })]]);
+  const settings = {
+    get: async (name) => (kept.has(name) ? JSON.parse(kept.get(name)) : undefined),
+    putIfAbsent: async (name, value) => (kept.has(name) ? JSON.parse(kept.get(name)) : (kept.set(name, JSON.stringify(value)), value)),
+    replaceIf: async (name, was, value) => {
+      if (kept.get(name) !== JSON.stringify(was)) return false;
+      kept.set(name, JSON.stringify(value));
+      return true;
+    },
+  };
+  // A folder whose every call fails, as a backend that cannot answer.
+  const ws = new Proxy({}, { get: (_, name) => (name === "then" ? undefined : async () => { throw new Error("the learning folder can't be read right now"); }) });
+  const refused = (records) => refusedOf(records, records.map(({ workflow }) => workflow), ws, { runs: { get: async () => undefined } });
+  const past = rec("other", "past", "hold");
+  assert.equal((await recordPromotion(settings, "unread", past, (was) => was === undefined, refused)).won, true);
+  assert.deepEqual(JSON.parse(kept.get(key)).items, [...items, past], "a commit read that throws trims nothing: every record stays, the new one after them");
+});
+
+// Never the whole folder: a purge whose read of main's history finds no commit refuses (503 to its DELETE, sent again
+// later), and every file stays on main.
+test("a purge whose read of main's history finds nothing refuses and takes none of the folder's files off", { timeout: 120_000 }, async (t) => {
+  const { api, data, store } = await serve(t, { runner: false });
+  assert.equal((await api("POST", "/agents", agent("blind", { learning: true }))).status, 201);
+  const revisionId = (await store.agents.get("blind")).currentRevision;
+  for (const runId of ["blind-first", "blind-gone"]) {
+    await store.runs.create({ id: runId, agentId: "blind", revisionId }, { body: launchBody({ input: { content: "Q" }, title: "t", place: { mode: "runner" } }) });
+    await store.runs.update(await store.claim(runId, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 0.1 });
+  }
+  await learned(data, "blind", (ws) => learningCommit(ws, { runId: "blind-first", reason: "It wrote v1.", files: filesOf("v1") }));
+  await learned(data, "blind", (ws) => learningCommit(ws, { runId: "blind-gone", reason: "It wrote v2.", files: filesOf("v2") }));
+  const before = onMain(data, "blind");
+  const { forgetRunText } = await import("../dist/learn/commit.js");
+  const { workspace, end } = learningFolderOf(data, "blind");
+  // The folder answers every call but the history read of main, which finds no such commit.
+  const blind = new Proxy(workspace, {
+    get(target, name) {
+      if (name === "exec") return async (argv, options) => (argv[2] === "read" && argv[3] === before.main ? { code: 1, stdout: Buffer.alloc(0), stderr: "", timedOut: false, truncated: false } : target.exec(argv, options));
+      const value = Reflect.get(target, name, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  let outcome;
+  try {
+    outcome = await forgetRunText(blind, "blind-gone", async () => false).then(() => "done", (error) => error.name);
+  } finally {
+    await end();
+  }
+  assert.deepEqual({ files: onMain(data, "blind").files, outcome }, { files: before.files, outcome: "FolderUnreadable" }, "no history read refuses, and every file of the folder is still on main");
 });
 
 // The writer rule follows the bytes over runs that end cheaply (no runner): (c) a workflow the purged run wrote new

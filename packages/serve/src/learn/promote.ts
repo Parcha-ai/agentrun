@@ -408,9 +408,12 @@ export function championOf(records: readonly PromotionRecord[], workflow: string
 
 /** The promotion records championOf skips (purged-workflow.ts refusedOf: the purge gate refuses each at its commit, so
  *  it names a record by its workflow and commit, a copy read later included). Every reader that serves or names the
- *  champion passes it, and the trim keeps the champion past it (trimPromotions). */
-export type Refused = (record: PromotionRecord) => boolean;
+ *  champion passes it, and the trim keeps the champion past it (trimPromotions). `unread`: a commit it asked could not be
+ *  read, so it may refuse too few, and the trim trims nothing on it (recordPromotion fails closed). */
+export type Refused = ((record: PromotionRecord) => boolean) & { readonly unread?: boolean };
 const NONE_REFUSED: Refused = () => false;
+/** The gate's answer when it could not be asked at all: refuses none, said unread. */
+const UNREAD: Refused = Object.assign(() => false, { unread: true });
 
 /** The newest promotion of `workflow` at `digest`: the promote record that began its newest run of promote records (its
  *  first, or the first after a record of that digest that was not promote: an owner's replay that promoted a held
@@ -509,13 +512,15 @@ const blankedRuns = (record: PromotionRecord | undefined): string[] =>
  *  there now has blanked is blanked in `record` too (forgetRunIn): a record built on a copy read before a run's purge
  *  (a connected agent's next turn, release or decision carries its turns on) never writes that run's text back. The trim
  *  keeps the champion past what the purge gate refuses too (`refused`, purged-workflow.ts refusedIn: asked before the
- *  guarded write when it would trim, over the records that write reads: a write that would trim records other than those
- *  it asked over, another writer's landing in between, reads and asks again). */
+ *  guarded write when it would trim, over the records that write reads and `record` after them, so a promotion it lands
+ *  for a revision the gate refuses is skipped as its readers skip it; a write that would trim records other than those
+ *  it asked over, another writer's landing in between, reads and asks again). Fails closed: a gate that could not read
+ *  a commit (Refused.unread) or could not be asked leaves every record, the write trims nothing. */
 export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, refused?: (records: readonly PromotionRecord[]) => Promise<Refused>): Promise<Recorded> {
   for (let tries = 0; tries < 20; tries++) {
     let out: Recorded | undefined;
     const before = refused ? writtenOf(itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId)))) : [];
-    const skip = refused && before.length >= PROMOTIONS_KEPT ? await refused(before) : undefined;
+    const skip = refused && before.length >= PROMOTIONS_KEPT ? await refused([...before, record]).catch(() => UNREAD) : undefined;
     const asked = JSON.stringify(before);
     await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
       const items = writtenOf(saved);
@@ -530,7 +535,7 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
         return items;
       }
       out = { record: kept, won: true };
-      return trimPromotions([...items, kept], skip);
+      return skip?.unread ? [...items, kept] : trimPromotions([...items, kept], skip);
     });
     if (out) return out;
   }

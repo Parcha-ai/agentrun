@@ -4,7 +4,7 @@
 // never served or executed and none of its merges is shown.
 import { ApiError } from "./errors.js";
 import { type LearningFolder, type SnapChange, type Snapshot, snapshotAt } from "./learn/folder.js";
-import { championOf, type PromotionRecord, type Refused } from "./learn/promote.js";
+import type { PromotionRecord, Refused } from "./learn/promote.js";
 import type { RunRow, Store } from "./store/index.js";
 import type { Workspace } from "./workspace/index.js";
 
@@ -51,22 +51,29 @@ export async function purgeGate(snapshot: Snapshot | undefined, store: Pick<Stor
 }
 
 /** The promotion records of `workflows` that championOf skips (learn/promote.ts Refused), read through purgeGate at
- *  each record's commit of the learning folder at `ws`: newest champion first, one the gate refuses at its commit (a
+ *  each record's commit of the learning folder at `ws`: newest promotion first, whatever its digest's newest decision
+ *  (a champion held since included: skipping it may leave an earlier one serving), one the gate refuses at its commit (a
  *  purged run wrote its workflow there) is skipped with every record of its workflow at that commit (by workflow and
- *  commit, so a copy of the records read later is skipped alike), until championOf names one the gate lets through, or
- *  none is left. A commit that can't be read refuses none (reading its text fails on its own); a record with no commit
- *  is let through. One read-only exec per commit asked. */
+ *  commit, so a copy of the records read later is skipped alike, a hold of it included), until the newest promotion left
+ *  is one the gate lets through, or none is left. A record with no commit is let through, and so is a commit the folder
+ *  no longer has (reading its text fails on its own). A commit whose read throws refuses none here and is said
+ *  (Refused.unread), so the promotions trim trims nothing on it (recordPromotion). One read-only exec per commit asked. */
 export async function refusedOf(records: readonly PromotionRecord[], workflows: Iterable<string>, ws: Workspace, store: Pick<Store, "runs">): Promise<Refused> {
   const refused = new Set<string>();
-  const skip: Refused = (one) => one.commit !== undefined && refused.has(`${one.workflow}\0${one.commit}`);
+  const skip = (one: PromotionRecord) => one.commit !== undefined && refused.has(`${one.workflow}\0${one.commit}`);
+  let unread = false;
   const reads = new Map<string, Promise<ReadonlyMap<string, RunRow>>>();
-  const gated = (commit: string) => reads.get(commit) ?? reads.set(commit, snapshotAt(ws, commit).catch(() => undefined).then(async (at) => (await purgeGate(at, store)).workflows)).get(commit)!;
+  const gated = (commit: string) => reads.get(commit) ?? reads.set(commit, snapshotAt(ws, commit).then(async (at) => (await purgeGate(at, store)).workflows, () => {
+    unread = true;
+    return new Map<string, RunRow>();
+  })).get(commit)!;
+  const promotedOf = (workflow: string) => records.findLast((one) => one.workflow === workflow && one.decided === "promote" && !skip(one));
   for (const workflow of new Set(workflows)) {
-    for (let champion = championOf(records, workflow, skip); champion?.commit && !skip(champion) && (await gated(champion.commit)).has(workflow); champion = championOf(records, workflow, skip)) {
-      refused.add(`${workflow}\0${champion.commit}`);
+    for (let last = promotedOf(workflow); last?.commit && (await gated(last.commit)).has(workflow); last = promotedOf(workflow)) {
+      refused.add(`${workflow}\0${last.commit}`);
     }
   }
-  return skip;
+  return Object.assign(skip, { unread });
 }
 
 /** refusedOf in the learning folder `folder` opens for each ask (ended after it), over `workflows` (every workflow of

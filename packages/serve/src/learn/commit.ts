@@ -265,27 +265,33 @@ export async function forgetRunText(ws: Workspace, runId: string, purged: (run: 
  *  run wrote since names that run). The snapshot is rebuilt from main first (two execs and a checkout): a merge that
  *  moved main and stopped before its snapshot leaves one that names none of that merge's workflows, and finding no work
  *  commits nothing that would show it stale. One more read-only exec of main's history when the run wrote one, and one
- *  per version put back. */
+ *  per version put back; either read finding nothing refuses (FolderUnreadable), so no guess takes a folder off. */
 async function forgetRunWorkflows(ws: Workspace, runId: string, purged: (run: string) => Promise<boolean>): Promise<string | undefined> {
   if (await readSnapshot(ws)) await learningRepair(ws);
   const done = await writeLearning<boolean>(ws, async ({ snapshot }) => {
     const mine = (snapshot?.workflows ?? []).filter((item) => item.run === runId);
     if (!mine.length) return { result: false };
+    // No history read, no guess: a purge that can't tell what came before the run's version refuses (503, sent again
+    // later), and never takes the whole folder off main.
+    const unread = () => new FolderUnreadable(false, "the learning folder's history at main can't be read, so a purge puts nothing back and takes nothing off: send the DELETE again");
     const history = await folderAt(ws, snapshot!.main);
+    if (!history) throw unread();
     const writes: { path: string; text: string }[] = [];
     const deletes: string[] = [];
     const written: Record<string, string> = {};
     for (const item of mine) {
       // Newest first: the first writer no purged run is the version to put back, as it stood just before the next
       // writer took the file over.
-      const writers = history?.writers(item.name) ?? [];
+      const writers = history.writers(item.name);
       let back: { path: string; text: string }[] = [];
       for (let i = 1; i < writers.length; i++) {
         const { run } = writers[i]!;
         if (run !== null && (await purged(run))) continue;
-        const at = writers[i - 1]!.before ? await folderAt(ws, writers[i - 1]!.before!) : undefined;
-        const files = at?.snapshot.workflows.find((one) => one.name === item.name)?.files ?? [];
-        back = files.map(({ path, oid }) => ({ path, text: at!.blobs.get(oid)!.toString("utf8") }));
+        const before = writers[i - 1]!.before;
+        const at = before ? await folderAt(ws, before) : undefined;
+        if (!at) throw unread();
+        const files = at.snapshot.workflows.find((one) => one.name === item.name)?.files ?? [];
+        back = files.map(({ path, oid }) => ({ path, text: at.blobs.get(oid)!.toString("utf8") }));
         if (back.length && run !== null) written[item.name] = run;
         break;
       }

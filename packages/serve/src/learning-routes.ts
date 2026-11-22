@@ -21,7 +21,7 @@ import { CORRECTIONS_CAP, draftProblems, frontKeys, isHeld, LEARNED_KEYS, learne
 import { readmeProblems, type DraftDecisions } from "./learn/workflow-draft.js";
 import { forgetRunText, putCorrections, readCorrections } from "./learn/commit.js";
 import { blobOid, type FolderChange, FolderBusy, folderOf, FolderRefused, FolderTooLarge, FolderUnreadable, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type RunDiff, runDiffKey, type SnapChange, type SnapHistory, type SnapLearned, type Snapshot, snapshotAt, textsAt, writeLearning } from "./learn/folder.js";
-import { purgeGate, purgedRows } from "./purged-workflow.js";
+import { purgedRun, purgeGate, purgedRows } from "./purged-workflow.js";
 import { ApiError, invalid } from "./errors.js";
 import type { ServingState } from "./learn/promote.js";
 import { type ItemStatus, detailShown, filesView, type Learning, learningFolderOf, reasonShown, type Shown, withAgentRepo } from "./learning.js";
@@ -352,12 +352,19 @@ function fileOf(raw: string, use: "read" | "approve" | "retire" | "restore"): st
 }
 
 /** GET /agents/{id}/learning/files/{file}: a draft's file on main as text, its ETag, and its type (workflow.json is
- *  JSON). A file not on main, a purged run's workflow included, is 404. */
-export async function readLearnedFile(data: string, agentId: string, raw: string, shown: Shown): Promise<{ text: string; etag: string; type?: string }> {
+ *  JSON). A purged run's workflow left main with its purge (learn/commit.ts forgetRunText), so its files are the 404 any
+ *  missing file is. A file of a workflow still on main whose workflow.json a purged run wrote (its run purged before its
+ *  purge took the folder's text, until its DELETE is sent again) is 410 purged, as every route of that run is
+ *  (purgeGate). */
+export async function readLearnedFile(data: string, agentId: string, raw: string, shown: Shown, store: Pick<Store, "runs">): Promise<{ text: string; etag: string; type?: string }> {
   const file = fileOf(raw, "read");
+  const place = learnedPlace(file)!;
   const found = await reading(data, agentId, async ({ snapshot, body }) => {
     const oid = blobIn(snapshot, file);
     if (oid === undefined) return undefined;
+    // Either file of the workflow: the gate refuses its folder whole, as the view and a merge's diff do.
+    const purged = (await purgeGate(snapshot, store)).workflows.get(place.name);
+    if (purged) throw purgedRun(purged);
     return { oid, text: await body(file, oid) };
   }, () => undefined);
   if (!found) throw new ApiError("not_found", "the agent's learning folder has no such file on main");
@@ -418,8 +425,11 @@ type DraftTools = () => Promise<{ tools: string[]; gated: Record<string, string>
  *  held draft (status: pending) to every later run; a retire takes it out of every later run unchecked, so a leaking one
  *  can always be revoked; a restore brings it back to the status its retire recorded, checked again as a new draft is
  *  (secrets' shapes, the host's values, hidden characters, its README's format, its workflow.json against the agent's
- *  tools and gate). A retire of a retired draft commits nothing. `refuse`: the host's secrets. */
-export async function changeWorkflow(data: string, agentId: string, raw: string, input: { action: "approve" | "retire" | "restore"; ifMatch?: string; refuse: readonly string[]; draftTools?: DraftTools }): Promise<{ status: 200; file: string; text: string; etag: string }> {
+ *  tools and gate). A retire of a retired draft commits nothing. An approval or a restore of a workflow whose
+ *  workflow.json a purged run wrote (still on main until its DELETE is sent again) is 410 purged (purgeGate over
+ *  `store`'s runs): no person's change gives it to a run; a retire takes it out as any other. `refuse`: the host's
+ *  secrets. */
+export async function changeWorkflow(data: string, agentId: string, raw: string, input: { action: "approve" | "retire" | "restore"; ifMatch?: string; refuse: readonly string[]; draftTools?: DraftTools; store: Pick<Store, "runs"> }): Promise<{ status: 200; file: string; text: string; etag: string }> {
   const file = fileOf(raw, input.action);
   const place = learnedPlace(file)!;
   const match = input.ifMatch?.split(",").map((tag) => tag.trim()).filter(Boolean);
@@ -436,6 +446,10 @@ export async function changeWorkflow(data: string, agentId: string, raw: string,
         const current = oid === undefined ? undefined : { oid, text: await body(file, oid) };
         if (!current) throw new ApiError("not_found", "the agent's learning folder has no such workflow on main");
         if (!match.includes(etagOf(current.oid))) throw new ApiError("precondition_failed", "The workflow changed since it was read (a run's merge, or another change): read it again.");
+        if (input.action !== "retire") {
+          const purged = (await purgeGate(snapshot, input.store)).workflows.get(place.name);
+          if (purged) throw purgedRun(purged);
+        }
         let text: string;
         if (input.action === "restore") {
           const status = learnedStatus(current.text);

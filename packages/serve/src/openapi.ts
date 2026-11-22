@@ -1892,7 +1892,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/files/{file}": {
     get: {
       operationId: "readLearningFile", tags: ["agents"], summary: "One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag",
-      description: "corrections.md and a README.md are `text/markdown`; a draft's workflow.json is `application/json`. A run's purge (`DELETE /runs/{run_id}`) puts each workflow whose workflow.json it changed last back to the version before it, the newest no purged run wrote (off main when it wrote it new, so both its files are `404`), and no read at an older commit serves the purged run's text either: a champion read by its digest reads no commit, a later merge's diff shows its files as added, and no run lays it.",
+      description: "corrections.md and a README.md are `text/markdown`; a draft's workflow.json is `application/json`. A run's purge (`DELETE /runs/{run_id}`) puts each workflow whose workflow.json it changed last back to the version before it, the newest no purged run wrote (off main when it wrote it new, so both its files are `404`), and no read at an older commit serves the purged run's text either: a champion read by its digest reads no commit, a later merge's diff shows its files as added, and no run lays it. A file of a workflow still on main whose workflow.json a purged run wrote (its run purged before its purge took the text, until its `DELETE` is sent again) is `410 purged`, as an approval or a restore of it is.",
       parameters: [AGENT_ID, FILE_PARAM], responses: { "200": FILE_TEXT("The file's text, cut of the host's secrets.", true), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
     },
   },
