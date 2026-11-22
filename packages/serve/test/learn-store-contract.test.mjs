@@ -487,6 +487,21 @@ for (const [kind, make] of Object.entries(STORES)) {
     assert.deepEqual(await Promise.all((await store.log(tip)).map(async ({ sha }) => [sha, paths(await store.read(sha))])), trees);
   });
 
+  // Greptile P1 on #3415 (purge.ts:137), red before its fix: A wrote x v1, B v2, C v1 again (the same bytes as A's).
+  // The purge of B gives back A's v1 under B's merge, so C's rewritten merge no longer changes x's bytes; a purge of A
+  // then must still leave C's x, the bytes C's merge wrote, never take it off as A's.
+  test(`${kind}: a run whose merge wrote back an older run's bytes keeps them through two purges: A v1, B v2, C v1, purge B then A: C's v1 stays, its entry C's`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText, learningCommit, readSnapshot } = await learn();
+    for (const [word, said] of [["ALPHA", "ALPHA"], ["BRAVO", "BRAVO"], ["CHARLIE", "ALPHA"]]) assert.equal((await learningCommit(store, { runId: `run_${word.toLowerCase()}`, reason: `${word} reason words`, files: flow("x", said) })).ok, true);
+    const files = ["workflows/x/README.md", "workflows/x/workflow.json"];
+    const v1 = await store.read(await store.head(), files);
+    assert.ok("commit" in (await forgetRunText(store, "run_bravo")));
+    assert.ok("commit" in (await forgetRunText(store, "run_alpha")));
+    assert.deepEqual(await store.read(await store.head(), files), v1, "C's x is at the tip");
+    assert.deepEqual((await readSnapshot(store)).workflows.map(({ name, run }) => [name, run]), [["x", "run_charlie"]]);
+  });
+
   test(`${kind}: a purge takes out the purged run's line after its owner moved it (the owner swaps two runs' lines): the other run's line stays`, async (t) => {
     const store = await make(t);
     const { forgetRunText, putCorrections, readSnapshot } = await learn();
