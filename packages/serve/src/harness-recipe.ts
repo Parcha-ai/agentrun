@@ -174,7 +174,8 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
   const idPattern = new RegExp(HARNESS_ID_PATTERN);
   if (typeof r.id !== "string" || !idPattern.test(r.id)) say(RECIPE_CODES.invalid, `id must match ${HARNESS_ID_PATTERN}`);
   else if (BUILTIN_HARNESS_IDS.includes(r.id) || RESERVED_HARNESS_IDS.includes(r.id)) say(RECIPE_CODES.invalid, `id ${r.id} is a harness AgentRun already has, or a name its runs carry; give yours its own`);
-  if (typeof r.label !== "string" || !r.label.trim() || r.label.length > 80) say(RECIPE_CODES.invalid, "label is the harness's name in a sentence, 1 to 80 characters");
+  // Printed in sentences on a terminal (the sign-in's warning among them), so no control character reaches one.
+  if (typeof r.label !== "string" || !r.label.trim() || r.label.length > 80 || /\p{Cc}/u.test(r.label)) say(RECIPE_CODES.invalid, "label is the harness's name in a sentence, 1 to 80 characters, none a control character");
 
   // Rule 2: the release.
   const release = r.release;
@@ -285,7 +286,8 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
     if (!isPlain(signIn)) say(RECIPE_CODES.invalid, 'signIn is { "args": the flags that start the agent\'s own sign-in (["--login"]), "homeArg": the flag it takes its sign-in folder by ("--gemini-dir") }');
     else {
       for (const field of Object.keys(signIn)) if (!["args", "homeArg", "terms"].includes(field)) say(RECIPE_CODES.invalid, `signIn.${field} is not a sign-in field`);
-      if (signIn.terms !== undefined && (typeof signIn.terms !== "string" || URL.parse(signIn.terms)?.protocol !== "https:")) say(RECIPE_CODES.invalid, "signIn.terms, when given, is the https address of the vendor's terms for a person's own sign-in, said at each sign-in");
+      // Printed as given in the sign-in's warning: printable ASCII with no space, at most 200 characters.
+      if (signIn.terms !== undefined && (typeof signIn.terms !== "string" || !/^https:\/\/[\x21-\x7e]{1,192}$/.test(signIn.terms) || URL.parse(signIn.terms)?.protocol !== "https:")) say(RECIPE_CODES.invalid, "signIn.terms, when given, is the https address of the vendor's terms for a person's own sign-in, said at each sign-in: printable ASCII with no space, at most 200 characters");
       if (!strings(signIn.args) || !signIn.args.length) say(RECIPE_CODES.invalid, 'signIn.args is a list of at least one string: the flags that start the agent\'s own sign-in (["--login"])');
       else if (signIn.args.some((arg) => EXPANDS.test(arg))) say(RECIPE_CODES.env, "signIn.args reads the host's environment ($NAME); write each argument out");
       if (typeof signIn.homeArg !== "string" || !LONG_FLAG.test(signIn.homeArg)) say(RECIPE_CODES.invalid, 'signIn.homeArg is the long flag the agent takes the folder it keeps its sign-in in by ("--gemini-dir"), its value given by AgentRun');

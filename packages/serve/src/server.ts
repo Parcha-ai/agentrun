@@ -1118,13 +1118,15 @@ export const HARNESS_SIGN_IN_NOT_LOCAL = "HARNESS_SIGN_IN_NOT_LOCAL";
  *  it as its own user (`ownUser`: runIsolationOf's `process`), never under --no-runner or a user of their own; and one
  *  person starts them, as Claude Code's login on this machine asks (claude-login.ts whyNotOneOwner): an owner, and one
  *  API token. A check, a schedule and a shared server run on a key (HARNESS.md#sign-in). */
-export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "tokens">, data: string, ownUser: boolean): string | undefined {
+export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string | undefined {
   const host = options.host ?? DEFAULT_HOST;
+  // Every token the server takes (acceptedTokens): AGENTRUN_TOKEN's as `default` beside the list's, or else DIR/.token's alone.
+  const tokens = (options.token === undefined ? 0 : 1) + (options.tokens?.length ?? 0);
   const why = [
     ...(loopback(host) ? [] : [`listens on ${host}, past loopback`]),
     ...(options.publicUrl ? [`has a public address (${options.publicUrl})`] : []),
     ...(options.apiOnly ? ["has no owner (the API-only profile), so anyone with its token starts runs"] : []),
-    ...((options.tokens?.length ?? 0) > 1 ? [`takes ${options.tokens!.length} API tokens, so more than one person starts runs`] : []),
+    ...(tokens > 1 ? [`takes ${tokens} API tokens (AGENTRUN_TOKEN and AGENTRUN_TOKENS together), so more than one person starts runs`] : []),
     ...(storeTarget(data).kind === "sqlite" ? [] : ["keeps its store in Postgres (AGENTRUN_STORE_URL), which servers elsewhere share"]),
     ...(options.runnerApart ? ["runs no runner beside it (--no-runner)"] : []),
     ...(ownUser ? [] : ["runs each run as a user of its own (unset AGENTRUN_RUN_USER=slot, or set AGENTRUN_RUN_USER=same)"]),

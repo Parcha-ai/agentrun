@@ -747,6 +747,9 @@ test("a recipe's keys and sign-in are checked: keys handed under the name the ag
   assert.deepEqual(parsed.signIn, SIGN_IN);
   const TERMS = "https://vendor.example.invalid/terms";
   assert.deepEqual(parseRecipe(JSON.stringify(both({}, { ...SIGN_IN, terms: TERMS }))).signIn, { ...SIGN_IN, terms: TERMS }, "the vendor's terms, said at each sign-in");
+  const LONGEST = `https://vendor.example.invalid/${"t".repeat(169)}`;
+  assert.equal(LONGEST.length, 200);
+  assert.equal(parseRecipe(JSON.stringify(both({}, { ...SIGN_IN, terms: LONGEST }))).signIn.terms, LONGEST, "200 characters is the most");
 
   const cases = [
     // A plan-billed agent runs on its key, the one route a check, a schedule and a shared server take: a sign-in alone is
@@ -755,6 +758,12 @@ test("a recipe's keys and sign-in are checked: keys handed under the name the ag
     ["terms not an https address", both({}, { ...SIGN_IN, terms: "http://vendor.example.invalid/terms" }), RECIPE_CODES.invalid],
     ["terms not an address", both({}, { ...SIGN_IN, terms: "see the vendor's site" }), RECIPE_CODES.invalid],
     ["terms not a string", both({}, { ...SIGN_IN, terms: ["https://vendor.example.invalid/terms"] }), RECIPE_CODES.invalid],
+    // Printed on a terminal as given: no control character, no space, nothing past ASCII, at most 200 characters.
+    ["terms with an escape sequence", both({}, { ...SIGN_IN, terms: "https://vendor.example.invalid/\u001b[2Jterms" }), RECIPE_CODES.invalid],
+    ["terms with a space", both({}, { ...SIGN_IN, terms: "https://vendor.example.invalid/ terms" }), RECIPE_CODES.invalid],
+    ["terms past ASCII", both({}, { ...SIGN_IN, terms: "https://vendor.example.invalid/térms" }), RECIPE_CODES.invalid],
+    ["terms past 200 characters", both({}, { ...SIGN_IN, terms: `https://vendor.example.invalid/${"t".repeat(170)}` }), RECIPE_CODES.invalid],
+    ["a label with a control character", both({ label: "Model\u001b[31m Agent" }, SIGN_IN), RECIPE_CODES.invalid],
     ["proxy billing signs in with the server's key", recipeOf(undefined, { signIn: SIGN_IN }), RECIPE_CODES.invalid],
     // The shape before the agent's own --login: a method sent with ACP authenticate, a folder by variable, attended runs.
     ["the old method field", both({}, { ...SIGN_IN, method: "model-agent-login" }), RECIPE_CODES.invalid],
@@ -1016,6 +1025,8 @@ test("--harness-sign-in starts only one owner's own server on their own machine:
   const data = join(await scratch(t), "agents");
   assert.equal(harnessSignInRefusal({}, data, true), undefined, "the default start: 127.0.0.1, SQLite, a runner beside it");
   assert.equal(harnessSignInRefusal({ host: "localhost" }, data, true), undefined);
+  assert.equal(harnessSignInRefusal({ token: "x" }, data, true), undefined, "AGENTRUN_TOKEN alone is one token");
+  assert.equal(harnessSignInRefusal({ tokens: [{ id: "a", token: "x" }] }, data, true), undefined, "a one-entry AGENTRUN_TOKENS is one token");
   const cases = [
     [{ host: "0.0.0.0" }, true, /listens on 0\.0\.0\.0, past loopback/],
     [{ publicUrl: "https://agents.example.invalid" }, true, /has a public address/],
@@ -1023,6 +1034,8 @@ test("--harness-sign-in starts only one owner's own server on their own machine:
     [{}, false, /runs each run as a user of its own/],
     [{ apiOnly: true }, true, /no owner \(the API-only profile\)/],
     [{ tokens: [{ id: "a", token: "x" }, { id: "b", token: "y" }] }, true, /takes 2 API tokens/],
+    // AGENTRUN_TOKEN beside a one-entry AGENTRUN_TOKENS: the server takes both (acceptedTokens), so two people could start runs.
+    [{ token: "x", tokens: [{ id: "a", token: "y" }] }, true, /takes 2 API tokens/],
   ];
   for (const [options, ownUser, words] of cases) {
     const refused = harnessSignInRefusal(options, data, ownUser);
