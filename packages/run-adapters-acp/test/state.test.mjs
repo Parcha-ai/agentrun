@@ -223,15 +223,15 @@ test("a fake agent whose store passes the budget: the run is told in words, ever
   assert.ok(!(await transcript(first.store)).some((e) => e.type === 'turn' && e.status !== 'completed'), 'every turn completed');
 });
 
-test("records an earlier version wrote (a whole file's bytes in one record) still restore, and a mirror reading them takes an unchanged file again never", () => {
+test("a record of any other shape (a whole file's bytes in one record, as before pieces) restores nothing, and the mirror takes that file whole", () => {
   const home = join(scratch(), 'home');
   mkdirSync(join(home, '.agent'), { recursive: true });
   writeFileSync(join(home, '.agent', 'store.json'), 'kept');
   const earlier = [{ path: '.agent/store.json', sha256: createHash('sha256').update('kept').digest('hex'), data: Buffer.from('kept').toString('base64') }];
-  assert.equal(String(stateFiles(earlier).get('.agent/store.json')), 'kept');
+  assert.equal(stateFiles(earlier).size, 0);
   const j = journal();
   new StateMirror(home, ['.agent'], new Set(), earlier).take(j);
-  assert.deepEqual(j.records, [], 'nothing changed since the earlier record');
+  assert.equal(String(stateFiles([...earlier, ...j.records]).get('.agent/store.json')), 'kept', 'mirrored as pieces, never taken for known');
 });
 
 test('a mirror that fails at the turn end never costs the turn its outcome', async (t) => {

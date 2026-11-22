@@ -27,9 +27,9 @@ export type StateRecord = Readonly<Record<string, unknown>>;
 
 /** A piece of a file's bytes, by its sha256 (base64 `data`): written once per session. */
 interface PieceRecord { piece: string; data: string }
-/** A file: its path in HOME, its sha256, and its pieces in order. Before pieces, a record held the whole file's bytes
- *  (`data`, base64): a journal written then still restores. */
-interface FileRecord { path: string; sha256?: string; pieces?: string[]; data?: string; deleted?: true }
+/** A file: its path in HOME, its sha256, and its pieces in order; or that it was deleted. A record of any other shape (a
+ *  whole file in one record, as before pieces) is no file of the mirror's: it restores nothing. */
+type FileRecord = { path: string; sha256: string; pieces: string[]; deleted?: undefined } | { path: string; deleted: true };
 /** The mirror passed its budget: `bytes` its records would have held, past `limit`. No file is restored after it. */
 interface DroppedRecord { dropped: true; bytes: number; limit: number }
 
@@ -123,13 +123,13 @@ function filesUnder(home: string, paths: readonly string[], skip: ReadonlySet<st
   return out;
 }
 
-/** The newest record of each path, as the records hold them. */
-function foldFiles(records: readonly unknown[]): Map<string, FileRecord> {
-  const out = new Map<string, FileRecord>();
-  for (const record of records as readonly FileRecord[]) {
+/** The newest record of each path, as the records hold them: a file's pieces, or its deletion. */
+function foldFiles(records: readonly unknown[]): Map<string, { sha256: string; pieces: string[] }> {
+  const out = new Map<string, { sha256: string; pieces: string[] }>();
+  for (const record of records as readonly Partial<{ path: unknown; sha256: unknown; pieces: unknown; deleted: unknown }>[]) {
     if (!record || typeof record.path !== "string") continue;
-    if (record.deleted) out.delete(record.path);
-    else out.set(record.path, record);
+    if (record.deleted === true) out.delete(record.path);
+    else if (typeof record.sha256 === "string" && Array.isArray(record.pieces) && record.pieces.every((piece) => typeof piece === "string")) out.set(record.path, { sha256: record.sha256, pieces: record.pieces as string[] });
   }
   return out;
 }
@@ -147,12 +147,10 @@ export function stateFiles(records: readonly StateRecord[]): Map<string, Buffer>
   for (const record of records) if (isPiece(record)) pieces.set(record.piece, record.data);
   for (const [path, record] of foldFiles(records)) {
     if (path.split("/").includes("..")) continue;
-    let bytes: Buffer | undefined;
-    if (record.pieces) {
-      const parts = record.pieces.map((digest) => pieces.get(digest));
-      if (parts.every((part): part is string => part !== undefined)) bytes = Buffer.concat(parts.map((part) => Buffer.from(part, "base64")));
-    } else if (record.data !== undefined) bytes = Buffer.from(record.data, "base64");
-    if (bytes && (record.sha256 === undefined || sha(bytes) === record.sha256)) out.set(path, bytes);
+    const parts = record.pieces.map((digest) => pieces.get(digest));
+    if (!parts.every((part): part is string => part !== undefined)) continue;
+    const bytes = Buffer.concat(parts.map((part) => Buffer.from(part, "base64")));
+    if (sha(bytes) === record.sha256) out.set(path, bytes);
   }
   return out;
 }
@@ -193,7 +191,7 @@ export class StateMirror {
       this.spent += sizeOf(record);
       if (isPiece(record)) this.pieces.add(record.piece);
     }
-    for (const [path, record] of foldFiles(records)) if (record.sha256) this.known.set(path, record.sha256);
+    for (const [path, record] of foldFiles(records)) this.known.set(path, record.sha256);
   }
 
   /** Append what changed to `journal` (the caller flushes). Returns how many records it appended. */
