@@ -61,6 +61,14 @@ function fixFor(entry: Pick<ProviderEntry, "label" | "local" | "imageEnv"> | und
   return `Give this agent a computer whose image has them: on the Docker box, set AGENTRUN_DOCKER_IMAGE to such an image (the media image, ${MEDIA_RECIPE_PATH}, has chrome, ffmpeg, ffprobe and hyperframes).`;
 }
 
+/** The words a run ends with when its setting needs programs but is no sandbox (`what`: "none", "a desktop on E2B"):
+ *  only a sandbox's box is checked for them, so nothing ran. The validator keeps needs to a sandbox; a stored body and a
+ *  launch's computer are read as given, so the claim refuses this too, never running without them. */
+export function needsNoSandboxWords(needs: readonly string[], what: string): string {
+  const list = new Intl.ListFormat("en", { type: "conjunction" }).format(needs);
+  return `This agent needs ${list} in a sandbox (computer.needs), and its computer is ${what}, which is not checked for them, so nothing ran. Make its computer a sandbox on the Docker box. ${DOCKER_IMAGE_FIX}`;
+}
+
 /** The words a run ends with when its box lacks what its agent needs, or could not be asked: nothing ran. */
 export function needsWords(answer: NeedsAnswer, needs: readonly string[], entry: Pick<ProviderEntry, "label" | "local" | "imageEnv"> | undefined): string {
   const box = `This agent's sandbox${entry ? ` on ${entry.label}` : ""}`;

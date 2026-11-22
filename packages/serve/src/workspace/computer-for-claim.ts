@@ -44,7 +44,7 @@ import { type RecordInput, type Recording, type RecordWatch, startRecording } fr
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions, settingOptions } from "../computer-keys.js";
 import { LOST_RECREATES, lostEnd, lostInCallWords, lostRecreatedWords } from "../computer-lost.js";
-import { missingNeeds, needsWords } from "../computer-needs.js";
+import { missingNeeds, needsNoSandboxWords, needsWords } from "../computer-needs.js";
 import { inToolCall, stopRun } from "../paid-calls.js";
 import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
@@ -1106,6 +1106,13 @@ export async function computerForClaim(
   };
 
   const setting = await settingOf(launch, store);
+  // Programs it needs (computer.needs) are checked in a sandbox's box alone: a setting that needs them and is any other
+  // kind is refused before anything is rented, never run without them.
+  const needs = (setting as { needs?: readonly string[] } | undefined)?.needs;
+  if (needs?.length && setting?.kind !== "sandbox") {
+    const label = setting?.provider ? kinds.PROVIDERS.find((one) => one.id === setting.provider)?.label ?? setting.provider : undefined;
+    throw unavailable(needsNoSandboxWords(needs, setting?.kind === "none" || !setting ? "none" : `a ${setting.kind}${label ? ` on ${label}` : ""}`));
+  }
   const resolved = await resolveComputer(setting, deps.mode, kinds, side);
   if ("refused" in resolved) throw unavailable(resolved.refused);
   if (resolved.kind === "none") return { computer: undefined, release: noop };
@@ -1133,9 +1140,9 @@ export async function computerForClaim(
   // What the agent needs its sandbox to have (computer.needs): asked of the box it started, before anything of the run
   // reaches a model. A box that lacks one, or that could not be asked, is let go and the run ends in words: never a run on
   // a box without what its work needs.
-  const needs = setting?.needs;
-  if (computer?.kind === "sandbox" && needs?.length) {
-    const answer = await missingNeeds(computer.computer.client, needs, deps.signal);
+  if (needs?.length) {
+    // A sandbox setting whose start gave no sandbox is no box to check: refused as one that could not be asked.
+    const answer = computer?.kind === "sandbox" ? await missingNeeds(computer.computer.client, needs, deps.signal) : { unchecked: "its start gave no sandbox" };
     if ("unchecked" in answer || answer.missing.length > 0) {
       await started.release().catch(() => undefined);
       await meter?.stopAll().catch(() => undefined);

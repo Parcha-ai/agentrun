@@ -865,7 +865,8 @@ ffprobe, hyperframes), build the media image: ...
 
 Nothing is installed and nothing falls back. A provider whose image is a setting of its own (Daytona's
 `AGENTRUN_DAYTONA_SNAPSHOT`) is named in the fix instead. Only a sandbox takes `needs` (422 `not_allowed` on another
-kind); an agent without it is checked for nothing, and its revision is as before. A template states them as `needs`
+kind; a stored setting or a launch's computer that has them on another kind fails the run at claim in words, nothing
+started); an agent without it is checked for nothing, and its revision is as before. A template states them as `needs`
 beside `computer: [shell]` ([templates](templates/README.md)), and apply writes them onto the sandbox it picks, or
 refuses where the shell here is no sandbox.
 
