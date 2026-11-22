@@ -92,7 +92,10 @@ test("the modules list is the server's to set, from its harnessModules option al
 
 test("a server started with harnessModules lists the module's harness in capabilities, and a revision naming it saves with the not-runnable warning", async (t) => {
   const dir = await scratch(t);
-  const { api } = await serve(t, { harnessModules: [acmeModule(dir)], runner: false });
+  const { api, store } = await serve(t, { harnessModules: [acmeModule(dir)], runner: false });
+  // Said in the store as a name a runner apart needs, though no shell exported it (runner-check.ts RUN_ENV_KEY).
+  const { serverRunEnv } = await import("../dist/runner/runner-check.js");
+  assert.ok((await serverRunEnv(store)).includes("AGENTRUN_SERVE_HARNESS_MODULES"), "the module setting is one a runner needs");
   const caps = (await api("GET", "/capabilities")).body;
   const acme = caps.harnesses.find((offer) => offer.id === "acme");
   assert.deepEqual([acme?.label, acme?.available, acme?.promises?.billing], ["Acme", false, "plan"], JSON.stringify(caps.harnesses.map((offer) => offer.id)));

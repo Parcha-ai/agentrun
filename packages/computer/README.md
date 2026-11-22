@@ -375,7 +375,7 @@ Tar archives move whole trees without holding an archive in memory, and no line 
 - `tar.push.begin {path}` makes the directory if missing and returns `{id}`; `tar.push.write {id, data}` hands it the
   next bytes (send each after the last one's reply), and extraction runs as they come; `tar.push.end {id}` returns
   `{entries}`. Files, directories and symlinks are extracted with their modes and never chowned; a file gets its
-  header's mtime, as tar gives it (a synced folder's push sets `PUSHED_MTIME`, 2000-01-01); a directory keeps
+  header's mtime, as tar gives it (`FolderSync.push` into a synced folder sets 2000-01-01); a directory keeps
   owner access until the archive ends, then gets its mode, deepest first, whether the push made it or found it. An
   entry that is absolute, has a `..` part, or has a symlink or a file on its way is `denied`, and ends the push;
   entries before it stay. A symlink at an entry's own name is replaced, never followed. A file is written beside its
@@ -1687,8 +1687,10 @@ default) a Daytona sandbox dials the server instead ([PROVIDERS.md](PROVIDERS.md
 no exec and no upload: create sends the boot env as `CreateSandbox.env`, `AGENTRUN_ATTACH_URL` left out, and
 `networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside). Once the sandbox reads
 `started` (within the create's time; `error` or `build_failed` fails create in Daytona's words), create starts
-`agentrun-dial` itself in a toolbox session of its own, `agentrun-dial`: one async session command,
-`AGENTRUN_ATTACH_URL='<url>' exec /usr/local/bin/agentrun-dial`. The URL is no secret; the token stays in the sandbox's
+`agentrun-dial` itself in a toolbox session of its own, `agentrun-dial`: one async session command, as root, that
+first takes others' access off each socket `/tmp/dbus-*` names (the sockets step the exec path runs before init), then
+`&& AGENTRUN_ATTACH_URL='<url>' exec /usr/local/bin/agentrun-dial`, so a step that fails starts nothing. It is the
+launch line E2B's dial runs (`dialLaunch`), with no rootOnly paths here. The URL is no secret; the token stays in the sandbox's
 env, which the command inherits, and is on no command line. A session Daytona refuses fails create in its words, and
 the sandbox is deleted. So the snapshot's entrypoint is not relied on: a box snapshot registered without one (name,
 image and resources alone) dials too, and one whose entrypoint is the box CMD sleeps, with no `AGENTRUN_ATTACH_URL` in
@@ -1753,9 +1755,9 @@ What each part of a dial sandbox rests on:
   ([api sandbox.dto.ts:84](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/api/src/sandbox/dto/sandbox.dto.ts#L84)),
   so whoever holds the API key reads the machine's token; that key already runs root in the sandbox through the
   toolbox. The token is the machine's alone, and revoked at its delete.
-- **Unverified**: whether a box-image sandbox has a D-Bus session bus in `/tmp` (on exec, create closes `/tmp/dbus-*`
-  to the computer's user through the toolbox; on dial there is no exec, so nothing does), and the `linux-vm` class on
-  dial.
+- **Unverified**: whether a box-image sandbox has a D-Bus session bus in `/tmp` (create closes `/tmp/dbus-*` to the
+  computer's user either way: on exec through the toolbox before init, on dial in `agentrun-dial`'s launch line), and
+  the `linux-vm` class on dial.
 
 ### Not yet known
 

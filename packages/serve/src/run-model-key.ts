@@ -15,6 +15,7 @@
 // to spend is 422 model_key_required, never a failure at the first model call. Spend after a run's turn ended (its key
 // erased with that end, and revoked by its caller) or tied to no run, with no key to spend, is skipped or refused in words.
 import { ApiError, type InputIssue } from "./errors.js";
+import { handedSecretOf } from "./handed-secret.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV, MODEL_PROVIDER, PROVIDER_KEYS } from "./model.js";
 import { gatewayBase } from "./provider.js";
 
@@ -52,12 +53,12 @@ export function runKeyNames(env: NodeJS.ProcessEnv, origin: string): string[] {
 /** Every model key a model route reads by name: each of pi-ai's providers' and the gateway's. */
 const MODEL_KEY_NAMES: ReadonlySet<string> = new Set([...Object.values(PROVIDER_KEYS).flat(), GATEWAY_KEY_ENV]);
 
-/** A model key `body` hands, checked: text of 1 to MAX_MODEL_KEY_CHARS characters with no whitespace or control character
- *  (it goes in a header). Issues are pushed at `model_key`. */
+/** A model key `body` hands, checked as every handed key is (handed-secret.ts), up to MAX_MODEL_KEY_CHARS. Issues are
+ *  pushed at `model_key`. */
 export function modelKeyOf(value: unknown, issues: InputIssue[]): string | undefined {
   if (typeof value !== "string") return void issues.push({ field: "model_key", reason: "wrong_type", message: "model_key is the run's model key as text, such as a LiteLLM virtual key minted for this run." });
-  if (!value.length || value.length > MAX_MODEL_KEY_CHARS || /[\s\x00-\x1f\x7f]/.test(value)) return void issues.push({ field: "model_key", reason: "invalid", message: `model_key is 1 to ${MAX_MODEL_KEY_CHARS} characters with no space or control character.` });
-  return value;
+  const wrong = handedSecretOf(value, "model_key", MAX_MODEL_KEY_CHARS);
+  return wrong ? void issues.push(wrong) : value;
 }
 
 /** 422 model_key_required: a run start, or a message that would start a turn, with no model key to spend: none handed,

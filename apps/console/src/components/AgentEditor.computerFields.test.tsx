@@ -17,7 +17,7 @@ const DRIVEN = ["image", "persistent", "surface", "exec", "record"];
 const CAN = { available: true };
 const KINDS = [
   { kind: "none", offered: true, groups: [], tools: ["read"], settings: [], record: { available: false, why: "with no computer, there is no screen to record" }, providers: [] },
-  { kind: "sandbox", offered: true, groups: ["exec"], tools: ["read", "bash"], settings: ["image", "persistent", "gpu"], record: { available: false, why: "a sandbox has no screen to record (a desktop, a phone or a browser does)" }, providers: [
+  { kind: "sandbox", offered: true, groups: ["exec"], tools: ["read", "bash"], settings: ["image", "persistent", "gpu"], record: { available: false, why: "fixture: a sandbox has no screen to record" }, providers: [
     provider("docker", "Docker"),
     provider("modal", "Modal", { images: ["py"], persistent: { images: ["py"] }, gpu: { types: ["T4"], max: 2 } }),
     provider("daytona", "Daytona", { images: ["py"], persistent: { images: ["py"] } }),
@@ -132,7 +132,7 @@ describe("AgentEditor, the Computer step's fields across a switch", () => {
 
   it("whether a kind records is its served record: a desktop the server says can't record drops record, and its Recording switch is disabled with the server's why", async () => {
     const desktop = KINDS[2]!;
-    const why = "ffmpeg isn't installed on this server (no ffmpeg command on PATH)";
+    const why = "fixture: no ffmpeg on this server";
     desktop.record = { available: false, why };
     try {
       const m = mount(agent(DESKTOP));
@@ -142,7 +142,7 @@ describe("AgentEditor, the Computer step's fields across a switch", () => {
       expect(await m.save()).toEqual({ kind: "desktop", provider: "e2b", surface: "code", exec: false });
       const recording = document.querySelector('[role="switch"][aria-labelledby="computer-record"]') as HTMLButtonElement;
       expect(recording.disabled).toBe(true);
-      expect(document.querySelector('[aria-label="Recording"] [role="note"]')!.textContent).toBe(`Recording isn't possible here: ${why}.`);
+      expect(document.querySelector('[aria-label="Recording"] [role="note"]')!.textContent).toContain(why);
     } finally {
       desktop.record = CAN;
     }

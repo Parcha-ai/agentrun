@@ -14,7 +14,7 @@ import { HostError } from "../dist/host.js";
 import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NETWORK_DESCRIPTOR, NotFound, VERSION } from "./fake-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
-const { hostedCommands, initFlags } = await import("../dist/hosted/scripts.js");
+const { AGENTRUN_DIAL, dialLaunch, hostedCommands, initFlags, quote } = await import("../dist/hosted/scripts.js");
 const VALUES = await import("../dist/hosted/values.js");
 
 const COMPUTER = "agentrun.computer";
@@ -292,6 +292,64 @@ test("the root-only script, run by sh: group and other write go from each path a
 		assert.equal(owned.status, 5, owned.stdout + owned.stderr);
 		assert.match(owned.stdout, /^\/etc\/passwd is not root's alone$/m);
 		assert.equal(readFileSync(chowned, "utf8"), `-h ${process.getuid()} /etc/passwd\n`);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("dialLaunch, run by sh: the root-only step when rootOnly names paths, then the sockets step, then agentrun-dial, the URL its quoted assignment when given; a step that fails never reaches agentrun-dial", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-dial-launch-"));
+	try {
+		// Not root here: the steps reach root through sudo -n, which this stand-in runs as it is.
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1" = -n ] && shift\nexec "$@"\n', { mode: 0o755 });
+		const dial = join(root, "agentrun-dial");
+		writeFileSync(dial, '#!/bin/sh\necho "dialed ${AGENTRUN_ATTACH_URL-unset}"\n', { mode: 0o755 });
+		const local = join(root, "local");
+		mkdirSync(local);
+		const bus = join(root, "dbus-Y8OW6E3FDx");
+		execFileSync("python3", ["-I", "-c", "import socket, sys\ns = socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])", bus]);
+		const linked = join(root, "linked");
+		symlinkSync(local, linked);
+		const ATTACH = "wss://agentrun.example/v2/computers/attach?a=1&b='2' $HOME";
+		// The line as dialLaunch gives it, with the box's agentrun-dial and /tmp's buses pointed here: nothing of this host's is touched.
+		const run = (options, { path = bin, env = {} } = {}) => {
+			const line = dialLaunch(options);
+			assert.ok(line.endsWith(` exec ${AGENTRUN_DIAL}`), line);
+			assert.equal(line.split(quote("/tmp/dbus-*")).length, 2, `one sockets step: ${line}`);
+			const here = `${line.replace(quote("/tmp/dbus-*"), quote(`${root}/dbus-*`)).slice(0, -AGENTRUN_DIAL.length)}${dial}`;
+			for (const open of [local, bus]) chmodSync(open, 0o777);
+			return spawnSync("sh", ["-c", here], { env: { PATH: `${path}:${process.env.PATH}`, ...env }, encoding: "utf8" });
+		};
+
+		const all = dialLaunch({ rootOnly: [local], attach: ATTACH });
+		assert.ok(all.indexOf("# agentrun-computer: root-only") < all.indexOf("# agentrun-computer: sockets"), "root-only first, then sockets");
+		const ran = run({ rootOnly: [local], attach: ATTACH });
+		assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+		assert.equal(ran.stdout, `closed ${bus}\ndialed ${ATTACH}\n`, "the buses closed, then agentrun-dial with the URL as given");
+		assert.equal(statSync(local).mode & 0o777, 0o755, "the rootOnly path made root's alone");
+		assert.equal(statSync(bus).mode & 0o777, 0o770, "the bus closed to others");
+
+		assert.equal(dialLaunch({ rootOnly: [] }), dialLaunch({}), "no paths: no root-only step");
+		assert.doesNotMatch(dialLaunch({}), /root-only|AGENTRUN_ATTACH_URL/);
+		const inherited = run({}, { env: { AGENTRUN_ATTACH_URL: "from-the-env" } });
+		assert.equal(inherited.status, 0, inherited.stdout + inherited.stderr);
+		assert.equal(inherited.stdout, `closed ${bus}\ndialed from-the-env\n`, "no attach: agentrun-dial reads the URL from the env it inherits");
+
+		const refused = run({ rootOnly: [linked], attach: ATTACH });
+		assert.equal(refused.status, 6, refused.stdout + refused.stderr);
+		assert.match(refused.stdout, /is a symbolic link/);
+		assert.doesNotMatch(refused.stdout, /closed|dialed/, "a root-only step that fails runs neither the sockets step nor agentrun-dial");
+		assert.equal(statSync(bus).mode & 0o777, 0o777);
+
+		// A chmod that fails: the sockets step fails, and agentrun-dial never starts.
+		const failing = join(root, "failing");
+		mkdirSync(failing);
+		writeFileSync(join(failing, "chmod"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+		const shut = run({ attach: ATTACH },{ path: `${failing}:${bin}` });
+		assert.equal(shut.status, 1, shut.stdout + shut.stderr);
+		assert.equal(shut.stdout, `failed ${bus}\n`, "a sockets step that fails never reaches agentrun-dial");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

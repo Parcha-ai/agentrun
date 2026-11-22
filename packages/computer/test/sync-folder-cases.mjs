@@ -4,7 +4,7 @@
 // above it and for a new tree). Run on a computerd on this host in a user namespace (sync-folder.test.mjs), and in a
 // Docker computer (docker/sync-folder.docker.test.mjs).
 import assert from "node:assert/strict";
-import { FolderSync, PUSHED_MTIME, pushTar, tarStream } from "../dist/index.js";
+import { FolderSync } from "../dist/index.js";
 
 const RACY_MS = 1000;
 
@@ -221,12 +221,10 @@ export async function folderOf(client, base, name, setup) {
 		sh,
 		sink,
 		reads,
-		/** `entries` pushed into the folder as one tar, each file at PUSHED_MTIME as a runner pushes it, then its baseline taken again. */
+		/** `entries` pushed into the folder as a runner pushes them (FolderSync.push), its baseline taken again. */
 		async push(entries) {
-			const pushed = await pushTar(client, root, tarStream(entries.map((entry) => (entry.type === "file" ? { ...entry, mtime: PUSHED_MTIME } : entry))));
+			const pushed = await engine.push(entries);
 			assert.equal(pushed.ok, true, JSON.stringify(pushed));
-			const again = await engine.baseline();
-			assert.equal(again.ok, true, JSON.stringify(again));
 		},
 		async sync(now) {
 			clock = now;

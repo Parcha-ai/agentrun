@@ -16,7 +16,7 @@ import { type ExecPieces, type FramedEvent, framedExec } from "./hosted/framed-e
 import { HostedProvider, type HostedOptions, type HostedTimeouts, timeoutsOf } from "./hosted/provider.js";
 import { boundOf, orThrow, seconds, pause as sleep, words } from "./hosted/process.js";
 import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
-import { AGENTRUN_DIAL, quote, shellLine } from "./hosted/scripts.js";
+import { dialLaunch, shellLine } from "./hosted/scripts.js";
 import { dateOf, isWhole, sizeRefusals } from "./hosted/values.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
 import { type ComputerResources, type ComputerSpec, checkGpu, type Refusal } from "./provider.js";
@@ -367,8 +367,8 @@ class DaytonaHost implements MachineHost {
 
 	/**
 	 * A dial sandbox's agentrun-dial, started once the sandbox reads started (by `until`, ms after create began): one
-	 * toolbox session of its own (DIAL_SESSION), its one command async, AGENTRUN_ATTACH_URL a quoted assignment on its
-	 * line. The token is never on it: it stays in the sandbox's env, which the command inherits. The session is kept, so
+	 * toolbox session of its own (DIAL_SESSION), its one command async: dialLaunch's line, as root (the toolbox runs
+	 * session commands as root), AGENTRUN_ATTACH_URL a quoted assignment on it. The token is never on it: it stays in the sandbox's env, which the command inherits. The session is kept, so
 	 * its log is the dial's last words (dialLog). A sandbox Daytona fails, one gone, or a session or command it refuses
 	 * throws vendor in Daytona's words, and one not started by `until` throws timeout: either is a create that made a
 	 * machine to the adapter, which deletes it by its name.
@@ -387,7 +387,7 @@ class DaytonaHost implements MachineHost {
 		}
 		try {
 			const toolbox = await this.#toolbox(id);
-			await this.#runAsync(toolbox, DIAL_SESSION, `AGENTRUN_ATTACH_URL=${quote(attach)} exec ${AGENTRUN_DIAL}`, Math.max(1, until - Date.now()));
+			await this.#runAsync(toolbox, DIAL_SESSION, dialLaunch({ rootOnly: this.facts.rootOnly, attach }), Math.max(1, until - Date.now()));
 		} catch (error) {
 			throw new HostError("vendor", `starting agentrun-dial in ${id} failed: ${words(error)}`);
 		}
