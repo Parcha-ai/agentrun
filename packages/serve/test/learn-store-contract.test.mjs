@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -325,16 +325,26 @@ for (const [kind, make] of Object.entries(STORES)) {
       assert.equal(execFileSync("git", ["--git-dir", git, "reflog", "show", "--all"]).toString("utf8").trim(), "");
     }
     if (store.data) {
-      // A rewrite stopped after moving main (before it pruned) left the run's bytes and a ref: a purge sent again finds
-      // its marker and removes them.
+      // Another run's commit being made on main (its import ref, its commit's parent main) is never disturbed by a purge
+      // sent again: nothing is tidied when no rewrite stopped, and an import on main is kept when one did.
       const git = gitDirOf(store.data);
-      const blob = execFileSync("git", ["--git-dir", git, "hash-object", "-w", "--stdin"], { input: "BRAVO left behind\n" }).toString("utf8").trim();
-      execFileSync("git", ["--git-dir", git, "update-ref", "refs/agentrun/rewrite-0123456789abcdef", blob]);
-      execFileSync("git", ["--git-dir", git, "hash-object", "-w", "--stdin"], { input: "BRAVO loose\n" });
+      const sh = (args, input) => execFileSync("git", ["--git-dir", git, ...args], { input }).toString("utf8").trim();
+      const making = sh(["commit-tree", `${done.commit}^{tree}`, "-p", done.commit, "-m", "a run's merge being made"]);
+      const importRef = "refs/agentrun/import-0123456789abcdef";
+      sh(["update-ref", importRef, making]);
+      assert.deepEqual(await forgetRunText(store, "run_bravo"), {});
+      assert.equal(sh(["rev-parse", importRef]), making);
+      // A rewrite stopped after moving main (its tidy mark left, before it pruned) left the run's bytes and a ref: a
+      // purge sent again finds its marker and removes them, the import on main kept.
+      const blob = sh(["hash-object", "-w", "--stdin"], "BRAVO left behind\n");
+      sh(["update-ref", "refs/agentrun/rewrite-0123456789abcdef", blob]);
+      sh(["hash-object", "-w", "--stdin"], "BRAVO loose\n");
+      writeFileSync(join(git, "agentrun-tidy"), "");
       assert.deepEqual(await forgetRunText(store, "run_bravo"), {});
       const objects = execFileSync("git", ["--git-dir", git, "cat-file", "--batch-all-objects", "--batch"], { maxBuffer: 64 << 20 }).toString("utf8");
       assert.doesNotMatch(objects, /BRAVO/);
-      assert.equal(execFileSync("git", ["--git-dir", git, "for-each-ref", "--format=%(refname)"]).toString("utf8").trim(), "refs/heads/main");
+      assert.deepEqual(sh(["for-each-ref", "--format=%(refname)"]).split("\n").sort(), [importRef, "refs/heads/main"]);
+      assert.equal(existsSync(join(git, "agentrun-tidy")), false, "the tidy mark goes once it is done");
     }
     if (store.fake) {
       assert.deepEqual([...store.fake.repos.keys()], [`agentrun-${SRV}-agent-one-g1`]);
