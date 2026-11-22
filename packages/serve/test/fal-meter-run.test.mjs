@@ -175,13 +175,16 @@ async function admittedAfterStop(t) {
   const fake = await startFakeMcp({});
   t.after(() => fake.close());
   let runId;
-  // The timeline's own long poll (wait_ms), bounded: a row `matches`, or a failure naming `what` never came.
+  // The timeline's own long poll (wait_ms) from its cursor, as `follow` reads it, bounded: each page's rows (new or changed
+  // since the last) are checked until a row `matches`, or a failure names `what` that never came.
   const onTimeline = async (matches, what) => {
     const deadline = Date.now() + 30_000;
+    let after = 0;
     while (Date.now() < deadline) {
-      const page = runId ? (await api("GET", `/runs/${runId}/timeline?wait_ms=2000`)).body : undefined;
+      if (!runId) { await new Promise((done) => setImmediate(done)); continue; }
+      const page = (await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=2000`)).body;
       if (page?.rows?.some(matches)) return;
-      if (!runId) await new Promise((done) => setImmediate(done));
+      after = page?.next_after ?? after;
     }
     throw new Error(`not within 30 s: ${what}`);
   };
