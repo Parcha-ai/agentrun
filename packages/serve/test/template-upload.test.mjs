@@ -301,6 +301,33 @@ test("an agent's delete removes the upload it was applied from once no other age
   assert.deepEqual(await stored(), [GITHUB]);
 });
 
+test("an upload its agent's purge removed stops being served by the DELETE sent again after a purge that committed and never answered; an upload put in while the server reads its store stays served", { timeout: 60_000 }, async (t) => {
+  const server = await serve(t, { runner: false });
+  const { api, store } = server;
+  const served = async () => (await api("GET", "/templates")).body.templates.filter((one) => !one.bundled).map((one) => one.id);
+  assert.equal((await api("POST", "/templates/import", { files: filesOf(pkg(agentMd())) })).status, 201);
+  const applied = await api("POST", `/templates/${enc("upload:pr-alert")}/apply`, { parameters: {} });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  assert.equal((await api("POST", `/agents/${applied.body.agent_id}/archive`)).status, 200);
+  // The purge's write committed, and the DELETE that sent it ended before it answered.
+  await store.agents.purge(applied.body.agent_id);
+  assert.deepEqual(await served(), ["upload:pr-alert"]);
+  assert.equal((await api("DELETE", `/agents/${applied.body.agent_id}`)).status, 204);
+  assert.deepEqual(await served(), []);
+
+  // Only the package read before the store's rows goes: one uploaded while they are read is served.
+  const { dropRemovedUploads, importedPackage } = await import("../dist/template-import.js");
+  const { TemplateRegistry } = await import("../dist/templates.js");
+  const upload = (name, version) => importedPackage(`upload:${name}`, { source: `upload:${name}`, sha: version.replaceAll(".", "").padEnd(64, "0"), publisher: "" }, pkg(agentMd({ name, version })));
+  const registry = new TemplateRegistry([]);
+  registry.put(upload("pr-alert", "0.1.0"));
+  registry.put(upload("gone", "0.1.0"));
+  const fresh = upload("pr-alert", "0.2.0");
+  await dropRemovedUploads({ registry, store: { importedTemplates: { list: async () => (registry.put(fresh), []) } } });
+  assert.deepEqual(registry.list().map((one) => one.id), ["upload:pr-alert"]);
+  assert.equal(registry.get("upload:pr-alert"), fresh);
+});
+
 test("an API-only server takes an upload ({files}) and refuses a GitHub source", { timeout: 60_000 }, async (t) => {
   const server = await serve(t, { apiOnly: true, runner: false });
   const post = async (body) => {

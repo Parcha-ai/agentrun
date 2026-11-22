@@ -949,9 +949,8 @@ class SqliteStore implements Store {
           await tx.run("DELETE FROM agents WHERE id = ?", agentId);
         });
       },
-      purge: async (agentId) => {
-        let gone: string[] = [];
-        await this.#purging(() => db.transaction(async (tx) => {
+      purge: (agentId) =>
+        this.#purging(() => db.transaction(async (tx) => {
           await d.lockRow(tx, "agents", "id", agentId);
           const agent = await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM agents WHERE id = ?", agentId);
           if (!agent || agent.purged_at !== null) return false;
@@ -964,26 +963,25 @@ class SqliteStore implements Store {
           // The answer a template apply kept under its key, which holds the agent as it was made.
           await tx.run(`DELETE FROM idempotency WHERE scope = 'templates.apply' AND ${d.jsonText("response", ["agentId"])} = ?`, agentId);
           // The uploads it was applied from, each gone unless another agent not purged was applied from it too: nothing
-          // else owns one, and a server that serves no template route (API-only) could never remove it.
+          // else owns one, and a server that serves no template route (API-only) could never remove it. Each is held by its
+          // id, in order, before it is read: two purges of agents applied from one upload read it in turn, so the later
+          // reads the earlier's purge (committed) and removes the upload.
           const packageId = (alias: string) => d.jsonText(`${alias}.package`, ["id"]);
-          const applied = await tx.all<{ id: string | null }>(`SELECT DISTINCT ${packageId("r")} AS id FROM revisions r WHERE r.agent_id = ? AND r.package IS NOT NULL`, agentId);
-          const removed: string[] = [];
-          for (const { id } of applied) {
-            if (!id?.startsWith(UPLOAD_PREFIX)) continue;
+          const applied = (await tx.all<{ id: string | null }>(`SELECT DISTINCT ${packageId("r")} AS id FROM revisions r WHERE r.agent_id = ? AND r.package IS NOT NULL`, agentId))
+            .map((row) => row.id)
+            .filter((id): id is string => id !== null && id.startsWith(UPLOAD_PREFIX))
+            .sort();
+          for (const id of applied) {
+            await d.lockKey(tx, `imported_templates:${id}`);
             const kept = await tx.get<{ id: string }>(`SELECT r.id FROM revisions r JOIN agents a ON a.id = r.agent_id WHERE r.agent_id <> ? AND a.purged_at IS NULL AND ${packageId("r")} = ? LIMIT 1`, agentId, id);
-            if (kept) continue;
-            await tx.run("DELETE FROM imported_templates WHERE id = ?", id);
-            removed.push(id);
+            if (!kept) await tx.run("DELETE FROM imported_templates WHERE id = ?", id);
           }
           // Each revision's content; its id, kind, parent and time stay, which its runs' tombstones name.
           await tx.run("UPDATE revisions SET body = '{}', skills = NULL, package = NULL, note = NULL, mcp_pin = NULL, monid_pin = NULL WHERE agent_id = ?", agentId);
           // Its purge time last, in the same write as its name and description.
           await tx.run("UPDATE agents SET name = '', description = NULL, purged_at = ? WHERE id = ?", now(), agentId);
-          gone = removed;
           return true;
-        }));
-        return gone;
-      },
+        })),
     };
 
     this.templates = {

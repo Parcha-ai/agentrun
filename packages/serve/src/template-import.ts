@@ -93,6 +93,15 @@ export async function loadImported(deps: Pick<TemplateImportDeps, "registry" | "
   }
 }
 
+/** The uploads served here whose row the store no longer keeps (an agent's purge removed it: Agents.purge), no longer
+ *  served. Only the package read before the store is removed, so an upload put in meanwhile stays served. */
+export async function dropRemovedUploads(deps: Pick<TemplateImportDeps, "registry" | "store">): Promise<void> {
+  const served = deps.registry.list().filter((pkg) => pkg.origin !== null && pkg.id.startsWith(UPLOAD_PREFIX));
+  if (!served.length) return;
+  const stored = new Set((await deps.store.importedTemplates.list()).map((row) => row.id));
+  for (const pkg of served) if (!stored.has(pkg.id) && deps.registry.get(pkg.id) === pkg) deps.registry.remove(pkg.id);
+}
+
 /** Whether `publisher` is one the owner trusts (case-insensitive, as GitHub's account names are). */
 async function trusted(deps: Pick<TemplateImportDeps, "store">, publisher: string): Promise<boolean> {
   const list = await deps.store.settings.get(TRUSTED_PUBLISHERS);

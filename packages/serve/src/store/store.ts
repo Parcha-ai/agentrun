@@ -840,10 +840,11 @@ export interface Agents {
    *  refused while a run is not (StoreConstraint) or a trigger is (TriggersLeft), nothing written. Its row and its
    *  revisions' ids stay, so its runs' tombstones and every total over them read as before. In the same write, each
    *  uploaded package (`upload:<name>`, imported_templates) a revision of it was applied from is removed when no revision
-   *  of another agent not purged (an archived one too) was; a package imported from GitHub stays. Answers the ids of the
-   *  packages removed. An agent with no row, or one purged already, is no write. On SQLite, the scrub's marker first and
-   *  a WAL checkpoint once it commits (Runs.purge). */
-  purge(agentId: string): Promise<string[]>;
+   *  of another agent not purged (an archived one too) was, each read and removed holding its id; a package imported from
+   *  GitHub stays. The server stops serving what it removed (template-import.ts dropRemovedUploads). An agent with no
+   *  row, or one purged already, is no write. On SQLite, the scrub's marker first and a WAL checkpoint once it commits
+   *  (Runs.purge). */
+  purge(agentId: string): Promise<void>;
 }
 
 export interface Templates {
