@@ -13,6 +13,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -574,4 +575,112 @@ test("Composio's origin is one constant, and its seam is a test's alone: no envi
   const setters = [];
   for (const f of tests) for (const line of (await readFile(testDir + f, "utf8")).split("\n")) if (/\.\.\.\(composioMcpOrigin \? \{ composioMcpOrigin \} : \{\}\)/.test(line)) setters.push(f);
   assert.deepEqual(setters, ["support.mjs"], "its one setter on a runner: the test's startInProcessRunner");
+});
+
+// The listing probe: a per_run save's headers, at a listed origin alone, list its tools once and are kept nowhere.
+
+/** A distinctive bearer the probe tests send (a fake), searched for whole and as its bare token. */
+const PROBE_TOKEN = `probe-${"bearer-7c41e0d9a2f3"}`;
+const PROBE_BEARER = `Bearer ${PROBE_TOKEN}`;
+const perRunWith = (url) => ({ url, auth: { type: "per_run", headers: { authorization: PROBE_BEARER } } });
+
+/** This process's stdout and stderr from now until the test ends: the server under test logs in it. */
+function processOutput(t) {
+  const err = serverLog(t);
+  const chunks = [];
+  const write = process.stdout.write;
+  process.stdout.write = function (chunk, ...rest) {
+    chunks.push(String(chunk));
+    return write.call(process.stdout, chunk, ...rest);
+  };
+  t.after(() => void (process.stdout.write = write));
+  return { text: () => err.text() + chunks.join("") };
+}
+
+/** A plain HTTP host on loopback, closed when the test ends, answering each request with `answer(req, res)` (a 404 by
+ *  default): every connection and request it took is counted, whatever it was sent. */
+async function plainHost(t, answer = (_req, res) => res.writeHead(404).end()) {
+  const took = { connections: 0, requests: [] };
+  const host = createServer((req, res) => {
+    took.requests.push({ path: req.url, bearer: req.headers.authorization === PROBE_BEARER });
+    req.resume();
+    answer(req, res);
+  });
+  host.on("connection", () => (took.connections += 1));
+  await new Promise((resolve) => host.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (host.close(resolve), host.closeAllConnections())));
+  return { url: `http://127.0.0.1:${host.address().port}/mcp`, took };
+}
+
+test("API-only listing probe: a per_run save's headers at a listed origin list its tools and are kept nowhere (row, answer, store bytes, log); at an unlisted origin they are never sent", async (t) => {
+  const sent = [];
+  const fake = await startFakeMcp({ token: PROBE_TOKEN, inspect: (headers) => sent.push(headers.authorization) });
+  t.after(() => fake.close());
+  const unlisted = await plainHost(t);
+  withEnv(t, { [ORIGINS_ENV]: originOf(fake.url) });
+  const out = processOutput(t);
+  const { server, token } = await tokenServer(t, { mcpLoopback: true });
+  const saved = await token("PUT", "/settings/mcp-servers/gw", perRunWith(fake.url));
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.ok(saved.body.tools.some((tool) => tool.name === "add"), "listed with the bearer");
+  assert.ok(sent.length > 0 && sent.every((one) => one === PROBE_BEARER), "the listing carried the bearer");
+  assert.deepEqual([saved.body.auth.type, saved.body.credential], ["per_run", null]);
+  assert.equal(JSON.stringify(saved.body).includes(PROBE_TOKEN), false, "the answer holds no bearer");
+  const row = await server.store.mcp.server("gw");
+  assert.deepEqual([row.auth, row.sealed ?? null], ["per_run", null], "the row seals no credential");
+  assert.equal(JSON.stringify(row).includes(PROBE_TOKEN), false, "nor holds the bearer anywhere");
+  assert.equal(storeBytes(server.data).includes(Buffer.from(PROBE_TOKEN)), false, "the store's bytes never hold it");
+  // At an origin the list does not hold: refused before anything is sent there.
+  const elsewhere = await token("PUT", "/settings/mcp-servers/other", perRunWith(unlisted.url));
+  assert.deepEqual(issueOf(elsewhere), [422, "url", "not_an_option"], JSON.stringify(elsewhere.body));
+  assert.equal(JSON.stringify(elsewhere.body).includes(PROBE_TOKEN), false);
+  assert.deepEqual(unlisted.took, { connections: 0, requests: [] }, "the unlisted host got nothing");
+  assert.equal(out.text().includes(PROBE_TOKEN), false, "the log never holds the bearer");
+});
+
+test("API-only listing probe: a listed server's 4xx or 5xx that echoes the bearer fails the save in words, and neither the answer nor the log holds it", async (t) => {
+  let sent;
+  let answer;
+  const fake = await startFakeMcp({ token: PROBE_TOKEN, inspect: (headers) => (sent = headers.authorization), gate: (_url, message) => answer(message) });
+  t.after(() => fake.close());
+  withEnv(t, { [ORIGINS_ENV]: originOf(fake.url) });
+  const out = processOutput(t);
+  const { token } = await tokenServer(t, { mcpLoopback: true });
+  const bare = () => sent.replace(/^Bearer\s+/, "");
+  // Each echoes the header it was sent, whole and as its bare token: as a JSON-RPC error's words (which the SDK's error
+  // carries), or as a body beside a status.
+  const cases = [
+    ["400 JSON-RPC", (message) => ({ status: 400, body: { jsonrpc: "2.0", id: message?.id ?? null, error: { code: -32600, message: `refused ${sent} (token ${bare()})` } } })],
+    ["400", () => ({ status: 400, body: { error: `refused ${sent}`, token: bare() } })],
+    ["403", () => ({ status: 403, body: { error: `refused ${sent}`, token: bare() } })],
+    ["500", () => ({ status: 500, body: { error: `crashed holding ${sent}`, token: bare() } })],
+    ["503 JSON-RPC", (message) => ({ status: 503, body: { jsonrpc: "2.0", id: message?.id ?? null, error: { code: -32603, message: `down, holding ${sent} (token ${bare()})` } } })],
+  ];
+  for (const [at, [name, gate]] of cases.entries()) {
+    answer = gate;
+    sent = undefined;
+    const failed = await token("PUT", `/settings/mcp-servers/gw${at}`, perRunWith(fake.url));
+    assert.equal(sent, PROBE_BEARER, `${name}: the probe carried the bearer`);
+    assert.ok(failed.status >= 400 && typeof failed.body.error?.message === "string" && failed.body.error.message.length > 0, `${name}: refused in words (${failed.status})`);
+    assert.equal(JSON.stringify(failed.body).includes(PROBE_TOKEN), false, `${name}: the answer holds no bearer`);
+  }
+  assert.deepEqual((await token("GET", "/settings/mcp-server-names")).body, { names: [] }, "nothing saved");
+  assert.equal(out.text().includes(PROBE_TOKEN), false, "the log never holds the bearer");
+});
+
+test("API-only listing probe: a listed server's 302 to another host is not followed: that host gets nothing, and the save fails in words holding no bearer", async (t) => {
+  const second = await plainHost(t);
+  const listed = await plainHost(t, (_req, res) => res.writeHead(302, { location: second.url }).end());
+  // The listed origin alone: the host it points to is a second one, listed or not.
+  withEnv(t, { [ORIGINS_ENV]: originOf(listed.url) });
+  const out = processOutput(t);
+  const { token } = await tokenServer(t, { mcpLoopback: true });
+  const saved = await token("PUT", "/settings/mcp-servers/gw", perRunWith(listed.url));
+  assert.deepEqual(issueOf(saved), [422, "url", "redirect"], JSON.stringify(saved.body));
+  assert.match(saved.body.error.fields[0].message, /not followed/);
+  assert.ok(listed.took.requests.length > 0 && listed.took.requests.every((one) => one.bearer), "the listed origin was asked, with the bearer");
+  assert.deepEqual(second.took, { connections: 0, requests: [] }, "the host it pointed to got nothing");
+  assert.equal(JSON.stringify(saved.body).includes(PROBE_TOKEN), false, "the answer holds no bearer");
+  assert.deepEqual((await token("GET", "/settings/mcp-server-names")).body, { names: [] }, "nothing saved");
+  assert.equal(out.text().includes(PROBE_TOKEN), false, "the log never holds the bearer");
 });
