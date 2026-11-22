@@ -324,9 +324,12 @@ unpacks it beside the harness's folder, checks the binary's sha256 and the whole
 then moves it into `~/.agentrun/harnesses/<id>` and makes it read-only. `--data DIR` installs into another AgentRun's
 data directory. No key reaches the install. Run it again with the binary in place and it downloads nothing.
 
-`.tar.bz2` and `.tar.gz` unpack with the host's `tar`; `.zip` unpacks in Node, with no `unzip` on the host. An archive
-with an entry that leaves the folder (`..`, an absolute path, a backslash), a symbolic link, a device, an encrypted
-entry or a duplicate is refused whole, before anything lands (`HARNESS_UNPACK_FAILED`).
+A `.zip` unpacks in Node, with no `unzip` on the host: a zip with an entry that leaves the folder (`..`, an absolute
+path, a backslash), a symbolic link, a device, an encrypted entry or a duplicate is refused whole, before anything
+lands (`HARNESS_UNPACK_FAILED`). A `.tar.bz2` or `.tar.gz` goes to the host's `tar`, into a fresh folder of its own,
+with the archive's owners and permissions dropped; AgentRun makes none of the zip's checks on it, so what lands is what
+the host's `tar` extracts (symbolic links included). Either way the archive is the one the recipe pins by its sha256,
+and every file it unpacks to is pinned by the tree's digest (rule 2).
 
 A digest the recipe leaves out is recorded at the first install, one file each under
 `~/.agentrun/harnesses/.first-seen/`: `<id>@<version>-<platform>.sha256` for the binary and `.tree.sha256` for the
@@ -453,14 +456,23 @@ A check never runs on a sign-in. A recipe with a `signIn` and no key is refused 
 
 ### Vendor terms
 
-A person's sign-in is the vendor's to allow, and AgentRun builds `signIn` to stay inside what the vendor allows. This
-is AgentRun's reading of the terms as of November 2026, not legal advice: read your vendor's terms yourself.
+A person's sign-in is the vendor's to allow, and AgentRun builds `signIn` to stay inside what the vendor allows. Read
+your vendor's terms yourself: this section is not legal advice, and a vendor's terms change.
 
-**Google Antigravity.** Allowed: the official, unmodified `antigravity-acp` binary in an ACP client, signed in with
-its own `oauth-personal`, by one person for their own interactive development, on the models their own plan offers.
-Not allowed: a tool that extracts or reuses its OAuth credentials, a wrapper around the `agy` CLI's non-interactive
-mode (`agy -p`), or rotating between accounts. Everything else (`harness-check`, unattended and scheduled runs, CI, a
-server shared by several people) runs on a Gemini API key from Google AI Studio, or on Gemini Enterprise.
+**Google Antigravity.** Its sources, as of November 2026:
+
+- The [Google Antigravity Additional Terms of Service](https://antigravity.google/terms) (the registry's `license_url`
+  for `antigravity-acp`), section 6: using a third-party tool with Antigravity's OAuth sign-in is a breach of the
+  agreement, and may get the Antigravity and Gemini CLI accounts suspended or ended.
+- Google's [ACP page](https://antigravity.google/docs/ide/extensions/acp/): the agent in an ACP client, and its sign-in
+  methods (`oauth-personal` for a personal Google account, `oauth-business` for Gemini Enterprise, `gemini-api-key`
+  reading `GEMINI_API_KEY`, and `terminal-login` for clients with ACP terminal authentication).
+
+AgentRun's own rule is narrower than what those pages spell out. A person's sign-in is used only by the official,
+unmodified `antigravity-acp` binary, with its own `oauth-personal`, by its one owner, on runs that owner starts and
+attends. AgentRun never takes the OAuth sign-in into a tool of its own, never wraps the `agy` CLI's non-interactive
+mode (`agy -p`), and never rotates between accounts. Everything else (`harness-check`, unattended and scheduled runs,
+CI, a server shared by several people) runs on a Gemini API key from Google AI Studio, or on Gemini Enterprise.
 
 How AgentRun keeps to that:
 
