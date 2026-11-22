@@ -192,6 +192,45 @@ test("an API-only dry run plans each trigger as skipped, in the words its apply 
   assert.deepEqual(said, planned.body.plan.triggers.map((one) => [one.name, one.reason]), "the plan and the apply skip the same triggers, in the same words");
 });
 
+/** A package with a schedule and a feed whose feeds are a parameter, empty by default. */
+const FEEDS = `---
+name: deployed
+version: 1.0.0
+description: Reads the vendors' status feeds, and writes a note every morning.
+budget: { per_run_usd: 0.5 }
+tools: []
+parameters:
+  status_feeds: { type: array, items: { type: string }, required: false, default: [], description: "each vendor's status feed" }
+triggers:
+  - name: morning
+    source: { kind: schedule, cron: "0 9 * * *", timezone: UTC }
+    target: { kind: start_run, input: { content: "Today's note." } }
+  - name: status
+    source: { kind: feed, urls: "\${parameters.status_feeds}", every_s: 14400 }
+    target: { kind: start_run, input: { content: "A vendor posted." } }
+---
+Read the vendors' status.
+`;
+
+test("an API-only redeploy leaves each trigger of the package the agent has already, a feed left empty included, and its dry run plans none removed", { timeout: 60_000 }, async (t) => {
+  const server = await deployServer(t, { apiOnly: true }, FEEDS);
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: {} });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = applied.body.agent_id;
+  // Triggers of the package this agent has from before (made while the server was the whole server), off.
+  const own = (id, name, source) => ({ id, agentId: agent, name, enabled: false, source, target: { kind: "start_run", agent_id: agent, input: { content: "Answer." } }, nextAt: null, catchupWindowS: 0, templateId: applied.body.template });
+  await server.store.triggers.create(own("trg_morning", "morning", { kind: "schedule", cron: "0 9 * * *", timezone: "UTC" }));
+  await server.store.triggers.create(own("trg_status", "status", { kind: "feed", urls: ["https://status.example.com/feed.xml"], every_s: 14400 }));
+
+  const planned = await send(server, "POST", "/v2/templates/deployed/apply", { body: { agent_id: agent, dry_run: true } });
+  assert.equal(planned.status, 200, JSON.stringify(planned.body));
+  assert.deepEqual(planned.body.plan.triggers.map((one) => [one.name, one.action]), [["morning", "skip"], ["status", "skip"]], "both skipped, neither removed");
+  const redeployed = await send(server, "POST", "/v2/templates/deployed/apply", { body: { agent_id: agent } });
+  assert.equal(redeployed.status, 200, JSON.stringify(redeployed.body));
+  assert.deepEqual(skippedOf(redeployed.body).map(([field, reason]) => [field, reason]), [["triggers.0", "not_an_option"], ["triggers.1", "not_an_option"]], "each said once, as this profile's skip");
+  assert.deepEqual((await server.store.triggers.list(agent)).map((row) => [row.id, row.enabled, row.source.urls ?? null]).sort(), [["trg_morning", false, null], ["trg_status", false, ["https://status.example.com/feed.xml"]]], "both left as they were");
+});
+
 test("an API-only server unarchives an agent it archived, so an archive sent by mistake is undone", { timeout: 60_000 }, async (t) => {
   const server = await deployServer(t, { apiOnly: true });
   const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
