@@ -14,7 +14,7 @@ import type { RunRow, Store } from "../store/store.js";
 import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { createHash } from "node:crypto";
 import { LEARNED_MAX_TURNS, WORKFLOW_NAME } from "./workflow-draft.js";
-import { type AuditDisagreement, type AuditHold, championOf, type CheckDisagreement, type CheckRecord, checkShares, type PromotionRecord, NOTHING_REFUSED, promotionOf, type Refused, resetAtOf } from "./promote.js";
+import { type AuditDisagreement, type AuditHold, championOf, type CheckDisagreement, type CheckRecord, checkShares, isRefused, type PromotionRecord, NOTHING_REFUSED, promotionOf, type Refused, resetAtOf } from "./promote.js";
 import { listed } from "../learning-words.js";
 import { excerptShown, redactSecrets } from "./secrets.js";
 import { isShadowRun } from "./audit.js";
@@ -145,9 +145,11 @@ export function promotedOf(records: readonly PromotionRecord[], workflow: string
  *  hold counts: with it held there is no champion. Not one a check stopped (its recompile's check held it too): nothing
  *  compiles it again. */
 export function heldNamesOf(records: readonly PromotionRecord[], refused: Refused = NOTHING_REFUSED): Set<string> {
-  return new Set([...new Set(records.map(({ workflow }) => workflow))].filter((name) => {
-    const champion = championOf(records, name, refused)?.digest;
-    const newest = records.findLast((one) => one.workflow === name && one.digest !== champion);
+  // A record the purge gate refuses (promote.ts refusedOf) is no champion and no hold a compile revises.
+  const kept = records.filter((one) => !isRefused(refused, one));
+  return new Set([...new Set(kept.map(({ workflow }) => workflow))].filter((name) => {
+    const champion = championOf(kept, name)?.digest;
+    const newest = kept.findLast((one) => one.workflow === name && one.digest !== champion);
     return newest?.decided === "hold" && !newest.check?.stopped && !newest.audit?.stopped;
   }));
 }

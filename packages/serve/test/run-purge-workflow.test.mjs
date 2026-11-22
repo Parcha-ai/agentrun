@@ -335,7 +335,7 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     assert.deepEqual(await reads("What is six times seven?"), { holds: true, champion: crowned, served: digestOf(v2[path]) }, "before the purge, v2 is the champion and serves");
     assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
     assert.deepEqual((await onMain(data, "crowned")).files, v1, "main holds answer v1 again, both files as `first` wrote them");
-    assert.deepEqual(await reads("What is seven times six?"), { holds: false, champion: kept, served: digestOf(v1[path]) }, "no read, run or compile ask holds v2; the champion read names v1's commit, and a run that fits it is served v1");
+    assert.deepEqual(await reads("What is seven times six?"), { holds: false, champion: await mergeAt(data, "crowned", first), served: digestOf(v1[path]) }, "no read, run or compile ask holds v2; the champion read names v1's commit, and a run that fits it is served v1");
     // The cost read names the champion the gate leaves: the serving check is v1's, and the bill says v1 serves, never v2.
     const cost = (await api("GET", "/agents/crowned/learning/cost")).body;
     const states = Object.fromEntries(cost.bill.revisions.filter(({ workflow }) => workflow === "answer").map(({ digest, state }) => [digest, state]));
@@ -351,7 +351,7 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     const trimmed = await recordPromotion(store.settings, "crowned", { workflow: "other", digest: "other-past", at, decided: "hold", reason: "held" }, (was) => was === undefined, recordLearningOf(learningStoreOf(data, "crowned"), store));
     assert.equal(trimmed.won, true);
     assert.equal((await store.settings.get("learning.promotions.crowned")).items.length, PROMOTIONS_KEPT, "the record past the bound trims one");
-    assert.deepEqual(await reads("What is seven times seven?"), { holds: false, champion: kept, served: digestOf(v1[path]) }, "past the trim, the champion read still names v1's commit, and a run that fits it is served v1");
+    assert.deepEqual(await reads("What is seven times seven?"), { holds: false, champion: await mergeAt(data, "crowned", first), served: digestOf(v1[path]) }, "past the trim, the champion read still names v1's commit, and a run that fits it is served v1");
 
     // A revision `later` promotes after the purge is the champion over v1.
     const v3 = answerAt("in tens");
@@ -403,7 +403,8 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     assert.deepEqual(await reads("What is six times seven?"), { champion: await mergeAt(data, "again", first), served: digestOf(v1[path]) }, "v1's record, moved by the rewrite, is the champion and serves");
   });
 
-  // #3458 (jobs/purge-keeps-champion 54885ee672), on both stores. A check that outlives the purge: `gone`'s v2 replays on
+  // #3458 (jobs/purge-keeps-champion 54885ee672), on both stores; v1's commit is the one the purge moved it to (mergeAt:
+  // code.storage rebuilds every commit into the next generation). A check that outlives the purge: `gone`'s v2 replays on
   // other runs' inputs, so its purge never stops it, and it decides after the purge with the records at the trim bound.
   // Its decision lands no promote for v2 (the gate refuses v2 at the commit it was checked at), and a promote some writer
   // lands for v2 is asked of the gate with the records it trims, so v1's records stay and v1 still serves.
@@ -437,7 +438,7 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     const rows = ["a", "b", "c", "d", "e"].map((one) => ({ of: `late-input-${one}`, input: "What is six?", agent: "6", outcome: "answered", answer: "6" }));
     const deps = { store, agentId: "late", log: () => {}, shown: async () => secretsShown([]), learning };
     await decideCheck(deps, "answer", digestOf(v2[path]), bar, { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, (was) => was?.decided === "replaying", replay);
-    assert.deepEqual(await servedNow(api, store, "late", "What is six times seven?"), { champion: kept, served: digestOf(v1[path]) }, "past the late check's write, the champion read names v1's commit, and a run that fits it is served v1");
+    assert.deepEqual(await servedNow(api, store, "late", "What is six times seven?"), { champion: await mergeAt(data, "late", first), served: digestOf(v1[path]) }, "past the late check's write, the champion read names v1's commit, and a run that fits it is served v1");
     const late = promotionOf((await store.settings.get("learning.promotions.late")).items, "answer", digestOf(v2[path]));
     assert.deepEqual({ decided: late?.decided, said: /purged/.test(late?.reason ?? "") }, { decided: "hold", said: true }, "the late check records no promote for v2: a hold that says its run was purged");
 
@@ -445,7 +446,7 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     // included, so the trim keeps v1's.
     const landed = await recordPromotion(store.settings, "late", { workflow: "answer", digest: digestOf(v2[path]), at, decided: "promote", reason: "checked: promoted", commit: revised }, () => true, recordLearningOf(learning, store));
     assert.equal(landed.won, true);
-    assert.deepEqual(await servedNow(api, store, "late", "What is seven times six?"), { champion: kept, served: digestOf(v1[path]) }, "past a promote for the purged v2 and its trim, the champion read names v1's commit, and a run that fits it is served v1");
+    assert.deepEqual(await servedNow(api, store, "late", "What is seven times six?"), { champion: await mergeAt(data, "late", first), served: digestOf(v1[path]) }, "past a promote for the purged v2 and its trim, the champion read names v1's commit, and a run that fits it is served v1");
   });
 
   // A purged champion that was held since: `gone`'s v2 was promoted, then held (here by this release's DSL; an audit's
@@ -473,14 +474,14 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     assert.deepEqual(await servedNow(api, store, "reheld", "What is six times seven?"), { champion: null, served: null }, "before the purge, v2 is held and nothing serves");
     assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
     assert.deepEqual((await onMain(data, "reheld")).files, v1, "main holds answer v1 again");
-    assert.deepEqual(await servedNow(api, store, "reheld", "What is seven times six?"), { champion: kept, served: digestOf(v1[path]) }, "after the purge of the held champion's run, the champion read names v1's commit, and a run that fits it is served v1");
+    assert.deepEqual(await servedNow(api, store, "reheld", "What is seven times six?"), { champion: await mergeAt(data, "reheld", first), served: digestOf(v1[path]) }, "after the purge of the held champion's run, the champion read names v1's commit, and a run that fits it is served v1");
 
     const { PROMOTIONS_KEPT, recordPromotion } = await import("../dist/learn/promote.js");
     const { recordLearningOf } = await import("../dist/purged-workflow.js");
     await store.settings.put("learning.promotions.reheld", { v: 1, items: filledTo((await store.settings.get("learning.promotions.reheld")).items, PROMOTIONS_KEPT, at) });
     const trimmed = await recordPromotion(store.settings, "reheld", { workflow: "other", digest: "other-past", at, decided: "hold", reason: "held" }, (was) => was === undefined, recordLearningOf(learningStoreOf(data, "reheld"), store));
     assert.equal(trimmed.won, true);
-    assert.deepEqual(await servedNow(api, store, "reheld", "What is seven times seven?"), { champion: kept, served: digestOf(v1[path]) }, "past the trim, the champion read still names v1's commit, and a run that fits it is served v1");
+    assert.deepEqual(await servedNow(api, store, "reheld", "What is seven times seven?"), { champion: await mergeAt(data, "reheld", first), served: digestOf(v1[path]) }, "past the trim, the champion read still names v1's commit, and a run that fits it is served v1");
   });
 
   // The raw reads of a workflow a purged run wrote that is still on main (its run purged before its purge took the

@@ -575,7 +575,7 @@ export class PromotionRefused extends Error {
  *  history now (a purge rewrote it after the claim that recorded it read its seed), it does not hold the revision's
  *  text, or the run that wrote the revision is purged. Throws when a read fails. */
 async function standsNot(record: PromotionRecord & { commit: string }, learning: RecordLearning): Promise<string | undefined> {
-  if (!(await learning.onMain(record.commit))) return `the learning commit it was checked at is not on its main (a purge rewrote it)`;
+  if (!(await learning.onMain(record.commit))) return `the learning commit it was checked at is not on its main: its history was rewritten when a run was purged`;
   if (!(await learning.holds(record.workflow, record.digest, record.commit))) return `the learning commit it was checked at no longer holds it`;
   if (await learning.writerPurged(record.workflow, record.commit)) return `the run that wrote it was purged`;
   return undefined;
@@ -589,8 +589,9 @@ async function standsNot(record: PromotionRecord & { commit: string }, learning:
  *  A promote or replaying record naming a learning commit is first checked against the agent's learning (`learning`,
  *  standsNot): a promote whose commit no longer stands for its revision (a check at work while its run was purged) is
  *  kept as a hold that says why (NOT_ON_MAIN), so the check ends and never serves the revision; a replaying one is
- *  refused (PromotionRefused), nothing written. A read that fails throws, nothing written. The trim reads the refused
- *  records (refusedOf) over the records and this one. `learning` undefined: a record kept with nothing read (a fixture's
+ *  refused (PromotionRefused), nothing written. A read that fails throws, nothing written. A write that trims reads the
+ *  refused records (refusedOf) over the records it read and this one; another writer's landing in between, it reads and
+ *  asks again. `learning` undefined: a record kept with nothing read (a fixture's
  *  seed, written by hand); every caller in the server passes its agent's (learn/store-of.ts, purged-workflow.ts
  *  recordLearningOf). */
 export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, learning: RecordLearning | undefined): Promise<Recorded> {
@@ -600,20 +601,29 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
     if (why !== undefined && record.decided === "replaying") throw new PromotionRefused(`${record.workflow} at ${record.digest} is not checked: ${why}`);
     if (why !== undefined) written = { ...record, decided: "hold", reason: `${NOT_ON_MAIN}: ${why}` };
   }
-  const refused = learning ? await refusedOf([...(await promotionsOf(settings, agentId)), written], learning.holds) : NOTHING_REFUSED;
-  let out: Recorded = { record: written, won: true };
-  await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
-    const items = writtenOf(saved);
-    const now = promotionOf(items, written.workflow, written.digest);
-    if (!still(now, items)) {
-      out = { record: now, won: false };
-      return items;
-    }
-    const kept = blankedRuns(now).reduce(forgetRunIn, written);
-    out = { record: kept, won: true };
-    return trimPromotions([...items, kept], refused);
-  });
-  return out;
+  for (let tries = 0; tries < 20; tries++) {
+    let out: Recorded | undefined;
+    // The gate is asked only when this write would trim, over the records it read and the one it writes.
+    const before = learning ? await promotionsOf(settings, agentId) : [];
+    const refused = learning && before.length >= PROMOTIONS_KEPT ? await refusedOf([...before, written], learning.holds) : NOTHING_REFUSED;
+    const asked = JSON.stringify(before);
+    await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
+      const items = writtenOf(saved);
+      const now = promotionOf(items, written.workflow, written.digest);
+      if (!still(now, items)) {
+        out = { record: now, won: false };
+        return items;
+      }
+      // Another writer landed since the gate was asked, and this write would trim records it never asked over: read
+      // and ask again.
+      if (learning && items.length >= PROMOTIONS_KEPT && JSON.stringify(items) !== asked) return items;
+      const kept = blankedRuns(now).reduce(forgetRunIn, written);
+      out = { record: kept, won: true };
+      return trimPromotions([...items, kept], refused);
+    });
+    if (out) return out;
+  }
+  throw new Error(`${promotionsKey(agentId)} kept changing under this write; try again`);
 }
 
 /** The newest records, at most PROMOTIONS_KEPT, in order, with each workflow's champion (championOf) the same after as

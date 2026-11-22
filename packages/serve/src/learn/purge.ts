@@ -2,7 +2,7 @@
 // forgetCopies): main's whole history rebuilt without it, the same way on every store (learn/store.ts rewrite).
 import { CORRECTIONS_FILE } from "./corrections.js";
 import { blobOid, forgetHistory, hostCommitOf, isHostPath, type Restored, rewrittenSnapshot, scrubbedMessage, SNAPSHOT_FILE, type SnapLearned, type Snapshot } from "./folder.js";
-import { type ChainCommit, type LearningStore, MOVED_FILE, purgedMarker, runMarker, runMarkerText, runOfKey, type StoreCommit, type StoreFile, wroteOf } from "./store.js";
+import { type ChainCommit, FolderUnreadable, type LearningStore, MOVED_FILE, purgedMarker, runMarker, runMarkerText, runOfKey, type StoreCommit, type StoreFile, wroteOf } from "./store.js";
 import { WORKFLOWS_DIR } from "./workflow-draft.js";
 
 /** The host's words on the commit a purge ends with (its message reads `host: <these>`). */
@@ -62,6 +62,9 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
   if (!old) return { nothing: "empty" };
   const [marked, newestFirst] = await Promise.all([store.read(old, [purgedMarker(runId)]), store.log(old)]);
   if (!marked || !newestFirst) return "stale";
+  // A history read that does not start at main is short (a listing cut, a backend that answered nothing): never
+  // rebuilt from, so no tree loses a file on a guess. Retryable.
+  if (newestFirst[0]?.sha !== old) throw new FolderUnreadable(false, `the agent's learning history could not be read whole: run ${runId}'s purge took nothing off, send it again`);
   // Purged already: what a rewrite stopped after moving main kept of the old history goes now, or this throws, retryable.
   if (marked.length) {
     await store.tidy();

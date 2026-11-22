@@ -360,15 +360,16 @@ function fileOf(raw: string, use: "read" | "approve" | "retire" | "restore"): st
 
 /** GET /agents/{id}/learning/files/{file}: a draft's file on main as text, its ETag, and its type (workflow.json is
  *  JSON). A purged run's workflows leave main with its purge (learn/purge.ts), so their files are the 404 any missing
- *  file is; a workflow.json on main whose writer is purged is 410 purged, as every route of that run is
- *  (purged-workflow.ts). */
+ *  file is; either file of a workflow on main whose workflow.json a purged run wrote is 410 purged, as every route of
+ *  that run is (purged-workflow.ts). */
 export async function readLearnedFile(data: string, agentId: string, raw: string, shown: Shown, store: Pick<Store, "runs">): Promise<{ text: string; etag: string; type?: string }> {
   const file = fileOf(raw, "read");
   const place = learnedPlace(file)!;
   const found = await reading(data, agentId, async ({ snapshot, body }) => {
     const oid = blobIn(snapshot, file);
     if (oid === undefined) return undefined;
-    const purged = place.kind === "workflow" ? (await purgedWorkflows(snapshot, store)).get(place.name) : undefined;
+    // Either file of the workflow: the gate refuses its folder whole, as the view and a merge's diff do.
+    const purged = (await purgedWorkflows(snapshot, store)).get(place.name);
     if (purged) throw purgedRun(purged);
     return { oid, text: await body(file, oid) };
   }, () => undefined);
@@ -430,8 +431,11 @@ type DraftTools = () => Promise<{ tools: string[]; gated: Record<string, string>
  *  held draft (status: pending) to every later run; a retire takes it out of every later run unchecked, so a leaking one
  *  can always be revoked; a restore brings it back to the status its retire recorded, checked again as a new draft is
  *  (secrets' shapes, the host's values, hidden characters, its README's format, its workflow.json against the agent's
- *  tools and gate). A retire of a retired draft commits nothing. `refuse`: the host's secrets. */
-export async function changeWorkflow(data: string, agentId: string, raw: string, input: { action: "approve" | "retire" | "restore"; ifMatch?: string; refuse: readonly string[]; draftTools?: DraftTools }): Promise<{ status: 200; file: string; text: string; etag: string }> {
+ *  tools and gate). A retire of a retired draft commits nothing. An approval or a restore of a workflow whose
+ *  workflow.json a purged run wrote (still on main until its DELETE is sent again) is 410 purged (purgedWorkflows over
+ *  `store`'s runs): no person's change gives it to a run; a retire takes it out as any other. `refuse`: the host's
+ *  secrets. */
+export async function changeWorkflow(data: string, agentId: string, raw: string, input: { action: "approve" | "retire" | "restore"; ifMatch?: string; refuse: readonly string[]; draftTools?: DraftTools; store: Pick<Store, "runs"> }): Promise<{ status: 200; file: string; text: string; etag: string }> {
   const file = fileOf(raw, input.action);
   const place = learnedPlace(file)!;
   const match = input.ifMatch?.split(",").map((tag) => tag.trim()).filter(Boolean);
@@ -447,6 +451,10 @@ export async function changeWorkflow(data: string, agentId: string, raw: string,
         const current = oid === undefined ? undefined : { oid, text: await body(file, oid) };
         if (!current) throw new ApiError("not_found", "the agent's learning folder has no such workflow on main");
         if (!match.includes(etagOf(current.oid))) throw new ApiError("precondition_failed", "The workflow changed since it was read (a run's merge, or another change): read it again.");
+        if (input.action !== "retire") {
+          const purged = (await purgedWorkflows(snapshot, input.store)).get(place.name);
+          if (purged) throw purgedRun(purged);
+        }
         let text: string;
         if (input.action === "restore") {
           const status = learnedStatus(current.text);
