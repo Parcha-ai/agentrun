@@ -1,0 +1,34 @@
+{
+  "dialog": 1,
+  "full": {
+    "width": 1440,
+    "height": 851,
+    "window": [
+      1440,
+      900
+    ]
+  },
+  "back": {
+    "window": 1440,
+    "frame": {
+      "left": 253,
+      "right": 1087,
+      "top": 296,
+      "bottom": 817,
+      "width": 834,
+      "height": 521
+    },
+    "video": null,
+    "list": {
+      "left": 1088,
+      "right": 1407,
+      "top": 335,
+      "bottom": 817,
+      "width": 319,
+      "height": 482
+    },
+    "sideways": 0
+  },
+  "sameFrame": true,
+  "screenshot": "L7-full-window.png"
+}

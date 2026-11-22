@@ -1,0 +1,31 @@
+{
+  "steps": [
+    "05:56 AMPhaseRecording the desktop's screen into recordings/faux-desktop-1.mp4.",
+    "05:56 AMYouLook at the desktop.",
+    "05:56 AMComputer screenshotTook a screenshot",
+    " Working"
+  ],
+  "hint": "3 steps so far",
+  "layout": {
+    "window": 1440,
+    "frame": {
+      "left": 253,
+      "right": 1087,
+      "top": 296,
+      "bottom": 817,
+      "width": 834,
+      "height": 521
+    },
+    "video": null,
+    "list": {
+      "left": 1088,
+      "right": 1407,
+      "top": 335,
+      "bottom": 817,
+      "width": 319,
+      "height": 482
+    },
+    "sideways": 0
+  },
+  "screenshot": "L1-live-steps-1440.png"
+}

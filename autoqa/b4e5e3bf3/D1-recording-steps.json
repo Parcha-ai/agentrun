@@ -1,0 +1,86 @@
+{
+  "src": "/v2/runs/01a201d3-b7a9-73bf-9faa-019f9177d937/files/recordings/faux-desktop-1.mp4",
+  "steps": [
+    {
+      "time": "0:00",
+      "text": "0:00PhaseRecording the desktop's screen into recordings/faux-desktop-1.mp4."
+    },
+    {
+      "time": "0:00",
+      "text": "0:00YouLook at the desktop."
+    },
+    {
+      "time": "0:00",
+      "text": "0:00Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:02",
+      "text": "0:02PhaseYou took over the desktop"
+    },
+    {
+      "time": "0:05",
+      "text": "0:05PhaseYou handed the desktop back"
+    },
+    {
+      "time": "0:05",
+      "text": "0:05Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:06",
+      "text": "0:06Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:06",
+      "text": "0:06Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:06",
+      "text": "0:06Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:07",
+      "text": "0:07Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:07",
+      "text": "0:07Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:07",
+      "text": "0:07Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:08",
+      "text": "0:08Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:08",
+      "text": "0:08Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:08",
+      "text": "0:08Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:09",
+      "text": "0:09Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:09",
+      "text": "0:09Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:10",
+      "text": "0:10Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:12",
+      "text": "0:12Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:14",
+      "text": "0:14Computer screenshotTook a screenshot"
+    }
+  ],
+  "screenshot": "D1-recording-steps-1440.png"
+}

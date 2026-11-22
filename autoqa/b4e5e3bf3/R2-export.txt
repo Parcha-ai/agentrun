@@ -1,0 +1,4 @@
+GET /v2/runs/01a201d3-b7a9-73bf-9faa-019f9177d937/files/recordings/faux-desktop-1.mp4?download=1 -> 200
+content-type: video/mp4
+content-disposition: attachment; filename="faux-desktop-1.mp4"
+bytes: 12048 (run read: 12048)

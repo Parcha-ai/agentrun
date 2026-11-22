@@ -1,0 +1,38 @@
+{
+  "follow": 202,
+  "recordings": [
+    {
+      "path": "recordings/faux-desktop-1.mp4",
+      "computer": "faux-desktop-1",
+      "seconds": 15.3,
+      "bytes": 12048,
+      "finished": true
+    },
+    {
+      "path": "recordings/faux-desktop-2.mp4",
+      "computer": "faux-desktop-2",
+      "seconds": 2.2,
+      "bytes": 4223,
+      "finished": true
+    }
+  ],
+  "steps": [
+    {
+      "time": "0:00",
+      "text": "0:00PhaseRecording the desktop's screen into recordings/faux-desktop-2.mp4."
+    },
+    {
+      "time": "0:00",
+      "text": "0:00YouLook once more."
+    },
+    {
+      "time": "0:00",
+      "text": "0:00Computer screenshotTook a screenshot"
+    },
+    {
+      "time": "0:00",
+      "text": "0:00AnswerLooked once more. Done again."
+    }
+  ],
+  "screenshot": "D7-second-recording.png"
+}

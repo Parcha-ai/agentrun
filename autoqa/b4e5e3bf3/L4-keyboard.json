@@ -1,0 +1,14 @@
+{
+  "shiftTabFromComposerReachedRegion": true,
+  "afterHome": {
+    "scrollTop": 0,
+    "scrollHeight": 901,
+    "clientHeight": 482,
+    "gap": 419
+  },
+  "tabForwardFromTakeOver": [
+    "iframe \"The run's screen\"",
+    "iframe \"The run's screen\"",
+    "iframe \"The run's screen\""
+  ]
+}

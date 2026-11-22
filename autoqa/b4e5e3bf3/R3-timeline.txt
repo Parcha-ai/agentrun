@@ -1,0 +1,86 @@
+Phase
+Recording the desktop's screen into recordings/faux-desktop-1.mp4.
+05:56 AM
+You
+Look at the desktop.
+05:56 AM
+Computer screenshot
+47 ms
+Took a screenshot
+05:56 AM
+Phase
+You took over the desktop
+05:56 AM
+Computer screenshot
+5.7 s
+Took a screenshot
+05:56 AM
+Phase
+You handed the desktop back
+05:56 AM
+Computer screenshot
+318 ms
+Took a screenshot
+05:56 AM
+Computer screenshot
+315 ms
+Took a screenshot
+05:56 AM
+Computer screenshot
+314 ms
+Took a screenshot
+05:56 AM
+Computer screenshot
+314 ms
+Took a screenshot
+05:56 AM
+Computer screenshot
+328 ms
+Took a screenshot
+05:56 AM
+Computer screenshot
+325 ms
+Took a screenshot
+05:56 AM
+Computer screenshot
+318 ms
+Took a screenshot
+05:56 AM
+Computer screenshot
+322 ms
+Took a screenshot
+05:56 AM
+Computer screenshot
+318 ms
+Took a screenshot
+05:56 AM
+Computer screenshot
+317 ms
+Took a screenshot
+05:56 AM
+Computer screenshot
+317 ms
+Took a screenshot
+05:56 AM
+Computer screenshot
+768 ms
+Took a screenshot
+05:56 AM
+Computer screenshot
+2.0 s
+Took a screenshot
+05:56 AM
+Computer screenshot
+2.0 s
+Took a screenshot
+05:56 AM
+Computer screenshot
+2.0 s
+Took a screenshot
+05:56 AM
+Answer
+Looked at the desktop seventeen times. Done.
+05:56 AM
+Usage
+Cost: $0 · free model over 18 model requests
+05:56 AM
