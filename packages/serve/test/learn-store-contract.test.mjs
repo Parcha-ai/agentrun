@@ -749,9 +749,46 @@ test("code.storage: each token is signed by its key's kind, as the SDK signs: an
   }
 });
 
-test("code.storage: every repository id the whole suite sent is agentrun-<12 hex>-... (no other repository of the org is created, read, written or deleted), and no call listed repositories", () => {
+test("code.storage: no call follows a redirect: the API answering one with a 302 to another origin fails that call, and the redirect's target gets no request, so the bearer token never rides it", async (t) => {
+  const { createServer } = await import("node:http");
+  const { codeStorageLearningStore } = await import("../dist/learn/code-storage.js");
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const fake = codeStorageFake({ name: "example-org", publicKey });
+  const listen = (server) => new Promise((done) => server.listen(0, "127.0.0.1", () => done(server.address().port)));
+  // The redirect's target: every request it gets, with its Authorization header.
+  const elsewhere = [];
+  const other = createServer((request, response) => {
+    elsewhere.push({ url: request.url, authorization: request.headers.authorization });
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ commits: [] }));
+  });
+  const otherPort = await listen(other);
+  // The API: the fake over real HTTP, but its first history read answered 302 to the other origin.
+  let redirected = 0;
+  const api = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    if (request.method === "GET" && request.url.startsWith("/api/v1/repos/commits") && redirected++ === 0) return response.writeHead(302, { location: `http://127.0.0.1:${otherPort}${request.url}` }).end();
+    const answer = await fake.fetch(new URL(request.url, "https://api.example-org.code.storage.invalid"), { method: request.method, headers: request.headers, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
+    response.writeHead(answer.status, Object.fromEntries(answer.headers)).end(Buffer.from(await answer.arrayBuffer()));
+  });
+  const apiPort = await listen(api);
+  t.after(() => {
+    other.close();
+    api.close();
+  });
+  // The real fetch (no `fetch` given), as the server runs it.
+  const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: `http://127.0.0.1:${apiPort}`, serverId: async () => SRV }, "agent-one");
+  await assert.rejects(store.head(), (error) => error?.name === "FolderUnreadable", "the redirected call fails, the store unavailable");
+  assert.equal(redirected, 1, "the API answered the call with its redirect");
+  assert.deepEqual(elsewhere, [], "the redirect's target got no request (no Authorization header reached it)");
+  // The next call, answered by the API itself, goes on as usual.
+  assert.equal(await store.head(), null);
+});
+
+test("code.storage: every repository id the whole suite sent is agentrun-<12 hex>-... (no other repository of the org is created, read, written or deleted), no call listed repositories, and every call refused redirects", () => {
   const sent = FAKES.flatMap((fake) => fake.calls);
   assert.ok(sent.length > 50, `the suite's calls: ${sent.length}`);
+  assert.deepEqual(sent.filter((call) => call.redirect !== "error"), [], "every fetch passes redirect: \"error\"");
   for (const call of sent) assert.match(String(call.repo), GUARD, JSON.stringify(call));
   for (const call of sent) assert.match(String(call.repo), /^agentrun-[0-9a-f]{12}-[A-Za-z0-9_-]+$/, JSON.stringify(call));
   assert.deepEqual(sent.filter((call) => /^repos\/?$/.test(call.path) && call.method === "GET"), [], "no repository listing");

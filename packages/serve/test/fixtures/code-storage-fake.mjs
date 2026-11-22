@@ -19,7 +19,8 @@ const ZERO = "0".repeat(40);
 const METADATA = new Set(["target_branch", "commit_message", "author", "committer", "files", "base_branch", "base_is_ephemeral", "target_is_ephemeral", "ephemeral", "ephemeral_base", "expected_head_sha", "expected_target_sha"]);
 
 /** A fake code.storage org `name`, its key's public half `publicKey` (PEM or KeyObject). `fetch` is what the adapter
- *  is handed; `calls` every request it made ({ method, path, repo }); `repos` the store, by id. */
+ *  is handed; `calls` every request it made ({ method, path, repo, search, redirect: the fetch's redirect mode });
+ *  `repos` the store, by id. */
 export function codeStorageFake({ name = "example-org", publicKey } = {}) {
   const key = publicKey === undefined ? undefined : publicKey instanceof KeyObject ? publicKey : createPublicKey(publicKey);
   /** id -> { commits: Map<sha, commit>, main: sha | null } */
@@ -149,7 +150,7 @@ export function codeStorageFake({ name = "example-org", publicKey } = {}) {
     const prefix = "/api/v1/";
     const path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : url.pathname;
     const claim = claims(new Headers(init.headers).get("authorization"));
-    calls.push({ method, path, repo: claim?.repo, search: url.search });
+    calls.push({ method, path, repo: claim?.repo, search: url.search, redirect: init.redirect });
     if (!claim) return fail(401, "unauthorized");
     const can = (scope) => claim.scopes.includes(scope);
     const id = claim.repo;
