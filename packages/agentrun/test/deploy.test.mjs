@@ -411,6 +411,16 @@ test("deploy delete takes a 404 as gone only when the agent is not there: a targ
   }
 });
 
+test("a target that does not offer an upload says so as every command's refusal does: its 501 printed as the unsupported error, exit 5", { timeout: 60_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const pkg = folder(dir);
+  const target = await fakeTarget(t, { "POST /templates/import": [501, { error: { message: "Uploads are off here.", capability: "template_uploads" } }] });
+  const result = await cli(env, ["deploy", pkg, "--to", target.base, "--yes"], { AGENTRUN_API_KEY: "not-a-secret" });
+  assert.equal(result.code, 5, result.err);
+  assert.deepEqual(JSON.parse(result.err.trim().split("\n").at(-1)), { error: { message: "Uploads are off here.", capability: "template_uploads", code: "unsupported_here", status: 501 } });
+  assert.equal(existsSync(join(pkg, ".agentrun", "deploy.json")), false);
+});
+
 /** watch: a feed trigger whose feeds are a parameter left empty by default, so an apply skips it. */
 const WATCH = `---
 name: watch
