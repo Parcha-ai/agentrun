@@ -7,6 +7,7 @@
 // whose box lacks a program it needs does not start its work.
 import type { ComputerClient, ProviderEntry } from "@parcha/agentrun-computer";
 import type { InputIssue } from "./errors.js";
+import { shellEnv } from "./workspace/hands.js";
 
 /** A program's name as a need says it: a name a shell finds on its PATH, no path and no space. */
 export const NEED_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
@@ -34,11 +35,12 @@ const CHECK = 'for name do command -v "$name" >/dev/null 2>&1 || printf "%s\\n" 
 /** What the box answered: the needs it lacks (none: it has them all), or why it could not be asked. */
 export type NeedsAnswer = { readonly missing: readonly string[] } | { readonly unchecked: string };
 
-/** Asks the box behind `client` which of `needs` it lacks, by one `sh` with the names as its arguments. */
+/** Asks the box behind `client` which of `needs` it lacks, by one `sh` with the names as its arguments, under the agent's
+ *  shell environment (shellEnv): its PATH, never the image's, so a program the check finds is one the agent's bash finds. */
 export async function missingNeeds(client: ComputerClient, needs: readonly string[], signal?: AbortSignal): Promise<NeedsAnswer> {
   let ran: Awaited<ReturnType<typeof client.call<"exec.run">>>;
   try {
-    ran = await client.call("exec.run", { argv: ["sh", "-c", CHECK, "sh", ...needs], timeoutMs: NEEDS_CHECK_MS }, signal ? { signal } : undefined);
+    ran = await client.call("exec.run", { argv: ["sh", "-c", CHECK, "sh", ...needs], env: { ...shellEnv() }, timeoutMs: NEEDS_CHECK_MS }, signal ? { signal } : undefined);
   } catch (error) {
     return { unchecked: error instanceof Error ? error.message : String(error) };
   }

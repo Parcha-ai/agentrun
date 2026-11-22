@@ -854,7 +854,8 @@ the provider's words.
 32 program names (letters, digits, `.`, `_`, `+` and `-`; no path), each once. It says what the box must have, never which
 image it is: a Docker box's image is still `AGENTRUN_DOCKER_IMAGE`'s, and another provider's is its own. Each run's
 claim asks the box it started, before the run's first model request: one `sh` with the names as its arguments, which
-prints those `command -v` does not find. A box that lacks one, or that cannot be asked, is let go and the run ends
+prints those `command -v` does not find, searching the folders the agent's shell searches (`/usr/local/sbin`,
+`/usr/local/bin`, `/usr/sbin`, `/usr/bin`, `/sbin`, `/bin`), never a PATH the image sets. A box that lacks one, or that cannot be asked, is let go and the run ends
 `failed` (`run_failed`), its words naming what is missing and how to give the box an image that has it:
 
 ```text
