@@ -743,9 +743,9 @@ AGENTRUN_DOCKER_IMAGE=$tag AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
 The tag is the recipe's hash, so an edit to the recipe is a new tag, and a tag already on this machine is used as it is
-(nothing is pulled). Its Debian packages come from snapshot.debian.org at one instant, and the CLI's npm dependencies
-from the registry as it stood at that instant (by date, not by content), so two builds of one tag install the same
-Debian packages. It is about 2.7 GB on disk. An agent that needs it says so with
+(nothing is pulled). Its Debian packages come from snapshot.debian.org (over https) at one instant, and the CLI's npm
+dependencies from the registry as it stood at that instant (by date, not by content), so two builds of one tag install
+the same Debian packages. It is about 2.7 GB on disk. An agent that needs it says so with
 [`computer.needs`](#computers), so a server on another image fails its runs in words instead of running them.
 
 **The documents image.** For an agent that writes decks, documents and sheets, the computer package keeps a third
@@ -1378,6 +1378,38 @@ answer 401 for it. Model spend that would run after the turn ends is never sent 
 Jev and the other decision providers run on their own keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`,
 `OPENROUTER_API_KEY`), which are not model keys and which a run's key does not replace. On a run that brings its own
 key, no model key is on the env its decision nodes run under, so Jev's route on an openrouter.ai gateway's key is off.
+
+### Per-run tool keys
+
+A caller can hand a run its own tool keys with `keys` on `POST /v2/runs`, `POST /v2/agents/{agent_id}/runs` and
+`POST /v2/runs/{run_id}/messages`: `{"PARALLEL_API_KEY": "..."}`. The run's tools use each one in place of the server's
+key of that name. The names a run can carry are the tool keys: `PARALLEL_API_KEY` (`web_search`, `web_fetch`, Parallel
+decisions), `MONID_API_KEY`, `BROWSERBASE_API_KEY` with `BROWSERBASE_PROJECT_ID` or `KERNEL_API_KEY` (`browser`) and
+`TYPESAFE_API_KEY` (Jev). A model key goes in `model_key`, above.
+
+```sh
+curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer $AGENTRUN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d "{\"input\": {\"content\": \"Find the release notes\"}, \"keys\": {\"PARALLEL_API_KEY\": \"$CUSTOMER_PARALLEL_KEY\"}}"
+```
+
+- A name that is not a tool key, or one no tool of the run's revision reads (its tools, its workflow's nodes and
+  decision providers, and the keys its template declares), is 422 at `keys.<NAME>`, the value never echoed.
+- The keys are taken out of the body before anything reads it, as `model_key` is: never in the run's saved body, its
+  timeline, its view, a log or an `Idempotency-Key`'s fingerprint. They are sealed with the run's launch, opened at
+  each claim for its tools alone, and erased by the write that ends its turn. Since no read after that could cut
+  them, the runner cuts them from everything the run writes, as it writes it.
+- A message's `keys` replace the run's in the message's own write, read from the run's next claim on; a turn still
+  going keeps the keys it opened. `keys: {}` leaves the run none. A message without them keeps the run's, which are
+  none once its last turn ended.
+
+**A server that holds no tool keys: `AGENTRUN_RUN_KEYS=1`.** Off, a template's apply refuses a tool key the server does
+not hold (409, as before). With the setting on, the apply makes the agent and says, in a warning, which tool keys
+each run must bring. A run of that agent without one of them is 409 `agent_not_runnable` at `keys.<NAME>`, before
+anything is made, and so is a message that would start a turn without it. `MONID_API_KEY` stays the server's even with
+the setting on: an agent's monid tools are checked with it when the agent is saved, before any run, so a template that
+grants them is still refused at its apply (409 at `secrets.MONID_API_KEY`) where the server has none. A run can still
+bring its own monid key to use in place of the server's.
 
 ### Direct Particle-1
 
@@ -3587,11 +3619,11 @@ stays in every total.
   (`DELETE /v2/agents/{id}/learning`) or the agent's purge, which delete the folder whole. Each merge's feedback line goes in
   one commit by the host (none when nothing is left to remove), a line a person edited since stays, and another
   merge's diff that shows the line as context is written without it. The log and a workflow's revisions leave out its
-  merges, known by the run the log names for each (its newest 200 changes). A learned workflow whose `workflow.json` the
-  run changed last (by the commits' run trailers over the whole history, past those 200) is refused by every read: its
-  file read is `410 purged`, a champion read by its digest reads no commit, a later merge's diff shows the file as added
-  (never the purged text), an SDK start sent again whose receipt pinned it is `410 purged`, and no run lays or serves
-  it, so the agent takes the run as when no champion serves. Each merge's scrub lands once, so a `DELETE` sent again
+  merges, known by the run the log names for each (its newest 200 changes). A purge takes each learned workflow whose
+  `workflow.json` the run changed last (by the commits' run trailers over the whole history, past those 200) off main
+  in one host commit, its whole folder: its file reads are `404`, no run lays it, and a read at an older commit
+  (a champion by its digest, an SDK receipt's pinned commit, a later merge's diff, which shows its files as added)
+  never serves its text. Each merge's scrub lands once, so a `DELETE` sent again
   after a stop takes no other run's same line, and a merge of the run made since is scrubbed by it. A second `DELETE`
   does this again. It covers the learning folder on this
   server; a Mode 2 agent's folder on an Archil disk keeps the run's text until a learning reset or the agent's purge.

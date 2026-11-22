@@ -361,7 +361,9 @@ function fileOf(raw: string, use: "read" | "approve" | "retire" | "restore"): st
 }
 
 /** GET /agents/{id}/learning/files/{file}: a draft's file on main as text, its ETag, and its type (workflow.json is
- *  JSON). A workflow.json a purged run wrote is 410 purged, as every route of that run is (purged-workflow.ts). */
+ *  JSON). A purged run's workflow left main with its purge (learn/commit.ts forgetRunText), so its files are the 404
+ *  any missing file is. A workflow.json still on main whose writer is purged (a run purged before purges took its
+ *  workflows off, until its DELETE is sent again) is 410 purged, as every route of that run is (purged-workflow.ts). */
 export async function readLearnedFile(data: string, agentId: string, raw: string, shown: Shown, store: Pick<Store, "runs">): Promise<{ text: string; etag: string; type?: string }> {
   const file = fileOf(raw, "read");
   const place = learnedPlace(file)!;
@@ -550,13 +552,14 @@ export async function runDiffOverStore(data: string, store: Store, runId: string
   return { base: start?.seed ?? null, head: null, files: [] };
 }
 
-/** `diff` with each learned workflow.json whose text at its parent a purged run wrote (purged-workflow.ts) diffed
- *  against nothing, so its patch never shows that text: its text at the merge as an added file, or, deleted there,
- *  no file. One more read-only exec when the merge changed such a file (snapshotAt), and one per file served so. */
+/** `diff` with each file of a learned workflow whose text at its parent a purged run wrote (purged-workflow.ts), its
+ *  whole `workflows/<name>/` folder (README.md too), diffed against nothing, so its patch never shows that text: its
+ *  text at the merge as an added file, or, deleted there, no file. One more read-only exec when the merge changed such
+ *  a file (snapshotAt), and one per file served so. */
 async function againstPurged(ws: Workspace, diff: RunDiff, store: Pick<Store, "runs">): Promise<RunDiff> {
   const replaced = (path: string, status: string) => {
-    const place = status === "added" ? undefined : learnedPlace(path);
-    return place?.kind === "workflow" ? place.name : undefined;
+    const [dir, name, ...rest] = path.split("/");
+    return status !== "added" && dir === WORKFLOWS_DIR && rest.length ? name : undefined;
   };
   if (!diff.files.some(({ path, status }) => replaced(path, status))) return diff;
   const purged = await purgedWorkflows(await snapshotAt(ws, diff.parent), store);

@@ -34,7 +34,8 @@ import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { MAX_MODEL_KEY_CHARS } from "./run-model-key.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
 import { PLACE_MODES } from "./place.js";
-import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
+import { TOOL_FIELDS, TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
+import { MAX_KEY as MAX_RUN_KEY } from "./run-keys.js";
 import { MCP_AUTH_TYPES } from "./mcp-probe.js";
 import { CATALOG_KEY_PATTERN, MCP_SERVER_NAME } from "./tool-names.js";
 import { MAX_PRIVATE_HOSTS } from "./mcp-private-hosts.js";
@@ -1891,7 +1892,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/files/{file}": {
     get: {
       operationId: "readLearningFile", tags: ["agents"], summary: "One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag",
-      description: "corrections.md and a README.md are `text/markdown`; a draft's workflow.json is `application/json`. A workflow.json whose newest change a purged run made (`DELETE /runs/{run_id}`) is `410 purged` with that run's tombstone, and no other read serves that workflow either: a champion read by its digest reads no commit, a later merge's diff shows the file as added, and no run lays it.",
+      description: "corrections.md and a README.md are `text/markdown`; a draft's workflow.json is `application/json`. A run's purge (`DELETE /runs/{run_id}`) takes each workflow whose workflow.json it changed last off main, so both its files are `404`, and no read at an older commit serves it either: a champion read by its digest reads no commit, a later merge's diff shows its files as added, and no run lays it.",
       parameters: [AGENT_ID, FILE_PARAM], responses: { "200": FILE_TEXT("The file's text, cut of the host's secrets.", true), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
     },
   },
@@ -3496,6 +3497,13 @@ const RUN_MODEL_KEY: Json = {
   "x-agentrun-serve": "runmodelkey/1",
 };
 
+/** runkeys/1: the run's own tool keys (run-keys.ts), by name. */
+const RUN_TOOL_KEYS: Json = {
+  type: "object", propertyNames: { enum: [...TOOL_FIELDS] }, additionalProperties: { type: "string", minLength: 1, maxLength: MAX_RUN_KEY },
+  description: `The run's own tool keys, by name: a value for each tool key its revision reads (its tools', its workflow nodes' and decision providers', and those its template declares), which its tools use in place of the server's key of that name. Sealed into the run's launch, opened at each claim for its tools alone, erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint, and cut from what the run writes. 422 at \`keys.<NAME>\` for a name that is not a tool key, or one no tool of the run's revision reads (a model key goes in \`model_key\`). On a server started with AGENTRUN_RUN_KEYS=1, a run of an agent made from a template that declares a tool key the server does not hold is 409 \`agent_not_runnable\` at \`keys.<NAME>\` without it.`,
+  "x-agentrun-serve": "runkeys/1",
+};
+
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Limits: {
     free_model_requests: { type: "integer", minimum: 1, description: "The most requests on free models a run makes: a free model's catalog price is all zeros, so a dollar cap cannot stop it. AGENTRUN_FREE_MODEL_REQUESTS, else 60. The request after that many is not sent, and the run ends `failed`, its error `spend_cap_reached`: \"Not sent: this run reached its 60-request limit for free models.\" (the number is this one). Every free model's request counts, the run's own, its subagents', its side calls and any cut by a crash, capped or not; a paid request, a paid tool call and a workflow decision never do. ChatGPT-plan requests don't count.", "x-agentrun-serve": "freerequests/1" },
@@ -3503,6 +3511,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   MessageCreate: {
     model_key: { ...RUN_MODEL_KEY, description: `${RUN_MODEL_KEY.description as string} On a message it replaces the run's key from the run's next model request on, a turn still going included, and it is the first key of a run that started on the server's (mint one per turn); a message without one keeps the key the run holds, which is none once its last turn ended: then, where the server holds no key for the run's model, the message is 422 \`model_key_required\` and nothing is written.` },
     mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Replaces the run's handed credentials in the message's own write (a follow-up that opens an ended run again hands its turn's), so the turn the message starts calls with them. A run handed none calls a per_run server's tools refused, nothing sent.` },
+    keys: { ...RUN_TOOL_KEYS, description: `${RUN_TOOL_KEYS.description as string} On a message they replace the run's keys in the message's own write, read from the run's next claim on (a turn still going keeps the keys it opened); a message without them keeps the keys the run holds, which are none once its last turn ended.` },
   },
   Cost: {
     ...SO_FAR,
@@ -3538,6 +3547,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   RunCreate: {
     model_key: RUN_MODEL_KEY,
+    keys: RUN_TOOL_KEYS,
     mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Each names a saved MCP server that takes that shape: headers for one whose \`auth.type\` is per_run, a binding for a per-run Composio server (422 at \`mcp_auth.<server>\` otherwise, and at the binding's field for a malformed user or account, no run made). Sealed into the run's launch for its life, read at each claim, and erased by the write that ends it; never in its saved body, its timeline, its view or an Idempotency-Key's fingerprint (a retry with a new credential answers the first request's run).` },
     labels: { ...RUN_LABELS, description: `The caller's own labels for the run: at most ${MAX_LABELS} keys, each 1 to 63 letters, digits, \`.\`, \`_\`, \`-\` or \`/\` starting with a letter or a digit; each value text of 1 to ${MAX_LABEL_VALUE} characters with no control character. Kept on the run as given, served on every read of it (\`labels\` on Run and RunSummary) and matched by GET /runs' \`label\`; set once, at the start. The server reads nothing else from them: put no secret in one. Another shape is 422 under \`labels\` or \`labels.<key>\`. Absent: none.` },
     workflow_first: {

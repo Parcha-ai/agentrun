@@ -21,7 +21,8 @@ import { held, held as runnerSeam } from "./held.js";
 import { savedGatewayIn } from "../model-gateway.js";
 import type { HeldRedact } from "./redact.js";
 import { type HeldModelKey, noServerKeyWords, runKeyEndedFor, runModelOrigin, withRunModelKey, withRunModelKeyLater } from "../run-model-key.js";
-import { openRunLaunch, type RunModelKey } from "../store/seal.js";
+import { openRunLaunch, type RunModelKey, type RunToolKeys } from "../store/seal.js";
+import { declaredFrom } from "../run-keys.js";
 import { type Claim, StoreLaunchMissing } from "../store/store.js";
 import { withRequestMetadata } from "../request-metadata.js";
 
@@ -33,17 +34,25 @@ const CANDIDATES: readonly string[] = [...new Set([...RUN_SECRETS, ...DECISION_K
  *  environment (its own, with no server secret in it: those are the store's). */
 export interface ClaimSecretsDeps {
   /** `put`, `replaceIf`, `removeIf` and `clock` for the ChatGPT sign-in alone, which a run renews and seals again under a
-   *  lease on the store's clock (chatgpt-plan.ts). */
-  readonly store: { readonly sealedKeys: Pick<SealedKeys, "get" | "put" | "replaceIf" | "removeIf" | "clock"> };
+   *  lease on the store's clock (chatgpt-plan.ts). `runs.launch` for a claim given its run's id: its launch's sealed
+   *  column, which holds the run's own tool keys. */
+  readonly store: { readonly sealedKeys: Pick<SealedKeys, "get" | "put" | "replaceIf" | "removeIf" | "clock">; readonly runs?: RunLaunchReader };
   /** The runner's seal key: with none, no saved key is opened, and only the environment's values are read. */
   readonly sealKey: Buffer | undefined;
   readonly env?: NodeJS.ProcessEnv;
+  /** Where the run's own tool keys this claim lays go before anything can echo one: the runner's one redactor's `carry`
+   *  (redact.ts), which cuts them from the run's journal as it is written, since no one holds them after the turn. */
+  readonly carry?: (values: readonly string[]) => void;
 }
+
+/** What reads a run's launch sealed column. */
+type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8Array | null }> };
 
 /** The environment a claimed run's tools run under: the runner's base (its secrets stripped), with the keys the run's
  *  revision needs read from the store on top — the tool keys its tools unlock, the model keys its model needs, and its
- *  decision provider keys. A fresh object per claim, so no run's keys reach another's. */
-export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, launch: Pick<RunLaunch, "plane" | "model">): Promise<NodeJS.ProcessEnv> {
+ *  decision provider keys — and, for claim `runId`, the run's own tool keys its revision declares (run-keys.ts) over the
+ *  server's by the same name. A fresh object per claim, so no run's keys reach another's. */
+export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, launch: Pick<RunLaunch, "plane" | "model">, runId?: string): Promise<NodeJS.ProcessEnv> {
   const base = withoutSecrets(deps.env ?? {});
   const working = await workingEnv(deps);
   const needs = await needsOf(revision);
@@ -58,6 +67,15 @@ export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, l
   for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV)) env[name] = working[name];
   const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
   for (const [name, value] of Object.entries(decision)) env[name] = value;
+  // The run's own tool keys, sealed with its launch: each one its revision declares, over the server's by the same name.
+  // Opened by a runner, which holds the seal key; a run's own process is handed them with the rest of its claim's keys.
+  if (runId !== undefined && deps.sealKey && deps.store.runs) {
+    const carried = await openRunKeys({ runs: deps.store.runs, sealKey: deps.sealKey }, runId);
+    const declared = carried ? declaredFrom(needs, revision) : [];
+    const laid = Object.entries(carried ?? {}).filter(([name]) => declared.includes(name));
+    if (laid.length) deps.carry?.(laid.map(([, value]) => value));
+    for (const [name, value] of laid) env[name] = value;
+  }
   // The server's ChatGPT sign-in, read from the store for this claim: its token is asked at each request the run's model
   // proxy sends (chatgpt-plan.ts), never put on the environment its tools run under (a symbol no spawn copies). Only for
   // a run that can reach a plan model: one pinned to a key's model (and its tiers on keys) never holds the sign-in, which
@@ -93,6 +111,12 @@ async function workingEnv(deps: ClaimSecretsDeps): Promise<NodeJS.ProcessEnv> {
     if (value !== undefined) working[name] = value;
   }
   return working;
+}
+
+/** `keys` (learnedDecisionKeys') laid onto `env`, a claim's environment, where it holds no value of that name: what the
+ *  claim laid stays, a run's own tool key over the server's above all. A name both read holds the same server key. */
+export function underClaimed(env: NodeJS.ProcessEnv, keys: Readonly<Record<string, string>>): void {
+  for (const [name, value] of Object.entries(keys)) if (!env[name]) env[name] = value;
 }
 
 /** The decision keys a run's learned workflows need, beside those claimSecrets scoped to its revision (whose own nodes
@@ -221,6 +245,19 @@ export async function openRunModelKey(deps: { readonly store: { readonly runs: {
   const opened = deps.sealKey ? openRunLaunch(deps.sealKey, runId, sealed) : undefined;
   if (!opened) throw new Error("This run's launch secrets do not open with this runner's seal key: its model key is not sent.");
   return opened.model;
+}
+
+/** Run `runId`'s own tool keys as its launch's sealed column holds them (run-keys.ts), opened under `deps.sealKey`: none
+ *  for a launch that holds none (or no launch row). Throws, in words, where the launch does not open. */
+export async function openRunKeys(deps: { readonly runs: RunLaunchReader; readonly sealKey: Buffer }, runId: string): Promise<RunToolKeys | undefined> {
+  const sealed = await deps.runs.launch(runId).then((launch) => launch.sealed, (error: unknown) => {
+    if (error instanceof StoreLaunchMissing) return null;
+    throw error;
+  });
+  if (sealed === null) return undefined;
+  const opened = openRunLaunch(deps.sealKey, runId, sealed);
+  if (!opened) throw new Error("This run's launch secrets do not open with this runner's seal key: its keys are not sent.");
+  return opened.keys;
 }
 
 /**
