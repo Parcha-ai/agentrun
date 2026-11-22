@@ -17,7 +17,7 @@ const template: TemplateView = {
   parameters: { type: "object", additionalProperties: false, required: ["repo"], properties: { repo: { type: "string", description: "Repository" }, max_files: { type: "integer", description: "Maximum files" } } },
 };
 const copied = vi.fn(async (_prompt: string) => {});
-const applyTemplate = vi.fn(async () => ({ agent_id: "review-1", trigger_ids: [], triggers: [], warnings: [] }));
+const applyTemplate = vi.fn(async () => ({ agent_id: "review-1", triggers: [], warnings: [] }));
 const v2 = { listTemplates: async () => ({ templates: [template] }), listMcpServers: async () => ({ servers: [] }), applyTemplate };
 async function mount(name?: string, playground = false, draft?: string) {
   const host = document.body.appendChild(document.createElement("div"));

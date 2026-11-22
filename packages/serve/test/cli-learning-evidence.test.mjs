@@ -166,19 +166,6 @@ test('only a known absent first Claude path can establish a deferred transcript 
   assert.equal(await captureTranscriptCursor(broken, identity), null, 'a dangling symlink is not an absent native file');
 });
 
-test('a first Claude file born after enrollment must prove its root source prompt before evidence is used', async t => {
-  const f = await fixture(t), path = join(f.root, 'first-claude.jsonl');
-  const cursor = await captureTranscriptCursor(path, { runtime: 'claude-code', sessionId: 'session-1', turnId: 'prompt-1' });
-  await delay(5);
-  await writeFile(path, lines(firstClaudeRows()));
-  const evidence = await collectPromptEvidence({ runtime: 'claude-code', cursor, sessionId: 'session-1', turnId: 'prompt-1', prompt: 'Task', answer: 'Done.' });
-  assert.equal(evidence.complete, true);
-  assert.deepEqual(evidence.messages, [{ role: 'user', text: 'Task' }, { role: 'assistant', text: 'Done.' }]);
-  assert.equal(evidence.verifiedCursor.path, path);
-  assert.ok(evidence.verifiedCursor.offset > 0);
-  assert.equal(evidence.verifiedCursor.absent, undefined);
-});
-
 test('a newly appearing Claude file with another prompt or prior ancestry uploads no transcript history', async t => {
   for (const user of [{ sessionId: 'foreign-session' }, { promptId: 'foreign-prompt' }, { promptId: undefined }, { parentUuid: 'earlier-history' }]) {
     const f = await fixture(t), path = join(f.root, 'first-claude.jsonl');

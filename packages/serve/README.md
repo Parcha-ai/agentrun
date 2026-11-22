@@ -3088,6 +3088,9 @@ serves these routes alone:
 - an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
   the backend whose inline runs made it;
+- the [purge of a run](#purging-a-run-or-an-agent-made-here) (`DELETE /runs/{id}`) of such an agent, for that
+  backend: it erases one user's runs where deleting the agent, which every user's runs share, would take them all. A
+  run of an agent made here is refused, as every address not listed here is;
 - the computer settings' two reads, for a backend to check before it launches: `GET /computers` (each provider, its
   key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
   on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
@@ -3489,12 +3492,20 @@ stays in every total.
     overwrites them. `VACUUM FULL` rewrites the table into a new file (under an exclusive lock), and the old file's
     blocks go back to the filesystem unwiped. Postgres's own WAL and its archived WAL keep the old values until they are
     recycled or expire, and backups keep them for their retention.
-- Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id. The
-  agent's learning folder keeps what the run taught it: its merge's diff (`.agentrun/diffs/<run>.json`, with its
-  patches) and any feedback line it added to `corrections.md`, in the folder's history too. The run's purge removes
-  neither; the agent's purge (below) removes the whole folder.
+- Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id and the
+  commits it names. A run's purge removes its diff file and its feedback line from the folder's current files, and the
+  folder's history no longer serves its merge; the bytes stay in the folder's `.git` until a learning reset
+  (`DELETE /v2/agents/{id}/learning`) or the agent's purge, which delete the folder whole. Each merge's feedback line goes in
+  one commit by the host (none when nothing is left to remove), a line a person edited since stays, and another
+  merge's diff that shows the line as context is written without it. The log, a workflow's revisions and a champion read by
+  its digest leave out its merges, known by the run the log names for each (its newest 200 changes), and a champion
+  whose workflow it changed last is not read at main either. Each merge's scrub lands once, so a `DELETE` sent again
+  after a stop takes no other run's same line, and a merge of the run made since is scrubbed by it. A second `DELETE`
+  does this again. It covers the learning folder on this
+  server; a Mode 2 agent's folder on an Archil disk keeps the run's text until a learning reset or the agent's purge.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
-  any other console session is `403 forbidden`, no credential `401`.
+  any other console session is `403 forbidden`, no credential `401`. An [API-only](#api-only) server purges a run of
+  an agent another system owns alone; a run of an agent made here is its profile's `404` there.
 
 An agent made here is purged the same way once archived: `DELETE /v2/agents/{id}`. Its revisions' content, name and
 description, learning, triggers, saved sign-ins, own computer, disk and folders go, and each of its runs is purged.
@@ -4269,13 +4280,16 @@ spend limit. A workflow definition keeps one the same way. The cap is checked in
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 what each request still in flight is held at, plus the most this request can cost must stay within it, or the
 request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). The cap is a hard stop for everything but
-the charge of a monid call priced by usage, which can pass the estimate it was held at: when it does, the run stops at
-once ([monid](#monid)). An MCP tool counts only at the price saved for it (its server's `prices`); one with none is
+two charges that can pass what they were held at: a monid call priced by usage, which can pass monid's estimate (when
+it does, the run stops at once, [monid](#monid)), and a fal job, booked at the units its output states, which can pass
+those its input asked for (when that takes the run past its cap, the run stops at once in the cap's words, nothing
+run after it). An MCP tool counts only at the price saved for it (its server's `prices`); one with none is
 not metered and bills its own account outside the cap. fal is counted: a job sent to a fal server (one saved with the
 toolkit `fal`, or at `mcp.fal.ai`) through `run_model`, `submit_job` or `submit_jobs` is priced before it is sent, at
 fal's unit price for its endpoint (the server's own `get_pricing`, read with the run's credential and kept five
 minutes) times the units the job's input states: its images, their megapixels, its text's characters, the seconds it
-names, or the length of the audio or video it is given, read from the file first. That price is held under the cap, a
+names, or, for dubbing, lip-sync, voice isolation and speech-to-text, which fal bills by the length of the media they
+are given, that length, read from the file first. That price is held under the cap, a
 job the cap can't take is refused before it is submitted, and the job is booked as the run's tool cost, charged by the
 server, with the price and the count it came from. It is an estimate at fal's list price, not fal's invoice: fal
 reports no cost for a job, and a minimum charge, a discount or a rate that depends on a setting `get_pricing` does not

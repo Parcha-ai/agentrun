@@ -33,7 +33,7 @@ import { rm } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
-import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, externalKey, getAgent, listAgents, makeRevision, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -56,7 +56,7 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import { LEARNING_LABEL, learningFolderOf, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf, withAgentRepo } from "./learning.js";
 import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
-import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, learningLog, pendingCount, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
+import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, forgetRunLearning, learningLog, pendingCount, type PurgedOf, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/workflow-draft.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
@@ -210,7 +210,7 @@ import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceVie
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
-import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgeRun, purgingKey } from "./agent-delete.js";
+import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgedAgain, purgeRun, purgingKey } from "./agent-delete.js";
 import { type LearningResetHost, resetLearning } from "./learning-reset.js";
 import { agentComputerHoldKey } from "./workspace/agent-computer.js";
 import { sdkRunKey } from "./sdk/runs.js";
@@ -1855,6 +1855,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return [...serverSecrets(), ...pointers];
   };
   const learningShown = async (agentId: string) => secretsShown(await learningValues(agentId));
+  // Which runs a learning folder's log names are purged, by each one's row (its purge time): the history reads serve none
+  // of their merges.
+  const purgedOf: PurgedOf = async (runIds) => {
+    const rows = await Promise.all(runIds.map((runId) => store.runs.get(runId)));
+    return new Set(runIds.filter((_, i) => rows[i] !== undefined && rows[i]!.purgedAt !== null));
+  };
   // The agent's audit ledger on its learning folder's main (learn/audit.ts), oldest first.
   const auditsOfAgent = async (agentId: string) => {
     const { workspace, end } = learningFolderOf(data, agentId);
@@ -2595,10 +2601,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // DELETE. A run on its agent's own disk: with its agent's delete that disk went whole (removeDisk), its folder with
       // it; deleted alone, its folder there is deleted, the disk kept, read from its disk setting, which goes after.
       const launched = await store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
-      // Purged alone, the agent's learning stays, maybe on that disk too: the run's tombstone keeps its disk (runs.disk),
-      // for the agent's reset or delete to find (learningDisksOf).
-      if (launched?.kind === "launch") await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"], again);
-      else if (alone) {
+      // The agent's learning folder there too: a Mode 2 end wrote the run's diff and correction in it, and nothing reads it.
+      if (launched?.kind === "launch") {
+        await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"], again);
+        await notYetWith(() => archil.removeLearningFolder(agentId, launched.diskId), ["unavailable", "upstream_failed"], again);
+      } else if (alone) {
         const own = launched?.diskId ?? (await runDiskKept(store, runId));
         if (own) await notYetWith(() => archil.removeRunFolder(agentId, runId, own, "agent"), ["unavailable", "upstream_failed"], again);
       }
@@ -2621,7 +2628,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The replay runs of its input, its audit's shadow run and a learning run it names (the store's), and its audit's shadow
     // run by its id (one whose launch is gone too).
     madeFrom: async (runId) => [...new Set([...(await store.runs.madeFrom(runId)), shadowRunId(runId)])],
-    forgetCopies: (agentId, runId) => forgetRunCopies(store.settings, agentId, runId),
+    // Its copies in the agent's promotion records, then its text off the agent's learning folder's current files (its
+    // merges' diff files and feedback lines), in the agent's queue: a folder that can't be written now is 503, the run
+    // purged or kept as the purge had got, and the next DELETE does it again.
+    forgetCopies: async (agentId, runId) => {
+      await forgetRunCopies(store.settings, agentId, runId);
+      await notYetWith(() => forgetRunLearning(data, agentId, runId), ["unavailable"], "The agent's learning folder keeps the run's text until the DELETE is sent again.");
+    },
     // /usage's meters and a live read's spend, from its journal, as they read now (store-reads/cap.ts), and how its
     // learning ended as /stats counts it (its state and reason alone).
     kept: async (runId) => {
@@ -3209,8 +3222,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // (catchup_window_s and max_active_runs the package leaves out back to their defaults, as a fresh apply makes them); a new name is made; one the package
     // marked and no longer lists is removed (`removing`). Each trigger the apply makes or keeps is marked as the package's; each write to one the agent had is made only while it
     // is still the agent's: one a PATCH moved away meanwhile is neither changed nor removed, and its name is made anew.
-    // Each trigger it made or kept, in the package's order, as it stands after its write: the answer's trigger_ids and
-    // triggers (its name, its kind, and whether it is on).
+    // Each trigger it made or kept, in the package's order, as it stands after its write: the answer's triggers (its id,
+    // its name, its kind, and whether it is on).
     const answered: { trigger_id: string; name: string; kind: string; enabled: boolean }[] = [];
     const list = (view: { id: string; name: string; enabled: boolean; source: { kind: string } }) => answered.push({ trigger_id: view.id, name: view.name, kind: view.source.kind, enabled: view.enabled });
     // The triggers this apply made (never one it changed in place): what a refusal's undo removes.
@@ -3322,7 +3335,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // What the apply did to the agent: made it, wrote a new revision, or wrote none (an update whose package and
     // parameters the current revision already holds: commitAgent keeps that revision).
     const agentChange = !onto ? "made" : entry.revision?.id === onto.revision?.id ? "unchanged" : "updated";
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_version: entry.version, agent_change: agentChange, servers: used, trigger_ids: answered.map((one) => one.trigger_id), triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
     return { applied, minted, updated: onto !== undefined };
   }
 
@@ -4475,8 +4488,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // at a time, the agent read in its turn, so a DELETE after one that finished is 404 (deleted) or 204 (purged).
         await deleteInTurn(id, async () => {
           const { agent } = await needAgent(id);
-          if (agent.purgedAt !== null) return;
-          if (agent.externalRef !== null) return deleteExternalAgent(agentDeleteHost, id);
+          if (agent.purgedAt !== null) return purgedAgain(agentDeleteHost, id);
+          if (ownedElsewhere(agent)) return deleteExternalAgent(agentDeleteHost, id);
           if (agent.archivedAt === null) throw new ApiError("agent_not_archived", `The agent ${id} is not archived: archive it first (POST /v2/agents/${id}/archive), which stops new runs and turns its triggers off, then send the DELETE again. Nothing was purged.`);
           await purgeAgent(agentDeleteHost, id);
         });
@@ -4585,9 +4598,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "deleteRun": {
         // In its agent's delete turn (an agent's delete or purge, or another purge of one of its runs, finishes first), the
-        // run read in that turn, so a DELETE after one that finished is 204 again (purgeRun: a purged run is no work).
+        // run read in that turn, so a DELETE after one that finished is 204 again (purgeRun: a purged run's only work is
+        // its store scrub's marker and its learning folder's scrub, again).
         const row = ID.test(id) ? await store.runs.get(id) : undefined;
         if (!row) throw new ApiError("not_found", `no run ${id}`);
+        // API-only (api-only.ts): a run of an agent another system owns alone, for the backend whose inline runs made it,
+        // as it deletes that agent; a run of an agent made here is the profile's refusal, in its words, as before.
+        if (options.apiOnly) {
+          const agent = await store.agents.get(row.agentId);
+          if (!agent || !ownedElsewhere(agent)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        }
         await deleteInTurn(row.agentId, () => purgeRun(agentDeleteHost, id));
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
@@ -5179,7 +5199,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const costStop = await costStopOverStore(store, id);
         const body = entry.revision?.body as AgenticBody | undefined;
         const modelEnv = !body || sdkOf(body) || nativeOf(body) ? env : envAtPlace(env, resolvePlace(body.place as Place | undefined, fallbackPlace(entry.revision!.kind === "workflow" ? "workflow" : "agentic", body.tools ?? [])));
-        return send(res, 200, { ...await agentLearning(data, id, await learningShown(id), counts, impact, (workflow) => servingStateOf(records, workflow, costStop)), learning_model: await learningModelOf(modelEnv, entry.revision) });
+        return send(res, 200, { ...await agentLearning(data, id, await learningShown(id), counts, impact, (workflow) => servingStateOf(records, workflow, costStop), purgedOf), learning_model: await learningModelOf(modelEnv, entry.revision) });
       }
       case "getLearningCost": {
         await needAgent(id);
@@ -5220,7 +5240,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const champion = championOf(records, workflow);
           const record = champion?.digest === digest ? champion : undefined;
           const commits = records.filter((one) => one.workflow === workflow && one.digest === digest && one.commit).map((one) => one.commit!).reverse();
-          const read = await workflowAtDigest(data, id, workflow, digest, commits).catch(() => undefined);
+          const read = await workflowAtDigest(data, id, workflow, digest, commits, purgedOf).catch(() => undefined);
           let doc: unknown;
           try {
             doc = read ? JSON.parse(read.text) : undefined;
@@ -5264,7 +5284,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listLearningLog":
         await needAgent(id);
-        return send(res, 200, await learningLog(data, id, url.searchParams, await learningShown(id)));
+        return send(res, 200, await learningLog(data, id, url.searchParams, await learningShown(id), purgedOf));
       case "getLearningCorrections": {
         await needAgent(id);
         // corrections.md whole, as every run of the agent is served it under # Learned, with its ETag in the body and the header.
@@ -5291,7 +5311,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listLearnedWorkflowRevisions":
         await needAgent(id);
-        return send(res, 200, await workflowRevisions(data, id, second!, url.searchParams, await learningShown(id)));
+        return send(res, 200, await workflowRevisions(data, id, second!, url.searchParams, await learningShown(id), purgedOf));
       case "readLearningFile":
         await needAgent(id);
         return sendText(res, 200, await readLearnedFile(data, id, second!, await learningShown(id)));

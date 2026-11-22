@@ -23,7 +23,7 @@ const agentOf = (id: string, name: string, template: string | null) => ({ agent_
 /** What the server answers an apply of `body` about its agent: an Update (agent_id) wrote revision `rev` of it, an Apply
  *  made one (rev 1). */
 const answerOf = (body: { agent_id?: string }, rev = 2) => body.agent_id ? { agent_id: body.agent_id, revision_version: rev, agent_change: "updated" } : { agent_id: "made-1", revision_version: 1, agent_change: "made" };
-const applyTemplate = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ ...answerOf(body), trigger_ids: [], triggers: [], warnings: [] }));
+const applyTemplate = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ ...answerOf(body), triggers: [], warnings: [] }));
 const go = vi.fn();
 const client = (agents: ReturnType<typeof agentOf>[]) =>
   ({ listTemplates: async () => ({ templates: [base] }), listMcpServers: async () => ({ servers: [] }), listAgents: async (_q?: { cursor?: string | null }) => ({ agents, next_cursor: null as string | null }), applyTemplate });
@@ -66,7 +66,7 @@ describe("a template that already made an agent here", () => {
   // An apply with warnings shows its result. The words say what it did, as its answer says it (agent_change and
   // revision_version): an Update updated the agent to the revision it wrote, never "made"; only an Apply, which made a
   // new agent, says made. Nothing is read back for them.
-  const warned = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ ...answerOf(body), trigger_ids: [], triggers: [], warnings: [{ field: "computer", message: "No shell here." }] }));
+  const warned = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ ...answerOf(body), triggers: [], warnings: [{ field: "computer", message: "No shell here." }] }));
   const result = (host: HTMLElement) => host.querySelector('section[aria-label="Applied"]')?.textContent ?? "";
   it("an Update with warnings says it updated the agent and the revision it wrote, from its answer, never that the agent is made", async () => {
     const getAgent = vi.fn();
@@ -85,7 +85,7 @@ describe("a template that already made an agent here", () => {
       catchup_window_s: 0, max_active_runs: 1, failures_in_a_row: 0, disabled: null, last_run_id: null,
       created_at: "2026-11-11T00:00:00Z", updated_at: "2026-11-11T00:00:00Z", next_at: "2026-11-12T09:00:00Z", last_firing: null,
     };
-    const scheduled = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ ...answerOf(body, 3), trigger_ids: ["trg_d"], triggers: [{ trigger_id: "trg_d", name: "daily", kind: "schedule", enabled: true }], warnings: [] }));
+    const scheduled = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ ...answerOf(body, 3), triggers: [{ trigger_id: "trg_d", name: "daily", kind: "schedule", enabled: true }], warnings: [] }));
     const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: scheduled, getTrigger: async () => schedule } as never);
     await act(async () => button(host, "Update Morning notes")!.click());
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
@@ -103,7 +103,7 @@ describe("a template that already made an agent here", () => {
       created_at: "2026-11-11T00:00:00Z", updated_at: "2026-11-11T00:00:00Z", next_at: "2026-11-12T18:00:00Z", last_firing: null,
     };
     const triggers = [{ trigger_id: "trg_mail", name: "new-mail", kind: "email", enabled: true }, { trigger_id: "trg_d", name: "evening-digest", kind: "schedule", enabled: true }, { trigger_id: "trg_w", name: "monday-brief", kind: "schedule", enabled: false }];
-    const kept = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ ...answerOf(body, 4), trigger_ids: triggers.map((x) => x.trigger_id), triggers, warnings: [] }));
+    const kept = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ ...answerOf(body, 4), triggers, warnings: [] }));
     const getTrigger = vi.fn(async (id: string) => { if (id === "trg_d") return schedule; throw new Error("down"); });
     const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: kept, getTrigger } as never);
     await act(async () => button(host, "Update Morning notes")!.click());
@@ -112,7 +112,7 @@ describe("a template that already made an agent here", () => {
     const rows = [...host.querySelectorAll('[aria-label="Triggers"] [data-trigger]')];
     expect(rows.map((r) => r.getAttribute("data-trigger"))).toEqual(["trg_mail", "trg_d", "trg_w"]);
     expect(rows[0]!.textContent).toContain("new-mail");
-    expect(rows[0]!.textContent).toContain("starts a run on each new mail");
+    expect(rows[0]!.textContent).toContain("Email · On each new message in a mailbox");
     expect(rows[1]!.textContent).toContain("next ");
     expect(rows[2]!.textContent).toMatch(/It is off/);
     expect(getTrigger).not.toHaveBeenCalledWith("trg_mail");
@@ -128,7 +128,7 @@ describe("a template that already made an agent here", () => {
   });
 
   // An Update that changes nothing: the server wrote no revision (agent_change unchanged) and names the current one.
-  const same = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ agent_id: body.agent_id ?? "notes-1", revision_version: 2, agent_change: "unchanged", trigger_ids: [], triggers: [], warnings: [{ field: "computer", message: "No shell here." }] }));
+  const same = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ agent_id: body.agent_id ?? "notes-1", revision_version: 2, agent_change: "unchanged", triggers: [], warnings: [{ field: "computer", message: "No shell here." }] }));
   it("an Update that changes nothing says so, at the revision that stays current, never that the agent is made or applied", async () => {
     const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: same, getAgent: vi.fn() } as never);
     await act(async () => button(host, "Update Morning notes")!.click());
@@ -138,7 +138,7 @@ describe("a template that already made an agent here", () => {
     expect(result(host)).not.toMatch(/made|applied|Updated/);
   });
   it("the words come from the answer, not the button: an apply the server answers unchanged says so, and is shown even with nothing more to say", async () => {
-    const quiet = vi.fn(async () => ({ agent_id: "notes-1", revision_version: 2, agent_change: "unchanged", trigger_ids: [], triggers: [], warnings: [] }));
+    const quiet = vi.fn(async () => ({ agent_id: "notes-1", revision_version: 2, agent_change: "unchanged", triggers: [], warnings: [] }));
     const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: quiet } as never);
     await act(async () => button(host, "Apply")!.click());
     expect(go).not.toHaveBeenCalled();

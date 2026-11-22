@@ -439,7 +439,7 @@ class ArchilWorkspace implements Workspace {
     }
     if (entries.size === 0 && rel !== "") {
       const kind = await this.#kind(rel).catch((error: unknown) => { throw failed(error, rel, "list"); });
-      if (kind === undefined) throw new WorkspaceError("NOT_FOUND", `${show(rel)} is not there`, { path: rel });
+      if (kind === undefined) throw new WorkspaceError("NOT_FOUND", `${show(rel)} is not there (list; Archil: nothing under ${prefix} on disk ${this.#disk.id})`, { path: rel });
       if (kind === "file") throw new WorkspaceError("REFUSED", `${show(rel)} is not a directory`, { path: rel });
     }
     return [...entries.values()].sort((a, b) => byName(a.name, b.name));

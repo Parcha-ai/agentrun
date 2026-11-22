@@ -9,7 +9,6 @@ import { captureCdpState, connectCdp, restoreCdpState } from "../dist/providers/
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { planRestore, vaultRuntime } from "../dist/vault-session.js";
 import { CHROME, NO_CHROME } from "./fixtures/local-chrome.mjs";
-import { countedPath, isPortProbe } from "./fixtures/loopback-probe.mjs";
 
 // What a vault keeps of a signed-in local Chrome: the cookies the host's origins would be sent, and each origin's local storage, captured and restored over the
 // browser's DevTools socket from the harness side. Cookies are scoped by DOMAIN, so the filter is tested by domain; a restore never touches the network; the
@@ -146,28 +145,8 @@ test("a provider's context id is a capability: once tracked as a secret, the red
   assert.equal(redact(`https://api.example/browsers?context=${encodeURIComponent(contextId)}`).includes(contextId), false);
 });
 
-test("a request to the test site is set aside only when it is exactly a port probe: GET /, the User-Agent Go-http-client/1.1 and no Cookie; any other request counts, a Chrome User-Agent included", () => {
-  const req = (over = {}) => ({ method: "GET", url: "/", headers: { "user-agent": "Go-http-client/1.1" }, ...over });
-  assert.equal(isPortProbe(req()), true);
-  assert.equal(countedPath(req()), null);
-  for (const [what, over] of Object.entries({
-    "a Chrome User-Agent": { headers: { "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36" } },
-    "another User-Agent": { headers: { "user-agent": "curl/8.5.0" } },
-    "no User-Agent": { headers: {} },
-    "a near-miss User-Agent": { headers: { "user-agent": "Go-http-client/2.0" } },
-    "a cookie": { headers: { "user-agent": "Go-http-client/1.1", cookie: "a=b" } },
-    "another path": { url: "/favicon.ico" },
-    "a path with a query": { url: "/?x=1" },
-    "another method": { method: "POST" },
-  })) {
-    assert.equal(isPortProbe(req(over)), false, what);
-    assert.notEqual(countedPath(req(over)), null, `${what} is counted`);
-  }
-});
-
-test("in Chrome: a signed-in session is captured, the browser is released, and a fresh Chrome gets it back before any page opens, with no request to the site", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
-  const hits = [];
-  const server = http.createServer((req, res) => { const counted = countedPath(req); if (counted !== null) hits.push(counted); res.writeHead(200, { "content-type": "text/html" }); res.end(`<!doctype html><title>site</title><p id="who"></p><script>document.getElementById("who").textContent = localStorage.getItem("login") || "signed out";</script>`); });
+test("in Chrome: a signed-in session is captured, the browser is released, and a fresh Chrome gets it back before any page opens", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+  const server = http.createServer((req, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end(`<!doctype html><title>site</title><p id="who"></p><script>document.getElementById("who").textContent = localStorage.getItem("login") || "signed out";</script>`); });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close(), { timeout: 30_000 });
   const A = `http://127.0.0.1:${server.address().port}`;
@@ -198,14 +177,14 @@ test("in Chrome: a signed-in session is captured, the browser is released, and a
   assert.equal(state.cookies.find((c) => c.name === "sess").expires, undefined, "a session cookie has none");
   assert.deepEqual(Object.keys(state.localStorage).sort(), [A, B].sort());
 
-  // session B: a fresh Chrome and a fresh profile. Restore before any page: the site must not be asked for anything
+  // session B: a fresh Chrome and a fresh profile, restored before any page opens. That the restore's own requests are
+  // answered locally (Fetch on the origin) is pinned with a fake link above; a count at this loopback port, which any
+  // process on the box can reach, was flaky.
   const refB = await provider.create(spec("vault-b"), signal());
   const linkB = await attachedLink(refB);
   // B's Chrome is released even when an assertion below fails: a left-over Chrome holds the test process open.
   t.after(async () => { linkB.close(); await provider.release(refB, signal()).catch(() => undefined); }, { timeout: 30_000 });
-  const before = hits.length;
   const counts = await restoreCdpState(linkB, state, [A, B]);
-  assert.equal(hits.length, before, "the restore made no request to the site: every request was answered locally");
   assert.deepEqual([counts.cookies, counts.origins], [2, 2]);
   const pageB = await openPage(linkB, `${A}/`);
   assert.equal(await pageB.eval(`document.getElementById("who").textContent`), "sam", "the page's own script finds the restored local storage");

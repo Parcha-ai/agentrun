@@ -69,7 +69,7 @@ test("an applied watch template's schedule stores a real list its agent's input 
   const applied = await api("POST", "/templates/watch/apply", { parameters: { companies: ["Stripe", "Adyen"] } }, { "idempotency-key": "watch-array" });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
-  const trigger = (await api("GET", `/triggers/${applied.body.trigger_ids[0]}`)).body;
+  const trigger = (await api("GET", `/triggers/${applied.body.triggers[0].trigger_id}`)).body;
   assert.deepEqual(trigger.target.input, { companies: ["Stripe", "Adyen"], limit: 5, content: "Watch Stripe, Adyen today." });
   assert.ok(Array.isArray(trigger.target.input.companies), "a list, never its text");
   assert.ok(!Object.hasOwn(trigger.target.input, "focus"), "focus was given no value, so the field is absent");

@@ -191,6 +191,11 @@ export const chargedTool = (row: TimelineEvent): string | undefined =>
  *  told after the note's "AgentRun server note:" label). A row of its own, the server's ("AgentRun: …", labelled once);
  *  no request, no cost. */
 export const CAP_WRAPUP = "agentrun.cap_wrapup";
+/** A tool call the spend cap's wrap-up refused (serve's wrap-up.ts, the runner's gate): `callId` and the cap it was
+ *  refused under (`capUsd`), on the run's root. The call's own refused row is its result's; this one is data only, for the
+ *  run's view (`stopped_for`, `budget_refused_calls`): no row, no request, no cost. A call refused twice (a replay) is
+ *  one call. */
+export const CAP_REFUSED = "agentrun.cap_refused";
 /** The run's model was told once, on its first request after its claim gave it a computer in place of an earlier
  *  claim's, that the old one is gone with what was on it (`words`, what it was told after the label, as the wrap-up's).
  *  A row of its own, the server's, as the wrap-up's; no request, no cost. */
@@ -904,6 +909,8 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
+    // The wrap-up's refusal of a call, kept for the run's view: its result row is the call's own.
+    if (entry.kind === CAP_REFUSED) return out;
     if (entry.kind === CAP_WRAPUP || entry.kind === COMPUTER_NOTE) {
       // What the run's model was told near its cap, or after its computer was replaced: the server's row (`origin:
       // "server"`, in the words of its other rows), no request, no cost, and no message any turn took (its id ends in

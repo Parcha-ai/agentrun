@@ -44,7 +44,7 @@ import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
-import { launchDiskOf, readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
+import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
 
@@ -144,7 +144,7 @@ const claimableIn = (d: Dialect, n: StoreNow): { sql: string; params: SqliteValu
     (wake_at IS NOT NULL AND wake_at <= ${n.sql})
     OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind IN ('stop', 'cancel'))
     OR ((backoff_until IS NULL OR backoff_until <= ${n.sql}) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL
-      AND ${d.jsonNotFalse("commands.body", ["answers"])})))))`,
+      AND ${d.jsonNotFalse(readableJson(d, "commands.body"), ["answers"])})))))`,
   params: [...n.params, ...n.params, ...n.params, ...n.params, ...n.params],
 });
 /** What a claim sets: the next epoch, the runner and its lease (from `n`, the deadlines' clock, plus a lease in ms), running,
@@ -701,7 +701,7 @@ class SqliteStore implements Store {
   readonly #released = new Map<string, number>();
   /** secureRewrite's marker (SCRUB_SUFFIX): set on a SQLite store with a file, never on a snapshot. */
   readonly #scrubMarker: string | undefined;
-  /** How many times a purge left the marker (#purged). The marker has two owners: secureRewrite removes it only when no
+  /** How many times a purge left the marker (#purged), or a retried purge found it there (purgeScrub). The marker has two owners: secureRewrite removes it only when no
    *  purge left it since the step that covers that purge's log (its own start, or the checkpoint it asked), so a marker a
    *  purge left is never removed without a checkpoint that truncated the purge's frames. */
   #purgeMarks = 0;
@@ -765,7 +765,7 @@ class SqliteStore implements Store {
      *  launch is read (no index names its source): a purge's read, never a hot path. */
     const launchedFrom = async (ex: Pick<SqliteExecutor, "all">, runId: string): Promise<string[]> =>
       (await ex.all<{ id: string }>(
-        `SELECT run_id AS id FROM run_launch WHERE (${d.jsonText("body", ["replay", "of"])} = ? OR ${d.jsonText("body", ["audit", "of"])} = ?) AND run_id <> ? ORDER BY run_id`,
+        `SELECT run_id AS id FROM run_launch WHERE (${d.jsonText(readableJson(d, "body"), ["replay", "of"])} = ? OR ${d.jsonText(readableJson(d, "body"), ["audit", "of"])} = ?) AND run_id <> ? ORDER BY run_id`,
         runId, runId, runId,
       )).map((row) => row.id);
     /** Inserts the trigger, or (on its name for the agent) changes it in place, keeping its id; then its scope rows, only
@@ -1106,7 +1106,7 @@ class SqliteStore implements Store {
           const firing = await tx.get<{ status: string }>("SELECT status FROM trigger_firings WHERE trigger_id = ? AND key = ?", triggerId, key);
           if (!firing || firing.status !== "due") return undefined;
           const waiting = (await tx.get<{ n: number }>(
-            `SELECT COUNT(*) AS n FROM commands WHERE run_id = ? AND taken_at IS NULL AND ${d.jsonText("body", ["origin", "trigger_id"])} = ?`, runId, triggerId,
+            `SELECT COUNT(*) AS n FROM commands WHERE run_id = ? AND taken_at IS NULL AND ${d.jsonText(readableJson(d, "body"), ["origin", "trigger_id"])} = ?`, runId, triggerId,
           ))!.n;
           const clear = "retry_at = NULL, waits_on = NULL, payload = NULL, attrs = NULL, attempts = 0";
           if (waiting >= bound.max) {
@@ -1389,8 +1389,8 @@ class SqliteStore implements Store {
         const rows = await db.all<{ id: string }>(
           `SELECT id FROM runs WHERE ${COST_UNKNOWN}
             AND NOT (state = 'stopped' AND COALESCE(outcome, '') = 'stopped' AND ${agentic})
-            AND NOT (${agentic} AND EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${db.dialect.jsonText("run_launch.body", ["native"])} IS NOT NULL))
-            AND EXISTS (SELECT 1 FROM ${PI_TABLE.entries} AS entry WHERE entry.run_id = runs.id AND ${db.dialect.jsonText("entry.record", ["kind"])} = ?)
+            AND NOT (${agentic} AND EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText(readableJson(d, "run_launch.body"), ["native"])} IS NOT NULL))
+            AND EXISTS (SELECT 1 FROM ${PI_TABLE.entries} AS entry WHERE entry.run_id = runs.id AND ${d.jsonText(readableJson(d, "entry.record"), ["kind"])} = ?)
             ${after === undefined ? "" : "AND id > ? "}ORDER BY id LIMIT ?`,
           RUNNER_RECORDS.turn, ...(after === undefined ? [] : [after]), limit,
         );
@@ -2367,7 +2367,8 @@ class SqliteStore implements Store {
    *  request of the store's one connection queues behind it (the purge already committed). One it held back (or that
    *  failed) leaves secureRewrite's marker, so the next start's scrub truncates the log, a crash between included. A marker
    *  that cannot be written (a full disk) throws, the purge committed: its caller answers it as the fault it is (a 500 the
-   *  server logs), and drops what it served of the purged run all the same (agent-delete.ts purgeOneOrRefuse). */
+   *  server logs), and drops what it served of the purged run all the same (agent-delete.ts purgeOneOrRefuse); the
+   *  client's retry finds the row purged and runs this again through purgeScrub. */
   async #purged(): Promise<void> {
     const marker = this.#scrubMarker;
     const db = this.#db;
@@ -2380,6 +2381,15 @@ class SqliteStore implements Store {
     } catch (error) {
       throw new Error(`The purge committed, but its WAL checkpoint was held back and the scrub's marker could not be written (${(error as Error).message}): the log may keep the purged bytes until a later checkpoint truncates it.`, { cause: error });
     }
+  }
+
+  async purgeScrub(): Promise<void> {
+    const marker = this.#scrubMarker;
+    if (marker === undefined) return;
+    // A marker there may be a rewrite's, under way (secureRewrite): counted as one a purge left, so that rewrite keeps it
+    // unless a checkpoint asked after this truncates the log.
+    if (existsSync(marker)) return void this.#purgeMarks++;
+    await this.#purged();
   }
 
   async secureRewrite(work: () => Promise<number>, options: SecureRewriteOptions = {}): Promise<SecureRewrite> {

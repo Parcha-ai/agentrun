@@ -206,7 +206,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const starting = creating && isStarter(f.harness);
   // The built-in tools offered: a call-only one to a workflow, or to an agent that names it.
   const offeredTools = caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name));
-  const toolCount = (query: string) => offeredTools.filter((t) => matchesFilter(query, t.name, t.blurb, t.summary)).length
+  // The built-in tools a filter keeps: what the Tools step draws and counts, one rule for both.
+  const builtIns = (query: string) => offeredTools.filter((t) => matchesFilter(query, t.name, t.blurb, t.summary));
+  const toolCount = (query: string) => builtIns(query).length
     + (caps.mcp && !workflow ? mcpShownCount(mcpServers ?? null, f.tools ?? [], query) : 0)
     + (!workflow ? monidCards(f.tools ?? [], monidSeen, query).length : 0);
   // What a new agent still needs before Create is on.
@@ -236,6 +238,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools") && (s.id !== "computer" || (!workflow && !starting && !!(caps.computers || caps.places))));
   // A step this agent or server has none of (the Computer step on a server that lists no places) opens the first one.
   const step: Step = steps.some((s) => s.id === chosen) ? chosen : steps[0]!.id;
+  // Counted only while the Tools step shows: it scans every MCP tool, and the other steps re-render on each keystroke.
+  const shownTools = step === "tools" ? toolCount(toolQuery) : 0;
   const at = steps.findIndex((s) => s.id === step);
   const save = async () => {
     if (!onSave) return;
@@ -415,12 +419,12 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
             <div className="space-y-6">
               <Field group label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
                 {/* A filter over the built-in tools and every MCP server's (a GitHub server lists hundreds): a card it hides stays as it was. */}
-                <ListFilter value={toolQuery} onChange={setToolQuery} label="Filter tools" placeholder="Filter by name or description" shown={toolCount(toolQuery)} total={toolCount("")} className="mb-3" />
-                {toolQuery.trim() && !toolCount(toolQuery) && <p className="mb-3 font-mono text-body text-muted-foreground">No tool matches “{toolQuery.trim()}”.</p>}
+                <ListFilter value={toolQuery} onChange={setToolQuery} label="Filter tools" placeholder="Filter by name or description" shown={shownTools} total={toolCount("")} className="mb-3" />
+                {toolQuery.trim() && !shownTools && <p className="mb-3 font-mono text-body text-muted-foreground">No tool matches “{toolQuery.trim()}”.</p>}
                 {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
                 {/* Every collapsed card one height, top-aligned: one card's Details grows it alone, never its row. */}
                 <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] items-start gap-2">
-                  {offeredTools.filter((t) => matchesFilter(toolQuery, t.name, t.blurb, t.summary)).map((t) => {
+                  {builtIns(toolQuery).map((t) => {
                     // A call-only tool runs only in a workflow's call node, which needs it in its revision's tools: a
                     // workflow agent picks it like any other. An agentic agent is never offered one, and one it already
                     // names shows as such, to untick.

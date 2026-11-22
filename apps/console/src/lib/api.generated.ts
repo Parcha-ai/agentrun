@@ -915,6 +915,8 @@ export interface components {
     kind: "agentic" | "workflow";
     archived_at: string | null;
     labels?: Record<string, string>;
+    stopped_for?: "budget" | null;
+    budget_refused_calls?: number;
     approvals?: "ask" | "never";
     last_progress_at?: string | null;
     recordings?: {
@@ -1191,6 +1193,8 @@ export interface components {
     kind: "agentic" | "workflow";
     archived_at: string | null;
     labels?: Record<string, string>;
+    stopped_for?: "budget" | null;
+    budget_refused_calls?: number;
     effort?: components["Effort"];
     error?: components["RunError"] | null;
     learning?: {
@@ -1448,7 +1452,6 @@ export interface operations {
       revision_version: number;
       agent_change: "made" | "updated" | "unchanged";
       servers: Record<string, string | null>;
-      trigger_ids: string[];
       triggers: {
         trigger_id: string;
         name: string;
