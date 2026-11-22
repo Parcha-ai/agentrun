@@ -375,7 +375,10 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const hook = await receiver(t, (n) => (n === 1 ? held.then(() => 200) : 200));
     t.after(() => release());
     const data = join(await scratch(t), "agents");
-    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    // The held try's own bound is past anything a slow machine stalls for (and under its claim's 60 s): at the default
+    // 15 s, a runner starved that long before the close let the bound fire first, so the try failed as a timeout
+    // (attempts 1) and this case saw no try cut.
+    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s", webhookTimeoutMs: 59_000 });
     let stopped = false;
     t.after(() => stopped || first.close());
     let api = client(first.baseUrl, first.token);
