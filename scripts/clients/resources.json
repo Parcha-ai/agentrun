@@ -119,6 +119,7 @@
     "listToolKeys": ["tool-keys", "list"],
     "saveToolKey": ["tool-keys", "save"],
     "deleteToolKey": ["tool-keys", "delete"],
+    "listHarnessKeys": ["harness-keys", "list"],
     "listMcpServers": ["mcp-servers", "list"],
     "previewMcpServer": ["mcp-servers", "preview"],
     "getMcpServer": ["mcp-servers", "get"],

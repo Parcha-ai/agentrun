@@ -30,7 +30,8 @@ import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
 import { wireName } from "../catalog.js";
 import { environmentLine, runZone } from "../environment.js";
-import { factsOf, type HarnessEntry, harnessOf } from "../harness-table.js";
+import { factsOf, type HarnessEntry, harnessOf, recipeKeysOf } from "../harness-table.js";
+import { layHarnessKeys, openHarnessKeys } from "../harness-keys.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
@@ -469,6 +470,17 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // runs on that key, and a run in a sandbox place on the model keys.
   const login = keyed ? undefined : await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, launch.place);
   const env = withClaudeLogin(cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey, claim), login);
+  // A plan-billed recipe's keys saved for its harness alone (harness-keys.ts), opened at each claim for this run's harness
+  // and no other (a run's own process asks its runner, which opens its claim's own: held.ts harnessKeys), held by the
+  // redactors, and laid on the adapter's environment alone, never enumerable (layHarnessKeys): the tools' plane copies
+  // `claimed`, never `env`, and no spread or child environment built from `env` carries them. The ACP adapter reads each
+  // by name for the agent's start, and only keys laid here take a run onto the keys route (harness-recipe-entry.ts).
+  const recipeKeys = name === undefined ? undefined : recipeKeysOf(deps.env ?? {}, name);
+  if (name !== undefined && recipeKeys?.length) {
+    const opened = deps.sealKey ? await openHarnessKeys(deps.store, deps.sealKey, name, recipeKeys) : ((await runnerSeam()?.harnessKeys()) ?? {});
+    hold(Object.values(opened));
+    layHarnessKeys(env, opened);
+  }
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   await planBeforeRun(env, chosen.model);
   if (login && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {

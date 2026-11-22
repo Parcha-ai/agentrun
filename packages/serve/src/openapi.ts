@@ -557,6 +557,21 @@ const TOOL_KEYS_VIEW = closed({
   },
 });
 const KEY_ID = { name: "key_id", in: "path", required: true, description: "The tool key: one of GET /settings/tool-keys' ids.", schema: { type: "string" } };
+/** GET /settings/harness-keys (harness-keys.ts HarnessKeysOverStore.list): names and SecretMeta only, never a value. */
+const HARNESS_KEYS_VIEW = closed({
+  harnesses: {
+    type: "array",
+    description: "Each harness recipe billed to its vendor's plan that this server is started with (--harness-recipe), in the table's order. Empty when it names none.",
+    items: closed({
+      id: { type: "string", pattern: HARNESS_ID_PATTERN, description: "The harness's id, as a revision's `harness` names it." },
+      label: { type: "string", description: "Its recipe's label." },
+      keys: { type: "array", items: { $ref: "#/components/schemas/SecretMeta" }, description: "Each key its recipe runs on (its `keys`, in their order) as every secret's view says it: named harness:<harness>:<KEY>; source `console` once saved; changed_at when its value was last saved. Never a value." },
+      ready: { type: "boolean", description: "Whether every one of `keys` is saved: then its runs run on them, a scheduled or triggered one too, ahead of its owner's own sign-in (--harness-sign-in)." },
+    }),
+  },
+});
+const HARNESS_ID_PARAM = { name: "harness_id", in: "path", required: true, description: "The harness: one of GET /settings/harness-keys' ids.", schema: { type: "string" } };
+const HARNESS_KEY_PARAM = { name: "key", in: "path", required: true, description: "One of the harness's `keys`, by the name its recipe gives it.", schema: { type: "string" } };
 /** The InputIssue reasons a saved MCP server's refusals give that the contract's enum lacks (mcp-probe.ts). */
 const MCP_ISSUE_REASONS = ["redirect", "not_https", "too_many_tools", "tools_too_large", "reserved", "expired", "registration_unavailable"] as const;
 /** Whether an MCP server's OAuth sign-in brings its own client, and the callback URL a hand-made one must name
@@ -2554,6 +2569,34 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
   },
+  "/settings/harness-keys": {
+    get: {
+      operationId: "listHarnessKeys", tags: ["local"], summary: "The keys each plan-billed harness recipe runs on, and which are saved: names only, never a value",
+      responses: { "200": json(HARNESS_KEYS_VIEW, "Each plan-billed recipe's harness and its keys."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "harnesskeys/1",
+    },
+  },
+  "/settings/harness-keys/{harness_id}/{key}": {
+    put: {
+      operationId: "saveHarnessKey", tags: ["local"], summary: "Save one key of a plan-billed harness recipe, sealed, for that harness alone",
+      description: "The value is sealed under the server's seal key and kept in the store as ciphertext alone, named for this harness, so no other harness's run ever gets it, nor any run's tools. The next claim of a run on the harness opens it, with no restart. A value it replaces stays sealed for the cut, so a timeline written while it was live stays cut. 404 for a harness that is not a plan-billed recipe on this server; 422 for a key its recipe does not name, or a value under 8 characters, over 1024 bytes, or holding whitespace or a control character. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      parameters: [HARNESS_ID_PARAM, HARNESS_KEY_PARAM],
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["value"], properties: { value: { type: "string", minLength: 8, "x-agentrun-secret": true } } } } } },
+      responses: { "204": { description: "Saved." }, ...errors(400, 401, 403, 404, 415, 422, 429, 500, 503) },
+      "x-agentrun-serve": "harnesskeys/1",
+    },
+    delete: {
+      operationId: "deleteHarnessKey", tags: ["local"], summary: "Forget one key of a plan-billed harness recipe",
+      // A removal has no body to mark a field in: the operation is marked whole, a secret write all the same.
+      "x-agentrun-secret": true,
+      description: "Its runs no longer get it; the value stays sealed for the cut. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      parameters: [HARNESS_ID_PARAM, HARNESS_KEY_PARAM],
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 404, 422, 429, 500) },
+      "x-agentrun-serve": "harnesskeys/1",
+    },
+  },
   "/settings/email": {
     get: {
       operationId: "getEmailAccount", tags: ["local"], summary: "This server's email account: its address, servers and who signs in, never its password",
@@ -4087,6 +4130,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: { routes: { type: "boolean" }, at_rest: { const: "sealed" } },
       description: "GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept `sealed` under the server's seal key, which it always has (handed, or made at its first start).",
       "x-agentrun-serve": "toolkeys/1",
+    },
+    harness_keys: {
+      type: "object", additionalProperties: false, required: ["routes", "at_rest", "harnesses"],
+      properties: { routes: { type: "boolean" }, at_rest: { const: "sealed" }, harnesses: { type: "array", items: { type: "string", pattern: HARNESS_ID_PATTERN }, description: "The plan-billed harness recipes this server is started with (--harness-recipe), whose keys GET /settings/harness-keys lists. Empty when it names none." } },
+      description: "GET /settings/harness-keys and PUT/DELETE /settings/harness-keys/{harness_id}/{key}: the keys a plan-billed harness recipe runs on, each kept `sealed` for that harness alone, opened at the claim of a run on it and never handed to another harness or to any run's tools.",
+      "x-agentrun-serve": "harnesskeys/1",
     },
     mcp_client: {
       type: "object", additionalProperties: false, required: ["transports", "auth", "at_rest", "harnesses"],

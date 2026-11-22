@@ -9,6 +9,7 @@ import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
 import { ARCHIVE_CODES, archivePlatform, digestOf } from "./harness-archive.js";
 import { type EgressProxy, egressProxy, egressVars } from "./harness-egress.js";
 import { installDirOf } from "./harness-install.js";
+import { HARNESS_KEYS_PAGE, harnessKeysSavedHere, keysLaid } from "./harness-keys.js";
 import { checkedOf, loadRecipe, pinnedDigest, pinnedTree, type Recipe, type RecipeArchive, recipeBinaryOf, recipeCheckLine, recipeInstallLine, recipeSignInLine, releaseFor, signedIn, signInHomeOf } from "./harness-recipe.js";
 import { acpEntryOf, type AcpEntryHost, type HarnessEntry } from "./harness-table.js";
 import { HarnessUnavailable } from "./provider.js";
@@ -19,9 +20,9 @@ export const HARNESS_NOT_SIGNED_IN = "HARNESS_NOT_SIGNED_IN";
 /** A recipe a server names that has no passing harness-check on this data directory for the recipe, binary and files
  *  it would run (harness-recipe.ts checkedOf). */
 export const HARNESS_NOT_CHECKED = "HARNESS_NOT_CHECKED";
-/** A plan-billed recipe a server names, whose runs take keys saved for its harness alone: this server saves none yet (the
- *  cut every child's environment takes keeps the server's own out), so it runs under harness-check, or on its owner's
- *  own sign-in on their own machine (--harness-sign-in). */
+/** A plan-billed recipe a server names, whose runs take keys saved for its harness alone (harness-keys.ts), and not every
+ *  one is saved: its owner saves them in Settings → Harness keys. Until then it runs under harness-check, or on its
+ *  owner's own sign-in on their own machine (--harness-sign-in). */
 export const HARNESS_KEYS_NOT_SAVED = "HARNESS_KEYS_NOT_SAVED";
 
 /** What a recipe's agent runs on: its keys (each read by its saved name where it runs; none for a proxy-billed agent,
@@ -29,18 +30,21 @@ export const HARNESS_KEYS_NOT_SAVED = "HARNESS_KEYS_NOT_SAVED";
 export type RecipeRoute = { readonly on: "keys" } | { readonly on: "sign-in"; readonly home: string };
 
 /** The route a server runs `recipe`'s agent on, or why there is none. Proxy-billed: the model proxy. Plan-billed: keys
- *  saved for its harness alone, which come first wherever they are saved; none are yet (HARNESS_KEYS_NOT_SAVED). Its
- *  owner's own sign-in only where `signIn` (the server's --harness-sign-in: one owner, on their own machine, its runs as
- *  its own user, which the start proved) and only for a person's run (a scheduled or triggered one is refused at its
- *  claim, run-child-host.ts staysInRunner). harness-check never takes this route: it runs on the recipe's keys alone. */
-export function serverRoute(recipe: Recipe, file: string, data: string, env: NodeJS.ProcessEnv, { signIn }: { signIn: boolean }): RecipeRoute | { refused: string; message: string } {
+ *  saved for its harness alone (harness-keys.ts), which come first: those a claim laid on `env` (keysLaid), or `saved`,
+ *  every one held by the server in this process (harnessKeysSavedHere), whose claims lay them. Its owner's own
+ *  sign-in only where `signIn` (the server's --harness-sign-in: one owner, on their own machine, its runs as its own
+ *  user, which the start proved) and only for a person's run (a scheduled or triggered one with no keys saved is refused
+ *  at its claim, harness-loops.ts refuseRecipeTriggerRun). Else HARNESS_KEYS_NOT_SAVED, naming the console's page.
+ *  harness-check never takes this route: it runs on the recipe's keys from the shell alone. */
+export function serverRoute(recipe: Recipe, file: string, data: string, env: NodeJS.ProcessEnv, { signIn, saved = false }: { signIn: boolean; saved?: boolean }): RecipeRoute | { refused: string; message: string } {
   if (recipe.model.billing === "proxy") return { on: "keys" };
+  if (saved || keysLaid(env, recipe.keys)) return { on: "keys" };
   if (signIn && recipe.signIn) {
     if (signedIn(data, recipe)) return { on: "sign-in", home: signInHomeOf(data, recipe.id) };
-    return { refused: HARNESS_NOT_SIGNED_IN, message: `${recipe.label} runs on this server on its owner's own sign-in (--harness-sign-in), and its agent is not signed in here: sign it in with: ${recipeSignInLine(file, data, env)}` };
+    return { refused: HARNESS_NOT_SIGNED_IN, message: `${recipe.label} runs on this server on its keys saved in Settings → Harness keys (${HARNESS_KEYS_PAGE}), else on its owner's own sign-in (--harness-sign-in), and neither is here: save its keys there, or sign it in with: ${recipeSignInLine(file, data, env)}` };
   }
   const own = recipe.signIn ? "; on your own machine alone, a server started with --harness-sign-in runs it on your own sign-in" : "";
-  return { refused: HARNESS_KEYS_NOT_SAVED, message: `${recipe.label} runs on its keys (${recipe.keys.join(", ")}) saved for this harness alone, and this server saves no harness's keys yet: check it with harness-check, where its keys are read from your shell${own}` };
+  return { refused: HARNESS_KEYS_NOT_SAVED, message: `${recipe.label} runs on its keys (${recipe.keys.join(", ")}) saved for this harness alone, and not every one is saved: save them in Settings → Harness keys (${HARNESS_KEYS_PAGE}; \`agentrun harness keys\` prints the link)${own}` };
 }
 
 /** The ACP adapter's recipe for one start of `recipe`'s agent on `route`: the installed `binary`, the platform's own
@@ -141,7 +145,11 @@ export function recipeServerEntry(file: string, data: string, { signIn = false }
   if (!platform || !release) throw new Error(`harness recipe ${loaded.file}: ${recipe.label} ${recipe.release.version} has no release for ${platform ?? `${process.platform}-${process.arch}`}`);
   const binary = recipeBinaryOf(data, recipe, release);
   const installed = installDirOf(data, recipe.id);
-  const route = (env: NodeJS.ProcessEnv) => serverRoute(recipe, loaded.file, data, env, { signIn });
+  // The keys route when its claim laid them, or when this process's server holds every one saved (harnessKeysSavedHere):
+  // the server's listing and its offers' probe, whose environment holds none, and a start beside it, whose claim lays
+  // them. A start that holds none of them is refused by the adapter before its agent starts (ACP_KEY_MISSING), never put
+  // on the sign-in.
+  const route = (env: NodeJS.ProcessEnv) => serverRoute(recipe, loaded.file, data, env, { signIn, saved: harnessKeysSavedHere(recipe.id) });
   /** Why it cannot run on `env`, in words that end with the command that fixes it; undefined when it can. Nothing is
    *  digested here (each start is, beforeStart): the pins and the check's note are compared. */
   const why = (env: NodeJS.ProcessEnv): string | undefined => {

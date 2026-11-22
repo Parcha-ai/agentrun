@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun, @parcha/agentrun-client
+kind: feature
+---
+A server saves a plan-billed harness recipe's own keys, sealed in its store for that harness alone. The owner pastes them in the console's new Settings → Harness keys page (`agentrun harness keys` prints its link), or through `PUT`/`DELETE /v2/settings/harness-keys/{harness_id}/{key}` from the owner's signed-in session; the API token reads `GET /v2/settings/harness-keys` and never writes one. Each claim of a run on the harness opens that harness's keys and no other's, lays them on the agent's start alone, never on its tools, and cuts them from the timeline, errors and the agent's output, a replaced or removed value too. With every key saved, the recipe's runs run on them ahead of the owner's own sign-in, and its scheduled and triggered runs and `message_run` trigger turns, refused until now with `HARNESS_KEYS_NOT_SAVED`, run too. `harness-check` still reads its keys from the shell's environment alone.

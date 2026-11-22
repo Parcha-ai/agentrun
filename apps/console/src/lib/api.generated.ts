@@ -613,6 +613,11 @@ export interface components {
       routes: boolean;
       at_rest: "sealed";
     };
+    harness_keys?: {
+      routes: boolean;
+      at_rest: "sealed";
+      harnesses: string[];
+    };
     mcp_client?: {
       transports: "streamable-http"[];
       auth: ("none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run")[];
@@ -2170,6 +2175,10 @@ export interface operations {
     answer: never;
   };
   deleteFile: {
+    body: never;
+    answer: never;
+  };
+  deleteHarnessKey: {
     body: never;
     answer: never;
   };
@@ -4225,6 +4234,17 @@ export interface operations {
       next_cursor: string | null;
     };
   };
+  listHarnessKeys: {
+    body: never;
+    answer: {
+      harnesses: {
+        id: string;
+        label: string;
+        keys: components["SecretMeta"][];
+        ready: boolean;
+      }[];
+    };
+  };
   listHomeFiles: {
     body: never;
     answer: {
@@ -5885,6 +5905,12 @@ export interface operations {
       } | null;
       password_unreadable: boolean;
     };
+  };
+  saveHarnessKey: {
+    body: {
+      value: string;
+    };
+    answer: never;
   };
   saveMcpServer: {
     body: {

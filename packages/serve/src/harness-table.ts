@@ -663,7 +663,8 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
       const entry = recipeServerEntry(file, recipes!.data, { signIn: recipes!.signIn });
       if (Object.hasOwn(built, entry.id)) throw new Error(`harness recipe ${file} names ${entry.id}, which a harness module or another recipe already adds`);
       built[entry.id] = entry;
-      madeByRecipe.set(entry, loadRecipe(file).recipe.model.billing);
+      const { recipe } = loadRecipe(file);
+      madeByRecipe.set(entry, { billing: recipe.model.billing, label: recipe.label, keys: Object.freeze([...recipe.keys]) });
     }
     table = Object.freeze(built);
     loaded.set(key, table);
@@ -671,8 +672,10 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
   return table;
 }
 
-/** The entries harnessTable made from a recipe (HARNESS_RECIPES_ENV), with the recipe's billing. */
-const madeByRecipe = new WeakMap<HarnessEntry, "proxy" | "plan">();
+/** What harnessTable kept of each entry it made from a recipe (HARNESS_RECIPES_ENV): its billing, its label and the names
+ *  of the keys it runs on (recipe.keys). */
+type RecipeMade = { readonly billing: "proxy" | "plan"; readonly label: string; readonly keys: readonly string[] };
+const madeByRecipe = new WeakMap<HarnessEntry, RecipeMade>();
 
 /** How `id` on `env`'s table is billed when it is a recipe's harness, else undefined. A recipe's install, its check's
  *  note and its owner's sign-in are the server user's alone (0700 and 0600 under `<data>/harnesses`), so its runs run as
@@ -680,8 +683,25 @@ const madeByRecipe = new WeakMap<HarnessEntry, "proxy" | "plan">();
  *  own sign-in (harness-recipe-entry.ts serverRoute). */
 export const recipeHarness = (env: NodeJS.ProcessEnv, id: string): "proxy" | "plan" | undefined => {
   const entry = Object.hasOwn(harnessTable(env), id) ? harnessTable(env)[id] : undefined;
-  return entry === undefined ? undefined : madeByRecipe.get(entry);
+  return entry === undefined ? undefined : madeByRecipe.get(entry)?.billing;
 };
+
+/** A harness on `env`'s table whose keys are saved for it alone (harness-keys.ts): a recipe billed to its vendor's plan. */
+export type PlanRecipe = { readonly id: string; readonly label: string; readonly keys: readonly string[] };
+
+/** The names of the keys `id` runs on when it is a plan-billed recipe's harness on `env`'s table, else undefined. */
+export const recipeKeysOf = (env: NodeJS.ProcessEnv, id: string): readonly string[] | undefined => {
+  const entry = Object.hasOwn(harnessTable(env), id) ? harnessTable(env)[id] : undefined;
+  const made = entry === undefined ? undefined : madeByRecipe.get(entry);
+  return made?.billing === "plan" ? made.keys : undefined;
+};
+
+/** Every plan-billed recipe's harness on `env`'s table, in its order: what Settings → Harness keys lists. */
+export const planRecipesOf = (env: NodeJS.ProcessEnv): PlanRecipe[] =>
+  Object.values(harnessTable(env)).flatMap((entry) => {
+    const made = madeByRecipe.get(entry);
+    return made?.billing === "plan" ? [{ id: entry.id, label: made.label, keys: made.keys }] : [];
+  });
 
 /** The owner's setting that names harness modules when no option does: package names or paths, comma-separated. */
 export const HARNESS_MODULES_SETTING = "AGENTRUN_SERVE_HARNESS_MODULES";

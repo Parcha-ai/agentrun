@@ -554,6 +554,14 @@ Route: none, it runs on this machine.
 - `--cap USD` (string, this CLI's own): the most the check may spend (default 0.25)
 - `--data DIR` (string, this CLI's own): the data directory the recipe's agent was installed into (default ~/.agentrun)
 
+## harness-keys
+
+### `agentrun harness-keys list`
+
+The keys each plan-billed harness recipe runs on, and which are saved: names only, never a value.
+
+Route: `GET /settings/harness-keys`.
+
 ## home
 
 ### `agentrun home delete AGENT_ID PATH`

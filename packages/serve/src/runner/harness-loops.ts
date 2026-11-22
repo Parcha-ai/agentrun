@@ -13,7 +13,9 @@ import { createNativeLoop } from "./native-loop.js";
 //     module adds with no adapter facts of its own, on its runner's adapter;
 //   - a CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter;
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
-import { harnessOf, recipeHarness } from "../harness-table.js";
+import { harnessOf, recipeKeysOf } from "../harness-table.js";
+import { HARNESS_KEYS_PAGE, harnessKeysSaved } from "../harness-keys.js";
+import type { SealedKeys } from "../store/index.js";
 import { hostMemory, neverFits } from "../host.js";
 import type { RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
@@ -36,20 +38,24 @@ export class NeverFits extends ClaimRefused {
 }
 
 /** The words a scheduled or triggered run on a plan-billed harness recipe is refused in (harness-recipe-entry.ts
- *  serverRoute): such a run takes keys saved for that harness, never its owner's own sign-in, and none are saved yet. */
-export const RECIPE_SIGN_IN_PERSON_ONLY = "A scheduled or triggered run on a harness recipe billed to its vendor's plan runs on keys saved for that harness, never on its owner's own sign-in, and this server saves no harness's keys yet: start this run yourself, or run the agent on a harness billed through this server's model proxy.";
+ *  serverRoute): such a run takes keys saved for that harness, never its owner's own sign-in, and not every one is saved. */
+export const RECIPE_SIGN_IN_PERSON_ONLY = `A scheduled or triggered run on a harness recipe billed to its vendor's plan runs on keys saved for that harness, never on its owner's own sign-in, and not every one of its keys is saved: save them in Settings → Harness keys (${HARNESS_KEYS_PAGE}), start this run yourself, or run the agent on a harness billed through this server's model proxy.`;
 
 /** Refuses at its claim a run no person started (a schedule's, a trigger's: launch.trigger) on a plan-billed recipe's
- *  harness (harness-table.ts recipeHarness), on every path a claim takes (run-child-host.ts staysInRunner, and here). */
-export function refuseRecipeTriggerRun(env: NodeJS.ProcessEnv, harness: string, launch: Pick<RunLaunch, "trigger">): void {
-  if (launch.trigger !== undefined && recipeHarness(env, harness) === "plan") throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
+ *  harness (harness-table.ts recipeKeysOf) unless every key it runs on is saved for that harness (harness-keys.ts), on
+ *  every path a claim takes (run-child-host.ts staysInRunner, and here). Rows are counted, never opened: the claim opens
+ *  them (cli-run-spec.ts). */
+export async function refuseRecipeTriggerRun(deps: { readonly env?: NodeJS.ProcessEnv; readonly store: { readonly sealedKeys: Pick<SealedKeys, "all"> } }, harness: string, launch: Pick<RunLaunch, "trigger">): Promise<void> {
+  if (launch.trigger === undefined) return;
+  const keys = recipeKeysOf(deps.env ?? {}, harness);
+  if (keys !== undefined && !(await harnessKeysSaved(deps.store, harness, keys))) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
 }
 
 /** The dispatch's `resolve`, built from the runner's deps: it reads the run's revision (for a workflow revision) and
  *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words). */
 export function resolveRunnerLoop(given: AdapterSpecDeps): (harness: string, launch: RunLaunch, runId: string) => Promise<LoopFactory | undefined> {
   return async (harness, launch, runId) => {
-    refuseRecipeTriggerRun(given.env ?? {}, harness, launch);
+    await refuseRecipeTriggerRun(given, harness, launch);
     // The model gateway saved in the console (model-gateway.ts), read from the store at each claim and laid over the run
     // environment as its variables would be, so a gateway saved or removed since reaches the next run with no restart. A
     // gateway the runner's environment names wins, and nothing saved is read over it.

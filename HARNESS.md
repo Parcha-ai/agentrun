@@ -356,7 +356,9 @@ OPENROUTER_API_KEY=... agentrun harness-check --recipe acme.json --model openrou
 
 `harness-check` loads the recipe, finds the binary the install put in place and checks its sha256, then runs the agent
 on the model for four short turns, as AgentRun would run it, in a private HOME under the system's temp directory. It
-gives the agent two tools of its own over MCP, `check_echo` (allowed) and `check_denied` (refused by the gate).
+gives the agent two tools of its own over MCP, `check_echo` (allowed) and `check_denied` (refused by the gate). A
+plan-billed recipe's `keys` come from your shell's environment alone, as above: `harness-check` never reads the keys a
+server saved for the harness ([Its keys](#its-keys)).
 
 Stage 2, the real binary:
 
@@ -500,8 +502,25 @@ lists it as available only once all of these hold, and a run starts only then:
   sha256s match (else `HARNESS_NOT_CHECKED`, with the check command). Any edit to the recipe file, or a new binary,
   needs a new check;
 - it has a route ([Sign-in](#sign-in)). A proxy-billed agent runs on this server's model proxy. A plan-billed agent runs
-  on keys saved for its harness alone, which come first wherever they are saved. No server saves them yet, so its run
-  is refused with `HARNESS_KEYS_NOT_SAVED`, except on its owner's own machine as below.
+  on its keys saved for its harness alone ([Its keys](#its-keys)), which come first wherever they are saved. Until every
+  one is saved, its run is refused with `HARNESS_KEYS_NOT_SAVED`, except on its owner's own machine as below.
+
+#### Its keys
+
+The owner saves a plan-billed recipe's `keys` in the console, in Settings → Harness keys (`agentrun harness keys` prints
+the link). That page is offered once the server is started with such a recipe. Each value is sealed under the server's
+seal key in the store, named `harness:<id>:<KEY>`, so a key saved for one harness never reaches another harness's run,
+even under the same name. Saving or removing one is a secret write: the owner's signed-in session alone, never the API
+token. The routes are `GET /v2/settings/harness-keys` and `PUT`/`DELETE /v2/settings/harness-keys/{harness_id}/{key}`.
+
+Each claim of a run on the harness opens that harness's keys, and no other's. A runner apart opens them for its run's
+own process. They are laid on the agent's start alone, never on the run's tools or the environment the tools see, and
+they are cut from the timeline, errors and the agent's output. A value that is replaced or removed stays sealed, up to
+eight per key, so a timeline written while it was live stays cut.
+
+With every key saved, its runs run on them ahead of its owner's own sign-in, and its scheduled and triggered runs and a
+`message_run` trigger's turns run too. `harness-check` does not read them: it reads its keys from your shell's
+environment alone, as [Check it](#check-it) shows.
 
 On your own machine, a server you start with `--harness-sign-in` runs a person's runs of a plan-billed recipe that names
 a `signIn` on your own sign-in:
@@ -513,10 +532,11 @@ agentrun-serve --data <data> --harness-recipe antigravity.json --harness-sign-in
 No setting turns it on; only the flag does. The start is refused with `HARNESS_SIGN_IN_NOT_LOCAL`, naming each reason,
 unless the server is one owner's own: it listens on loopback with no public address, keeps its store in `<data>` (no
 `AGENTRUN_STORE_URL`), runs its runs beside it as its own user (no `--no-runner`, no user of its own per run), and
-has an owner and one API token. A separate runner never runs a recipe on the sign-in, whatever it is started with. A
-scheduled or triggered run on a plan-billed recipe never runs on the sign-in: it is refused at its claim, on any server,
-until its harness's keys can be saved. Nor does a trigger's turn in a person's run on one: a `message_run` trigger to
-that run is refused when it is made, and each firing is skipped in words if the recipe is named only later.
+has an owner and one API token. A separate runner never runs a recipe on the sign-in, whatever it is started with. Keys
+saved for the harness come first: with every one saved, its runs run on them, not on the sign-in. A scheduled or
+triggered run on a plan-billed recipe never runs on the sign-in: until every key is saved it is refused at its claim,
+on any server. Nor does a trigger's turn in a person's run on one: until then a `message_run` trigger to that run is
+refused when it is made, and each firing is skipped in words if the recipe is named only later.
 
 Each start of the agent's process digests the binary and its tree again and refuses a start where either differs from
 its pin. A run's agent reaches beyond loopback through the server's own egress proxy, as on the check: a `CONNECT` to
@@ -562,9 +582,8 @@ format, and runs on Cursor's key alone.
 
 ### Limits today
 
-- A server saves no harness's keys yet, so it runs a plan-billed recipe only on its owner's own machine, on their own
-  sign-in (`--harness-sign-in`), and refuses it elsewhere (`HARNESS_KEYS_NOT_SAVED`): the store for a harness's own keys
-  comes next.
+- A saved harness key carries no stamp of the seal key it was sealed under. A key that no longer opens, after the seal
+  key changed, reads as not saved; saving it again replaces it.
 - `harness-check` proves a recipe on its keys, so a run on the sign-in takes a route no check ran: the same binary and
   tree, plus `homeArg` and the folder, with nothing the agent prints kept.
 - The installer unpacks archives alone; some registry agents ship an npm or uv package with no archive at all. See
