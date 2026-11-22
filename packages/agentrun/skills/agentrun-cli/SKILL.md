@@ -158,7 +158,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun slack`: deliveries, get, redeliver, test
 - `agentrun stats`: Counts and cost over every agent and run
 - `agentrun stop`: Stop the AgentRun the installer started in the background, where there is no service manager (exit 0 stopped, 3 none running)
-- `agentrun template`: apply, delete, eval, import, install, list, validate
+- `agentrun template`: apply, delete, eval, get, import, install, list, validate
 - `agentrun tool-keys`: list
 - `agentrun tool-settings`: get, save
 - `agentrun triggers`: create, delete, fire, firings, get, list, update

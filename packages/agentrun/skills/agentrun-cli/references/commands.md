@@ -1369,6 +1369,12 @@ Route: none, it runs on this machine.
 - `--report FILE` (string, this CLI's own): the whole report, as JSON (a summary goes to stdout either way)
 - `--faux MODULE` (string, this CLI's own): answer every model request from MODULE's default export: no key, no network
 
+### `agentrun template get TEMPLATE`
+
+One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent.
+
+Route: `GET /templates/{template}`.
+
 ### `agentrun template import`
 
 Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run).

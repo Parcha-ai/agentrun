@@ -4114,6 +4114,28 @@ export const COMMANDS = [
   {
     "command": [
       "template",
+      "get"
+    ],
+    "operationId": "getTemplate",
+    "method": "GET",
+    "path": "/templates/{template}",
+    "pathParams": [
+      "template"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent"
+  },
+  {
+    "command": [
+      "template",
       "import"
     ],
     "operationId": "importTemplate",

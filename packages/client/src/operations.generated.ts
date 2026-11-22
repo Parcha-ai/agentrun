@@ -4934,6 +4934,98 @@ export type ApplyTemplateResponse = {
 
 /** Remove an imported template package (DELETE /templates/{template}). */
 
+/** One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent (GET /templates/{template}). */
+export type GetTemplateResponse = {
+  template: {
+    id: string;
+    bundled: boolean;
+    source: string | null;
+    sha: string | null;
+    publisher: string | null;
+    name: string;
+    display_name: string | null;
+    version: string;
+    description: string;
+    license: string | null;
+    author: {
+      name: string;
+      email?: string;
+      url?: string;
+    } | null;
+    repository: string | null;
+    output: {
+      schema: string;
+      json_schema: Record<string, unknown> | null;
+    } | null;
+    harness: Array<string> | null;
+    model: {
+      tier: "fast" | "balanced" | "strong";
+      prefer?: string;
+      fast?: string;
+      strong?: string;
+      choices?: Array<{
+        id: string;
+        label: string;
+        model: string;
+        harness: string;
+        warning: string | null;
+        note: string | null;
+        secrets: Array<string>;
+      }>;
+    } | null;
+    effort: string | null;
+    tools: Array<string> | null;
+    checkout: "pull_request" | null;
+    tool_policy: {
+      bash: "read-only";
+    } | null;
+    computer: Array<"shell" | "none"> | null;
+    needs: Array<string> | null;
+    computer_here: {
+      entry: "shell" | "none" | null;
+      computer: {
+        kind: string;
+        provider?: string;
+        needs?: Array<string>;
+      } | null;
+      shell: string | null;
+      dropped: Array<string>;
+      note: string | null;
+    } | null;
+    category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
+    tags: Array<string>;
+    mcp: Array<{
+      source: "composio" | "github" | "url";
+      toolkit: string;
+      required: boolean;
+      reason: string | null;
+      tools: Array<{
+        name: string;
+        tool: string;
+        asks: "allow" | "ask";
+        pin?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | {
+          keys: Array<string>;
+        }>;
+      }>;
+    }>;
+    parameters: Record<string, unknown>;
+    input_schema: Record<string, unknown> | null;
+    secrets: Array<string>;
+    budget: {
+      per_run_usd: number;
+      max_requests?: number;
+    } | null;
+    learning: boolean | Record<string, unknown>;
+    approvals_default: "ask" | "never";
+    triggers: Array<Record<string, unknown>>;
+    skills: Array<string>;
+    evals: Array<string>;
+  };
+  instructions: string;
+  skill_files: Record<string, string>;
+  console_url: string;
+};
+
 /** Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run) (POST /templates/import). */
 export type ImportTemplateBody = {
   source?: string;
@@ -6631,6 +6723,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getStats: {"method":"GET","path":"/stats","pathParams":[],"multiSegment":[],"query":["from","to","agent"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   applyTemplate: {"method":"POST","path":"/templates/{template}/apply","pathParams":["template"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteTemplate: {"method":"DELETE","path":"/templates/{template}","pathParams":["template"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
+  getTemplate: {"method":"GET","path":"/templates/{template}","pathParams":["template"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   importTemplate: {"method":"POST","path":"/templates/import","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listTemplates: {"method":"GET","path":"/templates","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteToolKey: {"method":"DELETE","path":"/settings/tool-keys/{key_id}","pathParams":["key_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -7015,6 +7108,8 @@ export function resources(call: Call) {
       apply: (template: string, body: ApplyTemplateBody, params?: ApplyTemplateParams, options?: RequestOptions): Promise<ApplyTemplateResponse> => call("applyTemplate", [template], body, params, options),
       /** Remove an imported template package (DELETE /templates/{template}). */
       delete: (template: string, options?: RequestOptions): Promise<void> => call("deleteTemplate", [template], undefined, undefined, options),
+      /** One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent (GET /templates/{template}). */
+      get: (template: string, options?: RequestOptions): Promise<GetTemplateResponse> => call("getTemplate", [template], undefined, undefined, options),
       /** Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run) (POST /templates/import). */
       import: (body: ImportTemplateBody, options?: RequestOptions): Promise<ImportTemplateResponse> => call("importTemplate", [], body, undefined, options),
       /** The template packages this server ships, and those imported here: each makes an agent, its skills and its triggers (GET /templates). */
