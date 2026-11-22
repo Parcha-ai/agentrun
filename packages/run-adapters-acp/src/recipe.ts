@@ -2,7 +2,7 @@
 // keeps its sessions and who bills its model. The loader's own rules (keys, registry archives, owner installs) are S5's;
 // these are the checks the adapter itself needs before it starts anything. Written for AgentRun.
 import { isAbsolute, normalize, sep } from "node:path";
-import { launchEnv } from "@parcha/agentrun-kernel";
+import { KEY_NAME, launchEnv } from "@parcha/agentrun-kernel";
 
 /** Who pays for the agent's model requests. `plan`: the vendor bills the owner's plan (Cursor), no request reaches us, so
  *  the adapter itself stops the run at these limits. `proxy`: the agent's model goes through the host's proxy, which the
@@ -13,8 +13,6 @@ export type AcpBilling = { readonly kind: "plan"; readonly maxTurns: number; rea
  *  words the host says instead. */
 export type AcpRefusal = { readonly says: string; readonly code: string; readonly words: string };
 
-/** An environment variable's name, as a key's. */
-const KEY_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 /** A model id as an agent lists one (`gpt-5.4-nano[reasoning=medium]`): one line, no spaces, not an option. */
 export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/=,[\]-]{0,199}$/;
 /** A refusal's code: capitals, digits and `_`. */
