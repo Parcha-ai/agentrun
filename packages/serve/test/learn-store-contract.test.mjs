@@ -287,6 +287,25 @@ for (const [kind, make] of Object.entries(STORES)) {
     assert.deepEqual(await save(store, merged.saved, [{ path: "workflows/z/README.md", text: "z\n" }], { seed: one }), { refused: { absent: [], same: [], seed: one } });
   });
 
+  test(`${kind}: a purge takes out only the copies of a line the purged run added: one its owner removed and another run added again later stays, in that run's diff and on main`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText, learningCommit, putCorrections, readSnapshot, runMergeOf } = await learn();
+    const shared = "the same words twice";
+    const merge = async (runId) => assert.equal((await learningCommit(store, { runId, reason: `${runId} reason words`, files: [], correction: shared })).ok, true);
+    await merged(store, "ALPHA");
+    await merge("run_gone");
+    // The owner takes the purged run's line out by hand; a later run adds the same words again.
+    const snap = await readSnapshot(store);
+    const text = (await store.read(snap.main, ["corrections.md"]))[0].body.toString("utf8");
+    assert.equal((await putCorrections(store, { text: text.replace(`- ${shared}\n`, ""), ifMatch: snap.corrections.oid })).ok, true);
+    await merge("run_later");
+    assert.ok("commit" in (await forgetRunText(store, "run_gone")));
+    const main = (await store.read(await store.head(), ["corrections.md"]))[0].body.toString("utf8");
+    assert.equal(main, `- ALPHA line from the owner\n- ${shared}\n`, "the later run's line is on main");
+    const diff = await runMergeOf(store, "run_later");
+    assert.deepEqual(diff.files.map((file) => [file.path, file.patch?.includes(`+- ${shared}`)]), [["corrections.md", true]], "the later run's diff adds its line");
+  });
+
   test(`${kind}: a purge takes run B's text out of every commit (no read, log message, diff or snapshot at any commit holds it), A's and C's diffs stay, B merges no more, and a purge again does nothing`, async (t) => {
     const store = await make(t);
     const { forgetRunText, readSnapshot, runMergeOf } = await learn();
