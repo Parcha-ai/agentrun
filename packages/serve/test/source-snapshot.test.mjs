@@ -185,11 +185,14 @@ test('credentials are never copied; references remain resolvable destination req
   assert.ok(safe.blockers.some(item => item.code === "native_account_policy"));
   assert.deepEqual(safe.configuration.tools[0].credentials, ['DOCS_ACCESS_TOKEN']);
   assert.ok(!JSON.stringify(safe).includes(literal));
-  await f.put(join(f.project, '.mcp.json'), JSON.stringify({ mcpServers: { private: { url: 'https://private.example.invalid/mcp', headers: { Authorization: literal } } } }));
+  const other = 'fake-test-key';
+  await f.put(join(f.project, '.mcp.json'), JSON.stringify({ mcpServers: { private: { url: 'https://private.example.invalid/mcp', headers: { Authorization: other } } } }));
   const blocked = await f.snapshot(); assert.equal(blocked.complete, false);
   assert.ok(blocked.blockers.some(x => x.code === 'secret_content'));
-  assert.ok(!Object.values(blocked.blobs).some(value => Buffer.from(value, 'base64').includes(Buffer.from(literal))));
+  assert.ok(!Object.values(blocked.blobs).some(value => [literal, other].some(secret => Buffer.from(value, 'base64').includes(Buffer.from(secret)))));
   assert.equal(file(blocked, 'project/.mcp.json'), undefined);
+  await f.put(join(f.project, '.mcp.json'), JSON.stringify({ mcpServers: { private: { url: 'https://private.example.invalid/mcp', headers: { Authorization: literal } } } }));
+  await assert.rejects(f.snapshot(), error => error.code === 'source_unavailable' && !error.message.includes(literal));
 });
 
 test('Codex account metadata: ordinary saved sign-in exports only policy classification', async t => {
