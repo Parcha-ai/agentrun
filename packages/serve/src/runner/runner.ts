@@ -20,6 +20,7 @@ import { HAND_BACK } from "./hand-back.js";
 import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
+import { FrameTooLarge } from "./run-channel.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
 import { FINAL_STATES, type RunState } from "../store/store.js";
 import { Unanswered } from "../store/postgres/connection.js";
@@ -55,6 +56,9 @@ export const runnerName = (): string => `${hostname()}:${process.pid}:${randomUU
 
 /** A failed end's code when the claim was refused for good before any loop started (loop-contract's ClaimRefused). */
 const CLAIM_REFUSED = "claim-refused";
+/** A failed end's code when the run's records no longer cross the channel to its process (run-channel's FrameTooLarge):
+ *  every try reads the same records, so none can go on. */
+const TOO_LARGE = "frame-too-large";
 
 /** The untaken row a run ends on when no loop can: a cancel before a stop (it ends the run for good, in its words). */
 const endingRow = (untaken: readonly Command[]): Command | undefined => untaken.find((row) => row.kind === "cancel") ?? untaken.find((row) => row.kind === "stop");
@@ -724,8 +728,10 @@ export function startRunner(options: RunnerOptions): Runner {
       // with why, and a person can raise again or stop it (#1944-5). A claim its spec refuses (ClaimRefused: a handed
       // sign-in that won't read back, an MCP pin refused) never comes here: the loop writes that end itself, final, the run
       // failed in the refusal's words.
-      // A claim refused for good (CLAIM_REFUSED) is no resume to try again: it fails the run below, parked or not.
-      if (threw && end.state === "failed" && claim.from === "parked" && end.error.code !== CLAIM_REFUSED) return await resumeFailed(held, end.error.message);
+      // A claim refused for good (CLAIM_REFUSED), or a run whose records no longer cross to its process (TOO_LARGE), is no
+      // resume to try again: it fails the run below, parked or not, and the row that woke it (an approval already answered
+      // 204) is refused as a failed run's, never left to wait.
+      if (threw && end.state === "failed" && claim.from === "parked" && end.error.code !== CLAIM_REFUSED && end.error.code !== TOO_LARGE) return await resumeFailed(held, end.error.message);
       if (threw && end.state === "failed") {
         // A loop that failed with no end written: a person's stop waiting now is the run's end (stopped, its row taken),
         // never refused as a failed run's; else the run ends failed with why. Either way its end is in the journal.
@@ -851,7 +857,9 @@ export function startRunner(options: RunnerOptions): Runner {
         threw = true;
         // A claim refused before any loop could start (the dispatch's ClaimRefused: a harness this host never holds) is
         // for good: the run fails in its words, whatever woke it.
-        end = { state: "failed", error: { code: error instanceof ClaimRefused ? CLAIM_REFUSED : "loop-threw", message: message(error) } };
+        end = error instanceof FrameTooLarge
+          ? { state: "failed", error: { code: TOO_LARGE, message: `the run's records no longer fit the channel to its process (${error.message}), so it cannot go on` } }
+          : { state: "failed", error: { code: error instanceof ClaimRefused ? CLAIM_REFUSED : "loop-threw", message: message(error) } };
       }
       await finish(held, end, threw);
     })();
