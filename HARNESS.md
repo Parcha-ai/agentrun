@@ -187,8 +187,8 @@ adds a row to [docs/examples.md](docs/examples.md) with:
 ## A recipe
 
 A recipe fits an ACP agent that the [ACP registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json)
-lists with a binary release packed as `.tar.bz2` or `.tar.gz`. A server doesn't run a recipe yet: today a recipe is
-installed and checked.
+lists with a binary release packed as `.tar.bz2`, `.tar.gz` or `.zip`. A server doesn't run a recipe yet: today a
+recipe is installed, signed in where its agent signs a person in, and checked.
 
 ### What you need
 
@@ -210,10 +210,12 @@ refused (`RECIPE_INVALID`, or the code of the rule it would break).
 | `id` | yes | The harness's id: lowercase letters, digits and `-`, starting with a letter, at most 40 characters. Not an id the server's harness table already has (`pi`, `claude-agent`, `codex`, `opencode`, `goose`, `cursor`) nor a name serve reserves: one its own runs carry (`learning`, `sdk`, `cli`, `codex-cli`, `claude-code-cli`, `workflow`, `claude-agent-sdk`, `codex-sdk`, `eve`, `external`) or every object has (`constructor`). |
 | `label` | yes | The harness's name in a sentence, 1 to 80 characters. |
 | `release` | yes | Where the binary comes from: `{ "registry": ID, "version": VERSION, "archives": { PLATFORM: ARCHIVE } }`. `registry` is the agent's id in the ACP registry, `version` its version there. |
-| `release.archives.PLATFORM` | at least one | `PLATFORM` as the registry names it: `linux-x86_64`, `linux-aarch64`, `darwin-aarch64`, `darwin-x86_64`. `ARCHIVE` is `{ "url", "format", "sha256", "cmd", "binarySha256"? }`: `url` the registry's `archive` (https), `format` `"tar.bz2"` or `"tar.gz"` (the formats the installer unpacks), `sha256` the registry's `sha256` of the archive (64 lowercase hex digits; when the registry lists none, the sha256 of the archive you downloaded and checked yourself), `cmd` the registry's `cmd` (the binary's path inside the archive, `./agent`). `binarySha256`, when you know it, is the sha256 of the unpacked binary; leave it out and the first install records it (rule 2). |
-| `args` | no | The arguments that start the agent in ACP mode over stdio: the registry's `args` (`["acp"]`). |
-| `model` | yes | Who bills the model. `{ "billing": "proxy", "wire": "anthropic-messages", "env": NAME, "hostEnv"?: "ANTHROPIC_HOST" \| "ANTHROPIC_BASE_URL" }`, or `{ "billing": "plan", "maxTurns": N, "maxToolCalls": M, "hosts"?: [HOST, ...] }`. See [Billing](#billing). |
-| `keys` | no | The names of keys saved for this harness alone (a vendor's API key the agent reads). A plan-billed agent needs at least one. Never a key the server holds for anything else (rule 1). Each is read by name where the check or the run starts, and handed to the agent under the same name; a start where one is not set is refused before the agent runs (`ACP_KEY_MISSING`). |
+| `release.archives.PLATFORM` | at least one | `PLATFORM` as the registry names it: `linux-x86_64`, `linux-aarch64`, `darwin-aarch64`, `darwin-x86_64`. `ARCHIVE` is `{ "url", "format", "sha256", "cmd", "binarySha256"?, "treeSha256"?, "args"? }`: `url` the registry's `archive` (https), `format` `"tar.bz2"`, `"tar.gz"` or `"zip"` (the formats the installer unpacks), `sha256` the registry's `sha256` of the archive (64 lowercase hex digits; when the registry lists none, the sha256 of the archive you downloaded and checked yourself), `cmd` the registry's `cmd` (the binary's path inside the archive, `./agent`). `binarySha256`, when you know it, is the sha256 of the unpacked binary, and `treeSha256` the digest of every file the archive unpacks to; leave either out and the first install records it (rule 2). `args`, when the registry lists them for this platform alone (Antigravity's linux `["--uid="]`), start the agent on this platform in place of the top-level `args`. |
+| `args` | no | The arguments that start the agent in ACP mode over stdio: the registry's `args` (`["acp"]`), on every platform whose archive names none of its own. |
+| `model` | yes | Who bills the model. `{ "billing": "proxy", "wire": "anthropic-messages", "env": NAME, "hostEnv"?: "ANTHROPIC_HOST" \| "ANTHROPIC_BASE_URL" }`, or `{ "billing": "plan", "maxTurns": N, "maxToolCalls": M, "hosts"?: [HOST, ...], "id"?: MODEL }`. See [Billing](#billing). |
+| `keys` | no | The keys saved for this harness alone (a vendor's API key the agent reads). A plan-billed agent needs at least one, or a `signIn`. Never a key the server holds for anything else (rule 1). Each entry is a name, handed to the agent under that same name, or `{ "name": SAVED, "env": NAME }`, handed as `NAME`: a Gemini agent's key saved as `ANTIGRAVITY_GEMINI_API_KEY` reaches it as `GEMINI_API_KEY`, while the server's own `GEMINI_API_KEY` never does. Each is read by its saved name where the check or the run starts; a start where one is not set is refused before the agent runs (`ACP_KEY_MISSING`). |
+| `keyMethod` | no | The sign-in method the agent's ACP `initialize` lists for its key (Antigravity's `gemini-api-key`): the adapter sends `authenticate` with it before any session opens. Needs `keys`. See [Sign-in](#sign-in). |
+| `signIn` | no | A person's own sign-in, for an agent whose vendor offers one: `{ "method": ID, "homeEnv": NAME, "runs": "attended" }`. Plan billing alone. See [Sign-in](#sign-in) and [Vendor terms](#vendor-terms). |
 | `env` | no | Variables the agent gets, each written out as a literal string: `{ "NAME": "value" }`. The place for an agent's switches (turn off its own tools, its telemetry, its session naming). No key, nothing read from the host (rule 5). |
 | `files` | no | Files written into the session's private HOME before the agent starts: `{ "path/in/home": "content" }`. A path is relative to HOME (`.config/agent/config.yaml`, or `$HOME/.config/...`). |
 | `state` | no | Folders in the private HOME where the agent keeps its sessions (`.local/share/agent/sessions`). AgentRun copies them into the session's records after each turn, so a session survives a crash and moves to another runner. |
@@ -256,13 +258,22 @@ with that rule's code. `agentrun harness install --recipe` and `agentrun harness
 1. **Own keys only** (`RECIPE_KEY_NOT_OWN`). `keys` names keys saved for this harness alone. A key the server holds for
    something else is refused: every model provider's (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`,
    `XAI_API_KEY`, ...), the gateway's (`AGENT_MODEL_*`), the tools' and the computers' keys, and AgentRun's own
-   (`AGENTRUN_*`). `env` names no key at all, since a value in a recipe file is plain text: a variable whose name has a
-   `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PAT`, `CREDENTIAL` or `DSN` segment is refused there.
+   (`AGENTRUN_*`). A key saved under a name of the harness's own may be handed under a provider's name the agent reads
+   (`{ "name": "ANTIGRAVITY_GEMINI_API_KEY", "env": "GEMINI_API_KEY" }`): its value is the harness's, read by its
+   saved name, never the server's. It is never handed as what the adapter, the proxy or the server sets (`AGENTRUN_*`,
+   `AGENT_MODEL_*`), nor as a variable that changes what the agent's process loads or runs (rule 5, refused with
+   `RECIPE_ENV_NOT_ALLOWLIST`). A saved key is named once in `keys`, and reaches the agent under one name; two keys are
+   never handed under one name. `env` names no key at all, since a value in a recipe
+   file is plain text: a variable whose name has a `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PAT`, `CREDENTIAL` or `DSN`
+   segment is refused there.
 2. **A pinned binary** (`RECIPE_BINARY_UNPINNED`). The binary is the release's archive for the platform, as the
    registry lists it: an https URL and its sha256. A recipe names no `command`, `binary` or `path` of its own. The
    binary's sha256 is pinned when the recipe gives `binarySha256`; when it doesn't (some registry entries list only the
    archive's digest, or none), the owner's install records the first one it unpacks from the verified archive, and a
-   binary that differs later is refused, at a check and a reinstall alike (`HARNESS_BINARY_MISMATCH`).
+   binary that differs later is refused, at a check and a reinstall alike (`HARNESS_BINARY_MISMATCH`). The rest of the
+   archive is pinned the same way: an archive with more than one executable (Antigravity's ships a sidecar,
+   `localharness_external`, beside its server) has its whole tree's digest pinned by `treeSha256` or recorded at the
+   first install, so no file beside the binary runs unpinned. A check or a sign-in refuses a tree that changed since.
 3. **Private paths** (`RECIPE_PATH_OUTSIDE`). Every `files` path and `state` folder is inside the session's private
    HOME: no absolute path, no `..`. The archive's `cmd` stays inside the agent's own folder.
 4. **The owner installs it** (`RECIPE_INSTALLS_ITSELF`). Only `agentrun harness install --recipe FILE` downloads and
@@ -273,7 +284,12 @@ with that rule's code. `agentrun harness install --recipe` and `agentrun harness
    host, its private `HOME`, `TMPDIR` and XDG folders, the recipe's `env`, its own `keys`, and the proxy's address and
    key: nothing else. A recipe can't ask for more (`passEnv`, `inheritEnv` and the like are refused), can't set what the
    adapter or the proxy sets (`HOME`, `PATH`, `ANTHROPIC_HOST`, ...), and writes every value out: `$HOME/.cache` in a
-   value is refused, since nothing of the host's environment reaches the agent to fill it in.
+   value is refused, since nothing of the host's environment reaches the agent to fill it in. Nor does it name a
+   variable that changes what the agent's process loads or runs before the pinned binary's own code: `PATH`, `LD_*`,
+   `DYLD_*`, `NODE_OPTIONS`, `NODE_PATH`, `PYTHON*`, `BASH_*`, `ENV`, `GIT_*`, and a few shells' and interpreters'
+   start-up variables (`IFS`, `PS4`, `ZDOTDIR`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, ...). That one list, the
+   kernel's `launchEnv`, holds for `env`, a key's handed name, `model.env` and `signIn.homeEnv` alike, in the loader
+   and in the ACP adapter. A variable's name is a letter or `_`, then letters, digits and `_`, at most 128 characters.
 
 ### Billing
 
@@ -286,11 +302,16 @@ with that rule's code. `agentrun harness install --recipe` and `agentrun harness
   `agentrun`, and the agent must offer them to its model as `agentrun__<tool>`. Turn the agent's own tools off in its
   config (`files`) or `env`. Today the proxy is the one Goose runs on, so it also lets through Goose's `load_skill` and
   only the `anthropic-beta` values Goose 1.59.2 sends.
-- **`plan`**: the agent calls its vendor itself, on the owner's plan and the recipe's own `keys`. AgentRun never sees
-  those requests, so the adapter stops the run itself after `maxTurns` turns or `maxToolCalls` tool calls
-  (`ACP_TURN_LIMIT`, `ACP_TOOL_CALL_LIMIT`). `hosts` (up to 16, each `host` or `host:port` with a port from 1 to 65535,
-  443 by default) names where the vendor's model is: `harness-check` tunnels the agent's `CONNECT` to those hosts and
-  refuses the rest, so list every host the agent needs for a turn.
+- **`plan`**: the agent calls its vendor itself, on the owner's plan and the recipe's own `keys` (or, on a run its
+  owner attends, the owner's own sign-in). AgentRun never sees those requests, so the adapter stops the run itself
+  after `maxTurns` turns or `maxToolCalls` tool calls (`ACP_TURN_LIMIT`, `ACP_TOOL_CALL_LIMIT`). `hosts` (up to 16,
+  each `host` or `host:port` with a port from 1 to 65535, 443 by default) names where the vendor's model is:
+  `harness-check` tunnels the agent's `CONNECT` to those hosts and refuses the rest, so list every host the agent needs
+  for a turn. To find them, check once with no `hosts`: the report's `side_requests.beyondLoopbackRefused` lists every
+  host the agent reached for. `id` names the model the agent runs on, as its `session/new` lists it in
+  `availableModels`; the adapter picks it with `session/set_model` before the first prompt, and a model the agent does
+  not list is refused before any prompt (`ACP_MODEL_UNLISTED`). Leave it out and the agent runs on its own default.
+  An agent on a person's plan lists that plan's models alone: Antigravity on a Google AI plan lists its Gemini models.
 
 ### Install it
 
@@ -299,13 +320,23 @@ agentrun harness install --recipe acme.json
 ```
 
 It loads the recipe (the five rules), downloads the archive for this platform, checks its sha256 against the recipe,
-unpacks it beside the harness's folder, checks the binary's sha256 (or records the first one), then moves it into
-`~/.agentrun/harnesses/<id>` and makes it read-only. `--data DIR` installs into another AgentRun's data directory. No key
-reaches the install. Run it again with the binary in place and it downloads nothing.
+unpacks it beside the harness's folder, checks the binary's sha256 and the whole tree's (or records the first ones),
+then moves it into `~/.agentrun/harnesses/<id>` and makes it read-only. `--data DIR` installs into another AgentRun's
+data directory. No key reaches the install. Run it again with the binary in place and it downloads nothing.
+
+`.tar.bz2` and `.tar.gz` unpack with the host's `tar`; `.zip` unpacks in Node, with no `unzip` on the host. An archive
+with an entry that leaves the folder (`..`, an absolute path, a backslash), a symbolic link, a device, an encrypted
+entry or a duplicate is refused whole, before anything lands (`HARNESS_UNPACK_FAILED`).
+
+A digest the recipe leaves out is recorded at the first install, one file each under
+`~/.agentrun/harnesses/.first-seen/`: `<id>@<version>-<platform>.sha256` for the binary and `.tree.sha256` for the
+tree. A record is written once and never over another; to take a new release, change `version` in the recipe. A
+release whose binary or tree differs from its record is refused at every check, sign-in and reinstall.
 
 A failure names its code and the command to try again: `HARNESS_PLATFORM_UNSUPPORTED` (no archive for this platform),
 `HARNESS_DOWNLOAD_FAILED`, `HARNESS_ARCHIVE_MISMATCH` (the archive's sha256 is not the recipe's),
-`HARNESS_BINARY_MISMATCH` (the binary's is not the pinned or the first recorded one).
+`HARNESS_UNPACK_FAILED` (an unsafe or unreadable archive), `HARNESS_BINARY_MISMATCH` (the binary's or the tree's sha256
+is not the pinned or the first recorded one), `HARNESS_INSTALL_BUSY` (another install into the same data directory is running).
 
 ### Check it
 
@@ -376,10 +407,82 @@ report: /work/harness-check-acme.json
 
 A refused recipe prints one line, `harness-check: refused: <CODE>: <every problem>`, and runs nothing.
 
+### Sign-in
+
+A plan-billed agent gets into its vendor one of two ways, and a recipe may name both.
+
+**On a key** (`keys`, `keyMethod`). The key is handed to the agent as rule 1 says. When the agent also needs to be
+told which method to use, `keyMethod` names it: after ACP `initialize`, the adapter checks the agent lists that method
+in `authMethods` (`ACP_AUTH_UNLISTED` when it doesn't) and sends `authenticate` with it before any session opens
+(`ACP_AUTH_FAILED` when the agent refuses). `harness-check` and every run its owner is not at run this way.
+
+**On a person's own sign-in** (`signIn`). `{ "method": ID, "homeEnv": NAME, "runs": "attended" }`: `method` is the
+agent's own sign-in in `authMethods` (Antigravity's `oauth-personal`), `homeEnv` the variable the agent reads the folder
+it keeps that sign-in in from (Antigravity's `GEMINI_HOME`), and `runs` the runs its vendor allows it on, `attended`
+alone: a run its one owner started by hand and is at. Plan billing only. `homeEnv` is never a key, never `keyMethod`'s
+method, never in `env`, never a variable the adapter sets (`HOME`, `TMPDIR`, the XDG folders), and never one on the
+launch list (rule 5).
+
+```sh
+agentrun harness sign-in --recipe antigravity.json
+```
+
+It checks the installed binary and tree against their pins (nothing is downloaded; `HARNESS_NOT_INSTALLED` with the
+install command when they are not in place) and makes the sign-in folder, `~/.agentrun/harnesses/<id>.sign-in`, open to
+you alone. It then starts the unmodified agent in your terminal: `homeEnv` points at that folder, HOME and TMPDIR at a
+scratch folder removed afterwards, plus the recipe's `env` and `PATH`, `LANG` and `TZ`. No key reaches it. It tells
+the agent ACP `authenticate` with `method`, and the agent does the rest: it prints the address to open, your browser
+comes back to the agent's own loopback server on that machine, and the agent writes its sign-in into the folder. On a
+remote server, forward that port from your own machine first, with the host and port the address's `redirect_uri`
+names (`ssh -N -L PORT:HOST:PORT the-server`), then open the address there. You have 10 minutes.
+
+AgentRun relays nothing. It reads none of what the agent prints, keeps no stderr in any record, and never opens,
+copies or moves what the agent writes; afterwards it checks only that the folder is not empty. The sign-in is meant to
+stay where the agent put it: an attended run is to point `homeEnv` at the same folder for the same pinned binary
+(no run path takes a recipe yet, see [Limits today](#limits-today)). To sign out, use the agent's own sign-out, or
+remove the folder.
+
+A failure says AgentRun's own code and, when the agent ended, its exit status, never its words: `HARNESS_NO_SIGN_IN` (the recipe names
+no `signIn`), `ACP_AUTH_UNLISTED`, `ACP_AUTH_FAILED` (refused, no sign-in within 10 minutes, or an error the agent
+answered, with its JSON-RPC code alone), `ACP_AGENT_EXITED`, `HARNESS_SIGN_IN_EMPTY` (the agent answered and wrote
+nothing).
+
+A check never runs on a sign-in. A recipe with a `signIn` and no key is refused by `harness-check` with
+`HARNESS_SIGN_IN_ATTENDED`, which names the key route: a key saved for this harness alone, for a Gemini agent `{
+"name": "<ID>_GEMINI_API_KEY", "env": "GEMINI_API_KEY" }` with `keyMethod` `"gemini-api-key"`.
+
+### Vendor terms
+
+A person's sign-in is the vendor's to allow, and AgentRun builds `signIn` to stay inside what the vendor allows. This
+is AgentRun's reading of the terms as of November 2026, not legal advice: read your vendor's terms yourself.
+
+**Google Antigravity.** Allowed: the official, unmodified `antigravity-acp` binary in an ACP client, signed in with
+its own `oauth-personal`, by one person for their own interactive development, on the models their own plan offers.
+Not allowed: a tool that extracts or reuses its OAuth credentials, a wrapper around the `agy` CLI's non-interactive
+mode (`agy -p`), or rotating between accounts. Everything else (`harness-check`, unattended and scheduled runs, CI, a
+server shared by several people) runs on a Gemini API key from Google AI Studio, or on Gemini Enterprise.
+
+How AgentRun keeps to that:
+
+- The binary is the registry's release, pinned by its sha256 and its whole tree's (rule 2). AgentRun never patches it.
+- The sign-in is the agent's own: AgentRun starts it and steps back. There is no relay of the browser's redirect, and
+  no code that reads, copies or refreshes the token.
+- The token stays in the agent's own folder, open to its owner alone. No sign-in file is copied to another folder,
+  machine or runner.
+- `runs: "attended"` is the only value: a check, or any run its owner is not at, is refused with a message naming the
+  key route.
+- Nothing the agent prints on a sign-in is read. The ACP adapter's `stderr: "none"`, made for a run on a sign-in,
+  keeps nothing it prints either.
+
+The built-in Cursor recipe in `packages/run-adapters-acp/recipes/cursor.json` is the ACP adapter's own, not this file's
+format, and runs on Cursor's key alone.
+
 ### Limits today
 
-- The installer unpacks `.tar.bz2` and `.tar.gz` archives alone; some registry agents ship `.zip`, or an npm or uv
-  package with no archive at all. See [HARNESS-SCORECARD.md](HARNESS-SCORECARD.md).
+- No server run path takes a recipe yet: a recipe is installed, signed in and checked. So no attended run calls the
+  sign-in yet.
+- The installer unpacks archives alone; some registry agents ship an npm or uv package with no archive at all. See
+  [HARNESS-SCORECARD.md](HARNESS-SCORECARD.md).
 - Proxy billing takes Anthropic's Messages API as Goose speaks it (tool names, betas). An agent on another wire is
   plan-billed, or needs a harness module.
 - The environment check reads `/proc` (Linux). Side requests beyond loopback are seen for an agent that honors
