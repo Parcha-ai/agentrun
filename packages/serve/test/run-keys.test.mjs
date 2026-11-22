@@ -297,3 +297,14 @@ test("AGENTRUN_RUN_KEYS=1 leaves the monid key the server's: a template granting
   assert.deepEqual(refused.body.error.fields.map((one) => [one.field, one.reason]), [["secrets.MONID_API_KEY", "not_set_up_here"]]);
   assert.deepEqual(await store.agents.list(), [], "nothing made");
 });
+
+test("AGENTRUN_RUN_KEYS is on for 1 or true, off when unset, empty, 0 or false, and refused in words otherwise", async () => {
+  const { RUN_KEYS_ENV, switchFrom } = await import("../dist/env-switch.js");
+  assert.equal(RUN_KEYS_ENV, "AGENTRUN_RUN_KEYS");
+  const read = (value) => switchFrom(RUN_KEYS_ENV, value === undefined ? {} : { AGENTRUN_RUN_KEYS: value });
+  for (const value of ["1", "true", "TRUE", " 1 "]) assert.equal(read(value), true, value);
+  for (const value of [undefined, "", "0", "false", "False"]) assert.equal(read(value), false, String(value));
+  for (const value of ["yes", "on", "2", "keys"]) {
+    assert.throws(() => read(value), (error) => error instanceof TypeError && error.message === `AGENTRUN_RUN_KEYS is 1 (each run brings the tool keys this server does not hold) or 0, not ${JSON.stringify(value)}`, value);
+  }
+});
