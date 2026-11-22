@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { serve } from "./support.mjs";
 
-const { keepPresence } = await import("../dist/runner/presence.js");
+const { keepPresence, PRESENCE_STALE_MS } = await import("../dist/runner/presence.js");
 const { capacityOverStore, capacityWindowOf, CAPACITY_WINDOW_MAX_MINUTES, CAPACITY_WINDOW_MINUTES } = await import("../dist/capacity.js");
 const { gaugeLine, metricLine, startRunnerGauge } = await import("../dist/runner/runner-metrics.js");
 
@@ -24,6 +24,19 @@ async function send(server, path, { token = true } = {}) {
     json = JSON.parse(text);
   } catch {}
   return { status: res.status, body: json ?? text };
+}
+
+/** Waits until every runner in `want` (names, or how many) has its row live in `runners` (a presence's first put is not
+ *  awaited by its caller): polls until its own few seconds are up, then fails naming the runners seen. */
+async function runnersRegistered(runners, want, { withinMs = 5000 } = {}) {
+  const deadline = Date.now() + withinMs;
+  let seen = [];
+  while (Date.now() < deadline) {
+    seen = (await runners.live(PRESENCE_STALE_MS)).map((row) => row.runner);
+    if (typeof want === "number" ? seen.length >= want : want.every((name) => seen.includes(name))) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`runners ${JSON.stringify(want)} did not register within ${withinMs} ms; seen ${JSON.stringify(seen)}`);
 }
 
 /** An inline run on `server`, queued (no runner takes it): its run and agent ids. */
@@ -53,13 +66,16 @@ test("the capacity counts queued and held runs, each live runner's version and f
   const server = await serve(t, { apiOnly: true, runner: false });
   const first = await inlineRun(server, "1");
   const second = await inlineRun(server, "2");
+  // A slow store: each runner's first put lands 300 ms late, as on a loaded box, so the case has to wait for the rows.
+  const runners = server.store.runners;
+  const slowRunners = Object.create(runners, { put: { value: async (...args) => { await new Promise((resolve) => setTimeout(resolve, 300)); return runners.put(...args); } } });
   // A runner apart says it is there, as the runner process does (main.ts): its version and its slots on its row.
-  const presence = keepPresence(server.store.runners, "runner-x", null, { slots: 4 });
+  const presence = keepPresence(slowRunners, "runner-x", null, { slots: 4 });
   t.after(() => presence.close());
   // A second runner that refused to claim: live, and no free slot.
-  const refused = keepPresence(server.store.runners, "runner-refusing", "its run isolation was refused", {});
+  const refused = keepPresence(slowRunners, "runner-refusing", "its run isolation was refused", {});
   t.after(() => refused.close());
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await runnersRegistered(server.store.runners, ["runner-refusing", "runner-x"]);
   let read = await send(server, "/v2/capacity");
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.deepEqual(read.body.runs, { queued: 2, executing: 0 }, "both runs wait");
@@ -100,6 +116,7 @@ test("the window is a whole number of minutes from 1 to a day, else 400", async 
 
 test("a server with its runner beside it lists that runner with this build's version and its slots", async (t) => {
   const server = await serve(t);
+  await runnersRegistered(server.store.runners, 1);
   const read = await send(server, "/v2/capacity");
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.equal(read.body.runners.length, 1, JSON.stringify(read.body.runners));

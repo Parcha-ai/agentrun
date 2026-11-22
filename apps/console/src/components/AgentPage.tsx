@@ -1,3 +1,4 @@
+import { SourceSyncPanel } from "@/components/SourceSync";
 import { cliLearningOf, cliLearningLabel } from "@/lib/cliLearning";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { useScrollQuiet } from "@/lib/useScrollQuiet";
@@ -229,6 +230,7 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
             ))}
             {!workflow && !native && !sdk && !cli && <div className="col-span-2 border bg-card p-4"><dt className="mb-2 text-label text-muted-foreground">Tools</dt><dd className="break-words text-small">{!workflow && agent.tools ? (agent.tools.length ? <ul className="space-y-2" aria-label="Tools">{agent.tools.map((tool) => <li key={tool.name}><span title={tool.blurb}>{tool.name}</span>{tool.provider ? ` · ${providerLabel(tool.provider, tool.name)}` : ""}{tool.permission ? ` · ${tool.permission}` : ""}{resolution(tool.resolved, tool.name).unavailable && <span data-unavailable className="text-warning-text" title={tool.resolved}> · unavailable</span>}</li>)}</ul> : "none") : d.tools.join(", ") || "None configured"}</dd></div>}
           </dl>
+          {(native || cli || agent.source_sync) && <SourceSyncPanel agent={agent} v2={v2} onAgent={onAgent} />}
           {offText && <Banner tone="warning" aria-label="Harness not available">{offText}</Banner>}
           {!agent.archived_at && needsModel && <Banner>Running this agent needs a configured model. <a href="#/settings/keys" className="text-primary-text underline underline-offset-2">Set up models in Settings</a></Banner>}
           {blockers.length > 0 && (

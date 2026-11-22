@@ -510,7 +510,7 @@ test("the address to open is the URL on the server's first \"Open \" line, howev
 });
 
 test("an API-only server's line stands for the Open line: the address is its AGENTRUN_BASE_URL line's, on the loopback address or the public URL alone", async (t) => {
-  const api = stub(["agentrun-serve on http://127.0.0.1:7345/v2 (agent store in /tmp/x)\nAGENTRUN_BASE_URL=http://127.0.0.1:7345/v2\nAGENTRUN_API_KEY=$AGENTRUN_TOKEN\n", "API only (AGENTRUN_API_ONLY=1): the run routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused.\n", "GET /v2/health 200\n"]);
+  const api = stub(["agentrun-serve on http://127.0.0.1:7345/v2 (agent store in /tmp/x)\nAGENTRUN_BASE_URL=http://127.0.0.1:7345/v2\nAGENTRUN_API_KEY=$AGENTRUN_TOKEN\n", "API only (AGENTRUN_API_ONLY=1): the run and deploy routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused.\n", "GET /v2/health 200\n"]);
   t.after(() => api.kill());
   assert.equal(await openUrl(api.stdout), "http://127.0.0.1:7345/v2");
   const published = stub(["AGENTRUN_BASE_URL=https://agents.example.com/v2\n", "API only (AGENTRUN_API_ONLY=1): the run routes are served.\n"]);

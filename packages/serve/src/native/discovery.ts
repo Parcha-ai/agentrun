@@ -57,13 +57,18 @@ export function nativeIdentity(target: Pick<NativeTarget, "runtime" | "project" 
   return hash(JSON.stringify([target.runtime,target.project,target.selector.kind,target.selector.name ?? null,target.machine_id]));
 }
 
+/** The existing native machine identity, shared with explicit source-consent checks before any source scan. */
+export async function nativeMachineId(): Promise<string> {
+  let machine = hostname(); try { machine = (await readFile("/etc/machine-id", "utf8")).trim(); } catch { /* hostname fallback */ }
+  return hash(machine);
+}
+
 export async function discoverNative(options: { project: string; runtime?: NativeRuntime; env?: NodeJS.ProcessEnv }): Promise<{ machine_id: string; targets: NativeTarget[] }> {
   const env = options.env ?? process.env, home = homeOf(env);
   let project: string;
   try { project = await realpath(resolve(options.project)); if(!(await stat(project)).isDirectory())throw new NativeDiscoveryError(); }
   catch { throw new NativeDiscoveryError(); }
-  let machine = hostname(); try { machine = (await readFile("/etc/machine-id", "utf8")).trim(); } catch { /* hostname fallback */ }
-  const machine_id = hash(machine), targets: NativeTarget[] = [];
+  const machine_id = await nativeMachineId(), targets: NativeTarget[] = [];
   for (const runtime of options.runtime ? [options.runtime] : NATIVE_RUNTIMES) {
     const binary = await nativeExecutable(runtime, env);
     const versionResult = binary ? await nativeMetadata(binary, ["--version"], project, env) : null;

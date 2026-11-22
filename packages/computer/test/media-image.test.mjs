@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DOCKER_BASE, DOCKER_RECIPE } from "../dist/index.js";
+import { snapshotApt } from "./snapshot-apt.mjs";
 
 const DOCKERFILE = readFileSync(new URL("../media/Dockerfile", import.meta.url), "utf8");
 /** The Dockerfile's instructions, a line each, continuation lines joined, comments out. */
@@ -47,6 +48,12 @@ test("it has Chromium as chrome, FFmpeg and FFprobe, title fonts and the HyperFr
   for (const name of ["chromium", "ffmpeg", "fonts-noto-core", "fonts-noto-cjk", "fonts-noto-color-emoji", "fonts-liberation"]) assert.ok(ours.includes(name), name);
   assert.match(RUNS, /ln -s \/usr\/bin\/chromium \/usr\/local\/bin\/chrome/, "chrome on PATH is Chromium");
   assert.match(RUNS, /npm install --global --ignore-scripts --before=\S+ hyperframes@\d+\.\d+\.\d+ /, "an exact version, no install script, the registry as it was");
+});
+
+test("its Debian packages come from snapshot.debian.org over https at one instant, the instant npm's --before names, never from the live mirror", () => {
+  const instant = snapshotApt(RUNS);
+  const before = RUNS.match(/--before=(\S+)/)[1];
+  assert.equal(new Date(before).toISOString(), instant, "apt and npm are pinned to one instant");
 });
 
 test("it holds no key and picks nothing: no ENV, ARG or secret mount, and its build command names AGENTRUN_DOCKER_IMAGE", () => {

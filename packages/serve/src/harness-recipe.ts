@@ -1,5 +1,5 @@
 // A harness recipe (HARNESS.md#a-recipe): the one loader, refusing by RECIPE_CODES before anything is downloaded.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS } from "./harness.js";
@@ -29,20 +29,18 @@ export const RECIPE_CODES = Object.freeze({
 } as const);
 export type RecipeCode = (typeof RECIPE_CODES)[keyof typeof RECIPE_CODES];
 
-/** One platform's release of the agent, copied from its ACP registry entry (`distribution.binary.<platform>`), with the
- *  registry's `args` for that platform where it lists its own (Antigravity's linux `--uid=`): they start the agent there
- *  in place of the recipe's `args`. */
+/** One platform's release of the agent, as its vendor ships it (an ACP registry entry's `distribution.binary.<platform>`,
+ *  or a release manifest's, Google's agy CLI's), pinned by its archive's sha256 or sha512, with that platform's own `args`
+ *  where it lists them: they start the agent there in place of the recipe's `args`. */
 export type RecipeArchive = ArchiveRelease & { readonly format: ArchiveFormat; readonly args?: readonly string[] };
 
-/** How an agent that runs on a person's account rather than a key signs in (Antigravity's `oauth-personal`), within its
- *  vendor's terms (HARNESS.md#vendor-terms). `method`: the id its initialize lists among its authMethods, sent with ACP
- *  `authenticate` before any session opens. `homeEnv`: the variable the agent reads the folder it keeps its own sign-in in
- *  from (Antigravity's GEMINI_HOME): an attended run points it at the owner's sign-in folder (signInHomeOf), where the
- *  agent's own sign-in (`agentrun harness sign-in`) left it. The server never opens, copies or reads what is in that
- *  folder: the agent alone uses its sign-in. `runs`: the runs its vendor allows it on, `attended` alone today (a run its
- *  one owner started by hand and is at): every other run, harness-check's among them, takes the recipe's keys or is
- *  refused. Plan billing alone: a proxy-billed agent runs on the server's key. */
-export type RecipeSignIn = { readonly method: string; readonly homeEnv: string; readonly runs: "attended" };
+/** How an agent that runs on its owner's own account signs in, with its own sign-in (Google's agy CLI: `agy acp --login
+ *  --gemini-dir DIR`), as T3 Code runs it. `args`: the flags that start that sign-in (`--login`), after the release's
+ *  args. `homeArg`: the flag the agent takes the folder it keeps its sign-in in by (`--gemini-dir`), given the owner's
+ *  folder (signInHomeOf) on the sign-in and on every run on it. AgentRun never reads, refreshes or sends the sign-in:
+ *  the agent alone writes and reads what is in that folder (HARNESS.md#sign-in). Plan billing alone: a proxy-billed agent
+ *  runs on the server's key. */
+export type RecipeSignIn = { readonly args: readonly string[]; readonly homeArg: string };
 
 /** The variables a proxy-billed agent may read the proxy's address from: Goose's, and the Anthropic SDKs'. */
 export const PROXY_HOST_ENVS: readonly string[] = Object.freeze(["ANTHROPIC_HOST", "ANTHROPIC_BASE_URL"]);
@@ -65,11 +63,10 @@ export const AGENT_VARS: Readonly<Record<"inherited" | "reserved" | "proxy", rea
 export type RecipeModel =
   | { readonly billing: "proxy"; readonly wire: "anthropic-messages"; readonly env: string; readonly hostEnv?: "ANTHROPIC_HOST" | "ANTHROPIC_BASE_URL" }
   | { readonly billing: "plan"; readonly maxTurns: number; readonly maxToolCalls: number; readonly hosts?: readonly string[]; readonly id?: string };
-
-/** A model id as an agent lists one (run-adapters-acp's MODEL_ID: `gpt-5.4-nano[reasoning=medium]`). */
-const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/=,[\]-]{0,199}$/;
-/** A sign-in method's id as an agent lists it (`oauth-personal`). */
+/** A sign-in method's id as an agent lists it (keyMethod's `gemini-api-key`). */
 const SIGN_IN_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** A long flag as signIn.homeArg names one (`--gemini-dir`): its value is the next argument, never after an `=`. */
+const LONG_FLAG = /^--[a-z0-9][a-z0-9-]{0,63}$/;
 /** `items` in a sentence: `a`, `a and b`, `a, b and c`. */
 const listed = (items: readonly string[]): string => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
 
@@ -84,7 +81,8 @@ const vendorHost = (host: string): boolean => {
 export interface Recipe {
   readonly id: string;
   readonly label: string;
-  readonly release: { readonly registry: string; readonly version: string; readonly archives: Readonly<Record<string, RecipeArchive>> };
+  /** `registry`: the agent's id in the ACP registry, for a release copied from there (the agy CLI is not). */
+  readonly release: { readonly registry?: string; readonly version: string; readonly archives: Readonly<Record<string, RecipeArchive>> };
   readonly args: readonly string[];
   /** The keys the agent runs on, by the names they are saved under for this harness alone. */
   readonly keys: readonly string[];
@@ -123,7 +121,8 @@ const ENV_FIELDS = new Set(["inheritEnv", "passEnv", "envFrom", "inherit", "envP
 /** Every variable of AGENT_VARS. */
 const SET_BY_ADAPTER: ReadonlySet<string> = new Set(Object.values(AGENT_VARS).flat());
 const SHA256 = /^[0-9a-f]{64}$/;
-const ARCHIVE_FIELDS = new Set(["url", "format", "sha256", "cmd", "binarySha256", "treeSha256", "args"]);
+const SHA512 = /^[0-9a-f]{128}$/;
+const ARCHIVE_FIELDS = new Set(["url", "format", "sha256", "sha512", "cmd", "binarySha256", "treeSha256", "args"]);
 /** A value the host would fill in from its own environment: `$NAME` or `${NAME}`. */
 const EXPANDS = /\$(?:\{[^}]*\}|[A-Za-z_])/;
 
@@ -178,18 +177,18 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
 
   // Rule 2: the release.
   const release = r.release;
-  if (!isPlain(release)) say(RECIPE_CODES.binary, "release names the agent's registry id, its version and an archive per platform with its sha256");
+  if (!isPlain(release)) say(RECIPE_CODES.binary, "release names the agent's version and an archive per platform with its sha256 or sha512 (and its ACP registry id, where it is listed there)");
   else {
     for (const field of Object.keys(release)) if (!["registry", "version", "archives"].includes(field)) say(BINARY_FIELDS.has(field) ? RECIPE_CODES.binary : INSTALL_FIELDS.has(field) ? RECIPE_CODES.install : RECIPE_CODES.invalid, `release.${field} is not a release field`);
-    if (typeof release.registry !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(release.registry)) say(RECIPE_CODES.invalid, "release.registry is the agent's id in the ACP registry");
-    if (typeof release.version !== "string" || !/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(release.version)) say(RECIPE_CODES.invalid, "release.version is the registry's version string");
+    if (release.registry !== undefined && (typeof release.registry !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(release.registry))) say(RECIPE_CODES.invalid, "release.registry, when given, is the agent's id in the ACP registry");
+    if (typeof release.version !== "string" || !/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(release.version)) say(RECIPE_CODES.invalid, "release.version is the release's version string");
     if (!isPlain(release.archives) || !Object.keys(release.archives).length) say(RECIPE_CODES.binary, "release.archives names at least one platform's archive (linux-x86_64, darwin-aarch64, ...)");
     else {
       for (const [platform, archive] of Object.entries(release.archives)) {
         const at = `release.archives["${platform}"]`;
         if (!/^(darwin|linux|windows)-(aarch64|x86_64)$/.test(platform)) say(RECIPE_CODES.invalid, `${at}: a platform is named as the registry names it (linux-x86_64)`);
         if (!isPlain(archive)) {
-          say(RECIPE_CODES.binary, `${at} is { url, format, sha256, cmd }`);
+          say(RECIPE_CODES.binary, `${at} is { url, format, sha256 or sha512, cmd }`);
           continue;
         }
         for (const field of Object.keys(archive)) if (!ARCHIVE_FIELDS.has(field)) say(INSTALL_FIELDS.has(field) ? RECIPE_CODES.install : RECIPE_CODES.binary, `${at}.${field} is not an archive field`);
@@ -199,11 +198,14 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
         } catch {
           url = undefined;
         }
-        if (!url || url.protocol !== "https:" || url.username || url.password) say(RECIPE_CODES.binary, `${at}.url must be the registry's https URL of the archive`);
-        if (typeof archive.sha256 !== "string" || !SHA256.test(archive.sha256)) say(RECIPE_CODES.binary, `${at}.sha256 must be the archive's sha256 as the registry lists it, 64 lowercase hex digits`);
+        if (!url || url.protocol !== "https:" || url.username || url.password) say(RECIPE_CODES.binary, `${at}.url must be the vendor's https URL of the archive`);
+        // The archive's one digest, as its vendor lists it: the registry's sha256, or a release manifest's sha512.
+        if ((archive.sha256 === undefined) === (archive.sha512 === undefined)) say(RECIPE_CODES.binary, `${at} pins its archive by one digest: sha256 (64 lowercase hex digits) or sha512 (128), as its vendor lists it`);
+        else if (archive.sha256 !== undefined && (typeof archive.sha256 !== "string" || !SHA256.test(archive.sha256))) say(RECIPE_CODES.binary, `${at}.sha256 must be the archive's sha256 as its vendor lists it, 64 lowercase hex digits`);
+        else if (archive.sha512 !== undefined && (typeof archive.sha512 !== "string" || !SHA512.test(archive.sha512))) say(RECIPE_CODES.binary, `${at}.sha512 must be the archive's sha512 as its vendor lists it, 128 lowercase hex digits`);
         if (archive.binarySha256 !== undefined && (typeof archive.binarySha256 !== "string" || !SHA256.test(archive.binarySha256))) say(RECIPE_CODES.binary, `${at}.binarySha256, when given, is the unpacked binary's sha256, 64 lowercase hex digits`);
         if (archive.treeSha256 !== undefined && (typeof archive.treeSha256 !== "string" || !SHA256.test(archive.treeSha256))) say(RECIPE_CODES.binary, `${at}.treeSha256, when given, is the digest of every file the archive unpacks to (HARNESS.md), 64 lowercase hex digits`);
-        if (archive.args !== undefined && !strings(archive.args)) say(RECIPE_CODES.invalid, `${at}.args, when given, is a list of strings: the registry's args for that platform`);
+        if (archive.args !== undefined && !strings(archive.args)) say(RECIPE_CODES.invalid, `${at}.args, when given, is a list of strings: the release's args for that platform`);
         if (!(ARCHIVE_FORMATS as readonly unknown[]).includes(archive.format)) say(RECIPE_CODES.binary, `${at}.format: the installer unpacks ${listed(ARCHIVE_FORMATS)} archives alone`);
         if (typeof archive.cmd !== "string" || !archive.cmd || isAbsolute(archive.cmd) || !insideHome(archive.cmd)) say(RECIPE_CODES.paths, `${at}.cmd is the binary's path inside the archive (./agent), never one outside it`);
       }
@@ -263,26 +265,31 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
   } else if (model.billing === "plan") {
     if (!Number.isInteger(model.maxTurns) || (model.maxTurns as number) < 1) say(RECIPE_CODES.invalid, "plan billing needs maxTurns, a whole number of turns of at least 1");
     if (!Number.isInteger(model.maxToolCalls) || (model.maxToolCalls as number) < 0) say(RECIPE_CODES.invalid, "plan billing needs maxToolCalls, a whole number of calls");
-    if (!entries?.length && r.signIn === undefined) say(RECIPE_CODES.invalid, "a plan-billed agent runs on its vendor's key or a person's sign-in: name the key in keys or the sign-in in signIn");
+    if (!entries?.length && r.signIn === undefined) say(RECIPE_CODES.invalid, "a plan-billed agent runs on its vendor's key or its owner's sign-in: name the key in keys or the sign-in in signIn");
     if (model.hosts !== undefined && (!strings(model.hosts) || model.hosts.length > 16 || !model.hosts.every(vendorHost))) say(RECIPE_CODES.invalid, "model.hosts lists at most 16 hosts the vendor's model is on, each a host name with an optional :port from 1 to 65535 (default 443)");
-    if (model.id !== undefined && (typeof model.id !== "string" || !MODEL_ID.test(model.id))) say(RECIPE_CODES.invalid, "model.id, when given, is the model's id as the agent lists it (session/new's availableModels): one word, no spaces");
+    // A model id as an agent lists one (`gpt-5.4-nano[reasoning=medium]`): the ACP package's MODEL_ID, the one definition.
+    // Without that package no recipe runs (harness-table.ts refuses it by name), so its form goes unchecked here.
+    const listedId = acpPackage()?.MODEL_ID;
+    if (model.id !== undefined && (typeof model.id !== "string" || (listedId !== undefined && !listedId.test(model.id)))) say(RECIPE_CODES.invalid, "model.id, when given, is the model's id as the agent lists it (session/new's availableModels): one word, no spaces");
     for (const field of Object.keys(model)) if (!["billing", "maxTurns", "maxToolCalls", "hosts", "id"].includes(field)) say(RECIPE_CODES.invalid, `model.${field} is not a field of plan billing`);
   } else say(RECIPE_CODES.invalid, 'model.billing is "proxy" or "plan"');
 
-  // The sign-in: plan billing alone, attended runs alone, the agent's own folder named by a variable of its own.
+  // The sign-in: plan billing alone, the agent's own sign-in flags, and the one flag that names its folder, which AgentRun
+  // alone gives a value (the owner's folder), so no other argument names it.
   const signIn = r.signIn;
   if (signIn !== undefined) {
-    if (!isPlain(signIn)) say(RECIPE_CODES.invalid, 'signIn is { "method": the id initialize lists in authMethods, "homeEnv": the variable the agent reads its sign-in folder from, "runs": "attended" }');
+    if (!isPlain(signIn)) say(RECIPE_CODES.invalid, 'signIn is { "args": the flags that start the agent\'s own sign-in (["--login"]), "homeArg": the flag it takes its sign-in folder by ("--gemini-dir") }');
     else {
-      for (const field of Object.keys(signIn)) if (!["method", "homeEnv", "runs"].includes(field)) say(RECIPE_CODES.invalid, `signIn.${field} is not a sign-in field`);
-      if (typeof signIn.method !== "string" || !SIGN_IN_METHOD.test(signIn.method)) say(RECIPE_CODES.invalid, "signIn.method is the sign-in method's id as the agent's initialize lists it in authMethods (oauth-personal)");
-      else if (signIn.method === r.keyMethod) say(RECIPE_CODES.invalid, `signIn.method ${signIn.method} is also keyMethod: a person's sign-in and a key are two methods`);
-      if (typeof signIn.homeEnv !== "string" || !ENV_NAME.test(signIn.homeEnv)) say(RECIPE_CODES.invalid, "signIn.homeEnv is the variable the agent reads the folder it keeps its own sign-in in from (GEMINI_HOME)");
-      else if (SET_BY_ADAPTER.has(signIn.homeEnv) || serverKey(signIn.homeEnv) || keyShaped(signIn.homeEnv) || keys.has(signIn.homeEnv)) say(RECIPE_CODES.env, `signIn.homeEnv names ${signIn.homeEnv}, which is the adapter's, the proxy's or a key`);
-      else if (launchEnv(signIn.homeEnv) || signIn.homeEnv.startsWith("AGENTRUN_") || signIn.homeEnv.startsWith("AGENT_MODEL_")) say(RECIPE_CODES.env, `signIn.homeEnv names ${signIn.homeEnv}, which changes what the agent's process loads or runs, or the server sets`);
-      else if (isPlain(r.env) && signIn.homeEnv in r.env) say(RECIPE_CODES.env, `env names ${signIn.homeEnv}, which an attended run points at its owner's sign-in`);
-      // The runs its vendor's terms allow a person's sign-in on (HARNESS.md#vendor-terms): attended ones alone today.
-      if (signIn.runs !== "attended") say(RECIPE_CODES.invalid, 'signIn.runs is "attended": the runs the vendor\'s terms allow a person\'s sign-in on (a run its one owner started by hand and is at)');
+      for (const field of Object.keys(signIn)) if (!["args", "homeArg"].includes(field)) say(RECIPE_CODES.invalid, `signIn.${field} is not a sign-in field`);
+      if (!strings(signIn.args) || !signIn.args.length) say(RECIPE_CODES.invalid, 'signIn.args is a list of at least one string: the flags that start the agent\'s own sign-in (["--login"])');
+      else if (signIn.args.some((arg) => EXPANDS.test(arg))) say(RECIPE_CODES.env, "signIn.args reads the host's environment ($NAME); write each argument out");
+      if (typeof signIn.homeArg !== "string" || !LONG_FLAG.test(signIn.homeArg)) say(RECIPE_CODES.invalid, 'signIn.homeArg is the long flag the agent takes the folder it keeps its sign-in in by ("--gemini-dir"), its value given by AgentRun');
+      else {
+        const archives = isPlain(release) && isPlain(release.archives) ? Object.values(release.archives) : [];
+        const elsewhere = [strings(signIn.args) ? signIn.args : [], strings(r.args) ? r.args : [], ...archives.map((archive) => (isPlain(archive) && strings(archive.args) ? archive.args : []))];
+        const flag = signIn.homeArg;
+        if (elsewhere.some((args) => args.some((arg) => arg === flag || arg.startsWith(`${flag}=`)))) say(RECIPE_CODES.invalid, `signIn.homeArg ${flag} is in args too: AgentRun alone gives it its value, the owner's sign-in folder`);
+      }
     }
     if (isPlain(model) && model.billing !== "plan") say(RECIPE_CODES.invalid, "signIn is for a plan-billed agent: a proxy-billed one runs on the server's key, through its proxy");
   }
@@ -329,7 +336,7 @@ export function parseRecipe(text: string): Recipe {
     state: (r.state ?? []).map((path) => insideHome(path)!),
     declares: r.declares,
     quirks: r.quirks ?? {},
-    ...(r.signIn ? { signIn: Object.freeze({ method: r.signIn.method, homeEnv: r.signIn.homeEnv, runs: r.signIn.runs }) } : {}),
+    ...(r.signIn ? { signIn: Object.freeze({ args: Object.freeze([...r.signIn.args]), homeArg: r.signIn.homeArg }) } : {}),
   });
 }
 
@@ -396,24 +403,23 @@ export function pinnedTree(data: string, recipe: Recipe, release: RecipeArchive,
   return recorded ? { sha256: recorded, by: "first-seen" } : undefined;
 }
 
-/** The folder the agent keeps its owner's sign-in in (its signIn.homeEnv on an attended run, and on
- *  `agentrun harness sign-in`): `<data>/harnesses/<id>.sign-in`, 0700, beside the install and never inside it (a
- *  reinstall keeps the sign-in). The agent alone writes and reads what is in it. */
+/** The folder the agent keeps its owner's sign-in in (given by signIn.homeArg on `agentrun harness sign-in` and on every
+ *  run on that sign-in): `<data>/harnesses/<id>.sign-in`, 0700, beside the install and never inside it (a reinstall keeps
+ *  the sign-in). The agent alone writes and reads what is in it: AgentRun hands it the path, and never lists, opens,
+ *  copies or sends anything in it. */
 export const signInHomeOf = (data: string, id: string): string => join(harnessesOf(data), `${id}.sign-in`);
+
+/** AgentRun's own note that the agent's sign-in ended well (its exit status 0), beside the folder and never in it:
+ *  `<data>/harnesses/<id>.signed-in`, holding when and on which version. It holds nothing of the sign-in. */
+export const signedInNoteOf = (data: string, id: string): string => join(harnessesOf(data), `${id}.signed-in`);
 
 /** The owner's command that signs the recipe at `file` in, on `data`. */
 export const recipeSignInLine = (file: string, data: string, env: NodeJS.ProcessEnv = process.env): string =>
   `agentrun harness sign-in --recipe ${shellWord(file)}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;
 
-/** Whether the agent's sign-in folder holds anything: its names alone are listed, nothing in it is opened. */
-export const signedIn = (data: string, recipe: Recipe): boolean => {
-  if (!recipe.signIn) return true;
-  try {
-    return readdirSync(signInHomeOf(data, recipe.id)).length > 0;
-  } catch {
-    return false;
-  }
-};
+/** Whether the agent's own sign-in ended well on `data` (signedInNoteOf): nothing in its folder is read to say so.
+ *  Whether the sign-in still holds is the agent's to say when it runs (an ACP -32000, Authentication required). */
+export const signedIn = (data: string, recipe: Recipe): boolean => recipe.signIn !== undefined && existsSync(signedInNoteOf(data, recipe.id));
 
 /** Installs the recipe's release into `<data>/harnesses/<id>` (the owner's command, rule 4): its archive downloaded and
  *  checked against the recipe's sha256, unpacked, and its binary checked against the recipe's pin, or recorded as the

@@ -27,7 +27,7 @@ const NONE = { none: "this server has no shell to give an agent now: no box" };
 /** The refusal's words where the shell here is no sandbox: the programs by name, and the image that gives them. */
 /** Why no sandbox answers in Mode 2, as the refusal says it: Archil's exec is none, and the docker box can't mount its workspaces. */
 const MODE2_WHY = /no sandbox answers here: Archil's serverless exec is no sandbox, and the docker box is unavailable here \(Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them/;
-const NO_SANDBOX = /^The film template needs a sandbox that has hyperframes and ffmpeg on its PATH, and .+\. Nothing was created\. .*AGENTRUN_DOCKER_IMAGE/;
+const NO_SANDBOX = /^The film template needs a sandbox that has hyperframes and ffmpeg, and .+\. Nothing was created\. .*AGENTRUN_DOCKER_IMAGE/;
 
 /** A folder holding `name`'s agent.md, `text`. */
 async function packageDir(t, name, text) {
@@ -79,7 +79,7 @@ test("a template's needs read beside computer: [shell] alone, as a list of progr
     assert.ok(problems.some((p) => beside.test(p)), `${JSON.stringify(computer)}: ${JSON.stringify(problems)}`);
   }
   // As a sandbox's computer.needs is checked (computer-needs.ts needsIssues), at the field `needs`.
-  for (const [value, words] of [["ffmpeg", /needs is a list of 1 to 32 program names/], ["[]", /needs is a list of 1 to 32 program names/], ["[/usr/bin/ffmpeg]", /needs holds "\/usr\/bin\/ffmpeg", not a program's name/], ["[ffmpeg, ffmpeg]", /needs names one program twice/]]) {
+  for (const [value, words] of [["ffmpeg", /needs is a list of 1 to 32 program names/], ["[]", /needs is a list of 1 to 32 program names/], ["[/usr/bin/ffmpeg]", /needs holds "\/usr\/bin\/ffmpeg", not a need's name/], ["[ffmpeg, ffmpeg]", /needs names one need twice/]]) {
     const problems = await problemsOf(t, "[hyperframes, ffmpeg]", value);
     assert.ok(problems.some((p) => words.test(p)), `${value}: ${JSON.stringify(problems)}`);
   }

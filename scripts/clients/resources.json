@@ -48,6 +48,7 @@
     "unarchiveAgent": ["agents", "unarchive"],
     "listRuns": ["agents", "runs"],
     "listRevisions": ["revisions", "list"],
+    "getAgentPackage": ["agents", "package"],
     "setCurrent": ["revisions", "set-current"],
     "validateWorkflow": ["workflows", "validate"],
     "createRun": ["runs", "start"],

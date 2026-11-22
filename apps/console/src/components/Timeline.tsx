@@ -111,6 +111,13 @@ const toolName = (tool: string | null | undefined) => (tool ? (mcpToolLabel(tool
 const label = (row: TimelineRow) => fromServer(row) ? "AgentRun" : fromTrigger(row) ? (triggerParts(row).who ?? "Trigger") : isFeedbackRow(row) ? "Your grade" :
   ({ user_message: "You", thinking: "Thinking", tool_use: toolName(row.tool_name) ?? "Tool", tool_result: toolName(row.tool_name) ?? "Result", waiting: "Waiting for you", usage: "Usage", final_answer: "Answer", phase: "Phase", error: "Error", decision: "Decision", text_block: "Text", tool_approval_requested: "Your approval", learning: "Learning" } as Partial<Record<string, string>>)[row.kind] ?? row.kind;
 
+/** A row's label and its title as this list says them, for another list of the run's steps (the Screen tab's, beside a
+ *  recording): the same words for the same row. */
+export const rowLabel = (row: TimelineRow): string => label(row);
+export function RowTitle({ row }: { row: TimelineRow }): ReactNode {
+  return inline(title(row));
+}
+
 /** A waiting row's chip, by what the run waits on now (its `pending.kind`, the run page's to pass: a row carries no kind
  *  of its own), as the run header's status chip says it. Only a wait whose row is a `waiting` one: a cap pause's. An
  *  approval waits on its own tool_approval_requested row, which carries "Approval required"; the newest waiting row

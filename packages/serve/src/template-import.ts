@@ -1,25 +1,78 @@
-// POST /v2/templates/import and the imported packages' life here: read from GitHub (template-source.ts), checked by the one
-// checker (templates.ts readPackage, over the files held in memory), stored (store `imported_templates`) and loaded beside
-// the bundled packages at each start. The first import stored from a GitHub account needs its owner's "I trust <account>",
-// remembered server-side (settings TRUSTED_PUBLISHERS). Nothing in a package runs.
+// POST /v2/templates/import and the imported packages' life here: read from GitHub (template-source.ts), or uploaded whole
+// as its files ({files}, by `agentrun deploy`), checked by the one checker (templates.ts readPackage, over the files held
+// in memory), stored (store `imported_templates`) and loaded beside the bundled packages at each start. The first import
+// stored from a GitHub account needs its owner's "I trust <account>", remembered server-side (settings
+// TRUSTED_PUBLISHERS); an upload needs none, as only this server's owner (its session or its token) sends one, and it
+// goes with the last agent applied from it (store Agents.purge). Nothing in a package runs.
+import { packageSha256 } from "./agent-package.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
-import type { Store } from "./store/index.js";
+import { type Store, UPLOAD_PREFIX } from "./store/index.js";
 import { fetchPackageFiles, type GithubReach, type GithubSource, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
-import { memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
+import { MANIFEST, manifestName, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
 import { isObject, type Json, unknownFields } from "./validate.js";
 
 /** The settings key that holds the GitHub accounts this server's owner trusts as publishers, lower-cased. */
 export const TRUSTED_PUBLISHERS = "templates.trusted_publishers";
+
+/** An uploaded package's id is this and its manifest's name: the next upload of that name replaces it. */
+export { UPLOAD_PREFIX };
 
 export type TemplateImportDeps = {
   registry: TemplateRegistry;
   store: Pick<Store, "importedTemplates" | "settings">;
   /** Where GitHub is read (template-source.ts GithubReach): GitHub's hosts and this server's App token when it has one. */
   reach: (signal: AbortSignal) => Promise<GithubReach>;
+  /** The API-only profile: an upload is taken, a GitHub source refused (its backend sends the package). */
+  apiOnly?: boolean;
 };
 
-/** The folder name a package's id ends in: its path's last part, else the repository's name (agent.md's `name` is it). */
-const nameOf = (id: string) => id.slice("github:".length).split("/").at(-1)!;
+/** The folder name a package's id ends in: an upload's name, else its path's last part, else the repository's name
+ *  (agent.md's `name` is it). */
+const nameOf = (id: string) => (id.startsWith(UPLOAD_PREFIX) ? id.slice(UPLOAD_PREFIX.length) : id.slice("github:".length).split("/").at(-1)!);
+
+/** An upload's sha: the digest an export names (agent-package.ts packageSha256), which `agentrun deploy` locks. */
+const uploadSha = (files: ReadonlyMap<string, Buffer>): string => packageSha256([...files].map(([path, data]) => ({ path, encoding: "base64", content: data.toString("base64") })));
+
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+/** A path part that is not plain, or a character no package path holds (a control character, a backslash). */
+const NOT_PLAIN = (path: string) => /[\0-\x1f\x7f\\]/.test(path) || path.split("/").some((part) => part === "" || part === "." || part === "..");
+
+/** An upload's files ({path, encoding, content}) as the package's bytes by path: 422 under files.<i> for one that is not
+ *  that shape; the GitHub import's own refusals (ImportRefused "package") for a path that is not plain or is there twice,
+ *  over its count and over the bytes it keeps. */
+function uploadFiles(raw: unknown): Map<string, Buffer> {
+  const shape = "files is a list of {path, encoding, content}: each file of the package, its encoding utf8 or base64";
+  if (!Array.isArray(raw) || raw.length === 0) throw invalid([{ field: "files", reason: "wrong_type", message: shape }]);
+  if (raw.length > IMPORT_LIMITS.files) throw new ImportRefused("package", `The package holds over ${IMPORT_LIMITS.files} files.`);
+  const issues: InputIssue[] = [];
+  const read: [string, Buffer][] = [];
+  raw.forEach((one: unknown, i) => {
+    if (!isObject(one) || typeof one.path !== "string" || typeof one.content !== "string") return void issues.push({ field: `files.${i}`, reason: "wrong_type", message: shape });
+    for (const issue of unknownFields(one, ["path", "encoding", "content"])) issues.push({ ...issue, field: `files.${i}.${issue.field}` });
+    if (one.encoding !== "utf8" && one.encoding !== "base64") return void issues.push({ field: `files.${i}.encoding`, reason: "not_an_option", message: "encoding is utf8 or base64" });
+    if (one.encoding === "base64" && !BASE64.test(one.content)) return void issues.push({ field: `files.${i}.content`, reason: "invalid", message: `${JSON.stringify(one.path)}'s content is not base64` });
+    read.push([one.path, Buffer.from(one.content, one.encoding)]);
+  });
+  if (issues.length) throw invalid(issues);
+  const files = new Map<string, Buffer>();
+  let kept = 0;
+  for (const [path, data] of read) {
+    if (NOT_PLAIN(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)}, a path that is not plain: refused.`);
+    if (files.has(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)} twice: refused.`);
+    kept += data.length;
+    if (kept > IMPORT_LIMITS.packageBytes) throw new ImportRefused("package", `The package's files are over the ${IMPORT_LIMITS.packageBytes} bytes an import keeps.`);
+    files.set(path, data);
+  }
+  // A path that is a file and a folder's name at once (agent.md and agent.md/x) is no folder a package could be.
+  for (const path of files.keys()) {
+    const parts = path.split("/");
+    for (let end = 1; end < parts.length; end++) {
+      const folder = parts.slice(0, end).join("/");
+      if (files.has(folder)) throw new ImportRefused("package", `The package holds ${JSON.stringify(folder)} as a file and as a folder: refused.`);
+    }
+  }
+  return files;
+}
 
 /** An imported package read from its files, checked whole, with its id and origin: PackageError when it does not check. */
 export function importedPackage(id: string, origin: { source: string; sha: string; publisher: string }, files: ReadonlyMap<string, Buffer>): Package {
@@ -38,6 +91,15 @@ export async function loadImported(deps: Pick<TemplateImportDeps, "registry" | "
       skipped(row.id, error instanceof PackageError ? error.problems.join("; ") : (error as Error).message);
     }
   }
+}
+
+/** The uploads served here whose row the store no longer keeps (an agent's purge removed it: Agents.purge), no longer
+ *  served. Only the package read before the store is removed, so an upload put in meanwhile stays served. */
+export async function dropRemovedUploads(deps: Pick<TemplateImportDeps, "registry" | "store">): Promise<void> {
+  const served = deps.registry.list().filter((pkg) => pkg.origin !== null && pkg.id.startsWith(UPLOAD_PREFIX));
+  if (!served.length) return;
+  const stored = new Set(await deps.store.importedTemplates.ids());
+  for (const pkg of served) if (!stored.has(pkg.id) && deps.registry.get(pkg.id) === pkg) deps.registry.remove(pkg.id);
 }
 
 /** Whether `publisher` is one the owner trusts (case-insensitive, as GitHub's account names are). */
@@ -74,21 +136,48 @@ function refusalOf(error: unknown): never {
   throw error;
 }
 
-/** The body POST /v2/templates/import takes, checked: 422 naming each field that is wrong. */
-function bodyOf(body: Json): { source: GithubSource; dryRun: boolean; trustPublisher: boolean } {
-  const issues = unknownFields(body, ["source", "dry_run", "trust_publisher"]);
+/** The body POST /v2/templates/import takes, checked: 422 naming each field that is wrong. A GitHub source ({source}), or
+ *  the package's files ({files}, an upload); on an API-only server, the files alone. */
+function bodyOf(body: Json, apiOnly: boolean): { source: GithubSource; dryRun: boolean; trustPublisher: boolean } | { files: unknown; dryRun: boolean } {
+  const issues = unknownFields(body, ["source", "files", "dry_run", "trust_publisher"]);
   if (body.dry_run !== undefined && typeof body.dry_run !== "boolean") issues.push({ field: "dry_run", reason: "wrong_type", message: "dry_run is true or false" });
   if (body.trust_publisher !== undefined && typeof body.trust_publisher !== "boolean") issues.push({ field: "trust_publisher", reason: "wrong_type", message: "trust_publisher is true or false" });
   if (typeof body.source === "string" && body.source.length > 1024) issues.push({ field: "source", reason: "too_long", message: "source is at most 1024 characters" });
+  if (body.files !== undefined && body.source !== undefined) issues.push({ field: "files", reason: "not_allowed", message: "The body is {source} or {files}: source or files, not both." });
+  if (body.files !== undefined && body.trust_publisher !== undefined) issues.push({ field: "trust_publisher", reason: "not_allowed", message: "An upload is this server's owner's own package, so an upload asks no publisher's trust: trust_publisher goes with a source alone." });
+  if (apiOnly && body.source !== undefined) issues.push({ field: "source", reason: "not_allowed", message: "This server serves the API alone: a package is uploaded here as {files}, never read from GitHub." });
   if (issues.length) throw invalid(issues);
+  if (body.files !== undefined) return { files: body.files, dryRun: body.dry_run === true };
   return { source: parseSource(body.source), dryRun: body.dry_run === true, trustPublisher: body.trust_publisher === true };
 }
 
+/** An upload: its files checked as an import's are, its id `upload:<name>` (its manifest's name), its sha the package's
+ *  sha256; a dry run answers it, storing nothing; else it is stored and served (201), in place of the one of its name. */
+async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: boolean): Promise<{ status: 200 | 201; pkg: Package; trusted: boolean; replaced: string | null }> {
+  let pkg: Package;
+  let files: Map<string, Buffer>;
+  try {
+    files = uploadFiles(raw);
+    const id = `${UPLOAD_PREFIX}${manifestName(files.get(MANIFEST)?.toString("utf8") ?? "") ?? ""}`;
+    pkg = importedPackage(id, { source: id, sha: uploadSha(files), publisher: "" }, files);
+  } catch (error) {
+    refusalOf(error);
+  }
+  const replaced = deps.registry.get(pkg.id)?.origin?.sha ?? null;
+  if (dryRun) return { status: 200, pkg, trusted: true, replaced };
+  await deps.store.importedTemplates.put({ id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: "", files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
+  deps.registry.put(pkg);
+  return { status: 201, pkg, trusted: true, replaced };
+}
+
 /** POST /v2/templates/import: the package read at its source's commit and checked; a dry run answers it, storing nothing;
- *  else it is stored and served (201), in place of the one under its id. `signal` ends the read (the request's). */
+ *  else it is stored and served (201), in place of the one under its id. `signal` ends the read (the request's). An
+ *  upload ({files}) is uploadTemplate's. */
 export async function importTemplate(deps: TemplateImportDeps, raw: unknown, signal: AbortSignal): Promise<{ status: 200 | 201; pkg: Package; trusted: boolean; replaced: string | null }> {
-  if (!isObject(raw)) throw invalid([{ field: "body", reason: "wrong_type", message: "The body is {source, dry_run?, trust_publisher?}." }]);
-  const { source, dryRun, trustPublisher } = bodyOf(raw);
+  if (!isObject(raw)) throw invalid([{ field: "body", reason: "wrong_type", message: "The body is {source, dry_run?, trust_publisher?} or {files, dry_run?}." }]);
+  const body = bodyOf(raw, deps.apiOnly === true);
+  if ("files" in body) return uploadTemplate(deps, body.files, body.dryRun);
+  const { source, dryRun, trustPublisher } = body;
   const read = AbortSignal.any([signal, AbortSignal.timeout(IMPORT_LIMITS.ms)]);
   let pkg: Package;
   let files: Map<string, Buffer>;

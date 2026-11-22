@@ -58,7 +58,7 @@ import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
 import { catalogSessionNames, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
@@ -99,6 +99,9 @@ import type { AgenticBody } from "../store/agent-body.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
 import { monidForClaim, type MonidFake, withMonid } from "./monid-run.js";
+import { verifyPlacedProject, movedSkillFiles } from "../source-sync/claim.js";
+import { projectCheckpointForRun } from "./project-checkpoint.js";
+import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -458,6 +461,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const revisionRow = await deps.store.agents.revision(runRow.revisionId);
   if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);
   const body = (revisionRow.body ?? {}) as RevisionBody;
+  const movedProject = await verifyPlacedProject(deps.store, runRow, revisionRow, launch, { data: deps.data, sealKey: deps.sealKey, env: deps.env, ...(run.signal ? { signal: run.signal } : {}), control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
   const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
   const granted = body.tools ?? [];
 
@@ -511,14 +515,17 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
   // folder not there yet, never over an earlier claim's. A desktop or a phone (the revision's computer
   // setting, the one computerForClaim starts) brings its kind's skill, named in the prompt beside the revision's own.
-  const kindSkills = await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
+  const kindSkills = movedProject ? [] : await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
+  const currentSkills = movedProject ? await movedSkillFiles(ws.workspace, body.skills ?? {}, settingOfDefinition(body)?.computer.kind) : [...Object.keys(body.skills ?? {}), ...kindSkills];
   // A learning run's seed, read once from its learning folder where the run's place keeps it (runner/learning-seed.ts):
   // its learned workflows, cut of the server's secrets, the ones its learned_workflow tool runs. Read before the run's
-  // tools are bound. A learning fault, or a seed that failed (seedFailed), gives none.
+  // tools are bound. A learning fault, or a seed that failed (seedFailed), gives none. None a purged run wrote, by the
+  // store's runs; a run's own process (no seal key) reads no other run, and its runner reads the seed again
+  // (learned-first.ts learnedFirstWhereHeld).
   const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
   const learningFolder = () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil }));
   const seedLaid = start && !seedFailed(start)
-    ? await layLearningSeed({ seed: start.seed, folder: learningFolder, shown, log, ...(start.noWorkflows ? { workflows: false as const } : {}) })
+    ? await layLearningSeed({ seed: start.seed, folder: learningFolder, store: deps.sealKey ? deps.store : null, shown, log, ...(start.noWorkflows ? { workflows: false as const } : {}) })
     : undefined;
 
   // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin, the one its revision's save made, read, its
@@ -562,7 +569,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // as `tools.<name>`, each a nested call, gated and recorded as the model's own call is. A computer that replaced an
   // earlier claim's holds its acts to what it showed.
   const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
-  holds.hold({ tools });
+  let remoteProjectCapture = false;
+  holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
@@ -572,7 +580,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The run's secrets for this claim, read from the one store (never this process's environment or a pipe): the keys its
   // tools unlock and its model needs, scoped to the run as the old per-run environment was, so one run's keys never reach
   // another's on this runner (claim-secrets.ts). MCP credentials are the other per-claim secret and come through mcp-claim.
-  const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+  const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env, redact: run.redact }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch, claim.runId);
   // The run's own model key, when its caller handed one (model_key, sealed in its launch): opened at every claim, a reclaim
   // after a crash among them, and held by the run's one redactor. Its model routes read it alone; its tools never do.
   // A run that starts on the server's key holds the claim's key holder too: a message's first key reaches its next request.
@@ -720,10 +728,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Model spend beside the run that its caller's key does not pay for (claimSpendOff): a shadow audit and a replay check
   // are skipped, in words, where the run brought its own key or the server holds none.
   const spendOff = await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey);
-  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff };
+  const admitAuxiliary = runnerSeam() ? undefined : sourceAuxiliaryAdmitter(deps.store, { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
+  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff, admitAuxiliary };
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
   // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself.
-  const learned = await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff }, seedLaid?.workflows ?? []);
+  const learned = await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff, admitAuxiliary }, seedLaid?.workflows ?? []);
   const firstChoice = learned.choice;
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsOver, learn/replay-calls.ts).
@@ -748,7 +757,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     }
     const learnedKeys = await learnedDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, workflows, (provider) => gate.permissions.policy(provider) !== "deny");
     holdClaimed(cut, learnedKeys);
-    Object.assign(toolEnv, learnedKeys);
+    underClaimed(toolEnv, learnedKeys);
   }
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a route of its own beside the session's, on the
   // session's booking under the run's one cap. None: the pair is compared whole, in words saying so.
@@ -797,7 +806,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The one path for every harness.
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
-  const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...kindSkills], ws.workspace, { onDemand: readsFiles(granted) });
+  const instructions = await promptOf(laid, currentSkills, ws.workspace, { onDemand: movedProject || readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   // The run's clock: a template eval case's (EvalFakes.now), else the real one.
   const now = fakes?.now;
@@ -955,6 +964,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // credential with it, and the run's timeline is told so.
     ...(computer.keeps ? { keptWords: computerKeptWords(computer.keeps) } : {}),
     release: (how) => holds.release(how),
+    ...(movedProject ? { projectCheckpoint: projectCheckpointForRun({ store: deps.store, agentId: runRow.agentId, claim, launch, tools, computer,
+      workspace: { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },
+      secrets: async () => runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)),
+    }, () => { remoteProjectCapture = true; }) } : {}),
     endCheckout: () => holds.endCheckout(),
   };
 }

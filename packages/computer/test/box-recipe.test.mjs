@@ -408,3 +408,9 @@ test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, ea
   // E2B's builder adds sudo before the recipe's steps: a sudo check here would refuse its build before the guard takes it away.
   assert.doesNotMatch(desktop, /command -v sudo/, "the desktop's no-sudo check is the guard's, after it");
 });
+
+test("the default box recipe's hash stays ed5aee54d3ea: staging's desktops start from the snapshot of that name through beta.53", async () => {
+  // Another image (media/, documents/) is a recipe of its own; nothing it adds moves this one.
+  const { recipeHash } = await import("../box/recipe.mjs");
+  assert.equal(recipeHash(), "ed5aee54d3ea");
+});

@@ -25,6 +25,43 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "bind-source-tool"
+    ],
+    "operationId": "bindSourceTool",
+    "method": "POST",
+    "path": "/agents/{agent_id}/source/tools",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "tool",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "server",
+        "type": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Choose the existing destination account for a required source tool"
+  },
+  {
+    "command": [
+      "agents",
       "connect-native"
     ],
     "operationId": "connectNative",
@@ -327,6 +364,28 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "get-source-sync"
+    ],
+    "operationId": "getSourceSync",
+    "method": "GET",
+    "path": "/agents/{agent_id}/source",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read source sync and managed Move readiness"
+  },
+  {
+    "command": [
+      "agents",
       "list"
     ],
     "operationId": "listAgents",
@@ -410,6 +469,113 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "move-source-agent"
+    ],
+    "operationId": "moveSourceAgent",
+    "method": "POST",
+    "path": "/agents/{agent_id}/source/move",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Move the same agent to server-managed execution from its complete synchronized setup"
+  },
+  {
+    "command": [
+      "agents",
+      "package"
+    ],
+    "operationId": "getAgentPackage",
+    "method": "GET",
+    "path": "/agents/{agent_id}/package",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The agent's current revision as a template package"
+  },
+  {
+    "command": [
+      "agents",
+      "resolve-source-sync"
+    ],
+    "operationId": "resolveSourceSync",
+    "method": "POST",
+    "path": "/agents/{agent_id}/source/resolve",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "revision",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "snapshot",
+        "type": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Use an explicitly reviewed source snapshot while retaining the prior managed revision in history"
+  },
+  {
+    "command": [
+      "agents",
+      "review-source-project"
+    ],
+    "operationId": "reviewSourceProject",
+    "method": "POST",
+    "path": "/agents/{agent_id}/source/project-review",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Acknowledge exact unresolved run receipts and allow later runs to use the saved project"
+  },
+  {
+    "command": [
+      "agents",
       "runs"
     ],
     "operationId": "listRuns",
@@ -462,6 +628,37 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "The agent's runs index"
+  },
+  {
+    "command": [
+      "agents",
+      "set-source-sync"
+    ],
+    "operationId": "setSourceSync",
+    "method": "PATCH",
+    "path": "/agents/{agent_id}/source",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "enabled",
+        "type": "boolean",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Enable or pause this agent’s source sync"
   },
   {
     "command": [
@@ -921,6 +1118,12 @@ export const COMMANDS = [
         "type": "string",
         "required": false,
         "description": ""
+      },
+      {
+        "name": "connector_id",
+        "type": "string",
+        "required": false,
+        "description": ""
       }
     ],
     "hasBody": true,
@@ -931,6 +1134,31 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Create a ten-minute one-use connection code"
+  },
+  {
+    "command": [
+      "connectors",
+      "grant-source-sync"
+    ],
+    "operationId": "grantSourceSync",
+    "method": "POST",
+    "path": "/connectors/{connector_id}/targets/{target_id}/sync/grant",
+    "pathParams": [
+      "connector_id",
+      "target_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read or establish this explicitly authorized source sync grant without re-enabling a paused grant"
   },
   {
     "command": [
@@ -1054,6 +1282,44 @@ export const COMMANDS = [
   {
     "command": [
       "connectors",
+      "publish-source-sync"
+    ],
+    "operationId": "publishSourceSync",
+    "method": "POST",
+    "path": "/connectors/{connector_id}/targets/{target_id}/sync",
+    "pathParams": [
+      "connector_id",
+      "target_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "generation",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "sequence",
+        "type": "integer",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Publish a bounded source snapshot under its grant and sequence"
+  },
+  {
+    "command": [
+      "connectors",
       "register-remote-connector"
     ],
     "operationId": "registerRemoteConnector",
@@ -1151,6 +1417,56 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Revoke a source connector and stop its outstanding commands"
+  },
+  {
+    "command": [
+      "connectors",
+      "source-sync-failure"
+    ],
+    "operationId": "sourceSyncFailure",
+    "method": "POST",
+    "path": "/connectors/{connector_id}/targets/{target_id}/sync/status",
+    "pathParams": [
+      "connector_id",
+      "target_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "generation",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "sequence",
+        "type": "integer",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "code",
+        "type": "string",
+        "enum": [
+          "unsupported_platform",
+          "source_changed",
+          "source_unavailable",
+          "snapshot_too_large"
+        ],
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Record a fixed source failure while preserving its last complete snapshot"
   },
   {
     "command": [
@@ -1958,6 +2274,26 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "list-mcp-server-names"
+    ],
+    "operationId": "listMcpServerNames",
+    "method": "GET",
+    "path": "/settings/mcp-server-names",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The names of the MCP servers saved here, and nothing else of them"
+  },
+  {
+    "command": [
+      "local",
       "receive-hook-composio"
     ],
     "operationId": "receiveHook_composio",
@@ -2457,7 +2793,7 @@ export const COMMANDS = [
         "name": "model_key",
         "type": "string",
         "required": false,
-        "description": "The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call."
+        "description": "The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased from the store by the write that ends the run's turn (the runner's redactor keeps the value in memory to cut it); never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 `invalid` at `model_key` for a key under 8 characters (no cut could hold it) or one with a space or a control character; 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call."
       },
       {
         "name": "workflow_first",
@@ -2864,7 +3200,7 @@ export const COMMANDS = [
         "name": "model_key",
         "type": "string",
         "required": false,
-        "description": "The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call. On a message it replaces the run's key from the run's next model request on, a turn still going included, and it is the first key of a run that started on the server's (mint one per turn); a message without one keeps the key the run holds, which is none once its last turn ended: then, where the server holds no key for the run's model, the message is 422 `model_key_required` and nothing is written."
+        "description": "The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased from the store by the write that ends the run's turn (the runner's redactor keeps the value in memory to cut it); never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 `invalid` at `model_key` for a key under 8 characters (no cut could hold it) or one with a space or a control character; 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call. On a message it replaces the run's key from the run's next model request on, a turn still going included, and it is the first key of a run that started on the server's (mint one per turn); a message without one keeps the key the run holds, which is none once its last turn ended: then, where the server holds no key for the run's model, the message is 422 `model_key_required` and nothing is written."
       }
     ],
     "hasBody": true,
@@ -3039,7 +3375,7 @@ export const COMMANDS = [
         "name": "model_key",
         "type": "string",
         "required": false,
-        "description": "The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call."
+        "description": "The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased from the store by the write that ends the run's turn (the runner's redactor keeps the value in memory to cut it); never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 `invalid` at `model_key` for a key under 8 characters (no cut could hold it) or one with a space or a control character; 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call."
       },
       {
         "name": "workflow_first",
@@ -3720,10 +4056,28 @@ export const COMMANDS = [
     ],
     "bodyFlags": [
       {
+        "name": "dry_run",
+        "type": "boolean",
+        "required": false,
+        "description": "True: answer the apply's plan (200 `{plan}`) from the same reads and checks, writing nothing and keeping no Idempotency-Key record. Missing keys and MCP servers are listed in the plan where the apply would be 409; any other refusal is the apply's own."
+      },
+      {
         "name": "agent_id",
         "type": "string",
         "required": false,
         "description": "An agent this package made here (GET /agents `template.id` is the package's id): the apply writes a new revision of it in place of making another, answered 200 with the same id. Its runs and its learning (corrections and workflows) stay. The parameters and grants are checked as a fresh apply checks them. Its triggers are reconciled by name: one of a name it has is changed in place (its id, a feed trigger's seen items, a webhook trigger's secret and whether it is on are kept; a `catchup_window_s` or `max_active_runs` the package leaves out goes back to its default, as a fresh apply makes it; a source the package leaves as it was is not rewritten, so a schedule keeps its next time, and an `every_s` one with no `start_at` the grid its first apply set), a new name is made, and one this package's apply made or kept that the package no longer lists is removed (a feed trigger whose feeds are left empty is not listed). Which triggers are the package's is kept on each trigger, never in an API body: one the owner made, one moved to the agent from another (or away and back), and one made before this was kept are never removed. A Composio trigger it removes (the package dropped it, or makes it again) goes at Composio first: one whose instance Composio does not delete is kept here as it was (on or off, the package's, its config sealed), and the next apply removes it; a dropped one is said in `warnings` under `triggers`, naming it and what is left at Composio. Such an unmarked trigger with a package trigger's name is adopted only when it can be changed in place (the same kind, and for a Composio trigger the same server, event and config), and is the package's from then on; one that would have to be made again, or one another package made, is 409 name_taken under `triggers.<i>.name` before anything is written: rename or delete it, then apply again. A trigger moved to another agent while the update runs is neither changed nor removed; its name is made anew. A Composio trigger it keeps keeps its sealed config when the package sends the same values; one whose server, event or config the package changes (another key too) is made again, as one whose source kind changed is: the old trigger and its Composio instance are removed first, and the new one is off where the owner turned the old one off. When Composio does not delete the old instance, the new one is not made, and the apply is 424 upstream_failed with the new revision standing and the old trigger kept as it was (remove the instance at Composio, or wait, and apply again: the old trigger's off carries to the new one). What the package owns and its new version leaves out (an input or answer schema, a checkout, a default cap, learning) is gone from the agent; what the host set (its harness, computer, sdk and native references) is kept. Updates of one agent run one after the other on a server, and each writes only onto the revision it read: one whose read went stale meanwhile (an edit, or an update elsewhere) is 412 precondition_failed, with nothing changed. An agent made otherwise, or from another package, is 422 under `agent_id`, saying which; an unknown id is 404; an archived agent is 409 agent_archived."
+      },
+      {
+        "name": "revision",
+        "type": "string",
+        "required": false,
+        "description": "With `agent_id`: the agent's revision as you read it (GET /agents/{agent_id} `revision`, or a plan's `current_revision_id`). The apply, or its plan, writes only while it is the agent's current one: another is 412 precondition_failed, nothing changed. Without `agent_id` it is 422."
+      },
+      {
+        "name": "sha",
+        "type": "string",
+        "required": false,
+        "description": "The package's sha as you read it (GET /templates `sha`, or an import's answer): the apply, or its plan, is 412 precondition_failed when the package stored under this id is another (an upload of the same name replaced it), nothing changed."
       }
     ],
     "hasBody": true,
@@ -3795,8 +4149,8 @@ export const COMMANDS = [
       {
         "name": "source",
         "type": "string",
-        "required": true,
-        "description": "Where the package is: `github:<owner>/<repo>[/<path>][@<ref>]` (the ref, a branch, tag or commit, defaults to the default branch), or the folder's https://github.com/<owner>/<repo>/tree/<ref>/<path> URL. A public repository on github.com alone."
+        "required": false,
+        "description": "Where the package is: `github:<owner>/<repo>[/<path>][@<ref>]` (the ref, a branch, tag or commit, defaults to the default branch), or the folder's https://github.com/<owner>/<repo>/tree/<ref>/<path> URL. A public repository on github.com alone. Not with `files`; refused on a server that serves the API alone."
       },
       {
         "name": "dry_run",
@@ -3818,7 +4172,7 @@ export const COMMANDS = [
     ],
     "secretBody": false,
     "raw": false,
-    "summary": "Import a template package from a public GitHub repository, or preview it (dry_run)"
+    "summary": "Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run)"
   },
   {
     "command": [

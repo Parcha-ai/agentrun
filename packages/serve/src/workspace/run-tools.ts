@@ -308,6 +308,8 @@ export type RunTools = {
   /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
    *  no computer), then bash's full outputs and TMPDIR swept. */
   end(): Promise<void>;
+  /** Strict checkpoint stop: cleanup errors or any still-running tracked process refuse publication. */
+  settleProject(): Promise<readonly string[]>;
 };
 
 /**
@@ -332,6 +334,13 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     kindTools,
     ...(run.computer ? { computer: run.computer } : {}),
     hostTools: (names, results) => bindTools(run, registry, names, results ? { results } : {}),
+    async settleProject() {
+      const before = await run.hands.processes?.list() ?? [];
+      await endBackground(run.hands);
+      if ((await run.hands.processes?.list() ?? []).some(process => process.running)) throw new Error("Project processes have not settled.");
+      await run.sweep();
+      return before.filter(process => process.argv[3] === "agentrun-background" && /^[1-9][0-9]*$/.test(process.argv[4] ?? "")).map(process => `background/${process.argv[4]}/output.log`);
+    },
     async end() {
       await endBackground(run.hands);
       await run.sweep();

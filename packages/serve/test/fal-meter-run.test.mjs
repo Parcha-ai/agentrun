@@ -163,3 +163,90 @@ test("a fal job that settles above its hold while another is still held: when th
   assert.deepEqual([view.status, view.error?.code], ["failed", "spend_cap_reached"]);
   assert.match(view.error?.message ?? "", /over its cap of \$1\.$/);
 });
+
+/** Three calls at once under a $1 cap, in one message. ideogram's job, held at $0.40 (4 images at $0.10), states 12 images
+ *  ($1.20) and stops the run for good. flux's job passed the tool gate beside it, and the fake answers its price only once
+ *  ideogram's result is on the timeline (the gateway answers only after its settle, so after the stop): flux's job is
+ *  admitted after the stop, and the cap refuses it for room. A script's first call, `wait`, passed the gate before the stop
+ *  (ideogram answers only once it has arrived); the fake answers it only once flux's refusal is on the timeline. The
+ *  script's next call, `last`, comes after both. The order is the fake's and the timeline's, never a timer's. */
+async function admittedAfterStop(t) {
+  const { api } = await serve(t, { faux: AT_ONCE });
+  const fake = await startFakeMcp({});
+  t.after(() => fake.close());
+  let runId;
+  // The timeline's own long poll (wait_ms) from its cursor, as `follow` reads it, bounded: each page's rows (new or changed
+  // since the last) are checked until a row `matches`, or a failure names `what` that never came.
+  const onTimeline = async (matches, what) => {
+    const deadline = Date.now() + 30_000;
+    let after = 0;
+    while (Date.now() < deadline) {
+      if (!runId) { await new Promise((done) => setImmediate(done)); continue; }
+      const page = (await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=2000`)).body;
+      if (page?.rows?.some(matches)) return;
+      after = page?.next_after ?? after;
+    }
+    throw new Error(`not within 30 s: ${what}`);
+  };
+  const schemaCalls = [];
+  let waitArrived;
+  const waitSent = new Promise((done) => { waitArrived = done; });
+  const reply = (args, n) => ({ content: [{ type: "text", text: JSON.stringify({ status: "completed", submission_replayed: false, endpoint_id: args.endpoint_id, request_id: `r-${args.endpoint_id}`, result: { images: Array.from({ length: n }, (_, i) => ({ url: `https://v3.fal.media/${i}.png`, width: 1000, height: 1000 })) }, has_result: true }) }] });
+  const price = (endpoint_id, unit_price, unit) => ({ content: [{ type: "text", text: JSON.stringify({ prices: [{ endpoint_id, unit_price, unit, currency: "USD" }], next_cursor: null, has_more: false }) }] });
+  fake.tools.get_pricing = {
+    description: "fal's price for an endpoint.",
+    input: { type: "object", properties: { endpoint_id: { type: "string" } }, required: ["endpoint_id"], additionalProperties: false },
+    run: async ({ endpoint_id }) => {
+      if (endpoint_id === "fal-ai/ideogram/v3") return price(endpoint_id, 0.1, "images");
+      await onTimeline((row) => row.kind === "tool_result" && /run_model: ok/.test(row.summary ?? ""), "ideogram's result on the run's timeline");
+      return price(endpoint_id, 0.5, "megapixels");
+    },
+  };
+  fake.tools.run_model = {
+    description: "Run a fal model.",
+    input: { type: "object", properties: {} },
+    run: async (args) => {
+      if (args.endpoint_id === "fal-ai/ideogram/v3") return (await waitSent, reply(args, 12));
+      return reply(args, 1);
+    },
+  };
+  fake.tools.get_model_schema = {
+    description: "A fal model's schema.",
+    input: { type: "object", properties: {} },
+    run: async (args) => {
+      schemaCalls.push(args.endpoint_id);
+      if (args.endpoint_id === "wait") {
+        waitArrived();
+        await onTimeline((row) => row.kind === "tool_result" && /run_model failed/.test(row.summary ?? ""), "flux's refusal on the run's timeline");
+      }
+      return { content: [{ type: "text", text: "{}" }] };
+    },
+  };
+  assert.equal((await api("PUT", "/settings/mcp-servers/fal", { url: fake.url, auth: { type: "none" }, toolkit: "fal" })).status, 200);
+  const SCHEMA = "mcp:fal/get_model_schema";
+  const made = await api("POST", "/agents", agent("sticky", { tools: [RUN_MODEL, SCHEMA], tool_settings: { [RUN_MODEL]: { permission: "allow" }, [SCHEMA]: { permission: "allow" } } }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const script = "await tools.mcp__fal__get_model_schema({ endpoint_id: 'wait' }); await tools.mcp__fal__get_model_schema({ endpoint_id: 'last' }).catch(() => 'refused'); return 'end';";
+  const calls = [
+    ["mcp__fal__run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a lighthouse", num_images: 4 } }],
+    ["mcp__fal__run_model", { endpoint_id: "fal-ai/flux/schnell", input: { prompt: "a harbour", image_size: { width: 1000, height: 1000 }, num_images: 1 } }],
+    ["codemode", { script }],
+  ];
+  const run = await api("POST", "/agents/sticky/runs", { input: { content: `At once: ${JSON.stringify(calls)}` }, max_cost_usd: 1 });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  runId = run.body.run_id;
+  await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  const sent = (tool) => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === tool).length;
+  return { view, sent, schemaCalls };
+}
+
+test("a stop for good stays: a paid call admitted after it and refused for room never lets a later call of a script run", { timeout: 120_000 }, async (t) => {
+  const { view, sent, schemaCalls } = await admittedAfterStop(t);
+  assert.equal(sent("get_pricing"), 2, "flux's job read its price after the stop, so it passed the gate before it");
+  assert.equal(sent("run_model"), 1, "only the job that passed the cap was sent; flux's was refused at its admission");
+  assert.deepEqual(schemaCalls, ["wait"], "the script's call after the stop was never sent");
+  assert.equal(micro(view.cost.tools_usd), micro(1.2));
+  assert.deepEqual([view.status, view.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(view.error));
+  assert.match(view.error?.message ?? "", /over its cap of \$1\.$/, "ended in the stop's words");
+});

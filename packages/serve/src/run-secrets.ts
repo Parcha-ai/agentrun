@@ -12,6 +12,7 @@ import { GATEWAY_KEY_ENV, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, type Ti
 import { DECISION_KEYS, SECRET_NAMES } from "./secrets.js";
 import { TOOL_FIELDS, TOOL_KEYS, unlocksTool } from "./tool-keys.js";
 import { workflowTools } from "./tools.js";
+import { LAUNCH_HOOK_SECRET_ENV } from "./trigger-launch-hook.js";
 import { ARCHIL_API_KEY_ENV } from "./workspace/archil-key.js";
 
 /** The computer providers' account keys a run never gets: every computer key (computer-keys.ts COMPUTER_KEY_NAMES) but
@@ -21,15 +22,18 @@ const COMPUTER_ACCOUNT_KEYS = COMPUTER_KEY_NAMES.filter((name) => !TOOL_FIELDS.i
 /** The server's own secrets, which a run never gets: the API token, by name or by value, the seal key the tool keys are
  *  kept under (tool-keys.ts), the store's URL (it may hold the database's password), the remote boxes' keys
  *  (place-offers.ts BOX_KEYS) and every other computer provider's account key, which only the server's and the runner's
- *  computer providers use, and the Archil account key (archil-key.ts), from which the claim mints each run's own mount
- *  credential. */
-const SERVER_ONLY: ReadonlySet<string> = new Set(["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS, ...COMPUTER_ACCOUNT_KEYS, ARCHIL_API_KEY_ENV]);
+ *  computer providers use, the Archil account key (archil-key.ts), from which the claim mints each run's own mount
+ *  credential, and the launch hook's signing secret (trigger-launch-hook.ts). */
+const SERVER_ONLY: ReadonlySet<string> = new Set(["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS, ...COMPUTER_ACCOUNT_KEYS, ARCHIL_API_KEY_ENV, LAUNCH_HOOK_SECRET_ENV]);
 /** The secrets a run may be handed: every one but the server's own and the decision keys, which go apart. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
 type KeyRow = { kind: string; fields: readonly string[]; unlocks: readonly string[] };
 /** The fields a run gets only when its revision names what they unlock: a `tool` key's. Any other kind's (a model key's)
  *  is the model's to need, as every model key is. */
 const scopedOf = (rows: readonly KeyRow[]): readonly string[] => rows.filter((row) => row.kind === "tool").flatMap((row) => row.fields);
+/** Each field of a `tool` row of `rows` that unlocks one of `tools`: the tool keys a run of them reads. */
+export const unlockedFields = (tools: readonly string[], rows: readonly KeyRow[] = TOOL_KEYS): string[] =>
+  [...new Set(rows.filter((row) => row.kind === "tool" && row.unlocks.some((unlock) => tools.some((name) => unlocksTool(unlock, name)))).flatMap((row) => row.fields))];
 /** The model keys: every key of pi-ai's providers (model.ts' PROVIDER_KEYS) and the gateway's. A run gets those its model
  *  needs and no other (keysFor). A workflow's decision keys, OpenRouter's among them, go apart (decisions.ts), whatever
  *  its model. */
@@ -64,7 +68,7 @@ export async function needsOf(revision: Revision): Promise<RunNeeds> {
  *  (HarnessEntry.ownKeys: Cursor's CURSOR_API_KEY) on a run of any other harness. Read at each claim, so a key saved with no restart counts at
  *  the next. */
 export function keysFor(needs: RunNeeds, env: NodeJS.ProcessEnv, rows: readonly KeyRow[] = TOOL_KEYS): string[] {
-  const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((unlock) => needs.tools.some((name) => unlocksTool(unlock, name)))).flatMap((row) => row.fields));
+  const unlocked = new Set(unlockedFields(needs.tools, rows));
   const scoped = scopedOf(rows);
   const entry = harnessOf(env, needs.harness);
   const model = new Set(!entry || entry.facts ? harnessModelKeys(needs.harness, env, needs.model) : needs.tiers ? modelKeys(env, undefined, needs.tiers) : modelKeys(env, needs.model));

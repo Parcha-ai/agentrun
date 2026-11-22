@@ -60,10 +60,11 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
   );
 }
 
-/** An imported package's provenance in one line: its source, the commit it was read at, its publisher. */
+/** An imported package's provenance in one line: its source, the commit it was read at, its publisher; an uploaded one
+ *  (`agentrun deploy`, no publisher) its id and the start of its sha256. */
 export function TemplateProvenance({ t }: { t: Pick<TemplateView, "source" | "sha" | "publisher"> }) {
   if (!t.source) return null;
-  return <p className="mt-1 break-all font-mono text-small text-muted-foreground" data-provenance>{t.source} at {t.sha?.slice(0, 12)}, published by {t.publisher}</p>;
+  return <p className="mt-1 break-all font-mono text-small text-muted-foreground" data-provenance>{t.source} at {t.sha?.slice(0, 12)}{t.publisher ? `, published by ${t.publisher}` : ", uploaded"}</p>;
 }
 
 /** The list, with the "Add from URL" box: a package on GitHub is read and shown whole (the install page) before it is stored. */
@@ -393,22 +394,9 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
         {made.warnings.length > 0 && <>
           <p className="mb-3 text-lead">{change.said(made.revision_version)}. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-body" role="status" aria-label="Warnings">
-            {made.warnings.map((w, i) => {
-              // A webhook trigger's (triggers.<i>.secret, <i> the package's index): the trigger the apply made of that name,
-              // trimmed as the server names it (apply keys triggers by name; a skipped trigger is not in the answer, so the
-              // index is not its place there) opens from here, where its secret is shown with Rotate. One webhook_secrets
-              // speaks for gets its link there.
-              const hook = /^triggers\.(\d+)\.secret$/.exec(w.field);
-              const raw = hook ? t.triggers[Number(hook[1])]?.name : undefined;
-              const named = typeof raw === "string" ? raw.trim() : "";
-              const id = named ? made.triggers.find((x) => x.name === named)?.trigger_id : undefined;
-              if (id && made.webhook_secrets?.some((x) => x.trigger_id === id)) return <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}</li>;
-              return (
-                <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}
-                  {id && <a href={`#/triggers/${encodeURIComponent(id)}`} className="mt-1 block font-mono text-small text-primary-text underline-offset-2 hover:underline">Open {named || id} to get its signing secret (Rotate)</a>}
-                </li>
-              );
-            })}
+            {made.warnings.map((w, i) => (
+              <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}</li>
+            ))}
           </ul>
         </>}
         {/* Each webhook trigger the apply made: its signing secret this once, in the first answer to this session (held in
@@ -427,15 +415,18 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
             );
         })}
         {/* Every trigger the apply made or kept, of any kind, by the package's name for it: what starts it in words and
-            whether it is on. A schedule read back says its line and next run (scheduleLine), as the Triggers page does. */}
+            whether it is on. A schedule read back says its line and next run (scheduleLine), as the Triggers page does. A
+            webhook with no webhook_secrets item (one the apply kept) says its page is where its secret is. */}
         {made.triggers.length > 0 && (
           <ul className="mt-4 divide-y border" aria-label="Triggers">
             {made.triggers.map((x) => {
               const s = schedules.find((one) => one.id === x.trigger_id);
+              const kept = x.kind === "webhook" && !made.webhook_secrets?.some((one) => one.trigger_id === x.trigger_id);
               return (
                 <li key={x.trigger_id} data-trigger={x.trigger_id} className="px-4 py-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <a href={`#/triggers/${encodeURIComponent(x.trigger_id)}`} className="break-words text-prose font-semibold hover:underline">{x.name}</a>
+                    {kept && <span className="text-small text-muted-foreground">Open it to get its signing secret (Rotate)</span>}
                     <Chip tone={x.enabled ? "success" : "plain"}>{x.enabled ? "on" : "off"}</Chip>
                   </div>
                   {/* Its kind and what starts a run of it, as the Triggers page says each kind. */}
