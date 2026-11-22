@@ -330,7 +330,7 @@ async function fakeTarget(t, answers) {
   return { base: `http://127.0.0.1:${fake.address().port}/v2`, seen, bodies };
 }
 
-test("a folder's upload is its package alone: agent.md, skills/, rules/, evals/ and the answer's schema the manifest names at its root, never a .env, a key, a README or another folder beside them; no agent.md is refused with nothing sent; deploy delete removes the upload with its agent", { timeout: 180_000 }, async (t) => {
+test("a folder's upload is its package alone: agent.md, skills/, rules/, evals/ and the answer's schema the manifest names at its root, never a .env, a key, a README or another folder beside them, nor a hidden file or folder inside them; no agent.md is refused with nothing sent; deploy delete removes the upload with its agent", { timeout: 180_000 }, async (t) => {
   const { dir, env } = scratch();
   const key = { AGENTRUN_API_KEY: "not-a-secret" };
   const fake = await fakeTarget(t, {});
@@ -351,6 +351,11 @@ test("a folder's upload is its package alone: agent.md, skills/, rules/, evals/ 
   writeFileSync(join(pkg, "evals", "today", "graders", "says.md"), "---\ntype: llm\n---\nPass if it says what changed.\n");
   writeFileSync(join(pkg, "answer.schema.json"), `${JSON.stringify({ type: "object", properties: { summary: { type: "string" } }, required: ["summary"] })}\n`);
   writeFileSync(join(pkg, ".env"), "PARALLEL_API_KEY=not-a-secret\n");
+  // A hidden file or folder inside a tree stays here too: a skill folder's .env would become part of the agent.
+  writeFileSync(join(pkg, "skills", "check", ".env"), "PARALLEL_API_KEY=not-a-secret\n");
+  writeFileSync(join(pkg, "skills", "check", ".DS_Store"), "\0\0\0\x01Bud1");
+  mkdirSync(join(pkg, "evals", "today", ".cache"));
+  writeFileSync(join(pkg, "evals", "today", ".cache", "token"), "not-a-secret\n");
   writeFileSync(join(pkg, "key.pem"), "not-a-secret\n");
   writeFileSync(join(pkg, "README.md"), "# pr-alert\n");
   mkdirSync(join(pkg, "node_modules", "left-pad"), { recursive: true });

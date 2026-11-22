@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
+import { memoryFiles, readPackage } from "../dist/templates.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { serve, withEnv } from "./support.mjs";
 
@@ -88,6 +89,12 @@ test("an upload is checked and stored as an import is, under upload:<name> with 
   const restarted = await serve(t, { data: server.data, runner: false });
   assert.deepEqual((await restarted.api("GET", "/templates")).body.templates.filter((one) => !one.bundled).map((one) => [one.id, one.version, one.sha]), [["upload:pr-alert", "0.2.0", sha256Of(second)]]);
   assert.equal((await restarted.api("DELETE", `/templates/${enc("upload:pr-alert")}`)).status, 204);
+});
+
+test("a package holds no hidden file: one inside skills/, rules/ or evals/ (an upload sent before the CLI left it out, a GitHub import, a folder) is never part of the agent", async () => {
+  const files = pkg(undefined, { "skills/check/.env": "PARALLEL_API_KEY=not-a-secret\n", "skills/check/.DS_Store": Buffer.from([0, 0, 0, 1]), "skills/check/.cache/token": "not-a-secret\n" });
+  const read = readPackage(memoryFiles("pr-alert", "the upload pr-alert", files));
+  assert.deepEqual(Object.keys(read.skills), ["check/SKILL.md"]);
 });
 
 test("an upload is refused in the GitHub import's words, storing nothing: a path that is not plain, over 1 MiB of agent files, over 256 files, over the bytes an import keeps, and an agent.md that does not check", { timeout: 60_000 }, async (t) => {
