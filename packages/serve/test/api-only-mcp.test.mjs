@@ -405,6 +405,67 @@ test("claim: a per_run server the token saved, whose origin the runner no longer
   assert.equal(listed.log.length, sent, "that host got nothing after the save");
 });
 
+/** A per-run bearer a run hands its per_run server (a fake value). */
+const RUN_BEARER = `Bearer not-a-secret-${"per-run-bearer-0005"}`;
+/** An inline run of `expert` granted the gw server's list_notes, handing it RUN_BEARER: its answer. */
+const notesRun = (token, expert) => token("POST", "/runs", {
+  external: { source: "backend", kind: "expert", id: expert, version: 1 },
+  definition: { name: `Expert ${expert}`, instructions: "Answer.", skills: [], tools: ["mcp:gw/list_notes"], tool_settings: { "mcp:gw/list_notes": { permission: "allow" } }, harness: "pi" },
+  input: { content: "List my notes." },
+  mcp_auth: { gw: { headers: { authorization: RUN_BEARER } } },
+});
+
+test("API-only: a run of a per_run server the token saved, whose origin the server's list no longer holds, is refused before it starts (409 agent_not_runnable) by its name; no run starts, and that host gets nothing", async (t) => {
+  const fake = await notesFake(t);
+  withEnv(t, { [ORIGINS_ENV]: originOf(fake.url) });
+  const first = await tokenServer(t);
+  assert.equal((await first.token("PUT", "/settings/mcp-servers/gw", { url: fake.url, auth: { type: "per_run" } })).status, 200);
+  const started = await notesRun(first.token, "notes-reader");
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const agent = started.body.agent_id;
+  await first.server.stop();
+
+  // The operator took the origin off the list and started the server again on the same data.
+  process.env[ORIGINS_ENV] = "https://elsewhere.example";
+  const again = await tokenServer(t, { data: first.server.data });
+  const sent = fake.log.length;
+  const before = (await again.token("GET", "/runs")).body.runs.length;
+  // The agent its first run made, pinned already: refused at the run's start, inline or by the agent's own route.
+  for (const refused of [await notesRun(again.token, "notes-reader"), await again.token("POST", `/agents/${agent}/runs`, { input: { content: "List my notes." }, mcp_auth: { gw: { headers: { authorization: RUN_BEARER } } } })]) {
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body.error?.code, "agent_not_runnable");
+    assert.match(refused.body.error.message, /gw.*AGENTRUN_MCP_TOKEN_ORIGINS/, refused.body.error.message);
+    assert.deepEqual(refused.body.error.fields?.map((issue) => [issue.field, issue.reason]), [["definition.tools[0]", "not_an_option"]]);
+    assert.equal(JSON.stringify(refused.body).includes(RUN_BEARER), false, "the run's bearer is not echoed");
+  }
+  // An agent never run before: its save can't list the server to pin it, in the same words.
+  const fresh = await notesRun(again.token, "notes-writer");
+  assert.equal(fresh.status, 422, JSON.stringify(fresh.body));
+  assert.match(JSON.stringify(fresh.body.error), /gw.*AGENTRUN_MCP_TOKEN_ORIGINS/);
+  assert.equal((await again.token("GET", "/runs")).body.runs.length, before, "no run made");
+  assert.equal(fake.log.length, sent, "that host got nothing");
+});
+
+test("API-only: the token's per_run save over a server it did not save (a row written by hand) is the secret-write refusal (403) at a listed origin: the row stays as it was, and the address gets nothing; over its own, 200", async (t) => {
+  const listed = await startFakeMcp();
+  t.after(() => listed.close());
+  const elsewhere = await startFakeMcp();
+  t.after(() => elsewhere.close());
+  withEnv(t, { [ORIGINS_ENV]: originOf(listed.url) });
+  const { server, token } = await tokenServer(t);
+  await server.store.mcp.put({ name: "gw", url: elsewhere.url, auth: "none", tools: [ADD_TOOL], sealed: null });
+  const refused = await token("PUT", "/settings/mcp-servers/gw", { url: listed.url, auth: { type: "per_run" } });
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
+  assert.deepEqual([(await server.store.mcp.server("gw")).url, (await server.store.mcp.server("gw")).auth], [elsewhere.url, "none"], "the row stays as it was");
+  assert.deepEqual(listed.log, [], "the address got nothing");
+
+  assert.equal((await token("PUT", "/settings/mcp-servers/mine", { url: listed.url, auth: { type: "per_run" } })).status, 200);
+  const over = await token("PUT", "/settings/mcp-servers/mine", { url: listed.url, auth: { type: "per_run" }, toolkit: "notes" });
+  assert.equal(over.status, 200, JSON.stringify(over.body));
+  assert.equal((await token("DELETE", "/settings/mcp-servers/mine")).status, 204, "the token's own, to delete");
+});
+
 test("API-only: a Composio save takes no url or headers from its body: each is 422 not_allowed, nothing is sent to Composio or the address", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const elsewhere = await startFakeMcp();
