@@ -589,13 +589,9 @@ export function external(file, args, env, io, platform = process.platform) {
   }
   return new Promise((resolve) => {
     let child;
-    try {
-      child = spawn(file, args, { stdio: "inherit", env, shell: false });
-    } catch (error) {
-      io.stderr.write(`Cannot run ${file} (${error.code ?? error.name}).\n`);
-      return resolve(126);
-    }
-    const pass = (signal) => child.kill(signal);
+    // The handlers are on before the command starts: it may print, and be sent a signal for it, before this process runs
+    // again after the spawn. A signal's handler runs only once this turn is over, so `child` is set by then.
+    const pass = (signal) => child?.kill(signal);
     const handlers = [["SIGINT", platform === "win32" ? () => {} : pass], ["SIGQUIT", pass], ["SIGTERM", pass], ["SIGHUP", pass]];
     for (const [signal, handler] of handlers) process.on(signal, handler);
     let done = false;
@@ -605,6 +601,12 @@ export function external(file, args, env, io, platform = process.platform) {
       for (const [signal, handler] of handlers) process.off(signal, handler);
       resolve(code);
     };
+    try {
+      child = spawn(file, args, { stdio: "inherit", env, shell: false });
+    } catch (error) {
+      io.stderr.write(`Cannot run ${file} (${error.code ?? error.name}).\n`);
+      return end(126);
+    }
     child.once("error", (error) => {
       io.stderr.write(`Cannot run ${file} (${error.code ?? error.name}).\n`);
       end(error.code === "ENOENT" ? 127 : 126);
