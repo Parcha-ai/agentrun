@@ -347,7 +347,7 @@ test("a folder's lock that names an address this CLI never deployed to gets no k
   const { dir, env } = scratch();
   const pkg = folder(dir);
   plant(pkg);
-  const key = { AGENTRUN_API_KEY: "not-a-secret-but-a-key" };
+  const key = { AGENTRUN_API_KEY: "not-a-secret" };
   for (const args of [["deploy", pkg, "--yes"], ["deploy", "rollback", pkg], ["deploy", "delete", pkg, "--yes"]]) {
     const refused = await cli(env, args, key);
     assert.equal(refused.code, 2, `${args.join(" ")}: ${refused.err}`);

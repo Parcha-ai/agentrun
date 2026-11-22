@@ -245,7 +245,7 @@ test("a plan lists the monid key as missing where a monid grant is pinned when t
   assert.match(JSON.stringify(applied.body), /no monid key here/);
   assert.equal((await api("GET", "/agents")).body.agents.length, 0, "nothing made");
 
-  withEnv(t, { MONID_API_KEY: "monid-test-key" });
+  withEnv(t, { MONID_API_KEY: "fake-test-key" });
   const keyed = await serve(t, { runner: false });
   assert.deepEqual((await planOf(keyed.api)).plan.missing_secrets, []);
 });
