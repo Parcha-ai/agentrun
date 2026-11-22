@@ -11,7 +11,6 @@
 // printed when the target gives one), 1 the target refused otherwise or could not be reached, 4 no token for it.
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -22,8 +21,6 @@ import { toUrl } from "./target.mjs";
  *  and the answer's schema file the manifest names at the folder's root. */
 const MANIFEST = "agent.md";
 const TREES = ["skills", "rules", "evals"];
-/** agent.md's YAML front matter, found as the target finds it. */
-const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 /** What an upload takes (the server's import limits): refused here before anything is read past them. */
 const MAX_FILES = 256;
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -48,34 +45,24 @@ export function packageSha256(files) {
   return hash.digest("hex");
 }
 
-/** The server's YAML reader: the `yaml` the server installed with this command depends on (this package's one
- *  dependency is the server), so agent.md's front matter is read as the server reads it. Loaded for a folder's deploy
- *  alone. */
-async function serverYaml(fail) {
+/** The server's manifest reader (its `manifest` export; the server is this package's one dependency), so agent.md is
+ *  read here as the target reads it. Loaded for a folder's deploy alone. */
+async function serverManifest(fail) {
   // Loaded here: start.mjs loads cli.mjs, which loads this module.
   const { SERVE_PACKAGE } = await import("./start.mjs");
   try {
-    return createRequire(createRequire(import.meta.url).resolve(`${SERVE_PACKAGE}/package.json`))("yaml");
+    return (await import(`${SERVE_PACKAGE}/manifest`)).manifestOf;
   } catch {
     throw fail(2, `AgentRun's server (${SERVE_PACKAGE}) is not installed beside this command, and it is the server's reader that reads agent.md: nothing was sent.`);
   }
 }
 
-/** The answer's schema file agent.md names (`output: {schema}`) when it is a file at the package's root. One under
- *  skills/, rules/ or evals/ goes with its tree, and the target takes no other folder. None when the manifest names
- *  none or does not parse: the target refuses it then, in its own words. */
-function rootSchemaOf(manifest, { parseDocument }) {
-  const match = FRONT.exec(manifest.toString("utf8"));
-  if (!match) return undefined;
-  const doc = parseDocument(match[1], { schema: "core", merge: false, uniqueKeys: true, strict: true });
-  if (doc.errors.length) return undefined;
-  let schema;
-  try {
-    schema = doc.toJS({ maxAliasCount: 0 })?.output?.schema;
-  } catch {
-    return undefined;
-  }
-  return typeof schema === "string" && /^[^/\\]+$/.test(schema) && schema !== "." && schema !== ".." ? schema : undefined;
+/** The answer's schema file agent.md names (`output: {schema}`) when it is a file at the package's root other than
+ *  agent.md. One under skills/, rules/ or evals/ goes with its tree, and the target takes no other folder. None when
+ *  the manifest names none or does not parse: the target refuses it then, in its own words. */
+function rootSchemaOf(manifest, manifestOf) {
+  const schema = manifestOf(manifest.toString("utf8"))?.output?.schema;
+  return typeof schema === "string" && /^[^/\\]+$/.test(schema) && schema !== "." && schema !== ".." && schema !== MANIFEST ? schema : undefined;
 }
 
 /** A folder's package by path, each file its bytes: agent.md, the skills/, rules/ and evals/ trees, and the answer's
@@ -101,7 +88,6 @@ async function readFolder(dir, fail) {
       return;
     }
     if (!entry.isFile()) throw fail(2, `${rel} is neither a file nor a folder: a package holds files and folders alone, so nothing was sent.`);
-    if (files.has(rel)) return;
     if (files.size >= MAX_FILES) throw fail(2, `The package holds over ${MAX_FILES} files: nothing was sent.`);
     const data = readFileSync(join(dir, rel));
     bytes += data.length;
@@ -115,7 +101,7 @@ async function readFolder(dir, fail) {
     const entry = entryOf(tree);
     if (entry && !entry.isFile()) take(tree, entry);
   }
-  const schema = rootSchemaOf(files.get(MANIFEST), await serverYaml(fail));
+  const schema = rootSchemaOf(files.get(MANIFEST), await serverManifest(fail));
   const entry = schema === undefined ? undefined : entryOf(schema);
   if (entry && !entry.isDirectory()) take(schema, entry);
   return files;

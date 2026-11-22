@@ -8,7 +8,8 @@ import { packageSha256 } from "./agent-package.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { type Store, UPLOAD_PREFIX } from "./store/index.js";
 import { fetchPackageFiles, type GithubReach, type GithubSource, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
-import { MANIFEST, manifestName, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
+import { manifestOf } from "./manifest.js";
+import { MANIFEST, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
 import { isObject, type Json, unknownFields } from "./validate.js";
 
 /** The settings key that holds the GitHub accounts this server's owner trusts as publishers, lower-cased. */
@@ -158,7 +159,8 @@ async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: bo
   let files: Map<string, Buffer>;
   try {
     files = uploadFiles(raw);
-    const id = `${UPLOAD_PREFIX}${manifestName(files.get(MANIFEST)?.toString("utf8") ?? "") ?? ""}`;
+    const name = manifestOf(files.get(MANIFEST)?.toString("utf8") ?? "")?.name;
+    const id = `${UPLOAD_PREFIX}${typeof name === "string" ? name : ""}`;
     pkg = importedPackage(id, { source: id, sha: uploadSha(files), publisher: "" }, files);
   } catch (error) {
     refusalOf(error);

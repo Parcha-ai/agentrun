@@ -9,6 +9,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import { type InputIssue, invalid } from "./errors.js";
+import { frontMatter } from "./manifest.js";
 import { DOCKER_IMAGE_FIX, needsIssues } from "./computer-needs.js";
 // Where a package's MCP tools come from (a Composio toolkit, GitHub's MCP server, or any other server by its address): a
 // saved MCP server records one too, and apply maps each need to a server whose record matches.
@@ -95,22 +96,6 @@ const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[
 const PLACEHOLDER = /\$\{parameters\.([^}]*)\}/g;
 /** Text that is one placeholder alone: it takes the parameter's value with its type (a pin's, a trigger's input's). */
 const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
-const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
-
-/** The `name` agent.md's front matter gives (`text`), as text, or undefined: what an upload's folder is named before
- *  readPackage checks it whole (the name read as readPackage's front matter reads it). */
-export function manifestName(text: string): string | undefined {
-  const match = FRONT.exec(text);
-  if (!match) return undefined;
-  const doc = parseDocument(match[1]!, { schema: "core", merge: false, uniqueKeys: true, strict: true });
-  if (doc.errors.length) return undefined;
-  try {
-    const data: unknown = doc.toJS({ maxAliasCount: 0 });
-    return isObject(data) && typeof data.name === "string" ? data.name : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 /** An MCP server a package uses, by where it comes from (`source`, `toolkit`), never by the name an owner saves it under:
  *  inside the package its tools are `mcp:<toolkit>/<tool>`. `tools`, those the agent uses and the package asks the owner to
@@ -624,21 +609,14 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   /** A file's YAML front matter and body. */
   const front = (path: string, required = true): { data: Json; body: string } | undefined => {
     const content = text(path);
-    const match = FRONT.exec(content);
-    if (!match) {
+    const read = frontMatter(content);
+    if (!read) {
       if (required) bad(path, "has no YAML front matter between --- lines");
       return required ? undefined : { data: {}, body: content };
     }
-    const doc = parseDocument(match[1]!, { schema: "core", merge: false, uniqueKeys: true, strict: true });
-    if (doc.errors.length) return bad(path, `its front matter is not YAML: ${doc.errors[0]!.message.split("\n")[0]}`), undefined;
-    let data: unknown;
-    try {
-      data = doc.toJS({ maxAliasCount: 0 });
-    } catch (error) {
-      return bad(path, `its front matter is refused: ${(error as Error).message}`), undefined;
-    }
-    if (!isObject(data)) return bad(path, "its front matter is not a mapping"), undefined;
-    return { data, body: content.slice(match[0].length) };
+    if ("problem" in read) return bad(path, `its front matter ${read.problem}`), undefined;
+    if (!isObject(read.data)) return bad(path, "its front matter is not a mapping"), undefined;
+    return { data: read.data, body: read.body };
   };
   const list = (value: unknown, field: string, test: (item: string) => boolean = (item) => item !== ""): string[] => {
     if (value === undefined) return [];

@@ -82,8 +82,9 @@ const allowedExtraFiles = {
   // And the locks the CLI harnesses' first use installs by (src/harness-install.ts): each the package.json it locks and
   // npm's lock, metadata naming the package at its pin and every package of its tree by sha512, never the CLI itself.
   // And the template packages it ships, which it reads at its start (src/templates.ts), with their format (templates/README.md).
-  // And the two subpaths a harness's author imports (HARNESS.md): the module's types and the conformance suite.
-  serve: ['package/launcher/agentrun-serve', 'package/dist/harness-module.js', 'package/dist/harness-module.d.ts', 'package/dist/conformance.js', 'package/dist/conformance.d.ts','package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', ...templateFiles()],
+  // And the two subpaths a harness's author imports (HARNESS.md): the module's types and the conformance suite; and the
+  // front-matter reader `agentrun deploy` imports to find what of a folder its package holds.
+  serve: ['package/launcher/agentrun-serve', 'package/dist/harness-module.js', 'package/dist/harness-module.d.ts', 'package/dist/conformance.js', 'package/dist/conformance.d.ts', 'package/dist/manifest.js', 'package/dist/manifest.d.ts','package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', ...templateFiles()],
   // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
   // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
   // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's

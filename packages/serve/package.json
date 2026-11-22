@@ -30,6 +30,10 @@
       "types": "./dist/conformance.d.ts",
       "default": "./dist/conformance.js"
     },
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "default": "./dist/manifest.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
