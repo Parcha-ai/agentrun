@@ -794,3 +794,36 @@ test("a key's handed name, signIn.homeEnv and env never name a variable that cha
     assert.ok(refusalOf(recipeOf(undefined, { model: plan, keys: [KEY], signIn: { ...SIGN_IN, homeEnv: name } })).codes.includes(RECIPE_CODES.env), `signIn.homeEnv ${name}`);
   }
 });
+
+// The Antigravity example (examples/harness-recipe/antigravity.json): the ACP registry's antigravity-acp 1.5.2 release
+// as the registry lists it, on a key saved for it alone and, on a run its owner attends, the owner's own sign-in.
+const ANTIGRAVITY_REGISTRY = {
+  "linux-x86_64": { url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.5.2-linux-x86_64.zip", sha256: "99dd8612450805011619d7b8447ce374c289e00549d8557f36790e1dd6256852", args: ["--uid="] },
+  "linux-aarch64": { url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.5.2-linux-arm64.zip", sha256: "e729e05ef54ef0763e48900032466b47fa7c9939cde257f93ba49410ab577acb", args: ["--uid="] },
+  "darwin-aarch64": { url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.5.2-darwin-arm64.zip", sha256: "123a16d5c40a8ac99e20f01a62b68dd860fd96b1c528dfb8eaa37ca8733d4845" },
+  "darwin-x86_64": { url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.5.2-darwin-x86_64.zip", sha256: "92addb5580577b5356d35484d72d1a113d9c5312ad766bcb304983aa8e3fbb06" },
+};
+
+test("the Antigravity example recipe loads under the five rules: the registry's 1.5.2 zips, its key handed as GEMINI_API_KEY with gemini-api-key, and oauth-personal on attended runs alone", () => {
+  const file = new URL("../../../examples/harness-recipe/antigravity.json", import.meta.url).pathname;
+  const { recipe } = loadRecipe(file);
+  assert.equal(recipe.id, "antigravity");
+  assert.deepEqual([recipe.release.registry, recipe.release.version], ["antigravity-acp", "1.5.2"]);
+  assert.deepEqual(Object.keys(recipe.release.archives).sort(), Object.keys(ANTIGRAVITY_REGISTRY).sort());
+  for (const [platform, want] of Object.entries(ANTIGRAVITY_REGISTRY)) {
+    const archive = recipe.release.archives[platform];
+    assert.equal(archive.url, want.url, platform);
+    assert.equal(archive.sha256, want.sha256, platform);
+    assert.equal(archive.format, "zip", platform);
+    assert.equal(archive.cmd, "./agy_acp_server.par", platform);
+    assert.deepEqual(archive.args, want.args, platform);
+  }
+  assert.deepEqual(recipe.args, []);
+  assert.equal(recipe.model.billing, "plan");
+  assert.deepEqual(recipe.keys, ["ANTIGRAVITY_GEMINI_API_KEY"]);
+  assert.deepEqual(Object.entries(recipe.keyEnv), [["ANTIGRAVITY_GEMINI_API_KEY", "GEMINI_API_KEY"]]);
+  assert.equal(recipe.keyMethod, "gemini-api-key");
+  assert.deepEqual(recipe.signIn, { method: "oauth-personal", homeEnv: "GEMINI_HOME", runs: "attended" });
+  assert.deepEqual(recipe.declares, { load: true, mcp: "http" });
+  assert.deepEqual(recipe.env, {}, "no switch the binary is not known to read");
+});

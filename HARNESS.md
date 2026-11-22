@@ -188,7 +188,9 @@ adds a row to [docs/examples.md](docs/examples.md) with:
 
 A recipe fits an ACP agent that the [ACP registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json)
 lists with a binary release packed as `.tar.bz2`, `.tar.gz` or `.zip`. A server doesn't run a recipe yet: today a
-recipe is installed, signed in where its agent signs a person in, and checked.
+recipe is installed, signed in where its agent signs a person in, and checked. A whole one, for Google Antigravity
+(a `.zip`, a key handed under the name the agent reads, and a person's own sign-in), is in
+[examples/harness-recipe](examples/harness-recipe/README.md).
 
 ### What you need
 
