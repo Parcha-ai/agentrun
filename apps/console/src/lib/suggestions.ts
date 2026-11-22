@@ -48,6 +48,7 @@ export const agentVariable = (key: string) => `AGENTRUN_AGENT_${key.split(/[-_]/
 export function scanLine(r: ScannedRepository): string {
   const { scan } = r;
   if (scan.status === "running") return "Scanning: reading the code on a read-only copy.";
+  if (scan.status === "waiting") return "The scan stopped before it answered: its run reached its cost cap or asks for input. Open the run to resume it, or scan again.";
   if (scan.status === "failed") return "The scan failed.";
   if (scan.status === "cancelled") return "The scan was cancelled.";
   const found = scan.found ?? 0;
@@ -56,6 +57,9 @@ export function scanLine(r: ScannedRepository): string {
   if (scan.dropped.length) parts.push(`${scan.dropped.length} left out`);
   return `${parts.join(" · ")}.`;
 }
+
+/** Whether two names are one GitHub repository: GitHub, and the server, read owner/name without regard to case. */
+export const same = (a: string | undefined, b: string | undefined) => a !== undefined && b !== undefined && a.toLowerCase() === b.toLowerCase();
 
 /** Whether any repository's scan is still running: the page reads the list again while one is. */
 export const scanning = (repos: readonly ScannedRepository[]) => repos.some((r) => r.scan.status === "running");

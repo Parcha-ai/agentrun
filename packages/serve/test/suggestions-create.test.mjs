@@ -179,6 +179,25 @@ test("two scans of one repository sent at once start one run, the other told it 
   assert.equal((await a.scan({ repo: third })).status, 202);
 });
 
+test("a scan whose run stopped without ending (its cost cap, input asked, or paused) is waiting, not running: a new scan starts a new run", async (t) => {
+  const { deps } = await service(t, { makeAgent: async () => assert.fail("no agent is made") });
+  let starts = 0;
+  const statuses = {};
+  const s = new Suggestions({ ...deps, startScan: async () => `run_${++starts}`, readRun: async (id) => ({ status: statuses[id] ?? "running" }) });
+  const other = "faux-org/other";
+  const status = async () => (await s.list({ repo: other })).repositories[0].scan.status;
+  const first = await s.scan({ repo: other });
+  assert.equal(await status(), "running");
+  assert.equal((await s.scan({ repo: other })).body.already_running, true, "running: the same run answers");
+  statuses[first.body.run_id] = "input_required";
+  assert.equal(await status(), "waiting");
+  const again = await s.scan({ repo: other });
+  assert.deepEqual([again.status, again.body.already_running, again.body.run_id, starts], [202, false, "run_2", 2], "waiting: a new run");
+  assert.equal(await status(), "running");
+  statuses.run_2 = "paused";
+  assert.equal(await status(), "waiting");
+});
+
 test("a suggested agent's package is kept before its apply, registered after it, and taken back as it was when the apply refuses, never over an import made meanwhile", async () => {
   const s = checkSuggestion(suggestionsFor()[0]);
   const files = packageFiles(s);

@@ -137,6 +137,12 @@ describe("Suggested agents", () => {
 });
 
 describe("Suggested agents' repositories", () => {
+  it("shows a repository's suggestions whatever the case of its name: GitHub reads owner/name without regard to case", async () => {
+    const { v2 } = server({ connected: true, suggestions: [{ ...SUGGESTION, repo: "ACME/Shop" }], readiness: READY });
+    const { host } = await page(v2);
+    expect(host.querySelector("article[aria-label='Triage support tickets']")).toBeTruthy();
+  });
+
   it("Refresh reads the App's repositories again, and a list GitHub cut short still takes a repository typed in", async () => {
     const repos: Listing = { repositories: [{ full_name: "acme/other", private: false, account: "acme", installation: 7 }], truncated: true, unread: [] };
     const { v2, calls } = server({ connected: true, suggestions: [{ ...SUGGESTION }], readiness: READY, repos });
@@ -169,6 +175,7 @@ describe("Suggested agents' words", () => {
     expect(permissionLabel("pull_requests: write")).toBe("Pull requests: Read and write");
     expect(scanLine({ ...SCANNED, scan: { ...SCANNED.scan, found: 2, already_decided: 1, dropped: ["x"] } } as never)).toBe("2 suggestions · 1 already decided · 1 left out.");
     expect(scanLine({ ...SCANNED, scan: { ...SCANNED.scan, status: "running" } } as never)).toBe("Scanning: reading the code on a read-only copy.");
+    expect(scanLine({ ...SCANNED, scan: { ...SCANNED.scan, status: "waiting" } } as never)).toMatch(/stopped before it answered[^]*Open the run to resume it, or scan again\.$/);
   });
 
   it("goes back after Connect only to a page of this console, once", () => {

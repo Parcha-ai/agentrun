@@ -3050,6 +3050,8 @@ Create; no run ever holds a token that can write.
    repository`), read-only bash where there is a shell, and an answer of at most five suggestions against its schema.
    Its first message lists the suggestions already decided on that repository, so none comes back. 202 with the run;
    200 while one runs; what the apply or the start refuses is the answer (`409 agent_not_runnable` with no model key).
+   A scan whose run stopped without ending (at its cost cap or asking for input, or paused) is listed as `waiting`: it is
+   resumed or cancelled on its run's page, and a new scan starts a new run.
 3. **List.** `GET /v2/suggestions` (`?repo=`, `?status=open|created|discarded|all`; open and created by default) answers
    GitHub's state, each repository's newest scan, and its suggestions. A scan that ended is read once: each suggestion is
    checked again field by field (paths inside the repository, a client path in its language's extension and outside

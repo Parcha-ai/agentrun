@@ -8,7 +8,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { githubFormAction } from "@/lib/github";
 import { type Problem, problem } from "@/lib/problem";
 import { httpHref } from "@/lib/safeUrl";
-import { agentVariable, IMPACT, keepReturn, LANGUAGE, permissionLabel, readinessWords, repoHref, scanLine, scanning, suggestionsHash, TIER } from "@/lib/suggestions";
+import { agentVariable, IMPACT, keepReturn, LANGUAGE, permissionLabel, readinessWords, repoHref, same, scanLine, scanning, suggestionsHash, TIER } from "@/lib/suggestions";
 import { cn } from "@/lib/utils";
 import type { GitHubRepository, ScannedRepository, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList } from "@/lib/v2";
 
@@ -73,8 +73,8 @@ export function SuggestionsPage({ v2, repo, go }: { v2: Client; repo?: string; g
             <Button size="icon" variant="ghost" aria-label="Dismiss" onClick={() => setDiscarded(null)}><X aria-hidden /></Button>
           </div>
         )}
-        {[...list.repositories].sort((a, b) => (a.repo === repo ? -1 : b.repo === repo ? 1 : 0)).map((r) => (
-          <RepositorySection key={r.repo} v2={v2} r={r} suggestions={list.suggestions.filter((s) => s.repo === r.repo)} busy={busy}
+        {[...list.repositories].sort((a, b) => (same(a.repo, repo) ? -1 : same(b.repo, repo) ? 1 : 0)).map((r) => (
+          <RepositorySection key={r.repo} v2={v2} r={r} suggestions={list.suggestions.filter((s) => same(s.repo, r.repo))} busy={busy}
             onDiscard={(s) => void discard(s)} onCreate={(s) => { setDiscarded(null); setCreating(s); }} onScanned={() => void read()} />
         ))}
       </div>
@@ -217,7 +217,7 @@ function ScanBox({ v2, repo, round = 0, scanned, onStarted }: { v2: Client; repo
     return () => { live = false; };
   }, [v2, round]);
   const first = !scanned.length;
-  const left = (repos ?? []).filter((r) => !scanned.some((s) => s.repo === r.full_name));
+  const left = (repos ?? []).filter((r) => !scanned.some((s) => same(s.repo, r.full_name)));
   // The pick stays one of the repositories offered: the address's, else the first not scanned.
   const choice = left.some((r) => r.full_name === picked) ? picked : left[0]?.full_name ?? "";
   // A typed name counts only while its field is shown: a Refresh that lists the whole App hides it, and the pick stands.

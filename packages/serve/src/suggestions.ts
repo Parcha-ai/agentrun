@@ -55,6 +55,9 @@ const IMPACTS = ["high", "medium", "low"] as const;
 const BUDGET: Record<(typeof TIERS)[number], number> = { fast: 0.25, balanced: 0.75, strong: 2 };
 /** The run statuses a scan is over at. */
 const FINAL = new Set(["completed", "failed", "cancelled"]);
+/** A run that stopped without ending: at its cost cap or asking for input (`input_required`), or paused. Its scan is
+ *  `waiting`, never `running`: a new scan starts a new run, and the stopped one is resumed or cancelled from its page. */
+const WAITING = new Set(["input_required", "paused"]);
 
 export type Language = keyof typeof LANGUAGES;
 export type InputField = { name: string; type: (typeof INPUT_TYPES)[number]; description: string; required: boolean };
@@ -589,10 +592,12 @@ export class Suggestions {
 
   /** A scan's run read once it ended: its suggestions kept (a decided one left as it was decided, an open one of an
    *  older scan replaced, one the new answer no longer holds removed), and what was read kept on the scan. */
-  private async settle(scan: Scan): Promise<Scan> {
+  private async settle(scan: Scan): Promise<Scan & { waiting?: string }> {
     if (scan.read) return scan;
     const run = await this.deps.readRun(scan.run_id);
     if (!run) return this.mark(scan, { status: "failed", at: this.now(), found: 0, dropped: [], skipped: 0, error: "The scan's run is gone." });
+    // Stopped, not ended: said as waiting, read later if the run is resumed and completes.
+    if (WAITING.has(run.status)) return { ...scan, waiting: run.status };
     if (!FINAL.has(run.status)) return scan;
     if (run.status !== "completed") return this.mark(scan, { status: run.status as "failed" | "cancelled", at: run.endedAt ?? this.now(), found: 0, dropped: [], skipped: 0, ...(run.error ? { error: run.error } : {}) });
     const answer = readScoutAnswer(run.output, scan.repo);
@@ -652,7 +657,7 @@ export class Suggestions {
           repo: scan.repo,
           scan: {
             run_id: scan.run_id, agent_id: scan.agent_id, started_at: new Date(scan.started_at).toISOString(),
-            status: scan.read?.status ?? "running", ended_at: scan.read ? new Date(scan.read.at).toISOString() : null,
+            status: scan.read?.status ?? (scan.waiting ? "waiting" : "running"), ended_at: scan.read ? new Date(scan.read.at).toISOString() : null,
             app: scan.read?.app ?? null, commit: scan.read?.commit ?? null, found: scan.read?.found ?? null, dropped: scan.read?.dropped ?? [], already_decided: scan.read?.skipped ?? 0, error: scan.read?.error ?? null,
           },
           counts: { open: count("open"), created: count("created"), discarded: count("discarded") },
@@ -675,9 +680,10 @@ export class Suggestions {
       if (isObject(was) && this.held(was.starting, SCAN_CLAIM_MS)) throw new ApiError("home_busy", `A scan of ${repo} is starting: list the suggestions in a moment to follow it.`);
       if (isObject(was) && typeof was.run_id === "string") {
         const settled = await this.settle(was as Scan);
-        if (!settled.read) return { status: 200, body: { repo: settled.repo, run_id: settled.run_id, agent_id: settled.agent_id, status: "running", already_running: true } };
-        // Read just now: the row moved, so it is read again before it is reserved.
-        if (settled !== was) continue;
+        if (!settled.read && !settled.waiting) return { status: 200, body: { repo: settled.repo, run_id: settled.run_id, agent_id: settled.agent_id, status: "running", already_running: true } };
+        // Read just now: the row moved, so it is read again before it is reserved. A waiting scan's row did not move: a
+        // new scan replaces it, and its stopped run is left as it is.
+        if (settled.read && settled !== was) continue;
       }
       const claim = { ...(isObject(was) ? was : { repo }), starting: { at: this.now(), by: randomUUID() } };
       const reserved = isObject(was) ? await this.deps.settings.replaceIf(key, was, claim) : JSON.stringify(await this.deps.settings.putIfAbsent(key, claim)) === JSON.stringify(claim);
