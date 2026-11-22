@@ -477,10 +477,11 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
   let client: JevClient;
   let apiKey: string | undefined;
   try {
-    apiKey = options.apiKey ?? process.env[keyVariable[provider]];
-    // A blank key is refused on either provider: the SDK would send it as an empty bearer token. The provider-specific lookup also keeps
-    // an OpenRouter request from falling back to TYPESAFE_API_KEY, and lets diagnostics redact whichever runner key is in use.
-    if ((apiKey !== undefined || provider === "openrouter") && (typeof apiKey !== "string" || apiKey.trim().length === 0)) throw new Error("no key");
+    // A host client owns its credentials. Do not let an ambient, blank SDK key reject an otherwise valid client.
+    apiKey = hostClient === undefined ? options.apiKey ?? process.env[keyVariable[provider]] : undefined;
+    // A blank SDK key is refused on either provider: the SDK would send it as an empty bearer token. The provider-specific lookup also
+    // keeps an OpenRouter request from falling back to TYPESAFE_API_KEY, and lets diagnostics redact whichever runner key is in use.
+    if (hostClient === undefined && (apiKey !== undefined || provider === "openrouter") && (typeof apiKey !== "string" || apiKey.trim().length === 0)) throw new Error("no key");
     client = hostClient ?? new TypeSafeClient({
       apiKey, baseURL: options.baseURL ?? (provider === "openrouter" ? OPENROUTER_BASE_URL : undefined), fetch: options.fetch,
       defaultModel: model, retry: { maxRetries: 0 }, timeout: timeoutMs ?? undefined, logLevel: "off",
