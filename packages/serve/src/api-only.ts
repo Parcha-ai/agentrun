@@ -1,6 +1,7 @@
-// The API-only profile (AGENTRUN_API_ONLY=1): a server that runs behind its caller's backend serves the run routes alone
-// and refuses every other address before anything else reads the request: the console at "/" and its assets, sign-in
-// and setup, settings, MCP, triggers and their webhook hooks, agents, templates and the rest. Off by default.
+// The API-only profile (AGENTRUN_API_ONLY=1): a server that runs behind its caller's backend serves the run routes and a
+// deploy's routes alone, and refuses every other address before anything else reads the request: the console at "/" and
+// its assets, sign-in and setup, settings, MCP, triggers and their webhook hooks, the rest of agents and templates.
+// Off by default.
 import type { Route } from "./server.js";
 
 /** The variable that turns the profile on. */
@@ -15,7 +16,12 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *  - a backend reads what its agents learned (loop, promotions, cost per run, a run's learning), cut as the console's,
  *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
  *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
- *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart. */
+ *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart;
+ *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
+ *    words, template-import.ts), which an apply then makes into its agent;
+ *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
+ *    revision back, and archives it before its delete (or unarchives it): its token already makes agents through inline
+ *    runs, so it gains no new power. The apply makes no trigger, each skipped and said (apiOnlyTriggerSkipped). */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
@@ -27,7 +33,17 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "listRunFiles", "readRunFile",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getUsage", "getCapacity",
+  "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
 ]);
+
+/** What an apply on an API-only server (and its dry run's plan) says of `trigger` of the `packageName` template, which it
+ *  does not make. It makes none, of any source: a run here starts through the backend in front of it, on that backend's
+ *  keys and budget, never on this server's own clock or model key (a schedule's or a feed's), nor from a hook or a
+ *  setting the profile refuses (a webhook's, GitHub's, Composio's, the email account's). */
+export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unknown; source?: unknown }): string {
+  const kind = trigger.source !== null && typeof trigger.source === "object" ? String((trigger.source as { kind?: unknown }).kind) : "";
+  return `The ${packageName} template's trigger ${String(trigger.name).trim()} (${kind}) was not made: this server serves the run API only (${API_ONLY_ENV}=1), so a run starts here through the API alone, never on a trigger. Start its runs through the API instead.`;
+}
 
 /** Whether `env` turns the profile on: `1` or `true` on; unset, empty, `0` or `false` off. Any other value is refused in
  *  words (a TypeError), so a typo never leaves the console open on a server meant to be API-only. */

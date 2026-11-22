@@ -411,7 +411,10 @@ export type AdapterEvent =
   /** The model was given these submissions (the ids `send` or `steer` placed them under): a steer placed mid-turn reaches
    *  it at the turn's next step, after the tool calls in flight. An adapter that records nothing of its own says it, so
    *  its host records the message where the model read it. */
-  | { type: "message_taken"; ids: readonly string[] };
+  | { type: "message_taken"; ids: readonly string[] }
+  /** Something of the adapter's own the person should read on the run, in its words (the ACP mirror past its budget): a
+   *  host shows it as a step of the run, never as the model's text. */
+  | { type: "notice"; text: string };
 
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
 export type HarnessEvent = (AdapterEvent

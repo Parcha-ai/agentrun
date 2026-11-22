@@ -11,6 +11,8 @@
 //   beforeResult point), on the host-tool path every adapter's calls take;
 // - the paid model requests: the runner's booking (modelPortFor), the one ledger, every request through it;
 // - the held state (pi.live) reported through deps.live; the commands (steer, approve, deny).
+import { ProjectDrain } from "./project-drain.js";
+import type { ProjectCheckpoint } from "../source-sync/checkpoints.js";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -228,6 +230,8 @@ export interface AdapterRunSpec {
   readonly endCost?: () => Promise<EndCost>;
   /** The most the end's patch may take before the end is written without it. Default END_PATCH_MS. */
   readonly endPatchMs?: number;
+  /** Optional moved-project capture, only after actual dispatch has drained. Failure remains an explicit terminal receipt. */
+  readonly projectCheckpoint?: { capture(signal: AbortSignal): Promise<ProjectCheckpoint>; uncertain(): ProjectCheckpoint; readonly timeoutMs?: number };
   /** The most a booking whose write has begun is waited for before an answer's cost, a park or the end goes on without
    *  it. Default BOOKING_WRITE_MS. */
   readonly bookingWriteMs?: number;
@@ -782,6 +786,13 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         else answer += event.delta;
       } else if (event.type === "tool_start" || event.type === "text_end") void flushText().catch(() => undefined);
       else if (event.type === "turn_end") void flushText(event).catch(() => undefined);
+      else if (event.type === "notice") {
+        // The adapter's own words (the ACP mirror past its budget): a phase row after what the model said before it.
+        void flushText().catch(() => undefined);
+        void inTurn(async () => {
+          await harness.commit((tx) => tx.appendEntry(root.id, { kind: HOST_PHASE, data: { summary: event.text, at: now() } as unknown as JsonValue }), context);
+        }).catch(() => undefined);
+      }
     },
     flushText,
     flushSaid: () => (answer === undefined && text.trim() !== "" ? flushText(undefined, true) : Promise.resolve()),
@@ -1029,6 +1040,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   };
   /** The current pass's spec's release, until it is called (closeSession). */
   let releaseNow: AdapterRunSpec["release"];
+  const projectWork = new ProjectDrain();
+  const projectCall = <T>(call: () => Promise<T>, strict = !!specNow?.projectCheckpoint): Promise<T> => strict ? projectWork.run(call) : call();
   /** The current pass ended in a park that keeps its computer (keepAtPark), for this cause, until its release reads it. */
   let parkedNow: ParkCause | undefined;
   /** From the end-of-run step's start (or a claim that found its turn open: lookingBackOpen, from its session's open)
@@ -1327,7 +1340,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   const channelCommand = async (command: Command): Promise<CommandOutcome> => {
     await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
     const [theGate, pass, theHeld] = [gate, channelNow, heldNow];
-    if (!theGate || theGate.sealed) return { refused: "The run's computer is not up now: the run is starting, parking or ending." };
+    if (!theGate || theGate.sealed || projectWork.closed) return { refused: "The run's computer is not up now: the run is starting, parking or ending." };
     if (!pass) return { refused: specNow?.computer ? "The run's computer is not up now: the run is starting, parking or ending." : "This run has no computer that takes protocol calls: none, or a browser." };
     const refusal = theHeld?.refusesCall();
     if (refusal) return { refused: refusal };
@@ -1338,7 +1351,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       theHeld?.callStarted();
       let done: Awaited<ReturnType<typeof runChannelCall>>;
       try {
-        done = await runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(CALL_MS)]), now);
+        done = await projectCall(() => runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(CALL_MS)]), now));
       } finally {
         theHeld?.callEnded(now());
       }
@@ -1862,7 +1875,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A host tool call's paid requests name the session the call runs in (RunTools.admit `under`): a request of it still
         // in flight may be the one that asked for the call (Claude Code books its cost after its calls; Codex starts a call
         // with its response open), so the call is judged beside it and never waits on it. pi's request has answered by then.
-        // A call settled above its hold (a fal job whose output states more than its input asked) can take what the run was
+        // A call settled above its hold (a fal job whose output states more than its input asked, a monid call charged above
+        // its maxCost) can take what the run was
         // charged past its cap. From then on, a settle that leaves the run's charges over its cap stops the run at once in
         // the cap's words (overCap, settled charges only), as a stop for good (paid-calls.ts stopRun): no tool runs after it,
         // a script's own calls included. A charge is never given back, so that stop holds; a call still in flight counts
@@ -1963,8 +1977,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A paid call's refusal is the call's result first: its pause is journaled at the model's next request (beforeRequest,
         // pendingPause), once the harness has stored that result, so the run never reads waiting on a raise before its
         // Timeline says why. The refusal is kept on the root at once (KINDS.pausePending, no run patch, nothing a person
-        // reads), so a claim lost in between restores it (pendingPauseOf) and the next claim's request parks the run.
+        // reads), so a claim lost in between restores it (pendingPauseOf) and the next claim's request parks the run. A stop
+        // for good (paid-calls.ts stopRun) stays: a refusal after it (a call admitted after the stop, refused for room) never
+        // replaces it, so no tool runs after the stop.
         pauseFor = async (refusal) => {
+          if (pendingPause?.forGood) return;
           pendingPause = refusal;
           await keepPending(refusal);
         };
@@ -2369,7 +2386,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
                 // The computer protocol calls it makes, kept beside it on the run's root (COMPUTER_CALLS) for its result
                 // row's computer_calls, before its result is written.
                 route: () => bookedIn({ call: toolContext.callId, paid: paidUnder, pause: ledger.pause }, () => recordingCalls(
-                  () => tool.call(args, { ...toolContext, signal: toolContext.signal ? AbortSignal.any([toolContext.signal, stopAbort.signal]) : stopAbort.signal }),
+                  () => projectCall(() => tool.call(args, { ...toolContext, signal: toolContext.signal ? AbortSignal.any([toolContext.signal, stopAbort.signal]) : stopAbort.signal }), !!spec.projectCheckpoint),
                   (calls, dropped) => keepCalls(toolContext.callId, calls, dropped),
                 )),
                 beforeResult: async (answer) => {
@@ -3283,6 +3300,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  through its tool bridge: its start, marked parked, so its row shows while it waits and reads before its approval). */
   function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks, wrapUp: (callId: string) => Promise<string | undefined>, beforeAsk?: (call: PreIntentCall) => Promise<void>) {
     return async (call: PreIntentCall, _hookContext: Context): Promise<PreIntentAnswer> => {
+      if (projectWork.closed) return { deny: "The project is finishing its checkpoint; no new call can start." };
       // An MCP tool is asked about by its catalog name (`mcp:<server>/<tool>`), as its settings and its card name it.
       const tool = mcp?.catalogOf(call.tool) ?? call.tool;
       const kernelCall: ToolCall = { callId: call.callId, tool: tool as never, args: call.args };
@@ -4138,6 +4156,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // their own commits, the end's patch reading the cost they book), and its requests' bookings come first.
     await releaseHost(on);
     await bookingsSettled();
+    let projectCheckpoint: ProjectCheckpoint | undefined;
+    if (specNow?.projectCheckpoint) {
+      const project = specNow.projectCheckpoint;
+      const signal = AbortSignal.any([deps.signal, AbortSignal.timeout(project.timeoutMs ?? 60_000)]);
+      try {
+        await projectWork.close(signal);
+        // Abort asks the bounded backend operations to stop; it is not evidence that they stopped. Keep the actual
+        // capture promise through its cleanup before teardown/end. A capability that ignores cancellation leaves
+        // this claim unresolved, never a published candidate or a falsely completed release.
+        projectCheckpoint = await project.capture(signal);
+        signal.throwIfAborted();
+      } catch { projectCheckpoint = project.uncertain(); }
+    }
     // The pull request's checkout goes before the end is committed: a run that reads final never still holds its code.
     await specNow?.endCheckout?.();
     const patch = await endPatchOf(base);
@@ -4149,7 +4180,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const lateStop = late?.kind === "command" && !take.includes(late.commandId) ? late : undefined;
     if (lateStop) take = [...take, lateStop.commandId];
     // An end that keeps the job's takes it too, and stays the job's.
-    const data: EndData = { ...base, ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd, ...(patch.costUpperBound ? { costUpperBound: true } : {}) } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}), ...(lateStop && keptAt === undefined ? stopEnd(lateStop.cancel) : {}) };
+    const data: EndData = { ...base, ...(projectCheckpoint ? { projectCheckpoint } : {}), ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd, ...(patch.costUpperBound ? { costUpperBound: true } : {}) } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}), ...(lateStop && keptAt === undefined ? stopEnd(lateStop.cancel) : {}) };
     const run = {
       state: data.state,
       ...(keptAt !== undefined ? { endedAt: keptAt, keepsEnd: true } : {}),

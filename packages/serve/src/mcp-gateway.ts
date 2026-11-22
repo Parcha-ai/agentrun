@@ -29,6 +29,7 @@ import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
 import { capped, mcpClient, scrub } from "./mcp-wire.js";
+import { resourceResult, resourceToolOperation, resourceToolProblem } from "./mcp-resources.js";
 import { mcpNameOf, mcpToolName } from "./tool-names.js";
 import { type Workspace, workspaceAt, workspaceErrorWords } from "./workspace/index.js";
 
@@ -136,6 +137,8 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
     // Gone since the save's check (deleted, or the server stopped listing the tool): the save is refused.
     if (!saved) throw new Error(`The MCP tool ${name} cannot be pinned: no MCP server ${parsed.server} is saved.`);
     if (!tool) throw new Error(`The MCP tool ${name} cannot be pinned: the MCP server ${parsed.server} does not list ${parsed.tool}.`);
+    const resourceProblem = resourceToolProblem(tool);
+    if (resourceProblem) throw new Error(`The MCP tool ${name} cannot be pinned: ${resourceProblem}.`);
     // A meta tool granted before the rule (mcp-meta.ts): refused here, never run.
     const meta = metaToolOf(saved.url, tool.name);
     if (meta) throw new Error(`${name} can't be granted: ${meta.reason}`);
@@ -245,7 +248,7 @@ export type McpGateway = {
 };
 
 export function mcpGateway(options: McpGatewayOptions): McpGateway {
-  type Upstream = { callTool(params: unknown, options: unknown): Promise<unknown> };
+  type Upstream = { callTool(params: unknown, options: unknown): Promise<unknown>; request(params: unknown, options: unknown): Promise<unknown> };
   /** Each server's client, with the account query it was connected with (`query`, JSON): a message that binds the run to
    *  another account connects again, so no session made as one account carries another's calls. */
   const clients = new Map<string, { query: string; upstream: Promise<Upstream> }>();
@@ -371,6 +374,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
    *  takes the server's raw result, when one came back. */
   const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>, outcome: { unsent?: true; raw?: Record<string, unknown>; quiet?: true } = {}, back?: McpKeys["back"]): Promise<McpCallResult> => {
     let connected = false;
+    const operation = resourceToolOperation(tool);
+    const boundedSignal = operation ? AbortSignal.any([signal, AbortSignal.timeout(options.bounds?.callMs ?? CALL_MS)]) : signal;
     // Read at each use: a token refreshed while the call is out, and sent, is scrubbed with the one it took.
     const held = callSet(server);
     const scrubbed = scrubberOf(server, hold(server, headers), held.values);
@@ -378,7 +383,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const clean = back ? (text: string) => back(scrubbed(text)) : scrubbed;
     hold(server, queryOf(server));
     try {
-      const upstream = await until(connect(server, url, headers), signal);
+      const upstream = await until(connect(server, url, headers), boundedSignal);
       connected = true;
       if (sending && !signal.aborted) {
         const refused = await sending();
@@ -386,12 +391,15 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       }
       // The pinned definition, so the SDK mirrors its x-mcp-header parameters into Mcp-Param-* headers on a 2026-07-28
       // server, as its own listing would have it do.
-      const result = (await upstream.callTool({ name: tool.name, arguments: args }, { signal, timeout: options.bounds?.callMs ?? CALL_MS, toolDefinition: { name: tool.name, inputSchema: tool.inputSchema } })) as Record<string, unknown>;
+      const result = operation
+        ? await resourceResult(upstream, operation, args, boundedSignal, options.bounds?.callMs ?? CALL_MS, scrubbed)
+        : (await upstream.callTool({ name: tool.name, arguments: args }, { signal, timeout: options.bounds?.callMs ?? CALL_MS, toolDefinition: { name: tool.name, inputSchema: tool.inputSchema } })) as Record<string, unknown>;
       outcome.raw = result;
       // A meter's own read (`quiet`): its raw result is all that is wanted, nothing filed for a model to read.
       return said(outcome.quiet ? "" : await textOf(server, tool.name, result, clean), result.isError === true);
     } catch (error) {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
+      if (boundedSignal.aborted) return said(`The resource operation on the MCP server ${server} exceeded its deadline.`, true);
       // The next call connects again (a server that dropped its session, say); this one is never sent again.
       clients.delete(server);
       // Its address refused before the request left (reach): nothing reached it. Read from this call's own error, never
@@ -422,6 +430,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const unsendable = (server: string, tool: string): string | undefined => {
     const pinned = pins.get(server);
     if (!pinned?.tools.some((t) => t.name === tool)) return `${tool} is not a tool of the MCP server ${server} in this run.`;
+    const resourceProblem = resourceToolProblem(pinned.tools.find(t => t.name === tool));
+    if (resourceProblem) return `The MCP operation ${tool} is invalid: ${resourceProblem}. Nothing was sent.`;
     const meta = metaToolOf(pinned.url, tool);
     if (meta) return `mcp:${server}/${tool} can't be granted: ${meta.reason} Nothing was sent.`;
     const now = credentials.get(server);

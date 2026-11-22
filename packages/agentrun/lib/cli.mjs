@@ -5,9 +5,9 @@
 // validate and template eval, which check and run a package folder on this machine, are template.mjs's, harness install
 // (the harness its owner installs: goose) is harness.mjs's, and service
 // (AgentRun as a launchd or systemd user service) and stop (the AgentRun the installer started in the background) are
-// service.mjs's, doctor (how this AgentRun is set up, read-only) is doctor.mjs's, and export (an agent written as a
-// template package folder) is export.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf,
-// below).
+// service.mjs's, doctor (how this AgentRun is set up, read-only) is doctor.mjs's, export (an agent written as a template
+// package folder) is export.mjs's, and deploy (an agent's package sent to another AgentRun, with its lock, rollback and
+// delete) is deploy.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
 import { spawn } from "node:child_process";
 import { accessSync, closeSync, constants, fstatSync, openSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir, constants as osConstants } from "node:os";
@@ -22,9 +22,11 @@ import { SKILL_INSTALL } from "./skill.mjs";
 import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from "./template.mjs";
 import { HARNESS_CHECK, HARNESS_INSTALL, HARNESS_SIGN_IN } from "./harness.mjs";
 import { EXPORT } from "./export.mjs";
+import { DEPLOY, DEPLOY_DELETE, DEPLOY_ROLLBACK } from "./deploy.mjs";
 
-/** The hand-written commands that run as they are given (`run`), beside the table's. */
-const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, HARNESS_INSTALL, HARNESS_SIGN_IN, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR];
+/** The hand-written commands that run as they are given (`run`), beside the table's. A command of one word that has
+ *  verbs too (deploy) comes after them: `run` takes the first whose words match. */
+const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, HARNESS_INSTALL, HARNESS_SIGN_IN, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR, DEPLOY_ROLLBACK, DEPLOY_DELETE, DEPLOY];
 export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
 const START = "start it with `npx @parcha/agentrun`, or pass --base-url (or set AGENTRUN_BASE_URL) to the address the server printed";
@@ -45,11 +47,11 @@ const usageError = (message) => new Exit(2, message);
 const flag = (name) => name.replace(/_/g, "-").toLowerCase();
 
 /** The words of `argv` that are not flags, past the values of the flags placed before a command (--data, --base-url,
- *  and the server's --port). */
+ *  login's --to, and the server's --port) or before a verb (deploy's --to and --params). */
 export function words(argv) {
   const found = [];
   for (let i = 0; i < argv.length; i++) {
-    if (["--data", "--base-url", "--port"].includes(argv[i])) i++;
+    if (["--data", "--base-url", "--port", "--to", "--params"].includes(argv[i])) i++;
     else if (!argv[i].startsWith("-")) found.push(argv[i]);
   }
   return found;
@@ -72,7 +74,8 @@ const HELP = () => {
     "The server: --base-url, else AGENTRUN_BASE_URL, else base_url in $XDG_CONFIG_HOME/agentrun/config.json, else the",
     "server started on this machine with the data directory (--data, default ~/.agentrun). The token: AGENTRUN_API_KEY,",
     "else api_key in the config file, else that server's own; it is never a flag and never printed. agentrun login",
-    "--base-url URL checks a token read from stdin and writes the config file (0600); agentrun logout removes it.",
+    "--base-url URL checks a token read from stdin and writes the config file (0600); agentrun login --to URL (or cloud)",
+    "signs in with a device code when the server offers one, else reads the token the same way; agentrun logout removes it.",
     "Keys and other secrets are set in the console, signed in: the token can't write one, so no command does.",
     "Output: the response's JSON on stdout, a file's bytes as they are; an error's on stderr. Exit codes: 0 ok, 1 the",
     "server refused, 2 bad usage (a bad base URL among it), 3 the server cannot be reached, 4 no token, the token was",

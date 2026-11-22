@@ -15,7 +15,8 @@ import { test } from "node:test";
 import { serialize } from "node:v8";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { shadowRunId } from "../dist/learn/audit.js";
-import { Channel, ChannelClosed, MAX_FRAME } from "../dist/runner/run-channel.js";
+import { Channel, ChannelClosed, FrameTooLarge, MAX_FRAME } from "../dist/runner/run-channel.js";
+import { registerRunErrors } from "../dist/runner/run-errors.js";
 import { FIRST_RUN_ID, reapSlot, RUN_SLOTS, RunIsolationRefused, runIsolationOf, SlotHold, slotId, Slots, storeCall } from "../dist/runner/run-child-host.js";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
@@ -305,6 +306,22 @@ test("a call past the channel's cap fails alone, and the channel goes on", async
   await assert.rejects(runner.call("echo", "it", ["x".repeat(8192)]), /past the channel's 4096/);
   assert.equal(runner.closed, false);
   assert.equal(await runner.call("echo", "it", ["small"]), "small");
+  runner.close();
+  child.close();
+});
+
+test("a call or an answer past the channel's cap fails as FrameTooLarge on the caller's side, naming its bytes and the cap", async () => {
+  registerRunErrors();
+  const [a, b] = duplexPair();
+  const runner = new Channel(a, { maxFrame: 4096 });
+  const child = new Channel(b, { maxFrame: 4096 });
+  child.expose("big", () => "y".repeat(8192));
+  child.expose("echo", (_method, args) => args[0]);
+  const named = (error) => error instanceof FrameTooLarge && error.limit === 4096 && error.bytes > 8192 && error.message.includes(String(error.bytes)) && error.message.includes("4096");
+  // The answer is refused on the child's side and crosses back as an error: still a FrameTooLarge here.
+  await assert.rejects(runner.call("big", "it", []), named, "an answer");
+  await assert.rejects(runner.call("echo", "it", ["x".repeat(8192)]), named, "a call");
+  assert.equal(runner.closed, false);
   runner.close();
   child.close();
 });

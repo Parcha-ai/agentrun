@@ -1,6 +1,7 @@
-// The API-only profile (api-only.ts, AGENTRUN_API_ONLY=1): the server serves the run routes alone, for a caller's
-// backend, and refuses every other address with a 404 before the request is read further: the console, the store page's
-// data, sign-in, setup, settings writes, MCP, triggers and their webhook hooks, agents, and a live view's WebSocket. It
+// The API-only profile (api-only.ts, AGENTRUN_API_ONLY=1): the server serves the run routes and a deploy's routes alone
+// (api-only-deploy.test.mjs), for a caller's backend, and refuses every other address with a 404 before the request is
+// read further: the console, the store page's data, sign-in, setup, settings writes, MCP, triggers and their webhook
+// hooks, the agents list and their writes, and a live view's WebSocket. It
 // has no owner. The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
 // writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
 // run's learning) and its reset (DELETE learning), its learning's other writes and its own texts refused. A run's purge
@@ -11,7 +12,7 @@ import { randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { test } from "node:test";
 import { ended } from "./learn-support.mjs";
-import { follow, serve, startRun, withEnv } from "./support.mjs";
+import { follow, serve, startRun, WINDOW, withEnv } from "./support.mjs";
 
 const { API_ONLY_ENV, API_ONLY_ROUTES, apiOnlyFrom, servedApiOnly } = await import("../dist/api-only.js");
 const { ROUTES } = await import("../dist/server.js");
@@ -58,12 +59,16 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/runs/run_1/usage"], ["HEAD", "/v2/runs/run_1/usage"],
     ["PUT", "/v2/runs/run_1/grade"], ["POST", "/v2/runs/run_1/messages"], ["POST", "/v2/runs/run_1/stop"], ["POST", "/v2/runs/run_1/cancel"],
     ["GET", "/v2/runs/run_1/files"], ["GET", "/v2/runs/run_1/files/out/report.md"], ["POST", "/v2/files"], ["GET", "/v2/files/file_1"],
-    ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"], ["GET", "/v2/capacity"],
+    ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"], ["GET", "/v2/capacity"], ["POST", "/v2/templates/import"],
     ["GET", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1"], ["DELETE", "/v2/agents/a1/learning"], ["DELETE", "/v2/runs/run_1"], ["GET", "/v2/computers/daemon"],
     ["GET", "/v2/computers"], ["HEAD", "/v2/computers"], ["GET", "/v2/workspace/archil"], ["HEAD", "/v2/workspace/archil"],
     ["GET", "/v2/runs/run_1/computer"], ["POST", "/v2/runs/run_1/computer/take-over"], ["POST", "/v2/runs/run_1/computer/hand-back"],
     ["POST", "/v2/runs/run_1/computer/viewer"], ["GET", "/v2/runs/run_1/computer/live/v/x"], ["HEAD", "/v2/runs/run_1/computer/live/computer-viewer.js"],
     ...LEARNING_READS.flatMap((path) => [["GET", at(path, "a1", "run_1")], ["HEAD", at(path, "a1", "run_1")]]),
+    // A deploy's routes: a template's apply, the agent's read, its revisions, its current revision moved back, and its
+    // archive (and unarchive) before its delete.
+    ["POST", "/v2/templates/x/apply"], ["GET", "/v2/agents/a1"], ["HEAD", "/v2/agents/a1"], ["GET", "/v2/agents/a1/revisions"],
+    ["POST", "/v2/agents/a1/current"], ["POST", "/v2/agents/a1/archive"], ["POST", "/v2/agents/a1/unarchive"],
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
   for (const [method, raw] of [
     ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/llms.txt"],
@@ -72,7 +77,10 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["POST", "/v2/mcp"], ["GET", "/v2/triggers"], ["POST", "/v2/triggers"], ["POST", "/v2/hooks/trg_1"],
     ["GET", "/v2/agents"], ["POST", "/v2/agents"], ["POST", "/v2/runs/run_1/approvals/a"], ["GET", "/v2/runs/run_1/browser"], ["POST", "/v2/runs/run_1/kill"],
     ["GET", "/v2/runs/run_1/browser/live/v/x"], ["POST", "/v2/runs/run_1/computer/live/v/x"], ["POST", "/v2/runs/run_1/computer/call"], ["POST", "/v2/runs/run_1/computer/release"],
-    ["GET", "/v2/openapi.json"], ["POST", "/v2/templates/x/apply"], ["GET", "/v2/v2/runs"],
+    ["GET", "/v2/openapi.json"], ["GET", "/v2/v2/runs"],
+    ["GET", "/v2/templates"], ["DELETE", "/v2/templates/x"], ["PUT", "/v2/agents/a1/definition"],
+    ["GET", "/v2/triggers/trg_1"], ["PATCH", "/v2/triggers/trg_1"], ["DELETE", "/v2/triggers/trg_1"], ["GET", "/v2/triggers/trg_1/firings"],
+    ["POST", "/v2/triggers/trg_1/fire"], ["POST", "/v2/triggers/trg_1/secret"], ["POST", "/v2/hooks/composio/p1"],
     ["POST", "/v2/computers/pairings"], ["POST", "/v2/computers/pair"], ["GET", "/v2/computers/attach"],
     ["PUT", "/v2/computers/e2b/keys"], ["POST", "/v2/computers/e2b/test"], ["GET", "/v2/computers/e2b/choices"], ["DELETE", "/v2/computers/pc_1"],
     ["PUT", "/v2/workspace/archil"], ["DELETE", "/v2/workspace/archil"], ["POST", "/v2/workspace/archil/test"],
@@ -112,11 +120,17 @@ test("an API-only server serves a run's routes with the token", async (t) => {
   assert.equal((await send(server, "GET", "/v2/runs", { token: false })).status, 401, "and still takes the token");
 });
 
+/** An inline run of the expert `expert` its backend sends (`external`), with `content` its input and `extra` its
+ *  definition's other fields: its answer's body ({agent_id, run_id}). */
+async function inlineRun(server, expert, content, extra = {}) {
+  const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "backend", kind: "expert", id: expert, version: 1 }, definition: { name: `Expert ${expert}`, instructions: "Answer the question.", skills: [], tools: [], harness: "pi", ...extra }, input: { content } } });
+  assert.equal(inline.status, 202, JSON.stringify(inline.body));
+  return inline.body;
+}
+
 test("an API-only server serves a run's usage lines with the token, and still refuses a settings route", { timeout: 120_000 }, async (t) => {
   const server = await serve(t, { apiOnly: true });
-  const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "backend", kind: "expert", id: "usage-1", version: 1 }, definition: { name: "Counter", instructions: "Answer the question.", skills: [], tools: [], harness: "pi" }, input: { content: "What is six times seven." } } });
-  assert.equal(inline.status, 202, JSON.stringify(inline.body));
-  const { run_id: run } = inline.body;
+  const { run_id: run } = await inlineRun(server, "usage-1", "What is six times seven.");
   await ended(server.api, run);
 
   const usage = await send(server, "GET", `/v2/runs/${run}/usage`);
@@ -146,18 +160,8 @@ test("an API-only server serves an agent's Archil disk, read and removed, with t
   assert.equal((await send(server, "GET", `/v2/agents/${agent}/archil`, { token: false })).status, 401, "and takes the token");
 });
 
-/** An inline run of the expert `expert` its backend sends (`external`), with `content` its input and `extra` its
- *  definition's other fields: its answer's body ({agent_id, run_id}). */
-async function inlineRun(server, expert, content, extra = {}) {
-  const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "backend", kind: "expert", id: expert, version: 1 }, definition: { name: `Expert ${expert}`, instructions: "Answer the question.", skills: [], tools: [], harness: "pi", ...extra }, input: { content } } });
-  assert.equal(inline.status, 202, JSON.stringify(inline.body));
-  return inline.body;
-}
-
 /** `answer` is 410 purged, its tombstone the run's. */
 const purged = (answer, run, what) => assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.run_id], [410, "purged", run], `${what}: ${JSON.stringify(answer.body)}`);
-/** The window /usage is read over: every run a test starts. */
-const WINDOW = "from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z";
 
 test("an API-only server purges a run of an agent its backend made (an inline run's, external): 204, every read of it 410 purged, a second DELETE 204, its cost kept in /usage; an unknown run is the route's own 404; it takes the token", { timeout: 120_000 }, async (t) => {
   const server = await serve(t, { apiOnly: true });
@@ -232,9 +236,7 @@ test("an API-only server answers 409 run_not_final to DELETE of a live run of an
 
 test("an API-only server serves an inline-run agent's learning reads with the token (loop, promotions, cost, a run's learning), and refuses its learning's writes and texts", { timeout: 120_000 }, async (t) => {
   const server = await serve(t, { apiOnly: true, learning: "on" });
-  const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "backend", kind: "expert", id: "learner-1", version: 1 }, definition: { name: "Learner", instructions: "Answer the question.", skills: [], tools: [], harness: "pi", learning: true }, input: { content: "What is six times seven." } } });
-  assert.equal(inline.status, 202, JSON.stringify(inline.body));
-  const { agent_id: agent, run_id: run } = inline.body;
+  const { agent_id: agent, run_id: run } = await inlineRun(server, "learner-1", "What is six times seven.", { learning: true });
   // The run ends, then its learning (the look-back the runner beside the server runs): both read by the token.
   await ended(server.api, run);
 
@@ -369,6 +371,6 @@ test("off by default: the same routes are served without the profile", async (t)
 
 test("the banner says the server is API-only in place of the console's link", () => {
   const lines = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: "x".repeat(32), source: "env", apiOnly: true });
-  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused."), lines.join("\n"));
+  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run and deploy routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused."), lines.join("\n"));
   assert.ok(!lines.some((line) => line.startsWith("Open ")), "no console link");
 });

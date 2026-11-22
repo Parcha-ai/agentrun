@@ -1568,7 +1568,7 @@ the TTL.
 | `vendorAgentPorts` | `[2280]` | the toolbox's port, on every interface; isolation.vendor-agent checks a program of the computer's user reaches it on neither loopback |
 | `isolation` | `container`, or `vm` with `sandboxClass: "linux-vm"` | the class comes from the snapshot |
 | `os` | `linux` | Linux classes only; Windows and macOS are not offered here |
-| `daemon` | `child` | Daytona's toolbox daemon is the sandbox's first process, and init is started detached through a session command of it (above); on dial init is `agentrun-dial`'s child, and `agentrun-dial` the toolbox's entrypoint command ([Daytona on dial](#daytona-on-dial)) |
+| `daemon` | `child` | Daytona's toolbox daemon is the sandbox's first process, and init is started detached through a session command of it (above); on dial init is `agentrun-dial`'s child, and `agentrun-dial` a session command create starts ([Daytona on dial](#daytona-on-dial)) |
 | `networkReadBack` | `false` | the network is probed from inside, the same for every hosted vendor |
 | `groups` | `exec`, `files`, `processes` | the daemon's own, checked against its hello's `groups`, as is its `kind` |
 | `maxLifetimeMs` | 30 days | the cap `check` gives, through the shared `checkLifetime`; Daytona's TTL is whole minutes and documents no cap of its own |
@@ -1684,9 +1684,17 @@ Daytona also sweeps its own label through the host at its end (the report's `cle
 
 With `connect: "dial"` (a server's `daytonaConnect` setting, `COMPUTER_DAYTONA_CONNECT` for conformance; `exec` by
 default) a Daytona sandbox dials the server instead ([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)). The host has
-no exec and no upload, and nothing goes through the toolbox: create sends the boot env as `CreateSandbox.env` and
-`networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside), and the snapshot's
-entrypoint runs `agentrun-dial`. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
+no exec and no upload: create sends the boot env as `CreateSandbox.env`, `AGENTRUN_ATTACH_URL` left out, and
+`networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside). Once the sandbox reads
+`started` (within the create's time; `error` or `build_failed` fails create in Daytona's words), create starts
+`agentrun-dial` itself in a toolbox session of its own, `agentrun-dial`: one async session command,
+`AGENTRUN_ATTACH_URL='<url>' exec /usr/local/bin/agentrun-dial`. The URL is no secret; the token stays in the sandbox's
+env, which the command inherits, and is on no command line. A session Daytona refuses fails create in its words, and
+the sandbox is deleted. So the snapshot's entrypoint is not relied on: a box snapshot registered without one (name,
+image and resources alone) dials too, and one whose entrypoint is the box CMD sleeps, with no `AGENTRUN_ATTACH_URL` in
+its env, so `agentrun-dial` never runs twice. A machine that does not dial within `createMs` fails with the session
+command's log, its last 10 lines within 800 characters (`dialLog`, the token replaced by `<token>`), or "agentrun-dial
+never started" when the session is none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
 no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
 (`kind: "desktop"`): the box snapshot's X server, started over the socket it dialed, and xfwm4, which computerd starts
 (init's `--window-manager`), at the snapshot's 2 CPUs and 4 GiB, with no GPU. On exec a Daytona computer is kind
@@ -1698,13 +1706,15 @@ What each part of a dial sandbox rests on:
   whose tag is not `latest`, `lts` or `stable` ([docs: create snapshots](https://www.daytona.io/docs/en/snapshots.md#create-snapshots)).
   The one that holds `agentrun-dial` is the box image's, `agentrun-box-<recipe hash>`: `box/build-daytona.py`
   builds it from `box/Dockerfile`, or `POST /snapshots` makes it from the published
-  `ghcr.io/parcha-ai/agentrun-box:<recipe hash>` with the same `entrypoint`. The conformance module's run image on
+  `ghcr.io/parcha-ai/agentrun-box:<recipe hash>`, with or without the same `entrypoint`. The conformance module's run image on
   dial is that name. A snapshot carries its own resources: a create that names one sends none (400 "Cannot specify
   Sandbox resources when using a snapshot", live 11-11).
 - **The boot env reaches `agentrun-dial`.** The runner puts `env` in the container's env
   ([runner container_configs.go:87](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L87)),
   and the toolbox's session shell takes the toolbox's env (`cmd.Env = os.Environ()`,
   [daemon session/create.go:23-24](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/create.go#L23-L24)).
+  Live (11-22): a value set in create's `env` was echoed by a session command, which runs as root, and `runAsync` works.
+  `AGENTRUN_ATTACH_URL` comes from the command's own line.
 - **The image's CMD never runs; the snapshot's entrypoint does.** The container's entrypoint is the toolbox daemon, and
   its arguments are the snapshot's entrypoint, else the image's ENTRYPOINT, never its CMD
   ([runner container_configs.go:143-173](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L143-L173));
@@ -1712,9 +1722,11 @@ What each part of a dial sandbox rests on:
   ([daemon main.go:129-164](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/cmd/daemon/main.go#L129-L164)).
   A snapshot built from a Dockerfile with no ENTRYPOINT gets `sleep infinity`
   ([api snapshot.service.ts:883-901](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/api/src/sandbox/services/snapshot.service.ts#L883-L901)),
-  so `box/build-daytona.py` names the Dockerfile's CMD as the snapshot's `entrypoint`. The box snapshots it built
-  before, `agentrun-archil-<recipe hash>`, have none and never dial, so the snapshot it builds now has a name of its
-  own, `agentrun-box-<recipe hash>`, which no snapshot without the entrypoint holds.
+  so `box/build-daytona.py` names the Dockerfile's CMD as the snapshot's `entrypoint`. The provider no longer needs
+  it: a snapshot registered another way (an operator's tooling that sends name, image and resources alone) has no
+  entrypoint, its pid 1 is the bare toolbox daemon and the toolbox has no entrypoint session (404 "session not found",
+  live 11-22), and before create started `agentrun-dial` itself such a sandbox never dialed and failed at
+  `createMs` with no word of why.
 - **Outbound https, by tier.** Tier 1 and 2 organizations reach "essential services" alone, and those leave out shared
   hosting domains; Tier 3 and 4 have full access
   ([docs: tier-based network restrictions](https://www.daytona.io/docs/en/network-limits.md#tier-based-network-restrictions)).

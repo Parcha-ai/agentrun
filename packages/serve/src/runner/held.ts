@@ -21,6 +21,7 @@ import type { AlsoRow } from "../store/store.js";
 import type { RunModelKey } from "../store/seal.js";
 import type { EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
 import type { LearnedFirst } from "./learned-first.js";
+import type { ProjectCheckpoint } from "../source-sync/checkpoints.js";
 
 /** One MCP tool of the claim, its call made by the runner (mcp-run.ts mcpForClaim), with what the gate reads of it. */
 export interface HeldMcpTool {
@@ -61,6 +62,9 @@ export interface HeldComputerAsk {
 }
 
 export interface Held {
+  /** The host captures this claim's placed project once after draining its exported capabilities. No child-selected
+   * identifiers, paths, callbacks, workspace or secret values cross this boundary. */
+  projectCheckpoint(signal?: AbortSignal): Promise<ProjectCheckpoint>;
   /** The ChatGPT sign-in's reader (chatgpt-plan.ts planReaderOf), for a run whose models reach the plan; else none. */
   plan(): Promise<PlanReader | undefined>;
   /** Whether a browser sign-in handed to the run reads back here (sign-ins-store.ts handedSignInReadsBack). */

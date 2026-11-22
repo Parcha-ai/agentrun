@@ -325,7 +325,9 @@ provider's, made and deleted by runs; only the transport is this binding's.
   `AGENTRUN_DAEMON_SHA256` (the build the server serves for that arch), `AGENTRUN_INIT_ARGS` (init's arguments, as
   a start passes them, space-separated), for a desktop, `DISPLAY` (`:0`), and, with an attach egress,
   `AGENTRUN_ATTACH_EGRESS` (`<IPv4 relay>:<port>`, the operator's relay for machines that reach listed addresses
-  alone). The image's `agentrun-dial` fetches the daemon, refuses it unless its SHA-256 is that one, starts
+  alone). A provider that starts `agentrun-dial` itself may hand it `AGENTRUN_ATTACH_URL` on its start instead of in
+  the machine's env (Daytona does, so a snapshot entrypoint that dials while the env holds it sleeps instead); the
+  token is always the env's, never on a command line. The image's `agentrun-dial` fetches the daemon, refuses it unless its SHA-256 is that one, starts
   `computerd init` with an env that holds no token (and `DISPLAY`, when given), and runs `computerd attach` with the
   URL and token alone, and the egress when given. With an egress, the fetch and every dial open TCP to the relay and
   speak TLS and HTTP to the public host through it: the SNI, the certificate checked and `Host` are the public host's,

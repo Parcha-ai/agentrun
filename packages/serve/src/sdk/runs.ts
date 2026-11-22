@@ -1,12 +1,14 @@
 // Backend SDK calls remain in their application. This inbox only records their evidence and immutable completion;
 // the ordinary fenced runner owns journals, reflection, checking and learning commits.
+import { cliCaptureOf } from "../source-sync/capture.js";
+import { sourceKey } from "../source-sync/registry.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { inspectWorkflow, resolveSchemaForWorkflow } from "@parcha/agentrun-dsl";
 import { ApiError } from "../errors.js";
 import { canonical, isObject, cliLearningOf, learningSettingForBody, type AgenticBody } from "../store/agent-body.js";
-import type { Claim, RunOrigin, Store } from "../store/store.js";
+import type { Claim, RunOrigin, Store, SettingsGuard } from "../store/store.js";
 import type { AgentEntry } from "../agents-store.js";
-import { uuidv7 } from "../agents-store.js";
+import { uuidv7 } from "../ids.js";
 import { launchBody, type RunLaunch } from "../run-launch.js";
 import { learningStartFor, type StartDeps } from "../runs-over-store.js";
 import { chooseWorkflows, type LearnedWorkflow, learningFolderOf, seedAt, secretsShown, withAgentRepo } from "../learning.js";
@@ -16,6 +18,9 @@ import { refuseWhileNoRunner } from "../runner/presence.js";
 import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
+import { snapshotAt } from "../learn/folder.js";
+import { purgedRun, purgedWorkflows } from "../purged-workflow.js";
+import type { RunRow } from "../store/index.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 import type { SdkWorkflowCheckEvent } from "./check.js";
@@ -72,6 +77,9 @@ export type SdkInbox = {
   batches: { sequence: number; events: SdkEvent[] }[];
   /** Exact promoted executable workflows delivered by the start receipt. */
   learning_workflows?: LearnedWorkflow[];
+  /** The learning commit each of learning_workflows was read at, by name (its seed's, or its champion record's): where
+   *  the receipt asks whether a purged run wrote it (receipt). */
+  learning_commits?: Record<string, string>;
   /** A compiled draft reserved for a shadow check, never supplied to the native agent. */
   learning_check?: SdkWorkflowCheck;
   /** Server cleaning changed evidence: two different secret-bearing answers must never agree by their placeholder. */
@@ -232,6 +240,14 @@ export class SdkRuns {
     const workflow = cli ? undefined : sdkWorkflowManifest(body.workflow_tools, body.workflow_adapters);
     if (workflow && canonical(this.clean(workflow)) !== canonical(workflow))
       refuse("The workflow manifest contains a protected value; keep credentials in the backend.");
+    const expectedCurrent = entry.agent.currentRevision;
+    const managedLearning = learningSettingForBody(entry.revision?.body);
+    const capture = cli ? await cliCaptureOf(this.store, entry) : undefined;
+    const sourceGuards: SettingsGuard[] = cli ? [{ key: `cli-learning-connection:${cli.connection_id}`, fields: { active: true, generation: cli.connection_generation, agent_id: entry.agent.id } }] : [];
+    if (capture) {
+      entry = { ...entry, revision: capture.revision };
+      if (capture.source) sourceGuards.push({ key: sourceKey(entry.agent.id), fields: { id: capture.source.id, capture_revision: capture.source.capture_revision } });
+    }
     const binding = sdkOf(entry.revision?.body);
     if (cli) {
       if (cliLearningOf(entry.revision?.body)?.connection_id !== cli.connection_id)
@@ -267,7 +283,7 @@ export class SdkRuns {
     // their words, as any start is (prepareLaunch), before the caller holds a receipt it would run on.
     await refuseWhileNoRunner(this.store.runners);
     // A connected agent's run names no disk.
-    const learning = await learningStartFor(deps, entry, pinned.revision, { ...revisionBody, learning: learningSettingForBody(revisionBody) } as never, {
+    const learning = await learningStartFor(deps, entry, pinned.revision, { ...revisionBody, learning: cli ? managedLearning : learningSettingForBody(revisionBody) } as never, {
       disk: null,
       noWorkflows: !workflow,
       ...(compile.model ? { model: compile.model } : {}),
@@ -296,7 +312,7 @@ export class SdkRuns {
       const reset = learning ? await resetAtOf(this.store.settings, entry.agent.id) : undefined;
       if (learning && reset !== undefined && !(learning.seededAt !== undefined && learning.seededAt > reset))
         throw new ApiError("unavailable", "The agent's learning was reset while this run started: start it again.", { retry_after_ms: 1_000 });
-      const selected = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : { workflows: [], candidates: [] };
+      const selected = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : { workflows: [], commits: {}, candidates: [] };
       const cleaned = this.clean({ instructions, ...(model ? { model } : {}) });
       const runId = uuidv7();
       const redacted = cleanedInput !== input || cleaned.instructions !== instructions;
@@ -328,12 +344,13 @@ export class SdkRuns {
           expires_at: now + (cli ? 86_400_000 : 3_600_000),
           batches: [],
           learning_workflows: workflows,
+          ...(workflows.length ? { learning_commits: selected.commits } : {}),
           ...(check ? { learning_check: check } : {}),
           ...(redacted ? { check_redacted: true } : {}),
           ...(cli && cleanedInput !== input ? { evidence_incomplete: true } : {}),
         } satisfies SdkInbox);
         await this.store.runs.create(
-          { id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) },
+          { id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(cli ? { expectedCurrent, settingsGuards: sourceGuards } : {}), ...(origin ? { origin } : {}) },
           { body: launchBody(launch) },
         );
       } catch (error) {
@@ -371,6 +388,14 @@ export class SdkRuns {
     const launch = (await this.store.runs.launch(runId)).body as unknown as RunLaunch;
     const inbox = await sdkInbox(this.store, runId);
     const workflows = inbox.learning_workflows ?? [];
+    // A start sent again answers the receipt it pinned, never a workflow a purged run wrote: 410 purged, as its file read.
+    // Each is read at the commit it was taken from (learning_commits; the check's draft at the seed).
+    const seed = launch.learning?.seed ?? null;
+    const purged = seed === null ? undefined : await this.purgedPinned(run.agentId, [
+      ...workflows.map((flow) => [flow, inbox.learning_commits?.[flow.name] ?? seed] as const),
+      ...(inbox.learning_check ? [[inbox.learning_check.workflow, seed] as const] : []),
+    ]);
+    if (purged) throw purgedRun(purged);
     const shown = secretsShown(this.secrets(), { local: true });
     if (
       shown.holds(launch.learning?.section ?? "") ||
@@ -397,10 +422,27 @@ export class SdkRuns {
       },
     };
   }
-  private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; candidates: LearnedWorkflow[] }> {
+  /** The purged run (purged-workflow.ts) that wrote a workflow of `pinned`, each read at the learning commit a start took
+   *  its text from. One read-only exec per commit. */
+  private async purgedPinned(agentId: string, pinned: readonly (readonly [LearnedWorkflow, string])[]): Promise<RunRow | undefined> {
+    if (pinned.length === 0) return undefined;
     const folder = learningFolderOf(this.data, agentId);
     try {
-      const seed = await seedAt(folder.workspace, revision);
+      const reads = new Map<string, Promise<ReadonlyMap<string, RunRow>>>();
+      const at = (commit: string) => reads.get(commit) ?? reads.set(commit, snapshotAt(folder.workspace, commit).then((snapshot) => purgedWorkflows(snapshot, this.store))).get(commit)!;
+      for (const [flow, commit] of pinned) {
+        const row = (await at(commit)).get(flow.name);
+        if (row) return row;
+      }
+      return undefined;
+    } finally { await folder.end(); }
+  }
+  /** The workflows a start delivers and the learning commit each was read at (`commits`: the seed's, or its champion
+   *  record's), and the drafts a check may take. */
+  private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; commits: Record<string, string>; candidates: LearnedWorkflow[] }> {
+    const folder = learningFolderOf(this.data, agentId);
+    try {
+      const seed = await seedAt(folder.workspace, revision, this.store);
       const { flows } = chooseWorkflows(seed, secretsShown(this.secrets(), { local: true }));
       const dsl = await import("@parcha/agentrun-dsl");
       const { tools, gated, deniedBy } = sdkDraftTools(binding.workflow_tools);
@@ -412,15 +454,18 @@ export class SdkRuns {
         room -= bytes;
         return true;
       };
-      const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [];
+      const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [], commits: Record<string, string> = {};
       const atCommit = async (name: string, commit: string) =>
-        chooseWorkflows(await seedAt(folder.workspace, commit), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
+        chooseWorkflows(await seedAt(folder.workspace, commit, this.store), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
       for (const flow of flows) {
-        const { text: serving } = await championTextOf(records, flow, atCommit);
-        if (serving && compatible(serving)) workflows.push(serving);
+        const { text: serving, champion } = await championTextOf(records, flow, atCommit);
+        if (serving && compatible(serving)) {
+          workflows.push(serving);
+          commits[serving.name] = serving === flow ? seed.sha! : champion!.commit!;
+        }
         if ((!serving || workflowDigest(serving) !== workflowDigest(flow)) && compatible(flow)) candidates.push(flow);
       }
-      return { workflows, candidates };
+      return { workflows, commits, candidates };
     } finally { await folder.end(); }
   }
   private async modify(runId: string, change: (row: SdkInbox) => SdkInbox, limit = TOTAL_LIMIT): Promise<void> {

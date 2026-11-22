@@ -11,6 +11,7 @@ import type { ComposioBinding } from "./store/seal.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
 import { capped, MAX_RESPONSE, mcpClient, scrub } from "./mcp-wire.js";
+import { reservedResourceName, resourceTools, type ResourceOperation } from "./mcp-resources.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject, unknownFields } from "./validate.js";
 
@@ -68,11 +69,11 @@ const LOOPBACK_NAMES = ["localhost", "[::1]"]; // key-gate: loopback-rule plain 
 const LOOPBACK = (host: string) => LOOPBACK_NAMES.includes(host) || LOOPBACK_V4.test(host);
 
 export type AuthType = (typeof MCP_AUTH_TYPES)[number];
-export type McpTool = { name: string; title?: string; description?: string; input_schema: unknown; output_schema?: unknown; annotations?: unknown };
+export type McpTool = { name: string; title?: string; description?: string; input_schema: unknown; output_schema?: unknown; annotations?: unknown; resource?: ResourceOperation };
 /** A registry tool (input_schema, as the server listed it) in the harnesses' shape (the kernel's McpTool: inputSchema),
  *  as a run is pinned to it and a session binds it. */
-export function boundTool(tool: McpTool): { name: string; title?: string; description?: string; inputSchema: Record<string, unknown>; annotations?: Record<string, unknown> } {
-  return { name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), inputSchema: (tool.input_schema ?? {}) as Record<string, unknown>, ...(tool.annotations ? { annotations: tool.annotations as Record<string, unknown> } : {}) };
+export function boundTool(tool: McpTool): { name: string; title?: string; description?: string; inputSchema: Record<string, unknown>; annotations?: Record<string, unknown>; resource?: ResourceOperation } {
+  return { name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), inputSchema: (tool.input_schema ?? {}) as Record<string, unknown>, ...(tool.annotations ? { annotations: tool.annotations as Record<string, unknown> } : {}), ...(tool.resource !== undefined ? { resource: tool.resource } : {}) };
 }
 export type Listed = { protocol: string; server_info: unknown; instructions?: string; tools: McpTool[] };
 /** A tool's declared price in USD a call, by its name: what a run's cap holds and books for each call (mcp-gateway.ts). */
@@ -316,6 +317,7 @@ export async function listServer(url: URL, headers: HeaderMap, version: string, 
       for (let cursor: string | undefined, pages = 0; ; ) {
         const page = await client.request({ method: "tools/list", ...(cursor !== undefined ? { params: { cursor } } : {}) }, { timeout: PREVIEW_MS, signal: deadline });
         for (const tool of page.tools) {
+          if (reservedResourceName(tool.name)) throw invalid([{ field: "url", reason: "reserved", message: `The tool name ${tool.name} is reserved for AgentRun's resource operations.` }]);
           const kept: McpTool = {
             name: tool.name,
             ...(tool.title ? { title: tool.title } : {}),
@@ -334,6 +336,7 @@ export async function listServer(url: URL, headers: HeaderMap, version: string, 
         cursor = page.nextCursor;
       }
     }
+    if (client.getServerCapabilities()?.resources) tools.push(...resourceTools());
     const instructions = client.getInstructions();
     return {
       protocol: client.getNegotiatedProtocolVersion() ?? "unknown",

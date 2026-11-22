@@ -381,6 +381,8 @@ export function withdrawnAnswers(entries: readonly { readonly kind: string; read
 }
 
 export interface EndData {
+  /** Immutable moved-project candidate or explicit uncertainty, committed atomically with this run end. */
+  readonly projectCheckpoint?: import("../source-sync/checkpoints.js").ProjectCheckpoint;
   readonly state: "ended" | "stopped" | "failed";
   readonly summary?: string;
   /** How the run ended beside its state (the store's RunOutcome): an escalation's 'escalated'; a stopped end's 'stopped'

@@ -42,12 +42,14 @@ test("needs are part of the setting: two settings that differ only in them are n
   assert.equal(sameComputer({ kind: "sandbox", provider: "docker", needs: ["ffmpeg"] }, { kind: "sandbox", provider: "docker" }), false);
 });
 
-test("a stored body keeps a sandbox's needs as given, and one with none keeps none, so its body is as before", () => {
+test("a stored body keeps a sandbox's needs as given (up to 32, the API's cap), and one with none keeps none, so its body is as before", () => {
   assert.deepEqual(bodyOf({ kind: "agentic", instructions: "x", computer: { needs: MEDIA, provider: "docker", kind: "sandbox" } }).body.computer, { kind: "sandbox", provider: "docker", needs: MEDIA });
   assert.deepEqual(bodyOf({ kind: "agentic", instructions: "x", computer: { kind: "sandbox", provider: "docker" } }).body.computer, { kind: "sandbox", provider: "docker" });
-  for (const needs of [[], ["a b"], ["ffmpeg", "ffmpeg"], "ffmpeg"]) {
+  for (const needs of [[], ["a b"], ["ffmpeg", "ffmpeg"], "ffmpeg", Array.from({ length: 33 }, (_, i) => `p${i}`)]) {
     assert.throws(() => bodyOf({ kind: "agentic", instructions: "x", computer: { kind: "sandbox", provider: "docker", needs } }), (error) => error instanceof AgentBodyInvalid && /needs/.test(error.message), JSON.stringify(needs));
   }
+  const most = Array.from({ length: 32 }, (_, i) => `p${i}`);
+  assert.deepEqual(bodyOf({ kind: "agentic", instructions: "x", computer: { kind: "sandbox", provider: "docker", needs: most } }).body.computer.needs, most);
 });
 
 test("the words name what the box lacks and the fix in the provider's own setting: Docker's image, a provider's image setting, else the Docker box", async () => {
