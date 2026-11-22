@@ -48,7 +48,8 @@ test("an API-only server takes a deploy through its API: apply, read, run, redep
   assert.deepEqual([moved.status, moved.body.revision], [200, first], JSON.stringify(moved.body));
 
   for (const [method, path, body] of [["POST", "/triggers", { name: "x", agent_id: agent, source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run" } }], ["GET", "/settings/tools"], ["GET", "/agents"]]) {
-    const refused = await api(method, path, body);
+    // The token, never an owner's session (the client's for a secret write): this server has no owner.
+    const refused = await api(method, path, body, { authorization: `Bearer ${TOKEN}` });
     assert.deepEqual([refused.status, refused.body.error?.message], [404, `this server serves the run API only (AGENTRUN_API_ONLY=1): /v2${path} is not served here`], `${method} ${path}`);
   }
 

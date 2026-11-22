@@ -87,7 +87,7 @@ test("an API-only server applies a template, reads its agent and revisions, move
 
   const read = await send(server, "GET", `/v2/agents/${agent}`);
   assert.equal(read.status, 200, JSON.stringify(read.body));
-  assert.deepEqual([read.body.id, read.body.definition.instructions], [agent, "Write a short note about tides."], "the agent's read");
+  assert.deepEqual([read.body.agent_id, read.body.definition.instructions], [agent, "Write a short note about tides."], "the agent's read");
   const first = read.body.revision;
   assert.equal((await fetch(`${server.url}/v2/agents/${agent}`, { method: "HEAD", headers: { authorization: `Bearer ${server.token}` } })).status, 200, "HEAD as GET");
 
@@ -161,7 +161,7 @@ test("an API-only server reads an agent its inline runs made", { timeout: 60_000
   const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "backend", kind: "expert", id: "read-1", version: 1 }, definition: { name: "Expert 1", instructions: "Answer.", skills: [], tools: [] }, input: { content: "Hi" } } });
   assert.equal(inline.status, 202, JSON.stringify(inline.body));
   const read = await send(server, "GET", `/v2/agents/${inline.body.agent_id}`);
-  assert.deepEqual([read.status, read.body.id, read.body.name], [200, inline.body.agent_id, "Expert 1"], JSON.stringify(read.body));
+  assert.deepEqual([read.status, read.body.agent_id, read.body.definition?.name], [200, inline.body.agent_id, "Expert 1"], JSON.stringify(read.body));
   assert.equal((await send(server, "GET", "/v2/agents/agent_missing")).status, 404, "an agent it does not have is the route's own 404");
   assert.notEqual((await send(server, "GET", "/v2/agents/agent_missing")).body.error?.message?.includes("AGENTRUN_API_ONLY"), true, "not the profile's");
 });

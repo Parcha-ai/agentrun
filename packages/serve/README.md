@@ -3103,6 +3103,13 @@ serves these routes alone:
 - a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
   minted;
 - `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
+- a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
+  its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
+  (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`), which its
+  delete (`DELETE /agents/{id}`) needs first. The apply makes only the triggers that fire on this server's own clock
+  (a schedule, a feed); a webhook, GitHub, Composio or email trigger needs a hook or a setting this profile refuses, so
+  it is not made, and the answer says so under `warnings` (`triggers.<i>`, `not_an_option`). The backend starts those
+  runs through the API instead;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
@@ -3110,12 +3117,13 @@ Here a run's computer routes take the server's token. `POST /runs/{id}/computer/
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
 assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
-`POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no
-page to sign in to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or
-`false` serve the whole server, as before; any value other than these and `1` or `true` stops the start, in words.
+`POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
+template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
+to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the
+whole server, as before; any value other than these and `1` or `true` stops the start, in words.
 
-Its routes for agents are refused too, so on an API-only server a run is launched inline (`POST /runs` with its
-definition), or on an agent made before the profile was turned on.
+So on an API-only server a run is launched inline (`POST /runs` with its definition), on an agent a template's apply
+made, or on an agent made before the profile was turned on.
 
 ## Uploads
 

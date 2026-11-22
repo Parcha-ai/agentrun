@@ -21,7 +21,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { apiOnlyRefusal, servedApiOnly } from "./api-only.js";
+import { apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -3150,7 +3150,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // by the triggers' own clock, the one POST /triggers checks by and they fire by (a template eval case's `now`).
     // A feed trigger whose urls are one array parameter given empty reads no feed: skipped, never the apply (feedLeftEmpty).
     const emptyFeeds = new Set(made.triggers.flatMap((trigger, i) => (feedLeftEmpty(trigger) ? [i] : [])));
-    const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !emptyFeeds.has(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
+    // On an API-only server, a trigger whose source needs a hook or a setting the profile refuses is not made, and said
+    // (api-only.ts). It stays listed, so a trigger the agent has by its name is left as it is, never removed.
+    const hostless = new Map(options.apiOnly ? made.triggers.flatMap((trigger, i) => {
+      const said = apiOnlyTriggerSkipped(pkg.name, trigger);
+      return said ? [[i, said] as const] : [];
+    }) : []);
+    const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
+    const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
@@ -3170,7 +3177,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const resent = new Map<number, Source>();
     const remade = new Set<number>();
     for (const [i, trigger] of made.triggers.entries()) {
-      const was = emptyFeeds.has(i) ? undefined : hadByName.get(String(trigger.name).trim());
+      const was = unmade(i) ? undefined : hadByName.get(String(trigger.name).trim());
       if (!was || !isObject(trigger.source) || trigger.source.kind !== "composio" || !isObject(was.source) || was.source.kind !== "composio") continue;
       try {
         resent.set(i, composioTriggers.resent(was.source as Source, was.id, trigger.source as Source));
@@ -3186,7 +3193,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // have to make again without being its own, or another package's, refuses the apply with nothing written (409 under
     // triggers.<i>): the owner renames or deletes it, then applies again.
     const notOurs: InputIssue[] = made.triggers.flatMap((trigger, i) => {
-      const was = emptyFeeds.has(i) ? undefined : hadByName.get(String(trigger.name).trim());
+      const was = unmade(i) ? undefined : hadByName.get(String(trigger.name).trim());
       if (!was || was.templateId === pkg.id) return [];
       const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
       const wasKind = isObject(was.source) ? String(was.source.kind) : "";
@@ -3240,7 +3247,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const leftThere: InputIssue[] = [];
     try {
       for (const [i, trigger] of made.triggers.entries()) {
-        if (emptyFeeds.has(i)) continue;
+        if (unmade(i)) continue;
         const aimed: Json = { ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } };
         let was = hadByName.get(String(trigger.name).trim());
         const own = { templateId: pkg.id, onAgent: entry.agent.id };
@@ -3315,9 +3322,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const ticked = saved.map((need) => ({ ...need, tools: need.tools.filter((tool) => grants.includes(mcpToolName(need.server, tool))) }));
     const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => mcpMeta.get(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
-    const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
+    const hooks = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
-    const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "github"
+    const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "github"
       ? [unconnected.has(i) ? { field: `triggers.${i}`, reason: NOT_SET_UP, message: githubTriggerUnconnected(pkg.name, trigger.source) } : { field: `triggers.${i}`, reason: "not_an_option", message: githubTriggerWords(pkg.name, trigger.source) }]
       : []));
     // Each composio trigger it skipped: which, the refusal's words, and where to make it once that's fixed.
@@ -3327,6 +3334,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     });
     // Each feed trigger it skipped for want of a feed: which, and the parameter to set.
     const feedsSkipped: InputIssue[] = [...emptyFeeds].map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: feedTriggerEmpty(pkg.name, made.triggers[i]!, isObject(pkg.triggers[i]?.source) ? pkg.triggers[i]!.source.urls : undefined) }));
+    // Each trigger an API-only server does not make: nothing set up here makes it, so not_an_option.
+    const hostSkipped: InputIssue[] = [...hostless].map(([i, message]) => ({ field: `triggers.${i}`, reason: "not_an_option", message }));
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
@@ -3335,7 +3344,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // What the apply did to the agent: made it, wrote a new revision, or wrote none (an update whose package and
     // parameters the current revision already holds: commitAgent keeps that revision).
     const agentChange = !onto ? "made" : entry.revision?.id === onto.revision?.id ? "unchanged" : "updated";
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...hostSkipped, ...leftThere, ...appShort, ...twins] };
     return { applied, minted, updated: onto !== undefined };
   }
 

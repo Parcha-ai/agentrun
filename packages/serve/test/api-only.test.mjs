@@ -1,6 +1,7 @@
-// The API-only profile (api-only.ts, AGENTRUN_API_ONLY=1): the server serves the run routes alone, for a caller's
-// backend, and refuses every other address with a 404 before the request is read further: the console, the store page's
-// data, sign-in, setup, settings writes, MCP, triggers and their webhook hooks, agents, and a live view's WebSocket. It
+// The API-only profile (api-only.ts, AGENTRUN_API_ONLY=1): the server serves the run routes and a deploy's routes alone
+// (api-only-deploy.test.mjs), for a caller's backend, and refuses every other address with a 404 before the request is
+// read further: the console, the store page's data, sign-in, setup, settings writes, MCP, triggers and their webhook
+// hooks, the agents list and their writes, and a live view's WebSocket. It
 // has no owner. The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
 // writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
 // run's learning) and its reset (DELETE learning), its learning's other writes and its own texts refused. A run's purge
