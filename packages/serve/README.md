@@ -3551,9 +3551,12 @@ stays in every total.
   folder's history no longer serves its merge; the bytes stay in the folder's `.git` until a learning reset
   (`DELETE /v2/agents/{id}/learning`) or the agent's purge, which delete the folder whole. Each merge's feedback line goes in
   one commit by the host (none when nothing is left to remove), a line a person edited since stays, and another
-  merge's diff that shows the line as context is written without it. The log, a workflow's revisions and a champion read by
-  its digest leave out its merges, known by the run the log names for each (its newest 200 changes), and a champion
-  whose workflow it changed last is not read at main either. Each merge's scrub lands once, so a `DELETE` sent again
+  merge's diff that shows the line as context is written without it. The log and a workflow's revisions leave out its
+  merges, known by the run the log names for each (its newest 200 changes). A learned workflow whose `workflow.json` the
+  run changed last (by the commits' run trailers over the whole history, past those 200) is refused by every read: its
+  file read is `410 purged`, a champion read by its digest reads no commit, a later merge's diff shows the file as added
+  (never the purged text), an SDK start sent again whose receipt pinned it is `410 purged`, and no run lays or serves
+  it, so the agent takes the run as when no champion serves. Each merge's scrub lands once, so a `DELETE` sent again
   after a stop takes no other run's same line, and a merge of the run made since is scrubbed by it. A second `DELETE`
   does this again. It covers the learning folder on this
   server; a Mode 2 agent's folder on an Archil disk keeps the run's text until a learning reset or the agent's purge.

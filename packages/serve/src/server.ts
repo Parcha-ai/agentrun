@@ -71,6 +71,7 @@ import { LEARNING_LABEL, learningFolderOf, secretsShown, type LearningMode, lear
 import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
 import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, forgetRunLearning, learningLog, pendingCount, type PurgedOf, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/workflow-draft.js";
+import { purgedRun } from "./purged-workflow.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -569,20 +570,6 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
-
-const isoOrNull = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
-/** 410 purged for a route of a purged run (Runs.purge): its tombstone, what is kept of it. `tools_usd`: its paid tools'
- *  meter as /usage read it at its purge (null: unknown, or none read). */
-function purgedRun(row: RunRow): ApiError {
-  const meters = (row.metrics as { purged?: { meters?: { tools?: unknown } } } | null)?.purged?.meters;
-  return new ApiError("purged", `The run ${row.id} was purged: what it was given and did is gone, and its cost stays in every total.`, {
-    details: {
-      run_id: row.id, agent_id: row.agentId, state: row.state, started_at: isoOrNull(row.startedAt), ended_at: isoOrNull(row.endedAt),
-      cost_usd: row.costUsd ?? row.costAtMostUsd, cost_upper_bound: row.costUsd === null && row.costAtMostUsd !== null, tools_usd: typeof meters?.tools === "number" ? meters.tools : null,
-      purged_at: isoOrNull(row.purgedAt),
-    },
-  });
-}
 
 /** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off;
  *  `raw`, a route whose body is bytes and not JSON, which the page's session may send with any content type, still only
@@ -5522,7 +5509,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const champion = championOf(records, workflow);
           const record = champion?.digest === digest ? champion : undefined;
           const commits = records.filter((one) => one.workflow === workflow && one.digest === digest && one.commit).map((one) => one.commit!).reverse();
-          const read = await workflowAtDigest(data, id, workflow, digest, commits, purgedOf).catch(() => undefined);
+          const read = await workflowAtDigest(data, id, workflow, digest, commits, store).catch(() => undefined);
           let doc: unknown;
           try {
             doc = read ? JSON.parse(read.text) : undefined;
@@ -5596,7 +5583,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await workflowRevisions(data, id, second!, url.searchParams, await learningShown(id), purgedOf));
       case "readLearningFile":
         await needAgent(id);
-        return sendText(res, 200, await readLearnedFile(data, id, second!, await learningShown(id)));
+        return sendText(res, 200, await readLearnedFile(data, id, second!, await learningShown(id), store));
       case "retireLearningFile":
       case "approveLearningFile":
       case "restoreLearningFile": {

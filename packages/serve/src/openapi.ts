@@ -1887,7 +1887,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/files/{file}": {
     get: {
       operationId: "readLearningFile", tags: ["agents"], summary: "One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag",
-      description: "corrections.md and a README.md are `text/markdown`; a draft's workflow.json is `application/json`.",
+      description: "corrections.md and a README.md are `text/markdown`; a draft's workflow.json is `application/json`. A workflow.json whose newest change a purged run made (`DELETE /runs/{run_id}`) is `410 purged` with that run's tombstone, and no other read serves that workflow either: a champion read by its digest reads no commit, a later merge's diff shows the file as added, and no run lays it.",
       parameters: [AGENT_ID, FILE_PARAM], responses: { "200": FILE_TEXT("The file's text, cut of the host's secrets.", true), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
     },
   },

@@ -95,7 +95,8 @@ export interface PromotionDeps {
   readonly context: Context;
   readonly log: (line: string) => void;
   /** The learned workflow `name` as the learning folder held it active at `commit` (a champion's text), or undefined when
-   *  it held none by that name. Absent: no champion serves. */
+   *  it held none by that name, or a purged run wrote it (learning.ts seedAt): a purged champion is no champion's text,
+   *  and the agent takes the run. Absent: no champion serves. */
   readonly champion?: (name: string, commit: string) => Promise<LearnedWorkflow | undefined>;
   /** The digest of the learned workflow `name` the learning folder's main holds now (the newest revision), or undefined
    *  when it holds none by that name. Absent: every revision is the newest. */
@@ -124,7 +125,7 @@ export function claimPromotion(deps: Omit<PromotionDeps, "champion" | "kept"> & 
   return {
     ...deps,
     kept: async () => (deps.runId ? servedOf(await runEntries(deps.store, deps.runId, deps.context).catch(() => [])) : undefined),
-    champion: async (name, commit) => (await workflowsAt({ folder: deps.folder, shown: deps.shown }, commit)).find((one) => one.name === name),
+    champion: async (name, commit) => (await workflowsAt({ folder: deps.folder, store: deps.store, shown: deps.shown }, commit)).find((one) => one.name === name),
     newest: async (name) => {
       const folder = deps.folder();
       let main: string | undefined;
@@ -133,7 +134,7 @@ export function claimPromotion(deps: Omit<PromotionDeps, "champion" | "kept"> & 
       } finally {
         await folder.end().catch(() => undefined);
       }
-      const text = main ? (await workflowsAt({ folder: deps.folder, shown: deps.shown }, main)).find((one) => one.name === name) : undefined;
+      const text = main ? (await workflowsAt({ folder: deps.folder, store: deps.store, shown: deps.shown }, main)).find((one) => one.name === name) : undefined;
       return text ? workflowDigest(text) : undefined;
     },
   };
@@ -1048,7 +1049,7 @@ export interface ReplayAsk {
 /** The text of `name` at `digest` and the learning commit it is read from: a commit a record of that digest names (newest
  *  first), else the folder's main. When neither holds it, whether the agent has a workflow by that name at all (`named`:
  *  a record names it, or main holds it). */
-async function revisionOf(ask: Pick<ReplayAsk, "folder" | "shown">, records: readonly PromotionRecord[], name: string, digest: string): Promise<{ workflow: LearnedWorkflow; commit: string } | { named: boolean }> {
+async function revisionOf(ask: Pick<ReplayAsk, "folder" | "store" | "shown">, records: readonly PromotionRecord[], name: string, digest: string): Promise<{ workflow: LearnedWorkflow; commit: string } | { named: boolean }> {
   const folder = ask.folder();
   let main: string | undefined;
   try {
