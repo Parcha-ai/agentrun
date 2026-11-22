@@ -6,10 +6,12 @@
 // (the harness its owner installs: goose) is harness.mjs's, and service
 // (AgentRun as a launchd or systemd user service) and stop (the AgentRun the installer started in the background) are
 // service.mjs's, doctor (how this AgentRun is set up, read-only) is doctor.mjs's, and export (an agent written as a
-// template package folder) is export.mjs's.
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+// template package folder) is export.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf,
+// below).
+import { spawn } from "node:child_process";
+import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
+import { homedir, constants as osConstants } from "node:os";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { ALL, FLAGS, MAX_PAGES, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
@@ -63,6 +65,9 @@ const HELP = () => {
     "Commands (agentrun <command> --help for a command's arguments):",
     ...[...groups].map(([noun, verbs]) => `  ${noun.padEnd(width)}  ${verbs.join(", ")}`),
     `  ${"api".padEnd(width)}  METHOD PATH [${BODY}] [--header 'NAME: VALUE'], any route, PATH under the base URL (/agents)`,
+    "",
+    "Any other NAME: agentrun NAME [args] runs the program agentrun-NAME from an absolute folder of PATH with the rest of",
+    "the arguments and passes on its exit code, as git runs git-NAME; a tool adds a command by installing agentrun-NAME.",
     "",
     "The server: --base-url, else AGENTRUN_BASE_URL, else base_url in $XDG_CONFIG_HOME/agentrun/config.json, else the",
     "server started on this machine with the data directory (--data, default ~/.agentrun). The token: AGENTRUN_API_KEY,",
@@ -522,6 +527,51 @@ async function local(entry, argv, env, io) {
   return entry.run({ values, args, env, io, cli });
 }
 
+/** An external command's name: one plain word, so agentrun-NAME is a file in a folder of PATH, never a path below one. */
+const EXTERNAL_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/** The program agentrun-NAME: the first regular file of that name this user may run, in PATH's folders in order. A
+ *  relative or empty entry means the working directory, which any checkout can fill, so it is never searched. */
+function externalOf(name, env) {
+  if (!EXTERNAL_NAME.test(name)) return undefined;
+  for (const dir of (env.PATH ?? "").split(delimiter)) {
+    if (!isAbsolute(dir)) continue;
+    const file = join(dir, `agentrun-${name}`);
+    try {
+      if (!statSync(file).isFile()) continue;
+      accessSync(file, constants.X_OK);
+      return file;
+    } catch {
+      // Not there, or not one this user may run: the next folder.
+    }
+  }
+  return undefined;
+}
+
+/** `file` run with `args`: no shell, this process's stdin, stdout and stderr, and its exit code, or 128 plus the number
+ *  of the signal that ended it. Ctrl-C and Ctrl-\ reach it from the terminal, so this process waits for it rather than
+ *  end first; a SIGTERM or SIGHUP sent to this process alone is passed on to it. */
+function external(file, args, env, io) {
+  return new Promise((resolve) => {
+    const child = spawn(file, args, { stdio: "inherit", env, shell: false });
+    const pass = (signal) => child.kill(signal);
+    const handlers = [["SIGINT", () => {}], ["SIGQUIT", () => {}], ["SIGTERM", pass], ["SIGHUP", pass]];
+    for (const [signal, handler] of handlers) process.on(signal, handler);
+    let done = false;
+    const end = (code) => {
+      if (done) return;
+      done = true;
+      for (const [signal, handler] of handlers) process.off(signal, handler);
+      resolve(code);
+    };
+    child.once("error", (error) => {
+      io.stderr.write(`Cannot run ${file} (${error.code ?? error.name}).\n`);
+      end(error.code === "ENOENT" ? 127 : 126);
+    });
+    child.once("exit", (code, signal) => end(code ?? 128 + (osConstants.signals[signal] ?? 0)));
+  });
+}
+
 async function run(argv, env, io) {
   const [noun, verb] = words(argv);
   if (noun === undefined || noun === "help") return io.stdout.write(`${HELP()}\n`), 0;
@@ -531,7 +581,12 @@ async function run(argv, env, io) {
   if (own) return local(own, argv, env, io);
   const entries = COMMANDS.filter((entry) => entry.command[0] === noun);
   const listed = [...entries, ...LOCAL.filter((e) => e.command[0] === noun), ...(noun === WAIT.command[0] ? [WAIT] : [])];
-  if (!listed.length) throw usageError(`agentrun has no command ${noun}.\n\n${HELP()}`);
+  if (!listed.length) {
+    // No command of the CLI's own: agentrun-NAME from PATH, when NAME is the first argument, with every argument after it.
+    const file = argv[0] === noun ? externalOf(noun, env) : undefined;
+    if (file) return external(file, argv.slice(1), env, io);
+    throw usageError(`agentrun has no command ${noun}.\n\n${HELP()}`);
+  }
   const entry = entries.find((e) => e.command.length === 1 || e.command[1] === verb);
   if (entry) return command(entry, argv, env, io);
   if (verb === undefined) return io.stdout.write(`${nounHelp(noun, listed)}\n`), 0;
