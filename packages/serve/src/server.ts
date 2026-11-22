@@ -3487,6 +3487,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const entry = await needRunnableAgent(agentId);
     const { body, handed } = handedLaunchSecrets(await bodyOf(req));
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
+      // The host's run for a firing the launch hook handed it: the firing's own run, under the firing's key (a second
+      // start answers that run), with the trigger, input origin and title a start here would give it, and capped as
+      // every trigger's run is.
+      if (body.trigger_firing !== undefined) {
+        const { trigger_firing: given, ...rest } = body;
+        const firing = await triggers.handedStart(given, agentId);
+        if ("run_id" in firing) return { status: 202, body: await viewOverStore(store, firing.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${firing.run_id}`, "idempotent-replayed": "true" } };
+        const seal = startSeal(await handed());
+        const run = await startRunOf(entry, rest, { origin: { key: firing.key }, trigger: firing.trigger, from: firing.from, title: firing.title, capped: !nativeOf(entry.revision?.body), ...(seal ? { sealed: seal } : {}) });
+        return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
+      }
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
       const first = origin && (await agents.request(() => agents.store.runOfOrigin(origin.key)));
       if (first) {

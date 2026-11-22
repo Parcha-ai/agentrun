@@ -49,6 +49,8 @@ const FULL_RETRY_S = 30;
 export const SOURCE_KINDS: readonly string[] = TRIGGER_ADAPTERS.map((a) => a.id);
 export const TARGET_KINDS = ["start_run", "message_run"] as const;
 export const FIRING_STATUSES = ["due", "started", "sent", "skipped", "failed", "missed"] as const;
+/** A firing the launch hook's host took (a 2xx) without starting its run here under the firing (RunCreate trigger_firing). */
+export const HANDED_NO_RUN = "Handed to the host by the launch hook, which started no run here for it.";
 /** The most of a webhook's payload a firing passes on: the rest is cut, at a character's start (trigger-adapter.ts). */
 /** How late a missed time may be and still fire once, by default: an hour. */
 export const CATCHUP_WINDOW_S = 3600;
@@ -1131,10 +1133,10 @@ export class Triggers {
     await this.failed(triggerId, key, errorOf(error), runId);
   }
 
-  /** A start_run firing handed to the host by the launch hook, never started here: sent once the host takes it, with the
-   *  run it names when that is a run of the trigger's agent here (the overlap check reads it as the trigger's last run);
-   *  skipped with why on any other answer or none. The server's stop leaves it due, so the next start hands it again
-   *  under the same webhook-id. */
+  /** A start_run firing handed to the host by the launch hook, never started here. The run the host started for it
+   *  (handedStart: under the firing's key) makes it started, as a run started here would, whatever the hook answered;
+   *  else a 2xx makes it sent, with no run, and any other answer or none skipped with why. The server's stop leaves it
+   *  due, so the next start hands it again under the same webhook-id (or finds the run the host started). */
   private async handed(trigger: Trigger, firing: FiringRow, hook: LaunchHook): Promise<void> {
     if (trigger.target.kind !== "start_run") return;
     const agentId = trigger.target.agent_id;
@@ -1144,15 +1146,40 @@ export class Triggers {
     };
     const handed = await handToHost(hook, sent, this.stopping.signal);
     if (this.closed || "stopped" in handed) return;
+    const linked = await this.deps.runOf(firing.key);
+    if (this.closed) return;
+    if (linked) return void (await this.started(trigger.id, firing.key, linked.run_id));
     if ("skipped" in handed) {
       await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: handed.skipped });
       this.deps.say({ condition: "trigger_hook_skipped", trigger: trigger.id, firing: firing.key });
       return;
     }
-    const run = handed.run_id ? await this.store.runs.get(handed.run_id) : undefined;
-    const runId = run?.agentId === agentId ? run.id : undefined;
-    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", reason: "Handed to the host by the launch hook.", ...(runId ? { runId } : {}) }, { reset: true });
-    this.deps.say({ condition: "trigger_handed", trigger: trigger.id, firing: firing.key, ...(runId ? { run: runId } : {}) });
+    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", reason: HANDED_NO_RUN }, { reset: true });
+    this.deps.say({ condition: "trigger_handed", trigger: trigger.id, firing: firing.key });
+  }
+
+  /** The run the host starts through the API for a firing the launch hook handed it (RunCreate `trigger_firing`): the
+   *  firing's key (the run's origin key, so the firing finds it), and the trigger, input origin and title its own start
+   *  would give the run; or the run already started under that key. Refused, in words, unless this server has the hook and
+   *  the firing is a due one of a start_run trigger on `agentId`. */
+  async handedStart(given: unknown, agentId: string): Promise<{ run_id: string } | { key: string; trigger: RunTrigger; from: MessageOrigin; title: string }> {
+    const refused = (reason: string, message: string, field = "trigger_firing") => invalid([{ field, reason, message }]);
+    if (!this.deps.launchHook) throw refused("not_allowed", "This server has no launch hook: a run starts as a trigger firing's only when the hook handed that firing to its host.");
+    if (!isObject(given)) throw refused("wrong_type", "trigger_firing is { trigger_id, firing_id }, as the launch hook sent them.");
+    const extra = unknownFields(given, ["trigger_id", "firing_id"]);
+    if (extra.length) throw invalid(extra.map((issue) => ({ ...issue, field: `trigger_firing.${issue.field}` })));
+    const { trigger_id: triggerId, firing_id: key } = given;
+    if (typeof triggerId !== "string" || !ID.test(triggerId)) throw refused("wrong_type", "trigger_id is the trigger's id, as the launch hook sent it.", "trigger_firing.trigger_id");
+    if (typeof key !== "string" || !/^fir_[0-9a-f]{32}$/.test(key)) throw refused("wrong_type", "firing_id is the firing's id, as the launch hook sent it.", "trigger_firing.firing_id");
+    const trigger = await this.find(triggerId);
+    if (!trigger || trigger.target.kind !== "start_run" || trigger.target.agent_id !== agentId) throw refused("not_found", `This agent has no trigger ${triggerId} that starts its runs.`, "trigger_firing.trigger_id");
+    const firing = await this.store.triggers.firing(triggerId, key);
+    if (!firing) throw refused("not_found", `Trigger ${triggerId} has no firing ${key}.`, "trigger_firing.firing_id");
+    const prior = await this.deps.runOf(key);
+    if (prior) return prior;
+    if (firing.status !== "due") throw refused("not_due", `Firing ${key} is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}: only a firing the launch hook is handing over starts a run.`, "trigger_firing.firing_id");
+    const attrs = firing.attrs as Record<string, string> | null | undefined;
+    return { key, trigger: { id: triggerId, firing_key: key, name: trigger.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, from: this.originOf(trigger), title: this.titleOf(trigger, firing) };
   }
 
   private async started(triggerId: string, key: string, runId: string): Promise<void> {

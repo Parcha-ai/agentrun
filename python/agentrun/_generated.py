@@ -831,6 +831,7 @@ __all__ = [
     "RunCreateInlineArchilDisk",
     "RunCreateInlineMcpAuthValue",
     "RunCreateMcpAuthValue",
+    "RunCreateTriggerFiring",
     "RunError",
     "RunErrorCode",
     "RunErrorDetails",
@@ -6136,6 +6137,7 @@ class RunCreate(_RunCreateRequired, total=False):
     archil_disk: RunCreateArchilDisk
     hold: bool
     hold_minutes: int
+    trigger_firing: RunCreateTriggerFiring
 
 
 class RunCreateMcpAuthValue(TypedDict):
@@ -6144,6 +6146,11 @@ class RunCreateMcpAuthValue(TypedDict):
 
 class RunCreateArchilDisk(TypedDict):
     disk_id: str
+
+
+class RunCreateTriggerFiring(TypedDict):
+    trigger_id: str
+    firing_id: str
 
 
 CreateRunResponse: TypeAlias = "Run"

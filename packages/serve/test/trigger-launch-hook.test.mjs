@@ -1,8 +1,9 @@
 // The launch hook (trigger-launch-hook.ts): a server started with a hook URL and its signing secret hands each trigger
 // firing that would start a run to the host instead, as a signed POST (Standard Webhooks, the firing's id its
-// webhook-id), and starts no run of its own for it. The host's 2xx records the firing sent, with the run the host
-// started through the API when it names one of the agent's here; any other answer, or none within the bound, records it
-// skipped with why. The hook's receiver here is a server on 127.0.0.1 that checks the signature as any receiver would.
+// webhook-id), and starts no run of its own for it. The run the host starts through the API with `trigger_firing` is the
+// firing's (started, counted by the overlap check); a 2xx with no such run records it sent; any other answer, or none
+// within the bound, records it skipped with why. The hook's receiver here is a server on 127.0.0.1 that checks the
+// signature as any receiver would.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
@@ -66,29 +67,51 @@ test("a schedule trigger's firing is handed to the host, signed with the setting
   assert.deepEqual(await runsOf(api, "nightly"), [], "the install started no run for the firing");
 });
 
-test("the host starts the run through the API and names it: the firing records that run, never one that is not the agent's here", { timeout: 180_000 }, async (t) => {
+test("the host starts the firing's run through the API with trigger_firing: the run is the trigger's, the firing started, and the overlap check counts it", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const secret = mintSecret();
   let api;
-  const hook = await hookServer(t, async (res, sent, n) => {
-    if (n > 1) return answerJson(res, 202, { run_id: "run_somewhere_else" });
-    const started = await api("POST", `/agents/${sent.agent_id}/runs`, { input: sent.input, max_cost_usd: 0.5 }, { "idempotency-key": sent.firing_id });
-    answerJson(res, started.status, { run_id: started.body.run_id });
+  const starts = [];
+  const hook = await hookServer(t, async (res, sent) => {
+    starts.push(await api("POST", `/agents/${sent.agent_id}/runs`, { input: sent.input, max_cost_usd: 0.5, trigger_firing: { trigger_id: sent.trigger_id, firing_id: sent.firing_id } }));
+    answerJson(res, 202, {});
   });
-  ({ api } = await serve(t, { triggerClock: clock, launchHook: { url: hook.url, secret } }));
+  // No runner: the host's run stays queued, so it is still active at the next time.
+  ({ api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret } }));
   await made(api, "nightly");
+  await made(api, "other");
   const created = await api("POST", "/triggers", schedule("nightly", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   clock.to("2026-06-01T00:10:00Z");
   const [first] = await firings(api, created.body.id, 1);
-  const [run] = await runsOf(api, "nightly");
-  assert.ok(run, "the host's run");
-  assert.deepEqual([first.status, first.run_id], ["sent", run.run_id], JSON.stringify(first));
-  await follow(api, run.run_id, ["completed"]);
+  assert.equal(starts[0]?.status, 202, JSON.stringify(starts[0]?.body));
+  const runId = starts[0].body.run_id;
+  assert.deepEqual([first.status, first.run_id], ["started", runId], JSON.stringify(first));
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual(run.trigger, { id: created.body.id, firing_key: first.key }, "the run is the trigger's, as one started here");
+  const ref = { trigger_id: created.body.id, firing_id: first.key };
+  const again = await api("POST", "/agents/nightly/runs", { input: { content: "Again." }, max_cost_usd: 0.5, trigger_firing: ref });
+  assert.deepEqual([again.status, again.body.run_id, again.headers.get("idempotent-replayed")], [202, runId, "true"], "a second start for the firing answers its run");
+  const elsewhere = await api("POST", "/agents/other/runs", { input: { content: "Hi." }, max_cost_usd: 0.5, trigger_firing: ref });
+  assert.equal(elsewhere.status, 422, "another agent's run is never this trigger's");
+  assert.equal(elsewhere.body.error.fields[0].field, "trigger_firing.trigger_id", JSON.stringify(elsewhere.body));
+
   clock.to("2026-06-01T00:20:00Z");
   const [second] = await firings(api, created.body.id, 2);
-  assert.deepEqual([second.status, second.run_id], ["sent", null], "a run that is not the agent's here is not recorded");
-  assert.equal((await runsOf(api, "nightly")).length, 1, "still only the host's one run");
+  assert.deepEqual([second.status, second.run_id], ["skipped", null], JSON.stringify(second));
+  assert.equal(hook.got.length, 1, "the time its run overlapped was never handed to the host");
+  const late = await api("POST", "/agents/nightly/runs", { input: { content: "Late." }, max_cost_usd: 0.5, trigger_firing: { trigger_id: created.body.id, firing_id: second.key } });
+  assert.equal(late.status, 422, "a skipped firing starts no run");
+  assert.match(JSON.stringify(late.body), /not_due/);
+  assert.equal((await runsOf(api, "nightly")).length, 1, "the host's one run");
+});
+
+test("a server without the launch hook refuses a run for a trigger firing", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, {});
+  await made(api, "nightly");
+  const refused = await api("POST", "/agents/nightly/runs", { input: { content: "Hi." }, max_cost_usd: 0.5, trigger_firing: { trigger_id: "trg_0123456789abcdef01234567", firing_id: `fir_${"0".repeat(32)}` } });
+  assert.equal(refused.status, 422);
+  assert.match(JSON.stringify(refused.body), /no launch hook/);
 });
 
 test("a hook that answers 500 skips the firing with the reason; one that does not answer within its bound skips it too", { timeout: 120_000 }, async (t) => {

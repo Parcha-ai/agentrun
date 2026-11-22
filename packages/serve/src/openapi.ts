@@ -1268,7 +1268,7 @@ const TRIGGER_FIRING = closedWith(
     key: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing's key: from the trigger and its nominal time, or from the trigger and the Idempotency-Key of a run now. Its run is started under it, once." },
     by: firedByOf(TRIGGER_ADAPTERS),
     nominal_at: { ...DATE_TIME, description: "The time it fires for, to the second; a run now's is when it was asked." },
-    status: { enum: [...FIRING_STATUSES], description: `\`due\`: recorded, its run not started yet (a full server keeps it due, with \`retry_at\`). \`started\`: its run is \`run_id\`. \`sent\`: a message_run firing's message reached \`run_id\`; or, on a server with the launch hook (AGENTRUN_LAUNCH_HOOK_URL), the host took the firing, and \`run_id\` is the run it named, when that run is the agent's here. \`skipped\`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due, or the launch hook did not take it; \`reason\` says which. \`failed\`: the run was refused, with \`error\`; a trigger.failed webhook message says so. \`missed\`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), \`count\` of them from \`nominal_at\` on.` },
+    status: { enum: [...FIRING_STATUSES], description: `\`due\`: recorded, its run not started yet (a full server keeps it due, with \`retry_at\`). \`started\`: its run is \`run_id\`. \`sent\`: a message_run firing's message reached \`run_id\`; or, on a server with the launch hook (AGENTRUN_LAUNCH_HOOK_URL), the host took the firing and started no run for it here (a run it starts with \`trigger_firing\` makes the firing \`started\`). \`skipped\`: the trigger's last run was still active (working, or waiting on a person), or an earlier firing was still due, or the launch hook did not take it; \`reason\` says which. \`failed\`: the run was refused, with \`error\`; a trigger.failed webhook message says so. \`missed\`: times not fired while the server was down or its timer late (older than the catch-up window, or before the one that caught up), \`count\` of them from \`nominal_at\` on.` },
     at: { ...DATE_TIME, description: "When it was recorded." },
     run_id: { type: ["string", "null"] },
     reason: { type: ["string", "null"] },
@@ -3520,6 +3520,15 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     hold: { type: "boolean", description: `true: the run claims its computer and holds it for its owner. Its agent waits until POST /runs/{run_id}/start; meanwhile POST /runs/{run_id}/computer/call sends the computer protocol calls, to set a task up. After the agent's end the run keeps the computer, for the owner's calls (to check what the agent left), until POST /runs/{run_id}/computer/release; then it ends as its agent did. A stop (POST /runs/{run_id}/stop) ends the agent and keeps the computer the same way, and the run ends stopped at the release; a cancel ends the run at once and lets the computer go. Each wait lets the computer go after \`hold_minutes\` with no call from the owner: before the start, the run then ends cancelled. The run read's \`computer.held\` says where the hold is. Only for an agent whose computer is a sandbox, a desktop or a phone, never a workflow (422 \`hold\` not_an_option otherwise). A run that loses its runner, or whose harness restarts after a fault, loses the computer it held: it fails, and \`computer.held.why\` is \`lost\`.`, "x-agentrun-serve": "held/1" },
     hold_minutes: { type: "integer", minimum: 1, maximum: HOLD_MAX_MINUTES, description: `With \`hold: true\`: how long the held computer waits with no call from its owner, before the start and after the agent's end. Absent: ${HOLD_MINUTES}. Above ${HOLD_MAX_MINUTES}, or without hold, is 422.`, "x-agentrun-serve": "held/1" },
+    trigger_firing: {
+      type: "object", additionalProperties: false, required: ["trigger_id", "firing_id"],
+      properties: {
+        trigger_id: { type: "string", description: "The trigger's id, as the launch hook sent it." },
+        firing_id: { type: "string", pattern: "^fir_[0-9a-f]{32}$", description: "The firing's id, as the launch hook sent it (its webhook-id too)." },
+      },
+      description: "On a server with the launch hook (AGENTRUN_LAUNCH_HOOK_URL): the firing the hook handed this host, which this run is for. The run is that firing's, as a run the trigger started here would be: its `trigger` names the trigger and the firing, its input's origin is the trigger's, its title is the trigger's, and it is capped as the trigger's own run would be (this body's `max_cost_usd`, else the agent's default). The firing reads `started` with it, so the trigger's overlap check and `max_active_runs` count it. A second start for the same firing answers its run. 422 when this server has no launch hook, the trigger is not one of this agent's that starts runs, or the firing is not being handed over (`not_due`: skipped, or its run started by another way).",
+      "x-agentrun-serve": "launchhook/1",
+    },
   },
   TimelineUsage: { ...SO_FAR, requests: { type: ["integer", "null"], minimum: 0, description: "Model requests; null when the native runtime reports aggregate turn usage without a request count.", "x-agentrun-serve": "native/1" }, not_metered: { type: "integer", minimum: 1, description: "Set when the run made tool calls with no price (an MCP tool its owner set none for): how many. They ran outside the run's cost and its cap, and never make `usd` unknown.", "x-agentrun-serve": "mcpservers/1" } },
   Usage: { unpriced_runs: { type: "integer", minimum: 0, description: "How many runs in the report have a cost no one knows on them: they add no dollars to `total_usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" } },
@@ -4210,10 +4219,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // email/1: the email read tools' scope, inside an agent's own tool settings (AGENT_TOOL_SETTINGS).
   fields.push(...SCOPED_TOOLS.map((name) => `DefinitionInput.tool_settings.${name}.scope`));
   // inlineagent/1: POST /runs' body, the run fields of POST /agents/{agent_id}/runs (RunCreate, as extended above) but a
-  // pinned revision, with the agent given inline as POST /agents takes one and its reference in the system that owns it.
+  // pinned revision and a trigger firing (an inline agent has no trigger), with the agent given inline as POST /agents takes
+  // one and its reference in the system that owns it.
   const runCreate = schemas.RunCreate as Json & { properties: Record<string, Json> };
   const agentCreate = schemas.AgentCreate as Json & { properties: Record<string, Json> };
-  const { revision: _pinned, ...runFields } = runCreate.properties;
+  const { revision: _pinned, trigger_firing: _firing, ...runFields } = runCreate.properties;
   schemas.ExternalRef = { ...EXTERNAL_REF, "x-agentrun-serve": "inlineagent/1" };
   schemas.RunCreateInline = {
     type: "object", additionalProperties: false, required: ["external", "definition", "input"],

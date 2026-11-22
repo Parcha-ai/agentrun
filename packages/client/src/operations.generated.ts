@@ -918,6 +918,10 @@ export type RunCreate = {
   };
   hold?: boolean;
   hold_minutes?: number;
+  trigger_firing?: {
+    trigger_id: string;
+    firing_id: string;
+  };
 };
 
 export type StopResult = {

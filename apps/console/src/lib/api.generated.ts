@@ -1046,6 +1046,10 @@ export interface components {
     };
     hold?: boolean;
     hold_minutes?: number;
+    trigger_firing?: {
+      trigger_id: string;
+      firing_id: string;
+    };
   };
   RunCreateInline: {
     external: components["ExternalRef"];

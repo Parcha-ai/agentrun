@@ -1,6 +1,6 @@
 // A real server (the CLI on the faux model) started with the launch hook set, through its HTTP API alone: a trigger's
-// run now is handed to the host's hook on 127.0.0.1, which checks the signature, starts the run through the same API
-// under the firing's id and names it; the firing records that run, and the server started none of its own. The secret is
+// run now is handed to the host's hook on 127.0.0.1, which checks the signature and starts the run through the same API
+// as the firing's (trigger_firing); the firing records that run, and the server started none of its own. The secret is
 // in no answer, no file of the data directory and no line the process printed. Half the setting stops the start in words.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -62,7 +62,7 @@ test("a server with the launch hook hands a trigger's firing to the host, which 
     received.push({ refused, id: req.headers["webhook-id"] });
     if (refused) return void res.writeHead(401).end();
     const firing = JSON.parse(body.toString("utf8"));
-    const run = await api("POST", `/agents/${firing.agent_id}/runs`, { input: firing.input, max_cost_usd: 0.5 }, { "idempotency-key": firing.firing_id });
+    const run = await api("POST", `/agents/${firing.agent_id}/runs`, { input: firing.input, max_cost_usd: 0.5, trigger_firing: { trigger_id: firing.trigger_id, firing_id: firing.firing_id } });
     res.writeHead(run.status, { "content-type": "application/json" }).end(JSON.stringify({ run_id: run.body.run_id }));
   });
   await new Promise((resolve) => hook.listen(0, "127.0.0.1", resolve));
@@ -86,7 +86,8 @@ test("a server with the launch hook hands a trigger's firing to the host, which 
   assert.deepEqual(received, [{ refused: undefined, id: fired.body.key }], "one signed POST, its webhook-id the firing's");
   const runs = (await api("GET", "/runs?agent=digest")).body.runs;
   assert.equal(runs.length, 1, "the host's run alone");
-  assert.deepEqual([fired.body.status, fired.body.run_id], ["sent", runs[0].run_id], JSON.stringify(fired.body));
+  assert.deepEqual([fired.body.status, fired.body.run_id], ["started", runs[0].run_id], JSON.stringify(fired.body));
+  assert.deepEqual((await api("GET", `/runs/${runs[0].run_id}`)).body.trigger, { id: trigger.body.id, firing_key: fired.body.key }, "the trigger's run");
   const { last } = await follow(api, runs[0].run_id, ["completed", "failed", "cancelled"], { deadlineMs: 120_000 });
   assert.equal(last.status, "completed");
 
