@@ -3283,6 +3283,16 @@ const RUN_FIELDS: Record<string, Json> = {
   kind: { enum: ["agentic", "workflow"], description: "The revision's kind: an agentic run, or a workflow run.", "x-agentrun-serve": "serve/1" },
   archived_at: { type: ["string", "null"], description: "When the run, or its agent, was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
   labels: { ...RUN_LABELS, description: "The labels the run was started with (RunCreate.labels), as given; `{}` when none. Always sent by a server that keeps labels (`runlabels/1`); absent from an earlier one's answer." },
+  stopped_for: {
+    oneOf: [{ const: "budget" }, { type: "null" }],
+    description: "Why a `completed` run stopped short: `budget` when it wound down to stay under its `max_cost_usd`, its model told to wrap up near the cap, or its tool calls refused (`budget_refused_calls`), under the cap it has now (a raise since is a new cap it has not wound down under). Its status stays `completed`: the run answered from what it had, under its cap. Null for every other run: one with no cap or that never came near it, one not completed, and a workflow run. A run its cap paused reads `pending.kind` `budget`, and one its cap ended reads failed, `error.code` `spend_cap_reached`, as before. Always sent by a server that keeps it (`stoppedfor/1`), on the run read and every list item; absent from an earlier one's answer.",
+    "x-agentrun-serve": "stoppedfor/1",
+  },
+  budget_refused_calls: {
+    type: "integer", minimum: 0,
+    description: "How many of the run's tool calls its spend cap's wrap-up refused, each call once: once what the run keeps back to answer no longer fits under `max_cost_usd`, every tool call its model makes is refused, unrun, and the model answers. 0 for a run with no cap or never near it. Its end-of-run learning turn's calls are not counted. Sent with `stopped_for`.",
+    "x-agentrun-serve": "stoppedfor/1",
+  },
 };
 /** What a run waits on, one field for every kind, told apart by `kind`: a question it asked a person, or a tool call
  *  that waits for approval. */

@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: feature
----
-An agent can limit its own runs' requests on free models: `definition.max_requests`, a whole number, under the server's limit (`AGENTRUN_FREE_MODEL_REQUESTS`, 60 by default), so a run stops at the lower of the two. A dollar cap can't stop a free model, so before, the server's limit was the only bound, for every run on the server alike, and one run looping on a free model could spend a person's whole daily free quota under it. The run that reaches the agent's limit ends `failed` with `spend_cap_reached` in the server limit's words, naming the number it stopped at ("Not sent: this run reached its 20-request limit for free models."). It counts what the server's limit counts, and a paid request never counts. Above 0 sets it, 0 clears it, and an edit that leaves it out keeps it. A template sets it with `budget: { per_run_usd, max_requests }`: the manifest refuses 0 or a fraction, the template list shows it, and the console's template card says "Free-model requests: at most N a run".

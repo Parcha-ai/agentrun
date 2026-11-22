@@ -440,6 +440,8 @@ export type RunSummary = {
   kind: "agentic" | "workflow";
   archived_at: string | null;
   labels?: Record<string, string>;
+  stopped_for?: "budget" | null;
+  budget_refused_calls?: number;
   effort?: Effort;
   error?: RunError | null;
   learning?: {
@@ -746,6 +748,8 @@ export type Run = {
   kind: "agentic" | "workflow";
   archived_at: string | null;
   labels?: Record<string, string>;
+  stopped_for?: "budget" | null;
+  budget_refused_calls?: number;
   approvals?: "ask" | "never";
   last_progress_at?: string | null;
   recordings?: Array<{
