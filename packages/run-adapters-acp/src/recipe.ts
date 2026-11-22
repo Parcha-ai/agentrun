@@ -2,6 +2,7 @@
 // keeps its sessions and who bills its model. The loader's own rules (keys, registry archives, owner installs) are S5's;
 // these are the checks the adapter itself needs before it starts anything. Written for AgentRun.
 import { isAbsolute, normalize, sep } from "node:path";
+import { KEY_NAME, launchEnv } from "@parcha/agentrun-kernel";
 
 /** Who pays for the agent's model requests. `plan`: the vendor bills the owner's plan (Cursor), no request reaches us, so
  *  the adapter itself stops the run at these limits. `proxy`: the agent's model goes through the host's proxy, which the
@@ -12,12 +13,12 @@ export type AcpBilling = { readonly kind: "plan"; readonly maxTurns: number; rea
  *  words the host says instead. */
 export type AcpRefusal = { readonly says: string; readonly code: string; readonly words: string };
 
-/** An environment variable's name, as a key's. */
-const KEY_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 /** A model id as an agent lists one (`gpt-5.4-nano[reasoning=medium]`): one line, no spaces, not an option. */
 export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/=,[\]-]{0,199}$/;
 /** A refusal's code: capitals, digits and `_`. */
 const CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
+/** A sign-in method's id as an agent lists one in authMethods (`oauth-personal`, `gemini-api-key`). */
+const AUTH_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export interface AcpRecipe {
   /** The harness's id: the adapter's. */
@@ -33,6 +34,18 @@ export interface AcpRecipe {
    *  start and handed to the agent under the same name, never written in the recipe. A start whose host lacks one of
    *  them is refused with ACP_CODES.keyMissing before anything starts. */
   readonly keys?: readonly string[];
+  /** The variable a key reaches the agent as, by its name in `keys`, where it differs: a key saved for this harness alone
+   *  (ANTIGRAVITY_GEMINI_API_KEY) handed under the name the agent reads (GEMINI_API_KEY). The value is always read by the
+   *  key's own name, so a value the host holds under the handed name never reaches the agent. */
+  readonly keyEnv?: Readonly<Record<string, string>>;
+  /** The sign-in method the agent is told with ACP `authenticate` after initialize and before any session opens (its
+   *  authMethods id: Antigravity's `gemini-api-key`, or `oauth-personal` on an attended run). One its initialize does
+   *  not list is refused with ACP_CODES.authUnlisted, one it refuses with ACP_CODES.authFailed. Absent: none is sent. */
+  readonly authMethod?: string;
+  /** `none`: nothing the agent prints on stderr is read or kept, nor the words of an error it answers; a failure says
+   *  its exit status and the adapter's own code alone. For an agent on a person's sign-in, whose token no key cut knows.
+   *  Default `tail`. */
+  readonly stderr?: "tail" | "none";
   /** Files in HOME the agent derives from its keys (Cursor's `.config/cursor/auth.json`): never written, since each
    *  start makes every one an empty folder the agent cannot write a file at (an agent named here must run on the key in
    *  its env when its save fails, as Cursor 2026.11.13 does), so a hard kill leaves none on disk; never mirrored; and
@@ -91,6 +104,8 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
   for (const path of recipe.state ?? []) if (!homePath(path)) problems.push(`the state path ${JSON.stringify(path)} must be inside the private HOME`);
   const reserved = Object.keys(recipe.env ?? {}).filter((name) => RESERVED_ENV.has(name));
   if (reserved.length) problems.push(`the env names ${reserved.join(", ")}, which the adapter sets`);
+  const launching = Object.keys(recipe.env ?? {}).filter((name) => !RESERVED_ENV.has(name) && launchEnv(name));
+  if (launching.length) problems.push(`the env names ${launching.join(", ")}, which change what the agent's process loads or runs`);
   for (const name of recipe.keys ?? []) {
     if (typeof name !== "string" || !KEY_NAME.test(name)) problems.push(`the key ${JSON.stringify(name)} is not a variable's name (capitals, digits and _)`);
     else if (RESERVED_ENV.has(name)) problems.push(`the key ${name} is a variable the adapter sets`);
@@ -103,6 +118,19 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
   }
   if (recipe.quiet !== undefined && (!Array.isArray(recipe.quiet) || recipe.quiet.some((words) => typeof words !== "string" || words.trim() === ""))) problems.push("quiet is a list of words, none empty");
   if (recipe.model !== undefined && (typeof recipe.model !== "string" || !MODEL_ID.test(recipe.model))) problems.push(`the model ${JSON.stringify(String(recipe.model).slice(0, 80))} is not a model id`);
+  const handed = new Set<string>();
+  for (const name of recipe.keys ?? []) {
+    const as = recipe.keyEnv?.[name] ?? name;
+    if (typeof as !== "string" || !KEY_NAME.test(as)) problems.push(`the key ${name} is handed as ${JSON.stringify(as)}, which is not a variable's name`);
+    else if (RESERVED_ENV.has(as)) problems.push(`the key ${name} is handed as ${as}, a variable the adapter sets`);
+    else if (launchEnv(as)) problems.push(`the key ${name} is handed as ${as}, which changes what the agent's process loads or runs`);
+    else if (as !== name && Object.hasOwn(recipe.env ?? {}, as)) problems.push(`the key ${name} is handed as ${as}, which is also in env`);
+    if (handed.has(as)) problems.push(`two keys are handed as ${as}`);
+    handed.add(as);
+  }
+  for (const name of Object.keys(recipe.keyEnv ?? {})) if (!(recipe.keys ?? []).includes(name)) problems.push(`keyEnv names ${name}, which is not one of the keys`);
+  if (recipe.authMethod !== undefined && (typeof recipe.authMethod !== "string" || !AUTH_METHOD.test(recipe.authMethod))) problems.push(`the sign-in method ${JSON.stringify(String(recipe.authMethod).slice(0, 80))} is not a method's id`);
+  if (recipe.stderr !== undefined && recipe.stderr !== "tail" && recipe.stderr !== "none") problems.push('stderr is "tail" or "none"');
   return problems;
 }
 

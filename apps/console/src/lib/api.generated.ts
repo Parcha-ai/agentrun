@@ -388,6 +388,7 @@ export interface components {
       surface?: "code" | "tools";
       exec?: boolean;
       record?: boolean;
+      needs?: string[];
     };
     tool_settings?: {
       read?: {
@@ -3836,11 +3837,13 @@ export interface operations {
           bash: "read-only";
         } | null;
         computer: ("shell" | "none")[] | null;
+        needs: string[] | null;
         computer_here: {
           entry: "shell" | "none" | null;
           computer: {
             kind: string;
             provider?: string;
+            needs?: string[];
           } | null;
           shell: string | null;
           dropped: string[];
@@ -4494,11 +4497,13 @@ export interface operations {
           bash: "read-only";
         } | null;
         computer: ("shell" | "none")[] | null;
+        needs: string[] | null;
         computer_here: {
           entry: "shell" | "none" | null;
           computer: {
             kind: string;
             provider?: string;
+            needs?: string[];
           } | null;
           shell: string | null;
           dropped: string[];

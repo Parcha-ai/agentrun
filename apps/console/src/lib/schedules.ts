@@ -153,6 +153,25 @@ export const capWords = (usd: number) => `${dollars(usd)} a run`;
 export const capOf = (own: number | undefined, agentDefault: number | undefined) =>
   typeof own === "number" ? capWords(own) : typeof agentDefault === "number" && agentDefault > 0 ? `Agent's default (${dollars(agentDefault)})` : "Agent's default";
 
+/** Why a trigger that starts a connected agent (one whose definition names a `native` source) has no cost cap: the
+ *  server refuses one on its target, and its effort too (serve's trigger target check). */
+export const CONNECTED_NO_CAP = "None. A connected agent runs in its own CLI, which keeps its own limits: AgentRun cannot cap its runs.";
+/** How a trigger form treats its cap for the picked agent: `none` for a connected agent (no cap is asked for or sent,
+ *  whatever was typed), else `optional` when an empty cap takes the agent's default, else `required`. */
+export type CapRule = "required" | "optional" | "none";
+/** The picked agent's default cap per run (definition.max_cost_usd) and whether it is a connected agent. */
+export function agentCapOf(agent: { definition: { native?: unknown; max_cost_usd?: unknown } } | undefined): { agentCap: number | undefined; connected: boolean } {
+  const raw = agent?.definition.max_cost_usd;
+  return { agentCap: typeof raw === "number" && raw > 0 ? raw : undefined, connected: !!agent?.definition.native };
+}
+/** A draft's cap under `rule` (a boolean is the older `capOptional`): the number to send, if any, and what is wrong. */
+function capUnder(maxCost: string, rule: boolean | CapRule, needed: string): { cap?: number; issue?: string } {
+  if (rule === "none") return {};
+  const cap = numberOf(maxCost);
+  if (!maxCost.trim()) return rule === true || rule === "optional" ? {} : { issue: needed };
+  return cap === undefined ? { issue: NEEDED } : { cap };
+}
+
 /** Where a one-time schedule stands once its time has passed (`now`) and the server gives it no next time: `ran`, the
  *  firing of its own time that started a run (from its last firing, or `history` after a Run now replaced it), or
  *  `passed`, its time, when no such firing is known (it waits, missed, failed, or the list read lacks it). Only `ran`
@@ -307,8 +326,9 @@ const numberOf = (text: string): number | undefined => (text.trim() !== "" && Nu
 /** The body a create or an edit sends, or what is missing, by the field the server would name. Nothing else is checked
  *  here: a short interval, a cron line that does not parse and a cap of 0 are the server's to refuse. `capOptional`:
  *  the picked agent has a default cap per run (or an edited schedule already ran under it), so an empty cap is left out
- *  and each run takes the agent's; the server refuses it, under the field, if the agent has none by then. */
-export function bodyOf(d: Draft, capOptional = false): { body?: ScheduleInput; issues?: Record<string, string> } {
+ *  and each run takes the agent's; the server refuses it, under the field, if the agent has none by then. `"none"`: the
+ *  picked agent is a connected one, so no cap is asked for or sent. */
+export function bodyOf(d: Draft, capOptional: boolean | CapRule = false): { body?: ScheduleInput; issues?: Record<string, string> } {
   const issues: Record<string, string> = {};
   let source: ScheduleInput["source"];
   if (d.kind === "cron") {
@@ -327,9 +347,8 @@ export function bodyOf(d: Draft, capOptional = false): { body?: ScheduleInput; i
   }
   if (!d.agentId) issues["target.agent_id"] = "Pick an agent.";
   if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
-  const cap = numberOf(d.maxCost);
-  if (!d.maxCost.trim()) { if (!capOptional) issues["target.max_cost_usd"] = "A cost cap is needed: every run a schedule starts is capped."; }
-  else if (cap === undefined) issues["target.max_cost_usd"] = NEEDED;
+  const { cap, issue } = capUnder(d.maxCost, capOptional, "A cost cap is needed: every run a schedule starts is capped.");
+  if (issue) issues["target.max_cost_usd"] = issue;
   if (Object.keys(issues).length) return { issues };
   return {
     body: {
@@ -354,7 +373,7 @@ export function webhookSourceOf(was: { signature?: HookSource["signature"] }, ru
 
 /** A new webhook's create body, or what is missing, by the field the server would name: its filter's shape, and bodyOf's
  *  rules for the run it starts. The URL and the signing secret are the server's, in the create's answer. */
-export function webhookBodyOf(d: WebhookDraft, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+export function webhookBodyOf(d: WebhookDraft, capOptional: boolean | CapRule = false): { body?: TriggerCreate; issues?: Record<string, string> } {
   const { source, issues } = webhookSourceOf({ signature: d.signature }, d.accept);
   return createOf(d, source, issues, capOptional, "a webhook");
 }
@@ -492,7 +511,7 @@ export function composioSourceOf(was: ComposioSource, where: readonly ConditionD
 
 /** A new trigger from an app's create body, or what is missing: a server, an event, its config by `fields`, its filter's
  *  shape, and bodyOf's rules for the run it starts. */
-export function composioBodyOf(d: ComposioDraft, fields: readonly ConfigField[], capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+export function composioBodyOf(d: ComposioDraft, fields: readonly ConfigField[], capOptional: boolean | CapRule = false): { body?: TriggerCreate; issues?: Record<string, string> } {
   const issues: Record<string, string> = {};
   if (!d.server) issues["source.server"] = "Pick a Composio server.";
   if (!d.event) issues["source.event"] = "Pick an event.";
@@ -583,7 +602,7 @@ export function feedSourceOf(d: FeedDraft, minEvery?: number): { source: FeedSou
 }
 
 /** A new feed trigger's create body, or what is wrong: its source (feedSourceOf), and bodyOf's rules for the run it starts. */
-export function feedBodyOf(d: FeedDraft, minEvery?: number, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+export function feedBodyOf(d: FeedDraft, minEvery?: number, capOptional: boolean | CapRule = false): { body?: TriggerCreate; issues?: Record<string, string> } {
   const { source, issues } = feedSourceOf(d, minEvery);
   return createOf(d, source, issues, capOptional, "a feed trigger");
 }
@@ -603,7 +622,7 @@ export const EMAIL_FIELDS = new Set(["name", "enabled", "source.mailbox", "sourc
 
 /** A new email trigger's create body, or what is wrong: its mailbox (INBOX when left empty) and interval (at least
  *  `minEvery`, when the server says), whether it is on, and bodyOf's rules for the run it starts. */
-export function emailBodyOf(d: EmailDraft, minEvery?: number, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+export function emailBodyOf(d: EmailDraft, minEvery?: number, capOptional: boolean | CapRule = false): { body?: TriggerCreate; issues?: Record<string, string> } {
   const issues: Record<string, string> = {};
   const every = everyOf(d, minEvery, issues);
   const made = createOf(d, { kind: "email", mailbox: d.mailbox.trim() || "INBOX", every_s: every }, issues, capOptional, "an email trigger");
@@ -611,18 +630,17 @@ export function emailBodyOf(d: EmailDraft, minEvery?: number, capOptional = fals
 }
 
 /** A new GitHub trigger's create body, or what is missing: its filter's shape, and bodyOf's rules for the run it starts. */
-export function githubBodyOf(d: GitHubDraft, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+export function githubBodyOf(d: GitHubDraft, capOptional: boolean | CapRule = false): { body?: TriggerCreate; issues?: Record<string, string> } {
   const { source, issues } = githubSourceOf(d);
   return createOf(d, source, issues, capOptional, "a GitHub trigger");
 }
 
 /** A create body from its source and the run it starts (bodyOf's rules for the target), or what is missing. */
-function createOf(d: { name: string; agentId: string; content: string; maxCost: string }, source: TriggerCreate["source"], issues: Record<string, string>, capOptional: boolean, what: string): { body?: TriggerCreate; issues?: Record<string, string> } {
+function createOf(d: { name: string; agentId: string; content: string; maxCost: string }, source: TriggerCreate["source"], issues: Record<string, string>, capOptional: boolean | CapRule, what: string): { body?: TriggerCreate; issues?: Record<string, string> } {
   if (!d.agentId) issues["target.agent_id"] = "Pick an agent.";
   if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
-  const cap = numberOf(d.maxCost);
-  if (!d.maxCost.trim()) { if (!capOptional) issues["target.max_cost_usd"] = `A cost cap is needed: every run ${what} starts is capped.`; }
-  else if (cap === undefined) issues["target.max_cost_usd"] = NEEDED;
+  const { cap, issue } = capUnder(d.maxCost, capOptional, `A cost cap is needed: every run ${what} starts is capped.`);
+  if (issue) issues["target.max_cost_usd"] = issue;
   if (Object.keys(issues).length) return { issues };
   return {
     body: {
@@ -655,12 +673,13 @@ export const same = (a: unknown, b: unknown): boolean => {
 
 /** An edit's PATCH: only the parts of `body` that differ from the schedule as read, and never `enabled` (Pause and
  *  Resume set it). The server starts a schedule again from now whenever an edit names its source, so an unchanged
- *  source is left out. */
-export function patchOf(t: Schedule, body: ScheduleInput): ScheduleInput {
+ *  source is left out. `connected`: the agent now picked is a connected one, which takes no effort, so the schedule's is
+ *  not carried over to it. */
+export function patchOf(t: Schedule, body: ScheduleInput, connected = false): ScheduleInput {
   // An interval typed with no start keeps the start the schedule has.
   const source = body.source && "every_s" in body.source && !body.source.start_at && "every_s" in t.source ? { ...body.source, start_at: t.source.start_at } : body.source;
   // What the form does not show of the target (its effort, the input's other fields) is kept as it is.
-  const target = body.target && { ...body.target, input: { ...t.target.input, ...body.target.input }, ...(t.target.effort !== undefined && body.target.effort === undefined ? { effort: t.target.effort } : {}) };
+  const target = body.target && { ...body.target, input: { ...t.target.input, ...body.target.input }, ...(!connected && t.target.effort !== undefined && body.target.effort === undefined ? { effort: t.target.effort } : {}) };
   return {
     ...(body.name !== undefined && body.name !== t.name ? { name: body.name } : {}),
     ...(source && !same(source, t.source) ? { source } : {}),

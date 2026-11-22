@@ -191,6 +191,7 @@ export type DefinitionInput = {
     surface?: "code" | "tools";
     exec?: boolean;
     record?: boolean;
+    needs?: Array<string>;
   };
   tool_settings?: {
     read?: {
@@ -4612,11 +4613,13 @@ export type ImportTemplateResponse = {
       bash: "read-only";
     } | null;
     computer: Array<"shell" | "none"> | null;
+    needs: Array<string> | null;
     computer_here: {
       entry: "shell" | "none" | null;
       computer: {
         kind: string;
         provider?: string;
+        needs?: Array<string>;
       } | null;
       shell: string | null;
       dropped: Array<string>;
@@ -4705,11 +4708,13 @@ export type ListTemplatesResponse = {
       bash: "read-only";
     } | null;
     computer: Array<"shell" | "none"> | null;
+    needs: Array<string> | null;
     computer_here: {
       entry: "shell" | "none" | null;
       computer: {
         kind: string;
         provider?: string;
+        needs?: Array<string>;
       } | null;
       shell: string | null;
       dropped: Array<string>;

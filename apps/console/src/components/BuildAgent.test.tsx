@@ -15,7 +15,7 @@ const packageTemplate = (name: string): TemplateView => ({
   name, display_name: name, version: "2.1.0", description: `A complete ${name} agent package.`,
   license: "Apache-2.0", author: null, repository: null, output: null, input_schema: null,
   harness: ["claude-agent"], model: null, effort: null, tools: null, tool_policy: null,
-  computer: null, computer_here: null, checkout: null, mcp: [], parameters: { type: "object", additionalProperties: false, properties: {} }, secrets: [],
+  computer: null, needs: null, computer_here: null, checkout: null, mcp: [], parameters: { type: "object", additionalProperties: false, properties: {} }, secrets: [],
   budget: null, learning: false, approvals_default: "ask", triggers: [], skills: ["research"], evals: [],
 });
 const catalog = ["Code review", "Inbound lead", "KYB", "Market monitor", "Release notes", "My custom agent", "Another custom agent"].map(packageTemplate);
