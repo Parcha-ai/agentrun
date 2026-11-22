@@ -4,6 +4,7 @@
 //     tombstone, as every route of the run is (purgedRun).
 //   - The champion read by digest (GET .../learning/promotions) reads no commit for it.
 //   - A later merge's diff (GET /runs/{id}/learning/diff) serves that file against nothing: never the purged text.
+//   - An SDK start sent again (sdk/runs.ts receipt) whose receipt pinned it is 410 purged, as the file read.
 //   - A run's seed (learning.ts seedAt) leaves it out, so no claim lays, checks, replays or serves it, and a champion
 //     read at its commit finds none: the run goes on as it does when no champion serves.
 import { ApiError } from "./errors.js";

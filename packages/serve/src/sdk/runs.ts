@@ -16,6 +16,9 @@ import { refuseWhileNoRunner } from "../runner/presence.js";
 import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
+import { blobOid, type Snapshot, snapshotAt } from "../learn/folder.js";
+import { purgedRun, purgedWorkflows } from "../purged-workflow.js";
+import type { RunRow } from "../store/index.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 import type { SdkWorkflowCheckEvent } from "./check.js";
@@ -371,6 +374,9 @@ export class SdkRuns {
     const launch = (await this.store.runs.launch(runId)).body as unknown as RunLaunch;
     const inbox = await sdkInbox(this.store, runId);
     const workflows = inbox.learning_workflows ?? [];
+    // A start sent again answers the receipt it pinned, never a workflow a purged run wrote: 410 purged, as its file read.
+    const purged = await this.purgedPinned(run.agentId, launch.learning?.seed ?? null, [...workflows, ...(inbox.learning_check ? [inbox.learning_check.workflow] : [])]);
+    if (purged) throw purgedRun(purged);
     const shown = secretsShown(this.secrets(), { local: true });
     if (
       shown.holds(launch.learning?.section ?? "") ||
@@ -396,6 +402,28 @@ export class SdkRuns {
         ...(inbox.learning_check ? { check: inbox.learning_check } : {}),
       },
     };
+  }
+  /** The purged run (purged-workflow.ts) that wrote a workflow of `pinned`, read where a start took its text from: the
+   *  run's seed when it holds that text, else the commit its digest's promotion record names (championTextOf). */
+  private async purgedPinned(agentId: string, seed: string | null, pinned: readonly LearnedWorkflow[]): Promise<RunRow | undefined> {
+    if (seed === null || pinned.length === 0) return undefined;
+    const folder = learningFolderOf(this.data, agentId);
+    try {
+      const records = await promotionsOf(this.store.settings, agentId);
+      const reads = new Map<string, Promise<Snapshot | undefined>>();
+      const at = (commit: string) => reads.get(commit) ?? reads.set(commit, snapshotAt(folder.workspace, commit)).get(commit)!;
+      for (const flow of pinned) {
+        const path = `workflows/${flow.name}/workflow.json`;
+        for (const commit of new Set([seed, promotionOf(records, flow.name, workflowDigest(flow))?.commit ?? seed])) {
+          const snapshot = await at(commit);
+          const file = snapshot?.workflows.find(({ name }) => name === flow.name)?.files.find((one) => one.path === path);
+          if (file?.oid !== blobOid(flow.workflow)) continue;
+          const row = (await purgedWorkflows(snapshot, this.store)).get(flow.name);
+          if (row) return row;
+        }
+      }
+      return undefined;
+    } finally { await folder.end(); }
   }
   private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; candidates: LearnedWorkflow[] }> {
     const folder = learningFolderOf(this.data, agentId);
