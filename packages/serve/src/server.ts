@@ -3321,8 +3321,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
-    // The package's triggers by name, as this apply makes them (a feed it left empty is not made, so not listed either).
-    const listed = new Set(made.triggers.flatMap((trigger, i) => (emptyFeeds.has(i) ? [] : [String(trigger.name).trim()])));
+    // The package's triggers by name, as this apply makes them (a feed it left empty is not made, so not listed either,
+    // except on an API-only server, which makes none and leaves each the agent has: hostless above).
+    const listed = new Set(made.triggers.flatMap((trigger, i) => (emptyFeeds.has(i) && !hostless.has(i) ? [] : [String(trigger.name).trim()])));
     // The triggers to remove: each of the agent's that an apply of this package marked as its own (TriggerRow.templateId)
     // and whose name the package no longer lists. A trigger the owner made, one a PATCH moved here from another agent (or
     // away and back), and one made before the mark was kept carry none, and are left. One whose removal fails keeps its
