@@ -20,6 +20,8 @@ const { RUN_SECRETS } = await import("../dist/run-secrets.js");
 const { SECRET_NAMES } = await import("../dist/secrets.js");
 
 const PEM = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" });
+/** A PEM's armor (its first and last lines, the generated key's) around `body` in place of its own. */
+const withBody = (pem, body) => { const lines = pem.trim().split("\n"); return `${lines[0]}\n${body}\n${lines.at(-1)}\n`; };
 /** The settings an environment gives, its key read by name from `keys`. */
 const fromEnv = (env, keys = {}) => codeStorageFromEnv(env, (name) => keys[name]);
 
@@ -54,7 +56,7 @@ test("a data directory's store: the local folder by default, code.storage when s
   useLearningStore(data, { name: "example-org", key: PEM, apiUrl: "https://api.example-org.code.storage.invalid", serverId: async () => "srv1", fetch: async () => { throw new Error("not reached"); } });
   assert.equal(learningStoreOf(data, "agent-one").id, "code.storage:example-org:agent-one");
   // A key that reads as a PEM but is no key: making the store never throws (every run makes one), each call fails closed.
-  useLearningStore(data, { name: "example-org", key: "-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----\n", serverId: async () => "srv1", fetch: async () => { throw new Error("not reached"); } });
+  useLearningStore(data, { name: "example-org", key: withBody(PEM, "not-a-key"), serverId: async () => "srv1", fetch: async () => { throw new Error("not reached"); } });
   const unkeyed = learningStoreOf(data, "agent-one");
   await assert.rejects(unkeyed.head(), (error) => error.name === "FolderUnreadable" && /AGENTRUN_CODE_STORAGE_KEY is not a private key/.test(error.message) && !error.message.includes("not-a-key"));
   useLearningStore(data, { refused: LEARNING_APART });

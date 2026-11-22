@@ -3,7 +3,7 @@
 // and no pipe any of them holds has a secret left in it. A run's process still gets its own secrets, over its pipe.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { rm } from "node:fs/promises";
@@ -159,7 +159,8 @@ function canaries() {
   // code.storage's key must read as a PEM (a start with it alone, or with no PEM, stops), and is still a canary inside
   // one; its org's name (no secret) set beside it, so the start takes it. No learning is read here: code.storage is
   // never called.
-  const pem = (value) => `-----BEGIN PRIVATE KEY-----\n${value}\n-----END PRIVATE KEY-----\n`;
+  const armor = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" }).trim().split("\n");
+  const pem = (value) => `${armor[0]}\n${value}\n${armor.at(-1)}\n`;
   const secrets = Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_TOKENS" ? `rotation:${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : name === CODE_STORAGE_ENV.key ? pem(`${canary}-${i}`) : `${canary}-${i}`]));
   return { canary, secrets: { ...secrets, [CODE_STORAGE_ENV.name]: "example-org" } };
 }
