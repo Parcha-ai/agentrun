@@ -1231,7 +1231,7 @@ export class HostedProvider implements ComputerProvider {
 				const dialed = this.#dialed();
 				const to = "problem" in dialed ? "this server" : dialed.attach;
 				const through = this.#attachEgress === undefined ? "" : ` through ${this.#attachEgress}`;
-				return this.#fail("timeout", `${ref.name} did not dial ${to}${through} within ${seconds(createMs)}: the machine must reach that address, and run agentrun-dial (the box image's entrypoint while AGENTRUN_ATTACH_URL is set, or the provider's own start of it)${await this.#dialWords(ref)}`);
+				return this.#fail("timeout", `${ref.name} did not dial ${to}${through} within ${seconds(createMs)}: the machine must reach that address, and run agentrun-dial (the box image's entrypoint while AGENTRUN_ATTACH_URL is set, or the provider's own start of it)${await this.#dialWords(ref, signal)}`);
 			}
 			const polled = pause(Math.min(this.#startPollMs(), left), signal).then(() => false as const);
 			reading ??= this.#dialRefused(ref.name, Math.min(requestMs, left), signal);
@@ -1247,13 +1247,13 @@ export class HostedProvider implements ComputerProvider {
 
 	/**
 	 * A dial timeout's last words: what the host's dialLog read of agentrun-dial, its last DIAL_LOG_LINES lines within
-	 * DIAL_LOG_CHARS characters, or that it never started. Nothing for a host without dialLog, or a read that fails or
-	 * outlasts requestMs.
+	 * DIAL_LOG_CHARS characters, or that it never started. Nothing for a host without dialLog, or a read that fails,
+	 * outlasts requestMs or is cut by the create's signal, so a cancel never waits on it.
 	 */
-	async #dialWords(ref: ComputerRef): Promise<string> {
+	async #dialWords(ref: ComputerRef, signal?: AbortSignal): Promise<string> {
 		const { dialLog } = this.host;
 		if (dialLog === undefined) return "";
-		const read = await this.#call(`the dial log of ${ref.name}`, (ctx) => dialLog.call(this.host, ref.id, ctx), this.#timeouts.requestMs);
+		const read = await this.#call(`the dial log of ${ref.name}`, (ctx) => dialLog.call(this.host, ref.id, ctx), this.#timeouts.requestMs, signal);
 		if (!read.ok) return "";
 		if (read.value === undefined) return "; agentrun-dial never started";
 		const lines = read.value.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");

@@ -371,6 +371,20 @@ test("a machine that never dials: the timeout carries the host's dialLog, its la
 	assert.equal(silent.error?.code, "timeout");
 	assert.ok(silent.error.message.endsWith("; agentrun-dial never started"), silent.error.message);
 
+	// A cancel while the log read stalls ends the wait at once: the read never holds create's cleanup back.
+	const stalled = setup({ dials: false });
+	const cancel = new AbortController();
+	let askedAt;
+	stalled.fake.host.dialLog = () => {
+		askedAt = Date.now();
+		setTimeout(() => cancel.abort(), 20);
+		return new Promise(() => {});
+	};
+	const cancelled = await stalled.provider.create(SPEC, { requestId: `dial-${++requests}`, signal: cancel.signal });
+	assert.equal(cancelled.ok, false);
+	assert.ok(Date.now() - askedAt < TIMEOUTS.requestMs, `create ended ${Date.now() - askedAt} ms after the read began, within requestMs`);
+	assert.doesNotMatch(cancelled.error.message, /agentrun-dial said|never started/);
+
 	for (const dialLog of [async () => Promise.reject(new Error("the toolbox is down")), undefined]) {
 		const plain = setup({ dials: false });
 		if (dialLog) plain.fake.host.dialLog = dialLog;
