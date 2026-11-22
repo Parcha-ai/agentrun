@@ -361,5 +361,37 @@ test("push: a push that fails says it was the push, its code kept, and takes no 
 	assert.deepEqual(listed, { ok: false, error: { code: "gone", message: "pushed into the computer could not be listed: files.list of /workspace at 0: the computer went away" } });
 	const none = pushing({});
 	assert.deepEqual(await new FolderSync(none, fakeSink()).push([]), { ok: true, value: undefined });
-	assert.deepEqual(none.sent.calls, ["files.list"], "an empty folder is not pushed, its baseline is still taken");
+	assert.deepEqual(none.sent.calls, ["tar.push.begin", "tar.push.write", "tar.push.end", "files.list"], "an empty folder is an empty tar, then its baseline");
+});
+
+test("push: a source that throws is a failed push in words (the push ended, no baseline); an abort lets the source go", async () => {
+	const broken = pushing({});
+	const throwing = (async function* () {
+		yield { name: "a", type: "file", mode: 0o644, body: Buffer.from("a") };
+		throw new Error("the store lost a");
+	})();
+	const failed = await new FolderSync(broken, fakeSink()).push(throwing);
+	assert.deepEqual(failed, { ok: false, error: { code: "invalid", message: "could not be pushed into the computer: the tar source failed: the store lost a" } });
+	assert.deepEqual(broken.sent.calls, ["tar.push.begin", "tar.push.end"], "the push that began was ended, and no listing followed");
+
+	const stopped = new AbortController();
+	let closed = false;
+	let next = 0;
+	const endless = {
+		[Symbol.asyncIterator]: () => ({
+			next: async () => {
+				if (++next === 3) stopped.abort();
+				return { done: false, value: { name: `f${next}`, type: "file", mode: 0o644, body: Buffer.from("x") } };
+			},
+			return: async () => {
+				closed = true;
+				return { done: true, value: undefined };
+			},
+		}),
+	};
+	const aborted = await new FolderSync(pushing({}), fakeSink()).push(endless, { signal: stopped.signal });
+	assert.equal(aborted.ok, false);
+	assert.match(aborted.error.message, /^could not be pushed into the computer: .*aborted/);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(closed, true, "the caller's entries are let go, as a push lets go of its tar");
 });

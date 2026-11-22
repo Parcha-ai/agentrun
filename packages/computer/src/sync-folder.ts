@@ -175,22 +175,17 @@ export class FolderSync {
 
 	/**
 	 * `entries` (the sink's copy of the folder) pushed into the computer's folder as one streaming tar, each file at
-	 * PUSHED_MTIME, then the baseline taken: the rule a push into a synced folder keeps, in one place. None: an empty
-	 * folder, nothing pushed, the baseline still taken. A failure says which step it was: "could not be pushed into the
-	 * computer: ..." or "pushed into the computer could not be listed: ...", its code kept.
+	 * PUSHED_MTIME, then the baseline taken: the rule a push into a synced folder keeps, in one place. `entries` is read
+	 * only as pushTar reads it, so an abort or a failing source ends it as it ends any push (a source that throws is a
+	 * failed push, and the source is let go). A failure says which step it was: "could not be pushed into the computer:
+	 * ..." or "pushed into the computer could not be listed: ...", its code kept.
 	 */
 	async push(entries: AsyncIterable<TarEntry> | Iterable<TarEntry>, options: { signal?: AbortSignal } = {}): Promise<Result<void>> {
-		const stamp = (entry: TarEntry): TarEntry => (entry.type === "file" ? { ...entry, mtime: PUSHED_MTIME } : entry);
-		const source = Symbol.asyncIterator in entries ? entries[Symbol.asyncIterator]() : entries[Symbol.iterator]();
-		const first = await source.next();
-		if (!first.done) {
-			const stamped = (async function* () {
-				yield stamp(first.value);
-				for (let next = await source.next(); !next.done; next = await source.next()) yield stamp(next.value);
-			})();
-			const pushed = await pushTar(this.#client, this.#root, tarStream(stamped), options);
-			if (!pushed.ok) return failAs(pushed.error, `could not be pushed into the computer: ${pushed.error.message}`);
-		}
+		const stamped = (async function* () {
+			for await (const entry of entries) yield entry.type === "file" ? { ...entry, mtime: PUSHED_MTIME } : entry;
+		})();
+		const pushed = await pushTar(this.#client, this.#root, tarStream(stamped), options);
+		if (!pushed.ok) return failAs(pushed.error, `could not be pushed into the computer: ${pushed.error.message}`);
 		const listed = await this.baseline(options);
 		return listed.ok ? listed : failAs(listed.error, `pushed into the computer could not be listed: ${listed.error.message}`);
 	}
