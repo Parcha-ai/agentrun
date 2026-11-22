@@ -329,12 +329,43 @@ test("deploy delete takes a 404 as gone only when the agent is not there: a targ
     const lockFile = join(pkg, ".agentrun", "deploy.json");
     mkdirSync(join(pkg, ".agentrun"), { recursive: true });
     writeFileSync(lockFile, `${JSON.stringify({ target: target.base, workspace: null, agent_id: AGENT_ID, revision_id: "rev_1", package_sha256: null, deployed_at: new Date().toISOString() })}\n`);
-    const result = await cli(env, ["deploy", "delete", pkg, "--yes"], { AGENTRUN_API_KEY: "not-a-secret" });
+    const result = await cli(env, ["deploy", "delete", pkg, "--to", target.base, "--yes"], { AGENTRUN_API_KEY: "not-a-secret" });
     assert.equal(result.code, one.code, `${one.name}: ${result.err}\n${target.seen.join("\n")}`);
     assert.equal(existsSync(lockFile), one.kept, `${one.name}: the lock ${one.kept ? "is kept" : "is removed"}`);
     if (one.kept) assert.match(result.err, new RegExp(`did not (archive|delete) ${AGENT_ID}; nothing was deleted`), one.name);
     else assert.match(result.err, /Deleted/, one.name);
   }
+});
+
+test("a folder's lock that names an address this CLI never deployed to gets no key: deploy, rollback and delete exit 2 with nothing sent, until --to names it; AgentRun cloud is trusted", { timeout: 60_000 }, async (t) => {
+  const AGENT_ID = "agt_planted";
+  const target = await fakeTarget(t, { [`GET /agents/${AGENT_ID}`]: [404, { error: { code: "not_found", message: "Not found." } }] });
+  const plant = (pkg) => {
+    mkdirSync(join(pkg, ".agentrun"), { recursive: true });
+    writeFileSync(join(pkg, ".agentrun", "deploy.json"), `${JSON.stringify({ target: target.base, workspace: null, agent_id: AGENT_ID, revision_id: "rev_1", package_sha256: null, deployed_at: new Date().toISOString() })}\n`);
+  };
+  const { dir, env } = scratch();
+  const pkg = folder(dir);
+  plant(pkg);
+  const key = { AGENTRUN_API_KEY: "not-a-secret-but-a-key" };
+  for (const args of [["deploy", pkg, "--yes"], ["deploy", "rollback", pkg], ["deploy", "delete", pkg, "--yes"]]) {
+    const refused = await cli(env, args, key);
+    assert.equal(refused.code, 2, `${args.join(" ")}: ${refused.err}`);
+    assert.match(refused.err, new RegExp(`names ${target.base} as its target, an address this CLI has not deployed to: pass --to ${target.base}`));
+    assert.deepEqual(target.seen, [], `${args.join(" ")} sent nothing`);
+  }
+  // Named by --to, it is sent to (the agent is gone there, so the delete removes the lock).
+  const named = await cli(env, ["deploy", "delete", pkg, "--to", target.base, "--yes"], key);
+  assert.equal(named.code, 0, named.err);
+  assert.ok(target.seen.length > 0);
+  // A lock naming AgentRun cloud (AGENTRUN_CLOUD_URL here) needs no --to.
+  target.seen.length = 0;
+  const other = scratch();
+  const cloudy = folder(other.dir);
+  plant(cloudy);
+  const cloud = await cli(other.env, ["deploy", "delete", cloudy, "--yes"], { ...key, AGENTRUN_CLOUD_URL: target.base });
+  assert.equal(cloud.code, 0, cloud.err);
+  assert.ok(target.seen.length > 0);
 });
 
 test("--to names a target: cloud is api.agentrun.ai (AGENTRUN_CLOUD_URL overrides it), /v2 appended where the path lacks it; deploy refuses one that is no base URL before it sends anything", { timeout: 60_000 }, async () => {

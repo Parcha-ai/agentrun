@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { schemaProblems } from "./schema-support.mjs";
-import { serve } from "./support.mjs";
+import { serve, withEnv } from "./support.mjs";
 
 const enc = encodeURIComponent;
 
@@ -224,6 +224,30 @@ test("an apply, and its plan, hold to what the caller read: the agent's revision
   const loose = await api("POST", path, { parameters: {}, revision: read, sha: "nope" });
   assert.equal(loose.status, 422, JSON.stringify(loose.body));
   assert.deepEqual(loose.body.error.fields.map((f) => f.field).sort(), ["revision", "sha"]);
+});
+
+test("a plan lists the monid key as missing where a monid grant is pinned when the agent is saved, as the apply refuses it; with the key here the plan lists none", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, ["MONID_API_KEY"]);
+  const files = filesOf(pkg(agentMd({ name: "enricher", extra: ["tools: [read, monid:faux/person/enrich]"] })));
+  const planOf = async (api) => {
+    const answer = await api("POST", "/templates/import", { files });
+    assert.equal(answer.status, 201, JSON.stringify(answer.body));
+    const apply = `/templates/${enc(answer.body.template.id)}/apply`;
+    const plan = await api("POST", apply, { dry_run: true, parameters: {} });
+    assert.equal(plan.status, 200, JSON.stringify(plan.body));
+    return { apply, plan: plan.body.plan };
+  };
+  const { api } = await serve(t, { runner: false });
+  const { apply, plan } = await planOf(api);
+  assert.deepEqual(plan.missing_secrets, ["MONID_API_KEY"]);
+  const applied = await api("POST", apply, { parameters: {} });
+  assert.notEqual(applied.status, 201, "the apply itself is refused for want of the key");
+  assert.match(JSON.stringify(applied.body), /no monid key here/);
+  assert.equal((await api("GET", "/agents")).body.agents.length, 0, "nothing made");
+
+  withEnv(t, { MONID_API_KEY: "monid-test-key" });
+  const keyed = await serve(t, { runner: false });
+  assert.deepEqual((await planOf(keyed.api)).plan.missing_secrets, []);
 });
 
 test("an API-only server takes an upload ({files}) and refuses a GitHub source", { timeout: 60_000 }, async (t) => {
