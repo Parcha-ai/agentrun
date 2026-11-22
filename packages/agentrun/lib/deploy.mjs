@@ -10,7 +10,7 @@
 // the target, not confirmed), 3 not runnable yet (keys or MCP servers the target lacks: nothing is made, the setup page
 // printed when the target gives one), 1 the target refused otherwise or could not be reached, 4 no token for it.
 import { createHash } from "node:crypto";
-import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -23,10 +23,11 @@ const SKIPPED = new Set([".agentrun", ".git"]);
 const MAX_FILES = 256;
 const MAX_BYTES = 8 * 1024 * 1024;
 const LOCK_FIELDS = ["target", "workspace", "agent_id", "revision_id", "package_sha256", "deployed_at"];
-/** The CLI's deploy record's lock (privateRecord): how often a deploy looks, how long it waits, and when one is stale. */
+/** The CLI's deploy record's lock (privateRecord): how often a change looks for it and how long it waits. */
 const LOCK_POLL_MS = 25;
 const LOCK_WAIT_MS = 10_000;
-const LOCK_STALE_MS = 30_000;
+/** A hold's folder left empty this long (tryHold): its maker ended before naming itself. */
+const HOLD_EMPTY_MS = 60_000;
 
 /** A request's refusal already said on stderr: the command ends with `code`. */
 class Stopped {
@@ -92,44 +93,73 @@ const writeAtomic = (file, text, mode) => {
   renameSync(temp, file);
 };
 
-/** One command at a time per source: `held`, a file made only where none is, naming its process (`host pid`), so two
- *  deploys of one source never both read no lock and each make an agent. Another process's refuses the command (exit
- *  2) with nothing sent; one left by a process of this machine that has ended is taken. Answers its letting go. */
-function hold(held, fail) {
-  const me = `${hostname()} ${process.pid}`;
-  for (let tries = 0; tries < 3; tries++) {
+/** A hold on `held`: a folder made only where none is, holding one empty file named for its process (`host-pid`).
+ *  Answers `{release}`, or `{owner}` (the process holding it; none while its maker has yet to name itself). A hold left
+ *  by an ended process of this machine is taken, and no live one is ever touched: the ended one's file is removed by
+ *  its name alone, the folder only by whoever removed that file (rmdir keeps a folder that holds anything), and a
+ *  release removes only its own. A folder left empty (its maker ended before naming itself) is taken once
+ *  HOLD_EMPTY_MS old. The parent is made again if another command's cleanup removed it meanwhile. */
+function tryHold(held) {
+  const host = hostname();
+  const me = `${host}-${process.pid}`;
+  for (let tries = 0; tries < 5; tries++) {
     try {
-      writeFileSync(held, `${me}\n`, { flag: "wx", mode: 0o600 });
-      return () => rmSync(held, { force: true });
+      mkdirSync(dirname(held), { recursive: true });
+      mkdirSync(held);
+      writeFileSync(join(held, me), "", { flag: "wx" });
+      return {
+        release() {
+          rmSync(join(held, me), { force: true });
+          try {
+            rmdirSync(held);
+          } catch {
+            // not ours to remove
+          }
+        },
+      };
     } catch (error) {
-      if (error.code !== "EEXIST") throw error;
+      if (error.code !== "EEXIST" && error.code !== "ENOENT") throw error;
     }
-    let owner;
+    let names;
+    let age;
     try {
-      owner = readFileSync(held, "utf8").trim();
+      names = readdirSync(held);
+      age = Date.now() - statSync(held).mtimeMs;
     } catch {
       continue; // let go of meanwhile
     }
-    const [host, pid] = owner.split(" ");
-    if (host !== hostname() || !(Number(pid) > 0) || alive(Number(pid))) throw fail(2, `Another agentrun deploy of this source is running${host === hostname() && pid ? ` (process ${pid})` : ""}: try again once it ends, or remove ${held} if none is. Nothing was sent.`);
-    // Taken by moving it aside first: only the one that moves this very hold takes it, and a hold made meanwhile by
-    // another (moved by mistake) goes back.
-    const aside = `${held}.${process.pid}.ended`;
-    try {
-      renameSync(held, aside);
-    } catch {
+    if (!names.length) {
+      if (age < HOLD_EMPTY_MS) return { owner: undefined };
+      try {
+        rmdirSync(held);
+      } catch {
+        // named meanwhile
+      }
       continue;
     }
-    if (readFileSync(aside, "utf8").trim() !== owner) {
-      try {
-        linkSync(aside, held);
-      } catch {
-        // another's since: theirs stands
-      }
+    const at = names[0].lastIndexOf("-");
+    const owner = { host: names[0].slice(0, at), pid: Number(names[0].slice(at + 1)) };
+    if (owner.host !== host || !(owner.pid > 0) || alive(owner.pid)) return { owner };
+    try {
+      rmSync(join(held, names[0]));
+    } catch {
+      continue; // another took it first
     }
-    rmSync(aside, { force: true });
+    try {
+      rmdirSync(held);
+    } catch {
+      // named meanwhile
+    }
   }
-  throw fail(2, `Another agentrun deploy of this source is running: try again once it ends, or remove ${held} if none is. Nothing was sent.`);
+  return { owner: undefined };
+}
+
+/** One command at a time per source (its hold: tryHold), so two deploys of one source never both read no lock and each
+ *  make an agent. Another process's refuses the command (exit 2) with nothing sent. Answers its letting go. */
+function holdSource(held, fail) {
+  const { release, owner } = tryHold(held);
+  if (release) return release;
+  throw fail(2, `Another agentrun deploy of this source is running${owner ? ` (process ${owner.pid}${owner.host === hostname() ? "" : ` on ${owner.host}`})` : ""}: try again once it ends, or remove ${held} if none is. Nothing was sent.`);
 }
 
 const alive = (pid) => {
@@ -157,8 +187,7 @@ function folderLock(dir, fail) {
   return {
     file,
     hold() {
-      mkdirSync(dirname(file), { recursive: true });
-      const release = hold(`${file}.held`, fail);
+      const release = holdSource(`${file}.held`, fail);
       return () => {
         release();
         try {
@@ -198,33 +227,20 @@ function privateRecord(env, cli, fail) {
     }
     throw fail(2, `${file} is not the CLI's deploy record (an object of locks by install and agent, and its targets): fix or remove it.`);
   };
-  // Each change is read and written under `<file>.lock` (a folder, made or refused at once), so two CLIs deploying at
-  // the same time never write back a record the other has changed since. One left by a CLI that died holding it is
-  // taken once it is older than any change takes.
+  // Each change is read and written holding `<file>.lock` (tryHold), so two CLIs deploying at the same time never write
+  // back a record the other has changed since. A change waits for another's.
   const update = (change) => {
     const held = `${file}.lock`;
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-    for (let waited = 0; ; waited += LOCK_POLL_MS) {
-      try {
-        mkdirSync(held);
-        break;
-      } catch (error) {
-        if (error.code !== "EEXIST") throw error;
-      }
-      let age = 0;
-      try {
-        age = Date.now() - statSync(held).mtimeMs;
-      } catch {
-        continue; // let go of meanwhile
-      }
-      if (age > LOCK_STALE_MS) rmSync(held, { recursive: true, force: true });
-      else if (waited >= LOCK_WAIT_MS) throw fail(1, `Another deploy holds ${file} (${held}): try again once it ends, or remove ${held} if none is running.`);
-      else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_POLL_MS);
+    let got;
+    for (let waited = 0; !(got = tryHold(held)).release; waited += LOCK_POLL_MS) {
+      if (waited >= LOCK_WAIT_MS) throw fail(1, `Another deploy holds ${file} (${held}${got.owner ? `, process ${got.owner.pid} on ${got.owner.host}` : ""}): try again once it ends, or remove ${held} if none is running.`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_POLL_MS);
     }
     try {
       writeAtomic(file, `${JSON.stringify(change(all()), null, 2)}\n`, 0o600);
     } finally {
-      rmSync(held, { recursive: true, force: true });
+      got.release();
     }
   };
   return {
@@ -244,7 +260,7 @@ function installLock(env, cli, source, agentId, fail) {
     file: record.file,
     hold() {
       mkdirSync(dirname(record.file), { recursive: true, mode: 0o700 });
-      return hold(join(dirname(record.file), `deploy.${createHash("sha256").update(key).digest("hex").slice(0, 16)}.held`), fail);
+      return holdSource(join(dirname(record.file), `deploy.${createHash("sha256").update(key).digest("hex").slice(0, 16)}.held`), fail);
     },
     read: () => lockOf(record.all()[key], record.file, fail),
     write: (lock) => record.update((all) => ({ ...all, [key]: lock })),
