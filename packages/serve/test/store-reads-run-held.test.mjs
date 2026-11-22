@@ -50,7 +50,7 @@ test("a run's held draft reads as it stands on main after each act: waiting, the
   assert.deepEqual(held(await read(statuses)), [[NAME, true]], "still pending on main: it waits");
   assert.deepEqual(asked, ["agent-1"], "one read of the folder's statuses, for its agent");
 
-  const approved = await changeWorkflow(data, "agent-1", README, { action: "approve", ifMatch: await etagOf(data, "agent-1"), refuse: [] });
+  const approved = await changeWorkflow(data, "agent-1", README, { action: "approve", ifMatch: await etagOf(data, "agent-1"), refuse: [], store });
   assert.equal(approved.status, 200);
   const learned = await read(statuses);
   assert.deepEqual(held(learned), [[NAME, false]], `approved since: learned, nothing waits: ${JSON.stringify(learned)}`);
