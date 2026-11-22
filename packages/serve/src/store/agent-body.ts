@@ -11,7 +11,7 @@ import type { NativeBinding } from "../native/types.js";
 import { nativeBindingOf } from "../native/binding.js";
 import { isNativeRuntime, type NativeRuntime } from "../native/runtimes.js";
 import { type LearningSetting, learningSettingIssue, learningSettingOf } from "../learning-setting.js";
-import { NEED_NAME } from "../computer-needs.js";
+import { needsIssues } from "../computer-needs.js";
 
 /** A revision's body the store refuses: its content is not one the store keeps. The server maps it to an input refusal. */
 export class AgentBodyInvalid extends Error {
@@ -114,9 +114,8 @@ function computerOf(computer: unknown): RevisionComputer {
     invalid("the computer's gpu is not {type, count}: a GPU type name (letters, digits, dots, underscores and dashes) and a whole count from 1");
   }
   const needs = (computer as { needs?: unknown }).needs;
-  if (needs !== undefined && (!Array.isArray(needs) || needs.length === 0 || !needs.every((name) => typeof name === "string" && NEED_NAME.test(name)) || new Set(needs).size !== needs.length)) {
-    invalid("the computer's needs is not a list of program names, each once");
-  }
+  const needsIssue = needs === undefined ? undefined : needsIssues(needs, "the computer's needs")[0];
+  if (needsIssue) invalid(needsIssue.message);
   const kept = gpu as { type: string; count: number } | undefined;
   return { kind: ok.kind, ...(ok.provider !== undefined ? { provider: ok.provider } : {}), ...(ok.image !== undefined ? { image: ok.image } : {}), ...(kept !== undefined ? { gpu: { type: kept.type, count: kept.count } } : {}), ...(ok.persistent !== undefined ? { persistent: ok.persistent } : {}), ...(ok.surface !== undefined ? { surface: ok.surface } : {}), ...(ok.exec !== undefined ? { exec: ok.exec } : {}), ...(ok.record !== undefined ? { record: ok.record } : {}), ...(needs !== undefined ? { needs: [...(needs as string[])] } : {}) };
 }
