@@ -3560,8 +3560,8 @@ stays in every total.
 - Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id and the
   commit it names, moved to the rewritten commit by a purge. A run's purge takes its text out of the learning's whole
   history, not only its current files: every commit of main is rebuilt, oldest first, keeping of each `corrections.md`
-  line the run's merges added only as many copies as other runs' merges added of the same words (none, for words only
-  the run added), without each file of a learned workflow (`workflows/<name>/...`) whose bytes the run's merge changed
+  line the run's merges added only as many copies as other runs' merges added of the same words up to that commit
+  (none, for words only the run added), without each file of a learned workflow (`workflows/<name>/...`) whose bytes the run's merge changed
   last at that commit (a hand commit changes no owner, and once another run's merge writes a file again it is that
   run's; a kept run's workflow loses any file only the purged run wrote, and reads incomplete if it needed it), and without its merges' reasons (each merge kept, its
   message `learning: <run>: merged`, empty of its text), each snapshot rebuilt, and one commit by the host on top marks `.agentrun/purged/<run>`,

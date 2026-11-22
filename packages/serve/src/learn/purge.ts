@@ -13,7 +13,7 @@ const ATTEMPTS = 4;
 /**
  * Run `runId`'s text taken out of `store`: each commit of main's history, oldest first, rebuilt with corrections.md
  * keeping, of each line text the run's merges added (as the store diffs each merge), only as many copies as the other
- * runs' merges added (the first ones), without each workflow file the run's merge changed last there (a hand commit
+ * runs' merges added up to that commit (the first ones), without each workflow file the run's merge changed last there (a hand commit
  * changes no owner), the run's merge commits kept with their reason cut (`learning: <run>: merged`, its Run-Id trailer) and so empty of its text, and
  * each commit's snapshot rebuilt (learn/folder.ts rewrittenSnapshot: the new commit ids, the run's reasons cut). A
  * commit left with nothing of its own is dropped. One host commit on top marks `.agentrun/purged/<run>`: no merge of the
@@ -52,10 +52,10 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
   if (!merges.size) return { nothing: "unmerged" };
   const history = [...newestFirst].reverse();
   // Who wrote a correction line is known only from the merges, the one place a run writes: the lines each merge's diff
-  // adds. Each text the run's merges added leaves every tree but for as many copies as other runs' merges added of it.
-  // A hand commit owns nothing.
+  // adds. Each text the run's merges added leaves every tree but for as many copies as other runs' merges added of it
+  // up to that commit (a later run's copy of the same words keeps nothing older). A hand commit owns nothing.
   const purged = new Set<string>();
-  const kept = new Map<string, number>();
+  const others = new Map<string, string[]>();
   for (const one of newestFirst) {
     const run = runOf(one.message);
     if (!run) continue;
@@ -63,13 +63,12 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
     if (!diff) return "stale";
     for (const file of diff) {
       if (file.path !== CORRECTIONS_FILE || !("patch" in file)) continue;
-      for (const line of addedLines(file.patch)) {
-        if (run === runId) purged.add(line);
-        else kept.set(line, (kept.get(line) ?? 0) + 1);
-      }
+      const lines = addedLines(file.patch);
+      if (run === runId) for (const line of lines) purged.add(line);
+      else others.set(one.sha, [...(others.get(one.sha) ?? []), ...lines]);
     }
   }
-  const keep = new Map([...purged].map((line) => [line, kept.get(line) ?? 0]));
+  const keep = new Map([...purged].map((line) => [line, 0]));
 
   const rewritten = new Map<string, string | null>();
   const changed = new Map<string, string[]>();
@@ -93,6 +92,7 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
         if (tip) moved.set(one.sha, tip);
         continue;
       }
+      for (const line of others.get(one.sha) ?? []) if (keep.has(line)) keep.set(line, keep.get(line)! + 1);
       const run = runOf(one.message);
       const now = new Map(files.flatMap(({ path, mode, body }) => (folderOf(path) ? [[path, Buffer.concat([Buffer.from(`${mode}\0`), body])] as const] : [])));
       if (run) {
@@ -129,7 +129,7 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
 class Moved extends Error {}
 
 /** Commit `one` (its files `files`) rebuilt on the chain so far (`rewritten`, `changed` and the tree of its tip, `tree`):
- *  corrections.md with at most `keep`'s count of copies of each text it names (its first ones), no workflow file named in `gone`, its message scrubbed when it is a merge of `runId`, the paths it changes now set in
+ *  corrections.md with at most `keep`'s count (as it stands at this commit) of copies of each text it names (its first ones), no workflow file named in `gone`, its message scrubbed when it is a merge of `runId`, the paths it changes now set in
  *  `changed`, its snapshot as rewrittenSnapshot rebuilds it on `parent`. `oldBodies` gains the blobs it no longer holds. */
 function rebuilt(one: StoreCommit, files: readonly StoreFile[], { keep, gone }: { keep: ReadonlyMap<string, number>; gone: ReadonlySet<string> }, runId: string, chain: { rewritten: ReadonlyMap<string, string | null>; changed: Map<string, string[]>; tree: readonly StoreFile[] }, parent: string | null, oldBodies: Set<string>) {
   const out: StoreFile[] = [];
