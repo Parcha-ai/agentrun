@@ -11,7 +11,7 @@
 // another run wrote since. A held revision the purged run wrote is never the next run's compile ask.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -148,6 +148,24 @@ test("a purge takes the purged run's workflow off main: both its files read 404,
   await learned(data, "keeper", (ws) => learningCommit(ws, { runId: "later", reason: "It learned solo again.", files: [{ path: soloPath, text: JSON.stringify(answerFlow("Answer it alone.")) }, readmeOf("solo")] }));
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
   assert.equal(soloOnMain(), `${soloReadme}\n${soloPath}`, "a repeat DELETE leaves the later run's solo on main");
+});
+
+// A merge that moved main and stopped before it replaced the folder's snapshot leaves a snapshot behind main, which
+// names none of that merge's workflows: the purge reads main's own, so it still takes the run's workflow off.
+test("a purge takes the run's workflow off main when the folder's snapshot is behind main: a merge that stopped before its snapshot", { timeout: 300_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on" });
+  const first = (await startRun(api, "behind", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
+  await ended(api, first);
+  const gone = await started(api, "behind", "What is three?");
+  await ended(api, gone);
+  await learned(data, "behind", (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(answerFlow()) }, readmeOf("answer")] }));
+  const repo = repoOf(data, "behind");
+  const snapshotFile = join(repo, ".agentrun", "snapshot.json");
+  const behind = await readFile(snapshotFile);
+  await learned(data, "behind", (ws) => learningCommit(ws, { runId: gone, reason: "It learned solo.", files: [{ path: "workflows/solo/workflow.json", text: JSON.stringify(answerFlow("Answer it alone.")) }, readmeOf("solo")] }));
+  await writeFile(snapshotFile, behind);
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.equal(git(repo, ["ls-tree", "-r", "--name-only", "main", "workflows/"]), "workflows/answer/README.md\nworkflows/answer/workflow.json", "main holds the other run's workflow alone");
 });
 
 // The review's trace: run P's merge revises `answer`, its promotion check holds it, then P is purged; run Q ends and
