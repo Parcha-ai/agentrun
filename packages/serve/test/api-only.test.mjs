@@ -59,7 +59,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/runs/run_1/usage"], ["HEAD", "/v2/runs/run_1/usage"],
     ["PUT", "/v2/runs/run_1/grade"], ["POST", "/v2/runs/run_1/messages"], ["POST", "/v2/runs/run_1/stop"], ["POST", "/v2/runs/run_1/cancel"],
     ["GET", "/v2/runs/run_1/files"], ["GET", "/v2/runs/run_1/files/out/report.md"], ["POST", "/v2/files"], ["GET", "/v2/files/file_1"],
-    ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"], ["GET", "/v2/capacity"], ["POST", "/v2/templates/import"],
+    ["GET", "/v2/capabilities"], ["GET", "/v2/settings/mcp-server-names"], ["GET", "/v2/health"], ["GET", "/v2/usage"], ["GET", "/v2/capacity"], ["POST", "/v2/templates/import"],
     ["GET", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1"], ["DELETE", "/v2/agents/a1/learning"], ["DELETE", "/v2/runs/run_1"], ["GET", "/v2/computers/daemon"],
     ["GET", "/v2/computers"], ["HEAD", "/v2/computers"], ["GET", "/v2/workspace/archil"], ["HEAD", "/v2/workspace/archil"],
     ["GET", "/v2/runs/run_1/computer"], ["POST", "/v2/runs/run_1/computer/take-over"], ["POST", "/v2/runs/run_1/computer/hand-back"],

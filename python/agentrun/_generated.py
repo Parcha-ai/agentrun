@@ -671,6 +671,7 @@ __all__ = [
     "ListLearningPromotionsResponseServingItemChampionNodesItem",
     "ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem",
     "ListLearningPromotionsResponseServingItemCheck",
+    "ListMcpServerNamesResponse",
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
     "ListMcpServersResponseServersItemAuth",
@@ -4960,6 +4961,10 @@ class ListComputersResponseKindsItemProvidersItemGpuPerGpu(TypedDict):
 
 class ListComputersResponseKindsItemProvidersItemPersistent(TypedDict, total=False):
     images: list[str]
+
+
+class ListMcpServerNamesResponse(TypedDict):
+    names: list[str]
 
 
 class _PutWorkspaceArchilBodyRequired(TypedDict):
@@ -10477,6 +10482,7 @@ OPERATIONS: dict[str, Operation] = {
     "listComposioTriggers": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/triggers", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputerChoices": Operation(method="GET", path="/computers/{provider}/choices", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputers": Operation(method="GET", path="/computers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listMcpServerNames": Operation(method="GET", path="/settings/mcp-server-names", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "receiveHook_composio": Operation(method="POST", path="/hooks/composio/{hook}", path_params=("hook",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("*/*",)), answer="json", secret=False, public_fields=(), tagged=False),
     "rotateComposioSecret": Operation(method="POST", path="/settings/mcp-servers/{name}/composio/rotate-secret", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -10957,6 +10963,10 @@ class LocalResource(Group):
     def list_computers(self, *, timeout: float | None = None) -> ListComputersResponse:
         """Settings → Computers: the kinds of computer this server offers, each provider and whether its keys are saved (GET /computers)."""
         return self._call("listComputers", (), None, None, timeout=timeout)
+
+    def list_mcp_server_names(self, *, timeout: float | None = None) -> ListMcpServerNamesResponse:
+        """The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names)."""
+        return self._call("listMcpServerNames", (), None, None, timeout=timeout)
 
     def put_workspace_archil(self, body: PutWorkspaceArchilBody, *, timeout: float | None = None) -> PutWorkspaceArchilResponse:
         """Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil)."""
