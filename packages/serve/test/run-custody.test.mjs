@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
-import { client, printed } from "./support.mjs";
+import { client, LAUNCH_HOOK_URL, launchHookCanary, printed } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const CUSTODY = new URL("./fixtures/faux-custody.mjs", import.meta.url).pathname;
@@ -27,10 +27,10 @@ async function launched(t) {
   const secrets = Object.fromEntries(
     SECRET_NAMES.map((name, i) => [
       name,
-      name === "AGENTRUN_TOKEN" ? `${canary}-token-0123456789abcdef` : name === "AGENTRUN_TOKENS" ? `custody:${canary}-tokens-0123456789abcdef0123456789` : name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_STORE_URL" ? undefined : `${canary}-${i}`,
+      name === "AGENTRUN_TOKEN" ? `${canary}-token-0123456789abcdef` : name === "AGENTRUN_TOKENS" ? `custody:${canary}-tokens-0123456789abcdef0123456789` : name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_LAUNCH_HOOK_SECRET" ? launchHookCanary(`${canary}-${i}`) : name === "AGENTRUN_STORE_URL" ? undefined : `${canary}-${i}`,
     ]),
   );
-  const env = { ...process.env, ...secrets, XDG_CONFIG_HOME: join(dir, "config"), TMPDIR: dir };
+  const env = { ...process.env, ...LAUNCH_HOOK_URL, ...secrets, XDG_CONFIG_HOME: join(dir, "config"), TMPDIR: dir };
   for (const [name, value] of Object.entries(env)) if (value === undefined) delete env[name];
   const child = spawn(LAUNCHER, ["--data", join(dir, "data"), "--port", "0", "--faux", CUSTODY], { detached: true, stdio: ["ignore", "pipe", "pipe"], env });
   let alive = true;
