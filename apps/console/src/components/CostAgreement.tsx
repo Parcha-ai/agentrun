@@ -53,7 +53,44 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
     }),
   ], [before, revisions]);
   const drawn = marks.filter((m) => m.revision);
-  if (!cost || !drawn.length) return null;
+  if (!cost) return null;
+  // Every revision, with what it has and what it lacks: under the plot, and on its own where no revision is drawn.
+  const table = (open: boolean) => (
+    <details className="border-t px-4 py-2" open={open}>
+      <summary className="caps cursor-pointer text-label text-muted-foreground">Table</summary>
+      <div className="overflow-auto"><table className="mt-2 w-full border-collapse font-mono text-small">
+        <thead><tr className="caps text-label text-muted-foreground">{["Revision", "Digest", "Now", "Served runs", "$ a run", "Check agreed", "95% interval", "Audits agreed", "95% interval"].map((h, i) => <th key={i} className="py-1 pr-4 text-left font-normal">{h}</th>)}</tr></thead>
+        <tbody>{revisions.map((p) => {
+          const check = p.check ? agreementOf({ check: p.check, audits: null }) : null;
+          const audits = auditsOf(p);
+          return (
+            <tr key={`${p.workflow}:${p.digest}`}>
+              <td className="py-0.5 pr-4">{p.label}</td>
+              <td className="pr-4">{p.digest.slice(0, 7)}</td>
+              <td className="pr-4">{STATE_WORDS[p.state]}</td>
+              <td className="pr-4">{p.served?.runs ?? 0}</td>
+              <td className="pr-4">{p.served ? level(p.served.mean_usd) : "unknown"}</td>
+              <td className="pr-4">{check ? `${check.agreed} of ${check.rows} (${percent(check.share)})` : "no check"}</td>
+              <td className="pr-4">{check ? intervalWords(check) : "-"}</td>
+              <td className="pr-4">{audits && p.audits ? `${auditWords(p.audits)} (${percent(audits.share)})` : p.audits ? "none yet" : "not read"}</td>
+              <td className="pr-4">{audits ? intervalWords(audits) : "-"}</td>
+            </tr>
+          );
+        })}</tbody>
+      </table></div>
+    </details>
+  );
+  if (!drawn.length) {
+    // A revision with a verdict whose served runs cost $0 has no place on a log axis: there is no plot, and the card
+    // still stands with the table, so its check and its audits can be read. With no such revision there is no card.
+    if (!revisions.some((p) => p.served && agreementOf(p))) return null;
+    return (
+      <Card title="Cost against agreement" headline="No served run cost more than $0" testid="cost-agreement">
+        <p className="px-4 py-3 text-small text-muted-foreground">No revision is drawn: a run that cost $0 has no place on the chart&apos;s log axis. The table has each revision&apos;s check and its audits.</p>
+        {table(true)}
+      </Card>
+    );
+  }
 
   const width = Math.max(300, room);
   const plotW = width - M.left - M.right;
@@ -207,29 +244,7 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
           {moved ? " Revisions that cost nearly the same are drawn side by side: the table has each one's cost." : ""}
         </p>
       </figure>
-      <details className="border-t px-4 py-2">
-        <summary className="caps cursor-pointer text-label text-muted-foreground">Table</summary>
-        <div className="overflow-auto"><table className="mt-2 w-full border-collapse font-mono text-small">
-          <thead><tr className="caps text-label text-muted-foreground">{["Revision", "Digest", "Now", "Served runs", "$ a run", "Check agreed", "95% interval", "Audits agreed", "95% interval"].map((h, i) => <th key={i} className="py-1 pr-4 text-left font-normal">{h}</th>)}</tr></thead>
-          <tbody>{revisions.map((p) => {
-            const check = p.check ? agreementOf({ check: p.check, audits: null }) : null;
-            const audits = auditsOf(p);
-            return (
-              <tr key={`${p.workflow}:${p.digest}`}>
-                <td className="py-0.5 pr-4">{p.label}</td>
-                <td className="pr-4">{p.digest.slice(0, 7)}</td>
-                <td className="pr-4">{STATE_WORDS[p.state]}</td>
-                <td className="pr-4">{p.served?.runs ?? 0}</td>
-                <td className="pr-4">{p.served ? level(p.served.mean_usd) : "unknown"}</td>
-                <td className="pr-4">{check ? `${check.agreed} of ${check.rows} (${percent(check.share)})` : "no check"}</td>
-                <td className="pr-4">{check ? intervalWords(check) : "-"}</td>
-                <td className="pr-4">{audits && p.audits ? `${auditWords(p.audits)} (${percent(audits.share)})` : p.audits ? "none yet" : "not read"}</td>
-                <td className="pr-4">{audits ? intervalWords(audits) : "-"}</td>
-              </tr>
-            );
-          })}</tbody>
-        </table></div>
-      </details>
+      {table(false)}
     </Card>
   );
 }

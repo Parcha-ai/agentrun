@@ -151,6 +151,18 @@ describe("CostAgreement", () => {
     expect(host.querySelector('[data-testid="agreement-audits"]')).toBeNull();
     expect(host.querySelector('[data-testid="cost-agreement"]')!.textContent).toContain("v2 serving: $0.106 a run, agreed on 7 of 7 audited runs (100%)");
   });
+  it("keeps the card and its table, open, when every revision's served runs cost $0: no plot, the checks and audits still read", () => {
+    const free = REVISIONS.map((p) => ({ ...p, served: p.served ? { ...p.served, mean_usd: 0 } : null }));
+    const host = draw(createElement(CostAgreement, { cost: COST, revisions: free, width: 560 }));
+    const card = host.querySelector('[data-testid="cost-agreement"]')!;
+    expect(card.textContent).toContain("No served run cost more than $0");
+    expect(card.querySelector("svg")).toBeNull();
+    expect(card.querySelector("details")!.hasAttribute("open")).toBe(true);
+    const rows = [...card.querySelectorAll("details tbody tr")].map((r) => r.textContent);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toContain("15 of 17 (88%)");
+    expect(rows[0]).toContain("$0");
+  });
   it("draws nothing until a revision has both a served run with a cost and a verdict", () => {
     const unchecked = REVISIONS.map((p) => ({ ...p, check: null, audits: null }));
     expect(draw(createElement(CostAgreement, { cost: COST, revisions: unchecked, width: 560 })).textContent).toBe("");
