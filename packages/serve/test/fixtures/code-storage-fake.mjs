@@ -133,7 +133,11 @@ export function codeStorageFake({ name = "example-org", publicKey } = {}) {
       else tree.set(file.path, blobs.get(file.content_id) ?? Buffer.alloc(0));
     }
     if (old && sameTree(tree, treeOf(repo, old))) return json(412, { commit: null, result: result("precondition_failed", "no changes to commit") });
-    const sha = createHash("sha1").update(`${++counter}\0${old}\0${meta.commit_message}`).digest("hex");
+    // Over the tree too, as a git commit id is: two fakes' commits of other trees never share an id (dist keeps reads by
+    // repository and commit id, across stores).
+    const hash = createHash("sha1").update(`${++counter}\0${old}\0${meta.commit_message}`);
+    for (const [path, body] of [...tree].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) hash.update(`\0${path}\0`).update(body);
+    const sha = hash.digest("hex");
     repo.commits.set(sha, { sha, parent: old, tree, message: meta.commit_message, author: meta.author, date: new Date().toISOString() });
     repo.main = sha;
     return json(201, { commit: { commit_sha: sha, tree_sha: sha, target_branch: "main", pack_bytes: text.length, blob_count: blobs.size }, result: result("ok", undefined, true, { new_sha: sha }) });
