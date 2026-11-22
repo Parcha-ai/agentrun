@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -377,6 +377,19 @@ for (const [kind, make] of Object.entries(STORES)) {
     }
   });
 }
+
+test("local: a purge on a folder an earlier release wrote leaves none of its diff files (.agentrun/diffs, kept outside git): no file in the folder holds the run's text", async (t) => {
+  const store = await STORES.local(t);
+  const { forgetRunText } = await learn();
+  await merged(store, "ALPHA", "BRAVO", "CHARLIE");
+  const tree = join(gitDirOf(store.data), "..");
+  mkdirSync(join(tree, ".agentrun", "diffs"), { recursive: true });
+  writeFileSync(join(tree, ".agentrun", "diffs", "run_bravo.json"), JSON.stringify({ v: 1, run: "run_bravo", files: [{ path: "corrections.md", patch: "+- BRAVO line\n" }] }));
+  assert.ok("commit" in (await forgetRunText(store, "run_bravo")));
+  assert.equal(existsSync(join(tree, ".agentrun", "diffs")), false, "the earlier release's diffs are gone");
+  const held = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((one) => (one.name === ".git" ? [] : one.isDirectory() ? held(join(dir, one.name)) : readFileSync(join(dir, one.name), "utf8").includes("BRAVO") ? [join(dir, one.name)] : []));
+  assert.deepEqual(held(tree), []);
+});
 
 test("local: a purge whose checkout fails (an index.lock left behind) is not done: the tidy mark stays, the purge fails retryable, and once the lock is gone the purge sent again checks main out and leaves no file holding the run's text", async (t) => {
   const store = await STORES.local(t);

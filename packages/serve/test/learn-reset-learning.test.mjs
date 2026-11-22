@@ -22,6 +22,8 @@ import { getAgent } from "../dist/agents-store.js";
 import { SdkRuns } from "../dist/sdk/runs.js";
 import { secretsShown, seedOf, withAgentRepo } from "../dist/learning.js";
 import { learningStoreOf } from "../dist/learn/store-of.js";
+import { appendCorrection } from "../dist/learn/commit.js";
+import { forgetRunText } from "../dist/learn/purge.js";
 import { notAuditableOf } from "../dist/runner/audit.js";
 import { askReplay } from "../dist/runner/promotion.js";
 import { pastRunsOverStore } from "../dist/store-reads/learning.js";
@@ -675,22 +677,22 @@ test("(c) a run whose start read its seed before the reset, its row made after i
   assert.ok(!(await promotionsOf(w.server.settings, "agent-1")).some((one) => one.decided === "hold"), "no hold");
 });
 
-test("a run seeded after the reset whose end writes another learning folder than the one its seed was read from (a Mode 2 run's, on its disk, seeded from the server's): its learning is not dropped, and its owner's correction lands on that folder", { timeout: 120_000 }, async (t) => {
+test("a run whose seed its agent's learning no longer holds at its end (another run's purge rewrote the history since it started, no reset ever): its learning is dropped whole (reason reset), and its owner's correction lands nowhere", { timeout: 120_000 }, async (t) => {
   const w = await storeWorld(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 100 } });
-  // The disk the run's end writes, standing in as a data directory of its own: its folder never held the server's seed.
-  const disk = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-reset-disk-"));
-  t.after(() => rmSync(disk, { recursive: true, force: true }));
   await corrected(w);
-  assert.equal(await w.reset(), 204);
+  const learning = learningStoreOf(w.dir, "agent-1");
+  assert.equal((await appendCorrection(learning, { runId: "run-gone", text: "PURGED-RUN-LINE" })).ok, true);
   const launch = { input: { content: "What is six times seven?" }, title: "t", place: { mode: "runner" }, learning: startOf(await seedOf(w.dir, "agent-1")) };
+  const purged = await forgetRunText(learning, "run-gone");
+  assert.ok("moved" in purged && purged.moved.has(launch.learning.seed), "the purge rewrote the run's seed");
   await w.server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
-  await runnerFor(w, "run-1", launch, { feedback: FEEDBACK, folderData: disk, script: [{ say: "The job's answer." }, { say: "Noted." }] });
+  const first = await runnerFor(w, "run-1", launch, { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }] });
   assert.equal((await w.ended("run-1")).state, "ended");
+  await first.close();
   const proposal = (await w.server.learning.proposal("run-1"))?.proposal;
-  assert.equal(proposal?.state, "merged", JSON.stringify(proposal));
-  const repo = learningDir(disk, "agent-1");
-  assert.ok(git(repo, ["show", "main:corrections.md"]).includes(FEEDBACK), "its correction is on the disk's folder");
-  assert.equal(w.onMain().includes("corrections.md"), false, "and not on the server's");
+  assert.deepEqual([proposal?.state, proposal?.reason, proposal?.detail], ["dropped", "reset", "Dropped: its learning seed is gone from the agent's learning (a reset removed it, or a run's purge rewrote the history)."], JSON.stringify(proposal));
+  const corrections = git(w.repo, ["show", "main:corrections.md"]);
+  assert.ok(!corrections.includes(FEEDBACK), `no correction landed: ${JSON.stringify(corrections)}`);
 });
 
 const PRE = "PRE-RESET-MARKER";
