@@ -20,6 +20,8 @@ import { learningStoreOf } from "./learn/store-of.js";
 import { agentFolderOf, serialBy } from "./files.js";
 import { withoutLoopbackAddresses } from "./key-refusal.js";
 import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
+import { purgedWorkflows } from "./purged-workflow.js";
+import type { Store } from "./store/index.js";
 
 export { learnsOf } from "./learning-setting.js";
 
@@ -254,17 +256,21 @@ export function seedOf(data: string, agentId: string): Promise<Seed> {
   });
 }
 
-/** What commit `commit` of the store holds for a run, as seedOf reads main. No commit (null) is the empty seed; a commit
- *  the store no longer holds throws. */
-export async function seedAt(learning: LearningStore, commit: string | null): Promise<Seed> {
+/** What commit `commit` of the store holds for a run, as seedOf reads main, but a learned workflow a purged run wrote,
+ *  by `store`'s runs (purged-workflow.ts): no claim lays, checks, replays or serves it. `store` null: a run's own
+ *  process, which reads no other run; its runner reads the seed again with its store (runner/learning-seed.ts). No
+ *  commit (null) is the empty seed; a commit the store no longer holds throws. */
+export async function seedAt(learning: LearningStore, commit: string | null, store: Pick<Store, "runs"> | null): Promise<Seed> {
   if (commit === null) return { sha: null, corrections: "", workflows: [] };
   const at = await folderAt(learning, commit);
   if (!at) throw new Error(`the learning store's read at ${commit} is gone`);
-  return seedIn(commit, at.snapshot, async (_path, oid) => {
+  const purged = store ? await purgedWorkflows(at.snapshot, store) : new Map();
+  const seed = await seedIn(commit, at.snapshot, async (_path, oid) => {
     const bytes = at.blobs.get(oid);
     if (!bytes) throw new Error(`the learning store's read at ${commit} holds no blob ${oid}`);
     return bytes.toString("utf8");
   });
+  return { ...seed, workflows: seed.workflows.filter(({ name }) => !purged.has(name)) };
 }
 
 /** Whether `text` holds a host secret (`shown`): as written, or, read as JSON, in any string it decodes to (its escapes

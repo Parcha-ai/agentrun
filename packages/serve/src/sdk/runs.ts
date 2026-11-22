@@ -19,6 +19,8 @@ import { refuseWhileNoRunner } from "../runner/presence.js";
 import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
+import { type Snapshot, snapshotAt } from "../learn/folder.js";
+import { purgedRun } from "../purged-workflow.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 import type { SdkWorkflowCheckEvent } from "./check.js";
@@ -75,6 +77,10 @@ export type SdkInbox = {
   batches: { sequence: number; events: SdkEvent[] }[];
   /** Exact promoted executable workflows delivered by the start receipt. */
   learning_workflows?: LearnedWorkflow[];
+  /** The runs that wrote what the receipt delivers (each of learning_workflows at the learning commit it was read at,
+   *  the check's draft at the seed; SnapLearned.run): a start sent again whose writer was purged since is 410 purged
+   *  (receipt), however the purge rewrote the agent's learning. */
+  learning_writers?: string[];
   /** A compiled draft reserved for a shadow check, never supplied to the native agent. */
   learning_check?: SdkWorkflowCheck;
   /** Server cleaning changed evidence: two different secret-bearing answers must never agree by their placeholder. */
@@ -307,7 +313,7 @@ export class SdkRuns {
       const reset = learning ? await resetAtOf(this.store.settings, entry.agent.id) : undefined;
       if (learning && reset !== undefined && !(learning.seededAt !== undefined && learning.seededAt > reset))
         throw new ApiError("unavailable", "The agent's learning was reset while this run started: start it again.", { retry_after_ms: 1_000 });
-      const selected = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : { workflows: [], candidates: [] };
+      const selected = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : { workflows: [], commits: {}, candidates: [] };
       const cleaned = this.clean({ instructions, ...(model ? { model } : {}) });
       const runId = uuidv7();
       const redacted = cleanedInput !== input || cleaned.instructions !== instructions;
@@ -318,6 +324,10 @@ export class SdkRuns {
       const check = learning ? await reserveSdkCheck(checkDeps, { runId, revision: learning.seed, learning: revisionBody.learning, flows: selected.candidates, takes }) : undefined;
       // A shadow check needs the original agent's own answer, not an answer produced by its existing champion.
       const workflows = check ? [] : selected.workflows;
+      const writers = learning ? await this.writersOf(entry.agent.id, [
+        ...workflows.map((flow) => [flow.name, selected.commits[flow.name]!] as const),
+        ...(check && learning.seed ? [[check.workflow.name, learning.seed] as const] : []),
+      ]) : [];
       const launch: RunLaunch = {
         input: { content: cleanedInput },
         title: cleanedInput.trim().replace(/\s+/g, " ").slice(0, 80),
@@ -339,6 +349,7 @@ export class SdkRuns {
           expires_at: now + (cli ? 86_400_000 : 3_600_000),
           batches: [],
           learning_workflows: workflows,
+          ...(writers.length ? { learning_writers: writers } : {}),
           ...(check ? { learning_check: check } : {}),
           ...(redacted ? { check_redacted: true } : {}),
           ...(cli && cleanedInput !== input ? { evidence_incomplete: true } : {}),
@@ -382,6 +393,10 @@ export class SdkRuns {
     const launch = (await this.store.runs.launch(runId)).body as unknown as RunLaunch;
     const inbox = await sdkInbox(this.store, runId);
     const workflows = inbox.learning_workflows ?? [];
+    // A start sent again answers the receipt it pinned, never a workflow a purged run wrote: 410 purged, as its file read.
+    const writers = await Promise.all((inbox.learning_writers ?? []).map((id) => this.store.runs.get(id)));
+    const purged = writers.find((row) => row && row.purgedAt !== null);
+    if (purged) throw purgedRun(purged);
     const shown = secretsShown(this.secrets(), { local: true });
     if (
       shown.holds(launch.learning?.section ?? "") ||
@@ -408,9 +423,25 @@ export class SdkRuns {
       },
     };
   }
-  private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; candidates: LearnedWorkflow[] }> {
+  /** The runs that wrote `pinned` (each workflow by name at the learning commit it was read at), as their snapshots
+   *  name them (SnapLearned.run): what a receipt asks of the store's runs (purged-workflow.ts). One store read per commit. */
+  private async writersOf(agentId: string, pinned: readonly (readonly [string, string])[]): Promise<string[]> {
+    if (pinned.length === 0) return [];
     const learning = learningStoreOf(this.data, agentId);
-    const seed = await seedAt(learning, revision);
+    const reads = new Map<string, Promise<Snapshot | undefined>>();
+    const writers = new Set<string>();
+    for (const [name, commit] of pinned) {
+      const snapshot = await (reads.get(commit) ?? reads.set(commit, snapshotAt(learning, commit)).get(commit)!);
+      const run = snapshot?.workflows.find((one) => one.name === name)?.run;
+      if (run) writers.add(run);
+    }
+    return [...writers];
+  }
+  /** The workflows a start delivers and the learning commit each was read at (`commits`: the seed's, or its champion
+   *  record's), and the drafts a check may take. */
+  private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; commits: Record<string, string>; candidates: LearnedWorkflow[] }> {
+    const learning = learningStoreOf(this.data, agentId);
+    const seed = await seedAt(learning, revision, this.store);
     const { flows } = chooseWorkflows(seed, secretsShown(this.secrets(), { local: true }));
     const dsl = await import("@parcha/agentrun-dsl");
     const { tools, gated, deniedBy } = sdkDraftTools(binding.workflow_tools);
@@ -422,15 +453,18 @@ export class SdkRuns {
       room -= bytes;
       return true;
     };
-    const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [];
+    const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [], commits: Record<string, string> = {};
     const atCommit = async (name: string, commit: string) =>
-      chooseWorkflows(await seedAt(learning, commit), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
+      chooseWorkflows(await seedAt(learning, commit, this.store), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
     for (const flow of flows) {
-      const { text: serving } = await championTextOf(records, flow, atCommit);
-      if (serving && compatible(serving)) workflows.push(serving);
+      const { text: serving, champion } = await championTextOf(records, flow, atCommit);
+      if (serving && compatible(serving)) {
+        workflows.push(serving);
+        commits[serving.name] = serving === flow ? seed.sha! : champion!.commit!;
+      }
       if ((!serving || workflowDigest(serving) !== workflowDigest(flow)) && compatible(flow)) candidates.push(flow);
     }
-    return { workflows, candidates };
+    return { workflows, commits, candidates };
   }
   private async modify(runId: string, change: (row: SdkInbox) => SdkInbox, limit = TOTAL_LIMIT): Promise<void> {
     for (let retry = 0; retry < 20; retry++) {

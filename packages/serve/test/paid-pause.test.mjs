@@ -2,7 +2,8 @@
 // result says so, and the model's next request is refused in the paid call's words, so the turn ends there and the run
 // waits on a raise (input_required, waiting, pending kind budget) with the call's figures: what was taken, and the
 // call's hold as what it needs. A raise sends the run on (#1642), and the model calls again: each call the model makes is
-// one call, none of ours on top. A call monid charges above its hold stops the run instead, on every harness.
+// one call, none of ours on top. A call monid charges above its hold is booked as charged: the run goes on while its
+// charges stay within the cap, and stops at once in the cap's words when they pass it, on every harness.
 // Faux model and harness, faux monid: no key, no network.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -64,20 +65,41 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
 }
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  test(`${harness}: a paid call monid charges above its hold stops the run at once, failed in words naming both amounts, its charge booked as charged`, { timeout: 120_000 }, async (t) => {
+  test(`${harness}: a paid call monid charges above its hold, the run still within its cap, is booked as charged and the run goes on`, { timeout: 120_000 }, async (t) => {
     const log = join(await scratch(t), "monid-calls.jsonl");
     // Held at its $1 price and sent with it as maxCost; monid re-priced it after the read and charges $1.50.
     withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log, AGENTRUN_TEST_FAUX_MONID_CHARGE: "1.5" });
     const { api } = await serve(t, { fauxMonid: FAUX_MONID, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
     const id = `over-hold-${harness}`;
-    // The model calls it, then answers (pi) or calls it again (the CLIs): the request after the call is refused.
+    // The model calls it, then answers (pi) or calls it again, then answers (the CLIs): $1.50 or $3 of a $5 cap.
     assert.equal((await api("POST", "/agents", agent(id, { ...(harness === "pi" ? {} : { harness, instructions: ASK }), tools: [SEARCH], tool_settings: ALLOWED }))).status, 201);
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: ASK }, max_cost_usd: 5 });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const runId = started.body.run_id;
     await follow(api, runId, ENDED, { deadlineMs: 60_000 });
     const done = await view(api, runId);
-    assert.deepEqual([done.status, done.error?.message], ["failed", "monid charged $1.50, more than the $1 held; the run stopped"], JSON.stringify(done));
+    const calls = harness === "pi" ? 1 : 2;
+    assert.deepEqual([done.status, done.error], ["completed", null], `a charge the owner's cap can take stops nothing: ${JSON.stringify(done)}`);
+    assert.equal(await monidRuns(log), calls, "the model's next call was made");
+    assert.ok(done.cost.usd >= 1.5 * calls, `booked as charged: ${JSON.stringify(done.cost)}`);
+  });
+}
+
+for (const harness of ["pi", "claude-agent", "codex"]) {
+  test(`${harness}: a paid call monid charges above its hold that takes the run past its cap stops the run at once, in the cap's words`, { timeout: 120_000 }, async (t) => {
+    const log = join(await scratch(t), "monid-calls.jsonl");
+    // Held at its $1 price, inside a $1.20 cap; monid charges $1.50, $0.30 past the cap.
+    withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log, AGENTRUN_TEST_FAUX_MONID_CHARGE: "1.5" });
+    const { api } = await serve(t, { fauxMonid: FAUX_MONID, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
+    const id = `over-cap-${harness}`;
+    assert.equal((await api("POST", "/agents", agent(id, { ...(harness === "pi" ? {} : { harness, instructions: ASK }), tools: [SEARCH], tool_settings: ALLOWED }))).status, 201);
+    const started = await api("POST", `/agents/${id}/runs`, { input: { content: ASK }, max_cost_usd: 1.2 });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const runId = started.body.run_id;
+    await follow(api, runId, ENDED, { deadlineMs: 60_000 });
+    const done = await view(api, runId);
+    assert.deepEqual([done.status, done.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(done));
+    assert.match(done.error?.message ?? "", /over its cap of \$1\.20\.$/, "the cap's words");
     assert.ok(done.cost.usd >= 1.5, `booked as charged: ${JSON.stringify(done.cost)}`);
     assert.equal(await monidRuns(log), 1, "no call after it");
   });

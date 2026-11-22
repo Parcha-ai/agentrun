@@ -4,12 +4,17 @@
 // instructions (learning.ts laidLearned, from the launch's learning start).
 import { chooseWorkflows, type LearnedWorkflow, type Seed, seedAt, type Shown } from "../learning.js";
 import type { LearningStore } from "../learn/store.js";
+import type { Store } from "../store/index.js";
 
-/** What a claim reads its seed with: the commit, the agent's learning store, the server's secrets as cuts (`shown`), its log, and `workflows: false` for a run that
- *  takes none (an SDK run with no workflow binding). */
+/** What a claim reads its seed with: the commit, the agent's learning store, the store whose runs say which are purged
+ *  (a purged run's workflow is no seed's: learning.ts seedAt; null in a run's own process, which reads no other run: its
+ *  lay only tells its runner whether it laid any, and the runner reads the seed again with its store, workflowsAt), the
+ *  server's secrets as cuts (`shown`), its log, and `workflows: false` for a run that takes none (an SDK run with no
+ *  workflow binding). */
 export interface LearningSeedLay {
   readonly seed: string | null;
   readonly learning: LearningStore;
+  readonly store: Pick<Store, "runs"> | null;
   readonly shown: () => Promise<Shown>;
   readonly log: (line: string) => void;
   readonly workflows?: false;
@@ -30,7 +35,7 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
 export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | undefined> {
   let seed: Seed;
   try {
-    seed = await seedAt(lay.learning, lay.seed);
+    seed = await seedAt(lay.learning, lay.seed, lay.store);
   } catch (error) {
     lay.log(`the run starts with no learned workflow: ${message(error)}`);
     return undefined;
@@ -50,7 +55,7 @@ export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | 
  *  (chooseWorkflows): what a champion serves from while a newer revision of it is on main (runner/promotion.ts), and
  *  what a run's process is laid at its claim's seed (run-child-host.ts). Throws when the store cannot answer or the
  *  commit is gone. */
-export async function workflowsAt(read: Pick<LearningSeedLay, "learning" | "shown">, commit: string | null): Promise<LearnedWorkflow[]> {
-  const seed = await seedAt(read.learning, commit);
+export async function workflowsAt(read: Pick<LearningSeedLay, "learning" | "shown"> & { readonly store: Pick<Store, "runs"> }, commit: string | null): Promise<LearnedWorkflow[]> {
+  const seed = await seedAt(read.learning, commit, read.store);
   return chooseWorkflows(seed, await read.shown()).flows;
 }

@@ -363,6 +363,21 @@ test('a hold written by a completed turn with no shadow report: that turn is not
   await revisedAfter(server, 3, 'after');
 });
 
+// A turn that landed before the give-backs keeps its disagreement on the hold, and the revise prompt shows it.
+test('a give-back hold written after a landed turn carries that turn\'s disagreements into its revise prompt', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  const differs = await checkTurn(server, 'differs', '{"ready":false}');
+  for (let at = 1; at <= RELEASES; at++) await giveBack(server, `failed-${at}`);
+  const held = await server.latest(flow.name);
+  assert.deepEqual([held.decided, held.check.n, held.check.turns.n], ['hold', 0, 1], held.reason);
+  assert.deepEqual(held.check.disagreements.map(one => one.run), [differs.run_id], 'the landed turn\'s disagreement is on the hold');
+  const { compilePrompt } = await import('../dist/learn/compile.js');
+  const prompt = compilePrompt({ mode: 'revise', workflow: flow.name, current: '{}', held: { workflow: flow.name, digest: held.digest, reason: held.reason, check: held.check }, reference: '', traces: [], tools: [], judges: false });
+  assert.match(prompt, /Your answer: \{"ready":true\}\nThe draft's answer: \{"ready":false\}/);
+  assert.match(prompt, /1 of your inputs were checked before it was held/);
+  assert.doesNotMatch(prompt, /no disagreements to show/);
+});
+
 test('two give-back holds in a row: neither revise comes before compile_after runs, and the second works as the first', async t => {
   const server = await setup(t, 'eve', true, { compile_after: 3 });
   const first = await heldOnGiveBacks(server, DIGEST, 'first');

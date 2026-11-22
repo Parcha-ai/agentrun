@@ -95,7 +95,8 @@ export interface PromotionDeps {
   readonly context: Context;
   readonly log: (line: string) => void;
   /** The learned workflow `name` as the learning folder held it active at `commit` (a champion's text), or undefined when
-   *  it held none by that name. Absent: no champion serves. */
+   *  it held none by that name, or a purged run wrote it (learning.ts seedAt): a purged champion is no champion's text,
+   *  and the agent takes the run. Absent: no champion serves. */
   readonly champion?: (name: string, commit: string) => Promise<LearnedWorkflow | undefined>;
   /** The digest of the learned workflow `name` the learning folder's main holds now (the newest revision), or undefined
    *  when it holds none by that name. Absent: every revision is the newest. */
@@ -124,10 +125,10 @@ export function claimPromotion(deps: Omit<PromotionDeps, "champion" | "kept"> & 
   return {
     ...deps,
     kept: async () => (deps.runId ? servedOf(await runEntries(deps.store, deps.runId, deps.context).catch(() => [])) : undefined),
-    champion: async (name, commit) => (await workflowsAt({ learning: deps.learning, shown: deps.shown }, commit)).find((one) => one.name === name),
+    champion: async (name, commit) => (await workflowsAt({ learning: deps.learning, store: deps.store, shown: deps.shown }, commit)).find((one) => one.name === name),
     newest: async (name) => {
       const main = (await readSnapshot(deps.learning))?.main;
-      const text = main ? (await workflowsAt({ learning: deps.learning, shown: deps.shown }, main)).find((one) => one.name === name) : undefined;
+      const text = main ? (await workflowsAt({ learning: deps.learning, store: deps.store, shown: deps.shown }, main)).find((one) => one.name === name) : undefined;
       return text ? workflowDigest(text) : undefined;
     },
   };
@@ -819,7 +820,7 @@ export async function releaseSdkCheck(deps: DecideDeps, record: PromotionRecord,
   // A hold, never `stopped`: it asks a compile for a revision (learn/compile.ts heldNamesOf) after compile_after more runs
   // (runner/learning-end.ts compileAskOf), checked afresh.
   if (released >= SDK_CHECK_RELEASES)
-    return holdUnchecked(deps, record.workflow, record.digest, bar, `the connected agent gave back ${plural(released, "reserved native turn")} in a row with no answer to check it against (the last: ${why}). It is not promoted; the agent's next compile after ${plural(bar.compile_after, "more run")} revises it, and the revision is checked afresh`, still, { extra: sdkExtra(record) });
+    return holdUnchecked(deps, record.workflow, record.digest, bar, `the connected agent gave back ${plural(released, "reserved native turn")} in a row with no answer to check it against (the last: ${why}). It is not promoted; the agent's next compile after ${plural(bar.compile_after, "more run")} revises it, and the revision is checked afresh`, still, { check: bar.turns?.disagreements?.length ? { disagreements: bar.turns.disagreements } : {}, extra: sdkExtra(record) });
   const kept = await waitAgain(deps, record, bar, `Waiting for a native turn of the connected agent that it takes: ${why}, so that turn was given back${counted ? ` (${released} of ${SDK_CHECK_RELEASES} in a row before it is held for a recompile)` : ""}. Nothing was promoted.`);
   if (kept.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest} waits for another native turn: ${why}`);
   return kept;
@@ -1042,7 +1043,7 @@ export interface ReplayAsk {
 /** The text of `name` at `digest` and the learning commit it is read from: a commit a record of that digest names (newest
  *  first), else the folder's main. When neither holds it, whether the agent has a workflow by that name at all (`named`:
  *  a record names it, or main holds it). */
-async function revisionOf(ask: Pick<ReplayAsk, "learning" | "shown">, records: readonly PromotionRecord[], name: string, digest: string): Promise<{ workflow: LearnedWorkflow; commit: string } | { named: boolean }> {
+async function revisionOf(ask: Pick<ReplayAsk, "learning" | "store" | "shown">, records: readonly PromotionRecord[], name: string, digest: string): Promise<{ workflow: LearnedWorkflow; commit: string } | { named: boolean }> {
   const main = (await readSnapshot(ask.learning))?.main;
   const named = records.filter((one) => one.workflow === name && one.digest === digest && one.commit).map((one) => one.commit!).reverse();
   let onMain = false;

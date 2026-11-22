@@ -2023,8 +2023,8 @@ its charge unknown, as any cut call's) and given back when monid refused it unru
 which `maxCost` 0 lets through) is the call, settled at its charge. Under a cap, a read that ends with its charge unknown
 (no answer, or `FAILED` with no cost) stops the run at once, "monid may have charged for <name> and did not say how
 much, so this run's cap can't be kept; the run stopped": its $0 hold bounds nothing. Its charge can pass the estimate: then it is booked
-as charged, and the run stops at once, failed, in the words "monid charged $X, more than the $Y held; the run stopped".
-A run's spend cap is a hard stop for everything but that one charge. A mark a crash left unsettled leaves the run's cost unknown, as a
+as charged and logged ("monid charged $X, more than the $Y held"), and the run goes on while its charges fit its cap; one
+that takes them past it stops the run at once in the cap's words ([Spend cap](#spend-cap)). A mark a crash left unsettled leaves the run's cost unknown, as a
 model request a crash cut does, and its cap counts it at its held figure, never $0. A run that may have charged and says
 no cost (`FAILED`, `TIMED_OUT`, one stopped by the run or the wait, one whose sending failed) books an unknown charge,
 never $0: the run's cost reads `null`, and under a cap it counts at its held figure, the bound the cap let it go at, as
@@ -3547,23 +3547,27 @@ stays in every total.
     blocks go back to the filesystem unwiped. Postgres's own WAL and its archived WAL keep the old values until they are
     recycled or expire, and backups keep them for their retention.
 - Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id and the
-  commit it names, moved to the rewritten commit by a purge. A run's purge takes its text out of the learning's whole history, not only its current files: every
-  commit of main is rebuilt, oldest first, without the feedback lines the run's merges added to `corrections.md` and
-  without its merges' reasons (each merge kept, its message `learning: <run>: merged`, empty of its text), each
-  snapshot rebuilt, and one commit by the host on top marks `.agentrun/purged/<run>`, so no round of the run merges
-  again. No byte of the old history is kept: the local folder moves main to the new history, removes every other ref,
-  expires its reflog and prunes; code.storage builds the new history in the agent's next repository generation, moves
-  the agent to it and deletes the old repository (a purge cut short leaves the live repository untouched, and the next
-  one deletes the half-built repository by its exact id first; before moving, it fences the old repository's main, so
-  a run's merge that lands meanwhile is either rebuilt into the new history or refused, never kept in the repository
-  deleted). A purge cut short after moving main is finished by the next `DELETE`, which removes what is left of the old
-  history (or answers `503` while it can't). What it costs: every commit id of the agent's learning changes (each
-  promotion record's commit is moved to the rewritten one, so every champion reads as before); on code.storage it
-  takes about 0.3 s a commit (the local folder is fast), and the agent's learning waits meanwhile; a run of the agent
-  in flight merges nothing, as after a reset; every other run's history and diffs are kept. The log, a workflow's
-  revisions and a champion read by its digest leave out its merges, known by the run the log names for each (its newest
-  200 changes), and a champion whose workflow it changed last is not read at main either. A second `DELETE` finds the
-  purge marked and only finishes removing the old history, if a purge was cut short. It covers the agent's one learning store, local or on code.storage.
+  commit it names, moved to the rewritten commit by a purge. A run's purge takes its text out of the learning's whole
+  history, not only its current files: every commit of main is rebuilt, oldest first, without the feedback lines the
+  run's merges added to `corrections.md` and without its merges' reasons (each merge kept, its message `learning: <run>:
+  merged`, empty of its text), each snapshot rebuilt, and one commit by the host on top marks `.agentrun/purged/<run>`,
+  so no round of the run merges again. No byte of the old history is kept: the local folder moves main to the new
+  history, removes every other ref, expires its reflog and prunes; code.storage builds the new history in the agent's
+  next repository generation, moves the agent to it and deletes the old repository (a purge cut short leaves the live
+  repository untouched, and the next one deletes the half-built repository by its exact id first; before moving, it
+  fences the old repository's main, so a run's merge that lands meanwhile is either rebuilt into the new history or
+  refused, never kept in the repository deleted). A purge cut short after moving main is finished by the next `DELETE`,
+  which removes what is left of the old history (or answers `503` while it can't). What it costs: every commit id of the
+  agent's learning changes (each promotion record's commit is moved to the rewritten one, so every champion reads as
+  before); on code.storage it takes about 0.3 s a commit (the local folder is fast), and the agent's learning waits
+  meanwhile; a run of the agent in flight merges nothing, as after a reset; every other run's history and diffs are
+  kept. The log and a workflow's revisions leave out its merges, known by the run the log names for each (its newest 200
+  changes). A learned workflow whose `workflow.json` the run changed last (by the commits' run trailers over the whole
+  history, past those 200) is refused by every read: its file read is `410 purged`, a champion read by its digest reads
+  no commit, a later merge's diff shows the file as added (never the purged text), an SDK start sent again whose receipt
+  delivered it is `410 purged`, and no run lays or serves it, so the agent takes the run as when no champion serves. A
+  second `DELETE` finds the purge marked and only finishes removing the old history, if a purge was cut short. It covers
+  the agent's one learning store, local or on code.storage.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`. An [API-only](#api-only) server purges a run of
   an agent another system owns alone; a run of an agent made here is its profile's `404` there.
@@ -4366,10 +4370,10 @@ spend limit. A workflow definition keeps one the same way. The cap is checked in
 before each model request, the agent's and a compaction's alike, on every harness: what the run has spent so far, plus
 what each request still in flight is held at, plus the most this request can cost must stay within it, or the
 request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). The cap is a hard stop for everything but
-two charges that can pass what they were held at: a monid call priced by usage, which can pass monid's estimate (when
-it does, the run stops at once, [monid](#monid)), and a fal job, booked at the units its output states, which can pass
-those its input asked for (when that takes the run past its cap, the run stops at once in the cap's words, nothing
-run after it). An MCP tool counts only at the price saved for it (its server's `prices`); one with none is
+two charges that can pass what they were held at: a monid call priced by usage, which can pass monid's estimate
+([monid](#monid)), and a fal job, booked at the units its output states, which can pass those its input asked for. Either
+is booked as charged; when that takes the run past its cap, the run stops at once in the cap's words, nothing run after
+it, and below the cap the run goes on. An MCP tool counts only at the price saved for it (its server's `prices`); one with none is
 not metered and bills its own account outside the cap. fal is counted: a job sent to a fal server (one saved with the
 toolkit `fal`, or at `mcp.fal.ai`) through `run_model`, `submit_job` or `submit_jobs` is priced before it is sent, at
 fal's unit price for its endpoint (the server's own `get_pricing`, read with the run's credential and kept five
