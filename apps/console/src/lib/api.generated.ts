@@ -4488,6 +4488,12 @@ export interface operations {
       }[];
     };
   };
+  listMcpServerNames: {
+    body: never;
+    answer: {
+      names: string[];
+    };
+  };
   listMcpServers: {
     body: never;
     answer: {
