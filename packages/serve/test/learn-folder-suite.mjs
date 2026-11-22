@@ -8,7 +8,7 @@ import { test } from "node:test";
 import {
   blobOid, FolderTooLarge, forgetBodies, commitChange, learningInit, LOG_KEEP, nextSnapshot, readLearning, readSnapshot, runMergeOf, SNAPSHOT_FILE, WRITE_MAX, writeLearning,
 } from "../dist/learn/folder.js";
-import { forgetRunText, learningCommit, purgedContextOut } from "../dist/learn/commit.js";
+import { forgetRunText, learningCommit, purgedContextOut, putCorrections } from "../dist/learn/commit.js";
 import { held, readmeOf, released, restoredLearned, retiredLearned } from "../dist/learn/workflow-draft.js";
 
 const CORRECTIONS = "corrections.md";
@@ -430,7 +430,7 @@ export function folderSuite(backend, make, { skew = 0 } = {}) {
     forgetBodies();
     assert.ok(!JSON.stringify(await readSnapshot(rebuilt(store))).includes(mark), "nor a snapshot rebuilt from main's history");
     await matchesMain(store);
-    const served = JSON.stringify(await purgedContextOut(store, (await runMergeOf(store, "run-kept")).files));
+    const served = JSON.stringify(await purgedContextOut(store, (await runMergeOf(store, "run-kept")).files, goneOnly("run-gone")));
     assert.ok(!served.includes(mark) && served.includes("Answer in words."), served);
 
     // Again (a DELETE sent again): each scrub landed, so nothing is written, though main holds no line of it to find.
@@ -438,4 +438,34 @@ export function folderSuite(backend, make, { skew = 0 } = {}) {
     assert.deepEqual(await forgetRunText(store, "run-gone"), {});
     assert.equal(await store.head(), head);
   });
+
+  test(`${backend}: a purged run whose corrections line a person took off first still lands its scrub's marker (the snapshot keeps no reason of it), and another merge's diff is served without the line as context`, async (t) => {
+    const store = await make(t);
+    const mark = "PURGE-MARK-9c1e";
+    for (const change of [{ runId: "run-gone", reason: `It learned ${mark}.`, correction: `Never say ${mark}.` }, { runId: "run-kept", reason: "It answers in words.", correction: "Answer in words." }]) {
+      const done = await learningCommit(store, { files: [], ...change });
+      assert.equal(done.ok, true, JSON.stringify(done));
+    }
+    const now = await textOn(store, CORRECTIONS);
+    const put = await putCorrections(store, { text: "- Answer in words.\n", ifMatch: blobOid(now) });
+    assert.equal(put.ok, true, JSON.stringify(put));
+
+    const done = await forgetRunText(store, "run-gone");
+    assert.match(done.commit, HEX, "the scrub lands with no line to drop");
+    assert.deepEqual((await onMain(store)).map(({ path }) => path).filter((path) => path.startsWith(".agentrun/purged/")), [".agentrun/purged/run-gone"]);
+    for (const file of await onMain(store)) assert.ok(!text(file.body).includes(mark), `main's ${file.path} keeps no word of the purged run`);
+    const files = (await runMergeOf(store, "run-kept")).files;
+    assert.match(JSON.stringify(files), new RegExp(mark), "the store's diff of the kept merge shows the line as context");
+    const served = JSON.stringify(await purgedContextOut(store, files, goneOnly("run-gone")));
+    assert.ok(!served.includes(mark) && served.includes("Answer in words."), served);
+    assert.match(JSON.stringify(await purgedContextOut(store, files, goneOnly())), new RegExp(mark), "a run not purged keeps its context");
+    const head = await store.head();
+    assert.deepEqual(await forgetRunText(store, "run-gone"), {});
+    assert.equal(await store.head(), head);
+  });
+}
+
+/** A purgedOf naming `purged` among the runs it is asked about. */
+function goneOnly(...purged) {
+  return async (runIds) => new Set(runIds.filter((runId) => purged.includes(runId)));
 }

@@ -618,8 +618,9 @@ export type Committed =
 export async function commitChange(store: LearningStore, base: Snapshot | undefined, change: FolderChange | undefined): Promise<Committed> {
   const seconds = Math.floor(Date.now() / 1000);
   const { snapshot, changed } = nextSnapshot(base, change, seconds);
-  // A change that changes nothing on main is no commit: main stays, and nothing is saved.
-  if (base && change && !changed.length) return { landed: true, main: base.main, snapshot: base };
+  // A change that changes nothing on main is no commit: main stays, and nothing is saved. A purge's scrub always lands
+  // (its marker is the change).
+  if (base && change && !changed.length && change.purged === undefined) return { landed: true, main: base.main, snapshot: base };
   const writes = change?.writes ?? [];
   for (const { path } of writes) checkPath(path);
   for (const path of [...(change?.deletes ?? []), ...(change?.absent ?? []), ...(change?.same ?? []).map(({ path }) => path)]) checkPath(path);

@@ -202,8 +202,9 @@ const SCRUB = "a purged run's corrections removed";
  * its merges added to corrections.md, as the store diffs that merge, dropped from main in one host commit per merge (a
  * line a person edited since is theirs and stays), marked `.agentrun/purged/<key>` (the merge's key, runDiffKey). Its
  * merges stay in the store's history until a learning reset or its agent's purge removes the store; another merge's
- * diff that shows such a line as context is served without it (purgedContextOut). Idempotent: each merge's scrub lands
- * once (a second is the store's `already`), and nothing left to drop makes no commit. A merge is found by its commit on
+ * diff that shows such a line as context is served without it (purgedContextOut). Each merge's scrub lands once (a
+ * second is the store's `already`), its marker landing even when no line is left to drop (a person took it off first):
+ * the commit's snapshot keeps no reason of the run either way. A merge is found by its commit on
  * corrections.md's history whose Run-Id trailer names the run, its key by the marker the commit added. `commit`: the
  * host's last commit, when one was made.
  */
@@ -214,15 +215,13 @@ export async function forgetRunText(store: LearningStore, runId: string): Promis
     // run's same line stays; a merge of the run made since (a purge that stopped before the run's tombstone left it open
     // to a grade) is a key of its own, scrubbed in its turn.
     const done = await writeLearning<string | undefined>(store, async ({ snapshot, body }) => {
-      if (!snapshot?.corrections) return { result: undefined };
-      const before = await body(CORRECTIONS_FILE, snapshot.corrections.oid);
+      const before = snapshot?.corrections ? await body(CORRECTIONS_FILE, snapshot.corrections.oid) : "";
       const after = withoutLines(before, added);
-      if (after === before) return { result: undefined };
-      const write = after ? { writes: [{ path: CORRECTIONS_FILE, text: after }] } : { writes: [], deletes: [CORRECTIONS_FILE] };
-      return { result: snapshot.corrections.oid, change: { by: { host: SCRUB }, purged: key, ...write } };
+      const write = after === before ? { writes: [] } : after ? { writes: [{ path: CORRECTIONS_FILE, text: after }] } : { writes: [], deletes: [CORRECTIONS_FILE] };
+      return { result: after === before ? "" : snapshot!.corrections!.oid, change: { by: { host: SCRUB }, purged: key, ...write } };
     }).catch((error: unknown) => (error instanceof FolderMerged ? { result: undefined, main: undefined } : Promise.reject(error)));
     if (done.result !== undefined) {
-      forgetBody(done.result);
+      if (done.result) forgetBody(done.result);
       commit = done.main;
     }
   }
@@ -248,51 +247,44 @@ async function correctionMerges(store: LearningStore, runId: string): Promise<{ 
 }
 
 const RUNS_DIR = `${HOST_DIR}/runs/`;
-const PURGED_DIR = `${HOST_DIR}/purged/`;
+const TRAILER = "Run-Id: ";
 
-/** The lines each purge's scrub took off corrections.md, by store and scrub commit: a commit's never change. */
-const scrubbed = new Map<string, string[]>();
+/** The lines each run merge added to corrections.md, by store and merge commit: a commit's never change. */
+const mergeLines = new Map<string, string[]>();
 
 /**
- * A merge's diff `files` as a history read serves it: corrections.md's patch with each context line a purge's scrub
- * took off main left out (forgetRunText), so no read serves a purged run's line as another merge's context. The scrubs
- * are the host's commits on corrections.md's history that added a `.agentrun/purged/<key>` marker; a patch with no
- * context line reads none of them.
+ * A merge's diff `files` as a history read serves it: corrections.md's patch with each context line a purged run's
+ * merge added left out, so no read serves a purged run's line as another merge's context, whether its purge's scrub
+ * took the line off main or a person had taken it off first. The purged runs are the ones `purgedOf` names among the
+ * runs corrections.md's history merged (each merge's Run-Id trailer); their lines are what the store diffs each of
+ * those merges as adding. A patch with no context line reads none of it.
  */
-export async function purgedContextOut(store: LearningStore, files: readonly StoreDiffFile[]): Promise<StoreDiffFile[]> {
+export async function purgedContextOut(store: LearningStore, files: readonly StoreDiffFile[], purgedOf: (runIds: readonly string[]) => Promise<ReadonlySet<string>>): Promise<StoreDiffFile[]> {
   if (!files.some((file) => file.path === CORRECTIONS_FILE && "patch" in file && /^ /m.test(file.patch))) return [...files];
   const main = await store.head();
   if (!main) return [...files];
+  const merges = ((await store.log(main, { path: CORRECTIONS_FILE })) ?? []).flatMap(({ sha, message }) => {
+    const runId = message.split("\n").findLast((line) => line.startsWith(TRAILER))?.slice(TRAILER.length);
+    return runId ? [{ sha, runId }] : [];
+  });
+  const purged = merges.length ? await purgedOf([...new Set(merges.map(({ runId }) => runId))]) : new Set<string>();
   const gone = new Set<string>();
-  for (const { sha, message } of (await store.log(main, { path: CORRECTIONS_FILE })) ?? []) {
-    if (message.split("\n")[0] !== `host: ${SCRUB}`) continue;
+  for (const { sha, runId } of merges) {
+    if (!purged.has(runId)) continue;
     const at = `${store.id}\0${sha}`;
-    let lines = scrubbed.get(at);
+    let lines = mergeLines.get(at);
     if (!lines) {
-      const diff = (await store.diff(sha)) ?? [];
-      lines = diff.some(({ path, status }) => status === "added" && path.startsWith(PURGED_DIR)) ? diff.flatMap((file) => (file.path === CORRECTIONS_FILE && "patch" in file ? takenLines(file.patch) : [])) : [];
-      scrubbed.set(at, lines);
-      for (const old of scrubbed.keys()) {
-        if (scrubbed.size <= 256) break;
-        scrubbed.delete(old);
+      lines = ((await store.diff(sha)) ?? []).flatMap((file) => (file.path === CORRECTIONS_FILE && "patch" in file ? addedLines(file.patch) : []));
+      mergeLines.set(at, lines);
+      for (const old of mergeLines.keys()) {
+        if (mergeLines.size <= 256) break;
+        mergeLines.delete(old);
       }
     }
     for (const line of lines) gone.add(line);
   }
   if (!gone.size) return [...files];
   return files.map((file) => (file.path === CORRECTIONS_FILE && "patch" in file ? { ...file, patch: withoutContext(file.patch, gone) } : file));
-}
-
-/** The lines a patch (git's hunks) takes away and does not add back: what a scrub removed. */
-function takenLines(patch: string): string[] {
-  const lines = patch.split("\n");
-  const added = new Map<string, number>();
-  for (const line of lines) if (line.startsWith("+")) added.set(line.slice(1), (added.get(line.slice(1)) ?? 0) + 1);
-  return lines.filter((line) => line.startsWith("-")).map((line) => line.slice(1)).filter((line) => {
-    const left = added.get(line) ?? 0;
-    if (left) added.set(line, left - 1);
-    return !left && line.trim() !== "";
-  });
 }
 
 /** The lines a patch (git's hunks) adds and does not take away: what a merge appended. */
