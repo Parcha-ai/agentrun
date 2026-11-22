@@ -29,7 +29,8 @@ test("an entry that is not an exact origin is refused in words naming the variab
   for (const value of [
     "https://tools.example/mcp", "https://tools.example/", "https://tools.example?x=1", "https://tools.example#top",
     "https://user@tools.example", "https://*.tools.example", "*", "tools.example", "ftp://tools.example",
-    "http://tools.example", "http://127.0.0.1", "http://localhost:4001", "http://10.0.0.1:4001",
+    "http://tools.example", "http://127.0.0.1", "http://localhost:4001",
+    "http://10.0.0.1:4001", // key-gate: denylist a private-range entry the parser must refuse
     "https://tools.example,,https://edge.example", "https://tools.example,", "http://127.0.0.1:4001,http://127.0.0.1:4002",
   ]) {
     assert.throws(() => at(value, true), (error) => error instanceof TypeError && error.message.includes("AGENTRUN_MCP_TOKEN_ORIGINS"), value);

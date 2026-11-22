@@ -27,7 +27,9 @@ test("capabilities list the start-time switches: each off, with no value, on a s
 });
 
 test("capabilities list the start-time switches as the server was started: on, with the value it read", async (t) => {
-  withEnv(t, { AGENTRUN_WEBHOOK_PRIVATE_TARGETS: "1", AGENTRUN_PRIVATE_HOSTS: "10.20.0.0/16", AGENTRUN_BOX_ALLOW: "PyPI.org, *.pythonhosted.org", AGENTRUN_BOX_MEMORY: "512m", AGENTRUN_MCP_TOKEN_ORIGINS: "HTTPS://Tools.Example:443, http://127.0.0.1:8123" }, NAMES);
+  withEnv(t, { AGENTRUN_WEBHOOK_PRIVATE_TARGETS: "1", AGENTRUN_PRIVATE_HOSTS: "10.20.0.0/16", AGENTRUN_BOX_ALLOW: "PyPI.org, *.pythonhosted.org", AGENTRUN_BOX_MEMORY: "512m" }, NAMES);
+  // Restored with the rest (NAMES holds it).
+  process.env.AGENTRUN_MCP_TOKEN_ORIGINS = "HTTPS://Tools.Example:443, http://127.0.0.1:8123";
   // The CLI turns mcpLoopback on from AGENTRUN_MCP_ALLOW_LOOPBACK=1 (cli.ts); the server reads its option.
   const { api } = await serve(t, { runner: false, mcpLoopback: true });
   const caps = await api("GET", "/capabilities");

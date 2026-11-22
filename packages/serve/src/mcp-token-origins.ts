@@ -1,6 +1,6 @@
 // The origins an API-only server's token may save an MCP server at (AGENTRUN_MCP_TOKEN_ORIGINS), as its operator lists
-// them: a comma-separated list of exact origins, each https://host[:port], or one loopback origin http://127.0.0.1:<port>
-// (or http://[::1]:<port>) with its port. A loopback entry counts only where AGENTRUN_MCP_ALLOW_LOOPBACK is on. An entry
+// them: a comma-separated list of exact origins, each https://host[:port], or one loopback http origin with its port
+// (SHAPE below spells each form). A loopback entry counts only where AGENTRUN_MCP_ALLOW_LOOPBACK is on. An entry
 // that is not one of these is refused in words at the start (a TypeError), never skipped. Unset, none: the token's save of
 // a server at an address is refused. The token saves a per_run server alone there (server.ts saveMcpServer), which keeps
 // no credential; each claim of a server it saved checks its origin again against the runner's own list (runner/mcp-claim.ts),
