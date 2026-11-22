@@ -726,7 +726,7 @@ test("a recipe's keys and sign-in are checked: keys handed under the name the ag
   const both = (over = {}, signIn = SIGN_IN) => recipeOf(undefined, { model: plan, keys: [KEY], keyMethod: "model-agent-api-key", signIn, ...over });
   const parsed = parseRecipe(JSON.stringify(both()));
   assert.deepEqual(parsed.keys, ["MODEL_AGENT_GEMINI_API_KEY"]);
-  assert.deepEqual(parsed.keyEnv, { MODEL_AGENT_GEMINI_API_KEY: "GEMINI_API_KEY" });
+  assert.deepEqual(parsed.keyEnv, { [KEY.name]: KEY.env });
   assert.equal(parsed.keyMethod, "model-agent-api-key");
   assert.deepEqual(parsed.signIn, SIGN_IN);
   assert.equal(parseRecipe(JSON.stringify(recipeOf(undefined, { model: plan, signIn: SIGN_IN }))).keys.length, 0, "a sign-in alone loads (harness-check refuses it)");
