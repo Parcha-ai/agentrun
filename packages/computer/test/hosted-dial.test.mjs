@@ -341,10 +341,12 @@ test("a machine that never dials is deleted, its token revoked, and create fails
 });
 
 test("a machine that never dials: the timeout carries the host's dialLog, its last 10 lines within 800 characters, or that agentrun-dial never started; a dialLog that fails, or none, keeps the message", async () => {
-	const DIALED = "did not dial ws://127.0.0.1:8080/v2/computers/attach within 1 s: the machine must reach that address";
+	const DIALED = "did not dial ws://127.0.0.1:8080/v2/computers/attach within 0.05 s: the machine must reach that address";
 	const SAID = "; agentrun-dial said: ";
+	// A fake that never dials: create gives up at createMs, so these wait 50 ms each.
+	const QUICK = { timeouts: { ...TIMEOUTS, createMs: 50 } };
 	const lines = Array.from({ length: 15 }, (_, at) => `line ${at + 1}`);
-	const said = setup({ dials: false });
+	const said = setup({ dials: false }, QUICK);
 	const asked = [];
 	said.fake.host.dialLog = async (id) => {
 		asked.push(id);
@@ -358,35 +360,33 @@ test("a machine that never dials: the timeout carries the host's dialLog, its la
 	assert.equal(typeof asked[0], "string");
 	assert.deepEqual(said.fake.live(), [], "the machine was deleted");
 
-	const long = setup({ dials: false });
+	const long = setup({ dials: false }, QUICK);
 	long.fake.host.dialLog = async () => `start\n${"x".repeat(2_000)}y\n`;
 	const cut = await create(long.provider);
 	const tail = cut.error.message.slice(cut.error.message.indexOf(SAID) + SAID.length);
 	assert.equal(tail.length, 800, "the last 800 characters");
 	assert.ok(tail.endsWith("xy"));
 
-	const never = setup({ dials: false });
+	const never = setup({ dials: false }, QUICK);
 	never.fake.host.dialLog = async () => undefined;
 	const silent = await create(never.provider);
 	assert.equal(silent.error?.code, "timeout");
 	assert.ok(silent.error.message.endsWith("; agentrun-dial never started"), silent.error.message);
 
-	// A cancel while the log read stalls ends the wait at once: the read never holds create's cleanup back.
-	const stalled = setup({ dials: false });
+	// A cancel while the log read stalls ends the wait at once: the read never holds create's cleanup back. The read's
+	// bound is ten minutes, so a cancel that failed to cut it would hang into the test's own bound.
+	const stalled = setup({ dials: false }, { timeouts: { ...QUICK.timeouts, requestMs: 600_000 } });
 	const cancel = new AbortController();
-	let askedAt;
 	stalled.fake.host.dialLog = () => {
-		askedAt = Date.now();
-		setTimeout(() => cancel.abort(), 20);
+		queueMicrotask(() => cancel.abort());
 		return new Promise(() => {});
 	};
 	const cancelled = await stalled.provider.create(SPEC, { requestId: `dial-${++requests}`, signal: cancel.signal });
 	assert.equal(cancelled.ok, false);
-	assert.ok(Date.now() - askedAt < TIMEOUTS.requestMs, `create ended ${Date.now() - askedAt} ms after the read began, within requestMs`);
 	assert.doesNotMatch(cancelled.error.message, /agentrun-dial said|never started/);
 
 	for (const dialLog of [async () => Promise.reject(new Error("the toolbox is down")), undefined]) {
-		const plain = setup({ dials: false });
+		const plain = setup({ dials: false }, QUICK);
 		if (dialLog) plain.fake.host.dialLog = dialLog;
 		const kept = await create(plain.provider);
 		assert.equal(kept.error?.code, "timeout", "a log read that fails never changes the code");
