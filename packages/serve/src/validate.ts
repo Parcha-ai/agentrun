@@ -7,7 +7,7 @@ import { placeIssues } from "./place.js";
 import { computerIssues, settingConflict } from "./computer-setting.js";
 import { settingsIssues } from "./tool-plane.js";
 import { APPROVALS } from "./approvals.js";
-import { schemaCheck } from "./answer-json.js";
+import { carriedProblem, schemaCheck, X_CARRIED } from "./answer-json.js";
 import { learningSettingIssue } from "./learning-setting.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -24,7 +24,7 @@ export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "input_schema", "output_schema", "checkout", "native", "sdk"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "max_requests", "input_schema", "output_schema", "checkout", "native", "sdk", "cli_learning"];
 /** What an agentic definition may ask the server to check out in each run's folder before its first turn
  *  (runner/pr-checkout.ts): `pull_request`, the pull request the run's GitHub event names, at its head, read-only, in
  *  `repo/`; `none` clears it on an edit. */
@@ -123,6 +123,9 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
     else {
       const compiled = schemaCheck(d.output_schema);
       if ("why" in compiled) out.push(issue(`${at}.output_schema`, "bad_format", `${at}.output_schema ${compiled.why}`));
+      // The fields a trigger's next run is handed when the whole answer is too large (answer-json.ts X_CARRIED).
+      const carried = carriedProblem(d.output_schema);
+      if (carried) out.push(issue(`${at}.output_schema.${X_CARRIED}`, "bad_format", `${at}.output_schema.${X_CARRIED} ${carried}`, `Make ${X_CARRIED} a list of unique names from ${at}.output_schema.properties, or remove it.`));
     }
   }
   // An agentic revision's typed input: the JSON Schema each run's input meets (inputSchemaOf, the schema in force). A
@@ -147,6 +150,9 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.max_cost_usd !== undefined) {
     if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd >= 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number of at least 0, in US dollars: above 0 sets the agent's default cap, 0 clears it`));
   }
+  // The agent's own limit on each run's requests on free models, under the server's (AGENTRUN_FREE_MODEL_REQUESTS, which
+  // wins when lower): above 0 sets it, 0 clears it, and an edit that leaves it out keeps the agent's (agents-store.ts).
+  if (d.max_requests !== undefined && !(typeof d.max_requests === "number" && Number.isSafeInteger(d.max_requests) && d.max_requests >= 0)) out.push(issue(`${at}.max_requests`, "wrong_type", `${at}.max_requests is a whole number of at least 0: above 0 sets the most requests on free models each run makes (the server's own limit holds when it is lower), 0 clears it`));
   // The server's checkout before each run's first turn: kept by an edit that leaves it out, cleared by `none`.
   if (d.checkout !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.checkout`, "not_allowed", "A workflow revision keeps no checkout: only an agentic run starts in a checkout.", `Remove ${at}.checkout.`));
@@ -216,17 +222,20 @@ export function inputSchemaIssues(schema: unknown, at = "definition.input_schema
 
 /**
  * The input schema in force for an agentic revision whose definition has `schema` (none: DEFAULT_INPUT_SCHEMA). `content`
- * is always taken, as text: a run's message, which a follow-up and a trigger's line add to. It stays required when the
- * schema requires nothing else, as an agent with no schema requires it.
+ * is always taken, as text: a run's message, which a follow-up and a trigger's line add to. It is required when the
+ * schema has no field of its own, as an agent with no schema requires it. A schema whose own fields are all optional
+ * (a template's `pr_number`, given by hand and left out of a trigger's runs) leaves `required` empty: a run gives
+ * content or one of those fields, which inputIssues checks, so an input that says nothing is still refused.
  */
 export function inputSchemaOf(schema: unknown): Json {
   if (!isObject(schema)) return DEFAULT_INPUT_SCHEMA;
   const properties = isObject(schema.properties) ? schema.properties : {};
   const required = Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === "string") : [];
+  const ownOptional = required.length === 0 && Object.keys(properties).some((key) => key !== "content");
   return {
     ...schema,
     properties: { ...properties, content: properties.content ?? { type: "string" } },
-    required: required.some((key) => key !== "content") ? required : [...new Set([...required, "content"])],
+    required: required.some((key) => key !== "content") || ownOptional ? required : [...new Set([...required, "content"])],
   };
 }
 
@@ -262,6 +271,13 @@ export function inputIssues(input: Json, schema: Json, at = "input"): InputIssue
     // A required text sent empty is one left blank (a form sends it so): said as a missing one is, never as its length.
     else if (error.keyword === "minLength" && emptyRequired(input, schema, error.instancePath, error.schemaPath)) add(where, "missing", `${where} is required`);
     else add(where, KEYWORD_REASON[error.keyword] ?? "invalid", `${where} ${error.message}`);
+  }
+  // A schema in force that requires nothing (inputSchemaOf: its own fields all optional) takes content or one of them:
+  // an input naming none says nothing, said at content, with the fields that would do instead.
+  const named = isObject(schema.properties) ? Object.keys(schema.properties) : [];
+  if (Array.isArray(schema.required) && schema.required.length === 0 && isObject(input) && !named.some((key) => input[key] !== undefined)) {
+    const instead = named.filter((key) => key !== "content").map((key) => `${at}.${key}`);
+    add(`${at}.content`, "missing", `${at}.content is required${instead.length ? `, or one of ${instead.join(", ")}` : ""}`);
   }
   return out;
 }

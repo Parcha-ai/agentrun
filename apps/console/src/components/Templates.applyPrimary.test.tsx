@@ -27,7 +27,7 @@ const inbox: TemplateView = { ...base, id: "inbox/assistant", name: "inbox/assis
 const NONE: EmailAccount = { configured: false, preset: null, address: null } as EmailAccount;
 const SAVED: EmailAccount = { configured: true, preset: "gmail", address: "me@example.com" } as EmailAccount;
 
-const applyTemplate = vi.fn(async () => ({ agent_id: "made-1", trigger_ids: [], warnings: [] }));
+const applyTemplate = vi.fn(async () => ({ agent_id: "made-1", triggers: [], warnings: [] }));
 const go = vi.fn();
 const client = (templates: TemplateView[], emailAccount: () => Promise<EmailAccount> = async () => NONE) =>
   ({ listTemplates: async () => ({ templates }), listMcpServers: async () => ({ servers: [] }), applyTemplate, emailAccount: vi.fn(emailAccount) });

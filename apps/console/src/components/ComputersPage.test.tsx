@@ -28,10 +28,10 @@ const CHANGED = "2026-11-09T01:00:00.000Z";
 const METERED = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
 /** A provider's secret as served: its full name "computer:<provider>:<KEY>". */
 const secret = (provider: string, key: string, set: boolean, source: ComputerSecret["source"] = set ? "console" : null): ComputerSecret => ({ name: `computer:${provider}:${key}`, set, source, changed_at: source === "console" ? CHANGED : null });
-/** Where a choice's runs have their shell, as the server serves it: a computer that mounts the run's folder gives every
- *  host tool; one that doesn't, the file tools only. */
-const MOUNTS = { shell: "computer" as const, host_tools: ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"] };
-const NO_SHELL = { shell: "none" as const, host_tools: ["read", "write", "edit"], shell_note: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands." };
+/** Where a choice's runs have their shell and their folder, as a Mode 1 server serves it: a computer that binds the run's
+ *  folder gives every host tool; one that holds none, the file tools only. */
+const MOUNTS = { folder: "bind" as const, shell: "computer" as const, host_tools: ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"] };
+const NO_SHELL = { folder: null, shell: "none" as const, host_tools: ["read", "write", "edit"], shell_note: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands." };
 const docker: ComputerProvider = { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, runs_refused: null, ...MOUNTS };
 const e2b = (saved = false): ComputerProvider => ({ id: "e2b", name: "E2B", metered: true, secrets: [secret("e2b", "E2B_API_KEY", saved)], required: ["computer:e2b:E2B_API_KEY"], ready: saved, ...(saved ? {} : { why: E2B_WHY }), runs_refused: null, ...NO_SHELL });
 const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, secrets: [secret("orgo", "ORGO_API_KEY", true)], required: ["computer:orgo:ORGO_API_KEY"], ready: true, runs_refused: null, ...NO_SHELL };
@@ -46,7 +46,7 @@ const DESK: PairedComputer = {
   driver: "0.2.0", online: true, held_by_run: null, held_until: null, pairing: "pairing-mine", created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
 };
 const DESK_PROVIDER: ComputerProvider = { id: "cmp-abc", name: "desk-1 (windows)", metered: false, secrets: [], required: [], ready: true, runs_refused: null, ...NO_SHELL };
-const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], settings: [], providers, ...extra });
+const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], settings: [], record: { available: true }, providers, ...extra });
 const view = (saved = false): Computers => ({
   paired: [],
   kinds: [

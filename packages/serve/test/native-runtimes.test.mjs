@@ -7,6 +7,8 @@ test("native CLI facts keep the public connection identities and supported selec
   assert.deepEqual(NATIVE_MINIMUM_VERSION, { "claude-code": "2.1.322", codex: "0.167.2" });
   assert.deepEqual(NATIVE_RUNTIMES.map(id => [NATIVE_RUNTIME_FACTS[id].binary, NATIVE_RUNTIME_FACTS[id].namedSelector]),
     [["claude", "agent"], ["codex", "profile"]]);
+  assert.deepEqual(NATIVE_RUNTIMES.map(id => NATIVE_RUNTIME_FACTS[id].captureRuntime),
+    ["claude-code-cli", "codex-cli"], "captured prompt windows keep their source runtime separate from managed harnesses and SDKs");
   for (const id of NATIVE_RUNTIMES) {
     assert.equal(isNativeRuntime(id), true);
     assert.equal(Object.isFrozen(NATIVE_RUNTIME_FACTS[id]), true);

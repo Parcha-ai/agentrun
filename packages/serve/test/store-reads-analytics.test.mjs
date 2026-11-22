@@ -26,17 +26,17 @@ test("totals, time and tools over a run's row metrics, with a pending run counte
 
   const a = await analytics(store, { pending: { r4: "completed" } });
   assert.deepEqual(a.totals, {
-    runs: 4, completed: 2, needsReview: 0, failed: 1, runsWithMetrics: 1, tokens: 135, costUsd: 1, unknownCostRuns: 2,
+    runs: 4, completed: 2, needsReview: 0, failed: 1, runsWithMetrics: 1, runsWithTokenMetrics: 1, tokens: 135, costUsd: 1, unknownCostRuns: 2,
     input: 100, cacheRead: 10, cacheWrite: 5, output: 20, requests: 3, unmetered: 1,
   });
   assert.deepEqual(a.time, { endedRuns: 2, wallMs: 6000, activeRuns: 1, activeMs: 2000 });
   assert.deepEqual(a.tools, [{ tool: "read", calls: 4, errors: 1 }, { tool: "write", calls: 2, errors: 0 }]);
   assert.deepEqual(a.byHarnessEffort, [
-    { harness: "pi", effort: null, runs: 2, completed: 0, needsReview: 0, failed: 1, runsWithMetrics: 0, tokens: 0, costUsd: null, unknownCostRuns: 2 },
-    { harness: "pi", effort: "high", runs: 1, completed: 1, needsReview: 0, failed: 0, runsWithMetrics: 1, tokens: 135, costUsd: 1, unknownCostRuns: 0 },
+    { harness: "pi", effort: null, runs: 2, completed: 0, needsReview: 0, failed: 1, runsWithMetrics: 0, runsWithTokenMetrics: 0, tokens: null, costUsd: null, unknownCostRuns: 2 },
+    { harness: "pi", effort: "high", runs: 1, completed: 1, needsReview: 0, failed: 0, runsWithMetrics: 1, runsWithTokenMetrics: 1, tokens: 135, costUsd: 1, unknownCostRuns: 0 },
   ]);
-  assert.deepEqual(a.byDay, [{ day: "2026-11-08", runs: 3, completed: 1, needsReview: 0, failed: 1, runsWithMetrics: 1, tokens: 135, costUsd: 1, unknownCostRuns: 2 }]);
-  assert.deepEqual(a.bySource, [{ source: "live", runs: 3, completed: 1, needsReview: 0, failed: 1, runsWithMetrics: 1, tokens: 135, costUsd: 1, unknownCostRuns: 2 }]);
+  assert.deepEqual(a.byDay, [{ day: "2026-11-08", runs: 3, completed: 1, needsReview: 0, failed: 1, runsWithMetrics: 1, runsWithTokenMetrics: 1, tokens: 135, costUsd: 1, unknownCostRuns: 2 }]);
+  assert.deepEqual(a.bySource, [{ source: "live", runs: 3, completed: 1, needsReview: 0, failed: 1, runsWithMetrics: 1, runsWithTokenMetrics: 1, tokens: 135, costUsd: 1, unknownCostRuns: 2 }]);
 });
 
 test("by harness and effort across agents, an escalation counted as completed and needs_review, archived left out", async (t) => {
@@ -68,4 +68,63 @@ test("by harness and effort across agents, an escalation counted as completed an
   // from/to selects by the day a run started, and agent narrows to one.
   assert.deepEqual((await analytics(store, { from: "2026-11-09T05:00:00Z", to: "2026-11-10T05:00:00Z" })).byDay.map((d) => d.day), ["2026-11-09"], "only the middle day's run");
   assert.deepEqual((await analytics(store, { agent: "a-wf" })).totals.runs, 1, "only a-wf's run");
+});
+
+test("CLI prompt windows retain their native capture groups beside SDK and managed runs", async t => {
+  const { store } = await storeOn(t);
+  const definitions = [
+    ["captured-codex", { cli_learning: { runtime: "codex", connection_id: "codex-connection", project: "/fixture/project" } }],
+    ["captured-claude", { cli_learning: { runtime: "claude-code", connection_id: "claude-connection", project: "/fixture/project" } }],
+    ["external-sdk", { sdk: { runtime: "codex-sdk" } }],
+    ["managed", { harness: "codex" }],
+  ];
+  for (const [id, body] of definitions) {
+    await store.agents.create({ id, name: id }, { id: `rev-${id}`, kind: "agentic", body: { instructions: "x", ...body } });
+    await store.runs.create({ id: `run-${id}`, agentId: id, revisionId: `rev-${id}` });
+    await end(store, `run-${id}`, { state: "ended", outcome: "completed", metrics: metrics(), endedAt: T0 + 1000 });
+  }
+  const result = await analytics(store);
+  assert.deepEqual(result.byHarnessEffort.map(group => [group.harness, group.runs, group.tokens]), [
+    ["claude-code-cli", 1, 135], ["codex", 1, 135], ["codex-cli", 1, 135], ["codex-sdk", 1, 135],
+  ]);
+});
+
+test("token totals keep measured runs visible beside unknown CLI usage, with coverage in every group", async (t) => {
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "A" }, { id: "rev-1", kind: "agentic", body: { instructions: "x" } });
+  for (const id of ["known", "unknown", "active"]) await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" });
+  await end(store, "known", { state: "ended", outcome: "completed", metrics: metrics(), endedAt: T0 + 5000 });
+  await end(store, "unknown", { state: "ended", outcome: "completed", metrics: metrics({ input: null, cacheRead: null, cacheWrite: null, output: null, requests: null, unmetered: null }), endedAt: T0 + 1000 });
+  const a = await analytics(store);
+  assert.equal(a.totals.tokens, 135, "a run without usage cannot hide another run's measured 135 tokens");
+  assert.equal(a.totals.runsWithMetrics, 2, "metrics objects can exist without token counters");
+  assert.equal(a.totals.runsWithTokenMetrics, 1, "only one run supplies the complete token total");
+  for (const group of [...a.byDay, ...a.bySource, ...a.byHarnessEffort.filter(g => g.effort === "high")]) {
+    assert.equal(group.tokens, 135);
+    assert.equal(group.runsWithTokenMetrics, 1);
+  }
+  assert.equal(a.totals.output, null, "individual counter totals retain their unknown coverage");
+  assert.equal(a.totals.requests, null, "a token count does not invent a request count");
+});
+
+test("unknown token metrics, absent metrics and known zero remain distinct", async (t) => {
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "A" }, { id: "rev-1", kind: "agentic", body: { instructions: "x" } });
+  assert.equal((await analytics(store)).totals.tokens, 0, "an empty range has zero tokens");
+  for (const [id, m] of [
+    ["unknown", { input: null, output: null, cacheRead: null, cacheWrite: null }],
+    ["absent", {}],
+    ["partial", { input: 7, output: 3, cacheRead: null, cacheWrite: null }],
+  ]) {
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" });
+    await end(store, id, { state: "ended", outcome: "completed", metrics: m, endedAt: T0 + 1 });
+    const a = await analytics(store);
+    assert.equal(a.totals.tokens, null, "no complete token count is unknown, never a fabricated zero");
+    assert.equal(a.totals.runsWithTokenMetrics, 0);
+  }
+  await store.runs.create({ id: "zero", agentId: "agent-1", revisionId: "rev-1" });
+  await end(store, "zero", { state: "ended", outcome: "completed", metrics: metrics({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }), endedAt: T0 + 1 });
+  const a = await analytics(store);
+  assert.equal(a.totals.tokens, 0);
+  assert.equal(a.totals.runsWithTokenMetrics, 1, "reported zeros count as measured");
 });

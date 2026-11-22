@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.49 (2026-11-20)
+
+- `GET /v2/runs/{run_id}/usage` (`runusage/1`) says what one run cost, line by line, and whose invoice each part lands on: `tokens` per model (`model`, and `provider` where the server sent the requests itself; null behind a gateway), `tools` per charger (`charged_by`, with calls of unpriced tools in `not_metered_calls`), and `browser_time` per browser provider (`provider`, seconds). Each line has its quantity as measured, its dollars as the run's booking holds them, and its basis (`reported`, `estimate`, `unpriced`). It reads the same for a pi run, a CLI-harness run and a workflow run (its decisions on the model that answered them). The lines join to `total`, the run's `cost.usd`; a charge of unknown cost is null with what is known beside it, never $0. `ended_at` is the end the lines cover: a follow-up can reopen an ended run, and a later read with another `ended_at` says it moved. The console's Dev tools tab shows the lines as "Cost by line". In the kernel, a paid request may say `reported` (it settles at the provider's own figure), written on its `runner.request`. <!-- changes/run-usage-lines.md -->
+
+## 0.1.0-beta.47 (2026-11-19)
+
+- A pi run's model requests that answer at about the same time are each priced at their own cost. When one turn started several `subagent` calls, the child whose answer asked first was given every child's booking and the others $0, so the run page's Timeline and Dev tools tab and `GET /v2/runs/{id}/trace` showed one request at the sum (three requests of the same tokens at $0.02163, $0.01266 and $0.04326, say) and others at $0. Each answer now reads the bookings of its own conversation's requests. The run's cost was right throughout and does not change; a run already recorded keeps the per-request figures it was written with. <!-- changes/parallel-request-costs.md -->
+  The session's model proxy takes a new request header, `x-agentrun-conversation` (`CONVERSATION_HEADER`, exported from `@parcha/agentrun-kernel/host`): a client may name the conversation a request is asked in, an id-shaped label of its own. The proxy tells the host with the request (`ProxyRequest.conversation`, `ModelRequest.conversation`) and never sends the header to the provider. A request that names none is asked as before.
+
 ## 0.1.0-beta.45 (2026-11-18)
 
 - Goose 1.59.2 runs as an AgentRun harness on the ACP adapter: `gooseAdapter({ binary, model, provider, price })` checks the binary's sha256 against its pin, starts `goose acp` from the shipped recipe (`recipes/goose.json`, loaded by `recipeFile` and `gooseRecipe`), and points each Goose process at a model proxy of its own (`gooseProxy`) on the session's booking, so the run's cap and books hold as they do for Claude Code. <!-- changes/acp-goose-harness.md -->

@@ -36,7 +36,7 @@ Route: `POST /agents`.
 
 ### `agentrun agents delete-agent AGENT_ID`
 
-Delete an agent another system owns.
+Delete an agent another system owns, or purge an archived agent made here.
 
 Route: `DELETE /agents/{agent_id}`.
 
@@ -149,6 +149,93 @@ Route: `PUT /agents/{agent_id}/definition`.
 Check native CLI and sign-in without a paid model call.
 
 Route: `POST /agents/{agent_id}/native/verify`.
+
+## capabilities
+
+### `agentrun capabilities get-capacity`
+
+The runs waiting and held, the live runners and the recent hand-backs.
+
+Route: `GET /capacity`.
+
+- `--window INTEGER` (integer): The hand-back window in minutes, from 1 to 1440. Default 15.
+
+## cli-learning
+
+### `agentrun cli-learning complete RUN_ID`
+
+Close an existing CLI prompt window exactly once.
+
+Route: `POST /cli-learning/runs/{run_id}/complete`.
+
+- `--idempotency-key STRING` (string)
+- `--status completed|failed|cancelled` (string, one of these, required)
+- `--answer STRING` (string, required)
+- `--error STRING` (string)
+- `--model STRING` (string)
+- `--session-id STRING` (string)
+- `--evidence-complete` (boolean)
+- `--seed-observed` (boolean)
+- `--seed-revision STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun cli-learning enroll`
+
+Enable learning for an existing local CLI without launching it.
+
+Route: `POST /cli-learning/connections`.
+
+- `--runtime codex|claude-code` (string, one of these, required)
+- `--project STRING` (string, required)
+- `--name STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun cli-learning events RUN_ID`
+
+Upload bounded role-preserving CLI dialogue and tool evidence.
+
+Route: `POST /cli-learning/runs/{run_id}/events`.
+
+- `--idempotency-key STRING` (string)
+- `--sequence INTEGER` (integer, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun cli-learning get RUN_ID`
+
+Read CLI prompt-window learning progress.
+
+Route: `GET /cli-learning/runs/{run_id}`.
+
+### `agentrun cli-learning list`
+
+Read enrolled CLI learning connections.
+
+Route: `GET /cli-learning/connections`.
+
+### `agentrun cli-learning revoke CONNECTION_ID`
+
+Revoke CLI capture and guidance delivery, retaining history and learned files.
+
+Route: `DELETE /cli-learning/connections/{connection_id}`.
+
+### `agentrun cli-learning start CONNECTION_ID`
+
+Register one prompt window from an existing CLI session.
+
+Route: `POST /cli-learning/connections/{connection_id}/runs`.
+
+- `--idempotency-key STRING` (string, required)
+- `--session-id STRING` (string, required)
+- `--turn-id STRING` (string, required)
+- `--input STRING` (string, required)
+- `--instructions STRING` (string, required)
+- `--policy-complete` (boolean, required)
+- `--model STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ## connectors
 
@@ -301,11 +388,11 @@ Route: `PUT /files/{file_id}`.
 
 ### `agentrun harness install HARNESS`
 
-Install a harness AgentRun runs only once its owner installs it (goose, or a recipe file's), then restart AgentRun.
+Install a harness AgentRun runs only once its owner installs it (goose, cursor, or a recipe file's), then restart AgentRun.
 
 Route: none, it runs on this machine.
 
-- `--recipe FILE` (string, this CLI's own): in place of HARNESS: a recipe file (docs/harness-recipe.md), checked against its five rules before anything is downloaded
+- `--recipe FILE` (string, this CLI's own): in place of HARNESS: a recipe file (HARNESS.md#a-recipe), checked against its five rules before anything is downloaded
 - `--data DIR` (string, this CLI's own): the data directory of the AgentRun it is for (default ~/.agentrun, where npx @parcha/agentrun keeps it)
 
 ## harness-check
@@ -316,7 +403,7 @@ Run a recipe's installed agent for real and check it (tools off, env allowlist, 
 
 Route: none, it runs on this machine.
 
-- `--recipe FILE` (string, this CLI's own): the recipe file (docs/harness-recipe.md); its agent installed first with agentrun harness install --recipe FILE
+- `--recipe FILE` (string, this CLI's own): the recipe file (HARNESS.md#a-recipe); its agent installed first with agentrun harness install --recipe FILE
 - `--model PROVIDER/MODEL` (string, this CLI's own): the run's model, for a recipe billed through the proxy (openrouter/anthropic/claude-haiku-4.5, anthropic/claude-haiku-4-5)
 - `--report FILE` (string, this CLI's own): where the JSON report goes (default ./harness-check-ID.json)
 - `--cap USD` (string, this CLI's own): the most the check may spend (default 0.25)
@@ -397,6 +484,12 @@ Route: `GET /agents/{agent_id}/learning/files/{file}`.
 Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab).
 
 Route: `GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}`.
+
+### `agentrun learning reset AGENT_ID`
+
+Reset the agent's learning: everything it learned deleted, the agent and its runs kept.
+
+Route: `DELETE /agents/{agent_id}/learning`.
 
 ### `agentrun learning retire AGENT_ID FILE`
 
@@ -679,6 +772,21 @@ Route: `POST /runs`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun runs create-run-computer-viewer RUN_ID`
+
+Mint a link to the run's live view for the backend's user.
+
+Route: `POST /runs/{run_id}/computer/viewer`.
+
+- `--body JSON|@FILE|-` (application/json): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun runs delete RUN_ID`
+
+Purge a run's content and keep its cost.
+
+Route: `DELETE /runs/{run_id}`.
+
 ### `agentrun runs files RUN_ID`
 
 The files the run wrote.
@@ -859,6 +967,12 @@ Show the archived run in the lists again.
 
 Route: `POST /runs/{run_id}/unarchive`.
 
+### `agentrun runs usage RUN_ID`
+
+What a run cost, by model, by who charged for its tools, and by browser provider.
+
+Route: `GET /runs/{run_id}/usage`.
+
 ### `agentrun runs wait RUN_ID`
 
 Wait until the run ends or waits on a person, and print it.
@@ -909,10 +1023,11 @@ Register a task executed by an existing backend SDK.
 Route: `POST /agents/{agent_id}/sdk-runs`.
 
 - `--idempotency-key STRING` (string, required)
-- `--runtime claude-agent-sdk|codex-sdk|eve` (string, one of these, required)
+- `--runtime claude-agent-sdk|codex-sdk|eve|external` (string, one of these, required)
 - `--input STRING` (string, required)
 - `--instructions STRING` (string, required)
 - `--model STRING` (string)
+- `--platform STRING` (string): External source's display label, such as openclaw or capy. Preserved exactly; no surrounding whitespace, controls or lone surrogates. Never selects a managed harness or workflow capability.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -1057,7 +1172,7 @@ Route: `GET /stats`.
 
 - `--from STRING` (string): Runs started at or after this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.
 - `--to STRING` (string): Runs started before this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.
-- `--agent STRING` (string): One agent's runs.
+- `--agent STRING` (string): One agent's runs and associated source usage, or a connected session id to select that session's usage (with no recorded runs).
 
 ## stop
 

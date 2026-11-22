@@ -5,9 +5,11 @@
 // revision's own row (store schema `revisions`). Everything the old validator accepted it accepts, plus the agent-level
 // argument `pin` form in tool settings (the lead's ruling): at most 8 arguments mapped to JSON scalars, keys sorted, so
 // two equal pins are one revision.
+import { sdkBindingOf, type SdkBinding } from "../sdk/runtimes.js";
 import { createHash } from "node:crypto";
 import type { NativeBinding } from "../native/types.js";
 import { nativeBindingOf } from "../native/binding.js";
+import { isNativeRuntime, type NativeRuntime } from "../native/runtimes.js";
 import { type LearningSetting, learningSettingIssue, learningSettingOf } from "../learning-setting.js";
 
 /** A revision's body the store refuses: its content is not one the store keeps. The server maps it to an input refusal. */
@@ -64,15 +66,24 @@ export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
  *  listed it at the save; its input as POST /v1/run takes it; `usd` its fixed price (monid.ts fixedUsd), null for one
  *  priced by usage (held at monid's estimate). Stamped by the save (server.ts saveable), never shown in a definition. */
 export type MonidPinBody = Readonly<Record<string, { readonly description: string; readonly input: Record<string, unknown>; readonly usd: number | null }>>;
-export type SdkBinding = { runtime: "claude-agent-sdk" | "codex-sdk" | "eve" };
-export type AgenticBody = { sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: LearningSetting; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" };
-export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never" };
+export type CliLearningBinding = { runtime: NativeRuntime; connection_id: string; project: string };
+export const cliLearningOf = (body: unknown): CliLearningBinding | undefined => isObject(body) && isObject(body.cli_learning) && isNativeRuntime(body.cli_learning.runtime) && typeof body.cli_learning.connection_id === "string" && typeof body.cli_learning.project === "string" ? body.cli_learning as CliLearningBinding : undefined;
+/** Read old CLI enrollment settings through the current model without rewriting its revision or learned files.
+ * New definitions still reject "notes"; existing CLI profiles use owner corrections and no workflow bridge. */
+export function learningSettingForBody(body: unknown): LearningSetting | undefined {
+  if (!isObject(body) || body.learning === undefined) return undefined;
+  if (cliLearningOf(body) && body.learning === "notes") return true;
+  return learningSettingIssue(body.learning) === undefined ? body.learning as LearningSetting : undefined;
+}
+export type { SdkBinding } from "../sdk/runtimes.js";
+export type AgenticBody = { cli_learning?: CliLearningBinding; sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: LearningSetting; toolSettings?: ToolSettings; maxCostUsd?: number; maxRequests?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" };
+export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; maxRequests?: number; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already
  *  checked and canonical (agents-store.ts via tool-plane's one copy); this validator keeps it as given. */
 export type RevisionBodyInput =
-  | { kind: "agentic"; sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: LearningSetting; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" }
-  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never" };
+  | { kind: "agentic"; cli_learning?: CliLearningBinding; sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: LearningSetting; toolSettings?: ToolSettings; maxCostUsd?: number; maxRequests?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" }
+  | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; maxRequests?: number; approvals?: "ask" | "never" };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
 function placeOf(place: unknown): RevisionPlace {
@@ -137,7 +148,9 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
 
   // A default spend cap, for a revision of either kind.
   if (input.maxCostUsd !== undefined && !(typeof input.maxCostUsd === "number" && Number.isFinite(input.maxCostUsd) && input.maxCostUsd > 0)) invalid("the maxCostUsd is not a number above 0");
-  const capped = input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {};
+  // The agent's own limit on each run's requests on free models (definition.max_requests), under the server's.
+  if (input.maxRequests !== undefined && !(typeof input.maxRequests === "number" && Number.isSafeInteger(input.maxRequests) && input.maxRequests >= 1)) invalid("the maxRequests is not a whole number above 0");
+  const capped = { ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}), ...(input.maxRequests !== undefined ? { maxRequests: input.maxRequests } : {}) };
 
   // Whether the agent runs unattended (its definition.approvals): "never" lets an ask run without a person, for a revision
   // of either kind. "ask" (the default, as an agent read says it) is taken and kept as no value, so the default stays
@@ -156,10 +169,12 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
     if (input.outputSchema !== undefined && !isObject(input.outputSchema)) invalid("the outputSchema is not a JSON object");
     if (input.checkout !== undefined && input.checkout !== "pull_request") invalid("the checkout is not pull_request");
     if (input.modelTiers !== undefined && !(isObject(input.modelTiers) && Object.keys(input.modelTiers).length && Object.entries(input.modelTiers).every(([tier, ref]) => (tier === "fast" || tier === "strong") && typeof ref === "string" && ref !== ""))) invalid("the modelTiers are not fast and strong to a non-empty model");
-    if (input.sdk !== undefined && (!isObject(input.sdk) || Object.keys(input.sdk).some(key => key !== "runtime") || !["claude-agent-sdk", "codex-sdk", "eve"].includes(input.sdk.runtime))) invalid("sdk is {runtime: claude-agent-sdk, codex-sdk or eve}");
-    if (input.sdk && input.native) invalid("sdk and native connections are mutually exclusive");
+    if (input.sdk !== undefined && (!isObject(input.sdk) || Object.keys(input.sdk).some(key => key !== "runtime" && key !== "platform") || !sdkBindingOf(input.sdk))) invalid("sdk is {runtime: claude-agent-sdk, codex-sdk or eve}, or {runtime: external, platform: a label of 1–80 characters without surrounding whitespace, controls or lone surrogates}");
+    if ([input.sdk, input.native, input.cli_learning].filter(Boolean).length > 1) invalid("sdk, native and cli_learning connections are mutually exclusive");
+    if (input.cli_learning !== undefined && (!cliLearningOf(input) || Object.keys(input.cli_learning).some(key => !["runtime", "connection_id", "project"].includes(key)) || !input.cli_learning.connection_id || !input.cli_learning.project)) invalid("cli_learning requires a registered runtime, connection_id and project");
     const body: AgenticBody = {
       ...(input.sdk ? {sdk: {...input.sdk}} : {}),
+      ...(input.cli_learning ? {cli_learning: {...input.cli_learning}} : {}),
       instructions: input.instructions,
       ...(input.native !== undefined ? { native: nativeBindingOf(input.native) } : {}),
       skills: skillShas,

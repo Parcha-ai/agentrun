@@ -19,7 +19,7 @@ import { runInNewContext } from "node:vm";
 import { seal } from "../dist/sealing.js";
 import { storeOn } from "./store-helpers.mjs";
 import { stranger } from "./fixtures/stranger.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 
 // Namespaces: a name the runner does not export reads as undefined, and its assertion says what is missing.
 const host = await import("../dist/runner/run-child-host.js");
@@ -117,11 +117,12 @@ test("a run's process gets no decision or tier key its claim's learned workflows
   const plain = heldOf(store, { env });
   assert.deepEqual(await plain.decisionKeys(["parallel"]), {}, "a run with no learned workflow naming parallel");
   assert.deepEqual((await plain.tierModelKeys(["strong"])).keys, {}, "a run with no learned workflow naming the strong tier");
-  // A run whose seed lays a learned workflow asking Parallel: its key once the runner chose it, and no other provider's.
+  // A run whose seed lays a checked workflow asking Parallel: its key once the runner chose it, and no other provider's.
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-child-held-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const flow = judgeFlow("on-parallel", "parallel");
   const sha = await landWorkflows(data, "agent-own", [{ name: "on-parallel", description: "Checks a certificate", workflow: flow }]);
+  await promoteChecked(store.settings, "agent-own", [{ name: "on-parallel", workflow: flow }]);
   const learning = heldOf(store, { env, data, launch: { input: { content: "Hello." }, learning: startAt(sha) } });
   assert.deepEqual(await learning.decisionKeys(["parallel"]), {}, "none before the runner chose the claim's workflows");
   const first = await learning.learnedFirst({ laid: true });
@@ -162,12 +163,13 @@ test("a run's process reads no channel post: a webhook post, its own run's or an
   assert.ok(lines.some((line) => /asked the store for channels\.get, which a run's process may not/.test(line)), lines.join("\n"));
 });
 
-test("a run that runs no agent's code here stays in its runner: a learning run, an SDK backend run and a native run; any other run is a process of its own", () => {
+test("a run that runs no agent's code here stays in its runner: a learning run, an SDK backend run, a CLI capture and a native run; any other run is a process of its own", () => {
   assert.equal(typeof host.runsInRunner, "function", "the runner says which runs stay in it");
   assert.equal(host.runsInRunner("learning", {}), true, "a learning run");
   assert.equal(host.runsInRunner("claude-agent", { sdk: { runtime: "claude-agent-sdk", instructions: "Policy." } }), true, "an SDK backend run");
   assert.equal(host.runsInRunner("pi", { native: { runtime: "claude-code", remote: { connector_id: "c-1" } } }), true, "a native run");
-  for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(host.runsInRunner(harness, {}), false, harness);
+  assert.equal(host.runsInRunner("cli", { cli_learning: { runtime: "codex-cli", connection_id: "connection", session_id: "session", turn_id: "turn" } }), true, "a source CLI capture runs no agent code here");
+  for (const harness of ["pi", "claude-agent", "codex", "cli"]) assert.equal(host.runsInRunner(harness, {}), false, harness);
 });
 
 /** staysInRunner's deps for a run of a revision of `kind`, with Claude Code's login on this machine turned on when
@@ -315,4 +317,54 @@ test("a function handed across the channel is let go by its sender once the rece
   assert.equal(runner.handed, left, "what the runner counts as handed is what it holds");
   runner.close();
   child.close();
+});
+
+// A Mode 2 run's folder is its runner's Workspace on the run's disk, which its process holds by handle (held.ts archil,
+// archil-claim.ts archilWhereHeld): a write through it is a call of the run's channel, one frame. A write bigger than a
+// frame crosses in pieces the runner pulls, and the runner writes the file once, on that Workspace (runner/big-writes.ts).
+const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
+const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
+const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
+const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
+const { archilControlFetch } = await import("./archil-control-fake.mjs");
+const { saveSlots } = await import("../dist/web-save.js");
+const { setHeld } = await import("../dist/runner/held.js");
+const { archilWhereHeld } = await import("../dist/workspace/archil-claim.js");
+const { openRunWorkspace } = await import("../dist/workspace/run-workspace.js");
+const bigWrites = await import("../dist/runner/big-writes.js").catch(() => ({}));
+
+test("a Mode 2 run's process writes a file bigger than its channel's frame through its held Workspace: its runner pulls the pieces and writes it once, byte for byte", async (t) => {
+  const { store } = await storeOn(t);
+  const DISK = { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+  await saveArchilSettings(store, DISK);
+  await storeAgentDisk(store, "agent-own", { diskId: DISK.diskId });
+  await store.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
+  const disk = new FakeArchilDisk();
+  const control = archilControlFetch();
+  const deps = { store, sealKey: KEY, env: {}, data: "/nonexistent-data", makeArchilDisk: () => disk, mountControl: { baseUrl: control.baseUrl, fetch: control.fetch } };
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision: { kind: "agentic", body: {} }, claimed: {} };
+  // A channel of 1 MiB frames, its runner's side as the runner wires it (runChannel, heldFor's answers as "held"), the
+  // pieces a quarter of a frame.
+  const FRAME = 1024 * 1024;
+  const bigs = bigWrites.runBigWrites?.({ gate: saveSlots(4), piece: FRAME / 4 });
+  const side = bigs ? host.heldFor(deps, reads, (text) => text, () => {}, bigs) : host.heldFor(deps, reads, (text) => text, () => {});
+  const [runnerEnd, childEnd] = duplexPair();
+  const runner = host.runChannel(runnerEnd, () => {}, saveSlots(4), { ...(bigs ? { bigs } : {}), maxFrame: FRAME });
+  runner.expose("held", (method, args) => side.held[method](...args));
+  const child = new Channel(childEnd, { maxFrame: FRAME });
+  t.after(async () => { setHeld(undefined); child.close(); runner.close(); await side.release(); });
+  // The run's process opens its folder as a Mode 2 claim's does: the Workspace its runner opened on the disk.
+  setHeld(child.remote("held"));
+  const claim = await archilWhereHeld({ signal: new AbortController().signal });
+  const ws = (await openRunWorkspace({ mode: 2, agentId: "agent-own", runId: "run-own", archil: claim, log: () => {} })).workspace;
+  const bytes = randomBytes(3 * FRAME + 123);
+  await ws.write("media/big.bin", bytes);
+  // Read back on the runner's side of the disk (a read of it would not fit the channel's frame either).
+  const there = await (await side.held.archil()).workspace.read("media/big.bin");
+  assert.equal(Buffer.compare(Buffer.from(there), bytes), 0, "the file on the disk is the bytes written");
+  const puts = disk.calls.filter((call) => call.key?.endsWith("/media/big.bin") && call.op !== "getRange" && call.op !== "head");
+  assert.deepEqual(puts.map((call) => [call.op, call.size]), [["putObject", bytes.length]], "the runner wrote it once, whole");
+  // A write of one piece or less is one call, as before.
+  await ws.write("media/small.txt", "small");
+  assert.equal(Buffer.from(await (await side.held.archil()).workspace.read("media/small.txt")).toString(), "small");
 });

@@ -35,7 +35,9 @@ the console. You don't need a model key to deploy.
 ### Implementation Details
 
 Railway mounts the volume as root. The service starts as root only to give the volume to the server's own user, then
-runs the server as that user. The service has no Docker to run a sandbox in, so its agents get file tools and
+runs the server as that user. The template sets `AGENTRUN_RUN_USER=same`, so each run runs as that user, still a
+process of its own. Keep `AGENTRUN_RUN_USER=same`; without it the runner refuses to claim and every run answers
+`runner_refused` (packages/serve/README.md). The service has no Docker to run a sandbox in, so its agents get file tools and
 `web_fetch` but no shell. Use the Hobby plan or above, because the trial's 0.5 GB volume can't hold Claude Code and
 Codex (about 1 GB, installed onto the volume on first use).
 

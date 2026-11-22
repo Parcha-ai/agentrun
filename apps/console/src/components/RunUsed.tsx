@@ -9,8 +9,9 @@ import type { GradeAnswer, LearnedUse, Run, RunGraded, RunLearningRead } from "@
 const newer = (read: RunGraded | null, sent: RunGraded | null): RunGraded | null =>
   !sent ? read : !read || Date.parse(sent.graded_at) > Date.parse(read.graded_at) ? sent : read;
 
-/** The run's learning (GET /v2/runs/{id}/learning), read for a run that learns, once and again when it ends or its end
- *  moves (a grade's feedback round ends it again, and says it ended here): what its job did with the learned workflows
+/** The run's learning (GET /v2/runs/{id}/learning), read for a run that learns, once and again when it ends, its end
+ *  moves, or its learning moves (a grade's feedback round keeps the run's end, and its learning settling says the round
+ *  ended): what its job did with the learned workflows
  *  its agent gave it (`used`). `read` is null while unread, when the read failed,
  *  or for a run with nothing to read it from. `grade` is the run's grade with the round it opened: the newer of the
  *  read's (`graded`) and the one this page sent, taken by `graded` from the PUT's answer (PUT /v2/runs/{id}/grade,
@@ -33,7 +34,7 @@ export function useRunLearning(run: Pick<Run, "run_id" | "learning" | "ended_at"
       () => { if (live) { setGot(null); setFailed((n) => n + 1); } },
     );
     return () => { live = false; };
-  }, [run.run_id, learns, ended, run.ended_at, retry]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [run.run_id, learns, ended, run.ended_at, run.learning?.state, retry]); // eslint-disable-line react-hooks/exhaustive-deps
   const graded = useCallback(({ expected: _, ...answer }: GradeAnswer) => {
     setSent({ run: answer.run_id, grade: { ...answer, feedback_status: answer.feedback ? "running" : null } });
   }, []);

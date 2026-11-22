@@ -68,7 +68,8 @@ export function schemaFields(schema: unknown, skip?: string): [string, FieldSpec
 }
 
 /** How the run forms take an agent's input, from its definition's input_schema (see AgentInput). The message is
- *  required when the schema's `required` lists `content`, or when it requires no other property. */
+ *  required only when the schema's `required` lists `content`, as the server reads it: a schema whose own fields are all
+ *  optional takes one of them in place of the message, and the server refuses an input with neither at input.content. */
 export function agentInputOf(schema: unknown): AgentInput {
   if (!isObject(schema)) return { kind: "message" };
   const whole = (): AgentInput => ({ kind: "json", example: exampleOf(schema as Schema) });
@@ -80,7 +81,7 @@ export function agentInputOf(schema: unknown): AgentInput {
   const fields = schemaFields(schema, "content");
   if (!fields) return whole();
   if (!fields.length) return { kind: "message" };
-  return { kind: "fields", form: { fields, contentRequired: required.includes("content") || !required.some((k) => k !== "content") } };
+  return { kind: "fields", form: { fields, contentRequired: required.includes("content") } };
 }
 
 /** A field's label: its title, else its key. */
@@ -137,6 +138,15 @@ export const inputOf = (form: InputForm, content: string, text: ParameterText): 
 /** The field a refusal's issue is at (`input.company`, an item's `input.topics.1`; under `root`, `parameters.repo`), or
  *  null for one at no field. */
 export const fieldOfIssue = (path: string, root = "input"): string | null => path.startsWith(`${root}.`) ? path.slice(root.length + 1).split(".")[0]! : null;
+
+/** The server's issue at the run's message (input.content: an input giving neither the message nor a field), when the
+ *  form shows typed fields: said at the message box, never listed under the refusal. */
+export const contentIssueOf = <I extends { field: string }>(form: InputForm | null, issues: readonly I[] | undefined): I | undefined =>
+  (form ? issues?.find((i) => i.field === "input.content") : undefined);
+
+/** Whether a typed field's new value clears the server's issue at the run's message: only where the message is optional
+ *  (a field can stand in for it there), and only for a value the server takes. */
+export const clearsContentIssue = (form: InputForm, spec: FieldSpec, value: string): boolean => !form.contentRequired && value !== "" && fieldValid(spec, value);
 
 const kindWords = (f: FieldSpec) => (f.type === "integer" ? "a whole number" : f.type === "number" ? "a number" : f.type === "boolean" ? "true or false" : "text");
 const LIST_OF: Record<FieldSpec["type"], string> = { string: "text", integer: "whole numbers", number: "numbers", boolean: "true or false" };

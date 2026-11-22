@@ -38,7 +38,6 @@ const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 // said).
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const WAIT_MS = 15_000;
-const OWNER = { ownerSession: true, token: false, accounts: true };
 after(closeOpenSessions);
 
 async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}) {
@@ -64,7 +63,7 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     }
   };
   /** One of the two routes, as serve's dispatch calls it on the server's store (the one open now). */
-  const route = (name, body = {}) => computerRoute(name, "run-1", { ...OWNER, body }, server);
+  const route = (name, body = {}) => computerRoute(name, "run-1", body, server);
   /** The route's answer, or its refusal as { status, code, message }. */
   const answer = (name, body) => route(name, body).then((view) => ({ view }), (error) => {
     if (!(error instanceof ApiError)) throw error;

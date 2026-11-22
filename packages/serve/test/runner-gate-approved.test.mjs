@@ -39,7 +39,7 @@ async function approvedAfter(t, { tool, args, before, meanwhile }) {
   const runnerStore = opened.runners[0];
   // The gate as the dispatch builds it (adapterRunGate, the one the spec builder uses).
   const loop = createAdapterLoop(async (claim, run) => {
-    const gate = await adapterRunGate(runnerStore, claim, { kind: "agentic", body: { approvals: "ask" } }, root);
+    const gate = await adapterRunGate(runnerStore, claim, { kind: "agentic", body: { approvals: "ask" } }, root, undefined, { facts: undefined });
     return { ...(await base(claim, run)), gate };
   }, { restartLimit: MAX_RESTARTS });
   const runner = startRunner({ store: runnerStore, createLoop: loop, name: "runner-a", ...TIMING });

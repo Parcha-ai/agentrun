@@ -5,7 +5,7 @@
 //    (base64), or `deleted`. Only a file whose bytes changed since the last record is written again; a large one goes to
 //    the journal's blob stream on its own (NativeJournal offloads it).
 //  - A file whose name says it holds a credential (a token, a key, an auth or credentials file) is never mirrored, and the
-//    recipe's own files (written fresh at every start) are not either.
+//    recipe's own files (written fresh at every start) and the credentials it names (whatever their names) are not either.
 //  - The next process's HOME gets the newest record of each path back, before the agent starts.
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -42,6 +42,9 @@ function unlessGone<T>(read: () => T): T | undefined {
   }
 }
 
+/** Whether `path` (in HOME, POSIX separators) is one of `skip` or inside one of them. */
+const skipped = (path: string, skip: ReadonlySet<string>): boolean => skip.has(path) || [...skip].some((each) => path.startsWith(`${each}/`));
+
 /** Every file under `paths` in `home`, by its path in HOME (POSIX separators). A link is never followed: a state path
  *  whose directories in HOME include one (the agent made `.agent/store` a link out of HOME) is skipped whole, and a link
  *  inside the walk is neither a file nor a directory. */
@@ -55,7 +58,7 @@ function filesUnder(home: string, paths: readonly string[], skip: ReadonlySet<st
       for (const name of (unlessGone(() => readdirSync(absolute)) ?? []).sort()) visit(join(absolute, name));
       return;
     }
-    if (!stat.isFile() || skip.has(path) || CREDENTIAL_FILE.test(path.split("/").at(-1) ?? "")) return;
+    if (!stat.isFile() || skipped(path, skip) || CREDENTIAL_FILE.test(path.split("/").at(-1) ?? "")) return;
     if (stat.size > MAX_STATE_FILE) {
       log("acp: a state file too large to mirror was skipped", { path, bytes: stat.size });
       return;
@@ -121,7 +124,8 @@ export class StateMirror {
   constructor(
     private readonly home: string,
     private readonly paths: readonly string[],
-    /** The recipe's own files: written at every start, never mirrored. */
+    /** Paths in HOME never mirrored, each a file or a folder: the recipe's own files (written at every start) and the
+     *  credentials it names. */
     private readonly skip: ReadonlySet<string>,
     records: readonly StateRecord[],
     private readonly log: (message: string, fields?: Record<string, unknown>) => void = () => {},

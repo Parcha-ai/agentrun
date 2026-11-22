@@ -226,6 +226,17 @@ export { acceptWords };
 export const hookWhen = (source: HookSource): string =>
   source.accept?.length ? `Only signed requests for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : "On each signed request";
 
+/** Each kind of trigger in words: its short label (a list row's chip, an apply's result) and what starts a run of it (the
+ *  first-trigger panel's card, an apply's result). A new kind adds its row here and every place that names a kind says it. */
+export const TRIGGER_KINDS: Record<TriggerSource["kind"], { label: string; what: string }> = {
+  schedule: { label: "Schedule", what: "At the times you set: every day or week at a time, every few minutes or hours, or once." },
+  webhook: { label: "Webhook", what: "On each signed request another system sends to its URL." },
+  github: { label: "GitHub", what: "On the events you pick from this server's GitHub App." },
+  composio: { label: "App", what: "On an event in an app a saved Composio server connects, such as a new issue in a GitHub repository." },
+  feed: { label: "Feed", what: "On each new item in the feeds you name, read every few minutes: a status page's incidents, a blog, or an API's JSON list such as a repository's pull requests." },
+  email: { label: "Email", what: "On each new message in a mailbox of this server's email account." },
+};
+
 /** A firing's cause, in words: its schedule, a Run now, or a signed request to a webhook. */
 export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request", github: "On a GitHub event", composio: "On an app event", email: "On an email", feed: "On a feed item" };
 
@@ -432,6 +443,11 @@ export type ComposioTrigger = Trigger & { source: ComposioSource; target: Trigge
 export type ComposioSource = Extract<TriggerSource, { kind: "composio" }>;
 export const isComposioTrigger = (t: Trigger): t is ComposioTrigger => t.source.kind === "composio" && t.target.kind === "start_run";
 
+/** An email trigger that starts a run (serve's trigger-email.ts): each new message in a mailbox of the server's email
+ *  account (Settings → Email), read every `every_s`, and its filter. */
+export type EmailTrigger = Trigger & { source: Extract<TriggerSource, { kind: "email" }>; target: TriggerTarget };
+export const isEmailTrigger = (t: Trigger): t is EmailTrigger => t.source.kind === "email" && t.target.kind === "start_run";
+
 /** One field of an event's config, read from its JSON schema (the events list's `config`): its name, title, description,
  *  whether it is required, and how it is typed in (`json`: an object, a list or a type the form has no input for, typed as
  *  JSON). A deprecated field is never offered. */
@@ -560,14 +576,21 @@ export function feedUrlsOf(text: string): { urls: string[]; issues: Record<strin
   return { urls, issues };
 }
 
-/** A feed trigger's source, or what is wrong, by the field the server would name. `minEvery`: the shortest interval the
- *  server takes, when it says. A pointer is sent as typed, spaces and all; one left empty is left out, unless the source as read had it empty too. */
-export function feedSourceOf(d: FeedDraft, minEvery?: number): { source: FeedSource; issues: Record<string, string> } {
-  const { urls, issues } = feedUrlsOf(d.urls);
+/** A checked trigger's interval in seconds (`every`, a count of `everyUnit`): a count that is no number, or one under
+ *  `minEvery` when the server says one, is put in `issues` under source.every_s. */
+function everyOf(d: { every: string; everyUnit: EveryUnit }, minEvery: number | undefined, issues: Record<string, string>): number {
   const n = numberOf(d.every);
   const every = Math.round((n ?? 0) * UNIT_S[d.everyUnit]);
   if (n === undefined) issues["source.every_s"] = NEEDED;
   else if (minEvery && every < minEvery) issues["source.every_s"] = atLeast(minEvery);
+  return every;
+}
+
+/** A feed trigger's source, or what is wrong, by the field the server would name. `minEvery`: the shortest interval the
+ *  server takes, when it says. A pointer is sent as typed, spaces and all; one left empty is left out, unless the source as read had it empty too. */
+export function feedSourceOf(d: FeedDraft, minEvery?: number): { source: FeedSource; issues: Record<string, string> } {
+  const { urls, issues } = feedUrlsOf(d.urls);
+  const every = everyOf(d, minEvery, issues);
   const pointer = (name: "items" | "id") => {
     // Sent as typed: a space in a JSON Pointer is part of its key ("/data " names "data ").
     const typed = d[name];
@@ -587,6 +610,23 @@ export function feedBodyOf(d: FeedDraft, minEvery?: number, capOptional: boolean
 /** The fields a feed form says an issue under: its URLs (each by its place), its interval, its pointers and its filter's. */
 export function feedFields(urls: number, conditions: readonly number[]): Set<string> {
   return new Set(["name", "source.urls", ...Array.from({ length: urls }, (_, i) => `source.urls[${i}]`), "source.every_s", "source.items", "source.id", "target.agent_id", "target.input", "target.max_cost_usd", ...acceptFields(conditions)]);
+}
+
+/** A new email trigger's fields as typed: the mailbox of the server's account it reads (INBOX unless told), how often
+ *  (as a count of `everyUnit`; the server's least, a minute, by default), on or off from now, then the run each new
+ *  message starts (as a schedule's). */
+export type EmailDraft = { name: string; mailbox: string; every: string; everyUnit: EveryUnit; enabled: boolean; agentId: string; content: string; maxCost: string };
+export const emptyEmail = (): EmailDraft => ({ name: "", mailbox: "INBOX", every: "1", everyUnit: "minutes", enabled: true, agentId: "", content: "", maxCost: "" });
+/** The fields an email form says an issue under. */
+export const EMAIL_FIELDS = new Set(["name", "enabled", "source.mailbox", "source.every_s", "target.agent_id", "target.input", "target.max_cost_usd"]);
+
+/** A new email trigger's create body, or what is wrong: its mailbox (INBOX when left empty) and interval (at least
+ *  `minEvery`, when the server says), whether it is on, and bodyOf's rules for the run it starts. */
+export function emailBodyOf(d: EmailDraft, minEvery?: number, capOptional: boolean | CapRule = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+  const issues: Record<string, string> = {};
+  const every = everyOf(d, minEvery, issues);
+  const made = createOf(d, { kind: "email", mailbox: d.mailbox.trim() || "INBOX", every_s: every }, issues, capOptional, "an email trigger");
+  return made.body ? { body: { ...made.body, enabled: d.enabled } } : made;
 }
 
 /** A new GitHub trigger's create body, or what is missing: its filter's shape, and bodyOf's rules for the run it starts. */

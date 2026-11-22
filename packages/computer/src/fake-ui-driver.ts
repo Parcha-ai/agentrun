@@ -520,12 +520,17 @@ export class FakeUiDriver implements UiSource {
 	}
 
 	/**
-	 * A press's effect, from the window it landed in: go to a screen in that window, open another window, or close that
-	 * one. A delayed effect is that window's pending effect: it never lands once the window closed.
+	 * A press's effect, from the window it landed in: go to a screen in that window, open another window, close that
+	 * one, or bring another app in front (on a phone, the app it left is then out of reach). A delayed effect is that
+	 * window's pending effect: it never lands once the window closed.
 	 */
 	#apply(state: AppState, win: FakeWindow, effect: FakeEffect): void {
 		const go = () => {
 			if (effect.close === true) return this.#closeWindow(state, win);
+			if (effect.launch !== undefined) {
+				this.#launch({ id: effect.launch });
+				return;
+			}
 			if (effect.open !== undefined) {
 				state.opened += 1;
 				const [x, y, w, h] = state.origin;

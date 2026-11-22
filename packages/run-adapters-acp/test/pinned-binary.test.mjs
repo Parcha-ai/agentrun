@@ -1,11 +1,11 @@
 // The pinned-binary checks: a binary whose sha256 differs from its pin is refused with a named code, read and never run;
-// an agent with no registry digest has its first verified digest recorded, and a later binary that differs is refused.
+// a binary no pin names has its first digest recorded by the server's installer alone (agentrun-serve harness-archive).
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { ACP_CODES, acpPlatform, AcpBinaryRefused, fileDigestRecord, GOOSE_PIN, verifyFirstSeen, verifyPinnedBinary, verifyPinnedBinaryAsync } from '@parcha/agentrun-harness-acp';
+import { ACP_CODES, acpPlatform, AcpBinaryRefused, CURSOR_PIN, GOOSE_PIN, pinnedRelease, verifyPinnedBinary, verifyPinnedBinaryAsync } from '@parcha/agentrun-harness-acp';
 import { scratch } from './helpers.mjs';
 
 const sha = (text) => createHash('sha256').update(text).digest('hex');
@@ -46,6 +46,16 @@ test('the platform is named as the registry names it', () => {
   assert.equal(acpPlatform('linux', 'ia32'), undefined);
 });
 
+test('a pin has a release for a platform only where its binary is measured, and its tree too when asked', () => {
+  assert.equal(pinnedRelease(GOOSE_PIN, 'linux-x86_64'), GOOSE_PIN.archives['linux-x86_64']);
+  // Goose's darwin-aarch64 archive is pinned by the registry's digest alone: no binary is measured there.
+  assert.equal(pinnedRelease(GOOSE_PIN, 'darwin-aarch64'), undefined);
+  assert.equal(pinnedRelease(GOOSE_PIN, 'linux-x86_64', true), undefined, 'Goose is pinned by its binary, not its tree');
+  assert.equal(pinnedRelease(CURSOR_PIN, 'linux-x86_64', true), CURSOR_PIN.archives['linux-x86_64']);
+  for (const platform of ['plan9', '__proto__']) assert.equal(pinnedRelease(GOOSE_PIN, platform), undefined, platform);
+  assert.equal(pinnedRelease(GOOSE_PIN), pinnedRelease(GOOSE_PIN, acpPlatform()), 'no platform given: this host\'s');
+});
+
 test('a binary with its pinned sha256 passes; one that differs is refused, ACP_BINARY_MISMATCH; neither is run', async () => {
   const dir = scratch();
   const good = binary(dir, 'good');
@@ -60,31 +70,4 @@ test('a binary with its pinned sha256 passes; one that differs is refused, ACP_B
   assert.equal(existsSync(good.mark), false, 'the check never ran the binary');
   assert.throws(() => verifyPinnedBinary(join(dir, 'missing'), good.sha256), refusedWith(ACP_CODES.binaryUnreadable));
   assert.throws(() => verifyPinnedBinary(good.path, 'not-a-digest'), /not 64 lowercase hex/);
-});
-
-test('with no registry digest, the first verified digest is recorded and a later binary that differs is refused', () => {
-  const dir = scratch();
-  const first = binary(dir, 'cursor-agent');
-  const record = fileDigestRecord(join(dir, 'pins', 'cursor.sha256'));
-  assert.equal(record.read(), undefined);
-  assert.equal(verifyFirstSeen(first.path, record), first.sha256);
-  assert.equal(readFileSync(join(dir, 'pins', 'cursor.sha256'), 'utf8'), `${first.sha256}\n`);
-  // The same binary passes again; the record is not written again.
-  assert.equal(verifyFirstSeen(first.path, record), first.sha256);
-  // A new build in its place drifts from the first: refused, and the record keeps the first.
-  writeFileSync(first.path, '#!/bin/sh\necho a new build\n');
-  assert.throws(() => verifyFirstSeen(first.path, record), refusedWith(ACP_CODES.binaryDrift));
-  assert.equal(record.read(), first.sha256);
-  assert.equal(existsSync(first.mark), false, 'never run');
-});
-
-test('two processes that record a first digest at once: the first record holds, and a different binary drifts from it', () => {
-  const dir = scratch();
-  const a = binary(dir, 'a');
-  const file = join(dir, 'first.sha256');
-  // A record whose read saw none, then lost the race to another writer.
-  let raced = false;
-  const racing = { read: () => (raced ? fileDigestRecord(file).read() : undefined), write: (d) => { fileDigestRecord(file).write(sha('the other process')); raced = true; fileDigestRecord(file).write(d); } };
-  assert.throws(() => verifyFirstSeen(a.path, racing), refusedWith(ACP_CODES.binaryDrift));
-  assert.equal(fileDigestRecord(file).read(), sha('the other process'));
 });

@@ -18,7 +18,7 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
-import { type Cleanup, cleanupOf, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, storedMade } from "./composio-made.js";
+import { type Cleanup, cleanupOf, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
 import { COMPOSIO_PER_RUN, COMPOSIO_USER, composioListingAddress, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
@@ -247,13 +247,14 @@ export class McpServersOverStore {
    *  A server whose credential is not this server's to send (per_run, each run hands its own) or whose access token only a
    *  run refreshes (oauth) and that refuses the listing for its credential is pinned as its owner's last save or refresh
    *  listed it, with the credential it had then. Any other failure is the ApiError the listing threw, in its words. */
-  async pinListing(name: string, stop?: AbortSignal): Promise<{ url: string; tools: (McpTool & { grantable?: false; reason?: string })[]; prices: McpPrices } | undefined> {
+  async pinListing(name: string, stop?: AbortSignal): Promise<{ url: string; tools: (McpTool & { grantable?: false; reason?: string })[]; prices: McpPrices; toolkit: string | null } | undefined> {
     const row = await this.store.mcp.server(name);
     if (!row) return undefined;
+    const { toolkit } = await this.sourceOf(row);
     const url = new URL(row.url);
     const pinned = (tools: McpTool[]) => {
       const listed = marked(row.url, { tools });
-      return { url: row.url, tools: listed.tools, prices: pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools) };
+      return { url: row.url, tools: listed.tools, prices: pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools), toolkit };
     };
     const send = await this.reached(row.auth, url, stop);
     try {
@@ -342,12 +343,16 @@ export class McpServersOverStore {
     // A per-run Composio server, made so now (`stands`) or saved so and kept at its address by an ordinary save.
     const perRun = Boolean(stands?.per_run) || (!made && was !== undefined && auth.type === "headers" && was.url === url.href && (await this.perRunComposio(name, was)));
     const listed = await this.listServer(url, await this.withAppToken(auth.type, url, headers ?? {}, stop), send, stop, perRun);
-    const unlisted = Object.keys(prices ?? {}).filter((tool) => !listed.tools.some((listedTool) => listedTool.name === tool));
+    // The Composio preset prices each action it granted (its price_usd): one its server doesn't list goes unpriced, as the
+    // preset's answer names it (not_served), never a refusal. An owner's prices name only tools the server lists.
+    const asked = made && prices ? pricesListed(prices, listed.tools) : prices;
+    const unlisted = Object.keys(asked ?? {}).filter((tool) => !listed.tools.some((listedTool) => listedTool.name === tool));
     if (unlisted.length) throw invalid(unlisted.map((tool) => ({ field: `prices.${tool}`, reason: "not_an_option", message: `The server ${name} lists no tool ${tool}; its tools are ${listed.tools.map((t) => t.name).join(", ") || "none"}.` })));
     // The row as saved over `row` (the one read, or read again): a body with no `prices` keeps the saved ones, for the tools
-    // still listed at the same address.
+    // still listed at the same address; a preset save over a preset row keeps them at the new address its Composio server
+    // has (each preset save makes one), so a re-save never leaves a priced action unmetered.
     const fields = (row: McpServerRow | undefined) => {
-      const priced = prices ?? (row?.url === url.href ? pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools) : undefined);
+      const priced = asked ?? (row && (row.url === url.href || (made && wasPreset)) ? pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools) : undefined);
       return {
         name, url: url.href, auth: auth.type, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
         ...(priced && Object.keys(priced).length ? { prices: priced } : {}),
@@ -377,7 +382,12 @@ export class McpServersOverStore {
       // What it stands on at Composio: what the preset found and made, over what the server saved before over this row had
       // made. A row moved off Composio stands on nothing there: its delete removes nothing at Composio.
       if (made && stands) {
-        const others = (await this.composioRecords()).filter(([other]) => other !== name);
+        // An auth config the owner named (auth_config_id) is theirs from this save on: every other saved server's claim to
+        // have made it is let go first, so neither this record nor theirs, nor what they hand on, ever removes it.
+        const listed = (await this.composioRecords()).filter(([other]) => other !== name);
+        const released = stands.auth_config?.named ? releasedOf(stands.auth_config.id, listed) : [];
+        await this.handOver(listed, released);
+        const others = listed.map(([other, record, at]): [string, ComposioMade, number] => [other, released.find(([one]) => one === other)?.[1] ?? record, at]);
         const before = was ? recordedMade(await this.store.settings.get(composioMadeKey(name)), was.createdAt) : undefined;
         const record = madeToWrite(stands, before, others.map(([, other]) => other));
         await this.store.settings.put(composioMadeKey(name), storedMade(record, saved));
@@ -665,22 +675,25 @@ export class McpServersOverStore {
   }
 
   /** A saved Composio preset server's key (its sealed x-api-key), the Composio user its address names (`user_id`, the
-   *  preset's default when none) and its toolkit: what its Composio triggers are made with (composio-triggers.ts). Refused
+   *  preset's default when none), its toolkit and the auth config its save recorded (composio-made.ts; none for a server
+   *  saved before that was recorded): what its Composio triggers are made with (composio-triggers.ts). Refused
    *  when `name` is no such server: on the trigger's `source.server` at its create (`field`), as a 404 on the server's own
    *  routes (`route`). The key goes only to Composio. */
-  async composioOf(name: string, refusal: "field" | "route"): Promise<{ key: string; user: string; toolkit: string }> {
+  async composioOf(name: string, refusal: "field" | "route"): Promise<{ key: string; user: string; toolkit: string; auth_config?: string }> {
     const refuse = (message: string) => (refusal === "route" ? new ApiError("not_found", message) : invalid([{ field: "source.server", reason: "not_an_option", message }]));
     const row = await this.store.mcp.server(name);
     if (!row) throw refusal === "route" ? notFound(name) : refuse(`No MCP server ${name}: save a Composio server in Settings → MCP servers first.`);
     const { source, toolkit } = await this.sourceOf(row);
     if (source !== "composio" || row.auth !== "headers") throw refuse(`${name} is not a Composio server: only one saved with Settings → MCP servers → Composio makes Composio triggers.`);
     if (!toolkit) throw refuse(`${name} is a Composio server of no toolkit this server can name: save it again with its toolkit's slug.`);
+    const recorded = await this.store.settings.get(composioMadeKey(name));
     // A trigger runs as one Composio account, and a per-run server has none: each run names its own.
-    if (refusal === "field" && composioPerRun(row, await this.store.settings.get(composioMadeKey(name)))) throw refuse(`${name} takes its Composio account from each run (saved with user_id "${COMPOSIO_PER_RUN}"), and a trigger runs as one account: save a Composio server for that account to make its triggers.`);
+    if (refusal === "field" && composioPerRun(row, recorded)) throw refuse(`${name} takes its Composio account from each run (saved with user_id "${COMPOSIO_PER_RUN}"), and a trigger runs as one account: save a Composio server for that account to make its triggers.`);
     const { headers } = await this.opened(name, row, refusal === "field" ? "source.server" : "api_key");
     const key = Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1];
     if (!key) throw refuse(`${name}'s saved credential holds no Composio key: save it again with its key.`);
-    return { key, user: new URL(row.url).searchParams.get("user_id") || COMPOSIO_USER, toolkit };
+    const config = recordedMade(recorded, row.createdAt)?.auth_config?.id;
+    return { key, user: new URL(row.url).searchParams.get("user_id") || COMPOSIO_USER, toolkit, ...(config ? { auth_config: config } : {}) };
   }
 
   /** What the saved server `row` is, for a template's apply to match (mcp-sources.ts sourceOf): github on the GitHub App's

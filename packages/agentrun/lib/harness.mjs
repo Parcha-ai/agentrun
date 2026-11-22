@@ -1,10 +1,11 @@
-// `agentrun harness install goose` and `agentrun harness install --recipe FILE`: the harness its owner installs, never a
-// run (Goose, or an ACP agent a recipe file names: docs/harness-recipe.md). The server installed with this command does
-// it (agentrun-serve install-harness), as it runs validate-template: the pinned archive downloaded, its sha256 checked,
-// unpacked into DATA/harnesses/<id>, the binary's sha256 checked (or, for a recipe that pins none, the first one
-// recorded), then put in place read-only. DATA is this command's (~/.agentrun unless --data names one), the store
-// `npx @parcha/agentrun` starts the server on. Run again with the pinned binary in place, it downloads nothing. No
-// provider key goes near it.
+// `agentrun harness install goose|cursor` and `agentrun harness install --recipe FILE`: the harness its owner installs,
+// never a run (Goose; Cursor, on the owner's own Cursor API key; or an ACP agent a recipe file names:
+// HARNESS.md#a-recipe). The server installed with this command does it (agentrun-serve install-harness), as it runs
+// validate-template: the pinned archive downloaded, its sha256 checked, unpacked into DATA/harnesses/<id>, the binary's
+// sha256 checked (for Cursor, every file's too; for a recipe that pins none, the first one recorded), then put in place
+// read-only. DATA is this command's (~/.agentrun unless --data names one), the store `npx @parcha/agentrun` starts the
+// server on. Run again with the pinned release in place, it downloads nothing. No provider key goes near it,
+// CURSOR_API_KEY included.
 //
 // `agentrun harness-check --recipe FILE`: the recipe's installed agent run for real on --model and judged
 // (agentrun-serve check-harness, named as install-harness is, so this command's own word stays the CLI's): a JSON
@@ -14,7 +15,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 /** The harnesses this command installs by name. */
-const INSTALLABLE = ["goose"];
+const INSTALLABLE = ["goose", "cursor"];
 
 /** A variable named like a credential (a KEY, TOKEN, SECRET, PASSWORD or CREDENTIAL(S) segment). */
 const KEY_NAMED = /(?:^|_)(?:KEY|TOKEN|TOKENS|SECRET|PASSWORD|CREDENTIALS?)(?:_|$)/i;
@@ -35,10 +36,10 @@ export const HARNESS_INSTALL = {
   command: ["harness", "install"],
   pathParams: ["harness"],
   argsOptional: true,
-  summary: "Install a harness AgentRun runs only once its owner installs it (goose, or a recipe file's), then restart AgentRun",
+  summary: "Install a harness AgentRun runs only once its owner installs it (goose, cursor, or a recipe file's), then restart AgentRun",
   help: [
     ["HARNESS", `the harness: ${INSTALLABLE.join(", ")}. Its pinned release is downloaded and checked by sha256 into DATA/harnesses/HARNESS; run again, it downloads nothing`],
-    ["--recipe FILE", "in place of HARNESS: a recipe file (docs/harness-recipe.md), checked against its five rules before anything is downloaded"],
+    ["--recipe FILE", "in place of HARNESS: a recipe file (HARNESS.md#a-recipe), checked against its five rules before anything is downloaded"],
     ["--data DIR", "the data directory of the AgentRun it is for (default ~/.agentrun, where npx @parcha/agentrun keeps it)"],
   ],
   options: { recipe: { type: "string" } },
@@ -59,7 +60,7 @@ export const HARNESS_CHECK = {
   pathParams: [],
   summary: "Run a recipe's installed agent for real and check it (tools off, env allowlist, pins, limits, no side requests, resume, a denied call, an MCP tool): a JSON report and three facts. Real models cost money",
   help: [
-    ["--recipe FILE", "the recipe file (docs/harness-recipe.md); its agent installed first with agentrun harness install --recipe FILE"],
+    ["--recipe FILE", "the recipe file (HARNESS.md#a-recipe); its agent installed first with agentrun harness install --recipe FILE"],
     ["--model PROVIDER/MODEL", "the run's model, for a recipe billed through the proxy (openrouter/anthropic/claude-haiku-4.5, anthropic/claude-haiku-4-5)"],
     ["--report FILE", "where the JSON report goes (default ./harness-check-ID.json)"],
     ["--cap USD", "the most the check may spend (default 0.25)"],

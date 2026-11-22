@@ -128,7 +128,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "Delete an agent another system owns"
+    "summary": "Delete an agent another system owns, or purge an archived agent made here"
   },
   {
     "command": [
@@ -537,6 +537,333 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Check native CLI and sign-in without a paid model call"
+  },
+  {
+    "command": [
+      "capabilities",
+      "get-capacity"
+    ],
+    "operationId": "getCapacity",
+    "method": "GET",
+    "path": "/capacity",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [
+      {
+        "name": "window",
+        "type": "integer",
+        "required": false,
+        "description": "The hand-back window in minutes, from 1 to 1440. Default 15."
+      }
+    ],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The runs waiting and held, the live runners and the recent hand-backs"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "complete"
+    ],
+    "operationId": "completeCliLearningRun",
+    "method": "POST",
+    "path": "/cli-learning/runs/{run_id}/complete",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [
+      {
+        "name": "Idempotency-Key",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "bodyFlags": [
+      {
+        "name": "status",
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "answer",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "error",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "session_id",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "evidence_complete",
+        "type": "boolean",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "seed_observed",
+        "type": "boolean",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "seed_revision",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Close an existing CLI prompt window exactly once"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "enroll"
+    ],
+    "operationId": "enrollCliLearning",
+    "method": "POST",
+    "path": "/cli-learning/connections",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "runtime",
+        "type": "string",
+        "enum": [
+          "codex",
+          "claude-code"
+        ],
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "project",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "name",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Enable learning for an existing local CLI without launching it"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "events"
+    ],
+    "operationId": "cliLearningEvents",
+    "method": "POST",
+    "path": "/cli-learning/runs/{run_id}/events",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [
+      {
+        "name": "Idempotency-Key",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "bodyFlags": [
+      {
+        "name": "sequence",
+        "type": "integer",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Upload bounded role-preserving CLI dialogue and tool evidence"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "get"
+    ],
+    "operationId": "getCliLearningRun",
+    "method": "GET",
+    "path": "/cli-learning/runs/{run_id}",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read CLI prompt-window learning progress"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "list"
+    ],
+    "operationId": "listCliLearning",
+    "method": "GET",
+    "path": "/cli-learning/connections",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read enrolled CLI learning connections"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "revoke"
+    ],
+    "operationId": "revokeCliLearning",
+    "method": "DELETE",
+    "path": "/cli-learning/connections/{connection_id}",
+    "pathParams": [
+      "connection_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Revoke CLI capture and guidance delivery, retaining history and learned files"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "start"
+    ],
+    "operationId": "startCliLearningRun",
+    "method": "POST",
+    "path": "/cli-learning/connections/{connection_id}/runs",
+    "pathParams": [
+      "connection_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [
+      {
+        "name": "Idempotency-Key",
+        "type": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "bodyFlags": [
+      {
+        "name": "session_id",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "turn_id",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "input",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "instructions",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "policy_complete",
+        "type": "boolean",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Register one prompt window from an existing CLI session"
   },
   {
     "command": [
@@ -1255,6 +1582,28 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab)"
+  },
+  {
+    "command": [
+      "learning",
+      "reset"
+    ],
+    "operationId": "deleteAgentLearning",
+    "method": "DELETE",
+    "path": "/agents/{agent_id}/learning",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Reset the agent's learning: everything it learned deleted, the agent and its runs kept"
   },
   {
     "command": [
@@ -2176,6 +2525,52 @@ export const COMMANDS = [
   {
     "command": [
       "runs",
+      "create-run-computer-viewer"
+    ],
+    "operationId": "createRunComputerViewer",
+    "method": "POST",
+    "path": "/runs/{run_id}/computer/viewer",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": false,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Mint a link to the run's live view for the backend's user"
+  },
+  {
+    "command": [
+      "runs",
+      "delete"
+    ],
+    "operationId": "deleteRun",
+    "method": "DELETE",
+    "path": "/runs/{run_id}",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Purge a run's content and keep its cost"
+  },
+  {
+    "command": [
+      "runs",
       "files"
     ],
     "operationId": "listRunFiles",
@@ -2868,6 +3263,28 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "runs",
+      "usage"
+    ],
+    "operationId": "getRunUsage",
+    "method": "GET",
+    "path": "/runs/{run_id}/usage",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "What a run cost, by model, by who charged for its tools, and by browser provider"
+  },
+  {
+    "command": [
       "sdk-runs",
       "complete"
     ],
@@ -3027,7 +3444,8 @@ export const COMMANDS = [
         "enum": [
           "claude-agent-sdk",
           "codex-sdk",
-          "eve"
+          "eve",
+          "external"
         ],
         "required": true,
         "description": ""
@@ -3049,6 +3467,12 @@ export const COMMANDS = [
         "type": "string",
         "required": false,
         "description": ""
+      },
+      {
+        "name": "platform",
+        "type": "string",
+        "required": false,
+        "description": "External source's display label, such as openclaw or capy. Preserved exactly; no surrounding whitespace, controls or lone surrogates. Never selects a managed harness or workflow capability."
       }
     ],
     "hasBody": true,
@@ -3261,7 +3685,7 @@ export const COMMANDS = [
         "name": "agent",
         "type": "string",
         "required": false,
-        "description": "One agent's runs."
+        "description": "One agent's runs and associated source usage, or a connected session id to select that session's usage (with no recorded runs)."
       }
     ],
     "headers": [],

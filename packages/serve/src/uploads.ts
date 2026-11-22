@@ -3,10 +3,11 @@
 // for it at its start and copied into its workspace at its claim. Each file is `<data>/files/<file_id>/`: its bytes
 // (`bytes`) and its record (`file.json`, the contract's File), both 0600, the record written whole. A ready file's bytes
 // never change, and a run gets a copy of them through its Workspace, never a link: nothing a run does reaches the upload.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { copyFile, type FileHandle, link, lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
 import { DISK_DIR } from "./server-fs.js";
 import { dirname, join } from "node:path";
+import { uuidv7 } from "./agents-store.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { typeOf } from "./file-types.js";
 import { readJson, serialBy, tempOf, writeDurable } from "./files.js";
@@ -81,17 +82,6 @@ export type UploadedFile = {
   created_at: string;
   expires_at: null;
 };
-
-/** A UUIDv7, the form of the agent store's agent and run ids: 48 bits of Unix milliseconds, then random bits, so ids
- *  sort by creation time. The store mints its own inside it and exports no minter. */
-function uuidv7(now = Date.now()): string {
-  const bytes = randomBytes(16);
-  bytes.writeUIntBE(now, 0, 6);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
 
 /** Why `path` is not the contract's FilePathString (relative, `/` between segments, no empty segment and none that starts
  *  with `.`, no backslash or NUL, at most 1024 characters), or a segment is longer than a name on disk; undefined when it
@@ -208,9 +198,8 @@ export class Uploads {
     });
   }
 
-  /** The answer to a reservation, and to a file sent in one call. `upload.expires_at` is advisory (UPLOAD_WINDOW_MS). */
   private answer(file: UploadedFile): FileUploadAnswer {
-    return { file, upload: { method: "PUT", url: uploadUrl(file.file_id), expires_at: new Date(Date.parse(file.created_at) + UPLOAD_WINDOW_MS).toISOString() } };
+    return answerOf(file);
   }
 
   /** POST /v2/files?path=...: the body is the file's bytes, whatever its type but a multipart form (415, with the call
@@ -219,21 +208,7 @@ export class Uploads {
    *  else the path's extension's, else octet-stream. The bytes stream to a dot-named file of their own under the root,
    *  never held whole; over MAX_UPLOAD_BYTES is 413, a `sha256` they do not have 422. Nothing is made until `commit`. */
   async take(query: URLSearchParams, requestType: string | undefined, body: AsyncIterable<Buffer>): Promise<Received> {
-    const type = String(requestType ?? "").trim();
-    if (/^multipart\//i.test(type)) throw new ApiError("unsupported_media_type", "A multipart form is not taken: send the file's bytes as the body, as `curl --data-binary @plan.md \"$AGENTRUN_BASE_URL/files?path=plan.md\"` does.");
-    const issues: InputIssue[] = [...new Set(query.keys())].filter((key) => !QUERY.includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `A file sent in one call takes path, content_type and sha256 in the query; ${key} is not one.` }));
-    for (const key of QUERY) if (query.getAll(key).length > 1) issues.push({ field: key, reason: "duplicate", message: `${key} is given more than once` });
-    const path = query.get("path");
-    // An empty one is none.
-    const named = query.get("content_type") || null;
-    const sha = query.get("sha256");
-    if (path === null) issues.push({ field: "path", reason: "missing", message: "Name the file: POST /v2/files?path=<its path> with its bytes as the body, or a JSON reservation {path, size_bytes} and then PUT /v2/files/<id>.", fix: "Add ?path=<the file's name> to the URL." });
-    if (sha !== null && !SHA256.test(sha)) issues.push({ field: "sha256", reason: "bad_format", message: "sha256 is 64 lowercase hex digits" });
-    if (issues.length) throw invalid(issues);
-    const problem = this.problemOf(path!);
-    if (problem) throw new ApiError("invalid_file_path", problem);
-    const given = type && !GENERIC_TYPES.has(type.split(";")[0]!.trim().toLowerCase()) ? type : undefined;
-    const contentType = named ?? given ?? typeOf(path!) ?? "application/octet-stream";
+    const { path, sha, contentType } = sentInOneCall(query, requestType, (path) => this.problemOf(path));
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     const temp = tempOf(join(this.root, ".incoming"));
     const handle = await open(temp, "wx", 0o600);
@@ -251,13 +226,13 @@ export class Uploads {
       if (sha !== null && sha !== sha256) throw invalid([{ field: "sha256", reason: "invalid", message: `The body's SHA-256 is ${sha256}; the query names ${sha}.` }]);
       await handle.sync();
       await handle.close();
-      const fingerprint: Json = { sent_in_one_call: true, path: path!, content_type: contentType, size_bytes: size, sha256 };
+      const fingerprint: Json = { sent_in_one_call: true, path, content_type: contentType, size_bytes: size, sha256 };
       let made = false;
       return {
         fingerprint,
         commit: async () => {
           const now = Date.now();
-          const file: UploadedFile = { file_id: uuidv7(now), path: path!, size_bytes: size, content_type: contentType, sha256, status: "ready", created_at: new Date(now).toISOString(), expires_at: null };
+          const file: UploadedFile = { file_id: uuidv7(now), path, size_bytes: size, content_type: contentType, sha256, status: "ready", created_at: new Date(now).toISOString(), expires_at: null };
           const dir = join(this.root, file.file_id);
           await mkdir(dir, { mode: 0o700 });
           try {
@@ -285,27 +260,7 @@ export class Uploads {
 
   /** POST /v2/files: the body checked as the contract's FileCreate, then a pending file; with where to send its bytes. */
   async reserve(body: Json): Promise<FileUploadAnswer> {
-    const issues = unknownFields(body, FIELDS);
-    if (typeof body.path !== "string") issues.push({ field: "path", reason: body.path === undefined ? "missing" : "wrong_type", message: "path is the file's relative path, a string" });
-    if (!(Number.isSafeInteger(body.size_bytes) && (body.size_bytes as number) >= 0)) issues.push({ field: "size_bytes", reason: body.size_bytes === undefined ? "missing" : "wrong_type", message: "size_bytes is the file's length in bytes, an integer 0 or more" });
-    if (body.content_type !== undefined && typeof body.content_type !== "string") issues.push({ field: "content_type", reason: "wrong_type", message: "content_type is a string" });
-    if (body.sha256 !== undefined && !(typeof body.sha256 === "string" && SHA256.test(body.sha256))) issues.push({ field: "sha256", reason: typeof body.sha256 === "string" ? "bad_format" : "wrong_type", message: "sha256 is 64 lowercase hex digits" });
-    if (issues.length) throw invalid(issues);
-    const problem = this.problemOf(body.path as string);
-    if (problem) throw new ApiError("invalid_file_path", problem);
-    if ((body.size_bytes as number) > MAX_UPLOAD_BYTES) throw new ApiError("payload_too_large", `size_bytes is over ${MAX_UPLOAD_BYTES}, this server's largest upload`, { details: { limit: "max_upload_bytes" } });
-    const now = Date.now();
-    const file: UploadedFile = {
-      file_id: uuidv7(now),
-      path: body.path as string,
-      size_bytes: body.size_bytes as number,
-      // Named, or by the path's extension as a run's files are served (`plan.md` is text/markdown), else octet-stream.
-      content_type: (body.content_type as string | undefined) ?? typeOf(body.path as string) ?? "application/octet-stream",
-      sha256: (body.sha256 as string | undefined) ?? null,
-      status: "pending",
-      created_at: new Date(now).toISOString(),
-      expires_at: null,
-    };
+    const file = reservation(body, (path) => this.problemOf(path));
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     await mkdir(join(this.root, file.file_id), { mode: 0o700 });
     await writeDurable(join(this.root, file.file_id, RECORD), `${JSON.stringify(file)}\n`);
@@ -391,26 +346,7 @@ export class Uploads {
 
   /** A run's `file_ids`: each a file that is ready, none twice, at most MAX_FILES_PER_RUN, or 422 at `file_ids`. */
   async readyFiles(ids: readonly unknown[]): Promise<UploadedFile[]> {
-    const issues: InputIssue[] = [];
-    if (ids.length > MAX_FILES_PER_RUN) issues.push({ field: "file_ids", reason: "too_many", message: `A run names at most ${MAX_FILES_PER_RUN} files here (limits.max_files_per_run); this names ${ids.length}.` });
-    else if (new Set(ids).size !== ids.length) issues.push({ field: "file_ids", reason: "duplicate", message: "file_ids names one file twice" });
-    if (issues.length) throw invalid(issues);
-    const files: UploadedFile[] = [];
-    for (const [i, id] of ids.entries()) {
-      const field = `file_ids[${i}]`;
-      if (typeof id !== "string" || !ID.test(id)) {
-        issues.push({ field, reason: "wrong_type", message: `${field} is ${shown(id)}, not a file id: use the file_id an upload answered (POST /v2/files answers it under file.file_id).` });
-        continue;
-      }
-      const file = await this.get(id);
-      const problem = file?.status === "ready" ? this.problemOf(file.path) : undefined;
-      if (!file) issues.push({ field, reason: "not_an_option", message: `There is no file ${id}: reserve it with POST /v2/files.` });
-      else if (file.status !== "ready") issues.push({ field, reason: "invalid", message: `The file ${id} is not ready: send its bytes with PUT /v2/files/${id} first.` });
-      else if (problem) issues.push({ field, reason: "invalid", message: `The file ${id} cannot be copied into a run here: ${problem}.` });
-      else files.push(file);
-    }
-    if (issues.length) throw invalid(issues);
-    return files;
+    return readyFilesOf(ids, (id) => this.get(id), (path) => this.problemOf(path));
   }
 
   /** Copies `files` into the run's `inputs/` through its Workspace, each at its `path` with its folders, in order, before
@@ -420,19 +356,7 @@ export class Uploads {
    *  the copy (ESCAPE), and nothing is written through it. `bytesOf`: where each file's bytes are read (its upload's own,
    *  or the run's hold of them, `held`). */
   async copyInto(work: Workspace | string, files: readonly UploadedFile[], bytesOf: (file: UploadedFile) => string = (file) => join(this.root, file.file_id, BYTES)): Promise<void> {
-    const workspace = workspaceAt(work);
-    await uploadTestHooks.beforeCopy?.(workspace);
-    const names = takenNames(workspace);
-    // inputs/message.md is the run's message's (MESSAGE_FILE), never an upload's.
-    const top = await names(INPUTS_DIR);
-    if (!top.has(MESSAGE_FILE)) top.set(MESSAGE_FILE, "file");
-    for (const file of files) {
-      const segments = file.path.split("/");
-      let dir = INPUTS_DIR;
-      for (const segment of segments.slice(0, -1)) dir = `${dir}/${free(await names(dir), segment, "dir")}`;
-      const name = free(await names(dir), segments.at(-1)!, "file");
-      await workspace.write(`${dir}/${name}`, await readFile(bytesOf(file)));
-    }
+    await copyFilesInto(workspaceAt(work), files, (file) => readFile(bytesOf(file)));
   }
 
   /** At a run's start, before its row is written: each of its files (`ids`, ready) held for it under
@@ -483,6 +407,173 @@ export class Uploads {
     return (await readdir(join(this.root, HELD_DIR)).catch(() => [] as string[])).filter((name) => ID.test(name));
   }
 }
+
+/** What the files routes and a run's start ask of the place uploads are kept: this server's data directory (Uploads,
+ *  Mode 1), or its uploads disk on Archil (uploads-archil.ts WorkspaceUploads, Mode 2). */
+export interface UploadStore {
+  get(id: string): Promise<UploadedFile | null>;
+  ids(): Promise<string[]>;
+  remove(id: string): Promise<void>;
+  take(query: URLSearchParams, requestType: string | undefined, body: AsyncIterable<Buffer>): Promise<Received>;
+  reserve(body: Json): Promise<FileUploadAnswer>;
+  receive(id: string, body: AsyncIterable<Buffer>): Promise<UploadedFile>;
+  readyFiles(ids: readonly unknown[]): Promise<UploadedFile[]>;
+}
+
+/** The answer to a reservation, and to a file sent in one call. `upload.expires_at` is advisory (UPLOAD_WINDOW_MS). */
+export const answerOf = (file: UploadedFile): FileUploadAnswer => ({ file, upload: { method: "PUT", url: uploadUrl(file.file_id), expires_at: new Date(Date.parse(file.created_at) + UPLOAD_WINDOW_MS).toISOString() } });
+
+/** Whether `value` reads as a File record. */
+export const isUploadedFile = isFile;
+
+/** A file sent in one call, its query and request type checked (Uploads.take): its path, the hash the query names (or
+ *  null) and its type. `problemOf`: why a path cannot be a file's path in this store. */
+export function sentInOneCall(query: URLSearchParams, requestType: string | undefined, problemOf: (path: string) => string | undefined): { path: string; sha: string | null; contentType: string } {
+  const type = String(requestType ?? "").trim();
+  if (/^multipart\//i.test(type)) throw new ApiError("unsupported_media_type", "A multipart form is not taken: send the file's bytes as the body, as `curl --data-binary @plan.md \"$AGENTRUN_BASE_URL/files?path=plan.md\"` does.");
+  const issues: InputIssue[] = [...new Set(query.keys())].filter((key) => !QUERY.includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `A file sent in one call takes path, content_type and sha256 in the query; ${key} is not one.` }));
+  for (const key of QUERY) if (query.getAll(key).length > 1) issues.push({ field: key, reason: "duplicate", message: `${key} is given more than once` });
+  const path = query.get("path");
+  // An empty one is none.
+  const named = query.get("content_type") || null;
+  const sha = query.get("sha256");
+  if (path === null) issues.push({ field: "path", reason: "missing", message: "Name the file: POST /v2/files?path=<its path> with its bytes as the body, or a JSON reservation {path, size_bytes} and then PUT /v2/files/<id>.", fix: "Add ?path=<the file's name> to the URL." });
+  if (sha !== null && !SHA256.test(sha)) issues.push({ field: "sha256", reason: "bad_format", message: "sha256 is 64 lowercase hex digits" });
+  if (issues.length) throw invalid(issues);
+  const problem = problemOf(path!);
+  if (problem) throw new ApiError("invalid_file_path", problem);
+  const given = type && !GENERIC_TYPES.has(type.split(";")[0]!.trim().toLowerCase()) ? type : undefined;
+  return { path: path!, sha, contentType: named ?? given ?? typeOf(path!) ?? "application/octet-stream" };
+}
+
+/** POST /v2/files's JSON body checked as the contract's FileCreate (Uploads.reserve): the pending file it makes, not yet
+ *  written. */
+export function reservation(body: Json, problemOf: (path: string) => string | undefined): UploadedFile {
+  const issues = unknownFields(body, FIELDS);
+  if (typeof body.path !== "string") issues.push({ field: "path", reason: body.path === undefined ? "missing" : "wrong_type", message: "path is the file's relative path, a string" });
+  if (!(Number.isSafeInteger(body.size_bytes) && (body.size_bytes as number) >= 0)) issues.push({ field: "size_bytes", reason: body.size_bytes === undefined ? "missing" : "wrong_type", message: "size_bytes is the file's length in bytes, an integer 0 or more" });
+  if (body.content_type !== undefined && typeof body.content_type !== "string") issues.push({ field: "content_type", reason: "wrong_type", message: "content_type is a string" });
+  if (body.sha256 !== undefined && !(typeof body.sha256 === "string" && SHA256.test(body.sha256))) issues.push({ field: "sha256", reason: typeof body.sha256 === "string" ? "bad_format" : "wrong_type", message: "sha256 is 64 lowercase hex digits" });
+  if (issues.length) throw invalid(issues);
+  const problem = problemOf(body.path as string);
+  if (problem) throw new ApiError("invalid_file_path", problem);
+  if ((body.size_bytes as number) > MAX_UPLOAD_BYTES) throw new ApiError("payload_too_large", `size_bytes is over ${MAX_UPLOAD_BYTES}, this server's largest upload`, { details: { limit: "max_upload_bytes" } });
+  const now = Date.now();
+  return {
+    file_id: uuidv7(now),
+    path: body.path as string,
+    size_bytes: body.size_bytes as number,
+    // Named, or by the path's extension as a run's files are served (`plan.md` is text/markdown), else octet-stream.
+    content_type: (body.content_type as string | undefined) ?? typeOf(body.path as string) ?? "application/octet-stream",
+    sha256: (body.sha256 as string | undefined) ?? null,
+    status: "pending",
+    created_at: new Date(now).toISOString(),
+    expires_at: null,
+  };
+}
+
+/** A body's bytes against the file `held` was reserved or made as: the 422 at the field that differs, or undefined. */
+export function mismatchOf(held: UploadedFile, size: number, sha256: string): ApiError | undefined {
+  return size !== held.size_bytes
+    ? invalid([{ field: "size_bytes", reason: "invalid", message: `The body is ${size} bytes; the file was reserved with size_bytes ${held.size_bytes}.` }])
+    : held.sha256 !== null && held.sha256 !== sha256
+      ? invalid([{ field: "sha256", reason: "invalid", message: `The body's SHA-256 is ${sha256}; the file ${held.status === "ready" ? "is ready with" : "was reserved with"} ${held.sha256}.` }])
+      : undefined;
+}
+
+/** A run's `file_ids` (Uploads.readyFiles): each a file `get` finds ready, none twice, at most MAX_FILES_PER_RUN, or 422
+ *  at `file_ids`. `problemOf`: why a ready file's path cannot be copied into a run of this store. */
+export async function readyFilesOf(ids: readonly unknown[], get: (id: string) => Promise<UploadedFile | null>, problemOf: (path: string) => string | undefined): Promise<UploadedFile[]> {
+  const issues: InputIssue[] = [];
+  if (ids.length > MAX_FILES_PER_RUN) issues.push({ field: "file_ids", reason: "too_many", message: `A run names at most ${MAX_FILES_PER_RUN} files here (limits.max_files_per_run); this names ${ids.length}.` });
+  else if (new Set(ids).size !== ids.length) issues.push({ field: "file_ids", reason: "duplicate", message: "file_ids names one file twice" });
+  if (issues.length) throw invalid(issues);
+  const files: UploadedFile[] = [];
+  // Every record read at once (each a round trip to the disk in Mode 2), then judged in order.
+  const found = await Promise.all(ids.map((id) => (typeof id === "string" && ID.test(id) ? get(id) : Promise.resolve(null))));
+  for (const [i, id] of ids.entries()) {
+    const field = `file_ids[${i}]`;
+    if (typeof id !== "string" || !ID.test(id)) {
+      issues.push({ field, reason: "wrong_type", message: `${field} is ${shown(id)}, not a file id: use the file_id an upload answered (POST /v2/files answers it under file.file_id).` });
+      continue;
+    }
+    const file = found[i]!;
+    const problem = file?.status === "ready" ? problemOf(file.path) : undefined;
+    if (!file) issues.push({ field, reason: "not_an_option", message: `There is no file ${id}: reserve it with POST /v2/files.` });
+    else if (file.status !== "ready") issues.push({ field, reason: "invalid", message: `The file ${id} is not ready: send its bytes with PUT /v2/files/${id} first.` });
+    else if (problem) issues.push({ field, reason: "invalid", message: `The file ${id} cannot be copied into a run here: ${problem}.` });
+    else files.push(file);
+  }
+  if (issues.length) throw invalid(issues);
+  return files;
+}
+
+/** Copies `files` into the workspace's `inputs/` (Uploads.copyInto), each at its `path` with its folders: a name taken
+ *  already (the same path twice, a file where another's folder goes, or what the folder held before) gets the next free
+ *  suffix (`notes-2.txt`, `docs-2/`), the same for the same files in the same order, every name chosen before the first
+ *  byte is written. Each copy is a new file written whole by the Workspace. `read`: a file's bytes. `concurrency`: how
+ *  many files are read and written at once (default 1, one after another); `turn`: each file's read and write runs
+ *  inside it, as a limit shared with other copies (slots) takes them; `signal`: stops the copy before its next file,
+ *  rejecting with the signal's reason. */
+export async function copyFilesInto(workspace: Workspace, files: readonly UploadedFile[], read: (file: UploadedFile) => Promise<Uint8Array>, { concurrency = 1, turn = (copy) => copy(), signal }: { readonly concurrency?: number; readonly turn?: (copy: () => Promise<void>) => Promise<void>; readonly signal?: AbortSignal } = {}): Promise<void> {
+  await uploadTestHooks.beforeCopy?.(workspace);
+  const names = takenNames(workspace);
+  // inputs/message.md is the run's message's (MESSAGE_FILE), never an upload's.
+  const top = await names(INPUTS_DIR);
+  if (!top.has(MESSAGE_FILE)) top.set(MESSAGE_FILE, "file");
+  const targets: { file: UploadedFile; to: string }[] = [];
+  for (const file of files) {
+    const segments = file.path.split("/");
+    let dir = INPUTS_DIR;
+    for (const segment of segments.slice(0, -1)) dir = `${dir}/${free(await names(dir), segment, "dir")}`;
+    targets.push({ file, to: `${dir}/${free(await names(dir), segments.at(-1)!, "file")}` });
+  }
+  let next = 0;
+  // One file that fails stops the others before their next file: nothing more is written once the copy has failed.
+  let failed = false;
+  const worker = async (): Promise<void> => {
+    while (!failed && next < targets.length) {
+      const { file, to } = targets[next++]!;
+      try {
+        // Checked once the turn is had too: a file that waited for one past the deadline is not started.
+        signal?.throwIfAborted();
+        await turn(async () => {
+          signal?.throwIfAborted();
+          await workspace.write(to, await read(file));
+        });
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    }
+  };
+  // Every worker settles before the copy answers, so nothing it started is still writing once a caller cleans up.
+  const settled = await Promise.allSettled(Array.from({ length: Math.max(1, Math.min(concurrency, targets.length)) }, worker));
+  const first = settled.find((one): one is PromiseRejectedResult => one.status === "rejected");
+  if (first) throw first.reason;
+}
+
+/** At most `size` of the calls given to it running at once, the rest waiting in the order they came: a slot a call
+ *  leaves goes straight to the next one waiting. */
+export function slots(size: number): <T>(work: () => Promise<T>) => Promise<T> {
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  return async (work) => {
+    if (running < size) running++;
+    else await new Promise<void>((resolve) => waiting.push(resolve));
+    try {
+      return await work();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else running--;
+    }
+  };
+}
+
+/** The files a run's claim copies in (placeRunInputs): its launch's, unless the server already placed them in its folder
+ *  when it started the run (Mode 2, RunLaunch.filesPlaced), when the claim reads no upload at all. */
+export const filesToCopy = (launch: { readonly files?: readonly string[]; readonly filesPlaced?: true }): readonly string[] => (launch.filesPlaced ? [] : (launch.files ?? []));
 
 /** The words a run fails in when its files cannot be copied into its workspace at its claim. */
 export const notCopied = (why: string): string => `The run's files could not be copied into its workspace: ${why}`;

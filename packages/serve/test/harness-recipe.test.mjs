@@ -1,13 +1,4 @@
-// Bring your own harness, door 1: a recipe file (harness-recipe.ts), its owner's install (`install-harness --recipe`) and
-// `harness-check` (harness-check.ts).
-//   - The loader holds five rules, each refused by its own code before anything is downloaded or started: own keys only
-//     (RECIPE_KEY_NOT_OWN), a binary from a registry archive pinned by sha256 (RECIPE_BINARY_UNPINNED), files and state in
-//     the private HOME (RECIPE_PATH_OUTSIDE), only the owner's command installs it (RECIPE_INSTALLS_ITSELF, and a check
-//     of one not installed says that command: HARNESS_NOT_INSTALLED), an allowlist environment (RECIPE_ENV_NOT_ALLOWLIST).
-//   - The owner's install takes the recipe's archive, its sha256 checked, and records the binary's first sha256 where the
-//     recipe pins none: a binary that differs later is refused, by the check (ACP_BINARY_DRIFT) and by a reinstall.
-//   - harness-check runs the installed agent for real (here a stand-in ACP agent whose model is a scripted Anthropic
-//     origin on loopback: test/fixtures/model-acp-agent.mjs) and passes it through stages 2 and 3, printing the three facts.
+// The five rules (HARNESS.md#the-five-rules), the owner's install and harness-check.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -29,16 +20,17 @@ const MODEL = "anthropic/claude-haiku-4-5";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const linux = process.platform === "linux" ? false : "the agent's environment and its kill are read from /proc";
 
-/** A release of the stand-in agent: `./agent`, a script that runs it, packed in a .tar.bz2. `extra` changes its bytes. */
-async function release(t, extra = "") {
+/** A release of the stand-in agent: `./agent`, a script that runs it, packed in a .tar.bz2 (or a .tar.gz: `pack` "gz").
+ *  `extra` changes its bytes. */
+async function release(t, extra = "", pack = "bz2") {
   const dir = await scratch(t);
   const tree = join(dir, "tree");
   mkdirSync(tree);
   const body = `#!/bin/sh\n${extra}exec '${process.execPath}' '${AGENT}' "$@"\n`;
   writeFileSync(join(tree, "agent"), body);
   chmodSync(join(tree, "agent"), 0o755);
-  const archive = join(dir, "agent.tar.bz2");
-  const packed = spawnSync("tar", ["-cjf", archive, "-C", tree, "./agent"], { encoding: "utf8" });
+  const archive = join(dir, `agent.tar.${pack}`);
+  const packed = spawnSync("tar", [pack === "gz" ? "-czf" : "-cjf", archive, "-C", tree, "./agent"], { encoding: "utf8" });
   assert.equal(packed.status, 0, packed.stderr);
   const bytes = readFileSync(archive);
   return { bytes, archiveSha: sha256(bytes), binarySha: sha256(Buffer.from(body)) };
@@ -86,11 +78,12 @@ function cli(args, env = cliEnv()) {
   });
 }
 
-/** The check of `file` on `data`, its report read back. */
+/** The check of `file` on `data`, its report read back (`written`: the file as it is on disk). */
 async function check(t, file, data, env = cliEnv(), extra = []) {
   const report = join(await scratch(t), "report.json");
   const run = await cli(["check-harness", "--recipe", file, "--data", data, "--model", MODEL, "--report", report, ...extra], env);
-  return { ...run, report: existsSync(report) ? JSON.parse(readFileSync(report, "utf8")) : undefined };
+  const written = existsSync(report) ? readFileSync(report, "utf8") : undefined;
+  return { ...run, written, report: written === undefined ? undefined : JSON.parse(written) };
 }
 
 /** The loader's refusal of `recipe`: its code, and every problem's. */
@@ -125,7 +118,34 @@ const BROKEN = [
   ["rule 5, an allowlist environment: the host's environment passed through", RECIPE_CODES.env, () => recipeOf(undefined, { passEnv: true })],
   ["rule 5, an allowlist environment: a value read from the host's environment", RECIPE_CODES.env, () => recipeOf(undefined, { env: { MODEL_AGENT_CACHE: "$HOME/.cache" } })],
   ["rule 5, an allowlist environment: a variable the adapter sets", RECIPE_CODES.env, () => recipeOf(undefined, { env: { HOME: "/root" } })],
+  ["its own id: an id the server's harness table already has (cursor)", RECIPE_CODES.invalid, () => recipeOf(undefined, { id: "cursor" })],
 ];
+
+test("a recipe is refused under every id the server's harness table already has, and every reserved one", async () => {
+  const { BUILTIN_HARNESS_IDS } = await import("../dist/harness-table.js");
+  const { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS } = await import("../dist/harness.js");
+  for (const id of ["cli", "codex-cli", "claude-code-cli"]) assert.ok(RESERVED_HARNESS_IDS.includes(id), `${id} is reserved for source CLI capture`);
+  assert.ok(BUILTIN_HARNESS_IDS.includes("goose") && BUILTIN_HARNESS_IDS.includes("cursor"), BUILTIN_HARNESS_IDS.join(", "));
+  for (const id of [...BUILTIN_HARNESS_IDS, ...RESERVED_HARNESS_IDS].filter((each) => new RegExp(HARNESS_ID_PATTERN).test(each))) {
+    const refused = refusalOf(recipeOf(undefined, { id }));
+    assert.equal(refused.code, RECIPE_CODES.invalid, `${id}: ${refused.message}`);
+    assert.match(refused.message, new RegExp(`id ${id} `));
+  }
+});
+
+test("HARNESS.md's `id` row names exactly the ids the server's harness table has and the names it reserves", async () => {
+  const { BUILTIN_HARNESS_IDS } = await import("../dist/harness-table.js");
+  const { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS } = await import("../dist/harness.js");
+  const doc = readFileSync(new URL("../../../HARNESS.md", import.meta.url), "utf8");
+  const rows = doc.split("\n").filter((line) => line.startsWith("| `id` |"));
+  assert.equal(rows.length, 1, "one `id` row, the one list of these ids");
+  // The row's two lists: the table's ids in the parentheses before " nor ", the reserved names in those after it.
+  const [table, reserved] = rows[0].split(" nor ");
+  assert.ok(reserved, `the row says which ids it refuses, then "nor" the names reserved: ${rows[0]}`);
+  const named = (text) => [...text.matchAll(/\(([^)]*)\)/g)].flatMap((group) => [...group[1].matchAll(/`([^`]+)`/g)].map((id) => id[1])).sort();
+  assert.deepEqual(named(table), [...BUILTIN_HARNESS_IDS].sort(), "the built-in ids");
+  assert.deepEqual(named(reserved), RESERVED_HARNESS_IDS.filter((id) => new RegExp(HARNESS_ID_PATTERN).test(id)).sort(), "the reserved names an id could take");
+});
 
 for (const [name, code, make] of BROKEN) {
   test(`the loader refuses ${name}: ${code}`, () => {
@@ -204,10 +224,25 @@ test("the owner's install: the archive's sha256 checked, the binary's first sha2
   chmodSync(join(data, "harnesses", "model-agent", "agent"), 0o755);
   writeFileSync(join(data, "harnesses", "model-agent", "agent"), "#!/bin/sh\necho swapped\n");
   await assert.rejects(installRecipe(movedRecipe, moved, data, { fetch: servedFetch(other.bytes) }), (error) => error instanceof ArchiveInstallFailed && error.code === "HARNESS_BINARY_MISMATCH" && error.message.includes(first.binarySha));
-  // And the check refuses the swapped binary: drift from the first one seen.
+  // And the check refuses the swapped binary by the installer's code: one pin, one code.
   const run = await check(t, file, data);
   assert.equal(run.status, 1);
-  assert.equal(run.report.refused.code, "ACP_BINARY_DRIFT", run.report.refused.message);
+  assert.equal(run.report.refused.code, "HARNESS_BINARY_MISMATCH", run.report.refused.message);
+});
+
+test("a recipe's archive is in a format the installer unpacks (tar.bz2, tar.gz): a .tar.gz installs, a zip is refused by the loader", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const built = await release(t, "", "gz");
+  const file = await recipeFile(t, recipeOf(built.archiveSha, { release: { registry: "model-agent", version: "1.0.0", archives: { [PLATFORM]: { url: URL_OF, format: "tar.gz", sha256: built.archiveSha, cmd: "./agent" } } } }));
+  const { recipe } = loadRecipe(file);
+  const now = await installRecipe(recipe, file, data, { fetch: servedFetch(built.bytes) });
+  assert.equal(now.installed, "now");
+  assert.equal(readFileSync(firstSeenOf(data, recipe, PLATFORM), "utf8").trim(), built.binarySha);
+  const zip = recipeOf();
+  zip.release.archives[PLATFORM].format = "zip";
+  const refused = refusalOf(zip);
+  assert.equal(refused.code, RECIPE_CODES.binary);
+  assert.match(refused.message, /tar\.bz2 and tar\.gz/);
 });
 
 /** The stand-in agent installed from `recipe` (or `recipe(origin)`) into a fresh data directory, and a scripted origin
@@ -333,6 +368,78 @@ test("harness-check passes a plan-billed agent that reaches its vendor through H
   assert.equal(refusalOf(recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["vendor.example:65536"] } })).code, RECIPE_CODES.invalid);
   assert.equal(parseRecipe(JSON.stringify(recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["vendor.example:65535", "api.vendor.example"] } }))).model.hosts.length, 2);
   assert.equal(refusalOf(recipeOf(undefined, { model: { billing: "proxy", wire: "anthropic-messages", env: "MODEL_AGENT_MODEL", hosts: ["vendor.example"] } })).code, RECIPE_CODES.invalid);
+  // The key is handed the one way a run's is (the adapter's recipe.keys, read by name at its start): a host without it
+  // is refused before the agent starts, naming the key, and the vendor hears nothing.
+  const keyless = await installed(t, planned);
+  const missing = await check(t, keyless.file, keyless.data, cliEnv());
+  assert.equal(missing.status, 1);
+  assert.match(`${missing.stdout}\n${JSON.stringify(missing.report)}`, /ACP_KEY_MISSING: [^"\n]*MODEL_AGENT_API_KEY/);
+  assert.equal(keyless.origin.messages().length, 0);
+});
+
+test("harness-check cuts the recipe's key from its report and its output: an agent that prints its key on stderr as it dies", { skip: linux, timeout: 120_000 }, async (t) => {
+  // A fake literal, long enough to be cut (MIN_SECRET): never a real key.
+  const key = "fake-test-key-the-agent-prints";
+  const { data, file } = await installed(t, recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "leak-key" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["vendor.example.invalid"] } }));
+  const run = await check(t, file, data, cliEnv({ MODEL_AGENT_API_KEY: key }));
+  assert.equal(run.status, 1, "an agent that dies at each prompt fails the check");
+  assert.ok(run.written, "the report was written");
+  // Where the agent's words land, each told only whether it holds the key, never shown it.
+  for (const [where, text] of [["the report on disk", run.written], ["stdout", run.stdout], ["stderr", run.stderr]]) assert.equal(text.includes(key), false, `${where} holds the recipe's key`);
+  assert.match(run.report.stage3.mcp_tool.error ?? "", /the vendor refused the key \[redacted\] \(401\)/, "the agent's words, its key cut in place");
+});
+
+/** Each `n`-character piece of `key`: text holding any of them holds part of the key. */
+const piecesOf = (key, n = 8) => Array.from({ length: key.length - n + 1 }, (_, i) => key.slice(i, i + n));
+
+test("harness-check leaves no piece of the recipe's key where the agent's last words were cut inside it (the key, then 280 characters)", { skip: linux, timeout: 120_000 }, async (t) => {
+  // A fake literal, never a real key: its pieces match nothing else a report says.
+  const key = "fake-Qz7Wv9Lm2Np4Rs6Tx8Yb3Kc5Hd";
+  // " (401) " and 273 more: 280 characters after the key, so the last 300 of its words start 20 characters into it.
+  const { data, file } = await installed(t, recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "leak-key", MODEL_AGENT_LEAK_AFTER: "273" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["vendor.example.invalid"] } }));
+  const run = await check(t, file, data, cliEnv({ MODEL_AGENT_API_KEY: key }));
+  assert.equal(run.status, 1, "an agent that dies at each prompt fails the check");
+  assert.ok(run.written, "the report was written");
+  for (const [where, text] of [["the report on disk", run.written], ["stdout", run.stdout], ["stderr", run.stderr]]) {
+    const held = piecesOf(key).filter((piece) => text.includes(piece)).length;
+    assert.equal(held, 0, `${where} holds ${held} 8-character pieces of the recipe's key`);
+  }
+  assert.match(run.report.stage3.mcp_tool.error ?? "", /\(401\) \.{20}/, "the agent's last words are still there");
+});
+
+/** What a report says, without what differs run to run (pids, paths, digests, times): its result, its refusal's code,
+ *  its facts, each stage row's name, result and fields, and its failures. */
+const shapeOf = (report) => ({
+  ok: report.ok,
+  refused: report.refused?.code ?? null,
+  facts: report.facts ?? null,
+  ...Object.fromEntries(["stage2", "stage3"].map((stage) => [stage, Object.fromEntries(Object.entries(report[stage] ?? {}).map(([name, row]) => [name, { ok: row.ok, fields: Object.keys(row).sort() }]))])),
+  failures: report.failures,
+});
+
+// A plan-billed recipe's check starts its agent on the adapter over its recipe alone (harness-check.ts): its rows, their
+// fields and its failures as they were before a proxy-billed one went through the kit's entry (fixtures/
+// plan-check-shapes.json, written by the check before that change).
+test("a plan-billed recipe's check keeps its rows and codes: passed, a host it does not name refused, a key it lacks refused", { skip: linux, timeout: 120_000 }, async (t) => {
+  const planned = (hosts) => (origin) => {
+    const vendor = new URL(origin.url).host;
+    return recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: vendor, MODEL_AGENT_MODEL: "vendor-model" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: hosts ?? [vendor] } });
+  };
+  const keyed = cliEnv({ MODEL_AGENT_API_KEY: "fake-test-key" });
+  const passed = await installed(t, planned());
+  const unnamed = await installed(t, planned(["vendor.example.invalid"]));
+  const keyless = await installed(t, planned());
+  const runs = {
+    passed: await check(t, passed.file, passed.data, keyed),
+    unnamed: await check(t, unnamed.file, unnamed.data, keyed),
+    keyless: await check(t, keyless.file, keyless.data, cliEnv()),
+  };
+  assert.deepEqual(Object.fromEntries(Object.entries(runs).map(([name, run]) => [name, shapeOf(run.report)])), JSON.parse(readFileSync(new URL("./fixtures/plan-check-shapes.json", import.meta.url), "utf8")));
+  assert.deepEqual(Object.values(runs).map((run) => run.status), [0, 1, 1]);
+  // The key it lacks is refused by its code at the agent's start, before the vendor hears anything.
+  assert.match(runs.keyless.report.stage3.mcp_tool.error, /ACP_KEY_MISSING: [^\n]*MODEL_AGENT_API_KEY/);
+  assert.equal(keyless.origin.messages().length, 0);
+  assert.equal(unnamed.origin.messages().length, 0);
 });
 
 test("harness-check finds a host key the recipe copied under another name, though the server keeps its keys off the environment's enumeration", { skip: linux, timeout: 120_000 }, async (t) => {

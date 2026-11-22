@@ -26,7 +26,7 @@ async function open(hash: string, templates: TemplateView[] = [template]) {
     const path = new URL(url, "https://console.example.test").pathname;
     if (init?.method && init.method !== "GET") {
       writes.push({ path, body: JSON.parse(String(init.body)), headers: new Headers(init.headers) });
-      return json({ template: template.name, version: template.version, agent_id: "new-reviewer", trigger_ids: [], warnings: [] }, 201);
+      return json({ template: template.name, version: template.version, agent_id: "new-reviewer", triggers: [], warnings: [] }, 201);
     }
     if (path === "/v2/auth/session") return json({ password_set: true, signed_in: true });
     if (path === "/v2/setup/import") return json({ offer: false });

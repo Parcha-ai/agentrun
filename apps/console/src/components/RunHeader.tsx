@@ -1,3 +1,4 @@
+import { cliRunOf, cliRunLabel } from "@/lib/cliLearning";
 import { Archive, ArchiveRestore, ArrowLeft, Ban, CircleDollarSign, Square } from "lucide-react";
 import { useState } from "react";
 import { agentHash } from "@/components/AgentPage";
@@ -40,12 +41,15 @@ const TOKENS_TITLE = "The run's model requests' tokens, as the provider or gatew
 /** The run's title bar: back to its agent, the title, its status, what it cost so far, stop versus cancel, and archive.
  *  Stop ends the turn and keeps the run open (it waits for a message); cancel ends the run for good, after a confirm.
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
-export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
+/** `raiseBelow`: the page already shows a raise form for this run (a run paused at its cap, under its banner). The header's
+ *  Raise the cap button then takes the person to that form instead of opening a second one above it. */
+export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }: { run: Run; agentName: string; actions?: RunActions; costText?: string; raiseBelow?: () => void }) {
   // Where it ran, as its start resolved it.
   const sdk = backendSdkOf(run);
-  const ranIn = sdk ? "your backend" : runPlaceWords(run.place);
+  const cli = cliRunOf(run);
+  const ranIn = cli ? "your CLI" : sdk ? "your backend" : runPlaceWords(run.place);
   const state = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review, run.computer);
-  const view = sdk ? { ...state, canStop: false, canCancel: false } : state;
+  const view = sdk || cli ? { ...state, canStop: false, canCancel: false } : state;
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
   // A capped run that has not ended, agentic or workflow, takes a raise here too, so a working one is raised before it pauses.
@@ -53,7 +57,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   // A run that waits on the person for something other than its cap (its served `pending`: an approval, a question, its
   // browser or computer) is not held by its cap: a raise changes nothing it waits on, so none is offered there.
   const waitsOnOther = !!run.pending && run.pending.kind !== "budget" && run.pending.kind !== "stopped";
-  const raisable = !sdk && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
+  const raisable = !sdk && !cli && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   const onPlan = !!planOf(run.cost);
@@ -85,7 +89,8 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             {archived && <Chip tone="muted">Archived</Chip>}
             {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
             <span className="font-mono"><RunKind run={run} named /> · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
-            {sdk && <span className="font-mono">{backendSdkLabel(sdk.runtime)} · {run.sdk?.model ?? "Model not reported"}</span>}
+            {cli && <span className="font-mono">{cliRunLabel(cli.runtime)} · {cli.model ?? "Model not reported"}</span>}
+            {sdk && <span className="font-mono">{backendSdkLabel(sdk)} · {run.sdk?.model ?? "Model not reported"}</span>}
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's
                 spend cap when it has one, as the run is read now (a raise reads the run again, so the new cap shows). */}
@@ -103,7 +108,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
         {(view.canStop || view.canCancel || actions.onArchive || raisable) && (
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             {raisable && (
-              <Button size="sm" onClick={() => setRaising((r) => !r)} aria-expanded={raising} title={`Raise its ${capWords(cap!)} spend cap.`}>
+              <Button size="sm" onClick={raiseBelow ?? (() => setRaising((r) => !r))} aria-expanded={raiseBelow ? undefined : raising} title={`Raise its ${capWords(cap!)} spend cap.`}>
                 <CircleDollarSign aria-hidden /> Raise the cap
               </Button>
             )}
@@ -132,7 +137,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
           </div>
         )}
       </div>
-      {raisable && raising && (
+      {raisable && raising && !raiseBelow && (
         <div className="mt-3 max-w-xl">
           {/* Keyed on the pause, as the banner's form is: a new pause (or the first, on a working run) brings its suggestion. */}
           <RaiseCap key={budget ? `${run.run_id}:${budget.at}` : `${run.run_id}:working`} cap={cap!} suggested={suggestedCap(budget)} least={leastCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />

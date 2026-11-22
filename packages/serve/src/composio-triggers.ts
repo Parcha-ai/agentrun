@@ -25,7 +25,7 @@
 // asked anything.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
-import { type Ask, asking, type ComposioControl } from "./composio-preset.js";
+import { type Ask, asking, type ComposioControl, managedConfig } from "./composio-preset.js";
 import type { Source } from "./trigger-adapter.js";
 import { COMPOSIO_HOOK, COMPOSIO_SECRET, CONFIG_SECRET, CONFIG_UNLISTED, configScope, configSecrets, MOVE_FIELD, SEALED_FIELD, SEALED_MASK, sealableValue, sealedConfigFields, sealedKept, sealedSchemaFields, shownSource } from "./trigger-composio.js";
 import type { TriggerUpstream } from "./triggers.js";
@@ -40,8 +40,10 @@ const VERSION = "V3";
 const PAGE = 100;
 const MAX_PAGES = 10;
 
-/** A saved Composio server's key, the Composio user its address names, and its toolkit. */
-export type ComposioCredential = { key: string; user: string; toolkit: string };
+/** A saved Composio server's key, the Composio user its address names, its toolkit, and the auth config its save stands
+ *  on (the managed one found or made, or the one auth_config_id named; none for a server saved before that was recorded,
+ *  whose link is then under managedConfig's, or of a toolkit with no sign-in). */
+export type ComposioCredential = { key: string; user: string; toolkit: string; auth_config?: string };
 /** What an instance comes to once a trigger no longer holds it (leftWith). */
 type Left = "delete" | "off" | "keep";
 /** A trigger of kind composio, as the engine keeps it. */
@@ -55,7 +57,7 @@ export type ComposioTriggerDeps = {
   publicUrl?: string;
   /** The composio source's sealed settings: each hook's subscription secret. */
   sealed: Sealed;
-  /** Saved server `name`'s key, user and toolkit; refused (thrown) when it is no Composio server: by the source's field at
+  /** Saved server `name`'s key, user, toolkit and auth config; refused (thrown) when it is no Composio server: by the source's field at
    *  a trigger's create (`field`), as a 404 on its own routes (`route`). */
   credential(name: string, refusal: "field" | "route"): Promise<ComposioCredential>;
   /** Every trigger of kind composio, on or off. */
@@ -163,10 +165,12 @@ export class ComposioTriggers implements TriggerUpstream {
         // trigger leaves it as the triggers holding it then would (the upsert turned it on): deleted, off, or as it is.
         undo.push(async () => this.leave(ask, instance, await this.leftWith(instance, id)));
         if (!enabled && (await this.leftWith(instance, id)) !== "keep") await ask("turning the trigger instance off", "PATCH", `/api/v3/trigger_instances/manage/${enc(instance)}`, { status: "disable" });
-        // The saved server is still there, under the key this was made with: one deleted (or saved again with another
-        // key) meanwhile is refused here, and what was made is undone, so no trigger names a server that is gone.
+        // The saved server is still there, under the key and on the auth config this was made with: one deleted (or saved
+        // again with another key, or onto another config, whose accounts the instance's isn't) meanwhile is refused here,
+        // and what was made is undone, so no trigger names a server that is gone or an account it doesn't serve.
         const now = await this.deps.credential(server, "field");
         if (now.key !== credential.key) throw invalid([{ field: "source.server", reason: "invalid", message: `${server} was saved again with another Composio key while this trigger was being made: nothing was saved, make it again.` }]);
+        if (now.auth_config !== credential.auth_config) throw invalid([{ field: "source.server", reason: "invalid", message: `${server} was saved again on another auth config while this trigger was being made: nothing was saved, make it again.` }]);
         // Each credential of its config sealed, the trigger keeping the mask in its place: Composio's upsert above was the
         // one place it went.
         undo.push(async () => {
@@ -634,21 +638,25 @@ export class ComposioTriggers implements TriggerUpstream {
     return hook;
   }
 
-  /** The id of the one ACTIVE account the server's user has for its toolkit; none: refused, with the link to connect it;
-   *  several: refused, naming each with when it was connected, so the owner disconnects the ones it shouldn't run as. */
+  /** The id of the one ACTIVE account the server's user has for its toolkit, under the auth config the server's save stands
+   *  on (as its MCP server serves only those; every config, for a server saved before that was recorded); none: refused,
+   *  with the link to connect it under that config; several: refused, naming each with when it was connected, so the
+   *  owner disconnects the ones it shouldn't run as. */
   private async accountOf(ask: Ask, credential: ComposioCredential, server: string): Promise<string> {
-    const accounts = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${enc(credential.user)}&toolkit_slugs=${enc(credential.toolkit)}&statuses=ACTIVE`);
-    const active = (Array.isArray(accounts.items) ? accounts.items : []).filter((a): a is Json => isObject(a) && a.status === "ACTIVE" && !!text(a.id));
+    const config = credential.auth_config;
+    const accounts = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${enc(credential.user)}&toolkit_slugs=${enc(credential.toolkit)}${config ? `&auth_config_ids=${enc(config)}` : ""}&statuses=ACTIVE`);
+    const active = (Array.isArray(accounts.items) ? accounts.items : []).filter((a): a is Json => isObject(a) && a.status === "ACTIVE" && !!text(a.id) && (!config || (isObject(a.auth_config) && a.auth_config.id === config)));
     if (active.length === 1) return text(active[0]!.id);
+    const under = config ? ` under auth config ${config}` : "";
     // Several: never one picked, which would run the trigger as an account the owner didn't choose, unseen.
     if (active.length > 1) {
       const listed = active.map((a) => ({ id: text(a.id), created_at: text(a.created_at) })).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
-      throw new ApiError("composio_account_ambiguous", `${server}'s Composio user ${credential.user} has ${listed.length} connected ${credential.toolkit} accounts: ${listed.map((a) => `${a.id} (connected ${a.created_at || "at an unknown time"})`).join(", ")}. A trigger runs as one account: disconnect the ones it shouldn't run as in Composio, then make the trigger again.`, { details: { server, user_id: credential.user, accounts: listed } });
+      throw new ApiError("composio_account_ambiguous", `${server}'s Composio user ${credential.user} has ${listed.length} connected ${credential.toolkit} accounts${under}: ${listed.map((a) => `${a.id} (connected ${a.created_at || "at an unknown time"})`).join(", ")}. A trigger runs as one account: disconnect the ones it shouldn't run as in Composio, then make the trigger again.`, { details: { server, user_id: credential.user, accounts: listed } });
     }
-    // The link is under the toolkit's Composio-managed auth config, the one the server's save made or found.
-    const configs = await ask("finding the toolkit's auth config", "GET", `/api/v3/auth_configs?toolkit_slug=${enc(credential.toolkit)}`);
-    const managed = (Array.isArray(configs.items) ? configs.items : []).find((c) => isObject(c) && c.is_composio_managed === true && c.status !== "DISABLED" && text(c.id));
-    const link = isObject(managed) ? text((await ask("making the connect link", "POST", "/api/v3/connected_accounts/link", { auth_config_id: text(managed.id), user_id: credential.user })).redirect_url) : "";
-    throw new ApiError("composio_not_connected", `${server}'s Composio user ${credential.user} has no connected ${credential.toolkit} account: connect it${link ? ` at ${link}` : " in Composio"}, then make the trigger again.`, { details: { server, user_id: credential.user, ...(link ? { connect_url: link } : {}) } });
+    // The link is under the server's auth config; for a server saved before that was recorded, under the one its save
+    // found or made (managedConfig, the preset's own finder).
+    const linkConfig = config || (await managedConfig(ask, credential.toolkit));
+    const link = linkConfig ? text((await ask("making the connect link", "POST", "/api/v3/connected_accounts/link", { auth_config_id: linkConfig, user_id: credential.user })).redirect_url) : "";
+    throw new ApiError("composio_not_connected", `${server}'s Composio user ${credential.user} has no connected ${credential.toolkit} account${under}: connect it${link ? ` at ${link}` : " in Composio"}, then make the trigger again.`, { details: { server, user_id: credential.user, ...(link ? { connect_url: link } : {}) } });
   }
 }

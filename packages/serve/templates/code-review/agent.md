@@ -35,10 +35,10 @@ tool_policy: { bash: read-only }
 mcp:
   - source: github
     toolkit: github
-    tools: [pull_request_read, get_file_contents, get_repository_tree, pull_request_review_write, add_comment_to_pending_review]
+    tools: [pull_request_read, get_file_contents, pull_request_review_write, add_comment_to_pending_review]
     required: false
     reason: "Reads the pull request and the repo through GitHub, and posts one COMMENT review with the findings. Every call is held to this one repository. It never approves, requests changes or resolves a thread."
-    allow: [pull_request_read, get_file_contents, get_repository_tree]
+    allow: [pull_request_read, get_file_contents]
     # A pull request is text anyone can write: every tool, reads too, is pinned to the one repository, so a hostile
     # one can't have a read reach another repository the token reaches and the review quote it. No free-text search
     # (search_code reaches every repository the token does). The review write posts COMMENT reviews only: never
@@ -46,7 +46,6 @@ mcp:
     pin:
       pull_request_read: { owner: "${parameters.owner}", repo: "${parameters.repo}" }
       get_file_contents: { owner: "${parameters.owner}", repo: "${parameters.repo}" }
-      get_repository_tree: { owner: "${parameters.owner}", repo: "${parameters.repo}" }
       pull_request_review_write: { owner: "${parameters.owner}", repo: "${parameters.repo}", method: [create, submit_pending, delete_pending], event: [null, COMMENT] }
       add_comment_to_pending_review: { owner: "${parameters.owner}", repo: "${parameters.repo}" }
 parameters:

@@ -74,8 +74,10 @@ in this mount opts in on first registration only. Without workflow bindings the 
 turns and supplies those corrections; it cannot learn executable workflows.
 With explicit workflow bindings, `learning: { compile_after: 5 }` opts a new agent into
 workflow learning with a five-completed-run compilation threshold (the server default is 20).
-`agree_min` and `alone_min` configure the server's separate workflow-promotion checks; they do not
-gate delivery of committed workflows to eve. An existing agent's console setting always wins. The extension declares its own build dependencies;
+An Eve check compares the answer fields `agree_on` names, as in
+`learning: { compile_after: 5, agree_on: ["mcc"] }` (dotted paths into the answer's JSON object, such as
+`verdict.decision`). Connected checks use no grader, so without `agree_on` the whole answer must match exactly.
+Promotion thresholds stay in the agent's server settings. An existing agent's console setting always wins. The extension declares its own build dependencies;
 the application's model, tools and `agent.ts` build configuration need no changes.
 
 Removing the extension restores the original eve integration; it does not delete AgentRun history.
@@ -107,9 +109,11 @@ corrections or create a workflow after every successful task.
    Raw tool inputs/results, reasoning and native credentials remain with eve.
 4. Submit the original outcome once. Once enough complete native runs are recorded, AgentRun's
    ordinary runner compiles workflow drafts using the owner's corrections and the bound tool
-   schemas and commits them. A later fresh turn receives compatible committed workflows at its
-   pinned revision; the server's independent promotion checks are a separate stage. Submitting evidence does not itself
-   make a workflow executable.
+   schemas and commits them as drafts. Later native turns receive one candidate privately for a
+   shadow check after their own answers. The shared client replays recorded tool results, and the
+   server compares the workflow's answers through its promotion gate once it holds as many checked
+   turns as the compile threshold. Only promoted workflows become
+   reusable context on subsequent turns. Neither compilation nor receiving a check executes a workflow for the user.
 
 Evidence is bounded per turn. An oversized or conflicting buffer skips that turn’s learning;
 later native turns can still proceed. A missing start boundary or a full delivery backlog
@@ -159,12 +163,13 @@ locally; only schemas and permission metadata are sent to AgentRun.
 
 After binding the original tools, enable **Self-improving** in the agent's learning settings.
 The server can compile a workflow from complete native traces once the configured threshold is
-reached. The next fresh turn receives compatible committed workflows pinned
-to that turn's learning revision. When eve chooses `learned_workflow`, the extension
-creates a local MCP bridge inside that native tool step and invokes the original callbacks through
-the bridge's schema checks and live policy. This MCP server is temporary and listens only on
-localhost inside the eve application; it is not a public MCP endpoint on the AgentRun server.
-No model-visible URL, auth token or capability is needed.
+reached. Separate native turns, as many as that threshold, check the draft against the agent's own
+answers using their recorded tool results, and the server decides once on all of them. The server
+applies the same promotion gate as other connected harnesses; mismatched,
+incomplete or untested drafts are withheld. A subsequent turn can choose a promoted workflow
+when it fits, or use its original tools directly. When eve chooses `learned_workflow`, the extension
+executes through the shared in-process bridge, with the original callbacks, schema checks and live
+policy. No loopback MCP server or model-visible URL, token or capability is needed.
 Arguments and callback results stay with eve; signed, run-scoped lifecycle metadata survives durable
 replay and lets AgentRun distinguish actual workflow execution from an unverified claim.
 
@@ -186,7 +191,8 @@ cancel a callback already dispatched. Fresh Off turns expose no executable workf
   above; the extension does not install arbitrary tools or rewrite the project.
 - Admission requires AgentRun to be reachable. Once native work completes, a delivery failure
   is logged without replacing eve's answer. A pending receipt is retried on the next turn in the
-  same eve session, with the same upload keys. A session that never resumes may need operator
+  same eve session, with the same upload keys. A refused earlier delivery never rejects a new native
+  turn; a full backlog continues native execution without another learning receipt. A session that never resumes may need operator
   recovery; hooks are not an exactly-once background delivery service.
 - AgentRun evidence receipts expire after one hour. An expired receipt is closed without claiming
   learning; it does not block new turns. History reads and evidence uploads are bounded. Unknown

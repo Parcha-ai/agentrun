@@ -20,6 +20,7 @@ import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { savedModelKeys, withModelKeys } from "./claim-secrets.js";
+import { withRequestMetadata } from "../request-metadata.js";
 import { noServerKeyFor } from "../run-model-key.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
@@ -75,9 +76,12 @@ async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch,
   }
   // A backend SDK run's compile turn is asked on the runner's one model route, on the agent's own model (its learning
   // start's), its key from the runner's environment, else the one saved in Settings → Model keys, read at each ask.
-  if (launch.sdk) return createSdkLoop(launch, deps, async () => {
+  if (launch.sdk || launch.cli_learning) return createSdkLoop(launch, deps, async (claim) => {
+    if (launch.cli_learning) throw new Error("Connected CLI capture has no workflow execution bridge.");
     const base = deps.env ?? process.env;
-    const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
+    // Its requests on serve's gateway name the claim's run, turn and attempt, as every other request of a claim does
+    // (request-metadata.ts): withModelKeys makes the env this ask's own.
+    const env = withRequestMetadata(withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base })), claim);
     // It runs after its backend reported the run complete, on no run's key: on a server that holds no gateway key it is
     // skipped in words (run-model-key.ts noServerKeyFor), nothing sent.
     const off = noServerKeyFor(env, "An SDK run's compile turn");

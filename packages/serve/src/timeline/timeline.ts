@@ -191,6 +191,11 @@ export const chargedTool = (row: TimelineEvent): string | undefined =>
  *  told after the note's "AgentRun server note:" label). A row of its own, the server's ("AgentRun: …", labelled once);
  *  no request, no cost. */
 export const CAP_WRAPUP = "agentrun.cap_wrapup";
+/** A tool call the spend cap's wrap-up refused (serve's wrap-up.ts, the runner's gate): `callId` and the cap it was
+ *  refused under (`capUsd`), on the run's root. The call's own refused row is its result's; this one is data only, for the
+ *  run's view (`stopped_for`, `budget_refused_calls`): no row, no request, no cost. A call refused twice (a replay) is
+ *  one call. */
+export const CAP_REFUSED = "agentrun.cap_refused";
 /** The run's model was told once, on its first request after its claim gave it a computer in place of an earlier
  *  claim's, that the old one is gone with what was on it (`words`, what it was told after the label, as the wrap-up's).
  *  A row of its own, the server's, as the wrap-up's; no request, no cost. */
@@ -214,6 +219,18 @@ export const REQUEST_CONTINUED = "agentrun.request_continued";
 export const HOST_PHASE = "agentrun.phase";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
+/** Whether `entry` is pi's compaction entry answering its summary request, the one rule both journal counters read (this
+ *  timeline's meter, cap.ts openFigures): a summary request that left marked as a generation is answered by pi's
+ *  pi.compaction entry, since pi stores no answer for it; one a host marked as a side request (`request: "compaction"`)
+ *  is closed by its own cost entry, never by that entry. Fed every entry in the journal's order, `sideSummaries` counting
+ *  the side summary requests since pi's last compaction entry, which are its own. */
+export function compactionAnswers(entry: EntryLike, sideSummaries: { count: number }): boolean {
+  if (entry.kind === REQUEST_STARTED && isCompaction(entry)) sideSummaries.count += 1;
+  if (entry.kind !== "pi.compaction") return false;
+  if (sideSummaries.count === 0) return true;
+  sideSummaries.count = 0;
+  return false;
+}
 /** A side request's mark: its `request` is a label (a generation's, a harness's request number, is not). */
 const isSide = (entry: EntryLike) => typeof obj(entry.data)?.request === "string";
 const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
@@ -405,6 +422,8 @@ function createMeter() {
   // cost, or with an end when aborted.
   let compactions = 0;
   let compacting = 0;
+  // Compaction summaries a host marked as side requests since pi's last pi.compaction entry: that entry is theirs.
+  const sideSummaries = { count: 0 };
   // How many are in flight: two side requests (a turn's parallel searches) may be.
   let sidesOpen = 0;
   const tokens: Tokens = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
@@ -420,6 +439,7 @@ function createMeter() {
   function push(entry: EntryLike): "answer" | "call" | "continued" | "refusal" | "mark" | "charge" | "unmetered" | undefined {
     const message = entry.model?.[0];
     const data = obj(entry.data);
+    const summaryAnswered = compactionAnswers(entry, sideSummaries);
     if (entry.kind === "pi.assistant" && entry.recordedCall && message) {
       // A call the loop's record kept (a CLI's, or one a tool of pi's nested): shown as an answer's call, never a request.
       return "call";
@@ -434,6 +454,17 @@ function createMeter() {
       // The answer before it, continued: shown, never counted again.
       continued -= 1;
       return "continued";
+    } else if (entry.kind === "pi.compaction") {
+      // pi's summary of the older context. A summary request that left through the run's own model port was marked as a
+      // generation is (no `request` label) and booked at its price, and pi stores no answer for it: its cost rides on the
+      // answer pi stores beside it (what the session booked since the last one), so this entry is that request's answer,
+      // at no cost of its own here, its tokens unknown to pi's entries. One a host marked as a side request is closed by
+      // its own cost entry, never here. Shown as its phase row all the same.
+      if (summaryAnswered && marked - answered - freeUnanswered - atMostUnanswered - (freeEnded ? 1 : 0) - (atMostEnded !== undefined ? 1 : 0) > 0) {
+        (requests += 1), (answered += 1);
+        addTokens(undefined);
+      }
+      return undefined;
     } else if (entry.kind === REQUEST_STARTED && isSide(entry)) {
       compacting += 1;
       sidesOpen += 1;
@@ -878,6 +909,8 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
+    // The wrap-up's refusal of a call, kept for the run's view: its result row is the call's own.
+    if (entry.kind === CAP_REFUSED) return out;
     if (entry.kind === CAP_WRAPUP || entry.kind === COMPUTER_NOTE) {
       // What the run's model was told near its cap, or after its computer was replaced: the server's row (`origin:
       // "server"`, in the words of its other rows), no request, no cost, and no message any turn took (its id ends in

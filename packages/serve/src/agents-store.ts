@@ -6,11 +6,13 @@
 //
 // The run counts an agent view shows (runs.count, runs.live) are E3's run reads, not this module's; agentView takes them.
 import { randomBytes } from "node:crypto";
+import { purgedAgent } from "./agents.js";
 import { agentLink } from "./console-links.js";
 import { approvalsOf } from "./approvals.js";
 import { ApiError, invalid } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { type LearningSetting, learningSettingIssue } from "./learning-setting.js";
+import { learningSettingForBody } from "./store/agent-body.js";
 import { storedHarness } from "./harness-table.js";
 import {
   AgentBodyInvalid, type AgenticBody, RevisionMoved, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
@@ -24,7 +26,8 @@ import { type DefinitionBody, type Json, skillIssues, skillNames } from "./valid
 let mintedMs = -1;
 let mintedInMs = 0;
 
-/** A UUIDv7: time-ordered, so a listing by (created_at, id) is stable, and unique per revision and per minted agent. Two
+/** A UUIDv7: time-ordered, so a listing by (created_at, id) is stable, and unique per revision, per minted agent and per
+ *  upload (uploads.ts lists files by id, newest first). Two
  *  minted in one millisecond keep their order: the 12 bits after the time count them up (RFC 9562's monotonic counter),
  *  and a clock that steps back keeps the last millisecond, so each id sorts after the one before it. Without that, two
  *  edits in one millisecond tie on created_at and their random ids could number the newer revision first. */
@@ -74,11 +77,15 @@ function storeError(error: unknown): never {
   throw error;
 }
 
+/** Whether another system owns `agent`: an inline run with `external` made it (its `externalRef` set), so the system that
+ *  sent it sends its deletes, the agent's whole (DELETE /agents/{id}) and, on an API-only server, a run's purge. */
+export const ownedElsewhere = (agent: AgentRow): boolean => agent.externalRef !== null;
+
 /** Refuses a write to an externally owned agent: one that mirrors an agent in another system (its `externalRef` set) is
  *  read-only here — its source is the truth, which writes a new version by running it. Edits, set-current and archive are
  *  refused (403 forbidden); reads work as for any agent. */
 export function refuseExternal(agent: AgentRow): void {
-  if (agent.externalRef !== null) throw new ApiError("forbidden", `The agent ${agent.id} is managed by its source and is read-only here; change it there and run it again.`);
+  if (ownedElsewhere(agent)) throw new ApiError("forbidden", `The agent ${agent.id} is managed by its source and is read-only here; change it there and run it again.`);
 }
 
 /** An externally owned agent's reference in its source, as POST /runs names it: its source system, the kind of thing it
@@ -126,7 +133,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   // pin's arguments sorted) so two revisions that say the same are one body. The store never reimplements it.
   const set = toolSettingsOf(definition.tool_settings);
   const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...place, ...set };
-  const capped = typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {};
+  const capped = { ...(typeof definition.max_cost_usd === "number" && definition.max_cost_usd > 0 ? { maxCostUsd: definition.max_cost_usd } : {}), ...(typeof definition.max_requests === "number" && definition.max_requests > 0 ? { maxRequests: definition.max_requests } : {}) };
   // A workflow keeps its approvals too ("never": it runs unattended), so its call nodes are checked with them (runnable.ts,
   // permissionOf with the revision's approvals): a call node on a tool set to ask runs under never, as on main.
   if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...(definition.approvals === "never" ? { approvals: "never" as const } : {}), ...common, ...capped };
@@ -135,6 +142,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   return {
     kind: "agentic",
     instructions: definition.instructions as string,
+    ...(definition.cli_learning !== undefined ? {cli_learning: definition.cli_learning as import("./store/agent-body.js").CliLearningBinding} : {}),
     ...(definition.sdk !== undefined ? {sdk: definition.sdk as import("./store/agent-body.js").SdkBinding} : {}),
     ...(isObject(definition.native) ? { native: definition.native as unknown as import("./native/types.js").NativeBinding } : {}),
     ...(typeof definition.model === "string" ? { model: definition.model } : {}),
@@ -235,7 +243,7 @@ export async function createAgent(
   if (given !== undefined && !ID_PATTERN.test(given)) throw invalid([{ field: "definition.id", reason: "invalid", message: `definition.id does not match ${ID_PATTERN.source}` }]);
   if (given !== undefined && (await store.agents.get(given))) throw new ApiError("agent_exists", `an agent ${given} exists here`);
   // Stamped on the revision now, never resolved at run time: an agent saved with no place keeps running on the runner.
-  const placed = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow) && !isObject(definition.sdk)
+  const placed = options.fresh && definition.place === undefined && definition.computer === undefined && !isObject(definition.workflow) && !isObject(definition.sdk) && !isObject(definition.cli_learning)
     ? { place: options.fresh.place, ...(definition.tools === undefined ? { tools: [...options.fresh.tools] } : {}) }
     : {};
   // A template's agent keeps the package it was applied from on its first revision (store `revisions.package`).
@@ -267,6 +275,9 @@ export function makeRevision(definition: Json, files: Record<string, string>, no
   return note !== undefined ? { ...revision, note } : revision;
 }
 
+/** Runs a write's last read and its commit in the agent's delete turn (server.ts agentWrite). */
+export type InTurn = <T>(work: () => Promise<T>) => Promise<T>;
+
 /** How many times an edit with no If-Match is built again on a current revision that moved while it was checked. */
 const EDIT_TRIES = 5;
 
@@ -283,12 +294,13 @@ const EDIT_TRIES = 5;
  *  revision it does not follow. `contract`: an edit that always makes a new revision, even one equal to the current.
  *  `template`: the package an apply with agent_id wrote it from, kept on the revision (getAgent's `template`).
  *  `fromPackage`: the definition is a whole package's (an apply with agent_id), so what it leaves out is not carried over
- *  (editOn). */
+ *  (editOn). `inTurn`: where the agent is read again and the revision written (the server's agentWrite, which refuses a
+ *  purged agent, or one whose purge stopped part way); the check runs outside it. */
 export async function commitAgent(
   store: AgentsStore,
   read: AgentEntry,
   { definition, skills, note }: DefinitionBody,
-  { ifCurrent, check, contract = false, template, fromPackage = false }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean } = {},
+  { ifCurrent, check, contract = false, template, fromPackage = false, inTurn }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {},
 ): Promise<AgentEntry> {
   const stale = () => new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   const held = (entry: AgentEntry): AgentEntry => {
@@ -296,6 +308,8 @@ export async function commitAgent(
     return entry;
   };
   let entry = (await getAgent(store, read.agent.id)) ?? read;
+  // Purged since the request read it: 410 before anything is checked (the commit's turn and the store refuse it too).
+  if (entry.agent.purgedAt !== null) throw purgedAgent(entry.agent);
   refuseExternal(entry.agent);
   held(entry);
   const { agent } = entry;
@@ -314,8 +328,12 @@ export async function commitAgent(
     const edit = template ? { ...made, package: template } : made;
     const revision = stamped(edit, await check?.(edit, entry.revision));
     const base = entry.revision?.id ?? null;
-    const now = held((await getAgent(store, agent.id)) ?? entry);
-    if ((now.revision?.id ?? null) === base) {
+    // The agent read again and the revision written in `inTurn` (the server's agent delete turn): the check above, which
+    // may wait on a server's listing, runs outside it, so edits of one agent are checked at once and a DELETE never waits
+    // on a check.
+    const landed = await (inTurn ?? ((work) => work()))(async (): Promise<AgentEntry | undefined> => {
+      const now = held((await getAgent(store, agent.id)) ?? entry);
+      if ((now.revision?.id ?? null) !== base) return undefined;
       // A new description is a real edit: a revision, even with the body unchanged. The same one again writes nothing.
       const described = description !== undefined && description !== now.agent.description;
       if (!contract && !described && now.revision && sameRevision(now.revision, revision)) {
@@ -331,8 +349,10 @@ export async function commitAgent(
         return (await getAgent(store, agent.id))!;
       } catch (error) {
         if (!(error instanceof RevisionMoved)) storeError(error);
+        return undefined;
       }
-    }
+    });
+    if (landed) return landed;
     // Moved while it was checked or written: with If-Match that is stale; without, built and checked again on it.
     if (ifCurrent !== undefined) throw stale();
     if (tries >= EDIT_TRIES) throw new ApiError("precondition_failed", "the agent's current revision kept moving while this edit was checked: read the agent again");
@@ -348,6 +368,7 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
   if (files === undefined) files = (isObject(current?.skills) ? (current!.skills as Record<string, string>) : {});
   const carried = current
     ? {
+        ...((currentBody as AgenticBody).cli_learning && definition.cli_learning === undefined ? { cli_learning: (currentBody as AgenticBody).cli_learning } : {}),
         ...((currentBody as AgenticBody).sdk && definition.sdk === undefined ? { sdk: (currentBody as AgenticBody).sdk } : {}),
         ...((currentBody as AgenticBody).native && definition.native === undefined ? { native: (currentBody as AgenticBody).native } : {}),
         ...(definition.harness === undefined && currentBody.harness ? { harness: currentBody.harness } : {}),
@@ -360,10 +381,12 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
   // What the host owns (the sdk and native references, the harness, the computer and place) carries as an edit's does.
   const owned = current && !fromPackage
     ? {
-        ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).learning !== undefined ? { learning: (currentBody as AgenticBody).learning } : {}),
+        ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && learningSettingForBody(currentBody) !== undefined ? { learning: learningSettingForBody(currentBody) } : {}),
         // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals),
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
+        // So does its limit on each run's free-model requests (0 clears it): leaving a field out never removes a limit.
+        ...(definition.max_requests === undefined && currentBody.maxRequests !== undefined ? { max_requests: currentBody.maxRequests } : {}),
         // Its input's and its structured answer's schemas are the agent's contract with its callers: an edit that leaves
         // one out keeps it.
         ...(definition.input_schema === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).inputSchema !== undefined ? { input_schema: (currentBody as AgenticBody).inputSchema } : {}),
@@ -412,9 +435,9 @@ export const etagOf = (entry: AgentEntry) => `"${entry.revision?.id ?? "none"}"`
 /** A revision as a definition, as POST /agents takes one, numbered. */
 export function definitionOf(agent: AgentRow, revision: RevisionRow, version: number): Json {
   const body = revision.body as Body;
-  const common = body.maxCostUsd !== undefined ? { max_cost_usd: body.maxCostUsd } : {};
+  const common = { ...(body.maxCostUsd !== undefined ? { max_cost_usd: body.maxCostUsd } : {}), ...(body.maxRequests !== undefined ? { max_requests: body.maxRequests } : {}) };
   const kindBody = revision.kind === "agentic"
-    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).inputSchema !== undefined ? { input_schema: (body as AgenticBody).inputSchema } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
+    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...(learningSettingForBody(body) !== undefined ? { learning: learningSettingForBody(body) } : {}), ...((body as AgenticBody).inputSchema !== undefined ? { input_schema: (body as AgenticBody).inputSchema } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
   return {
     id: agent.id,
@@ -422,6 +445,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     name: agent.name,
     ...(agent.description !== null && agent.description !== undefined ? { description: agent.description } : {}),
     ...kindBody,
+    ...((body as AgenticBody).cli_learning ? { cli_learning: (body as AgenticBody).cli_learning } : {}),
     ...((body as AgenticBody).sdk ? { sdk: (body as AgenticBody).sdk } : {}),
     ...((body as AgenticBody).native ? { native: (body as AgenticBody).native } : {}),
     // Its approvals, of either kind: "ask" where none is set, as the definition read says it (definitionOf).

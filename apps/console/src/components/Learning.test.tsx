@@ -97,6 +97,21 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
 }
 const focus = async () => { await act(async () => { window.dispatchEvent(new Event("focus")); }); await settle(); };
 
+describe("learning model setup", () => {
+  it("shows the missing learning route and clears setup after it is configured, without changing learning", async () => {
+    let current = view({ learning_model: { location: "server", ready: false, model: "openrouter/example-model", needs: "key", reason: "Add OPENROUTER_API_KEY for this model." } });
+    const t = await open(agent(true), { learning: async () => current });
+    expect(t.host.querySelector('[aria-label="Learning model setup"]')).not.toBeNull();
+    expect(t.text()).toContain("openrouter/example-model");
+    expect(t.host.querySelector('a[href="#/settings/keys"]')).not.toBeNull();
+    current = view({ learning_model: { ...current.learning_model!, ready: true, needs: null, reason: null } });
+    await t.click(/^Refresh learning$/);
+    expect(t.host.querySelector('[aria-label="Learning model setup"]')).toBeNull();
+    expect(t.text()).toContain("openrouter/example-model");
+    expect(t.calls.filter((call) => /^(put |write )/.test(call))).toEqual([]);
+  });
+});
+
 describe("refreshing learning after external work", () => {
   it("reads the corrections, the workflows and the runs again when returning to the window", async () => {
     let current = view();
@@ -999,5 +1014,59 @@ describe("the bill", () => {
     // Runs 5 to 9 were audited and each has its row: the card and the charged runs agree, nothing waits.
     expect(t.text()).not.toContain("not scored yet");
     expect(t.text()).not.toMatch(/equal[- ]cache/i);
+  });
+});
+
+
+describe("CLI project learning uses owner corrections", () => {
+  const cli = { runtime: "codex" as const, connection_id: "connection", project: "/workspace/app" };
+  const empty = async () => none();
+
+  it("explains an uncaptured first prompt without launching extra work or promising automatic lessons", async () => {
+    const a = { ...agent(true, { cli_learning: cli }), runs: { count: 0, live: 0 } };
+    const t = await open(a, { learning: empty, runs: [] }, { server: "on" });
+    expect(t.text()).toContain("Waiting for the first captured prompt.");
+    expect(t.text()).toContain("Continue your normal work in Codex CLI");
+    expect(t.text()).toContain("Earlier conversations are not imported automatically");
+    expect(t.text()).toContain("owner-written corrections");
+    expect(t.text()).toContain("Workflow learning is unavailable for this CLI connection");
+    expect(t.text()).not.toContain("a job it does again compiles into a workflow");
+    expect(t.text()).not.toContain("keeps a note");
+    expect(t.host.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(t.calls.some(call => /^(put |write )/.test(call))).toBe(false);
+  });
+
+  it("stops the first-prompt message when a recorded run is visible", async () => {
+    const a = { ...agent(true, { cli_learning: cli }), runs: { count: 0, live: 0 } };
+    const t = await open(a, { learning: empty, runs: [RUNS[0]!] }, { server: "on" });
+    expect(t.text()).not.toContain("Waiting for the first captured prompt.");
+    expect(t.text()).toContain("No corrections yet.");
+    expect(t.text()).not.toContain("had their compile turn");
+  });
+
+  it("keeps disabled learning explicit and enables the current boolean setting on the latest revision", async () => {
+    const a = { ...agent(false, { cli_learning: cli }), runs: { count: 0, live: 0 } };
+    const t = await open(a, { learning: empty, runs: [] }, { server: "on" });
+    expect(t.text()).toContain("Learning is off for this agent.");
+    expect(t.text()).not.toContain("Waiting for the first captured prompt.");
+    await act(async () => (t.host.querySelector('[role="switch"]') as HTMLButtonElement).click());
+    await settle();
+    const saved = t.calls.find(call => call.startsWith("put "))!;
+    expect(saved).toContain('"learning":true');
+    expect(saved).toContain('"cli_learning"');
+    expect(saved).not.toContain('"learning":"notes"');
+  });
+
+  it("keeps corrections editable and historical workflows visible without offering execution or approval", async () => {
+    const t = await open(agent(true, { cli_learning: cli }), { learning: async () => view({ workflows: [flow("pending")] }), runs: [] });
+    expect(t.text()).toContain("Keep the answer to three lines.");
+    expect(t.button(/^Edit corrections$/)).toBeDefined();
+    expect(t.card("check-refunds")).not.toBeNull();
+    expect(t.button(/^Approve check-refunds$/)).toBeUndefined();
+    expect(t.button(/^Retire check-refunds$/)).toBeUndefined();
+    expect(t.text()).toContain("Stored workflows are preserved");
+    expect(t.text()).not.toContain("a job it does again, as steps a later run can call");
+    expect(t.text()).not.toContain("compiles into a workflow it can run as one step");
+    expect(t.calls.some(call => /^(put |write |approve |retire )/.test(call))).toBe(false);
   });
 });

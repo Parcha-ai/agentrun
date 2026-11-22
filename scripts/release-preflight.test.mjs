@@ -108,9 +108,11 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
     await mkdir(join(root, '.release'));
     await mkdir(join(root, 'bin'));
     await cp(new URL('./check-typescript-floor.mjs', import.meta.url), join(root, 'scripts/check-typescript-floor.mjs'));
+    await cp(new URL('./npm-command.mjs', import.meta.url), join(root, 'scripts/npm-command.mjs'));
     await writeFile(join(root, '.release/typescript-floor.json'), '{"status":"passed"}');
-    await writeFile(join(root, 'bin/npm'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
-    await assert.rejects(exec(process.execPath, ['scripts/check-typescript-floor.mjs'], { cwd: root, env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}` } }));
+    // An npm that fails, as the CLI script npm names under `npm run` (npm_execpath).
+    await writeFile(join(root, 'bin/npm-cli.cjs'), 'process.exit(1);\n');
+    await assert.rejects(exec(process.execPath, ['scripts/check-typescript-floor.mjs'], { cwd: root, env: { ...process.env, npm_execpath: join(root, 'bin/npm-cli.cjs') } }));
     assert.equal(JSON.parse(await readFile(join(root, '.release/typescript-floor.json'), 'utf8')).status, 'failed');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -118,8 +120,8 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-serve', '@parcha/agentrun']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-agentrun-decisions-${version}.tgz`, `parcha-agentrun-computer-${version}.tgz`, `parcha-agentrun-client-${version}.tgz`, `parcha-agentrun-kernel-${version}.tgz`, `parcha-agentrun-harness-claude-${version}.tgz`, `parcha-agentrun-harness-codex-${version}.tgz`, `parcha-agentrun-serve-${version}.tgz`, 'parcha-agentrun-0.3.0.tgz']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-harness-acp', '@parcha/agentrun-serve', '@parcha/agentrun']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-agentrun-decisions-${version}.tgz`, `parcha-agentrun-computer-${version}.tgz`, `parcha-agentrun-client-${version}.tgz`, `parcha-agentrun-kernel-${version}.tgz`, `parcha-agentrun-harness-claude-${version}.tgz`, `parcha-agentrun-harness-codex-${version}.tgz`, `parcha-agentrun-harness-acp-${version}.tgz`, `parcha-agentrun-serve-${version}.tgz`, 'parcha-agentrun-0.3.0.tgz']);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
@@ -232,7 +234,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-serve', '@parcha/agentrun']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-harness-acp', '@parcha/agentrun-serve', '@parcha/agentrun']);
   await writeFile(join(root, 'packages/pi-browser/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
@@ -283,7 +285,7 @@ test('the publish set is the explicit release map minus the held packages, and a
 });
 
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
-  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi-browser', 'decisions', 'computer', 'client', 'eve', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'serve', 'agentrun'], 'dependencies before consumers, including client/DSL before eve, and the npx command after serve');
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi-browser', 'decisions', 'computer', 'client', 'eve', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'serve', 'agentrun'], 'dependencies before consumers, including client/DSL before eve and the harness adapters before serve, and the npx command after serve');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   for (const directory of listedPackages) {
     for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {

@@ -25,16 +25,8 @@
 // opens it again, so a message's new credential reaches the run's next model request; a run handed none gets its calls
 // refused unsent (UNUSABLE.perRunMissing).
 //
-// A per-run Composio server (composio-made.ts composioPerRun: the preset saved it with user_id "per_run") keeps the
-// install's key, sealed as any headers server's, and no Composio user or account: its address names none. The run's
-// caller binds it ({composio_user_id, connected_account_id?} in mcp_auth), sealed in the run's launch as per_run
-// headers are, and its entry here carries that user and account as the query every request to it adds to the pinned
-// address (mcp-gateway.ts), held by the run's redactors as headers are, never written to its row, the journal, the
-// timeline or a log line: the binding's ids are held by the run's redactors as any secret of 8 characters or more; a
-// shorter Composio user id is an identifier, not a credential, and a conversation can still quote it, but no row,
-// journal entry, timeline item or log line carries it as a field (an account id is 8 or more, COMPOSIO_ACCOUNT_ID).
-// A run that bound none gets its calls refused unsent, in UNUSABLE.perRunMissing's words: never
-// a call to an address that names no account.
+// A per-run Composio server (composio-made.ts composioPerRun) is bound by each run's caller ({composio_user_id,
+// connected_account_id?} in mcp_auth, sealed in its launch): its entry carries them as `query` (mcp-gateway.ts).
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again
@@ -71,7 +63,7 @@ import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-probe.js";
-import { type McpCredential, openRunMcpAuth, type RunMcpAuth } from "../store/seal.js";
+import { type McpCredential, openRunMcpAuth, type RunMcpAuth, type RunMcpEntry } from "../store/seal.js";
 import { getMcpServer, keepRefreshedCredential, openMcpRow } from "../mcp-store.js";
 import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store } from "../store/index.js";
 
@@ -407,30 +399,30 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
 
   /** The run's handed MCP credentials, opened from its launch: read once per fresh() (perRunRead), not once per server. */
   let perRunRead: Promise<RunMcpAuth | undefined> | undefined;
-  /** A per_run server's headers for this run, from its launch; or why there are none. Only for the origin its url had
-   *  when they were handed: a server moved since gets none. */
-  const perRun = async (name: string, url: string): Promise<{ headers?: Record<string, string>; unopened?: string }> => {
+  /** What the run's caller handed `name` (mcp_auth, opened from its launch) when it is of `shape`; or why there is none.
+   *  Only for the origin its url had when it was handed: a server moved since gets none. */
+  const handed = async <K extends "headers" | "composio">(name: string, url: string, shape: K): Promise<Extract<RunMcpEntry, Record<K, unknown>> | { unopened: string }> => {
     perRunRead ??= store.runs.launch(claim.runId).then((launch) => openRunMcpAuth(sealKey, claim.runId, launch.sealed));
-    const handed = await perRunRead;
-    if (handed === undefined) return { unopened: UNUSABLE.damaged };
-    const given = Object.hasOwn(handed, name) ? handed[name] : undefined;
-    if (!given || !("headers" in given)) return { unopened: UNUSABLE.perRunMissing };
+    const all = await perRunRead;
+    if (all === undefined) return { unopened: UNUSABLE.damaged };
+    const given = Object.hasOwn(all, name) ? all[name] : undefined;
+    if (!given || !(shape in given)) return { unopened: UNUSABLE.perRunMissing };
     if (given.origin !== new URL(url).origin) return { unopened: UNUSABLE.damaged };
-    return { headers: { ...given.headers } };
+    return given as Extract<RunMcpEntry, Record<K, unknown>>;
+  };
+  /** A per_run server's headers for this run; or why there are none. */
+  const perRun = async (name: string, url: string): Promise<{ headers?: Record<string, string>; unopened?: string }> => {
+    const given = await handed(name, url, "headers");
+    return "unopened" in given ? given : { headers: { ...given.headers } };
   };
 
   /** A per-run Composio server's account for this run, as the query its requests add (composio-preset.ts
-   *  composioRunQuery), from its launch's binding; or why there is none. Undefined: `row` is no per-run Composio server
-   *  (its own record says so: composioPerRun). Only for the origin its url had when the binding was handed. */
+   *  composioRunQuery); or why there is none. Undefined: `row` is no per-run Composio server (its own record says so:
+   *  composioPerRun). */
   const composioAccount = async (name: string, row: McpServerRow): Promise<{ query: Record<string, string> } | { unopened: string } | undefined> => {
     if (!composioPerRun(row, await store.settings.get(composioMadeKey(name)))) return undefined;
-    perRunRead ??= store.runs.launch(claim.runId).then((launch) => openRunMcpAuth(sealKey, claim.runId, launch.sealed));
-    const handed = await perRunRead;
-    if (handed === undefined) return { unopened: UNUSABLE.damaged };
-    const given = Object.hasOwn(handed, name) ? handed[name] : undefined;
-    if (!given || !("composio" in given)) return { unopened: UNUSABLE.perRunMissing };
-    if (given.origin !== new URL(row.url).origin) return { unopened: UNUSABLE.damaged };
-    return { query: composioRunQuery(given.composio) };
+    const given = await handed(name, row.url, "composio");
+    return "unopened" in given ? given : { query: composioRunQuery(given.composio) };
   };
 
   const fresh = async () => {
@@ -522,7 +514,7 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     const at = Object.hasOwn(saved, server) ? saved[server]! : undefined;
     const listed = at?.tools.find((one) => one.name === tool);
     if (!at || !listed) throw new McpClaimRefused(`The MCP tool ${name} was not pinned when this agent's revision was saved, so this run cannot call it. Save the agent again to pin it. Nothing was sent.`);
-    const kept = (pinned[server] ??= { url: at.url, tools: [] });
+    const kept = (pinned[server] ??= { url: at.url, tools: [], ...(at.meter ? { meter: at.meter } : {}) });
     if (!kept.tools.some((one) => one.name === listed.name)) kept.tools.push(listed);
     const price = at.prices && Object.hasOwn(at.prices, listed.name) ? at.prices[listed.name] : undefined;
     if (price !== undefined) (kept.prices ??= Object.create(null) as Record<string, number>)[listed.name] = price;

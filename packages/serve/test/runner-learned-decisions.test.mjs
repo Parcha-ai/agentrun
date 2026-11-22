@@ -14,7 +14,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 import { withEnv } from "./support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
@@ -85,6 +85,7 @@ async function learnedJudgeRun(t, { toolSettings, noUsage = false, capUsd, patch
   });
   await server.agents.create({ id: "agent-1", name: "Checks" }, { id: "rev-1", kind: "agentic", body: { instructions: "Check the claim.", tools: ["read"], learning: true, ...(toolSettings ? { toolSettings } : {}) } });
   const seed = await landWorkflows(dir, "agent-1", [{ name: "check", description: "Checks whether a claim is right", workflow: checkFlow }]);
+  await promoteChecked(server.settings, "agent-1", [{ name: "check", workflow: checkFlow }]);
   const launch = { input: { content: "Check the claim." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, learning: startAt(seed), ...(capUsd !== undefined ? { maxCostUsd: capUsd } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();

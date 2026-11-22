@@ -15,7 +15,7 @@ import { runTemplatePrompt } from "@/lib/codingAgentPrompts";
 import { allPages, type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { cn } from "@/lib/utils";
-import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
+import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine, TRIGGER_KINDS } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
 import { type FieldSpec, fieldIssueWords, fieldKind, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, schemaFields } from "@/lib/inputForm";
@@ -230,6 +230,13 @@ const installHash = (source: string) => `#/templates/install?src=${encodeURIComp
  *  show first: a schedule with when it runs and its next run, as the Triggers page says them. */
 /** How long the Apply page waits on one of its new triggers' read-back before it leaves that trigger out. */
 export const TRIGGER_READ_MS = 3_000;
+/** What an apply did to its agent, as its answer says it (agent_change, revision_version): the title's last word and the
+ *  sentence above its warnings. An Update that changed nothing wrote no revision, and says so. */
+const CHANGE_WORDS: Record<TemplateApplied["agent_change"], { title: string; said: (rev: number) => string }> = {
+  made: { title: "applied", said: () => "The agent is made" },
+  updated: { title: "updated", said: (rev) => `Updated: rev ${rev}` },
+  unchanged: { title: "unchanged", said: (rev) => `Nothing to update: rev ${rev} is current` },
+};
 /** `promise`'s answer, or undefined once `ms` have passed without one. */
 function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -259,7 +266,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   // The refusal's own words beside Apply; `withIssues` when it came with issues, so it goes once the last of them does.
   const [said, setSaid] = useState<{ text: string; withIssues: boolean } | null>(null);
   const [made, setMade] = useState<TemplateApplied | null>(null);
-  // The schedules the apply made, each read back (GET /triggers/{id}) for its next run.
+  // The schedules the apply made, each read back (GET /triggers/{id}) for its line and next run.
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   // The parameters an apply sent: what its "applied" title names, whatever was typed while it was under way.
   const [sentValues, setSentValues] = useState<ParameterText>({});
@@ -344,26 +351,22 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
     try {
       const done = await v2.applyTemplate(t.id, sent, keys.keyFor(t.id, sent));
       keys.done();
-      // Each trigger the apply made, read back: a schedule shows when it runs next. One that can't be read, or isn't
-      // answered within TRIGGER_READ_MS, is left out (the Triggers page has it): a slow read never holds the result back.
+      // Each schedule the apply made, read back for when it runs next. One that can't be read, or isn't answered within
+      // TRIGGER_READ_MS, is said by the answer's words alone: a slow read never holds the result back.
       const schedulesOf = async (): Promise<Schedule[]> => {
-        const read = await Promise.all(done.trigger_ids.map((id) => bounded(v2.getTrigger(id), TRIGGER_READ_MS).catch(() => null)));
+        const read = await Promise.all(done.triggers.filter((x) => x.kind === "schedule").map((x) => bounded(v2.getTrigger(x.trigger_id), TRIGGER_READ_MS).catch(() => null)));
         return read.filter((x): x is Schedule => x !== null && x !== undefined && isScheduleTrigger(x));
       };
-      // A warning or a webhook's once-shown secret is shown at once; its schedules are added as they are read.
-      if (done.warnings.length || done.webhook_secrets?.length) {
-        setSentValues(sending);
-        setMade(done);
-        void schedulesOf().then(setSchedules, () => {});
-        return;
-      }
-      // Otherwise the agent opens at once, unless a schedule's next run is there to show first.
-      const scheduled = done.trigger_ids.length ? await schedulesOf() : [];
+      // An apply that changed the agent, made no trigger and says nothing more opens the agent at once. One that changed
+      // nothing (agent_change unchanged) says so first.
       if (!shown.current) return;
-      if (!scheduled.length) { go(agentHash(done.agent_id)); return; }
+      if (done.agent_change !== "unchanged" && !done.warnings.length && !done.webhook_secrets?.length && !done.triggers.length) { go(agentHash(done.agent_id)); return; }
+      // Otherwise its result is shown at once, in the answer's words for what it did (CHANGE_WORDS): a warning, a webhook's
+      // once-shown secret, and every trigger it made or kept (the answer's own list); a schedule's line and next run are
+      // added as it is read back.
       setSentValues(sending);
-      setSchedules(scheduled);
       setMade(done);
+      if (done.triggers.some((x) => x.kind === "schedule")) void schedulesOf().then((read) => { if (shown.current) setSchedules(read); }, () => {});
     } catch (e) {
       if (e instanceof ClientError && e.fields?.length) {
         setIssues(e.fields); setSaid({ text: e.message, withIssues: true });
@@ -382,22 +385,27 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   const placed = (i: FieldIssue) => /^(parameters|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field) || (i.field === "overrides.choice" && !!t.model?.choices?.length)
     || (i.field.startsWith("secrets.") && [...t.secrets, ...choiceKeys(picked?.secrets ?? [])].includes(i.field.slice("secrets.".length)));
   if (made) {
+    const change = CHANGE_WORDS[made.agent_change];
     return (
       <section aria-label="Applied" className="max-w-page">
-        <Heading className="mb-4 flex items-center gap-2 text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</Heading>
+        <Heading className="mb-4 flex items-center gap-2 text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} {change.title}</Heading>
+        {made.agent_change !== "made" && made.warnings.length === 0 && <p className="mb-3 text-lead">{change.said(made.revision_version)}.</p>}
         {made.warnings.length > 0 && <>
-          <p className="mb-3 text-lead">The agent is made. The server says:</p>
+          <p className="mb-3 text-lead">{change.said(made.revision_version)}. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-body" role="status" aria-label="Warnings">
             {made.warnings.map((w, i) => {
-              // A webhook trigger's (triggers.<i>.secret): the trigger the apply made (trigger_ids, in the template's order)
-              // opens from here, where its secret is shown with Rotate. One webhook_secrets speaks for gets its link there.
+              // A webhook trigger's (triggers.<i>.secret, <i> the package's index): the trigger the apply made of that name,
+              // trimmed as the server names it (apply keys triggers by name; a skipped trigger is not in the answer, so the
+              // index is not its place there) opens from here, where its secret is shown with Rotate. One webhook_secrets
+              // speaks for gets its link there.
               const hook = /^triggers\.(\d+)\.secret$/.exec(w.field);
-              const id = hook ? made.trigger_ids[Number(hook[1])] : undefined;
-              const named = hook ? t.triggers[Number(hook[1])]?.name : undefined;
+              const raw = hook ? t.triggers[Number(hook[1])]?.name : undefined;
+              const named = typeof raw === "string" ? raw.trim() : "";
+              const id = named ? made.triggers.find((x) => x.name === named)?.trigger_id : undefined;
               if (id && made.webhook_secrets?.some((x) => x.trigger_id === id)) return <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}</li>;
               return (
                 <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}
-                  {id && <a href={`#/triggers/${encodeURIComponent(id)}`} className="mt-1 block font-mono text-small text-primary-text underline-offset-2 hover:underline">Open {typeof named === "string" && named ? named : id} to get its signing secret (Rotate)</a>}
+                  {id && <a href={`#/triggers/${encodeURIComponent(id)}`} className="mt-1 block font-mono text-small text-primary-text underline-offset-2 hover:underline">Open {named || id} to get its signing secret (Rotate)</a>}
                 </li>
               );
             })}
@@ -407,9 +415,8 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
             this screen's state alone, never stored or logged), beside its URL; else the server's note and the trigger to
             rotate it from. */}
         {made.webhook_secrets?.map((x) => {
-          const index = made.trigger_ids.indexOf(x.trigger_id);
-          const named = index >= 0 ? t.triggers[index]?.name : undefined;
-          const name = typeof named === "string" && named ? named : x.trigger_id;
+          const named = made.triggers.find((one) => one.trigger_id === x.trigger_id)?.name;
+          const name = named || x.trigger_id;
           return x.signing_secret
             ? <SecretOnce key={x.trigger_id} label={`The webhook's URL and secret (${name})`} url={hookUrlOf({ id: x.trigger_id })} secret={x.signing_secret} />
             : (
@@ -419,15 +426,24 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
               </div>
             );
         })}
-        {/* Each schedule the apply made: its line (scheduleLine), as the Triggers page says it. */}
-        {schedules.length > 0 && (
-          <ul className="mt-4 divide-y border" aria-label="Schedules">
-            {schedules.map((s) => (
-              <li key={s.id} data-trigger={s.id} className="px-4 py-3">
-                <a href={`#/triggers/${encodeURIComponent(s.id)}`} className="break-words text-prose font-semibold hover:underline">{s.name}</a>
-                <p className="mt-1 break-words font-mono text-small text-muted-foreground">{scheduleLine(s.source, s.next_at)}</p>
-              </li>
-            ))}
+        {/* Every trigger the apply made or kept, of any kind, by the package's name for it: what starts it in words and
+            whether it is on. A schedule read back says its line and next run (scheduleLine), as the Triggers page does. */}
+        {made.triggers.length > 0 && (
+          <ul className="mt-4 divide-y border" aria-label="Triggers">
+            {made.triggers.map((x) => {
+              const s = schedules.find((one) => one.id === x.trigger_id);
+              return (
+                <li key={x.trigger_id} data-trigger={x.trigger_id} className="px-4 py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <a href={`#/triggers/${encodeURIComponent(x.trigger_id)}`} className="break-words text-prose font-semibold hover:underline">{x.name}</a>
+                    <Chip tone={x.enabled ? "success" : "plain"}>{x.enabled ? "on" : "off"}</Chip>
+                  </div>
+                  {/* Its kind and what starts a run of it, as the Triggers page says each kind. */}
+                  <p className="mt-1 break-words text-body">{TRIGGER_KINDS[x.kind].label} · {TRIGGER_KINDS[x.kind].what}{x.enabled ? "" : " It is off: it starts nothing until it is turned on."}</p>
+                  {s && <p className="mt-1 break-words font-mono text-small text-muted-foreground">{scheduleLine(s.source, s.next_at)}</p>}
+                </li>
+              );
+            })}
           </ul>
         )}
         <div className="mt-5" />
@@ -479,7 +495,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
               {servers && matches.length === 0 && (
                 <p role="status" data-missing-mcp={m.toolkit} className="mt-2 border border-warning/50 px-3 py-2 text-small text-warning-text">
                   {m.required ? `${m.toolkit} is required and not set up here: Apply is refused until it is.` : `${m.toolkit} is not set up here: Apply makes the agent without its tools (${m.tools.map((x) => x.name).join(", ")}).`}{" "}
-                  <a href={setUpHref(m)} className="font-mono text-primary-text underline-offset-2 hover:underline">{m.source === "github" ? "Set up GitHub App access" : m.source === "composio" ? `Add ${m.toolkit} from Composio` : `Set up ${m.toolkit}`}</a>
+                  <a href={setUpHref(m)} className="font-mono text-primary-text underline underline-offset-2 hover:decoration-2">{m.source === "github" ? "Set up GitHub App access" : m.source === "composio" ? `Add ${m.toolkit} from Composio` : `Set up ${m.toolkit}`}</a>
                 </p>
               )}
               <Issues issues={[...at(`mcp.${m.toolkit}`), ...at(`servers.${m.toolkit}`)]} />
@@ -493,8 +509,9 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
                         <span className="min-w-0">
                           <span className="font-mono text-body">{tool.name}</span> <span className="font-mono text-label text-muted-foreground">{tool.tool}</span>
                           {/* A tick is a grant, with no permission set: the section's note says what a granted tool then does.
-                              What the template asks for is said apart. */}
-                          <span className="block text-small text-muted-foreground">{tool.asks === "allow" ? "The template asks you to grant this." : "The template does not ask for this; unticked, the agent doesn't get it."}</span>
+                              Every tool the package lists is one the template uses, so each row asks for it; `asks: "ask"`
+                              (a write) only means each of its calls waits for approval, said in one clause. */}
+                          <span className="block text-small text-muted-foreground">The template asks you to grant this.{tool.asks === "ask" && " Each call waits for your OK unless you allowed it in Settings or pick Never ask."}</span>
                         </span>
                       </label>
                       {index >= 0 && <Issues issues={at(`grants.${index}`)} />}

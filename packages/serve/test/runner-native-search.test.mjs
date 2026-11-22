@@ -221,7 +221,7 @@ test("the runner's read of a tool's setting for the session fails closed: a stor
   await saveToolSettings(server, { web_search: { permission: "allow" } });
   let reads = true;
   const store = { settings: { get: async (key) => { if (!reads) throw new Error("the store does not answer"); return server.settings.get(key); }, put: (key, value) => server.settings.put(key, value) } };
-  const gate = await adapterRunGate(store, { runId: RUN }, { kind: "agentic", body: {} }, dir);
+  const gate = await adapterRunGate(store, { runId: RUN }, { kind: "agentic", body: {} }, dir, undefined, { facts: undefined });
   assert.equal(await gate.permission("web_search"), "allow", "read from the store");
   reads = false;
   assert.equal(await gate.permission("web_search"), "deny", "a failed read is a deny");

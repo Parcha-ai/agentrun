@@ -368,9 +368,25 @@ export interface ReadBackSpec {
  */
 export type ReadBackNotes = string[];
 
-/** What create returns: the computer's ref, and what its read-back recorded that does not refuse it. */
+/**
+ * What a computer was given, as its vendor's own answer for it says (its get or create answer): the figures the vendor
+ * bills by. Each field is absent where the vendor's answer does not say it, never guessed from what was asked.
+ */
+export interface ComputerResources {
+	cpus?: number;
+	memoryMb?: number;
+	/** Its disk, in GB as the vendor counts it. */
+	diskGb?: number;
+	gpu?: GpuSpec;
+}
+
+/**
+ * What create returns: the computer's ref, what its read-back recorded that does not refuse it, and what the vendor says
+ * it was given (`resources`), where the vendor's answer says it.
+ */
 export interface CreatedComputer extends ComputerRef {
 	notes?: ReadBackNotes;
+	resources?: ComputerResources;
 }
 
 /** A computer attach found: its ref, and the spec read back from it, so a caller sees what it attached to (root, open). */

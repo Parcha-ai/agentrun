@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { follow, serve } from "./support.mjs";
 import { fakeClock, firings, keyOf, made, until } from "./trigger-support.mjs";
-import { checked, emailTrigger, mailbox, saved } from "./email-support.mjs";
+import { checked, emailTrigger, mailbox, saved, savedThenGone } from "./email-support.mjs";
 
 const T0 = "2026-06-01T00:00:30Z";
 /** The grid's minute `n` after T0's: every_s 60 runs on whole minutes from the epoch. */
@@ -216,11 +216,8 @@ test("unreachable at creation: the trigger is made and its check says so; the fi
   const faux = await mailbox(t);
   faux.seed({ from: "old@example.com", subject: "Old 1" });
   faux.seed({ from: "old@example.com", subject: "Old 2" });
-  // A port nothing listens on: the account saved there can't be reached.
-  const closed = await mailbox(t);
-  const unreachable = { host: "127.0.0.1", port: closed.imap.port };
-  await closed.close();
-  await saved(api, faux, { imap: unreachable });
+  // An account that signed in when saved, on servers since closed: it can't be reached.
+  await savedThenGone(t, api);
   await made(api, "mail");
   const created = await api("POST", "/triggers", emailTrigger("mail", { every_s: 60 }));
   assert.equal(created.status, 201, `still made: ${JSON.stringify(created.body)}`);

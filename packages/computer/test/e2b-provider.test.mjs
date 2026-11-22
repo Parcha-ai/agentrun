@@ -384,6 +384,13 @@ test("the real SDK, given the provider's connection options, takes none of an am
 	});
 });
 
+test("get reads what E2B gave the sandbox (getInfo's cpuCount and memoryMB) as its resources, and none where getInfo says none", async () => {
+	const info = (fields) => ({ sandboxId: "sbx-1", templateId: "base", metadata: {}, startedAt: new Date(), endAt: new Date(Date.now() + HOUR), state: "running", ...fields });
+	const hostWith = (fields) => createHost({ env: { [ENV.key]: KEY }, Sandbox: { ...recorder().Sandbox, getInfo: async () => info(fields) } });
+	assert.deepEqual((await (await hostWith({ cpuCount: 2, memoryMB: 512 })).get("sbx-1", { timeoutMs: 1_000 })).resources, { cpus: 2, memoryMb: 512 });
+	assert.equal(Object.hasOwn(await (await hostWith({})).get("sbx-1", { timeoutMs: 1_000 }), "resources"), false);
+});
+
 test("E2B's exec, through the real SDK's envd client, passes the exec pre-check: every byte comes back as sent, where commands.run's onStdout decodes UTF-8", async (t) => {
 	const sdk = await import("e2b").catch(() => undefined);
 	if (sdk === undefined) return t.skip("the e2b package is not installed here; it is the host's, as Modal's SDK is");

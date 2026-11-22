@@ -776,6 +776,18 @@ test("the setup skill installs with the installer and runs the command it instal
   assert.ok(commands.length >= 10, `${commands.length} commands`);
   assert.deepEqual([...new Set(commands)], ["~/.agentrun/bin/agentrun"], "every command is the installed one, by its full path");
 });
+// QA (GRE-4614): on an SSH box, the setup agent tried to add a route to the machine's shared Traefik config, with sudo
+// as its fallback. The skill names the one way to the console from a remote machine, the person's own port forward, and
+// rules out every change to the machine.
+test("the setup skill opens a remote machine's console through the person's port forward, never through the machine's proxy or sudo", () => {
+  const open = skillSection(setupSkill(), "3. Start it where they chose").split(/^### /m).find((part) => part.startsWith("Open the setup page\n")) ?? "";
+  assert.match(open, /`ssh -o ExitOnForwardFailure=yes -L\s+<local>:127\.0\.0\.1:<port> <user>@<host>`/);
+  assert.match(open, /`http:\/\/127\.0\.0\.1:<local>\/` in place of its\s+address, keeping any `#code=\.\.\.`/);
+  assert.match(open, /An always-on machine's tailnet or HTTPS address needs no forward/);
+  assert.match(open, /no change to the machine's web server or reverse proxy \(Traefik, nginx,\s+Caddy/);
+  assert.match(open, /no new route, DNS name or firewall rule, and no `sudo`/);
+});
+
 test("the setup skill's Railway step is the published template's button, with the token from its Variables tab", () => {
   const skill = setupSkill();
   const hosted = skillSection(skill, "3. Start it where they chose");
@@ -1249,4 +1261,25 @@ test("started, the bin says a refused request on stderr; stdout stays the one ru
   child.kill("SIGTERM");
   assert.equal(await exited, 0, err);
   assert.equal(out.split("\n").filter(Boolean).length, 1, "nothing more on stdout");
+});
+
+test("public learning connection verbs reach the local installer while existing learning API verbs still work", (t) => {
+  const {env} = bare(t);
+  const project = mkdtempSync(join(tmpdir(), "agentrun-learning-launch-project-"));
+  const data = mkdtempSync(join(tmpdir(), "agentrun-learning-launch-data-"));
+  t.after(() => { rmSync(project, {recursive:true,force:true}); rmSync(data, {recursive:true,force:true}); });
+  const local = spawnSync(process.execPath, [BIN, "learning", "status", "--runtime", "codex", "--project", project, "--data", data], {env,encoding:"utf8",timeout:30_000});
+  assert.equal(local.status, 0, local.stderr);
+  assert.equal(JSON.parse(local.stdout).state, "not-installed");
+  for (const verb of ["connect", "status", "disconnect", "retry", "hook"]) {
+    const help = spawnSync(process.execPath, [BIN, "learning", verb, "--help"], {env,encoding:"utf8",timeout:30_000});
+    assert.ifError(help.error);
+    assert.equal(help.status, 0, `${verb}: ${help.stderr}`);
+    assert.match(help.stdout, /usage: agentrun-serve learning/);
+    assert.match(help.stdout, /--runtime codex\|claude-code/);
+  }
+  const api = spawnSync(process.execPath, [BIN, "learning", "corrections", "--help"], {env,encoding:"utf8",timeout:30_000});
+  assert.equal(api.status, 0, api.stderr);
+  assert.match(api.stdout, /corrections/);
+  assert.doesNotMatch(api.stdout, /server command/);
 });

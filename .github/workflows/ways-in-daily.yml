@@ -17,6 +17,7 @@ on:
       - 'packages/agentrun/test/npx-walk.sh'
       - 'packages/agentrun/test/first-run.sh'
       - '.github/actions/walk-image/**'
+      - 'deploy/render/walk.mjs'
 
 permissions:
   contents: read
@@ -138,9 +139,117 @@ jobs:
       image: ways-in-image
       platforms: '["dokploy"]'
 
+  # Deploys on the platforms themselves, on the schedule or by hand only; with a secret missing or on a pull request, the
+  # row skips with a notice and stays green.
+  railway-hosted:
+    name: Railway's published template, on Railway
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    concurrency:
+      group: railway-hosted
+      cancel-in-progress: false
+    outputs:
+      skip: ${{ steps.secrets.outputs.skip }}
+    steps:
+      - id: secrets
+        name: Whether it walks
+        env:
+          ROW: Railway (hosted)
+          NEED: RAILWAY_API_TOKEN WALK_OPENROUTER_API_KEY RAILWAY_WORKSPACE_ID
+          EVENT: ${{ github.event_name }}
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          WALK_OPENROUTER_API_KEY: ${{ secrets.WALK_OPENROUTER_API_KEY }}
+          RAILWAY_WORKSPACE_ID: ${{ vars.RAILWAY_WORKSPACE_ID }}
+        # Each name in NEED is a variable here, tested for a value (never printed). render-hosted's guard is the same text
+        # (actionlint 1.7.7 refuses an anchor here; ways-in-daily.test.mjs holds them equal).
+        run: |
+          missing=''
+          for name in $NEED; do [ -n "$(printenv "$name")" ] || missing="${missing:+$missing, }$name"; done
+          skip=''
+          if [ "$EVENT" = pull_request ]; then skip="a pull request's run: it deploys on the schedule, or by hand from a branch"
+          elif [ -n "$missing" ]; then skip="no $missing"; fi
+          [ -z "$skip" ] || echo "::notice title=$ROW not walked::$skip"
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+      - if: steps.secrets.outputs.skip == ''
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - if: steps.secrets.outputs.skip == ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - name: Walk
+        if: steps.secrets.outputs.skip == ''
+        env:
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.WALK_OPENROUTER_API_KEY }}
+          WORKSPACE: ${{ vars.RAILWAY_WORKSPACE_ID }}
+        # --walk alone: the template deploy/README.md's button deploys. The walk makes nothing outside the Parcha workspace.
+        run: |
+          REPORT="$RUNNER_TEMP/railway-hosted-walk.md" exec sh deploy/railway/publish-and-walk.sh "$WORKSPACE" --expect-workspace Parcha --walk --first-run
+      - name: Keep the report
+        if: always() && steps.secrets.outputs.skip == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: walk-report-railway-hosted
+          path: ${{ runner.temp }}/railway-hosted-walk.md
+          if-no-files-found: ignore
+
+  render-hosted:
+    name: render.yaml's service, on Render
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    concurrency:
+      group: render-hosted
+      cancel-in-progress: false
+    outputs:
+      skip: ${{ steps.secrets.outputs.skip }}
+    steps:
+      - id: secrets
+        name: Whether it walks
+        env:
+          ROW: Render (hosted)
+          NEED: RENDER_API_KEY WALK_OPENROUTER_API_KEY
+          EVENT: ${{ github.event_name }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          WALK_OPENROUTER_API_KEY: ${{ secrets.WALK_OPENROUTER_API_KEY }}
+        run: |
+          missing=''
+          for name in $NEED; do [ -n "$(printenv "$name")" ] || missing="${missing:+$missing, }$name"; done
+          skip=''
+          if [ "$EVENT" = pull_request ]; then skip="a pull request's run: it deploys on the schedule, or by hand from a branch"
+          elif [ -n "$missing" ]; then skip="no $missing"; fi
+          [ -z "$skip" ] || echo "::notice title=$ROW not walked::$skip"
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+      - if: steps.secrets.outputs.skip == ''
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - if: steps.secrets.outputs.skip == ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      # walk.mjs's yaml, for render.yaml.
+      - if: steps.secrets.outputs.skip == ''
+        run: npm ci --ignore-scripts
+      - name: Walk
+        if: steps.secrets.outputs.skip == ''
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.WALK_OPENROUTER_API_KEY }}
+        run: |
+          REPORT="$RUNNER_TEMP/render-hosted-walk.md" exec node deploy/render/walk.mjs --owner "Parcha Labs Inc"
+      - name: Keep the report
+        if: always() && steps.secrets.outputs.skip == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: walk-report-render-hosted
+          path: ${{ runner.temp }}/render-hosted-walk.md
+          if-no-files-found: ignore
+
   report:
     name: one table, and the issue
-    needs: [image, npx, launcher, docker, railway, helm, coolify, dokploy]
+    needs: [image, npx, launcher, docker, railway, helm, coolify, dokploy, railway-hosted, render-hosted]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10

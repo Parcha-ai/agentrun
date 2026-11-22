@@ -5,7 +5,8 @@ const count = { type: "integer", minimum: 0 };
 const object = (
   properties: Record<string, unknown>,
   required = Object.keys(properties),
-) => ({ type: "object", properties, required });
+  optional: string[] = [],
+) => ({ type: "object", properties, required: required.filter((key) => !optional.includes(key)) });
 const usage = object({
   input_tokens: count,
   output_tokens: count,
@@ -34,7 +35,7 @@ export const OBSERVATION_PATHS = {
       summary:
         "Read activity and token usage reported by externally running agents",
       description:
-        "Observation-only sessions retain the original harness. They are not executable agent definitions and do not enable learning. Tokens include cache in input; absent cache counters are null. Receipts have a seven-day replay window; older source timestamps cannot create activity or usage. Sessions and received-day usage are retained for 90 days. Capacity overflow is explicitly refused. Cross-connector totals outside exact integer range are null with overflow true. CLI ingestion is at /api/v2/control; /api/v2/control/connectors/capabilities advertises the supported wire formats.",
+        "Observation-only sessions retain the original harness. They are not executable agent definitions and do not enable learning. Learning status may refer to an existing CLI learning profile after a source proves its project/runtime-scoped credential; On also requires an accepted hook window for the exact native session. Profile settings are read live. No credential, proof or source path appears in observations. Tokens include cache in input; absent cache counters are null. Receipts have a seven-day replay window; older source timestamps cannot create activity or usage. Sessions and daily usage are retained for 90 days. Polling token deltas use the source UTC day and strictly increasing session sequences; OTLP usage uses the received UTC day. Capacity overflow is explicitly refused. Cross-connector totals outside exact integer range are null with overflow true. CLI ingestion is at /api/v2/control; /api/v2/control/connectors/capabilities advertises the supported wire formats and token_usage.polling support.",
       tags: ["Observations"],
       security: [{ bearer: [] }],
       "x-agentrun-serve": "observations/1",
@@ -85,7 +86,8 @@ export const OBSERVATION_PATHS = {
                     created_at: text,
                     updated_at: text,
                     sequence: count,
-                    display_name: text,
+                    display_name: { ...text, description: "Explicit native session title when reported; otherwise the harness and an opaque ID suffix." },
+                    project_name: { ...text, description: "Optional project basename; never an absolute source path." },
                     models: { type: "array", items: text },
                     usage: {
                       ...usage,
@@ -96,7 +98,14 @@ export const OBSERVATION_PATHS = {
                       required: [...usage.required, "status"],
                     },
                     observation_only: { const: true },
-                  }),
+                    learning: object({
+                      state: { enum: ["on", "off", "setup_required", "unknown", "unsupported"] },
+                      reason: { enum: ["ready", "source_setup_required", "source_unknown", "delegated_session", "connection_unavailable", "server_disabled", "agent_disabled", "awaiting_activation"] },
+                      agent_id: text,
+                      connection_id: text,
+                      mode: { enum: ["off", "notes", "corrections", "workflows"] },
+                    }, undefined, ["agent_id", "connection_id", "mode"]),
+                  }, undefined, ["project_name"]),
                 },
                 usage: {
                   ...usage,

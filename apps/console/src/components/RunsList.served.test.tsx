@@ -64,18 +64,20 @@ describe("a served run's page header", () => {
 // rows): the run page says which pass answered, beside the served label; the runs list keeps its one word.
 describe("a re-picked run's page header", () => {
   const repicked = (run: Run, repick: "found" | "missed"): Run => ({ ...run, workflow: { name: "mcc-guess", digest: "d".repeat(16), repick } });
-  it("a served run whose re-pick found its quotes reads Learned workflow · re-picked", () => {
-    expect(facts(repicked(SERVED, "found"))).toBe("Learned workflow mcc-guess · re-picked · rev 2 · on the server");
-    expect(header(repicked(SERVED, "found")).querySelector('[data-run-kind="learned"] .fill-chart-workflow')).not.toBeNull();
+  const repickOf = (run: Run) => header(run).querySelector('[data-run-kind="learned"] [data-run-repick]')?.getAttribute("data-run-repick");
+  /** The run kind's own words on its run page (RunKind), never the rest of the header line. */
+  const kindOf = (run: Run) => header(run).querySelector('[data-run-kind="agentic"]')?.textContent;
+  it("a served run whose re-pick found its quotes is marked re-picked beside the served label", () => {
+    expect(repickOf(repicked(SERVED, "found"))).toBe("found");
   });
   it("a handed-back run whose re-pick missed says so before its hand-back", () => {
-    expect(facts(repicked(HANDED, "missed"))).toBe("agentic · handed back by mcc-guess after its re-pick missed · rev 2 · on the server");
+    expect(kindOf(repicked(HANDED, "missed"))).toBe("agentic · handed back by mcc-guess after its re-pick missed");
   });
   it("a handed-back run whose re-pick found its quotes says it re-picked before its hand-back", () => {
-    expect(facts(repicked(HANDED, "found"))).toBe("agentic · handed back by mcc-guess after a re-pick · rev 2 · on the server");
+    expect(kindOf(repicked(HANDED, "found"))).toBe("agentic · handed back by mcc-guess after a re-pick");
   });
-  it("a run answered on its first pass reads as before, and the runs list keeps Learned workflow", () => {
-    expect(facts(SERVED)).toBe("Learned workflow mcc-guess · rev 2 · on the server");
+  it("a run answered on its first pass is not marked, and the runs list keeps Learned workflow", () => {
+    expect(header(SERVED).querySelector("[data-run-repick]")).toBeNull();
     const [served] = kinds([repicked(SERVED, "found")]);
     expect(served.textContent).toBe("Learned workflow");
   });

@@ -5,7 +5,7 @@ Choose where your agents run:
 | Option | Start here | Who operates the server |
 | --- | --- | --- |
 | **AgentRun Cloud** | [Create an account or sign in](https://console.agentrun.ai/) | The Grep team |
-| **Local** | [Run AgentRun on your computer](../README.md#run-locally-in-three-steps) | You |
+| **Local** | [Have your coding agent set it up](#run-locally) | You |
 | **Self-hosted** | [Deploy on Render or Docker](../README.md#deploy-it) | You, on your infrastructure |
 
 ## AgentRun Cloud
@@ -19,7 +19,16 @@ requirements with you. Use the setup instructions provided for your workspace.
 
 ## Run locally
 
-The open-source platform runs on macOS or Linux with Node 24.22.3 or newer:
+Have your coding agent set it up. Paste this into Claude Code, Codex or another coding agent:
+
+```text
+Read https://agentrun.ai/SKILL.md and follow it to set up AgentRun for me. Ask me where AgentRun should run before you install or deploy anything.
+```
+
+It asks where AgentRun should run before it installs anything, and you save keys and passwords in the console, never
+in the chat.
+
+To start it yourself instead, you need macOS or Linux with Node 24.22.3 or newer:
 
 ```sh
 npx @parcha/agentrun
@@ -28,15 +37,13 @@ npx @parcha/agentrun
 It opens a console on your machine and keeps its data in `~/.agentrun`. Set a password, then Continue with ChatGPT
 (Settings → Model keys, or the first screen) or add a model key, and apply a template to run your first agent. Codex
 and pi agents run on your ChatGPT plan; Claude Agent, OpenCode, Jev decisions and paid tools need their own keys.
-The [three-step local quickstart](../README.md#run-locally-in-three-steps) walks
+The README's [three-step local quickstart](../README.md#set-it-up-with-one-prompt) walks
 through a due diligence agent and its results. The [inbox quickstart](inbox-quickstart.md) sets up an assistant that
 files your new mail and drafts your replies, on your ChatGPT plan, in three minutes.
 
-To have your coding agent set it up, tell it:
-
-> Read https://agentrun.ai/SKILL.md and set up AgentRun for me.
-
-It asks where AgentRun should run before it installs anything.
+AgentRun counts itself anonymously (a random id, version and platform; never prompts, files or keys). Set
+`AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` where it starts to turn that off; [anonymous usage counts](telemetry.md)
+says how for the installer, a service and a server you deploy.
 
 ## Self-host
 

@@ -35,13 +35,18 @@ installEnvProxy();
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
-       agentrun-serve install-harness goose [--data DIR]
+       agentrun-serve install-harness goose|cursor [--data DIR]
        agentrun-serve install-harness --recipe FILE [--data DIR]
        agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
+       agentrun-serve learning connect|status|disconnect|retry --project PATH --runtime codex|claude-code [--url URL] [--data DIR]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
+       agentrun-serve runner --check --env [--data DIR]
+       agentrun-serve runner --check --heartbeat --data DIR [--name NAME]
+       agentrun-serve store-schema [--data DIR]
+       agentrun-serve store-schema --build
        agentrun-serve native discover|connect --project PATH [--runtime claude-code|codex] [--agent NAME|--profile NAME] [--url URL] [--data DIR]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
@@ -125,6 +130,13 @@ deleted worktree's); --all keeps those and temporary ones too. Each run keeps wh
 time at work), priced at the catalog's list prices when its source did not price it. Both end with a summary of every
 session found, those imported before included, and the address to open the console at (--port as the server takes it).
 
+\`agentrun-serve store-schema\` prints, as one line of JSON, the store's schema version and runner floor (the oldest version
+a runner's build must know to run on it) beside the version this build knows, and what this build's server and runner do
+on it: for a deploy's check before it starts a build, which must not be older than the store. It reads and changes
+nothing (no lock, no migration). The store is the server's: AGENTRUN_STORE_URL's Postgres, else SQLite in --data. Exit 0
+once read, 1 when the store could not be read, 2 for bad arguments. --build reads no store and prints only the versions
+this build knows. A running server says the same in GET /v2/capabilities (store_schema).
+
 \`agentrun-serve eval-template DIR\` runs a template package's eval cases (all, or each --case) as real runs of its agent
 and grades each run with the case's graders (templates/README.md, "Running the evals"). By default on a server of its
 own in this process, over a temp data directory removed at the end, so it never touches your server; --server URL runs
@@ -162,6 +174,11 @@ if (process.argv[2] === "remote-bridge") {
   process.exit(0);
 }
 
+if (process.argv[2] === "learning") {
+  const { learningMain } = await import("./cli-learning/cli.js");
+  process.exit(await learningMain(process.argv.slice(3)));
+}
+
 if (process.argv[2] === "native") {
   const { nativeMain } = await import("./native/cli.js");
   process.exit(await nativeMain(process.argv.slice(3), commandUsage));
@@ -181,9 +198,10 @@ if (process.argv[2] === "reset-password") {
   process.exit(0);
 }
 
-// A harness its owner installs (harness-goose.ts: Goose, the one there is), never a run: its pinned archive downloaded,
-// checked and unpacked into DIR/harnesses/<name> (harness-archive.ts). 0 once it is there (now or already), 1 when the
-// install failed (its code and the command to try again), 2 for a name it does not install. No provider key is read.
+// A harness its owner installs (harness-goose.ts: Goose; harness-cursor.ts: Cursor), never a run: its pinned archive
+// downloaded, checked and unpacked into DIR/harnesses/<name> (harness-archive.ts). 0 once it is there (now or already), 1
+// when the install failed (its code and the command to try again), 2 for a name it does not install. No provider key is
+// read, Cursor's included.
 if (process.argv[2] === "install-harness") {
   const usage = (message: string): never => (console.error(`agentrun-serve install-harness: ${message}\n\n${USAGE}`), process.exit(2));
   const read = () => {
@@ -215,21 +233,25 @@ if (process.argv[2] === "install-harness") {
       process.exit(1);
     }
   }
-  const { GOOSE_ID, installGoose } = await import("./harness-goose.js");
-  if (positionals.length !== 1) usage(`it takes one harness: ${GOOSE_ID}.`);
-  if (positionals[0] !== GOOSE_ID) usage(`it installs ${GOOSE_ID}, not ${positionals[0]}: claude-agent and codex install on first use, and pi and opencode come with AgentRun.`);
+  // The owner-installed harnesses (harness-owned.ts), each one's id, label, install and what its install checks.
+  const installers = await Promise.all([import("./harness-goose.js").then((m) => m.GOOSE), import("./harness-cursor.js").then((m) => m.CURSOR)]);
+  const names = installers.map((each) => each.id).join(" or ");
+  if (positionals.length !== 1) usage(`it takes one harness: ${names}.`);
+  const chosen = installers.find((each) => each.id === positionals[0]);
+  if (!chosen) usage(`it installs ${names}, not ${positionals[0]}: claude-agent and codex install on first use, and pi and opencode come with AgentRun.`);
+  const { label, install, verified } = chosen!;
   const [{ ArchiveInstallFailed }, { acpPackage, ACP_PACKAGE }] = await Promise.all([import("./harness-archive.js"), import("./acp-package.js")]);
   if (!acpPackage()) {
-    console.error(`Goose's adapter (${ACP_PACKAGE}) is not installed beside this server, so it has no pinned release to install.`);
+    console.error(`${label}'s adapter (${ACP_PACKAGE}) is not installed beside this server, so it has no pinned release to install.`);
     process.exit(1);
   }
   const data = resolve(values.data ?? defaultData());
   try {
-    const said = { downloaded: "the archive is downloaded and its sha256 matches the pin", unpacked: "unpacked", verified: "the binary's sha256 matches the pin" } as const;
-    const { version, installed, binary } = await installGoose(data, { onStep: (step) => console.error(`Goose: ${said[step]}`) });
+    const said = { downloaded: "the archive is downloaded and its sha256 matches the pin", unpacked: "unpacked", verified } as const;
+    const { version, installed, binary } = await install(data, { onStep: (step) => console.error(`${label}: ${said[step]}`) });
     console.log(installed === "already"
-      ? `Goose ${version} is installed in ${dirname(binary)} (already: the pinned binary is there, so nothing was downloaded).`
-      : `Goose ${version} is installed in ${dirname(binary)} (now). Restart AgentRun to pick it up.`);
+      ? `${label} ${version} is installed in ${dirname(binary)} (already: the pinned release is there, so nothing was downloaded).`
+      : `${label} ${version} is installed in ${dirname(binary)} (now). Restart AgentRun to pick it up.`);
     process.exit(0);
   } catch (error) {
     if (!(error instanceof ArchiveInstallFailed)) throw error;
@@ -354,11 +376,18 @@ if (process.argv[2] === "eval-template") {
 }
 
 // The runner process (runner/main.ts): beside the server, its own store connection in --data, claiming runs until SIGTERM
-// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know, 1 anything else, 0 closed. `--check` reads its
-// heartbeat (0 fresh, 1 not).
+// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know (or one whose runner floor rose above it while it
+// ran: its runs handed back), 1 anything else, 0 closed. `--check` checks its environment by name (runner-check.ts) and its
+// heartbeat; `--check --env` its environment alone (0 complete, 1 a gap).
 if (process.argv[2] === "runner") {
   const { runnerMain } = await import("./runner/main.js");
   process.exit(await runnerMain(process.argv.slice(3)));
+}
+
+// The store's schema and runner floor, read-only (store/store-schema.ts), for a deploy's skew check.
+if (process.argv[2] === "store-schema") {
+  const { storeSchemaMain } = await import("./store/store-schema.js");
+  process.exit(await storeSchemaMain(process.argv.slice(3), defaultData(), USAGE));
 }
 
 if (process.argv[2] === "import") {
@@ -534,6 +563,9 @@ if (!values["no-runner"] && askedAt === undefined) {
       process.exit(1);
     }
     console.error(`agentrun-serve: ${error.message}`);
+    // And said in the store, as the runner subcommand says it (presence.ts): while no runner that claims is there, the
+    // server refuses a launch in these words and fails the runs left queued, never queueing one for good.
+    serve.refuseRuns(error.message);
   }
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.

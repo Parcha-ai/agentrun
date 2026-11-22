@@ -14,7 +14,7 @@
 //     permission request for a tool of the agent's own through the host's gate, both journaled.
 // ACP's own report of a tool call (its status, its content) is never trusted: what ran is what the bridge recorded.
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PROTOCOL_VERSION, type ContentBlock, type InitializeResponse, type McpServer as AcpMcpServer, type PermissionOption, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification, type SystemPrompt } from "@agentclientprotocol/sdk";
@@ -27,6 +27,7 @@ import { ACP_CODES } from "./facts.js";
 import { homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
 import { startAgent, type AgentProcess } from "./host/agent.js";
+import { cutKeys, keysToCut } from "./host/key-cut.js";
 import type { ConfineChild } from "./host/child.js";
 import { startMcpServer, type McpServer } from "./host/mcp.js";
 
@@ -38,8 +39,16 @@ export const PROMPT_STREAM = "acp.prompt";
 export const CALL_STREAM = "acp.call";
 /** The permission requests for the agent's own tools: `asked` before the gate is, `answered` with what it said. */
 export const PERMISSION_STREAM = "acp.permission";
+/** How many of the agent's own calls, in one turn, may park on the person while a call the person allowed on a resume is
+ *  still not asked for again. At the limit the turn ends ACP_REASK_LIMIT on the resume, before the agent starts again: an
+ *  agent that writes a new command after each restart (Cursor) never gets to the approved one. A call the gate answers
+ *  without parking (a tool set to allow or to deny) is never counted. Read on the resume because a park commits the run
+ *  parked before the gate answers. */
+export const REASK_LIMIT = 3;
 /** One record per tool call the agent announced (or MCP call it made unannounced): the calls a plan-billed run counts. */
 export const TOOLS_STREAM = "acp.tools";
+/** The model chosen for the agent's session (recipe.model, as the agent lists it), one record each time one is chosen. */
+export const MODEL_STREAM = "acp.model";
 
 /** How long a session waits for the agent to start and answer initialize, or open its session. */
 export const START_MS = 60_000;
@@ -130,14 +139,22 @@ interface Runtime {
   /** The permission call ids this agent process's requests took: each request of the open turn takes one of its own. */
   claimed: Set<string>;
   ownIds: Set<string>;
+  /** The kind each tool_call was announced with: an update that names the call later is held to it (ourTool). */
+  kinds: Map<string, string>;
   mirror: StateMirror;
+  /** Its private HOME was removed with its process (recipe.credentials): nothing is mirrored from it any more. */
+  wiped: boolean;
   loading: boolean;
   current?: Current;
   dispose(): Promise<void>;
 }
 
 type CallRecord = { type: "seen" | "answered"; callId: string; tool?: string; args?: unknown; text?: string; isError?: boolean; refused?: boolean };
-type PermissionRecord = { type: "asked" | "answered"; callId: string; toolCallId?: string; title?: string; kind?: string; input?: unknown; answer?: "allow" | "deny"; words?: string };
+/** `asked` and `answered` as the stream's doc says, an answer taken on a resume before the agent started again being
+ *  `settled` in its turn (`turn`, the open turn's id); `given`: the answer was handed to the agent, which uses it up (a
+ *  later ask of the same request is a call of its own); `reasked`: another call (`callId`) parked on the person while
+ *  an allow they gave (`instead`) was still not asked for. */
+type PermissionRecord = { type: "asked" | "answered" | "given" | "reasked"; callId: string; toolCallId?: string; title?: string; kind?: string; input?: unknown; answer?: "allow" | "deny"; words?: string; settled?: true; turn?: string; instead?: string };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const message = (error: unknown) => String((error as Error)?.message ?? error);
@@ -234,13 +251,41 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   const names = new Set(listed.map((tool) => tool.name));
   let runtime: Runtime | undefined;
 
+  /** The recipe's refusal `text` (the agent's stderr, an error it answered) says, as `<code>: <words>`; undefined when it
+   *  says none of them. */
+  const refusalIn = (text: string): string | undefined => {
+    const refusal = recipe.refusals?.find((r) => text.includes(r.says));
+    return refusal && `${refusal.code}: ${refusal.words}`;
+  };
+  /** The values of the recipe's keys, read by name as the agent's start reads them: cut from anything the agent says
+   *  before it is shortened (key-cut.ts), so no cut lands inside one. */
+  const heldKeys = (): string[] => keysToCut((recipe.keys ?? []).map((name) => (options.env ?? process.env)[name]));
+  /** An error's words, the recipe's keys cut, its first 300 characters. */
+  const said = (error: unknown): string => cutKeys(message(error), heldKeys()).slice(0, 300);
+  /** `text` (the agent's stderr, or an error carrying it) as a failure's words: the terminal's escapes out, the recipe's
+   *  keys cut, and every line holding words the recipe calls quiet (recipe.quiet) left out, the last 300 characters of what
+   *  is left. */
+  // eslint-disable-next-line no-control-regex
+  const ESCAPES = /\u001b\[[0-9;?]*[A-Za-z]/g;
+  const lastWords = (text: string): string =>
+    cutKeys(text.replace(ESCAPES, ""), heldKeys())
+      .split("\n")
+      .filter((line) => !(recipe.quiet ?? []).some((words) => line.includes(words)))
+      .join("\n")
+      .trim()
+      .slice(-300);
+  /** Why an agent that ended did: its last words on stderr, else the error's, else that it said nothing. */
+  const whyEnded = (agent: { stderrTail(): string }, error: unknown): string => lastWords(agent.stderrTail()) || lastWords(message(error)) || "it said nothing";
+
   /** Mirror the agent's session store into `journal` (the caller flushes). A failure is said and never thrown: the next
    *  point takes the mirror again, and a turn's outcome is never lost to it. */
   const mirrorInto = (rt: Runtime, journal: NativeJournal) => {
+    // A HOME removed with its process holds nothing to take: read now, it would say the agent deleted its whole store.
+    if (rt.wiped) return;
     try {
       rt.mirror.take(journal);
     } catch (error) {
-      log("acp: the mirror of the agent's session store failed; the next point takes it again", { error: message(error).slice(0, 300) });
+      log("acp: the mirror of the agent's session store failed; the next point takes it again", { error: said(error) });
     }
   };
 
@@ -276,6 +321,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (!cur) return;
         if (cur.turn) cur.turn.final = "";
         countCall(rt, cur, update.toolCallId);
+        if (typeof update.kind === "string") rt.kinds.set(update.toolCallId, update.kind);
         // Only a call whose kind has no effects of its own can be ours (ourTool): a shell titled as our tool never takes an
         // MCP call's id, and never passes the permission shortcut below.
         const tool = ourTool(update as { title?: string | null; name?: string | null; kind?: string | null }, names);
@@ -283,8 +329,24 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         return;
       }
       case "tool_call_update": {
+        if (!cur) return;
+        // A call the agent named only after announcing it (Cursor's MCP calls: a tool_call titled "MCP: tool" with no
+        // input, then this update titled `agentrun: <tool>` with {providerIdentifier, toolName, args}): taken as ours
+        // here, under the id its tool_call already counted. Its kind is the tool_call's, which ourTool already let
+        // through, or this update's own when it names one.
+        if (!rt.calls.has(update.toolCallId)) {
+          // Held to both kinds, the tool_call's and the update's: a shell renamed by a later update is never ours.
+          const title = update.title ?? null;
+          const announcedAs = ourTool({ title, kind: rt.kinds.get(update.toolCallId) ?? null }, names);
+          const tool = announcedAs && ourTool({ title, kind: update.kind ?? null }, names) === announcedAs ? announcedAs : undefined;
+          if (tool) {
+            const raw = update.rawInput as { toolName?: unknown; args?: unknown } | null | undefined;
+            const args = raw && raw.toolName === tool && typeof raw.args === "object" && raw.args !== null && !Array.isArray(raw.args) ? raw.args : raw;
+            rt.calls.add(update.toolCallId, tool, args);
+          }
+        }
         // Its status is the agent's word only: what it changes is the mirror of the agent's session store.
-        if (!cur || (update.status !== "completed" && update.status !== "failed")) return;
+        if (update.status !== "completed" && update.status !== "failed") return;
         mirrorInto(rt, cur.journal);
         void cur.journal.flush().catch(() => {});
         return;
@@ -292,6 +354,64 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       default:
         return;
     }
+  };
+
+  /** The gate's call for a permission request of the agent's own tool: the same when the agent asks and when a resume
+   *  asks about it again (settlePermissions), so both reach the one approval. */
+  const permissionGateCall = (callId: string, kind: string, title: string, input: unknown): GateCall => ({ callId, tool: `acp_${kind.replace(/[^A-Za-z0-9_]/g, "_")}`, args: { title, kind, input } });
+
+  /** The open turn's permission requests still waiting (asked, never answered), in order, as the records hold them. */
+  const waitingPermissions = (state: SessionState): PermissionRecord[] => {
+    const since = openTurn(state)?.since ?? Number.POSITIVE_INFINITY;
+    const records = journalRecords<PermissionRecord>(state, PERMISSION_STREAM);
+    const answered = new Set(records.filter((r) => r.data?.type === "answered").map((r) => r.data.callId));
+    return records.filter((r) => r.at > since && r.data?.type === "asked" && !answered.has(r.data.callId)).map((r) => r.data);
+  };
+
+  /** The recovery note's line for a settled answer: the request as the agent asked it (its kind, title and input, so an
+   *  agent started without session/load can ask for the same call) and what the person said. */
+  const answerLine = (asked: PermissionRecord | undefined, answer: PermissionRecord): string => {
+    const kind = asked?.kind ?? "other";
+    const input = asked?.input === undefined || asked.input === null ? "" : JSON.stringify(asked.input);
+    const shown = input ? ` Its input: ${clip(input, 1500)}${input.length > 1500 ? " (cut here: ask with the whole input you first sent)" : ""}.` : "";
+    const named = `${kind} ${JSON.stringify(clip(asked?.title ?? kind, 300))}.${shown}`;
+    return answer.answer === "deny"
+      ? `- ${named} The person refused it.${answer.words ? ` Their words: ${clip(answer.words, 500).replace(/\n/g, " ")}` : ""}`
+      : `- ${named} The person allowed it once. Ask for it again exactly as before (the same kind, title and input) and it runs; any other request waits for the person again.`;
+  };
+
+  /** A resumed turn's waiting permission requests, each asked about again before the agent starts: the person's answer
+   *  is taken whatever the agent asks next (an agent may write another command after its restart), and with none yet the
+   *  gate parks the drive here, before any prompt is sent. The lines say every answer of the open turn the agent has not
+   *  been given yet, those taken now and those an earlier drive took before it stopped, for the agent's recovery note.
+   *  `limit`: the turn's other calls parked on the person REASK_LIMIT times while an allow went unasked, so the turn ends
+   *  here, before the agent starts again. */
+  const settlePermissions = async (ctx: DriveContext, journal: NativeJournal): Promise<{ lines: string[]; limit?: string }> => {
+    const gate = options.gate;
+    if (!gate) return { lines: [] };
+    const turn = openTurn(ctx.state());
+    const turnId = turn?.placed[0] ?? "";
+    const since = turn?.since ?? Number.POSITIVE_INFINITY;
+    const records = journalRecords<PermissionRecord>(ctx.state(), PERMISSION_STREAM).filter((r) => r.at > since).map((r) => r.data);
+    const askedOf = (callId: string) => records.find((r) => r?.type === "asked" && r.callId === callId);
+    const given = new Set(records.filter((r) => r?.type === "given").map((r) => r.callId));
+    const said = records.filter((r) => r?.type === "answered" && r.settled && r.turn === turnId && !given.has(r.callId)).map((r) => answerLine(askedOf(r.callId), r));
+    for (const request of waitingPermissions(ctx.state())) {
+      const kind = request.kind ?? "other";
+      const title = request.title ?? kind;
+      const refused = await askGate(gate, permissionGateCall(request.callId, kind, title, request.input ?? null), ctx.signal);
+      const answer = { type: "answered", callId: request.callId, answer: refused ? "deny" : "allow", ...(refused?.deny ? { words: refused.deny } : {}), settled: true, turn: turnId } satisfies PermissionRecord;
+      journal.append(PERMISSION_STREAM, answer);
+      await journal.flush();
+      said.push(answerLine(request, answer));
+      records.push(answer);
+    }
+    // A `reasked` call parked if a resume took its answer (settled; one the gate answered at once is not).
+    const settledIds = new Set(records.filter((r) => r?.type === "answered" && r.settled).map((r) => r.callId));
+    const parks = records.filter((r) => r?.type === "reasked" && r.turn === turnId && settledIds.has(r.callId));
+    if (parks.length < REASK_LIMIT) return { lines: said };
+    const approved = askedOf(parks.at(-1)?.instead ?? "");
+    return { lines: said, limit: `${ACP_CODES.reaskLimit}: the agent asked ${parks.length} times for another command instead of the one the person allowed (${approved?.kind ?? "other"} ${JSON.stringify(clip(approved?.title ?? "", 300))}), each waiting for the person, so the turn ends here; the agent is not started again and nothing more of the plan is spent on it` };
   };
 
   const onPermission = async (rt: Runtime, request: RequestPermissionRequest, connection: AbortSignal): Promise<RequestPermissionResponse> => {
@@ -319,18 +439,20 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const input = call.rawInput ?? null;
     // The request's id is the open turn's: the turn, what it asks, and which of the turn's requests that ask the same it
     // is. The records hold the ids the turn's requests took (another runner's agent process asked some of them): this
-    // process's request takes, of those it has not taken itself, the first one still waiting for its answer (the one a
-    // swap left parked), else the first one answered (the agent asking again for what it was answered), else a new one.
+    // process's request takes, of those it has not taken itself and whose answer no agent was handed (`given`: an
+    // allow-once is used once), the first one still waiting for its answer, else the first one answered (an answer a
+    // resume took, the agent asking again for it), else a new one.
     const opened = openTurn(cur.ctx.state());
     const turnId = opened?.placed[0] ?? "";
     const all = cur.journal.records<PermissionRecord>(PERMISSION_STREAM).map((r) => r.data);
     const askedIds = new Set(all.filter((r) => r?.type === "asked").map((r) => r.callId));
     const answeredIds = new Set(all.filter((r) => r?.type === "answered").map((r) => r.callId));
+    const givenIds = new Set(all.filter((r) => r?.type === "given").map((r) => r.callId));
     let callId: string | undefined;
     let firstAnswered: string | undefined;
     for (let nth = 0; callId === undefined; nth++) {
       const id = permissionCallId(turnId, { title, kind, rawInput: input }, nth);
-      if (rt.claimed.has(id)) continue;
+      if (rt.claimed.has(id) || givenIds.has(id)) continue;
       if (!askedIds.has(id)) callId = firstAnswered ?? id;
       else if (!answeredIds.has(id)) callId = id;
       else firstAnswered ??= id;
@@ -338,21 +460,34 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     rt.claimed.add(callId);
     const records = all.filter((r) => r?.callId === callId);
     const answered = records.find((r) => r.type === "answered");
-    if (answered) return choose(answered.answer === "allow" ? "allow_once" : "reject_once");
+    if (answered) {
+      // An answer a resume took (settled) reaches the agent here: it asked again for the same call, and uses it up.
+      cur.journal.append(PERMISSION_STREAM, { type: "given", callId, turn: turnId } satisfies PermissionRecord);
+      await cur.journal.flush();
+      return choose(answered.answer === "allow" ? "allow_once" : "reject_once");
+    }
     if (!records.some((r) => r.type === "asked")) {
+      // A new call while an allow the person gave on a resume is still not asked for: the agent asked for something else
+      // instead (Cursor writes a new command after a restart). Marked `reasked` here, before the gate (whose park
+      // commits the run parked before it answers): it counts toward REASK_LIMIT only if it parked, which the next resume
+      // reads (settlePermissions). One the gate answers at once (a tool set to allow) is the turn going on.
+      const unasked = all.find((r) => r?.type === "answered" && r.settled && r.turn === turnId && r.answer === "allow" && !givenIds.has(r.callId));
+      if (unasked) cur.journal.append(PERMISSION_STREAM, { type: "reasked", callId, turn: turnId, instead: unasked.callId } satisfies PermissionRecord);
       cur.journal.append(PERMISSION_STREAM, { type: "asked", callId, toolCallId: call.toolCallId, title, kind, input } satisfies PermissionRecord);
       await cur.journal.flush();
     }
     let refused: { deny: string } | undefined;
     if (options.gate) {
       try {
-        refused = await askGate(options.gate, { callId, tool: `acp_${kind.replace(/[^A-Za-z0-9_]/g, "_")}`, args: { title, kind, input } }, AbortSignal.any([cur.signal, connection, turn.stop.signal]));
+        refused = await askGate(options.gate, permissionGateCall(callId, kind, title, input), AbortSignal.any([cur.signal, connection, turn.stop.signal]));
       } catch {
         // Parked, and the session let go (or the turn was cancelled): nothing is answered, nothing recorded.
         return cancelled;
       }
     }
+    // Answered and handed to the agent at once: given with it, so a later ask of the same request is a call of its own.
     cur.journal.append(PERMISSION_STREAM, { type: "answered", callId, answer: refused ? "deny" : "allow", ...(refused ? { words: refused.deny } : {}) } satisfies PermissionRecord);
+    cur.journal.append(PERMISSION_STREAM, { type: "given", callId, turn: turnId } satisfies PermissionRecord);
     await cur.journal.flush();
     return choose(refused ? "reject_once" : "allow_once");
   };
@@ -398,6 +533,17 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const root = options.cwd === undefined ? join(base, "work") : normalize(options.cwd);
     const home = join(base, "home");
     const tmp = join(base, "tmp");
+    // The recipe's keys, read by name from the host's environment (a host may hold them readable by name alone), refused
+    // before anything starts when one is not there.
+    const hostEnv = options.env ?? process.env;
+    const keyEnv: Record<string, string> = {};
+    const absent: string[] = [];
+    for (const name of recipe.keys ?? []) {
+      const value = hostEnv[name];
+      if (typeof value === "string" && value !== "") keyEnv[name] = value;
+      else absent.push(name);
+    }
+    if (absent.length) throw new Error(`${ACP_CODES.keyMissing}: ${recipe.label ?? recipe.id} runs on ${absent.join(" and ")}, which this host does not hold; the agent was not started`);
     mkdirSync(base, { recursive: true, mode: 0o700 });
     // Everything the agent kept goes: what it starts with is the session's records, never an earlier process's files.
     for (const dir of [home, tmp]) {
@@ -415,11 +561,21 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       writeFileSync(file, text, { mode: 0o600 });
       own.add(clean.split("\\").join("/"));
     }
+    // The credentials the recipe names are never written: each path is an empty folder the agent cannot write a file at,
+    // so an agent that tolerates a failed save (Cursor 2026.11.13 says so on stderr and runs on the key in its env) holds
+    // its credential in memory alone, and a hard kill leaves none on disk. Nor are they mirrored, whatever their names and
+    // wherever the recipe's state paths reach.
+    for (const path of recipe.credentials ?? []) {
+      const clean = homePath(path)!;
+      mkdirSync(join(home, clean), { recursive: true, mode: 0o700 });
+      chmodSync(join(home, clean), 0o500);
+      own.add(clean.split("\\").join("/"));
+    }
 
     const stopped = new AbortController();
     const signal = AbortSignal.any([ctx.signal, stopped.signal]);
     const key = randomBytes(32).toString("base64url");
-    const rt = { ctx, loading: false, fresh: true, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log) } as unknown as Runtime;
+    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), kinds: new Map(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log) } as unknown as Runtime;
     const mcp = await startMcpServer({ tools: listed.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema as Record<string, unknown> })), key, log, call: (name, args, callSignal) => onMcpCall(rt, name, args, callSignal) });
     let proxy: { env: Record<string, string>; close(): Promise<void> } | undefined;
     let agent: AgentProcess | undefined;
@@ -437,6 +593,18 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (agent) await Promise.race([agent.exited, sleep(EXIT_WAIT_MS)]);
         await mcp.close().catch(() => {});
         await closeProxy();
+        // A recipe that names a credential the agent derives from its key (Cursor's auth.json): its HOME and tmp go with
+        // its process, whole, so no credential outlives the drive. What the next start needs comes back from the records.
+        if (recipe.credentials?.length) {
+          rt.wiped = true;
+          for (const dir of [home, tmp]) {
+            try {
+              rmSync(dir, { recursive: true, force: true });
+            } catch (error) {
+              log("acp: the agent's private HOME could not be removed", { dir, error: said(error) });
+            }
+          }
+        }
       })());
     ctx.signal.addEventListener("abort", () => void rt.dispose(), { once: true });
     try {
@@ -457,6 +625,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         cwd: root,
         env: {
           ...(recipe.env ?? {}),
+          ...keyEnv,
           ...(proxy?.env ?? {}),
           HOME: home,
           TMPDIR: tmp,
@@ -469,6 +638,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         ...(options.env ? { from: options.env } : {}),
         ...(options.confine ? { confine: options.confine } : {}),
         ...(options.parentWatch ? { parentWatch: options.parentWatch } : {}),
+        keys: Object.values(keyEnv),
         signal,
         onUpdate: (notification) => onUpdate(rt, notification),
         onPermission: (request, connection) => onPermission(rt, request, connection),
@@ -477,10 +647,14 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       const live = agent;
       const startMs = options.startMs ?? START_MS;
       const ask = <T>(what: string, run: () => Promise<T>) =>
-        within(unlessAborted(run(), signal), startMs, what).catch((error: unknown) => {
+        within(unlessAborted(run(), signal), startMs, what).catch(async (error: unknown) => {
           if (signal.aborted) throw signal.reason;
-          if (!live.alive() || live.connection.signal.aborted) throw new Error(`${ACP_CODES.agentExited}: the agent ended during ${what}: ${live.stderrTail().trim().slice(-300) || message(error)}`);
-          throw new Error(`acp: ${what} failed: ${message(error).slice(0, 300)}`);
+          // An agent that says why on its way out: its stderr is read once it has ended.
+          if (!live.alive() || live.connection.signal.aborted) await Promise.race([live.exited, sleep(500)]);
+          const named = refusalIn(`${live.stderrTail()}\n${message(error)}`);
+          if (named) throw new Error(named);
+          if (!live.alive() || live.connection.signal.aborted) throw new Error(`${ACP_CODES.agentExited}: the agent ended during ${what}: ${whyEnded(live, error)}`);
+          throw new Error(`acp: ${what} failed: ${said(error)}`);
         });
       const init: InitializeResponse = await ask("initialize", () =>
         live.connection.agent.request("initialize", { protocolVersion: PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "agentrun", version: "1" } }),
@@ -499,16 +673,18 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       const instructions = options.instructions?.trim() ? options.instructions : undefined;
       const systemPrompt: SystemPrompt | undefined = instructions && caps.sessionCapabilities?.systemPrompt ? { mode: "append", content: [{ type: "text", text: instructions }] } : undefined;
       const last = journalRecords<{ sessionId?: unknown }>(ctx.state(), SESSION_STREAM).map((r) => r.data?.sessionId).filter((id): id is string => typeof id === "string").at(-1);
+      /** What session/load or session/new answered: the models it lists, for one. */
+      let opening: unknown;
       if (recipe.declares.load && last) {
         // The agent's history comes back as session/update notifications before the answer: kept off the timeline.
         rt.loading = true;
         try {
-          await ask("session/load", () => live.connection.agent.request("session/load", { sessionId: last, cwd: root, mcpServers: [server], ...(systemPrompt ? { systemPrompt } : {}) }));
+          opening = await ask("session/load", () => live.connection.agent.request("session/load", { sessionId: last, cwd: root, mcpServers: [server], ...(systemPrompt ? { systemPrompt } : {}) }));
           rt.sessionId = last;
           rt.fresh = false;
         } catch (error) {
           if (signal.aborted || !live.alive()) throw error;
-          log("acp: the agent did not load its session; a new one starts with the conversation so far", { error: message(error).slice(0, 300) });
+          log("acp: the agent did not load its session; a new one starts with the conversation so far", { error: said(error) });
         } finally {
           rt.loading = false;
         }
@@ -522,6 +698,25 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (instructions && !systemPrompt) rt.firstBlocks.push(`Instructions for this session, from the host that runs you:\n\n${instructions}`);
         const context = contextNote(ctx.state());
         if (context) rt.firstBlocks.push(context);
+        opening = opened;
+      }
+      if (recipe.model !== undefined) {
+        // The run's model, among those the agent lists for its key: by its id, else by its name before the brackets.
+        // A loaded session that lists none keeps the one chosen for it before (MODEL_STREAM).
+        const models = (opening as { models?: { availableModels?: unknown } } | undefined)?.models?.availableModels;
+        const ids = Array.isArray(models) ? models.map((m) => (m as { modelId?: unknown })?.modelId).filter((id): id is string => typeof id === "string") : undefined;
+        const before = journalRecords<{ modelId?: unknown }>(ctx.state(), MODEL_STREAM).map((r) => r.data?.modelId).filter((id): id is string => typeof id === "string").at(-1);
+        const wanted = recipe.model;
+        const chosen = ids ? (ids.find((id) => id === wanted) ?? ids.find((id) => id.split("[")[0] === wanted)) : rt.fresh ? undefined : before;
+        if (!chosen) {
+          const said = ids?.length ? `it lists ${ids.join(", ")}` : "it lists none";
+          throw new Error(`${ACP_CODES.modelUnlisted}: the model ${JSON.stringify(wanted)} is not one ${recipe.label ?? recipe.id} lists for this key (${said}); no prompt was sent`);
+        }
+        await ask("session/set_model", () => live.connection.agent.request("session/set_model", { sessionId: rt.sessionId, modelId: chosen }));
+        if (chosen !== before) {
+          journal.append(MODEL_STREAM, { modelId: chosen });
+          await journal.flush();
+        }
       }
       log("acp: the agent's session is open", { sessionId: rt.sessionId, loaded: !rt.fresh, pid: live.pid });
       return rt;
@@ -561,6 +756,17 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       await journal.flush();
       if (!ctx.state().effects.has(toolKey(call.callId))) refusedLines.push(`- ${call.tool}(${clip(JSON.stringify(call.args) ?? "{}", 300)}), call ${call.callId}: refused by the host. Its answer:`, indent(clip(outcome.text, 1500)));
     });
+    // So is each request for a tool of the agent's own the turn left waiting: its answer is taken now, or the drive parks
+    // here, with no agent started and no prompt sent. Past REASK_LIMIT, the open turn ends here, saying so, with nothing
+    // of the inbox placed: a message sent while the run waited is a turn of its own, below, the agent started for it.
+    const { lines: permissionLines, limit: reaskLimit } = await settlePermissions(ctx, journal);
+    if (reaskLimit) {
+      log("acp: the agent kept asking for other calls instead of the allowed one", { limit: REASK_LIMIT });
+      journal.message({ type: "turn", status: "failed", error: reaskLimit } satisfies TranscriptEntry);
+      await journal.flush();
+      await ctx.refresh();
+      if (ctx.pending().length === 0) return;
+    }
 
     let rt = runtime;
     if (!rt || rt.ctx !== ctx || !rt.agent.alive()) {
@@ -624,6 +830,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         const result = await unlessAborted(Promise.race([asked, pastLimit]), ctx.signal);
         if (result === "past limit") {
           log("acp: the agent went on past the plan's limit after session/cancel; its process is ended", { waitedMs: LIMIT_STOP_MS });
+          // Its store is taken before its process ends: a recipe with a credential loses its HOME with it.
+          mirrorInto(agent, journal);
           await agent.dispose();
           if (runtime === agent) runtime = undefined;
         } else answer = result;
@@ -648,7 +856,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       let outcome: Outcome;
       if (turn.limitHit) outcome = { status: "failed", error: turn.limitHit };
       else if (failure !== undefined) {
-        outcome = { status: "failed", error: agent.agent.alive() && !agent.agent.connection.signal.aborted ? `acp: session/prompt failed: ${message(failure).slice(0, 300)}` : `${ACP_CODES.agentExited}: the agent ended during the turn: ${agent.agent.stderrTail().trim().slice(-300) || message(failure).slice(0, 300)}` };
+        const named = refusalIn(`${agent.agent.stderrTail()}\n${message(failure)}`);
+        outcome = { status: "failed", error: named ?? (agent.agent.alive() && !agent.agent.connection.signal.aborted ? `acp: session/prompt failed: ${said(failure)}` : `${ACP_CODES.agentExited}: the agent ended during the turn: ${whyEnded(agent.agent, failure)}`) };
       } else {
         const reason = answer?.stopReason;
         if (reason === "end_turn") outcome = { status: "completed" };
@@ -667,9 +876,13 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     try {
       // A turn a crash cut off: the kernel's note (quoting the turn's prompts, which a new agent session never saw), as a
       // user message, with the pending messages it carries.
-      const note = recoveryNote(ctx.state(), { prompts: true });
+      const note = reaskLimit ? undefined : recoveryNote(ctx.state(), { prompts: true });
       if (note) {
-        const text = refusedLines.length ? `${note.text}\n\nThe host answered these calls of yours since:\n${refusedLines.join("\n")}` : note.text;
+        const text = [
+          note.text,
+          ...(refusedLines.length ? [`The host answered these calls of yours since:\n${refusedLines.join("\n")}`] : []),
+          ...(permissionLines.length ? [`The person answered these requests of yours while the run waited:\n${permissionLines.join("\n")}`] : []),
+        ].join("\n\n");
         journal.message({ type: "message", role: "user", text, synthetic: "recovery" });
         await placeSubmissions(ctx, note.pending);
         await runTurn([text], `recovery:${transcriptOf(ctx.state()).length}`, [...note.turn.placed, ...note.pending.map((s) => s.id)]);

@@ -122,8 +122,16 @@ export type DefinitionInput = {
   output_schema?: JsonObject;
   workflow?: JsonObject;
   max_cost_usd?: number;
+  cli_learning?: {
+    runtime: "codex" | "claude-code";
+    connection_id: string;
+    project: string;
+  };
   sdk?: {
     runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
+  } | {
+    runtime: "external";
+    platform: string;
   };
   native?: {
     runtime: "claude-code" | "codex";
@@ -209,6 +217,9 @@ export type DefinitionInput = {
       provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
       permission?: "allow" | "ask" | "deny";
     };
+    web_save?: {
+      permission?: "allow" | "ask" | "deny";
+    };
     email_search?: {
       permission?: "allow" | "ask" | "deny";
       scope?: "thread" | "mailbox";
@@ -272,8 +283,11 @@ export type DefinitionInput = {
     hold_window?: number;
     hold_disagree?: number;
     stop_window?: number;
+    repick?: boolean;
+    repick_max_chars?: number;
   };
   checkout?: "pull_request" | "none";
+  max_requests?: number;
 };
 
 export type JsonObject = Record<string, unknown>;
@@ -360,6 +374,36 @@ export type RunSummary = {
       cache_write_tokens?: number | null;
       cost_usd?: number | null;
     } | null;
+  } | {
+    runtime: "external";
+    platform: string;
+    model: string | null;
+    session_id: string | null;
+    learning_revision: string | null;
+    usage: {
+      input_tokens?: number | null;
+      output_tokens?: number | null;
+      cache_read_tokens?: number | null;
+      cache_write_tokens?: number | null;
+      cost_usd?: number | null;
+    } | null;
+  };
+  cli_learning?: {
+    runtime: "codex-cli" | "claude-code-cli";
+    session_id: string;
+    turn_id: string;
+    model: string | null;
+    learning_revision: string | null;
+    seed_observed: boolean;
+    policy_complete: boolean;
+    evidence_complete: boolean;
+    usage: {
+      input_tokens?: number | null;
+      output_tokens?: number | null;
+      cache_read_tokens?: number | null;
+      cache_write_tokens?: number | null;
+      cost_usd?: number | null;
+    } | null;
   };
   native?: {
     runtime: string;
@@ -396,11 +440,13 @@ export type RunSummary = {
   kind: "agentic" | "workflow";
   archived_at: string | null;
   labels?: Record<string, string>;
+  stopped_for?: "budget" | null;
+  budget_refused_calls?: number;
   effort?: Effort;
   error?: RunError | null;
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
     detail: string | null;
     workflows?: Array<{
       file: string;
@@ -425,6 +471,7 @@ export type RunSummary = {
     call_id: string;
     args_preview: string;
     summary?: string;
+    asks_because?: string;
     requested_at: string;
     price?: number | "not metered" | "priced by usage";
     destructive?: true;
@@ -484,6 +531,7 @@ export type Cost = {
   so_far_usd?: number;
   unpriced?: number;
   upper_bound?: true;
+  unknown?: "booking_unread";
   tokens?: {
     input: number;
     output: number;
@@ -514,7 +562,7 @@ export type RunError = {
   };
 };
 
-export type RunErrorCode = "run_failed" | "moderated" | "agent_not_runnable" | "needs_connection" | "needs_reconnect" | "connection_revoked" | "output_invalid" | "spend_cap_reached" | "wall_clock_timeout" | "input_expired" | "internal";
+export type RunErrorCode = "run_failed" | "moderated" | "agent_not_runnable" | "needs_connection" | "needs_reconnect" | "connection_revoked" | "output_invalid" | "spend_cap_reached" | "wall_clock_timeout" | "input_expired" | "internal" | "computer_unavailable" | "runner_refused";
 
 export type NextAction = RequestAction | PersonAction;
 
@@ -634,6 +682,36 @@ export type Run = {
       cache_write_tokens?: number | null;
       cost_usd?: number | null;
     } | null;
+  } | {
+    runtime: "external";
+    platform: string;
+    model: string | null;
+    session_id: string | null;
+    learning_revision: string | null;
+    usage: {
+      input_tokens?: number | null;
+      output_tokens?: number | null;
+      cache_read_tokens?: number | null;
+      cache_write_tokens?: number | null;
+      cost_usd?: number | null;
+    } | null;
+  };
+  cli_learning?: {
+    runtime: "codex-cli" | "claude-code-cli";
+    session_id: string;
+    turn_id: string;
+    model: string | null;
+    learning_revision: string | null;
+    seed_observed: boolean;
+    policy_complete: boolean;
+    evidence_complete: boolean;
+    usage: {
+      input_tokens?: number | null;
+      output_tokens?: number | null;
+      cache_read_tokens?: number | null;
+      cache_write_tokens?: number | null;
+      cost_usd?: number | null;
+    } | null;
   };
   native?: {
     runtime: string;
@@ -670,6 +748,8 @@ export type Run = {
   kind: "agentic" | "workflow";
   archived_at: string | null;
   labels?: Record<string, string>;
+  stopped_for?: "budget" | null;
+  budget_refused_calls?: number;
   approvals?: "ask" | "never";
   last_progress_at?: string | null;
   recordings?: Array<{
@@ -706,7 +786,7 @@ export type Run = {
   };
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
     detail: string | null;
     at: string;
     workflows?: Array<{
@@ -732,6 +812,7 @@ export type Run = {
     call_id: string;
     args_preview: string;
     summary?: string;
+    asks_because?: string;
     requested_at: string;
     price?: number | "not metered" | "priced by usage";
     destructive?: true;
@@ -924,7 +1005,7 @@ export type TimelineRow = {
   tool_result_text?: string | null;
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
     detail: string | null;
   };
 };
@@ -963,6 +1044,18 @@ export type Capabilities = {
   features: Features;
   regions: Array<Region>;
   limits: Limits;
+  learning_model: {
+    location: "server" | "native";
+    ready: boolean;
+    model: string | null;
+    needs: "key" | "model" | null;
+    reason: string | null;
+  };
+  store_schema?: {
+    version: number | null;
+    runner_floor: number | null;
+    known: number;
+  };
   learning: {
     pending: true;
     approve: boolean;
@@ -1009,6 +1102,7 @@ export type Capabilities = {
     reason?: string;
     needs?: Array<"key" | "chatgpt">;
     installs?: "on_first_use";
+    card?: string;
   }>;
   tools: Array<{
     name: string;
@@ -1074,6 +1168,7 @@ export type Capabilities = {
     limit: string;
   };
   run_isolation?: "uid" | "process";
+  runner_refused?: string | null;
   switches: Record<string, {
     on: boolean;
     value: string | null;
@@ -1298,7 +1393,7 @@ export interface CreateAgentParams {
 }
 export type CreateAgentResponse = Agent;
 
-/** Delete an agent another system owns (DELETE /agents/{agent_id}). */
+/** Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id}). */
 
 /** Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil). */
 export type DeleteAgentArchilResponse = {
@@ -1546,11 +1641,36 @@ export type ListLearningPromotionsResponse = {
         differs_on?: string;
       }>;
       stopped?: true;
+      released?: number;
+      fresh_reads?: number;
+      turns?: {
+        n: number;
+        agreed: number;
+        alone: number;
+        of: Array<string>;
+        outcomes: {
+          answered: number;
+          handed_back: number;
+          failed: number;
+          skipped_write: number;
+        };
+        disagreements?: Array<{
+          run: string;
+          input: string;
+          agent: string | null;
+          draft?: string;
+          escalated?: string;
+          failed?: true;
+          differs_on?: string;
+        }>;
+        fresh_reads?: number;
+      };
     };
     runs?: Array<string>;
     inputs?: Array<string>;
     replay_id?: string;
     commit?: string;
+    via?: "sdk";
     audit?: {
       window: number;
       disagree: number;
@@ -1632,6 +1752,30 @@ export type ListLearningPromotionsResponse = {
           differs_on?: string;
         }>;
         stopped?: true;
+        released?: number;
+        fresh_reads?: number;
+        turns?: {
+          n: number;
+          agreed: number;
+          alone: number;
+          of: Array<string>;
+          outcomes: {
+            answered: number;
+            handed_back: number;
+            failed: number;
+            skipped_write: number;
+          };
+          disagreements?: Array<{
+            run: string;
+            input: string;
+            agent: string | null;
+            draft?: string;
+            escalated?: string;
+            failed?: true;
+            differs_on?: string;
+          }>;
+          fresh_reads?: number;
+        };
       } | null;
     } | null;
   }>;
@@ -1689,6 +1833,191 @@ export type VerifyNativeResponse = {
     remote?: {
       connector_id: string;
       target_id: string;
+    };
+  };
+};
+
+/** The runs waiting and held, the live runners and the recent hand-backs (GET /capacity). */
+export interface GetCapacityParams {
+  window?: number;
+}
+export type GetCapacityResponse = {
+  at: string;
+  runs: {
+    queued: number;
+    executing: number;
+  };
+  runners: Array<{
+    id: string;
+    version: string | null;
+    slots: number | null;
+    executing: number;
+    free_slots: number | null;
+    refused: boolean;
+    seen_at: string;
+  }>;
+  free_slots: number;
+  hand_backs: {
+    window_minutes: number;
+    count: number;
+  };
+};
+
+/** Close an existing CLI prompt window exactly once (POST /cli-learning/runs/{run_id}/complete). */
+export type CompleteCliLearningRunBody = {
+  status: "completed" | "failed" | "cancelled";
+  answer: string;
+  error?: string;
+  model?: string;
+  session_id?: string;
+  usage?: {
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cache_read_tokens?: number | null;
+    cache_write_tokens?: number | null;
+    cost_usd?: number | null;
+  };
+  evidence_complete?: boolean;
+  seed_observed?: boolean;
+  seed_revision?: string;
+  source_policy?: {
+    instructions: string;
+    complete: boolean;
+  };
+};
+export interface CompleteCliLearningRunParams {
+  "Idempotency-Key"?: string;
+}
+export type CompleteCliLearningRunResponse = {
+  accepted: true;
+};
+
+/** Enable learning for an existing local CLI without launching it (POST /cli-learning/connections). */
+export type EnrollCliLearningBody = {
+  runtime: "codex" | "claude-code";
+  project: string;
+  name?: string;
+};
+export type EnrollCliLearningResponse = {
+  connection_id: string;
+  agent_id: string;
+  runtime: "codex" | "claude-code";
+  project: string;
+  active: boolean;
+  last_hook_at?: string;
+  last_run_id?: string;
+  token: string;
+};
+
+/** Upload bounded role-preserving CLI dialogue and tool evidence (POST /cli-learning/runs/{run_id}/events). */
+export type CliLearningEventsBody = {
+  sequence: number;
+  events: Array<{
+    type: "message";
+    role: "user" | "assistant";
+    text: string;
+  } | {
+    type: "text";
+    text: string;
+  } | {
+    type: "session";
+    session_id: string;
+  } | {
+    type: "workflow_check";
+    id: string;
+    digest: string;
+    outcome: "answered" | "handed_back" | "failed" | "skipped_write";
+    answer?: string;
+    reason?: string;
+    skipped?: {
+      tool: string;
+      unmarked?: true;
+    };
+    fresh_reads?: number;
+  } | {
+    type: "tool";
+    id: string;
+    name: string;
+    status: "started" | "completed" | "failed";
+    input?: unknown;
+    output?: unknown;
+    parent_tool_use_id?: string;
+  }>;
+};
+export interface CliLearningEventsParams {
+  "Idempotency-Key"?: string;
+}
+export type CliLearningEventsResponse = {
+  accepted: true;
+};
+
+/** Read CLI prompt-window learning progress (GET /cli-learning/runs/{run_id}). */
+export type GetCliLearningRunResponse = {
+  run_id: string;
+  state: "running" | "processing" | "completed" | "failed" | "cancelled";
+  learning_run_id?: string;
+  learning: unknown;
+};
+
+/** Read enrolled CLI learning connections (GET /cli-learning/connections). */
+export type ListCliLearningResponse = {
+  connections: Array<{
+    connection_id: string;
+    agent_id: string;
+    runtime: "codex" | "claude-code";
+    project: string;
+    active: boolean;
+    last_hook_at?: string;
+    last_run_id?: string;
+  }>;
+};
+
+/** Revoke CLI capture and guidance delivery, retaining history and learned files (DELETE /cli-learning/connections/{connection_id}). */
+export type RevokeCliLearningResponse = {
+  connection_id: string;
+  agent_id: string;
+  runtime: "codex" | "claude-code";
+  project: string;
+  active: boolean;
+  last_hook_at?: string;
+  last_run_id?: string;
+};
+
+/** Register one prompt window from an existing CLI session (POST /cli-learning/connections/{connection_id}/runs). */
+export type StartCliLearningRunBody = {
+  session_id: string;
+  turn_id: string;
+  input: string;
+  instructions: string;
+  policy_complete: boolean;
+  model?: string;
+};
+export interface StartCliLearningRunParams {
+  "Idempotency-Key": string;
+}
+export type StartCliLearningRunResponse = {
+  run_id: string;
+  agent_id: string;
+  console_url: string;
+  token: string;
+  learning: {
+    enabled: boolean;
+    revision: string | null;
+    context: string;
+    workflows: Array<{
+      name: string;
+      workflow: string;
+      description: string;
+    }>;
+    check?: {
+      id: string;
+      revision: string;
+      digest: string;
+      workflow: {
+        name: string;
+        workflow: string;
+        description: string;
+      };
     };
   };
 };
@@ -2077,6 +2406,13 @@ export type GetLearningCostResponse = {
 
 /** What the agent has learned: its corrections, workflow drafts, log of changes and counts (GET /agents/{agent_id}/learning). */
 export type GetAgentLearningResponse = {
+  learning_model: {
+    location: "server" | "native";
+    ready: boolean;
+    model: string | null;
+    needs: "key" | "model" | null;
+    reason: string | null;
+  };
   agent: string;
   main: string | null;
   corrections: string;
@@ -2184,6 +2520,8 @@ export type GetLearnedWorkflowReplayResponse = {
   decided?: "promote" | "hold";
   reason?: string;
 };
+
+/** Reset the agent's learning: everything it learned deleted, the agent and its runs kept (DELETE /agents/{agent_id}/learning). */
 
 /** Retire a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
 export interface RetireLearningFileParams {
@@ -2522,6 +2860,10 @@ export type ListComputersResponse = {
     groups: Array<string>;
     tools: Array<string>;
     settings: Array<string>;
+    record: {
+      available: boolean;
+      why?: string;
+    };
     providers: Array<{
       id: string;
       name: string;
@@ -2535,6 +2877,7 @@ export type ListComputersResponse = {
       required: Array<string>;
       ready: boolean;
       runs_refused: string | null;
+      folder: "bind" | "archil" | "sync" | null;
       shell: "computer" | "local" | "none";
       host_tools: Array<string>;
       why?: string;
@@ -2659,6 +3002,8 @@ export type SaveComposioServerBody = {
   toolkit: string;
   tools: Array<string>;
   user_id?: string;
+  auth_config_id?: string;
+  price_usd?: number;
 };
 export type SaveComposioServerResponse = {
   server: {
@@ -2726,6 +3071,7 @@ export type SaveComputerKeysResponse = {
   required: Array<string>;
   ready: boolean;
   runs_refused: string | null;
+  folder: "bind" | "archil" | "sync" | null;
   shell: "computer" | "local" | "none";
   host_tools: Array<string>;
   why?: string;
@@ -3236,6 +3582,7 @@ export type GetObservationsResponse = {
     updated_at: string;
     sequence: number;
     display_name: string;
+    project_name?: string;
     models: Array<string>;
     usage: {
       input_tokens: number;
@@ -3248,6 +3595,13 @@ export type GetObservationsResponse = {
       status: "reported" | "unavailable";
     };
     observation_only: true;
+    learning: {
+      state: "on" | "off" | "setup_required" | "unknown" | "unsupported";
+      reason: "ready" | "source_setup_required" | "source_unknown" | "delegated_session" | "connection_unavailable" | "server_disabled" | "agent_disabled" | "awaiting_activation";
+      agent_id?: string;
+      connection_id?: string;
+      mode?: "off" | "notes" | "corrections" | "workflows";
+    };
   }>;
   usage: {
     input_tokens: number | null;
@@ -3355,6 +3709,15 @@ export interface CreateInlineRunParams {
   "Idempotency-Key"?: string;
 }
 export type CreateInlineRunResponse = Run;
+
+/** Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer). */
+export type CreateRunComputerViewerBody = Record<string, never>;
+export type CreateRunComputerViewerResponse = {
+  url: string;
+  expires_at: string;
+};
+
+/** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
 
 /** The files the run wrote (GET /runs/{run_id}/files). */
 export type ListRunFilesResponse = RunFileList;
@@ -3469,7 +3832,7 @@ export type HandBackRunComputerResponse = {
 export type GetRunLearningResponse = {
   run: string;
   state: "seeded" | "reflecting" | "merged" | "dropped";
-  reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+  reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
   detail: string | null;
   at: string;
   seed: string | null;
@@ -3651,6 +4014,85 @@ export type GetRunTraceResponse = {
 /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
 export type UnarchiveRunResponse = Record<string, unknown>;
 
+/** What a run cost, by model, by who charged for its tools, and by browser provider (GET /runs/{run_id}/usage). */
+export type GetRunUsageResponse = {
+  run_id: Id;
+  ended_at: string | null;
+  currency: "USD";
+  total: {
+    usd: number | null;
+    so_far_usd?: number;
+    unpriced?: number;
+    upper_bound?: true;
+  } | null;
+  lines: Array<{
+    meter: "tokens" | "tools" | "browser_time" | "compute_time";
+    model: string | null;
+    provider: string | null;
+    charged_by: string | null;
+    quantity: number | null;
+    unit: "token" | "call" | "second" | "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
+    basis: "reported" | "estimate" | "unpriced";
+    attempt: number | null;
+    billable: boolean;
+    usd: number | null;
+    so_far_usd?: number;
+    unpriced?: number;
+    upper_bound?: true;
+    requests?: number;
+    tokens?: {
+      input: number;
+      output: number;
+      cache_read: number;
+      cache_write: number;
+    };
+    unmetered_requests?: number;
+    not_metered_calls?: number;
+    resource?: "vcpu" | "memory" | "gpu" | "disk";
+    gpu_type?: string | null;
+    unheld_quantity?: number | null;
+    open_computers?: number;
+    measured_to?: string;
+  }> | null;
+  browser_sessions: Array<{
+    provider: string;
+    tag: string;
+    provider_session_id: string | null;
+    started_at: string | null;
+    ended_at: string | null;
+    release_reason: string | null;
+    charged_seconds: number | null;
+    provider_record: {
+      started_at: string | null;
+      ended_at: string | null;
+      proxy_bytes: number | null;
+    } | null;
+    provider_record_status: "read" | "not_offered" | "not_found" | "failed" | "no_session" | null;
+    attempt: number | null;
+    billable: boolean;
+  }> | null;
+  computer_intervals: Array<{
+    provider: string;
+    provider_id: string;
+    kind: string | null;
+    gpu: {
+      type: string | null;
+      count: number | null;
+    } | null;
+    cpus: number | null;
+    memory_mb: number | null;
+    disk_gb: number | null;
+    started_at: string;
+    ended_at: string | null;
+    kept: boolean;
+    booked_seconds: number;
+    attempt: number | null;
+    billable: boolean;
+  }> | null;
+  infra_usd: number | null;
+  reason: "running" | "not_booked" | "reopened" | null;
+};
+
 /** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */
 export type CompleteSdkRunBody = {
   status: "completed" | "failed" | "cancelled";
@@ -3683,6 +4125,18 @@ export type SdkRunEventsBody = {
   } | {
     type: "session";
     session_id: string;
+  } | {
+    type: "workflow_check";
+    id: string;
+    digest: string;
+    outcome: "answered" | "handed_back" | "failed" | "skipped_write";
+    answer?: string;
+    reason?: string;
+    skipped?: {
+      tool: string;
+      unmarked?: true;
+    };
+    fresh_reads?: number;
   } | {
     type: "tool";
     id: string;
@@ -3723,6 +4177,12 @@ export type StartSdkRunBody = {
     price_usd?: number;
   }>;
   workflow_adapters?: Array<"runNode" | "runJudge">;
+} | {
+  runtime: "external";
+  platform: string;
+  input: string;
+  instructions: string;
+  model?: string;
 };
 export interface StartSdkRunParams {
   "Idempotency-Key": string;
@@ -3741,6 +4201,16 @@ export type StartSdkRunResponse = {
       workflow: string;
       description: string;
     }>;
+    check?: {
+      id: string;
+      revision: string;
+      digest: string;
+      workflow: {
+        name: string;
+        workflow: string;
+        description: string;
+      };
+    };
   };
 };
 
@@ -3749,11 +4219,13 @@ export type GetCapabilitiesResponse = Capabilities;
 
 /** Whether this server can serve (GET /health). */
 export type GetHealthResponse = {
-  status: "ok" | "failing" | "warming";
+  status: "ok" | "degraded" | "failing" | "warming";
   checks: {
     store: "ok" | "does_not_open" | "opening";
     disk: "ok" | "below_floor" | "cannot_check";
+    runner?: "refused";
   };
+  runner_refused?: string;
 };
 
 /** The MCP endpoint: this API's tools, for a coding agent (POST /mcp). */
@@ -3899,6 +4371,27 @@ export type GetStatsResponse = {
     runs: number;
   };
   analytics: {
+    usage: {
+      tokens: number | null;
+      input: number | null;
+      output: number | null;
+      cache_read: number | null;
+      cache_write: number | null;
+      known_runs: number;
+      unknown_runs: number;
+      observed_sessions: number;
+      unknown_sessions: number;
+      partial_days: number;
+      retention_limited: boolean;
+      by_day: Array<{
+        day: string;
+        tokens: number | null;
+      }>;
+      by_harness: Array<{
+        harness: string;
+        tokens: number | null;
+      }>;
+    };
     filter: {
       from: string | null;
       to: string | null;
@@ -3910,6 +4403,7 @@ export type GetStatsResponse = {
       needs_review: number;
       failed: number;
       runs_with_metrics: number;
+      runs_with_token_metrics: number;
       tokens: number | null;
       cost_usd: number | null;
       unknown_cost_runs: number;
@@ -3934,6 +4428,7 @@ export type GetStatsResponse = {
       needs_review: number;
       failed: number;
       runs_with_metrics: number;
+      runs_with_token_metrics: number;
       tokens: number | null;
       cost_usd: number | null;
       unknown_cost_runs: number;
@@ -3945,6 +4440,7 @@ export type GetStatsResponse = {
       needs_review: number;
       failed: number;
       runs_with_metrics: number;
+      runs_with_token_metrics: number;
       tokens: number | null;
       cost_usd: number | null;
       unknown_cost_runs: number;
@@ -3956,6 +4452,7 @@ export type GetStatsResponse = {
       needs_review: number;
       failed: number;
       runs_with_metrics: number;
+      runs_with_token_metrics: number;
       tokens: number | null;
       cost_usd: number | null;
       unknown_cost_runs: number;
@@ -3994,8 +4491,15 @@ export type ApplyTemplateResponse = {
   template: string;
   version: string;
   agent_id: string;
+  revision_version: number;
+  agent_change: "made" | "updated" | "unchanged";
   servers: Record<string, string | null>;
-  trigger_ids: Array<string>;
+  triggers: Array<{
+    trigger_id: string;
+    name: string;
+    kind: "schedule" | "webhook" | "github" | "composio" | "email" | "feed";
+    enabled: boolean;
+  }>;
   warnings: Array<InputIssue>;
   webhook_secrets?: Array<{
     trigger_id: string;
@@ -4090,6 +4594,7 @@ export type ImportTemplateResponse = {
     secrets: Array<string>;
     budget: {
       per_run_usd: number;
+      max_requests?: number;
     } | null;
     learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";
@@ -4182,6 +4687,7 @@ export type ListTemplatesResponse = {
     secrets: Array<string>;
     budget: {
       per_run_usd: number;
+      max_requests?: number;
     } | null;
     learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";
@@ -4272,6 +4778,9 @@ export type PutToolSettingsBody = {
   };
   web_search?: {
     provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+    permission?: "allow" | "ask" | "deny";
+  };
+  web_save?: {
     permission?: "allow" | "ask" | "deny";
   };
   email_search?: {
@@ -5539,6 +6048,14 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   updateDefinition: {"method":"PUT","path":"/agents/{agent_id}/definition","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   verifyNative: {"method":"POST","path":"/agents/{agent_id}/native/verify","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getCapacity: {"method":"GET","path":"/capacity","pathParams":[],"multiSegment":[],"query":["window"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  completeCliLearningRun: {"method":"POST","path":"/cli-learning/runs/{run_id}/complete","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  enrollCliLearning: {"method":"POST","path":"/cli-learning/connections","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  cliLearningEvents: {"method":"POST","path":"/cli-learning/runs/{run_id}/events","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getCliLearningRun: {"method":"GET","path":"/cli-learning/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listCliLearning: {"method":"GET","path":"/cli-learning/connections","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  revokeCliLearning: {"method":"DELETE","path":"/cli-learning/connections/{connection_id}","pathParams":["connection_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  startCliLearningRun: {"method":"POST","path":"/cli-learning/connections/{connection_id}/runs","pathParams":["connection_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeRemoteCommand: {"method":"POST","path":"/connectors/{connector_id}/commands/{command_id}/complete","pathParams":["connector_id","command_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   enrollRemoteConnector: {"method":"POST","path":"/connectors/enrollment","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   importRemoteHistory: {"method":"POST","path":"/connectors/{connector_id}/targets/{target_id}/history","pathParams":["connector_id","target_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5563,6 +6080,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listLearningLog: {"method":"GET","path":"/agents/{agent_id}/learning/log","pathParams":["agent_id"],"multiSegment":[],"query":["cursor","limit"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   readLearningFile: {"method":"GET","path":"/agents/{agent_id}/learning/files/{file}","pathParams":["agent_id","file"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json+text","secret":false,"publicFields":[],"tagged":true},
   getLearnedWorkflowReplay: {"method":"GET","path":"/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}","pathParams":["agent_id","name","digest","replay_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  deleteAgentLearning: {"method":"DELETE","path":"/agents/{agent_id}/learning","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   retireLearningFile: {"method":"POST","path":"/agents/{agent_id}/learning/files/{file}/retire","pathParams":["agent_id","file"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":null,"answer":"text","secret":false,"publicFields":[],"tagged":true},
   listLearnedWorkflowRevisions: {"method":"GET","path":"/agents/{agent_id}/learning/workflows/{name}/revisions","pathParams":["agent_id","name"],"multiSegment":[],"query":["limit"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   putLearningCorrections: {"method":"PUT","path":"/agents/{agent_id}/learning/corrections","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["text/markdown","text/plain","application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
@@ -5625,6 +6143,8 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   callRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/call","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   releaseRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/release","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createInlineRun: {"method":"POST","path":"/runs","pathParams":[],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  createRunComputerViewer: {"method":"POST","path":"/runs/{run_id}/computer/viewer","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  deleteRun: {"method":"DELETE","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   listRunFiles: {"method":"GET","path":"/runs/{run_id}/files","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRun: {"method":"GET","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gradeRun: {"method":"PUT","path":"/runs/{run_id}/grade","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5645,6 +6165,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getTimeline: {"method":"GET","path":"/runs/{run_id}/timeline","pathParams":["run_id"],"multiSegment":[],"query":["after","wait_ms","limit","calls"],"headers":["Last-Event-ID"],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunTrace: {"method":"GET","path":"/runs/{run_id}/trace","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveRun: {"method":"POST","path":"/runs/{run_id}/unarchive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getRunUsage: {"method":"GET","path":"/runs/{run_id}/usage","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeSdkRun: {"method":"POST","path":"/sdk-runs/{run_id}/complete","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   sdkRunEvents: {"method":"POST","path":"/sdk-runs/{run_id}/events","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getSdkRun: {"method":"GET","path":"/sdk-runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5698,7 +6219,7 @@ export function resources(call: Call) {
       connectNative: (body: ConnectNativeBody, options?: RequestOptions): Promise<ConnectNativeResponse> => call("connectNative", [], body, undefined, options),
       /** Create an agent home (POST /agents). */
       create: (body: CreateAgentBody, params?: CreateAgentParams, options?: RequestOptions): Promise<CreateAgentResponse> => call("createAgent", [], body, params, options),
-      /** Delete an agent another system owns (DELETE /agents/{agent_id}). */
+      /** Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id}). */
       deleteAgent: (agentId: string, options?: RequestOptions): Promise<void> => call("deleteAgent", [agentId], undefined, undefined, options),
       /** Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil). */
       deleteAgentArchil: (agentId: string, options?: RequestOptions): Promise<DeleteAgentArchilResponse> => call("deleteAgentArchil", [agentId], undefined, undefined, options),
@@ -5730,6 +6251,26 @@ export function resources(call: Call) {
       update: (agentId: string, body: UpdateDefinitionBody, params?: UpdateDefinitionParams, options?: RequestOptions): Promise<Tagged<UpdateDefinitionResponse>> => call("updateDefinition", [agentId], body, params, options),
       /** Check native CLI and sign-in without a paid model call (POST /agents/{agent_id}/native/verify). */
       verifyNative: (agentId: string, options?: RequestOptions): Promise<VerifyNativeResponse> => call("verifyNative", [agentId], undefined, undefined, options),
+    },
+    capabilities: {
+      /** The runs waiting and held, the live runners and the recent hand-backs (GET /capacity). */
+      getCapacity: (params?: GetCapacityParams, options?: RequestOptions): Promise<GetCapacityResponse> => call("getCapacity", [], undefined, params, options),
+    },
+    cliLearning: {
+      /** Close an existing CLI prompt window exactly once (POST /cli-learning/runs/{run_id}/complete). */
+      complete: (runId: string, body: CompleteCliLearningRunBody, params?: CompleteCliLearningRunParams, options?: RequestOptions): Promise<CompleteCliLearningRunResponse> => call("completeCliLearningRun", [runId], body, params, options),
+      /** Enable learning for an existing local CLI without launching it (POST /cli-learning/connections). */
+      enroll: (body: EnrollCliLearningBody, options?: RequestOptions): Promise<EnrollCliLearningResponse> => call("enrollCliLearning", [], body, undefined, options),
+      /** Upload bounded role-preserving CLI dialogue and tool evidence (POST /cli-learning/runs/{run_id}/events). */
+      events: (runId: string, body: CliLearningEventsBody, params?: CliLearningEventsParams, options?: RequestOptions): Promise<CliLearningEventsResponse> => call("cliLearningEvents", [runId], body, params, options),
+      /** Read CLI prompt-window learning progress (GET /cli-learning/runs/{run_id}). */
+      get: (runId: string, options?: RequestOptions): Promise<GetCliLearningRunResponse> => call("getCliLearningRun", [runId], undefined, undefined, options),
+      /** Read enrolled CLI learning connections (GET /cli-learning/connections). */
+      list: (options?: RequestOptions): Promise<ListCliLearningResponse> => call("listCliLearning", [], undefined, undefined, options),
+      /** Revoke CLI capture and guidance delivery, retaining history and learned files (DELETE /cli-learning/connections/{connection_id}). */
+      revoke: (connectionId: string, options?: RequestOptions): Promise<RevokeCliLearningResponse> => call("revokeCliLearning", [connectionId], undefined, undefined, options),
+      /** Register one prompt window from an existing CLI session (POST /cli-learning/connections/{connection_id}/runs). */
+      start: (connectionId: string, body: StartCliLearningRunBody, params: StartCliLearningRunParams, options?: RequestOptions): Promise<StartCliLearningRunResponse> => call("startCliLearningRun", [connectionId], body, params, options),
     },
     connectors: {
       /** Complete a source command once under its valid lease (POST /connectors/{connector_id}/commands/{command_id}/complete). */
@@ -5786,6 +6327,8 @@ export function resources(call: Call) {
       read: (agentId: string, file: string, options?: RequestOptions): Promise<Tagged<ReadLearningFileResponse | string>> => call("readLearningFile", [agentId, file], undefined, undefined, options),
       /** Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
       replay: (agentId: string, name: string, digest: string, replayId: string, options?: RequestOptions): Promise<GetLearnedWorkflowReplayResponse> => call("getLearnedWorkflowReplay", [agentId, name, digest, replayId], undefined, undefined, options),
+      /** Reset the agent's learning: everything it learned deleted, the agent and its runs kept (DELETE /agents/{agent_id}/learning). */
+      reset: (agentId: string, options?: RequestOptions): Promise<void> => call("deleteAgentLearning", [agentId], undefined, undefined, options),
       /** Retire a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
       retire: (agentId: string, file: string, params?: RetireLearningFileParams, options?: RequestOptions): Promise<Tagged<string>> => call("retireLearningFile", [agentId, file], undefined, params, options),
       /** A learned workflow's revisions on main, oldest first, each with its workflow.json as it was then (GET /agents/{agent_id}/learning/workflows/{name}/revisions). */
@@ -5912,6 +6455,10 @@ export function resources(call: Call) {
       computerRelease: (runId: string, body?: ReleaseRunComputerBody, options?: RequestOptions): Promise<ReleaseRunComputerResponse> => call("releaseRunComputer", [runId], body, undefined, options),
       /** Start a run of an agent another system owns, given inline (POST /runs). */
       createInlineRun: (body: CreateInlineRunBody, params?: CreateInlineRunParams, options?: RequestOptions): Promise<CreateInlineRunResponse> => call("createInlineRun", [], body, params, options),
+      /** Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer). */
+      createRunComputerViewer: (runId: string, body?: CreateRunComputerViewerBody, options?: RequestOptions): Promise<CreateRunComputerViewerResponse> => call("createRunComputerViewer", [runId], body, undefined, options),
+      /** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
+      delete: (runId: string, options?: RequestOptions): Promise<void> => call("deleteRun", [runId], undefined, undefined, options),
       /** The files the run wrote (GET /runs/{run_id}/files). */
       files: (runId: string, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, undefined, options),
       /** One run (GET /runs/{run_id}). */
@@ -5952,6 +6499,8 @@ export function resources(call: Call) {
       trace: (runId: string, options?: RequestOptions): Promise<GetRunTraceResponse> => call("getRunTrace", [runId], undefined, undefined, options),
       /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
       unarchive: (runId: string, options?: RequestOptions): Promise<UnarchiveRunResponse> => call("unarchiveRun", [runId], undefined, undefined, options),
+      /** What a run cost, by model, by who charged for its tools, and by browser provider (GET /runs/{run_id}/usage). */
+      usage: (runId: string, options?: RequestOptions): Promise<GetRunUsageResponse> => call("getRunUsage", [runId], undefined, undefined, options),
     },
     sdkRuns: {
       /** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */

@@ -14,14 +14,15 @@ import { Input, Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { ClientError, type FieldIssue } from "@/lib/client";
-import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, inputOf } from "@/lib/inputForm";
+import { agentInputOf, clearsContentIssue, contentIssueOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, inputOf } from "@/lib/inputForm";
 import { curlFor, exampleHint, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { type ParameterText, paramHelp } from "@/lib/templatePackages";
 import { SpendCapMinimum } from "@/lib/spendCap";
+import { capWords } from "@/components/NeedsYou";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
-const NOTES = { "input.content": "Required. The run's first message.", file_ids: "Empty names none.", revision: "Empty runs the current revision.", effort: "How hard the model thinks. Empty uses the agent's own.", max_cost_usd: "A spend cap in dollars; empty means none.", repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent’s one repository." } as const;
+const NOTES = { "input.content": "Required. The run's first message.", file_ids: "Empty names none.", revision: "Empty runs the current revision.", effort: "How hard the model thinks. Empty uses the agent's own.", max_cost_usd: "This run's spend cap in dollars. Empty uses the agent's default cap, or none if it has none.", repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent’s one repository." } as const;
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
 
@@ -69,6 +70,15 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   // against the revision it runs), else the current one's. The fields start again for another agent, or a changed
   // schema.
   const picked = revision ? revisions.find((r) => r.revision === revision)?.definition : undefined;
+  // The default cap an empty max_cost_usd box leaves in force (as the run bar says it): the picked revision's, since the
+  // server runs with the cap of the revision it runs, else the current one's. A number is that cap and null is none;
+  // undefined is a picked revision whose definition the page does not hold, so the box names no amount.
+  const capFrom = revision ? picked : agent?.definition;
+  const defaultCap = !capFrom ? undefined : typeof capFrom.max_cost_usd === "number" && capFrom.max_cost_usd > 0 ? capFrom.max_cost_usd : null;
+  const whoseCap = revision ? "that revision's" : "the agent's";
+  const capNote = defaultCap === undefined ? `This run's spend cap in dollars. Empty uses ${whoseCap} default cap, or none if it has none.`
+    : defaultCap === null ? "This run's spend cap in dollars. Empty runs it with no cap."
+    : `This run's spend cap in dollars. Empty uses ${whoseCap} default cap, ${capWords(defaultCap)}.`;
   const schemaKey = kind === "agentic" ? JSON.stringify((picked ?? agent?.definition)?.input_schema ?? null) : "null";
   const shape = useMemo(() => (kind === "agentic" ? agentInputOf(JSON.parse(schemaKey)) : null), [kind, schemaKey]);
   const form = shape?.kind === "fields" ? shape.form : null;
@@ -108,7 +118,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     const issues = Array.isArray(error.fields) ? error.fields.filter((f): f is FieldIssue => !!f && typeof f.field === "string" && typeof f.message === "string") : [];
     // A 422 names its fields: each one whose message says more than the refusal's is listed under it, as the Run bar does;
     // one at a typed field is said there instead.
-    const more = issues.filter((f) => f.message !== error.message && atField(f.field) === null);
+    const more = issues.filter((f) => f.message !== error.message && atField(f.field) === null && !(form && f.field === "input.content"));
     return { message: error.message, more, issues, box: typeof error.details?.box === "string" ? error.details.box : undefined, details: error.code === "agent_not_runnable" ? error.details : undefined };
   }, [result, schemaKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // The fields edited to a value the server takes since the last answer: their issues go.
@@ -116,9 +126,17 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   useEffect(() => { setFixed(new Set()); }, [result]);
   const setField = (key: string, f: FieldSpec, value: string) => {
     setValues((was) => ({ ...was, [key]: value }));
-    setFixed((was) => { const n = new Set(was); if (fieldValid(f, value)) n.add(key); else n.delete(key); return n; });
+    // The message's issue goes where this value stands in for the message (clearsContentIssue), as the Run bar's does.
+    setFixed((was) => { const n = new Set(was); if (fieldValid(f, value)) n.add(key); else n.delete(key); if (form && clearsContentIssue(form, f, value)) n.add("input.content"); return n; });
+  };
+  const typeText = (value: string) => {
+    setText(value);
+    if (value.trim()) setFixed((was) => new Set(was).add("input.content"));
   };
   const issuesAt = (key: string) => (fixed.has(key) ? [] : (refusal?.issues ?? []).filter((i) => atField(i.field) === key));
+  // With typed fields the message may be optional: the server's issue at it (an input giving neither the message nor a
+  // field) is said at the message, until the message or a field is filled.
+  const contentIssue = fixed.has("input.content") ? undefined : contentIssueOf(form, refusal?.issues)?.message;
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
   // Files picked here are sent at once; the request names each once the server has it, and waits for the rest.
@@ -149,7 +167,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
             options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
         </div>
-        {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk.runtime)} · Your backend</span> : <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
+        {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk)} · Your backend</span> : <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
       </div>
       {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width.
           With the code panel folded, one column at any size. Where the two stood side by side, the button that shows
@@ -159,10 +177,10 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
       {sdk ? <section className="space-y-4 p-5 md:p-8">
         <h2 className="text-lg font-semibold">Run through your backend</h2>
         <p className="text-body text-muted-foreground">This agent keeps its existing SDK, tools and job entrypoint. Your coding agent can run it there; AgentRun records its progress and learning.</p>
-        <CodingAgentAction variant="primary" label="Run agent" prompt={runAgentPrompt(origin, agentId, sdk.runtime)} />
+        <CodingAgentAction variant="primary" label="Run agent" prompt={runAgentPrompt(origin, agentId, sdk)} />
       </section> : <div className={cn("relative grid min-h-0 flex-1 grid-cols-1", showCode ? "lg:[@media(min-height:501px)]:grid-cols-2" : "grid-rows-[minmax(0,1fr)_auto]")}>
         <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b", showCode ? "lg:border-b-0 lg:border-r short:hidden" : "lg:[@media(min-height:501px)]:border-b-0 short:border-b-0")}>
-          <header className={cn("flex items-center justify-between border-b px-5 py-3 md:px-6", !showCode && "lg:[@media(min-height:501px)]:min-h-[57px] lg:[@media(min-height:501px)]:pr-80 short:min-h-[57px] short:pr-72")}>
+          <header className={cn(BAR, "justify-between border-b", !showCode && "lg:[@media(min-height:501px)]:pr-80 short:pr-72")}>
             <span className="text-lead font-semibold">Request</span>
             <span role="group" aria-label="Request as" className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)} className={cn("min-h-6 border-b pb-1 capitalize", view === v ? "border-primary" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
           </header>
@@ -180,8 +198,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               </>
             ) : (
               <>
-                <Label htmlFor="playground-input" name={json ? "input" : "input.content"} required={!form || form.contentRequired} optional={!!form && !form.contentRequired} error={!built.ok && built.field === "input" && text ? built.message : undefined}>
-                  <Textarea id="playground-input" value={text} onChange={(e) => setText(e.target.value)} rows={json ? 7 : 4} placeholder={placeholder} className={field} />
+                <Label htmlFor="playground-input" name={json ? "input" : "input.content"} required={!form || form.contentRequired} optional={!!form && !form.contentRequired} error={!built.ok && built.field === "input" && text ? built.message : contentIssue}>
+                  <Textarea id="playground-input" value={text} onChange={(e) => typeText(e.target.value)} aria-invalid={contentIssue ? true : undefined} rows={json ? 7 : 4} placeholder={placeholder} className={field} />
                   {example && (
                     <p className="mt-1 font-mono text-label text-muted-foreground">
                       {exampleHint(example, "start", kind === "workflow" ? "workflow" : "agent")}
@@ -210,16 +228,16 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   <Input id="playground-repo" value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" />
                 </Label>}
                 {kind === "agentic" && !native && (
-                  <Label htmlFor="playground-cap" name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
-                    <Input id="playground-cap" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />
+                  <Label htmlFor="playground-cap" name="max_cost_usd" note={capNote} error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
+                    <Input id="playground-cap" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder={typeof defaultCap === "number" ? capWords(defaultCap) : "e.g. 0.50"} className={field} />
                     <p className="mt-1.5 text-small text-muted-foreground"><SpendCapMinimum /></p>
                   </Label>
                 )}
               </>
             )}
           </div>
-          <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
-            <span className="text-small text-muted-foreground">Sends a real request to this server.</span>
+          <footer className={cn(FOOT, "shrink-0 flex-wrap justify-between gap-3")}>
+            <span title="Sends a real request to this server." className="line-clamp-2 min-w-0 flex-1 basis-24 text-small text-muted-foreground">Sends a real request to this server.</span>
             <div className="ml-auto flex flex-wrap items-center gap-2">
               <CodingAgentAction size="lg" label="Use your agent" prompt={playgroundPrompt(origin, agentId, body)} disabled={nativeBlocked || !built.ok || !agentId || attachments.busy} />
               <Button variant="primary" size="lg" onClick={send} disabled={nativeBlocked || !built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
@@ -227,7 +245,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           </footer>
         </section>
         <section aria-label="Code and response" className={cn("flex min-h-0 flex-col", !showCode && "lg:[@media(min-height:501px)]:absolute lg:[@media(min-height:501px)]:right-6 lg:[@media(min-height:501px)]:top-3 short:absolute short:right-5 short:top-3")}>
-          <header className={cn("flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 md:px-6", showCode ? "border-b py-3" : "py-2 lg:[@media(min-height:501px)]:p-0 short:p-0")}>
+          <header className={cn("flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 md:px-6", showCode ? cn(BAR, "border-b") : "py-2 lg:[@media(min-height:501px)]:p-0 short:p-0")}>
             <span role="group" aria-label="Show" className={cn("flex gap-4 text-body", !showCode && "hidden")}>
               <button type="button" aria-pressed={pane === "code"} onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-primary" : "border-transparent text-muted-foreground")}>Code</button>
               <button type="button" aria-pressed={pane === "response"} onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-primary" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono max-sm:hidden", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
@@ -247,7 +265,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>
               </div>
               <pre tabIndex={0} aria-label="The request as code" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{code}</pre>
-              <footer className="border-t px-5 py-3 text-small text-muted-foreground md:px-6">The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
+              <footer className={cn(FOOT, "text-small text-muted-foreground")}>The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
             </>
           ) : result && (
             <>
@@ -263,11 +281,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 // The server answered 202: the run itself, followed until it ends, with the raw answer one click away.
                 <>
                   <div className="min-h-0 flex-1 overflow-hidden border-b short:overflow-auto">{live(result.runId)}</div>
-                  <details className="border-b px-5 py-2.5 md:px-6"><summary className="caps cursor-pointer text-label text-muted-foreground">Response body</summary>
+                  <details className="px-5 py-2.5 md:px-6"><summary className="caps cursor-pointer text-label text-muted-foreground">Response body</summary>
                     <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words py-3 font-mono text-small leading-[1.8]">{JSON.stringify(result.body, null, 2)}</pre></details>
                 </>
               ) : <pre tabIndex={0} aria-label="Response body" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{JSON.stringify(result.body, null, 2)}</pre>}
-              {result.runId && <button type="button" onClick={() => onOpenRun?.(result.runId!)} className="caps flex items-center justify-between border-t px-5 py-4 text-small text-primary-text hover:bg-accent md:px-6">Open this run <ArrowRight className="size-4" aria-hidden /></button>}
+              {result.runId && <button type="button" onClick={() => onOpenRun?.(result.runId!)} className={cn(FOOT, "caps justify-between text-small text-primary-text hover:bg-accent")}>Open this run <ArrowRight className="size-4" aria-hidden /></button>}
             </>
           )}
           </div>
@@ -276,6 +294,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     </div>
   );
 }
+
+/* Side by side, the request and the code/response panes rule their header and footer lines at the same heights: each bar
+ *  is its tallest control (a small button in the header, a large one in the footer) plus the same padding and border. */
+const BAR = "box-content flex min-h-control-sm items-center px-5 py-3 md:px-6";
+const FOOT = "box-content flex min-h-control-lg items-center border-t px-5 py-3 md:px-6";
 
 const field = "w-full border bg-card px-3 py-2.5 font-mono text-body outline-none placeholder:text-muted-foreground focus:border-border-strong";
 

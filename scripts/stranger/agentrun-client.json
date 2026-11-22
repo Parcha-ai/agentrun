@@ -2,6 +2,18 @@
   "package": "@parcha/agentrun-client",
   "install": ["client"],
   "companions": [],
-  "expect": "no-key path missing",
-  "reason": "The client README constructs an authenticated server client and requires an AgentRun API key; its SDK learning examples also require native authentication. No credential-free newcomer command is documented."
+  "files": [
+    {
+      "name": "check-agentrun.mjs",
+      "readme": "packages/client/README.md",
+      "heading": "Check the installation without credentials",
+      "fence": "js"
+    }
+  ],
+  "command": ["node", "check-agentrun.mjs"],
+  "expect": {
+    "exitCode": 0,
+    "pattern": "^(?<![\\s\\S])AgentRun client loaded; offline request passed\\. No server was contacted\\.\\r?\\n?(?![\\s\\S])"
+  },
+  "timeoutMs": 120000
 }

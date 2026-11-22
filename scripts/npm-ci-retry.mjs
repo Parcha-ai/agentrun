@@ -3,8 +3,8 @@
 // NPM_CI_RETRY_WAIT_MS (15 s) and runs once more: npm retries a request that fails before its response, never a download
 // that drops midway. Any other failure (a lockfile out of step, an engine npm refuses) exits at once with npm's own code,
 // as does a second failure.
-import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { npmSpawn } from './npm-command.mjs';
 
 const NETWORK_CODES = ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'ERR_SOCKET_TIMEOUT'];
 
@@ -18,7 +18,7 @@ function networkFailure(output) {
 
 /** Runs npm once with these arguments, its stdout and stderr passed through and kept: its exit code and output. */
 async function npm(args) {
-  const child = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', args, { stdio: ['inherit', 'pipe', 'pipe'], shell: process.platform === 'win32' });
+  const child = npmSpawn(args, { stdio: ['inherit', 'pipe', 'pipe'] });
   let output = '';
   child.stdout.on('data', (chunk) => { process.stdout.write(chunk); output += chunk; });
   child.stderr.on('data', (chunk) => { process.stderr.write(chunk); output += chunk; });

@@ -115,6 +115,18 @@ test("a session found by its tag, its create's answer lost, is billed when that 
   assert.deepEqual([record.spent.seconds, record.spent.usd, record.spent.final], [60, 0.002, true]);
 });
 
+test("a session found by its tag is told to the host at its release with that id and its bill, before the commit that records them", async (t) => {
+  // The release is told before the task's last commit, which records the id the delayed lookup found: the host hears the
+  // session as that commit leaves it, never as one no session was made for.
+  const told = [];
+  const onSession = async (row, change) => { if (change === "released") told.push(row.session); };
+  const { record, backend } = await run(t, { reads: 1, readS: 2, options: { createDeadlineMs: 50, onSession }, setup: (backend) => { backend.lose("create"); backend.fail("findByTag", 1); } });
+  assert.equal(backend.tally().creates, 1);
+  assert.equal(told.length, 1, JSON.stringify(told));
+  assert.equal(typeof record.resourceId, "string");
+  assert.deepEqual([told[0].resourceId, told[0].state, told[0].spent.seconds, told[0].spent.final], [record.resourceId, "released", 60, true]);
+});
+
 test("a session found by its tag stays billed when its release stops it and then fails: the next attempt's lookup no longer finds it", async (t) => {
   // The create's answer is lost and its first lookup fails, so the session is left to a release after the create deadline.
   // That release finds it by its tag and stops it, and the provider's answer is lost (its status check failed after the

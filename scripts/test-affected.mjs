@@ -30,12 +30,13 @@
 //   the commands, one suite at a time. --concurrency <n> caps the test files at once in each command: a `node --test`'s
 //   --test-concurrency (lowered, never raised), and TEST_CONCURRENCY and VITEST_MAX_WORKERS for the others.
 // Exit: 0, or with --run every command passed; 1 a command failed; 2 a usage error.
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, globSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import ts from 'typescript';
 import { readConfig, readSuites } from './ci-plan.mjs';
 import { isMain } from './is-main.mjs';
+import { npmSpawnSync, spawnArgvSync } from './npm-command.mjs';
 
 /** A fast test file per suite, run on every round: suite name to its file, relative to the suite's directory. */
 export const SMOKE = {
@@ -127,7 +128,7 @@ export function readTestSets(root) {
     // A whole suite's runner lists the files it runs with --list, and runs only the files it is given.
     const script = suite.workspace ? JSON.parse(readFileSync(join(root, suite.cwd, 'package.json'), 'utf8')).scripts.test : config.whole[suite.name];
     const where = suite.workspace ? ['-w', suite.workspace] : [];
-    const listed = spawnSync('npm', ['exec', ...where, '-c', `${script} --list`], { cwd: root, encoding: 'utf8' });
+    const listed = npmSpawnSync(['exec', ...where, '-c', `${script} --list`], { cwd: root, encoding: 'utf8' });
     if (listed.status !== 0) throw new Error(`${suite.name}: \`${script} --list\` exited ${listed.status ?? listed.signal}: ${(listed.stderr || '').trim().split('\n').slice(-2).join(' / ')}`);
     const files = [...new Set(listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean))].sort();
     return { name: suite.name, dir: suite.cwd, files, command: (some, { concurrency } = {}) => ({
@@ -490,7 +491,7 @@ function main(args) {
     const command = suite.command({ concurrency });
     console.error(`test-affected: ${suite.name}, ${suite.files.length} file${suite.files.length === 1 ? '' : 's'}: ${shellLine(command)}`);
     const started = Date.now();
-    const run = spawnSync(command.argv[0], command.argv.slice(1), { cwd: join(root, command.cwd ?? '.'), stdio: 'inherit', env: { ...env, ...command.env } });
+    const run = spawnArgvSync(command.argv, { cwd: join(root, command.cwd ?? '.'), stdio: 'inherit', env: { ...env, ...command.env } });
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
     console.error(`test-affected: ${suite.name} ${run.status === 0 ? 'passed' : `failed (exit ${run.status ?? run.signal})`} in ${seconds} s`);
     if (run.status !== 0) failed.push(`${suite.name} (exit ${run.status ?? run.signal})`);

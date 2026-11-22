@@ -104,6 +104,18 @@ test('a *.local.* file is excluded and a source file named local.ts is archived'
   assert.ok(receipt.exclusions.includes('*.local.*'));
 });
 
+test('a .parcha/ directory anywhere in the tree is left out, and its extensionless files do not stop the export', async t => {
+  const f = await fixture(t);
+  // A session hook on a developer machine writes .parcha/checkpoint-counter in whatever directory a command runs from.
+  const excluded = ['apps/console/.parcha/checkpoint-counter', 'packages/serve/.parcha/checkpoint-counter', 'docs/.parcha/state.json'];
+  for (const path of excluded) await f.write(path, '7\n');
+  await f.write('packages/dsl/src/parcha.mjs', 'export const name = 1;\n');
+  await f.run();
+  const listing = await f.listing();
+  for (const path of excluded) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
+  assert.ok(listing.includes('agentrun-dsl-source/packages/dsl/src/parcha.mjs'), 'a source file named parcha is archived');
+});
+
 test('a review file (*.review.*) is excluded and source named review is archived', async t => {
   const f = await fixture(t);
   // A review file is a file named `<name>.review.<ext>`, like the author's `<n>.review.json` beside each candidate; it and the

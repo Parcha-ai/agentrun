@@ -4,9 +4,9 @@
 // count, a file name, a duration, another service's status) is no refused key, and the error is left as it is.
 import { DEFAULT_HARNESS } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
-import { redactSecrets, valueMatcher } from "./learn/secrets.js";
+import { endsInScheme, redactSecrets, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
-import { openRouterOnly, WIRES } from "./provider.js";
+import { modelWire, openRouterOnly, WIRES } from "./provider.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -26,6 +26,8 @@ export function runKeyOf(env: NodeJS.ProcessEnv, harness: string = DEFAULT_HARNE
   // A gateway saved in the console (model-gateway.ts) is fixed there, never where AgentRun starts.
   const gateway: RunKey = savedGatewayIn(env) ? { who: "The model gateway saved in Settings → Model keys", field: "its key", saved: true, where: "enter its key again in Settings → Model keys → Use a model gateway, and test it there." } : { who: "The gateway at AGENT_MODEL_BASE_URL", field: "AGENT_MODEL_API_KEY", saved: false };
   const wire = harnessOf(env, harness)?.facts?.wire;
+  // A harness billed to its own plan (Cursor's) runs on no model key of this server's.
+  if (wire && !modelWire(wire)) return undefined;
   // Serve's gateway takes every request of the wire it serves, pi's too; a wire it does not serve never goes there.
   if (env.AGENT_MODEL_BASE_URL && (!wire || WIRES[wire].gateway)) return gateway;
   if (wire) return row(provider === "openrouter" || openRouterOnly(wire, env) ? "openrouter" : WIRES[wire].vendor);
@@ -86,7 +88,8 @@ export const answerPasses = { count: 0 };
 /** `text`, a run's answer as serve serves it (its final answer, or a string in its workflow output), with no held secret
  *  in it, and NEVER cut: an answer is shown whole. The same rule as redacted() (redactSecrets over `secrets`), over the
  *  whole text, read in pieces of about ANSWER_PIECE characters cut at whitespace. No form of a held value redactSecrets
- *  finds as it stands (as written, JSON-escaped, base64, hex) holds whitespace, so a cut there splits none. A run of more
+ *  finds as it stands (as written, JSON-escaped, base64, hex) holds whitespace, so a cut there splits none; the one shape
+ *  read across whitespace, a Bearer scheme and its token, is never cut between the two (endsInScheme). A run of more
  *  than ANSWER_PIECE characters with no whitespace is no person's text and is shown as "[redacted]", unread. A value split
  *  by whitespace across a cut, or a form only found across pieces, still shows to one valueMatcher pass over the joined
  *  output, and then the whole answer is "[redacted]", as redactSecrets does with a text that still holds a value. */
@@ -107,6 +110,20 @@ export function redactedAnswer(text: string, secrets: readonly string[]): string
         continue;
       }
       to = from + space + 1;
+      // A cut after a Bearer scheme would leave its token at the head of the next piece, where no shape reads it (the
+      // shape is the scheme, then the token). The cut moves back to the whitespace before the scheme; with none in this
+      // piece, the scheme and its token are read as one run, to the next whitespace, as a run with no whitespace is.
+      if (endsInScheme(text.slice(from, to))) {
+        const before = text.slice(from, to).trimEnd().search(/\s[^\s]*$/);
+        if (before > 0) to = from + before + 1;
+        else {
+          const next = text.slice(to).search(/\s/);
+          to = next < 0 ? text.length : to + next;
+          parts.push(to - from > ANSWER_PIECE ? "[redacted]" : redactSecrets(text.slice(from, to), secrets, Buffer.byteLength(text.slice(from, to))));
+          from = to;
+          continue;
+        }
+      }
     }
     const piece = text.slice(from, to);
     parts.push(redactSecrets(piece, secrets, Buffer.byteLength(piece)));

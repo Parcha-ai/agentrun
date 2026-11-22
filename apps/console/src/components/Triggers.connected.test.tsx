@@ -92,6 +92,7 @@ const FORMS: { kind: NonNullable<ScheduleView["kind"]>; submit: RegExp; needed: 
   { kind: "github", submit: /^Create GitHub trigger$/, needed: "A cost cap is needed: every run a GitHub trigger starts is capped.", fill: async () => {} },
   { kind: "composio", submit: /^Create app trigger$/, needed: "A cost cap is needed: every run a trigger starts is capped.", fill: async (t) => { await t.choose("Composio server", "gh"); await t.choose("Event", EVENT.slug); await t.set("config-repo", "scratch"); } },
   { kind: "feed", submit: /^Create feed trigger$/, needed: "A cost cap is needed: every run a feed trigger starts is capped.", fill: async (t) => { await t.set("urls", "https://status.example.com/history.atom"); } },
+  { kind: "email", submit: /^Create email trigger$/, needed: "A cost cap is needed: every run an email trigger starts is capped.", fill: async () => {} },
 ];
 
 describe("Triggers: a connected agent takes no cost cap", () => {

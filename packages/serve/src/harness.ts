@@ -3,6 +3,7 @@
 // before this field existed and one that names pi are the same revision. Which harnesses this server runs is said in
 // capabilities, and a revision naming one it does not run saves with a warning and is refused at run time.
 import type { HarnessPromises } from "./harness-table.js";
+import { SDK_RUNTIMES } from "./sdk/runtimes.js";
 
 
 /** The built-in harnesses' ids, in the table's order (harness-table.ts BUILTIN; harness-one-table.test.mjs holds them
@@ -15,11 +16,11 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
 export const HARNESS_ID_PATTERN = "^[a-z][a-z0-9-]{0,39}$";
 /** The names serve's own runs carry where a harness id goes, so a harness module may not take one (its start is refused):
  *  `learning`, the launch harness the stores' learning queries match; `sdk`, an SDK run's launch harness
- *  (sdk/runs.ts); and the names analytics files a run's harness under: `workflow`, a workflow revision's, and each SDK
+ *  (sdk/runs.ts); `cli`, a connected CLI capture; and the names analytics files a run's harness under: `workflow`, a workflow revision's, and each SDK
  *  runtime's (sdk/schema.ts SDK_BINDING). Also every name a plain object already has that the id pattern admits
  *  (`constructor`): serve looks harnesses up by id in plain objects, where such an id would read Object's own member. */
 export const RESERVED_HARNESS_IDS: readonly string[] = Object.freeze([
-  "learning", "sdk", "workflow", "claude-agent-sdk", "codex-sdk", "eve",
+  "learning", "sdk", "cli", "codex-cli", "claude-code-cli", "workflow", ...SDK_RUNTIMES,
   ...Object.getOwnPropertyNames(Object.prototype).filter((name) => new RegExp(HARNESS_ID_PATTERN).test(name)),
 ]);
 /** The harnesses that run on a person's ChatGPT plan (chatgpt-plan.ts): those whose requests go to OpenAI's Responses
@@ -37,7 +38,8 @@ export const PLAN_HARNESSES: readonly string[] = Object.freeze(["pi", "codex"] s
  *  (or the first agent made on it) installs it (harness-install.ts). */
 /** `id`: one of the table's (harness-table.ts harnessIds): a built-in one (HARNESSES) or one an owner's harness module adds.
  *  `label`: its name in a sentence. `promises`: what it promises (HarnessPromises), as capabilities show it. */
-export type HarnessOffer = { id: string; label: string; promises: HarnessPromises; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use" };
+/** `card`: what its owner reads before running it (HarnessEntry.card: Cursor's, billed to the owner's plan). */
+export type HarnessOffer = { id: string; label: string; promises: HarnessPromises; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use"; card?: string };
 /** A harness as capabilities list it: an offer with its `default_model` resolved (harnessOffers), never left out, and
  *  the memory a run of it reserves (`run_memory_mib`). */
 export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; free_models: { id: string; context_window: number }[]; run_memory_mib: number; needs?: HarnessNeed[] };
@@ -73,7 +75,8 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
       const { harnessIds, harnessOf, NATIVE_PROMISES } = await import("./harness-table.js");
       const probed = await Promise.all(harnessIds(env).map(async (id): Promise<HarnessOffer> => {
         const entry = harnessOf(env, id)!;
-        const named = { label: entry.label, promises: entry.promises ?? NATIVE_PROMISES };
+        const card = entry.card?.(env);
+        const named = { label: entry.label, promises: entry.promises ?? NATIVE_PROMISES, ...(card ? { card } : {}) };
         // The start's probe: these offers hold until a restart (server.ts), so the reason says so where installing fixes it.
         // Claude Code not installed yet says so (its install probes the offers again).
         const firstUse = entry.installs && !(await harnessInstalled(entry, env)) ? { installs: "on_first_use" as const } : {};
@@ -114,9 +117,9 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
           // lacks only a key is (a save warns of that, never refuses).
           const { MODEL_REF } = await import("./validate.js");
           const { providerFor, HarnessUnavailable } = await import("./provider.js");
-          const { adapterFactsOf } = await import("./adapter-facts.js");
           const { FAUX_ENV } = await import("./model.js");
-          const facts = adapterFactsOf(offer.id);
+          const { factsOf } = await import("./harness-table.js");
+          const facts = factsOf(env, offer.id);
           for (const id of new Set([...pickerCandidates(env, offer.id), ...free.map((m) => m.id)])) {
             if (!MODEL_REF.test(id)) continue;
             const chosen = await entry.model(env, id, true);

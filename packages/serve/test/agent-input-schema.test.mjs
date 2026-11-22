@@ -77,22 +77,49 @@ test("a run's input is checked against the agent's input_schema with the full co
   const contentNumber = await api("POST", "/agents/kyb/runs", { input: { content: 3, company: "Stripe" } });
   assert.deepEqual([contentNumber.status, fields(contentNumber.body)], [422, [["input.content", "wrong_type"]]]);
 
-  // No input_schema: {content: string}, as before. A schema that requires nothing else keeps content required.
+  // No input_schema: {content: string}, as before.
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   const plain = await api("POST", "/agents/plain/runs", { input: { company: "Stripe" } });
   assert.deepEqual([plain.status, fields(plain.body)], [422, [["input.content", "missing"]]]);
+  // A schema whose own fields are all optional: a run gives content or one of them, and an empty input is refused.
   assert.equal((await api("POST", "/agents", agent("loose", { input_schema: { type: "object", properties: { company: { type: "string" } } } }))).status, 201);
   const loose = await api("POST", "/agents/loose/runs", { input: { company: "Stripe" } });
-  assert.deepEqual([loose.status, fields(loose.body)], [422, [["input.content", "missing"]]], "nothing else required: content is");
+  assert.equal(loose.status, 202, `one of its own fields stands for content: ${JSON.stringify(loose.body)}`);
   assert.equal((await api("POST", "/agents/loose/runs", { input: { content: "Go.", company: "Stripe" } })).status, 202);
+  assert.equal((await api("POST", "/agents/loose/runs", { input: { content: "Go." } })).status, 202);
+  const empty = await api("POST", "/agents/loose/runs", { input: {} });
+  assert.deepEqual([empty.status, fields(empty.body)], [422, [["input.content", "missing"]]], "an input that says nothing");
+  assert.match(empty.body.error.fields[0].message, /^input\.content is required, or one of input\.company\b/, "the route adds its example after the fields that would do");
 });
 
-test("the schema in force: content is reserved as a string, kept required when nothing else is; without a schema it is the default", () => {
+test("a closed schema with one optional field (a template's pr_number): a run by hand gives the field alone, a trigger's run gives content alone, and an empty input is refused", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t);
+  const PR = { type: "object", additionalProperties: false, properties: { pr_number: { type: "integer", minimum: 1 } } };
+  assert.equal((await api("POST", "/agents", agent("pfl", { input_schema: PR }))).status, 201);
+  const byHand = await api("POST", "/agents/pfl/runs", { input: { pr_number: 3318 } });
+  assert.equal(byHand.status, 202, JSON.stringify(byHand.body));
+  assert.equal((await api("POST", "/agents/pfl/runs", { input: { content: "A pull request was opened: #3318." } })).status, 202);
+  const empty = await api("POST", "/agents/pfl/runs", { input: {} });
+  assert.deepEqual([empty.status, fields(empty.body)], [422, [["input.content", "missing"]]]);
+  const zero = await api("POST", "/agents/pfl/runs", { input: { pr_number: 0 } });
+  assert.deepEqual([zero.status, fields(zero.body)], [422, [["input.pr_number", "invalid"]]], "the field is still checked; it alone is wrong");
+});
+
+test("the schema in force: content is reserved as a string; with no field of its own required, content or one of its own fields is; without a schema it is the default", () => {
   assert.deepEqual(inputSchemaOf(undefined), DEFAULT_INPUT_SCHEMA);
   const inForce = inputSchemaOf(SUBJECT);
   assert.deepEqual(inForce.properties.content, { type: "string" });
   assert.deepEqual(inForce.required, ["company"]);
-  assert.deepEqual(inputSchemaOf({ type: "object", properties: { a: { type: "string" } } }).required, ["content"]);
+  assert.deepEqual(inputSchemaOf({ type: "object" }).required, ["content"], "no field of its own: content");
+  assert.deepEqual(inputSchemaOf({ type: "object", properties: { content: { type: "string" } } }).required, ["content"]);
+  assert.deepEqual(inputSchemaOf({ type: "object", required: ["content"], properties: { a: { type: "string" } } }).required, ["content"], "content required by the schema stays so");
+  const optional = inputSchemaOf({ type: "object", properties: { a: { type: "string" }, b: { type: "integer" } } });
+  assert.deepEqual(optional.required, []);
+  const issues = (input) => inputIssues(input, optional).map((i) => [i.field, i.reason, i.message]);
+  assert.deepEqual(issues({}), [["input.content", "missing", "input.content is required, or one of input.a, input.b"]]);
+  assert.deepEqual(issues({ a: "x" }), []);
+  assert.deepEqual(issues({ content: "x" }), []);
+  assert.deepEqual(issues({ b: "x" }), [["input.b", "wrong_type", "input.b must be integer"]], "a wrong field is said as itself, never as the missing content");
   assert.deepEqual(inputIssues({ company: "x", topics: [1] }, inForce).map((i) => [i.field, i.reason]), [["input.topics.0", "wrong_type"]]);
   assert.deepEqual(inputIssues({ company: "x" }, inForce, "target.input"), []);
   assert.deepEqual(inputIssues({}, inForce, "target.input").map((i) => i.field), ["target.input.company"]);

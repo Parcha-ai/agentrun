@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -93,7 +93,7 @@ async function mainOf(env, row, harness) {
 }
 
 /** A store with agent-1's revision and run-1 launched as `launch`, cleaned up after `t`. With `flows`, the agent learns:
- *  they are active in its learning folder, at the commit the launch's learning start pins (runner/learning-seed.ts). */
+ *  they have passed their check and are active in its learning folder, at the commit the launch pins. */
 async function storeWith(t, revision, launch, flows) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-gateway-model-id-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -105,6 +105,7 @@ async function storeWith(t, revision, launch, flows) {
   });
   await server.agents.create({ id: "agent-1", name: "Gateway" }, { id: "rev-1", kind: "agentic", body: { ...revision, ...(flows ? { learning: true } : {}) } });
   const seed = flows ? await landWorkflows(dir, "agent-1", flows) : undefined;
+  if (flows) await promoteChecked(server.settings, "agent-1", flows);
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { ...launch, ...(flows ? { learning: startAt(seed) } : {}) } });
   await server.flush?.();
   return { dir, server, store };

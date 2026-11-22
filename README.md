@@ -19,7 +19,7 @@
 
 <p align="center">
   <a href="https://console.agentrun.ai/"><b>AgentRun Cloud</b></a> ·
-  <a href="#run-locally-in-three-steps">Run locally</a> ·
+  <a href="#set-it-up-with-one-prompt">Run locally</a> ·
   <a href="#deploy-it">Self-host</a>
 </p>
 
@@ -81,12 +81,29 @@ laptop, in one container, or as a server with runners. Apache-2.0.
 create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
-Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it).
-The [getting-started guide](docs/getting-started.md) explains the three options.
+Prefer your own machine or infrastructure? Have your coding agent set it up below, or
+[self-host on Railway, Render, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it) yourself. The
+[getting-started guide](docs/getting-started.md) explains the three options. Wherever it runs, AgentRun counts itself
+anonymously; `AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off ([anonymous usage counts](docs/telemetry.md)).
 
 <a id="start-in-three-steps"></a>
+<a id="run-locally-in-three-steps"></a>
 
-### Run locally in three steps
+### Set it up with one prompt
+
+Paste this into Claude Code, Codex or another coding agent:
+
+```text
+Read https://agentrun.ai/SKILL.md and follow it to set up AgentRun for me. Ask me where AgentRun should run before you install or deploy anything.
+```
+
+Your agent first asks where AgentRun should run: this computer (macOS or Linux), your own always-on machine, Railway,
+Render or AgentRun Cloud. It installs nothing before you answer. It can bring in a Claude Code or Codex job you
+already schedule as the first run, or create and run a first agent with you. You save keys and passwords in the
+AgentRun console, never in the chat. The link is [the setup skill](docs/SKILL.md) in this repository.
+
+<details>
+<summary>Or run it locally yourself, in three steps</summary>
 
 You need Node 24.22.3 or newer, on macOS or Linux.
 
@@ -113,10 +130,7 @@ start a new agent from a template.
    a due diligence report with a verdict and every claim cited. Then open the agent's **Learning** tab to see what it
    kept for next time.
 
-Rather have your coding agent do it? Tell it `Read https://agentrun.ai/SKILL.md and set up AgentRun for me`.
-That page is [the setup skill](docs/SKILL.md) in this repository: it asks where AgentRun should run (this computer,
-your own always-on machine, Railway, Render or AgentRun Cloud) before it installs anything. It brings in a Claude Code
-or Codex job you already schedule as the first run, or creates and runs a first agent with you.
+</details>
 
 <details>
 <summary>Docker, sandboxes and running it on a server</summary>
@@ -154,15 +168,19 @@ reviewed checkout. The published observation-only CLI does not include this remo
    source CLI's secure prompt. Your native credentials stay on that machine; the worker connects outbound.
 3. **See the result.** For **History only**, open Runs and check the imported conversations and counts; no worker
    or model job is started. For a **live connection** or **Both**, open the connected agent, verify its setup, and
-   start a job. Keep a remote source worker online. Optionally turn **Self-improving** On to let completed jobs
-   propose notes and skills. Inspect what passes checking and grading in Learning Dojo, then start a fresh run to
-   use it. Reflection and grading add model usage.
+   start a job. Keep a remote source worker online. Turn **Self-improving** On to give future native runs your
+   standing corrections, which you can inspect and edit in Learning. Native connections do not compile or run
+   learned workflows; those require managed execution or a compatible backend workflow bridge.
 
 History import brings selected completed conversations into Runs without executing them or automatically training
 the agent. A live connection starts new CLI sessions; it does not attach to a desktop conversation already in
 progress. You can connect first and import history later with an explicitly approved history scope.
 
 [Connection and history guide](docs/native-agents.md) · [Remote CLI installation and commands](connector/README.md)
+
+Already use Codex CLI or Claude Code directly? [Connect its existing sessions for learning](docs/tutorials/existing-cli-learning.md)
+with project-scoped hooks that capture completed prompts and deliver explicit owner corrections. Keep starting
+the agent normally; no SDK wrapper or AgentRun task launcher is needed.
 
 Already run an agent inside your backend with an SDK? The development build can add checked learning around its
 existing call site. Your backend keeps its job queue, tools, model credentials and cancellation; AgentRun records
@@ -172,9 +190,11 @@ the run and supplies accepted learning to the next fresh task. Use the matching 
 | --- | --- |
 | Claude Agent SDK | [Wrap your existing query and custom tools](docs/tutorials/claude-sdk-learning.md) |
 | Codex SDK | [Wrap your existing Codex client and fresh threads](docs/tutorials/codex-sdk-learning.md) |
+| External platforms, including OpenClaw and Capy | [Report agents, scheduled jobs and threads from their platform](docs/tutorials/platform-sdk-runs.md) |
 
-The [live examples](examples/sdk-learning/README.md) verify native tool execution, an accepted note or skill, fresh-run reuse,
-and a learning-Off control. Reflection and independent grading run on the server and add model usage.
+The [live examples](examples/sdk-learning/README.md) verify native tool execution, owner-correction delivery in a fresh
+session, and a learning-Off control. Separate workflow examples verify compilation, an independent check, and reuse
+through the backend's tool bridge. Workflow compilation adds server model usage.
 
 ## Take the tour
 
@@ -226,7 +246,9 @@ flowchart LR
   once on those runs' inputs and serves only when it answers enough of them alone and agrees with the agent's answers.
 
 The agent's **Learning** tab shows its corrections, its workflows and the log of changes. Edit the corrections there,
-or with `PUT /v2/agents/{id}/learning/corrections`. Git keeps the history.
+or with `PUT /v2/agents/{id}/learning/corrections`. Git keeps the history. `DELETE /v2/agents/{id}/learning` resets
+it: everything the agent learned is deleted, history included, and the agent and its runs stay. Learning starts over
+from the runs after it: `compile_after` counts from the reset.
 
 <details>
 <summary>What gets kept, and what gets refused</summary>
@@ -387,7 +409,7 @@ computer:
 | --- | --- | --- |
 | `none` | Read and write files in its run folder; no shell (with Archil, commands run on Archil's exec) | none needed |
 | `sandbox` | Run code, install packages, keep processes in the background, on Linux | Docker, Daytona, Modal, E2B, Cloudflare (through a relay Worker you deploy) |
-| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server), and on dial Modal, Cloudflare and Fly Machines (the box image's desktop) |
+| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server), and on dial Daytona, Modal, Cloudflare and Fly Machines (the box image's desktop) |
 | `phone` | Tap, swipe, type, open apps and read the screen on Android | phone harness (a rented cloud Android) |
 | `browser` | Browse the web, and hand the controls to you at any point | Browserbase, Kernel |
 

@@ -54,22 +54,24 @@ test('workflow proof rejects a good answer produced by direct-tool fallback or a
   assert.throws(() => assertWorkflowReuse({ ...result, calls: result.calls.map(call => ({ ...call, source: 'native' })) }, receipt, 'accepted', ['release-brief']), /formatter callback/);
 });
 
-function demoFixture({ held = false } = {}) {
+function demoFixture({ held = false, checkFailed = false } = {}) {
   const counts = new Map(), prompts = [];
   const fetch = async (url, options) => {
     const path = new URL(url).pathname;
     if (path.endsWith('/sdk-runs')) {
       const agentId = path.split('/').at(-2), turn = (counts.get(agentId) ?? 0) + 1;
       counts.set(agentId, turn);
-      const enabled = agentId.endsWith('-on'), ready = enabled && turn > 5;
+      // Turns 6 through 10 check the draft (compile_after 5); the tenth decides.
+      const enabled = agentId.endsWith('-on'), ready = enabled && turn > 10 && !checkFailed;
+      const checking = enabled && turn >= 6 && turn <= 10;
       return Response.json({ run_id: `${agentId}-${turn}`, agent_id: agentId, console_url: 'https://console.example/#/runs/example',
-        learning: { enabled, revision: !enabled ? null : ready ? 'promoted' : 'seed', workflows: ready ? [{ name: 'release-brief' }] : [] } });
+        learning: { enabled, revision: !enabled ? null : ready ? 'promoted' : 'seed', workflows: ready ? [{ name: 'release-brief' }] : [], ...(checking ? { check: { id: 'shadow-1', revision: 'promoted', digest: 'workflow-digest', workflow: { name: 'release-brief' } } } : {}) } });
     }
     if (path.includes('/learning/files/')) return Response.json({ version: 1, root: { kind: 'call', tool: 'mcp:release/release_status' } });
     if (path.endsWith('/learning')) {
-      const ready = (counts.get('fixture-on') ?? 0) >= 5;
+      const count = counts.get('fixture-on') ?? 0, ready = count >= 5, checked = count >= 10;
       return Response.json({ main: ready ? 'promoted' : 'seed', corrections: '',
-        workflows: ready ? [{ name: 'release-brief', file: 'workflows/release-brief/workflow.json', status: held ? 'pending' : 'checking', run: 'practice' }] : [] });
+        workflows: ready ? [{ name: 'release-brief', file: 'workflows/release-brief/workflow.json', status: held ? 'pending' : checked ? checkFailed ? 'held' : 'serving' : 'checking', run: 'practice' }] : [] });
     }
     throw new Error(`Unexpected ${options?.method}: ${path}`);
   };
@@ -99,11 +101,19 @@ test('workflow demo preserves ordinary practice cadence and compares the same fr
   const { releaseTask } = await import('./sdk-learning/workflow-tools.mjs');
   const fixture = demoFixture();
   const result = await demonstrateWorkflows(fixture.options);
-  assert.deepEqual(result.stages.map(stage => stage.stage), ['teach', 'practice-1', 'practice-2', 'practice-3', 'practice-4', 'fresh-workflow-reuse', 'learning-off-control']);
+  const checks = [1, 2, 3, 4, 5].map(turn => `independent-shadow-check-${turn}`);
+  assert.deepEqual(result.stages.map(stage => stage.stage), ['teach', 'practice-1', 'practice-2', 'practice-3', 'practice-4', ...checks, 'fresh-workflow-reuse', 'learning-off-control']);
   assert.equal(fixture.prompts.at(-2), releaseTask('billing-api'));
   assert.equal(fixture.prompts.at(-1), releaseTask('billing-api'));
   assert.equal(result.runs.at(-1).enabled, false);
   assert.equal(result.acceptedRevision, 'promoted');
+  const checked = result.runs.filter(run => run.check);
+  assert.equal(checked.length, 5, 'The draft is checked on compile_after native turns.');
+  for (const run of checked) {
+    assert.equal(run.check.workflow, 'release-brief');
+    assert.deepEqual(run.workflows, [], 'The check must compare an independent native answer, not a workflow-generated baseline.');
+  }
+  for (const stage of checks) assert.equal(result.stages.find(one => one.stage === stage).calls.filter(call => call.source === 'workflow').length, 0);
 });
 
 test('workflow demo stops at owner review instead of approving or claiming workflow reuse', async () => {
@@ -111,6 +121,14 @@ test('workflow demo stops at owner review instead of approving or claiming workf
   const fixture = demoFixture({ held: true });
   await assert.rejects(demonstrateWorkflows(fixture.options), /needs owner review/);
   assert.equal(fixture.prompts.length, 5);
+  assert.equal(fixture.counts.has('fixture-off'), false);
+});
+
+test('workflow demo stops after one unsuccessful shadow check instead of serving an unchecked draft', async () => {
+  const { demonstrateWorkflows } = await import('./sdk-learning/workflow-demo.mjs');
+  const fixture = demoFixture({ checkFailed: true });
+  await assert.rejects(demonstrateWorkflows(fixture.options), /did not promote/);
+  assert.equal(fixture.prompts.length, 10, 'Stop when the check is decided (its fifth turn): no more paid tasks to fish for promotion.');
   assert.equal(fixture.counts.has('fixture-off'), false);
 });
 

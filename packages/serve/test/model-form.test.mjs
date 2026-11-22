@@ -39,6 +39,14 @@ test("with only an OpenRouter key, the likely id and the examples are OpenRouter
   assert.match(message(refused), /Did you mean openrouter\/anthropic\/claude-sonnet-5\.5\?/);
 });
 
+test("cursor, billed to its own plan, refuses a model with no provider in its own form (cursor/<model id>), never a vendor of ours", async (t) => {
+  const { api } = await withKey(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, OPENROUTER_API_KEY: `not-a-secret-${"router"}` });
+  const refused = await api("POST", "/agents", agent("cursor-bare", { harness: "cursor", model: "gpt-5.4-nano" }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.fields[0].field, "definition.model");
+  assert.equal(message(refused), 'On cursor, a model is cursor/<model id> (one Cursor lists for your key), like cursor/default: "gpt-5.4-nano" is not one.');
+});
+
 test("capabilities serve each harness's pickable models in the form it takes", async (t) => {
   const { api } = await withKey(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, OPENAI_API_KEY: `not-a-secret-${"openai"}` });
   const harnesses = (await api("GET", "/capabilities")).body.harnesses;

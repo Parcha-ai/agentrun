@@ -6,22 +6,27 @@ import type { Route } from "./server.js";
 /** The variable that turns the profile on. */
 export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
 
-/** The routes (server.ts ROUTES, by name) an API-only server serves. Those past a run's own:
- *  - getComputerDaemon: a run's hosted machine that dials fetches computerd with its own token, as the attach upgrade
- *    takes such a machine alone (a paired computer is the console's).
- *  - listComputers, getWorkspaceArchil: the two reads a backend checks before it launches, naming keys and never a
- *    value; their writes and tests stay the console's.
- *  - getAgentArchil, deleteAgentArchil, deleteAgent: an agent's disk and the delete of an agent its inline runs made,
- *    which the backend that made it sends. */
+/** The routes (server.ts ROUTES, by name) an API-only server serves. Past a run's own, why each group is here:
+ *  - a run's hosted machine fetches computerd with the token its create minted, not the server's;
+ *  - the computers list and the Archil settings are read before a launch, naming keys, never a value;
+ *  - an agent its inline runs made has its disk, its delete and its runs' purges sent by the backend that made it (a run
+ *    of an agent made here is refused by the purge's route itself, server.ts deleteRun, in this profile's words);
+ *  - a run's computer, take-over, hand-back and viewer link go to the backend, which has no owner's session here;
+ *  - a backend reads what its agents learned (loop, promotions, cost per run, a run's learning), cut as the console's,
+ *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
+ *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
+ *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
+  "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
   "listComputers", "getWorkspaceArchil",
-  "getAgentArchil", "deleteAgentArchil", "deleteAgent",
-  "getRun", "listRuns", "listAllRuns", "getTimeline",
+  "getAgentArchil", "deleteAgentArchil", "deleteAgent", "deleteAgentLearning", "deleteRun",
+  "getLearningLoop", "listLearningPromotions", "getLearningCost", "getRunLearning",
+  "getRun", "getRunUsage", "listRuns", "listAllRuns", "getTimeline",
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
   "listRunFiles", "readRunFile",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
-  "getCapabilities", "getHealth", "getUsage",
+  "getCapabilities", "getHealth", "getUsage", "getCapacity",
 ]);
 
 /** Whether `env` turns the profile on: `1` or `true` on; unset, empty, `0` or `false` off. Any other value is refused in
@@ -33,12 +38,16 @@ export function apiOnlyFrom(env: NodeJS.ProcessEnv = process.env): boolean {
   throw new TypeError(`${API_ONLY_ENV} is 1 (serve the run API only) or 0 (the whole server), not ${JSON.stringify(env[API_ONLY_ENV])}`);
 }
 
+/** A run's computer live view: its page, files and socket, which take the viewer credential alone here (server.ts). */
+const COMPUTER_LIVE = /^\/v2\/runs\/[^/]+\/computer\/live\//;
+
 /** Whether an API-only server serves `method` on `raw` (the path as sent, its query cut): a /v2 path one of
- *  API_ONLY_ROUTES matches for that method (HEAD as GET). */
+ *  API_ONLY_ROUTES matches for that method (HEAD as GET), or a GET of a run's computer live view. */
 export function servedApiOnly(routes: readonly Route[], method: string | undefined, raw: string): boolean {
   if (!raw.startsWith("/v2/")) return false;
   const path = raw.slice(3);
   const asked = method === "HEAD" ? "GET" : method;
+  if (asked === "GET" && COMPUTER_LIVE.test(raw)) return true;
   return routes.some((route) => API_ONLY_ROUTES.has(route.name) && route.method === asked && route.pattern.test(path));
 }
 
