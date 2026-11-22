@@ -17,7 +17,7 @@
 // The scout's run reads the repository on a read-only checkout and never holds a token; every write to GitHub is the
 // server's, made when a person presses Create, and its token is never the run's. Decisions are kept in the store's
 // settings (suggestions.item.<id>, suggestions.scan.<repo>), so every server on one store sees the same list.
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import type { GitHubConnectionView, RepoInstallation } from "./github-connection.js";
 import { githubCall } from "./github.js";
@@ -34,6 +34,12 @@ export const PACKAGE_DIR = ".agentrun/agents";
 export const PULL_PERMISSIONS = { contents: "write", pull_requests: "write", metadata: "read" } as const;
 const ITEM = "suggestions.item.";
 const SCAN = "suggestions.scan.";
+/** A create's claim on its suggestion, kept on its row in the shared store: one older than this was left by a server
+ *  that stopped mid-create, and the next create takes it over. A create's GitHub calls and apply take seconds. */
+export const CREATE_CLAIM_MS = 15 * 60_000;
+/** A scan's start, kept on its repository's row while its run is started: one older than this was left by a server that
+ *  stopped mid-start, and the next scan takes it over. */
+export const SCAN_CLAIM_MS = 2 * 60_000;
 const REPO = /^([A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38})\/([A-Za-z0-9._-]{1,100})$/;
 const KEY = /^[a-z][a-z0-9-]{1,38}[a-z0-9]$/;
 const FIELD = /^[a-z][a-z0-9_]{0,39}$/;
@@ -76,7 +82,11 @@ export type Item = {
   scan: { run_id: string; commit: string; at: number };
   decided_at?: number;
   created?: { agent_id: string; template_id: string; branch?: string; commit?: string; pull_request?: { number: number; url: string }; pull_error?: string };
+  /** A create in flight, on any server sharing the store: `by` is that create's own id. Taken off when it ends. */
+  creating?: Claim;
 };
+/** A claim on a row in the shared store: when it was taken, and by which request (a random id of its own). */
+export type Claim = { at: number; by: string };
 /** A scan as it is kept: its run, and what was read of it once it ended. */
 export type Scan = {
   repo: string;
@@ -84,6 +94,8 @@ export type Scan = {
   agent_id: string;
   started_at: number;
   read?: { status: "completed" | "failed" | "cancelled"; at: number; app?: string; commit?: string; found: number; dropped: string[]; skipped: number; error?: string };
+  /** A new scan of the repository being started, on any server sharing the store; the row is that scan's once it has. */
+  starting?: Claim;
 };
 /** A run of the scout, as its view says. */
 export type ScanRun = { status: string; output?: unknown; error?: string; endedAt?: number };
@@ -125,11 +137,12 @@ const line = (value: unknown, min: number, max: number): string | undefined => {
 };
 const oneOf = <T extends string>(value: unknown, list: readonly T[]): T | undefined => (list as readonly unknown[]).includes(value) ? (value as T) : undefined;
 
-/** A path in a repository: relative, in forward slashes, with no `.` or `..` part, no control character, at most 300. */
+/** A path in a repository: relative, in forward slashes, with no `.` or `..` part, at most 300, and no character that
+ *  ends a line in any language a client is written in: no control character (C0 or C1), no U+2028 or U+2029. */
 export function repoPath(value: unknown): string | undefined {
   if (typeof value !== "string" || !value || value.length > 300) return undefined;
   const path = value.replace(/^\.\//, "");
-  if (path.startsWith("/") || path.includes("\\") || /[\u0000-\u001f\u007f]/.test(path)) return undefined;
+  if (path.startsWith("/") || path.includes("\\") || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(path)) return undefined;
   const parts = path.split("/");
   return parts.every((part) => part && part !== "." && part !== "..") ? path : undefined;
 }
@@ -308,7 +321,7 @@ function header(s: Suggestion, repo: string, commit: string, mark: string): stri
   const lines = [
     `${oneLine(s.title)}: runs the AgentRun agent "${oneLine(s.agent.name)}" and returns its typed answer.`,
     `Added by AgentRun's agent scout from a scan of ${repo}${commit ? ` at ${commit.slice(0, 12)}` : ""}. Nothing calls it yet:`,
-    `wire it in at ${s.integration.call_site.path}:${s.integration.call_site.line}. ${oneLine(s.integration.call_site.note)}`,
+    `wire it in at ${oneLine(s.integration.call_site.path)}:${s.integration.call_site.line}. ${oneLine(s.integration.call_site.note)}`,
     "",
     "Configure in the app's environment (never commit the key):",
     ...[["AGENTRUN_URL", "the AgentRun server, like https://agentrun.example.com"], ["AGENTRUN_API_KEY", "an API key of that server"], [agentVariable(s.key), "the agent's id there (the pull request that added this file names it)"]].map(([name, what], _, all) => `  ${name!.padEnd(Math.max(...all.map(([n]) => n!.length)) + 2)}${what}`),
@@ -370,19 +383,26 @@ ${cjs ? `\nmodule.exports = { ${fn} };\n` : ""}`;
   }
   if (language === "python") {
     const py = snake(s.key);
-    const required = s.agent.inputs.filter((f) => f.required);
-    const optional = s.agent.inputs.filter((f) => !f.required);
-    const params = [...required.map((f) => `${f.name}: ${pyType(f)}`), ...optional.map((f) => `${f.name}: Optional[${pyType(f)}] = None`), "timeout_s: float = 300.0"].join(", ");
+    const input = `${pascal(s.key)}Input`;
+    // The inputs are one dict's keys, never names in the function: an input called key, base, timeout_s or class is
+    // the caller's value as it is, and the client's own names stay its own.
+    const shape = `{${s.agent.inputs.map((f) => `"${f.name}": ${pyType(f)}`).join(", ")}}`;
+    const required = s.agent.inputs.filter((f) => f.required).map((f) => `"${f.name}"`);
     // Every word a model wrote goes in a # comment, on one line: never in a string or a docstring it could end.
     const code = `${header(s, repo, commit, "#")}
 #
-# run_${py} returns the agent's answer as a dict:
+# run_${py} takes the agent's input as a dict:
+${s.agent.inputs.map((f) => `#   ${f.name} (${pyType(f)}${f.required ? ", required" : ""}): ${oneLine(f.description)}`).join("\n")}
+# and returns its answer as a dict:
 ${s.agent.output.map((f) => `#   ${f.name}: ${oneLine(f.description)}`).join("\n")}
 import json
 import os
 import time
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypedDict
+
+${input} = TypedDict("${input}", ${shape}, total=False)
+_REQUIRED = (${required.join(", ")}${required.length === 1 ? "," : ""})
 
 _ENDED = {"completed", "failed", "cancelled", "input_required", "paused"}
 
@@ -394,14 +414,17 @@ def _call(method: str, url: str, key: str, body: Optional[Dict[str, Any]] = None
         return json.loads(response.read().decode("utf-8"))
 
 
-def run_${py}(${params}) -> Dict[str, Any]:
+def run_${py}(inputs: ${input}, timeout_s: float = 300.0) -> Dict[str, Any]:
+    fields: Dict[str, Any] = {name: value for name, value in dict(inputs).items() if value is not None}
+    missing = [name for name in _REQUIRED if name not in fields]
+    if missing:
+        raise ValueError(f"run_${py} needs {', '.join(missing)}.")
     base = os.environ.get("AGENTRUN_URL", "").rstrip("/")
     key = os.environ.get("AGENTRUN_API_KEY")
     agent = os.environ.get("${env}")
     if not base or not key or not agent:
         raise RuntimeError("Set AGENTRUN_URL, AGENTRUN_API_KEY and ${env} to run the ${s.key} agent.")
-    fields = {${s.agent.inputs.map((f) => `"${f.name}": ${f.name}`).join(", ")}}
-    run = _call("POST", f"{base}/v2/agents/{agent}/runs", key, {"input": {name: value for name, value in fields.items() if value is not None}})
+    run = _call("POST", f"{base}/v2/agents/{agent}/runs", key, {"input": fields})
     until = time.monotonic() + timeout_s
     while run.get("status") not in _ENDED:
         if time.monotonic() > until:
@@ -422,7 +445,7 @@ def run_${py}(${params}) -> Dict[str, Any]:
 ${s.summary}
 
 Added by AgentRun's agent scout from a scan of ${repo}${commit ? ` at ${commit.slice(0, 12)}` : ""}. Call it from
-\`${s.integration.call_site.path}:${s.integration.call_site.line}\`: ${oneLine(s.integration.call_site.note)}
+\`${oneLine(s.integration.call_site.path)}:${s.integration.call_site.line}\`: ${oneLine(s.integration.call_site.note)}
 
 Start a run, then read it until its \`status\` is \`completed\`; the answer is its \`result.output\`.
 
@@ -525,12 +548,15 @@ const LABEL: Record<string, string> = { contents: "Contents", pull_requests: "Pu
 const said = (missing: string[]) => missing.map((m) => { const [name, level] = m.split(": "); return `${LABEL[name!] ?? name}: ${level === "write" ? "Read and write" : "Read-only"}`; }).join(" and ");
 
 export class Suggestions {
-  /** The creates in flight on this server, by suggestion id: a second one waits for none, it is refused. */
-  readonly #creating = new Set<string>();
   constructor(private readonly deps: SuggestionsDeps) {}
 
   private now(): number {
     return this.deps.now?.() ?? Date.now();
+  }
+
+  /** Whether a claim is held: taken, and not so old that the server holding it must have stopped. */
+  private held(claim: Claim | undefined, ms: number): boolean {
+    return isObject(claim) && typeof claim.at === "number" && this.now() - claim.at < ms;
   }
 
   private async item(id: string): Promise<Item | undefined> {
@@ -580,8 +606,8 @@ export class Suggestions {
       const fresh: Item = { id, repo: scan.repo, key: suggestion.key, status: "open", suggestion, scan: { run_id: scan.run_id, commit: answer.commit, at } };
       for (let tries = 0; tries < 3; tries++) {
         const was = await this.item(id);
-        // Decided stays decided; an open one from a newer scan than this is left too.
-        if (was && (was.status !== "open" || was.scan.at > at)) {
+        // Decided stays decided; an open one from a newer scan than this, or one being created, is left too.
+        if (was && (was.status !== "open" || was.scan.at > at || this.held(was.creating, CREATE_CLAIM_MS))) {
           if (was.status !== "open") skipped++;
           break;
         }
@@ -590,7 +616,7 @@ export class Suggestions {
     }
     // The older scans' open suggestions this answer no longer holds.
     for (const item of await this.items()) {
-      if (item.repo.toLowerCase() !== scan.repo.toLowerCase() || item.status !== "open" || kept.has(item.id) || item.scan.at > at) continue;
+      if (item.repo.toLowerCase() !== scan.repo.toLowerCase() || item.status !== "open" || kept.has(item.id) || item.scan.at > at || this.held(item.creating, CREATE_CLAIM_MS)) continue;
       await this.deps.settings.removeIf(`${ITEM}${item.id}`, item);
     }
     // `found`: the ones open now, never those a person had decided (counted apart, as `skipped`).
@@ -641,21 +667,44 @@ export class Suggestions {
     const issues = unknownFields(body, ["repo"]);
     if (issues.length) throw invalid(issues);
     const repo = repoOf(body.repo);
-    const was = (await this.deps.settings.get(scanKey(repo))) as Scan | undefined;
-    if (isObject(was) && !(await this.settle(was)).read) return { status: 200, body: { repo: was.repo, run_id: was.run_id, agent_id: was.agent_id, status: "running", already_running: true } };
-    const agentId = await this.deps.scoutAgent();
-    const decided = (await this.items()).filter((item) => item.repo.toLowerCase() === repo.toLowerCase() && item.status !== "open");
-    const content = [
-      `Scan https://github.com/${repo} for the places in its app where an AI agent would do real work, as your scout skill says.`,
-      ...(decided.length
-        ? ["", "Already decided on this repository: never suggest these again, nor the same idea under another key or title.", ...decided.map((item) => `- ${item.key}: ${item.suggestion.title} (${item.status})`)]
-        : []),
-    ].join("\n");
-    const runId = await this.deps.startScan(agentId, content);
-    const scan: Scan = { repo, run_id: runId, agent_id: agentId, started_at: this.now() };
-    // The newest scan of a repository is the one kept: its suggestions replace the open ones of the scan before.
-    await this.deps.settings.put(scanKey(repo), scan);
-    return { status: 202, body: { repo, run_id: runId, agent_id: agentId, status: "running", already_running: false } };
+    const key = scanKey(repo);
+    // The repository's row is reserved (`starting`) before anything is started, in the store every server shares: two
+    // scans sent at once start one run, and the other is told it is starting or answered with the one running.
+    for (let tries = 0; tries < 3; tries++) {
+      const was = (await this.deps.settings.get(key)) as (Partial<Scan> & { repo: string }) | undefined;
+      if (isObject(was) && this.held(was.starting, SCAN_CLAIM_MS)) throw new ApiError("home_busy", `A scan of ${repo} is starting: list the suggestions in a moment to follow it.`);
+      if (isObject(was) && typeof was.run_id === "string") {
+        const settled = await this.settle(was as Scan);
+        if (!settled.read) return { status: 200, body: { repo: settled.repo, run_id: settled.run_id, agent_id: settled.agent_id, status: "running", already_running: true } };
+        // Read just now: the row moved, so it is read again before it is reserved.
+        if (settled !== was) continue;
+      }
+      const claim = { ...(isObject(was) ? was : { repo }), starting: { at: this.now(), by: randomUUID() } };
+      const reserved = isObject(was) ? await this.deps.settings.replaceIf(key, was, claim) : JSON.stringify(await this.deps.settings.putIfAbsent(key, claim)) === JSON.stringify(claim);
+      if (!reserved) continue;
+      let scan: Scan;
+      try {
+        const agentId = await this.deps.scoutAgent();
+        const decided = (await this.items()).filter((item) => item.repo.toLowerCase() === repo.toLowerCase() && item.status !== "open");
+        const content = [
+          `Scan https://github.com/${repo} for the places in its app where an AI agent would do real work, as your scout skill says.`,
+          ...(decided.length
+            ? ["", "Already decided on this repository: never suggest these again, nor the same idea under another key or title.", ...decided.map((item) => `- ${item.key}: ${item.suggestion.title} (${item.status})`)]
+            : []),
+        ].join("\n");
+        const runId = await this.deps.startScan(agentId, content);
+        scan = { repo, run_id: runId, agent_id: agentId, started_at: this.now() };
+      } catch (error) {
+        // Nothing started: the row goes back as it was, so the next scan is not held up by this one.
+        await (isObject(was) ? this.deps.settings.replaceIf(key, claim, was) : this.deps.settings.removeIf(key, claim)).catch(() => false);
+        throw error;
+      }
+      // The newest scan of a repository is the one kept: its suggestions replace the open ones of the scan before. The
+      // reservation is this request's, so the row is written whole (a list that read the older scan meanwhile is replaced).
+      await this.deps.settings.put(key, scan);
+      return { status: 202, body: { repo, run_id: scan.run_id, agent_id: scan.agent_id, status: "running", already_running: false } };
+    }
+    throw new ApiError("home_busy", `The scan of ${repo} kept changing while it started: send it again.`);
   }
 
   /** GET /v2/suggestions/{id}: the suggestion whole, the files a create would add (rendered now), and whether this
@@ -697,7 +746,7 @@ export class Suggestions {
       const item = await this.need(id);
       if (item.status === to) return itemView(item);
       if (item.status === "created") throw new ApiError("suggestion_decided", `${item.suggestion.title} was created (its agent ${item.created?.agent_id ?? ""}): close its pull request on GitHub, or archive the agent, instead.`);
-      if (this.#creating.has(id)) throw new ApiError("home_busy", "This suggestion is being created: wait for it to finish.");
+      if (this.held(item.creating, CREATE_CLAIM_MS)) throw new ApiError("home_busy", "This suggestion is being created: wait for it to finish.");
       const next: Item = { ...item, status: to, decided_at: this.now() };
       if (to === "open") delete next.decided_at;
       if (await this.write(next, item)) return itemView(next);
@@ -714,12 +763,26 @@ export class Suggestions {
     const item = await this.need(id);
     if (item.status === "discarded") throw new ApiError("suggestion_decided", `${item.suggestion.title} was discarded: restore it first.`);
     if (item.status === "created" && item.created?.pull_request) return { status: 200, body: { ...itemView(item), warnings: [] } };
-    if (this.#creating.has(id)) throw new ApiError("home_busy", "This suggestion is being created: wait for it to finish.");
-    this.#creating.add(id);
+    // Claimed on its row in the store every server shares, before anything is written to GitHub: a create sent twice, or
+    // to two servers at once, makes one agent and one pull request, and the other is refused.
+    if (this.held(item.creating, CREATE_CLAIM_MS)) throw new ApiError("home_busy", "This suggestion is being created: wait for it to finish.");
+    const by = randomUUID();
+    const mine: Item = { ...item, creating: { at: this.now(), by } };
+    if (!(await this.write(mine, item))) throw new ApiError("home_busy", "This suggestion changed as its create started (another create, a discard or a scan): send it again.");
     try {
-      return await this.creating(item, typeof body.name === "string" ? body.name.trim() : undefined, signal);
+      return await this.creating(mine, typeof body.name === "string" ? body.name.trim() : undefined, signal);
     } finally {
-      this.#creating.delete(id);
+      await this.release(id, by);
+    }
+  }
+
+  /** A create's claim taken off its suggestion's row, whatever the create wrote there; never another create's. */
+  private async release(id: string, by: string): Promise<void> {
+    for (let tries = 0; tries < 3; tries++) {
+      const now = await this.item(id);
+      if (!now || now.creating?.by !== by) return;
+      const { creating: _claim, ...rest } = now;
+      if (await this.write(rest, now)) return;
     }
   }
 

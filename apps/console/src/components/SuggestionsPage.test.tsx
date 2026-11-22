@@ -32,7 +32,8 @@ const SHORT = { ...READY, ready: false, reason: "permission_missing", message: "
 
 type Call = { method: string; path: string; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-function server(state: { connected: boolean; suggestions: typeof SUGGESTION[]; readiness: typeof READY | typeof SHORT }) {
+type Listing = { repositories: { full_name: string; private: boolean; account: string; installation: number }[]; truncated: boolean; unread: { account: string; why: string }[] };
+function server(state: { connected: boolean; suggestions: typeof SUGGESTION[]; readiness: typeof READY | typeof SHORT; repos?: Listing }) {
   const calls: Call[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined };
@@ -40,7 +41,7 @@ function server(state: { connected: boolean; suggestions: typeof SUGGESTION[]; r
     const one = state.suggestions.find((s) => call.path.startsWith(`/v2/suggestions/${s.id}`));
     if (call.path === "/v2/suggestions" && call.method === "GET") return json(200, { github: state.connected ? { connected: true, app: "agentrun-acme", installations: [{ account: "acme" }], install_url: READY.install_url } : { connected: false, app: null, installations: [], install_url: null }, repositories: state.connected ? [SCANNED] : [], suggestions: state.suggestions.filter((s) => s.status !== "discarded") });
     if (call.path === "/v2/integrations/github/connect") return json(200, { action: "https://github.com/settings/apps/new?state=st_1", manifest: { name: "x" }, state: "st_1" });
-    if (call.path === "/v2/integrations/github/repositories") return json(200, { repositories: [{ full_name: REPO, private: true, account: "acme", installation: 7 }], truncated: false, unread: [] });
+    if (call.path === "/v2/integrations/github/repositories") return json(200, state.repos ?? { repositories: [{ full_name: REPO, private: true, account: "acme", installation: 7 }], truncated: false, unread: [] });
     if (one && call.path.endsWith("/discard")) { one.status = "discarded"; return json(200, one); }
     if (one && call.path.endsWith("/restore")) { one.status = "open"; return json(200, one); }
     if (one && call.path.endsWith("/create")) {
@@ -132,6 +133,33 @@ describe("Suggested agents", () => {
     expect(dialog().textContent).toContain("Triage support tickets: created");
     expect(dialog().querySelector(`a[href="https://github.com/${REPO}/pull/12"]`)?.textContent).toContain("Open pull request #12");
     expect(dialog().textContent).toMatch(/AGENTRUN_AGENT_TICKET_TRIAGEagent_77/);
+  });
+});
+
+describe("Suggested agents' repositories", () => {
+  it("Refresh reads the App's repositories again, and a list GitHub cut short still takes a repository typed in", async () => {
+    const repos: Listing = { repositories: [{ full_name: "acme/other", private: false, account: "acme", installation: 7 }], truncated: true, unread: [] };
+    const { v2, calls } = server({ connected: true, suggestions: [{ ...SUGGESTION }], readiness: READY, repos });
+    const { host, click } = await page(v2);
+    const reads = () => calls.filter((c) => c.path === "/v2/integrations/github/repositories").length;
+    expect(reads()).toBe(1);
+    expect(host.textContent).toContain("GitHub listed only some of the App's repositories");
+    const typed = host.querySelector<HTMLInputElement>("input[placeholder='owner/name']");
+    expect(typed).toBeTruthy();
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => { setValue.call(typed!, "acme/unlisted"); typed!.dispatchEvent(new Event("input", { bubbles: true })); });
+    await click(/^Scan repository$/);
+    expect(calls.find((c) => c.path === "/v2/suggestions/scans")?.body).toEqual({ repo: "acme/unlisted" });
+
+    // A repository added to the App on GitHub shows up on Refresh, with no reload; a whole list offers no typed field.
+    repos.repositories.push({ full_name: "acme/added", private: true, account: "acme", installation: 7 });
+    repos.truncated = false;
+    await click(/Read the suggestions and repositories again/);
+    expect(reads()).toBe(2);
+    expect(host.textContent).not.toContain("GitHub listed only some of the App's repositories");
+    expect(host.querySelector("input[placeholder='owner/name']")).toBeNull();
+    await click(/^Scan repository$/);
+    expect(calls.filter((c) => c.path === "/v2/suggestions/scans").map((c) => c.body)).toEqual([{ repo: "acme/unlisted" }, { repo: "acme/other" }]);
   });
 });
 

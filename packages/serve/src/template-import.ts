@@ -201,6 +201,34 @@ export async function importTemplate(deps: TemplateImportDeps, raw: unknown, sig
   return { status: 201, pkg, trusted: true, replaced };
 }
 
+/** A package made into an agent here as an imported template, from files this server wrote itself (a suggested agent's,
+ *  suggestions.ts): checked, kept, then applied. Once `apply` has made the agent nothing after it can fail (the registry
+ *  is in memory), so a thrown error always means no agent was made, which is what Suggestions.create reads it as. An
+ *  apply refused (a missing model key, say) takes the kept package back as it was before: removed, or the earlier one. */
+export async function applyImported<T>(
+  deps: { registry: Pick<TemplateRegistry, "put">; store: { importedTemplates: Pick<Store["importedTemplates"], "list" | "put" | "remove"> }; apply: (pkg: Package) => Promise<T> },
+  id: string,
+  origin: { source: string; sha: string; publisher: string },
+  files: ReadonlyMap<string, Buffer>,
+): Promise<T> {
+  const pkg = importedPackage(id, origin, files);
+  const templates = deps.store.importedTemplates;
+  const before = (await templates.list()).find((row) => row.id === pkg.id);
+  await templates.put({ id: pkg.id, source: origin.source, sha: origin.sha, publisher: origin.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
+  let made: T;
+  try {
+    made = await deps.apply(pkg);
+  } catch (error) {
+    const undo = before
+      ? templates.put({ id: before.id, source: before.source, sha: before.sha, publisher: before.publisher, files: before.files })
+      : templates.remove(pkg.id).then(() => undefined);
+    await undo.catch(() => {});
+    throw error;
+  }
+  deps.registry.put(pkg);
+  return made;
+}
+
 /** DELETE /v2/templates/{id}: an imported package removed from the store and the registry. A bundled one is 403; none of
  *  that id, 404. Agents applied from it stay. */
 export async function deleteTemplate(deps: Pick<TemplateImportDeps, "registry" | "store">, id: string): Promise<void> {

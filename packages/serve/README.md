@@ -3063,6 +3063,10 @@ Create; no run ever holds a token that can write.
    package checks, and whether the App can open its pull request now (read from GitHub: the installation that covers the
    repository and its permissions), with the App's permissions page and the installation's page when it can't.
    `POST /v2/suggestions/{id}/create` (`{name?}`) then:
+   - claims the suggestion on its row in the store, which every server on that store shares: another create of it, a
+     discard or a scan's answer meanwhile is `409 home_busy` or leaves the row alone, so one agent and one pull request
+     are made. A claim older than 15 minutes (a server that stopped mid-create) is taken over. A scan is reserved the
+     same way before its run starts;
    - refuses before anything is written: `409 github_not_connected`, `409 github_not_installed` (`details.install_url`),
      `409 github_permission_missing` when the installation lacks Contents or Pull requests write (`details.missing`,
      `permissions_url`, `installation_url`), or `409 github_file_exists` when the repository has a file it would add;
@@ -3070,10 +3074,10 @@ Create; no run ever holds a token that can write.
      revoked at the end whatever happens;
    - commits, over the default branch's head on a new branch `agentrun/<key>` (GitHub's Git Data API, no clone), the
      agent's package (`.agentrun/agents/<key>/agent.md` and `output.schema.json`, rendered here from the checked fields)
-     and a client at the suggestion's path (TypeScript or JavaScript over `fetch`, Python over `urllib`, or a Markdown
-     page of the HTTP calls for any other language; no dependency). It only adds files;
-   - applies that package here as the imported template `github:<owner>/<repo>/.agentrun/agents/<key>` at the pushed
-     commit (an apply refused deletes the branch and makes nothing);
+     and a client at the suggestion's path (TypeScript or JavaScript over `fetch`, Python over `urllib` taking the input
+     as one dict, or a Markdown page of the HTTP calls for any other language; no dependency). It only adds files;
+   - keeps that package as the imported template `github:<owner>/<repo>/.agentrun/agents/<key>` at the pushed commit,
+     then applies it here (an apply refused takes the package back, deletes the branch and makes nothing);
    - opens the pull request, naming the agent's id and the variables the client reads (`AGENTRUN_URL`,
      `AGENTRUN_API_KEY`, `AGENTRUN_AGENT_<KEY>`). A pull request GitHub refuses keeps the agent (`502 github_failed`,
      `details.agent_id`), and the next create opens the pull request alone. A created suggestion answers `200` as it is.

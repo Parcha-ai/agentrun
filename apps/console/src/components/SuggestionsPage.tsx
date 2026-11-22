@@ -27,6 +27,8 @@ export function SuggestionsPage({ v2, repo, go }: { v2: Client; repo?: string; g
   // The last discard, said with an undo until the next decision.
   const [discarded, setDiscarded] = useState<Suggestion | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // Each Refresh: the suggestions and the App's repositories read again (a repository added on GitHub shows up).
+  const [round, setRound] = useState(0);
   const toast = useToast();
 
   const read = useCallback(async () => {
@@ -63,7 +65,7 @@ export function SuggestionsPage({ v2, repo, go }: { v2: Client; repo?: string; g
     : (
       <div className="space-y-6">
         {!list.github.installations.length && <InstallApp url={list.github.install_url} onCheck={() => setTries((n) => n + 1)} />}
-        {list.github.installations.length > 0 && <ScanBox v2={v2} repo={repo} scanned={list.repositories} onStarted={(r) => { go(suggestionsHash(r)); void read(); }} />}
+        {list.github.installations.length > 0 && <ScanBox v2={v2} repo={repo} round={round} scanned={list.repositories} onStarted={(r) => { go(suggestionsHash(r)); void read(); }} />}
         {discarded && (
           <div role="status" className="flex flex-wrap items-center gap-3 border bg-card px-4 py-2.5 text-body">
             <span className="min-w-0 flex-1">Discarded <span className="font-semibold">{discarded.title}</span>. Later scans of {discarded.repo} leave it out.</span>
@@ -82,7 +84,7 @@ export function SuggestionsPage({ v2, repo, go }: { v2: Client; repo?: string; g
     <section className="flex min-h-full flex-col">
       <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
         <h1 className={pageTitleClass}><Sparkles className="size-4" aria-hidden />Suggested agents</h1>
-        {list && <Button size="sm" variant="ghost" className="ml-auto" onClick={() => void read()} aria-label="Read the suggestions again"><RefreshCw aria-hidden />Refresh</Button>}
+        {list && <Button size="sm" variant="ghost" className="ml-auto" onClick={() => { setRound((n) => n + 1); void read(); }} aria-label="Read the suggestions and repositories again"><RefreshCw aria-hidden />Refresh</Button>}
       </header>
       <div className="p-5 md:p-6">{body}</div>
       {creating && <CreateDialog v2={v2} suggestion={creating} onClose={() => setCreating(null)} onCreated={() => void read()} go={go} />}
@@ -199,8 +201,11 @@ function InstallApp({ url, onCheck }: { url: string | null; onCheck: () => void 
 /** Pick a repository the App is installed on and scan it. Before any scan it is the page's first step, said whole; after,
  *  it offers only the repositories not scanned yet (each scanned one has its own Scan again), and says so when none is
  *  left. */
-function ScanBox({ v2, repo, scanned, onStarted }: { v2: Client; repo?: string; scanned: readonly ScannedRepository[]; onStarted: (repo: string) => void }) {
+function ScanBox({ v2, repo, round = 0, scanned, onStarted }: { v2: Client; repo?: string; round?: number; scanned: readonly ScannedRepository[]; onStarted: (repo: string) => void }) {
   const [repos, setRepos] = useState<GitHubRepository[] | null>(null);
+  // GitHub listed only part of what the App covers (past the limit, or an installation it did not list): a repository
+  // can still be typed.
+  const [partial, setPartial] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [picked, setPicked] = useState(repo ?? "");
   const [typed, setTyped] = useState("");
@@ -208,14 +213,16 @@ function ScanBox({ v2, repo, scanned, onStarted }: { v2: Client; repo?: string; 
   const [said, setSaid] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    v2.githubRepositories().then((r) => { if (live) setRepos(r.repositories); }, (e) => { if (live) setListError(e instanceof Error ? e.message : String(e)); });
+    v2.githubRepositories().then((r) => { if (live) { setRepos(r.repositories); setPartial(r.truncated === true || (r.unread ?? []).length > 0); setListError(null); } }, (e) => { if (live) setListError(e instanceof Error ? e.message : String(e)); });
     return () => { live = false; };
-  }, [v2]);
+  }, [v2, round]);
   const first = !scanned.length;
   const left = (repos ?? []).filter((r) => !scanned.some((s) => s.repo === r.full_name));
   // The pick stays one of the repositories offered: the address's, else the first not scanned.
   const choice = left.some((r) => r.full_name === picked) ? picked : left[0]?.full_name ?? "";
-  const target = left.length ? choice : typed.trim();
+  // A typed name counts only while its field is shown: a Refresh that lists the whole App hides it, and the pick stands.
+  const typing = !left.length || partial;
+  const target = (typing ? typed.trim() : "") || (left.length ? choice : "");
   const scan = async () => {
     if (!target) return;
     setBusy(true); setSaid(null);
@@ -224,16 +231,22 @@ function ScanBox({ v2, repo, scanned, onStarted }: { v2: Client; repo?: string; 
     finally { setBusy(false); }
   };
   // Scanned all the App covers: one line, no form.
-  if (!first && repos && !listError && !left.length) {
+  if (!first && repos && !listError && !partial && !left.length) {
     return <p className="text-small text-muted-foreground">Every repository the GitHub App is installed on is scanned. To scan another, add it to the App's installation on GitHub, then refresh.</p>;
   }
+  const typedField = (label: string, note: string) => (
+    <Field label={label} note={note} className="min-w-[260px] flex-1">
+      <Input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="owner/name" />
+    </Field>
+  );
   const control = repos === null && !listError
     ? <p className="flex min-h-control-md items-center gap-2 text-body text-muted-foreground"><Spinner />Reading the repositories the App is installed on…</p>
     : left.length
-      ? <div className="min-w-[260px] flex-1"><Picker label="Repository" value={choice} onChange={setPicked} options={left.map((r) => ({ value: r.full_name, label: r.full_name, ...(r.private ? { tag: "private" } : {}) }))} /></div>
-      : <Field label="Repository" note={listError ? `The App's repositories could not be listed (${listError}). Type one it is installed on.` : "The App covers no repository yet: add one to its installation on GitHub, or type a public one."} className="min-w-[260px] flex-1">
-          <Input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="owner/name" />
-        </Field>;
+      ? <>
+          <div className="min-w-[260px] flex-1"><Picker label="Repository" value={choice} onChange={setPicked} options={left.map((r) => ({ value: r.full_name, label: r.full_name, ...(r.private ? { tag: "private" } : {}) }))} /></div>
+          {partial && typedField("Or type one", "GitHub listed only some of the App's repositories. A name typed here is scanned instead.")}
+        </>
+      : typedField("Repository", listError ? `The App's repositories could not be listed (${listError}). Type one it is installed on.` : partial ? "GitHub listed only some of the App's repositories: type one it is installed on." : "The App covers no repository yet: add one to its installation on GitHub, or type a public one.");
   const button = <Button variant={first ? "primary" : "outline"} size="md" onClick={() => void scan()} disabled={!target || busy} aria-busy={busy || undefined}><ScanSearch aria-hidden />{busy ? "Starting…" : "Scan repository"}</Button>;
   if (!first) {
     return (

@@ -201,7 +201,7 @@ import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, SOURCE_
 import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
 import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
-import { deleteTemplate, dropRemovedUploads, importedPackage, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
+import { applyImported, deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
 import { templateInstallLink, templateLink, templatesLink } from "./console-links.js";
 import { GITHUB_HOSTS, IMPORT_LIMITS } from "./template-source.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, inputSchemaOf, isObject, type Json, stable, unknownFields } from "./validate.js";
@@ -2230,12 +2230,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const error = isObject(view.error) && typeof view.error.message === "string" ? view.error.message : typeof result?.output_error === "string" ? `Its answer did not meet the scout's schema: ${result.output_error}` : undefined;
       return { status: String(view.status), ...(result && result.output != null ? { output: result.output } : {}), ...(error ? { error } : {}), ...(typeof view.ended_at === "string" ? { endedAt: Date.parse(view.ended_at) } : {}) };
     },
+    // Kept, then applied (template-import.ts applyImported): a thrown error means no agent was made. The package has no
+    // trigger, so the apply makes the agent as its last write.
     makeAgent: async (id, origin, files) => {
-      // Checked and applied first: an apply refused (a missing model key) keeps nothing, not even the package.
-      const pkg = importedPackage(id, origin, files);
-      const made = await applyTemplate(pkg, { parameters: {} });
-      await store.importedTemplates.put({ id: pkg.id, source: origin.source, sha: origin.sha, publisher: origin.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
-      registry.put(pkg);
+      const made = await applyImported({ registry, store, apply: (pkg) => applyTemplate(pkg, { parameters: {} }) }, id, origin, files);
       return { agentId: made.applied.agent_id, warnings: made.applied.warnings };
     },
     ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
