@@ -14,7 +14,6 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { refusalExit } from "./login.mjs";
 import { toUrl } from "./target.mjs";
 
 /** What of a folder its package is, as the target reads it (its readPackage reads nothing else): agent.md, these trees,
@@ -318,13 +317,15 @@ function targetFor({ values, env, cli }, from, lock, fail) {
   throw fail(2, `${from.lock.file} names ${lock.target} as its target, an address this CLI has not deployed to: pass --to ${lock.target} to deploy there. Nothing was sent (a lock comes with its folder, and the deploy sends your API key to its target).`);
 }
 
-/** The exit code of a target's refusal: 3 for a package not runnable there, 2 for one it refused as given (its input,
- *  a stale revision, a trigger name another owns), else the CLI's own (4 for the token, 5 for an operation it lacks). */
-const exitOf = (status, code) => (status === 409 && code === "agent_not_runnable" ? 3 : status === 422 || status === 412 || (status === 409 && code === "name_taken") ? 2 : refusalExit(status));
+/** The exit code of a target's refusal of a deploy's own: 3 for a package not runnable there, 2 for one it refused as
+ *  given (its input, a stale revision, a trigger name another owns). Any other is the CLI's own (clientOf's refused: 4
+ *  for the token, 5 for an operation the target lacks). */
+const exitOf = (status, code) => (status === 409 && code === "agent_not_runnable" ? 3 : status === 422 || status === 412 || (status === 409 && code === "name_taken") ? 2 : undefined);
 
 /** Requests to one AgentRun (`base`, else the one every command finds), with its token (the CLI's custody: targetOf,
- *  clientOf): `call(method, path, body?, allow?)` answers `{status, value}`, or prints the refusal and stops with its
- *  exit code. A server not reached is exit 1 here: 3 is a package not runnable. */
+ *  clientOf): `call(method, path, body?, allow?)` answers `{status, value}`, or prints the refusal as every command does
+ *  (clientOf's refused) and stops with its exit code. A server not reached is exit 1 here: 3 is a package not
+ *  runnable. */
 function remote(cli, values, env, io, base) {
   const target = cli.targetOf(base === undefined ? values : { ...values, "base-url": base }, env);
   const client = cli.clientOf(target, io);
@@ -347,9 +348,8 @@ function remote(cli, values, env, io, base) {
       if (response.ok && response.status !== 204 && value === undefined) throw cli.fail(1, `${method} ${path} on ${target.base} answered ${response.status} with no JSON.`);
       return { status: response.status, value };
     }
-    io.stderr.write(bytes.length ? bytes : `${response.status} ${response.statusText}`);
-    if (!bytes.length || bytes.at(-1) !== 10) io.stderr.write("\n");
-    throw new Stopped(exitOf(response.status, value?.error?.code));
+    const exit = client.refused(response, bytes);
+    throw new Stopped(exitOf(response.status, value?.error?.code) ?? exit);
   };
   return { base: target.base, call };
 }
