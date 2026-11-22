@@ -1127,9 +1127,9 @@ describe("the Screen tab's recording has the run's steps beside it", () => {
     const p = await played(recorded([rec("recordings/desk.mp4")]), ROWS);
     expect(p.said()).toEqual([
       "0:00PhaseRecording the desktop's screen into recordings/desk.mp4.",
-      "0:04Computer actOpened Chrome",
+      "0:06Computer actOpened Chrome",
       "0:15PhaseYou took over the desktop",
-      "0:31Computer actClicked “Sort”: no element with that name",
+      "0:32Computer actClicked “Sort”: no element with that name",
     ]);
     // What came before the recording, and after its length, is not a step of this video.
     expect(p.panel.textContent).not.toContain("Find the cheapest nonstop");
@@ -1149,10 +1149,10 @@ describe("the Screen tab's recording has the run's steps beside it", () => {
     expect(p.current()).toEqual(["0:15PhaseYou took over the desktop"]);
     // The video plays on past the next step: the mark moves with it, on the player's own events.
     await act(async () => { p.video().currentTime = 33; p.video().dispatchEvent(new Event("timeupdate")); });
-    expect(p.current()).toEqual(["0:31Computer actClicked “Sort”: no element with that name"]);
+    expect(p.current()).toEqual(["0:32Computer actClicked “Sort”: no element with that name"]);
     // Dragged back with the player's own bar.
-    await act(async () => { p.video().currentTime = 5; p.video().dispatchEvent(new Event("seeked")); });
-    expect(p.current()).toEqual(["0:04Computer actOpened Chrome"]);
+    await act(async () => { p.video().currentTime = 7; p.video().dispatchEvent(new Event("seeked")); });
+    expect(p.current()).toEqual(["0:06Computer actOpened Chrome"]);
   });
 
   it("another recording picked has its own steps, from its own start", async () => {
@@ -1179,7 +1179,7 @@ describe("the Screen tab's recording has the run's steps beside it", () => {
     expect(host.querySelector("video"), "the same element").toBe(before);
     expect(before.currentTime).toBe(7);
     const marked = [...host.querySelectorAll('ol[aria-label="The recording\'s steps"] button[aria-current="step"]')].map((b) => b.textContent);
-    expect(marked, "marked where the video already is").toEqual(["0:04Computer actOpened Chrome"]);
+    expect(marked, "marked where the video already is").toEqual(["0:06Computer actOpened Chrome"]);
   });
 
   it("with no row that says when the recording began there is no list: the player alone", async () => {
