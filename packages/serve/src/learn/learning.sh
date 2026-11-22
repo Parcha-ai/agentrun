@@ -407,9 +407,13 @@ case $op in
     }
     g ls-tree -r --full-tree "$new" | awk -F '\t' '{ split($1, a, " "); print a[1] " " $2 }' > "$tmp/paths" || die "ls-tree failed"
     no_links
+    # The tidy mark, before main moves; a rewrite that loses removes only a mark it wrote (one there already is another
+    # rewrite's, stopped before its old history went).
+    had_mark=
+    [ -f "$TIDY" ] && had_mark=1
     : > "$TIDY" || die "the tidy mark could not be written"
     if ! g update-ref -m learning refs/heads/main "$new" "$old" 2> "$tmp/cas"; then
-      rm -f "$TIDY"
+      [ -n "$had_mark" ] || rm -f "$TIDY"
       g update-ref -d "$ref" 2> /dev/null
       cur=$(main_now)
       if [ "$cur" != "$old" ]; then
