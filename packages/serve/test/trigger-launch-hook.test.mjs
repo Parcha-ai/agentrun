@@ -5,16 +5,19 @@
 // within the bound, records it skipped with why. The hook's receiver here is a server on 127.0.0.1 that checks the
 // signature as any receiver would.
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { follow, scratch, serve } from "./support.mjs";
+import { follow, scratch, serve, withEnv } from "./support.mjs";
 import { fakeClock, firings, made, schedule, until } from "./trigger-support.mjs";
 
 const { mintSecret, signatureOf, verify } = await import("../dist/standard-webhooks.js");
 const { LAUNCH_HOOK_LATE_START_MS, LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
 const { uuidv7 } = await import("../dist/ids.js");
+const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
+const { readLaunchBody } = await import("../dist/run-launch.js");
 
 /** A host's hook on 127.0.0.1: each request kept (its headers and body), answered by `answer`. One the sender cut short
  *  (its bound passed mid-body, or the test's end) is answered 400, never left to throw in the test. */
@@ -372,6 +375,96 @@ test("a sent firing waiting on its host's start is never driven or handed again:
   assert.deepEqual([before.key, before.status, before.run_id], [handed.key, "sent", null], "past its start_by it stays sent, never handed again");
   assert.equal(next.status, "sent");
   assert.deepEqual(hook.got.map((got) => got.headers["webhook-id"]), [handed.key, next.key], "one POST for each firing");
+});
+
+/** A server with the launch hook and AGENTRUN_RUN_KEYS=1, holding no Parallel key, whose agent (a template's, applied)
+ *  declares PARALLEL_API_KEY; a schedule trigger on it, at 00:10. `answer` is the host's. Its seal key, to open what a
+ *  run's claim gets (run-keys-claim). */
+async function keyedHook(t, answer) {
+  const sealKey = randomBytes(32);
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey.toString("base64") }, ["PARALLEL_API_KEY", "AGENTRUN_RUN_KEYS"]);
+  const dir = join(await scratch(t), "templates", "searcher");
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "agent.md"), ["---", "name: searcher", "version: 1.0.0", "description: Searches the web for what it is asked.", "model: { tier: strong }", "tools: [web_search, read]", "secrets: [PARALLEL_API_KEY]", "---", "Search the web for what you are asked, then answer.", ""].join("\n"));
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const hook = await hookServer(t, answer);
+  // No runner: the host's run stays queued, its launch holding the keys it carried.
+  const server = await serve(t, { triggerClock: clock, runner: false, runKeys: true, templates: join(dir, ".."), launchHook: { url: hook.url, secret: mintSecret() } });
+  const applied = await server.api("POST", "/templates/searcher/apply", {});
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agentId = applied.body.agent_id;
+  const created = await server.api("POST", "/triggers", schedule(agentId, { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  return { ...server, clock, hook, sealKey, agentId, triggerId: created.body.id };
+}
+
+/** The tool keys run `runId`'s claim lays over its tools' environment (claim-secrets.ts), on a host with none of its own. */
+async function claimedKeys(store, sealKey, runId) {
+  const row = await store.runs.get(runId);
+  const env = await claimSecrets({ store, sealKey, env: {} }, await store.agents.revision(row.revisionId), readLaunchBody((await store.runs.launch(runId)).body), runId);
+  return { PARALLEL_API_KEY: env.PARALLEL_API_KEY };
+}
+
+const runKey = () => ["not-a-secret", "run-key", randomBytes(8).toString("hex")].join("-");
+
+test("AGENTRUN_RUN_KEYS=1: the host's trigger_firing start carrying the key its agent declares is taken, the firing started, and the run's claim gets the key", { timeout: 120_000 }, async (t) => {
+  const key = runKey();
+  let api;
+  const starts = [];
+  const keyed = await keyedHook(t, async (res, sent) => {
+    starts.push(await api("POST", `/agents/${sent.agent_id}/runs`, { input: sent.input, max_cost_usd: 0.5, keys: { PARALLEL_API_KEY: key }, trigger_firing: { trigger_id: sent.trigger_id, firing_id: sent.firing_id } }));
+    answerJson(res, 202, {});
+  });
+  ({ api } = keyed);
+  keyed.clock.to("2026-06-01T00:10:00Z");
+  const [firing] = await firings(api, keyed.triggerId, 1);
+  assert.ok(await until(() => starts.length === 1), "the host's start answered");
+  assert.equal(starts[0].status, 202, JSON.stringify(starts[0].body));
+  const runId = starts[0].body.run_id;
+  assert.deepEqual([firing.status, firing.run_id], ["started", runId], JSON.stringify(firing));
+  assert.deepEqual(await claimedKeys(keyed.store, keyed.sealKey, runId), { PARALLEL_API_KEY: key }, "the run's claim lays the key its host's start carried");
+  assert.ok(!JSON.stringify(starts[0].body).includes(key), "the start's answer holds no key");
+});
+
+test("AGENTRUN_RUN_KEYS=1: the host's trigger_firing start without the declared key is 409 naming it, no run is left, and the firing stays sent and takes a start inside its window", { timeout: 120_000 }, async (t) => {
+  const keyed = await keyedHook(t, (res) => answerJson(res, 202, {}));
+  const { api } = keyed;
+  keyed.clock.to("2026-06-01T00:10:00Z");
+  const [handed] = await firings(api, keyed.triggerId, 1);
+  assert.deepEqual([handed.status, handed.run_id], ["sent", null], "the host answered first, with no run yet");
+  const ref = { trigger_id: keyed.triggerId, firing_id: handed.key };
+
+  keyed.clock.to("2026-06-01T00:15:00Z");
+  const bare = await api("POST", `/agents/${keyed.agentId}/runs`, { input: { content: "Search." }, max_cost_usd: 0.5, trigger_firing: ref });
+  assert.deepEqual([bare.status, bare.body.error?.code, bare.body.error?.fields?.map((one) => [one.field, one.reason])], [409, "agent_not_runnable", [["keys.PARALLEL_API_KEY", "not_set_up_here"]]], JSON.stringify(bare.body));
+  assert.deepEqual(await runsOf(api, keyed.agentId), [], "no run is left");
+  const [still] = (await api("GET", `/triggers/${keyed.triggerId}/firings`)).body.firings;
+  assert.deepEqual([still.key, still.status, still.run_id, still.start_by], [handed.key, "sent", null, handed.start_by], "the firing stays sent, its window as it was");
+
+  const key = runKey();
+  const carried = await api("POST", `/agents/${keyed.agentId}/runs`, { input: { content: "Search." }, max_cost_usd: 0.5, keys: { PARALLEL_API_KEY: key }, trigger_firing: ref });
+  assert.equal(carried.status, 202, JSON.stringify(carried.body));
+  const [now] = (await api("GET", `/triggers/${keyed.triggerId}/firings`)).body.firings;
+  assert.deepEqual([now.status, now.run_id], ["started", carried.body.run_id], "a start inside its window that carries the key is the firing's");
+  assert.deepEqual(await claimedKeys(keyed.store, keyed.sealKey, carried.body.run_id), { PARALLEL_API_KEY: key });
+});
+
+test("AGENTRUN_RUN_KEYS=1: a key the agent does not declare in the host's trigger_firing start gets the answer an ordinary start gives, and the firing stays sent", { timeout: 120_000 }, async (t) => {
+  const keyed = await keyedHook(t, (res) => answerJson(res, 202, {}));
+  const { api } = keyed;
+  keyed.clock.to("2026-06-01T00:10:00Z");
+  const [handed] = await firings(api, keyed.triggerId, 1);
+  assert.equal(handed.status, "sent");
+  const keys = { PARALLEL_API_KEY: runKey(), MONID_API_KEY: runKey() };
+  const ordinary = await api("POST", `/agents/${keyed.agentId}/runs`, { input: { content: "Search." }, max_cost_usd: 0.5, keys });
+  assert.equal(ordinary.status, 422, JSON.stringify(ordinary.body));
+  const firing = await api("POST", `/agents/${keyed.agentId}/runs`, { input: { content: "Search." }, max_cost_usd: 0.5, keys, trigger_firing: { trigger_id: keyed.triggerId, firing_id: handed.key } });
+  // Each answer names its own request; the rest is the same.
+  const answered = ({ status, body: { error: { request_id, ...error } } }) => [status, error];
+  assert.deepEqual(answered(firing), answered(ordinary), "the same answer as the ordinary start's");
+  assert.deepEqual(await runsOf(api, keyed.agentId), [], "no run for either");
+  const [still] = (await api("GET", `/triggers/${keyed.triggerId}/firings`)).body.firings;
+  assert.deepEqual([still.status, still.run_id], ["sent", null]);
 });
 
 test("a server without the launch hook refuses a run for a trigger firing", { timeout: 60_000 }, async (t) => {
