@@ -102,7 +102,7 @@ for n in $names; do
     AGENTRUN_STORE_URL) [ -n "$store" ] || continue; value=$store ;;
     # A whsec_ secret the server takes (a 32-byte key: 43 base64url characters) that still holds its canary, and the hook's
     # URL it needs beside it (a port nothing answers: no trigger fires here).
-    AGENTRUN_LAUNCH_HOOK_SECRET) value="whsec_$(printf '%-43s' "$canary-$i" | tr ' ' k)"; secrets="$secrets -e AGENTRUN_LAUNCH_HOOK_URL=http://127.0.0.1:9/firings" ;;
+    AGENTRUN_LAUNCH_HOOK_SECRET) value="whsec_$(printf '%-43s' "$canary-$i" | tr ' ' k)"; secrets="$secrets -e AGENTRUN_LAUNCH_HOOK_URL=http://127.0.0.1:9/firings" ;; # key-gate: loopback-rule the hook URL the server needs beside its secret, a port nothing answers inside its container
     *) value="$canary-$i" ;;
   esac
   secrets="$secrets -e $n=$value"
