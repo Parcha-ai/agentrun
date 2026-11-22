@@ -349,6 +349,21 @@ test(`${RELEASES} give-backs in a row hold the check, never for good: the revise
   await cancel(server, next);
 });
 
+// #3411 review (P1): the fifth give-back can be a completed turn with no shadow report. Its hold is written before that
+// run ends, so the run neither asks the revise itself nor counts as one of the compile_after runs since the hold.
+test('a hold written by a completed turn with no shadow report: that turn is not one of the compile_after runs since it', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  for (let at = 1; at < RELEASES; at++) await giveBack(server, `failed-${at}`);
+  const last = await server.start('no-report');
+  assert.equal(last.learning.check?.digest, DIGEST, 'the fifth turn is reserved');
+  await finish(server, last);
+  const held = await server.latest(flow.name);
+  assert.deepEqual([held.decided, held.check.released, held.check.stopped], ['hold', RELEASES, undefined], held.reason);
+  const kept = await server.store.learning.proposals(server.id, { limit: 50 });
+  assert.ok(!kept.some(one => one.runId === last.run_id && one.proposal?.compiled?.workflow === flow.name), 'the turn that wrote the hold asks no revise');
+  await revisedAfter(server, 3, 'after');
+});
+
 test('two give-back holds in a row: neither revise comes before compile_after runs, and the second works as the first', async t => {
   const server = await setup(t, 'eve', true, { compile_after: 3 });
   const first = await heldOnGiveBacks(server, DIGEST, 'first');

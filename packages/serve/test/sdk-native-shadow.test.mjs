@@ -17,6 +17,8 @@ for (const [runtime, mismatch] of [['claude', false], ['codex', false], ['codex-
     const server = await serve(t, { faux: new URL('./fixtures/sdk-workflow-model.mjs', import.meta.url).pathname });
     const id = `shadow-${runtime}`;
     const calls = [], receipts = [], prompts = [];
+    const revises = globalThis.sdkRevisePrompts = [];
+    t.after(() => { delete globalThis.sdkRevisePrompts; });
     let ready = true;
     const callback = (args, ctx) => {
       const value = { ready };
@@ -112,7 +114,11 @@ for (const [runtime, mismatch] of [['claude', false], ['codex', false], ['codex-
       assert.equal(held.digest, check.digest);
       assert.deepEqual([held.check.n, held.check.alone, held.check.agreed], [1, 1, 0]);
       assert.equal(promotions.promotions.some(record => record.decided === 'promote'), false);
-      assert.equal((await server.api('GET', `/agents/${id}/learning`)).body.workflows[0].status, 'held');
+      // The hold asks its one revise (its reason: it recompiles once) at this run's end, with the check's numbers. Before
+      // #3411 a connected agent's run never found its held workflow (its launch input is the task text), so none was asked.
+      assert.equal(revises.length, 1, 'the hold asks one revise');
+      assert.match(revises[0], /checked on 1 input of your last 1 completed runs/);
+      assert.equal((await server.api('GET', `/agents/${id}/learning`)).body.workflows[0].status, 'checking', 'the revision waits for its own check');
       assert.equal(calls.length, 2, 'A mismatch is recorded, not retried to seek agreement.');
       return;
     }
