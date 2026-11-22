@@ -3,15 +3,14 @@
 // webhook-id), and starts no run of its own for it. The run the host starts through the API with `trigger_firing` is the
 // firing's (started, counted by the overlap check); a 2xx with no such run records it sent; any other answer, or none
 // within the bound, records it skipped with why. The hook's receiver here is a server on 127.0.0.1 that checks the
-// signature as any receiver would.
+// signature as any receiver would (trigger-support.mjs hookServer).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
-import { fakeClock, firings, made, portProbe, schedule, until } from "./trigger-support.mjs";
+import { fakeClock, firings, hookServer, made, portProbe, schedule, until } from "./trigger-support.mjs";
 
 const { mintSecret, signatureOf, verify } = await import("../dist/standard-webhooks.js");
 const { LAUNCH_HOOK_LATE_START_MS, LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
@@ -19,35 +18,6 @@ const { uuidv7 } = await import("../dist/ids.js");
 const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
 const { heldRedactor, secretRedactor } = await import("../dist/runner/redact.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
-
-/** A host's hook on 127.0.0.1: each request kept (its headers and body), answered by `answer`. One the sender cut short
- *  (its bound passed mid-body, or the test's end) is answered 400, never left to throw in the test. */
-async function hookServer(t, answer) {
-  const got = [];
-  const server = createServer(async (req, res) => {
-    let sent;
-    try {
-      const chunks = [];
-      for await (const chunk of req) chunks.push(chunk);
-      const body = Buffer.concat(chunks);
-      got.push({ method: req.method, headers: req.headers, body });
-      sent = JSON.parse(body.toString("utf8"));
-    } catch {
-      if (!res.headersSent && !res.destroyed) res.writeHead(400).end();
-      return;
-    }
-    // An answer that throws (its server stopped under it) fails its test by what it leaves undone, not here.
-    await Promise.resolve(answer(res, sent, got.length)).catch(() => {
-      if (!res.headersSent && !res.destroyed) res.writeHead(500).end();
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => {
-    server.closeAllConnections();
-    server.close(() => resolve());
-  }));
-  return { url: `http://127.0.0.1:${server.address().port}/agentrun/firings`, got };
-}
 
 const answerJson = (res, status, body) => {
   res.writeHead(status, { "content-type": "application/json" });
