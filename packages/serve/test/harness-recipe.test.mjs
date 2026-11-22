@@ -943,13 +943,13 @@ test("a server takes a recipe it names only once its install is checked: hidden 
 
 test("a runner takes --harness-recipe as a server does, and the recipes a start names reach no run's environment, nor load from an operator's shell", async () => {
   const [{ HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, harnessRecipesOf, harnessTable, tableIds }, { withoutFaux }, main] = await Promise.all([import("../dist/harness-table.js"), import("../dist/model.js"), import("../dist/runner/main.js")]);
-  assert.deepEqual(main.runnerArgs(["--data", "/srv/agents", "--harness-recipe", "/srv/a.json", "--harness-recipe=/srv/b.json"]).harnessRecipes, ["/srv/a.json", "/srv/b.json"]);
-  assert.equal("harnessRecipes" in main.runnerArgs(["--data", "/srv/agents"]), false);
+  assert.deepEqual(main.runnerArgs(["--data", "/data/agents", "--harness-recipe", "/data/a.json", "--harness-recipe=/data/b.json"]).harnessRecipes, ["/data/a.json", "/data/b.json"]);
+  assert.equal("harnessRecipes" in main.runnerArgs(["--data", "/data/agents"]), false);
   // The flag over the setting; the setting comma-separated where no flag is given.
-  assert.deepEqual(harnessRecipesOf(["/srv/a.json"], { [HARNESS_RECIPES_SETTING]: "/srv/c.json" }), ["/srv/a.json"]);
-  assert.deepEqual(harnessRecipesOf([], { [HARNESS_RECIPES_SETTING]: "/srv/c.json, /srv/d.json" }), ["/srv/c.json", "/srv/d.json"]);
+  assert.deepEqual(harnessRecipesOf(["/data/a.json"], { [HARNESS_RECIPES_SETTING]: "/data/c.json" }), ["/data/a.json"]);
+  assert.deepEqual(harnessRecipesOf([], { [HARNESS_RECIPES_SETTING]: "/data/c.json, /data/d.json" }), ["/data/c.json", "/data/d.json"]);
   // What a start hands its table (AGENTRUN_HARNESS_RECIPES) is the server's own: cut from every run's environment.
-  const named = { [HARNESS_RECIPES_ENV]: JSON.stringify({ data: "/srv/agents", files: ["/srv/a.json"] }), KEEP: "1" };
+  const named = { [HARNESS_RECIPES_ENV]: JSON.stringify({ data: "/data/agents", files: ["/data/a.json"] }), KEEP: "1" };
   assert.deepEqual(Object.keys(withoutFaux(named)), ["KEEP"]);
   assert.deepEqual(Object.keys(main.besideRunEnv(named, {})), ["KEEP"]);
   // And a malformed one is refused in words, never half read.
