@@ -181,7 +181,7 @@ test('provider diagnostics enforce token and wrapped JSON length boundaries', as
 });
 
 test('provider tokens reject URLs and any value containing the runner API key', async () => {
-  const apiKey = 'runner-api-key-sentinel';
+  const apiKey = 'not-a-secret';
   for (const code of ['https://example.invalid/error', apiKey, `prefix-${apiKey}-suffix`]) {
     const run = createJevRunner({ apiKey, baseURL: 'https://fictional.invalid', maxAttempts: 1,
       fetch: async () => new Response(JSON.stringify({ code, detail: { error_type: 'billing_error' } }), { status: 400,
