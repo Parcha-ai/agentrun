@@ -310,7 +310,8 @@ with that rule's code. `agentrun harness install --recipe` and `agentrun harness
   each `host` or `host:port` with a port from 1 to 65535, 443 by default) names where the vendor's model is:
   `harness-check` tunnels the agent's `CONNECT` to those hosts and refuses the rest, so list every host the agent needs
   for a turn. To find them, check once with no `hosts`: the report's `side_requests.beyondLoopbackRefused` lists every
-  host the agent reached for. `id` names the model the agent runs on, as its `session/new` lists it in
+  host the agent reached for, also when its `authenticate` or `session/new` failed for want of one (the check fails,
+  and its report still holds the list). `id` names the model the agent runs on, as its `session/new` lists it in
   `availableModels`; the adapter picks it with `session/set_model` before the first prompt, and a model the agent does
   not list is refused before any prompt (`ACP_MODEL_UNLISTED`). Leave it out and the agent runs on its own default.
   An agent on a person's plan lists that plan's models alone: Antigravity on a Google AI plan lists its Gemini models.
