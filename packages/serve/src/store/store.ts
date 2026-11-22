@@ -658,7 +658,9 @@ export interface Firing {
 
 export type FiringStatus = "due" | "started" | "sent" | "skipped" | "failed" | "missed" | "ignored";
 /** A trigger's firing as its row keeps it. `shown`: in the trigger's history (the newest HISTORY_KEPT); false, kept only
- *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: the run whose turn end wakes a due firing. */
+ *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: the run whose turn end wakes a due firing.
+ *  `startBy`: a firing its launch hook's host took with no run (sent), the time until which the host may still start
+ *  its run (triggers.ts handedStart); null on any other. */
 export interface FiringRow {
   readonly triggerId: string;
   readonly key: string;
@@ -672,6 +674,7 @@ export interface FiringRow {
   readonly count: number | null;
   readonly attempts: number;
   readonly retryAt: number | null;
+  readonly startBy: number | null;
   readonly payload: string | null;
   readonly attrs: unknown;
   readonly notified: boolean;
@@ -718,7 +721,7 @@ export interface NewTrigger {
 export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown; readonly ifAgent?: string };
 export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns" | "templateId">>;
 /** A firing's new state. Out of due, a firing keeps no retry, wait, payload, attrs (unless `keepAttrs`) nor the reason its
- *  last try gave (unless given). */
+ *  last try gave (unless given), and no time but a sent firing's `startBy`. */
 export interface FiringChange {
   readonly status?: FiringStatus;
   readonly runId?: string;
@@ -731,6 +734,10 @@ export interface FiringChange {
   /** Settled, the firing keeps its attrs: one its launch hook's host took with no run yet, whose run, started late
    *  (triggers.ts handedStart), is tagged and titled from them as one started first is. */
   readonly keepAttrs?: boolean;
+  /** Settled `sent`: the time until which its launch hook's host may still start its run (FiringRow.startBy). It is kept
+   *  in the firing's retry_at column, which only a due firing holds otherwise, and is never read back as a retry. Any
+   *  other status keeps none. */
+  readonly startBy?: number;
 }
 /** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
  *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */
@@ -916,8 +923,9 @@ export interface Triggers {
   activeRuns(triggerId: string): Promise<number>;
   /** The history kept to `history` shown firings: older ones a sender's key names (manual, pushed) are kept for their day
    *  (shown 0), others removed; shown-0 rows past `dayMs` removed, then the oldest past `kept` of them. Never a due
-   *  firing, a failure not yet told, nor a started firing whose run has not ended. Answers how many went past `kept`. */
-  prune(triggerId: string, options: { history: number; dayMs: number; keepByKey: (by: string) => boolean; kept?: number }): Promise<number>;
+   *  firing, a failure not yet told, a started firing whose run has not ended, nor a sent one whose startBy is not before
+   *  `now` (the triggers' clock, which stamped it). Answers how many went past `kept`. */
+  prune(triggerId: string, options: { history: number; dayMs: number; keepByKey: (by: string) => boolean; kept?: number; now: number }): Promise<number>;
 }
 
 export interface Runs {

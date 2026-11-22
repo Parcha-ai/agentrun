@@ -1143,9 +1143,9 @@ export class Triggers {
 
   /** A start_run firing handed to the host by the launch hook, never started here. The run the host started for it
    *  (handedStart: under the firing's key) makes it started, as a run started here would, whatever the hook answered;
-   *  else a 2xx makes it sent, with no run (its attrs kept for a run the host starts late: handedRan), and any other
-   *  answer or none skipped with why. The server's stop leaves it due, so the next start hands it again under the same
-   *  webhook-id (or finds the run the host started). */
+   *  else a 2xx makes it sent, with no run (its attrs kept for a run the host starts late: handedRan) and its startBy
+   *  LAUNCH_HOOK_LATE_START_MS after that answer, and any other answer or none skipped with why. The server's stop leaves
+   *  it due, so the next start hands it again under the same webhook-id (or finds the run the host started). */
   private async handed(trigger: Trigger, firing: FiringRow, hook: LaunchHook): Promise<void> {
     if (trigger.target.kind !== "start_run") return;
     const agentId = trigger.target.agent_id;
@@ -1163,7 +1163,7 @@ export class Triggers {
       this.deps.say({ condition: "trigger_hook_skipped", trigger: trigger.id, firing: firing.key });
       return;
     }
-    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", reason: HANDED_NO_RUN, keepAttrs: true }, { reset: true });
+    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", reason: HANDED_NO_RUN, keepAttrs: true, startBy: this.clock.now() + LAUNCH_HOOK_LATE_START_MS }, { reset: true });
     // The host may start the run right after its answer: one it started between the read above and this write found the
     // firing still due (handedRan left it), so it is read again here.
     const after = await this.deps.runOf(firing.key);
@@ -1175,8 +1175,8 @@ export class Triggers {
   /** The run the host starts through the API for a firing the launch hook handed it (RunCreate `trigger_firing`): the
    *  firing's key (the run's origin key, so the firing finds it), and the trigger, input origin and title its own start
    *  would give the run; or the run already started under that key. Refused, in words, unless this server has the hook and
-   *  the firing, of a start_run trigger on `agentId`, is due (being handed over) or one its host took with no run, within
-   *  LAUNCH_HOOK_LATE_START_MS of its fired_at (the host may answer first and start the run after). */
+   *  the firing, of a start_run trigger on `agentId`, is due (being handed over) or one its host took with no run, up to
+   *  its startBy (the host may answer first and start the run after). */
   async handedStart(given: unknown, agentId: string): Promise<{ run_id: string } | { key: string; trigger: RunTrigger; from: MessageOrigin; title: string }> {
     const refused = (reason: string, message: string, field = "trigger_firing") => invalid([{ field, reason, message }]);
     if (!this.deps.launchHook) throw refused("not_allowed", "This server has no launch hook: a run starts as a trigger firing's only when the hook handed that firing to its host.");
@@ -1194,11 +1194,12 @@ export class Triggers {
     if (prior) return prior;
     const minutes = LAUNCH_HOOK_LATE_START_MS / 60_000;
     const taken = firing.status === "sent" && firing.runId === null && firing.reason === HANDED_NO_RUN;
-    if (taken && this.clock.now() - firing.nominalAt > LAUNCH_HOOK_LATE_START_MS) {
-      throw refused("not_due", `Firing ${key}'s host answered without starting its run, and the ${minutes} minutes after its fired_at in which the host may still start it have passed.`, "trigger_firing.firing_id");
+    if (taken && (firing.startBy === null || this.clock.now() > firing.startBy)) {
+      const until = firing.startBy === null ? "" : ` (start_by ${iso(firing.startBy)})`;
+      throw refused("not_due", `Firing ${key}'s host answered without starting its run, and the ${minutes} minutes after its host answered in which it may still start it have passed${until}.`, "trigger_firing.firing_id");
     }
     if (firing.status !== "due" && !taken) {
-      throw refused("not_due", `Firing ${key} is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}: a run starts only for a firing the launch hook is handing over, or one its host took within ${minutes} minutes of its fired_at.`, "trigger_firing.firing_id");
+      throw refused("not_due", `Firing ${key} is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}: a run starts only for a firing the launch hook is handing over, or one its host took within ${minutes} minutes of its answer.`, "trigger_firing.firing_id");
     }
     const attrs = firing.attrs as Record<string, string> | null | undefined;
     return { key, trigger: { id: triggerId, firing_key: key, name: trigger.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, from: this.originOf(trigger), title: this.titleOf(trigger, firing) };
@@ -1286,7 +1287,7 @@ export class Triggers {
    *  most SEEN_KEPT of them; past it the oldest go, said once each time the cap is reached. */
   private async prune(trigger: Trigger): Promise<void> {
     const cap = this.deps.seenKept ?? SEEN_KEPT;
-    const over = await this.store.triggers.prune(trigger.id, { history: HISTORY_KEPT, dayMs: DAY_MS, keepByKey: (by) => by === "manual" || eventful(adapterIn(this.adapters, by)), kept: cap });
+    const over = await this.store.triggers.prune(trigger.id, { history: HISTORY_KEPT, dayMs: DAY_MS, keepByKey: (by) => by === "manual" || eventful(adapterIn(this.adapters, by)), kept: cap, now: this.clock.now() });
     if (over > 0) {
       if (!this.seenFull.has(trigger.id)) this.deps.say({ condition: "trigger_seen_full", trigger: trigger.id, kept: cap });
       this.seenFull.add(trigger.id);
@@ -1465,6 +1466,7 @@ function firingView(firing: FiringRow) {
   return {
     key: firing.key, by: firing.by, nominal_at: second(firing.nominalAt), status: firing.status, at: iso(firing.at), run_id: firing.runId, reason: firing.reason, error: firing.error,
     ...(firing.count !== null ? { count: firing.count } : {}), ...(firing.catchUp ? { catch_up: true } : {}), ...(firing.retryAt !== null ? { attempts: firing.attempts, retry_at: iso(firing.retryAt) } : {}),
+    ...(firing.startBy !== null ? { start_by: iso(firing.startBy) } : {}),
   };
 }
 

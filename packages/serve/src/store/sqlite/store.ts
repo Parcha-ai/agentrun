@@ -123,9 +123,11 @@ const listingBehind = (now: string) => ({
   params: (at: readonly SqliteValue[]): SqliteValue[] => [...at, ...at],
 });
 const FIRING_COLUMNS = "trigger_id, key, by, nominal_at, status, at, run_id, reason, error, count, attempts, retry_at, payload, attrs, notified, catch_up, paused, shown, waits_on";
+/** A sent firing's retry_at is its startBy (settle's one exception), never a retry. */
 const firingOf = (r: FiringRecord): FiringRow => ({
   triggerId: r.trigger_id, key: r.key, by: r.by ?? "manual", nominalAt: r.nominal_at ?? r.at, status: r.status, at: r.at, runId: r.run_id, reason: r.reason,
-  error: r.error === null ? null : JSON.parse(r.error), count: r.count, attempts: r.attempts, retryAt: r.retry_at, payload: r.payload,
+  error: r.error === null ? null : JSON.parse(r.error), count: r.count, attempts: r.attempts, retryAt: r.status === "sent" ? null : r.retry_at,
+  startBy: r.status === "sent" ? r.retry_at : null, payload: r.payload,
   attrs: r.attrs === null ? null : JSON.parse(r.attrs), notified: r.notified === 1, catchUp: r.catch_up === 1, paused: r.paused === 1, shown: r.shown !== 0, waitsOn: r.waits_on,
 });
 /** The trigger's patch as columns: name -> [column, value]. */
@@ -1096,10 +1098,11 @@ class SqliteStore implements Store {
           if (!was) return undefined;
           const settled = change.status !== undefined && change.status !== "due";
           // Out of due, a firing keeps no retry, wait, payload or attrs (unless keepAttrs), nor the reason its last try gave
-          // (unless it gives one).
+          // (unless it gives one). One exception: a sent firing keeps its startBy in retry_at (firingOf reads it back as
+          // startBy, never as a retry), so no migration adds a column for it.
           const set: [string, SqliteValue][] = [];
           if (change.status !== undefined) set.push(["status", change.status]);
-          if (settled) set.push(["retry_at", null], ["waits_on", null], ["payload", null], ["reason", change.reason ?? null], ["attempts", change.attempts ?? 0]);
+          if (settled) set.push(["retry_at", change.status === "sent" ? change.startBy ?? null : null], ["waits_on", null], ["payload", null], ["reason", change.reason ?? null], ["attempts", change.attempts ?? 0]);
           if (settled && !change.keepAttrs) set.push(["attrs", null]);
           else if (change.reason !== undefined) set.push(["reason", change.reason]);
           if (change.runId !== undefined) set.push(["run_id", change.runId]);
@@ -1179,18 +1182,20 @@ class SqliteStore implements Store {
         (await db.get<{ n: number }>(
           `SELECT COUNT(*) AS n FROM trigger_firings f JOIN runs r ON r.id = f.run_id WHERE f.trigger_id = ? AND f.status = 'started' AND r.state NOT IN (${FINAL})`, triggerId,
         ))!.n,
-      prune: async (triggerId, { history, dayMs, keepByKey, kept }) =>
+      prune: async (triggerId, { history, dayMs, keepByKey, kept, now: clockNow }) =>
         db.transaction(async (tx) => {
           const at = now();
           await d.lockRow(tx, "triggers", "id", triggerId);
-          // Past the newest `history` shown firings: never a due one, a failure not yet told, or a started one whose run
-          // has not ended. The rest leave the history: kept for their key's day when a sender's key names them, else gone.
+          // Past the newest `history` shown firings: never a due one, a failure not yet told, a started one whose run has
+          // not ended, or a sent one its host may still start (its startBy, in retry_at, not passed on the triggers'
+          // clock). The rest leave the history: kept for their key's day when a sender's key names them, else gone.
           const old = await tx.all<{ key: string; by: string | null }>(
             `SELECT f.key, f.by FROM trigger_firings f LEFT JOIN runs r ON r.id = f.run_id
              WHERE f.trigger_id = ? AND f.shown = 1 AND f.status != 'due' AND NOT (f.status = 'failed' AND (f.notified IS NULL OR f.notified = 0))
                AND NOT (f.status = 'started' AND r.id IS NOT NULL AND r.state NOT IN (${FINAL}))
+               AND NOT (f.status = 'sent' AND f.retry_at IS NOT NULL AND f.retry_at >= ?)
                AND f.key NOT IN (SELECT key FROM trigger_firings WHERE trigger_id = ? AND shown = 1 ORDER BY at DESC, ${d.firingOrder} DESC LIMIT ?)`,
-            triggerId, triggerId, history,
+            triggerId, clockNow, triggerId, history,
           );
           for (const { key, by } of old) {
             if (keepByKey(by ?? "manual")) await tx.run("UPDATE trigger_firings SET shown = 0, payload = NULL, attrs = NULL WHERE trigger_id = ? AND key = ?", triggerId, key);

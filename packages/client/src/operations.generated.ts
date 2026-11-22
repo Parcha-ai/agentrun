@@ -3309,6 +3309,7 @@ export type ReceiveHookComposioResponse = {
     count?: number;
     attempts?: number;
     retry_at?: string;
+    start_by?: string;
     catch_up?: true;
   } | {
     ok: "duplicate";
@@ -3331,6 +3332,7 @@ export type ReceiveHookComposioResponse = {
     count?: number;
     attempts?: number;
     retry_at?: string;
+    start_by?: string;
     catch_up?: true;
   } | {
     ok: "duplicate";
@@ -5568,6 +5570,7 @@ export type CreateTriggerResponse = {
     count?: number;
     attempts?: number;
     retry_at?: string;
+    start_by?: string;
     catch_up?: true;
   } | null;
   last_check?: {
@@ -5610,6 +5613,7 @@ export type FireTriggerResponse = {
   count?: number;
   attempts?: number;
   retry_at?: string;
+  start_by?: string;
   catch_up?: true;
 };
 
@@ -5630,6 +5634,7 @@ export type ListTriggerFiringsResponse = {
     count?: number;
     attempts?: number;
     retry_at?: string;
+    start_by?: string;
     catch_up?: true;
   }>;
 };
@@ -5803,6 +5808,7 @@ export type GetTriggerResponse = {
     count?: number;
     attempts?: number;
     retry_at?: string;
+    start_by?: string;
     catch_up?: true;
   } | null;
   last_check?: {
@@ -5985,6 +5991,7 @@ export type ListTriggersResponse = {
       count?: number;
       attempts?: number;
       retry_at?: string;
+      start_by?: string;
       catch_up?: true;
     } | null;
     last_check?: {
@@ -6301,6 +6308,7 @@ export type UpdateTriggerResponse = {
     count?: number;
     attempts?: number;
     retry_at?: string;
+    start_by?: string;
     catch_up?: true;
   } | null;
   last_check?: {

@@ -3202,8 +3202,11 @@ The POST carries `webhook-id` (the firing's id, the same if it is handed again),
 `webhook-signature` as [webhooks](#webhooks) do: check them with any Standard Webhooks library before reading the
 body. The host starts the run with `POST /v2/agents/{agent_id}/runs`, giving the input, its own `model_key`, `keys` and
 `max_cost_usd`, and `"trigger_firing": { "trigger_id": ..., "firing_id": ... }` as it was sent, and answers 2xx within
-10 s. It can start the run before it answers or after: a firing it answered 2xx with no run yet reads `sent` and still
-takes that one start until 10 minutes after its `fired_at`, and is refused with 422 `not_due` past them. That run is
+10 s. It can start the run before it answers or after: a firing it answered 2xx with no run yet reads `sent` with
+`start_by`, 10 minutes after that answer, takes that one start until then, and is refused with 422 `not_due` after.
+The 10 minutes run from the answer, not from `fired_at`, so a firing that reaches the host late (a catch-up, one that
+waited on `max_active_runs`, one handed again after a restart) gets the same time; the server never hands a `sent`
+firing over again. That run is
 the firing's, as one this server started would be: it names the trigger and the firing, carries the trigger's title and
 input origin, is capped, and the firing reads `started` with it, so the trigger's overlap check and `max_active_runs`
 count it. The firing is the run's key, so a second start for the same firing answers the same run and the request

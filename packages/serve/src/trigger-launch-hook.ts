@@ -2,7 +2,7 @@
 // that would start a run to the host behind it instead (triggers.ts drive), and starts no run of its own for it. The host
 // starts the run through the API (POST /v2/agents/{agent_id}/runs with `trigger_firing` and its own model_key, keys and
 // max_cost_usd: the firing's run, under its key, triggers.ts handedStart) and answers 2xx, before or after that start
-// (after: within LAUNCH_HOOK_LATE_START_MS of the firing's fired_at); any other answer, or none within
+// (after: within LAUNCH_HOOK_LATE_START_MS of that 2xx, the firing's start_by); any other answer, or none within
 // LAUNCH_HOOK_TIMEOUT_MS, and the firing is skipped with why, unless the host started its run. Unset, nothing changes.
 // Off this machine the hook is https: a firing's input can carry a person's data, and the signature proves who sent it,
 // not that no one else read it.
@@ -17,9 +17,10 @@ export const LAUNCH_HOOK_URL_ENV = "AGENTRUN_LAUNCH_HOOK_URL";
 export const LAUNCH_HOOK_SECRET_ENV = "AGENTRUN_LAUNCH_HOOK_SECRET";
 /** How long the host has to answer a firing, its connection included. */
 export const LAUNCH_HOOK_TIMEOUT_MS = 10_000;
-/** How long after a firing's fired_at a host that answered 2xx without starting its run may still start it (one start,
- *  under the firing: triggers.ts handedStart). A fixed bound, so a host's late start never depends on when the server
- *  handed the firing over or on the trigger's settings. */
+/** How long after its 2xx a host that answered without starting the firing's run may still start it (one start, under
+ *  the firing: triggers.ts handedStart). From the answer, not from fired_at: a catch-up, a firing that waited on its
+ *  trigger's max_active_runs, or one a stop cut short and the next start handed again reaches the host late, and its
+ *  host gets the same 10 minutes as any. */
 export const LAUNCH_HOOK_LATE_START_MS = 10 * 60_000;
 
 /** A host this machine alone answers: localhost, 127.0.0.0/8 or ::1, as URL writes them (lower case, IPv4 in four parts,
