@@ -1478,8 +1478,11 @@ const TEMPLATE_PLAN = closed({
       items: closedWith({
         name: { type: "string" },
         kind: { type: "string", description: "Its source's kind." },
-        action: { enum: ["create", "update", "remove", "skip"], description: "`create`: made (or made again: `reason` says why); `update`: changed in place; `remove`: removed; `skip`: not made (`reason`: a connection this server lacks, or a feed left empty)." },
-      }, { reason: { type: "string" } }),
+        action: { enum: ["create", "update", "remove", "skip"], description: "`create`: made (or made again: `reason` says why); `update`: changed in place; `remove`: removed; `skip`: not made (`code` and `reason` say why)." },
+      }, {
+        code: { enum: ["not_set_up_here", "not_an_option"], description: "A skip's: `not_set_up_here` for a trigger this server makes once it is set up (a connection it lacks, a feed left empty, an API-only server's launch hook), so a later apply makes it; `not_an_option` for one it never makes (a trigger kind an API-only server serves no route for). The apply's warning for that trigger has the same `reason`." },
+        reason: { type: "string" },
+      }),
     },
     computer: { anyOf: [closed({ kind: { type: "string" }, provider: NULLABLE_STRING }), { type: "null" }], description: "The computer the apply picks from the package's list; null when the package names none." },
   }),

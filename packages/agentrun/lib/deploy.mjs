@@ -494,8 +494,10 @@ async function deploy(ctx) {
   const { value: applied } = await to.call("POST", `/templates/${enc(template.id)}/apply`, body);
   // A trigger the apply could not make yet (a connection or a feed the target lacks; a warning says which) is not in its
   // answer. The lock then names no package, so the next deploy of the same files applies again and makes it once it can.
+  // One the target never makes (its plan's skip code not_an_option: a webhook on an API-only install) is no reason to:
+  // the plan above said it is skipped, and the same files stay up to date.
   const there = new Set((applied.triggers ?? []).map((one) => one.name));
-  const unmade = plan.triggers.filter((one) => one.action !== "remove" && !there.has(one.name)).map((one) => one.name);
+  const unmade = plan.triggers.filter((one) => one.action !== "remove" && one.code !== "not_an_option" && !there.has(one.name)).map((one) => one.name);
   const written = { target: to.base, agent_id: applied.agent_id, revision_id: applied.revision_id, package_sha256: unmade.length ? null : sha, deployed_at: new Date().toISOString() };
   from.lock.write(written);
   for (const warning of applied.warnings ?? []) say(io, `Warning (${warning.field}): ${warning.message}`);

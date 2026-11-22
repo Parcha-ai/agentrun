@@ -8035,6 +8035,7 @@ class _ApplyTemplateResponseObject12PlanTriggersItemRequired(TypedDict):
 
 
 class ApplyTemplateResponseObject12PlanTriggersItem(_ApplyTemplateResponseObject12PlanTriggersItemRequired, total=False):
+    code: Literal["not_set_up_here", "not_an_option"]
     reason: str
 
 

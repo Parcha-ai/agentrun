@@ -3251,18 +3251,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const was = p.onto?.revision?.kind === "agentic" ? p.onto.revision : undefined;
     const unread = !env[MONID_KEY_ENV]?.trim() && (await pinMonid(tools, { key: undefined, ...(was ? { previous: { grants: (was.body as AgenticBody).tools ?? [], pin: was.monidPin ?? null } } : {}) }));
     const missing = unread && "refused" in unread && !p.missing.includes(MONID_KEY_ENV) ? [...p.missing, MONID_KEY_ENV] : p.missing;
-    const planned: { name: string; kind: string; action: "create" | "update" | "remove" | "skip"; reason?: string }[] = [];
+    // A skip's `code` is the apply's warning's for it: not_set_up_here for one this server makes once it is set up (a
+    // connection, a feed's URLs, a launch hook), not_an_option for one it never makes.
+    const planned: { name: string; kind: string; action: "create" | "update" | "remove" | "skip"; code?: string; reason?: string }[] = [];
     for (const [i, trigger] of p.made.triggers.entries()) {
       const name = String(trigger.name).trim();
       const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
       // On an API-only server, skipped in the apply's own words (prepareApply).
       const hostSkip = p.hostless.get(i);
       if (hostSkip) {
-        planned.push({ name, kind, action: "skip", reason: hostSkip.message });
+        planned.push({ name, kind, action: "skip", code: hostSkip.reason, reason: hostSkip.message });
         continue;
       }
       if (p.emptyFeeds.has(i)) {
-        planned.push({ name, kind, action: "skip", reason: feedTriggerEmpty(p.pkg.name, trigger, isObject(p.pkg.triggers[i]?.source) ? p.pkg.triggers[i]!.source.urls : undefined) });
+        planned.push({ name, kind, action: "skip", code: NOT_SET_UP, reason: feedTriggerEmpty(p.pkg.name, trigger, isObject(p.pkg.triggers[i]?.source) ? p.pkg.triggers[i]!.source.urls : undefined) });
         continue;
       }
       const was = p.hadByName.get(name);
@@ -3274,7 +3276,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // apply's create does (notSetUpYet), or refuses the apply. A Composio trigger is skipped for want of a public URL
       // (any trigger, on or off), read here; its account and subscription are Composio's to answer, which a plan never asks.
       const refusal = kind === "composio" && !options.publicUrl ? composioNoPublicUrl() : trigger.enabled !== false && !(was && !was.enabled) ? await triggerUnavailable(kind) : undefined;
-      if (refusal && notSetUpYet(kind, refusal.code)) planned.push({ name, kind, action: "skip", reason: refusal.message });
+      if (refusal && notSetUpYet(kind, refusal.code)) planned.push({ name, kind, action: "skip", code: NOT_SET_UP, reason: refusal.message });
       else if (refusal) throw refusal;
       else planned.push({ name, kind, action: "create", ...(was ? { reason: `The agent's ${name} trigger is removed and made again: its kind or its Composio server, event or config changed.` } : {}) });
     }

@@ -1503,6 +1503,7 @@ export interface operations {
           name: string;
           kind: string;
           action: "create" | "update" | "remove" | "skip";
+          code?: "not_set_up_here" | "not_an_option";
           reason?: string;
         }[];
         computer: {
