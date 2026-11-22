@@ -400,6 +400,12 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
   assert.deepEqual(trigger.target, { kind: "start_run", agent_id: applied.body.agent_id, input: { content: "Today's brief on solar." } });
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
   assert.deepEqual([agent.definition.name, agent.definition.instructions, agent.definition.max_cost_usd], ["nightly", "Write a brief of about 200 words on solar.", 0.25]);
+  // The package itself is not filled by an apply: GET /templates/{template} still answers its placeholders, and no
+  // parameter value or secret from the apply or the server's environment comes back in it.
+  const read = (await api("GET", "/templates/nightly")).body;
+  assert.equal(read.instructions, "Write a brief of about ${parameters.words} words on ${parameters.topic}.");
+  assert.ok(JSON.stringify(read.template.triggers).includes("Today's brief on ${parameters.topic}."), JSON.stringify(read.template.triggers));
+  for (const filled of ["solar", "200 words", "fake-test-key"]) assert.ok(!JSON.stringify(read).includes(filled), `${filled} is not in the package read after an apply`);
   const again = await api("POST", "/templates/nightly/apply", body, { "idempotency-key": "nightly-1" });
   assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body], [201, "true", applied.body], "the same key answers the first apply, and makes nothing");
 
