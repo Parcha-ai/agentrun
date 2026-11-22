@@ -781,7 +781,9 @@ test("the setup skill installs with the installer and runs the command it instal
 // rules out every change to the machine.
 test("the setup skill opens a remote machine's console through the person's port forward, never through the machine's proxy or sudo", () => {
   const open = skillSection(setupSkill(), "3. Start it where they chose").split(/^### /m).find((part) => part.startsWith("Open the setup page\n")) ?? "";
-  assert.match(open, /`ssh -L 7340:127\.0\.0\.1:<port> <user>@<host>`/);
+  assert.match(open, /`ssh -o ExitOnForwardFailure=yes -L\s+<local>:127\.0\.0\.1:<port> <user>@<host>`/);
+  assert.match(open, /`http:\/\/127\.0\.0\.1:<local>\/` in place of its\s+address, keeping any `#code=\.\.\.`/);
+  assert.match(open, /An always-on machine's tailnet or HTTPS address needs no forward/);
   assert.match(open, /no change to the machine's web server or reverse proxy \(Traefik, nginx,\s+Caddy/);
   assert.match(open, /no new route, DNS name or firewall rule, and no `sudo`/);
 });
