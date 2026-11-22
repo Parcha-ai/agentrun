@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { scratch } from "./support.mjs";
+import { follow, scratch, serve, startRun } from "./support.mjs";
 import { zipOf } from "./fixtures/zip-of.mjs";
 
 const [{ installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, RecipeRefused, firstSeenOf }, { ARCHIVE_CODES, archivePlatform, ArchiveInstallFailed }] = await Promise.all([
@@ -111,6 +111,8 @@ function refusalOf(recipe) {
 const BROKEN = [
   ["rule 1, own keys only: a key the server holds for a model provider", RECIPE_CODES.keys, () => recipeOf(undefined, { keys: ["OPENROUTER_API_KEY"] })],
   ["rule 1, own keys only: a key written into env", RECIPE_CODES.keys, () => recipeOf(undefined, { env: { MODEL_AGENT_API_KEY: "fake-test-key" } })],
+  // Not shaped as a key's name, so the cut every child's environment takes (withoutSecrets) would pass it on by name.
+  ["rule 1, own keys only: a key not named as a key (FOO_CRED)", RECIPE_CODES.keys, () => recipeOf(undefined, { keys: ["FOO_CRED"] })],
   ["rule 2, a pinned binary: a command of its own", RECIPE_CODES.binary, () => recipeOf(undefined, { command: "/usr/local/bin/agent" })],
   ["rule 2, a pinned binary: an archive with no sha256", RECIPE_CODES.binary, () => {
     const r = recipeOf();
@@ -182,7 +184,7 @@ test("one list names the variables the adapter and the proxy set, by part, and i
 
 test("harness-check refuses a recipe that breaks each of the five rules, by the rule's code, and starts nothing", async (t) => {
   const data = join(await scratch(t), "agents");
-  const rules = [BROKEN[0], BROKEN[2], BROKEN[5], BROKEN[7], BROKEN[8]];
+  const rules = [RECIPE_CODES.keys, RECIPE_CODES.binary, RECIPE_CODES.paths, RECIPE_CODES.install, RECIPE_CODES.env].map((each) => BROKEN.find(([, code]) => code === each));
   const runs = await Promise.all(rules.map(async ([, code, make]) => ({ code, run: await check(t, await recipeFile(t, make()), data) })));
   for (const { code, run } of runs) {
     assert.equal(run.status, 1, run.stderr);
@@ -203,7 +205,8 @@ test("rule 4: a check of a recipe its owner has not installed downloads nothing 
   assert.ok(run.report.refused.message.includes(`agentrun harness install --recipe ${file} --data ${data}`), run.report.refused.message);
   assert.equal(existsSync(join(data, "harnesses")), false, "nothing downloaded");
   // The install command refuses a broken recipe before it downloads anything.
-  const broken = await cli(["install-harness", "--recipe", await recipeFile(t, BROKEN[7][2]()), "--data", data]);
+  const installsItself = BROKEN.find(([, code]) => code === RECIPE_CODES.install);
+  const broken = await cli(["install-harness", "--recipe", await recipeFile(t, installsItself[2]()), "--data", data]);
   assert.equal(broken.status, 1);
   assert.match(broken.stderr, /RECIPE_INSTALLS_ITSELF/);
   assert.equal(existsSync(join(data, "harnesses")), false);
@@ -381,6 +384,7 @@ test("harness-check fails an agent whose own tools are on: its model request is 
   assert.match(run.stdout, /stage 2 tools_off: FAIL/);
   assert.equal(origin.messages().length, 0, "no request offering its own tools reached the provider");
   assert.match(run.stdout, /harness-check: FAILED/);
+  assert.equal(existsSync(join(data, "harnesses", "model-agent.checked")), false, "a failed check notes no pass, so no server runs it");
 });
 
 test("harness-check fails an agent whose title for our tool the adapter can't tie (`github: check echo`): its permission is the agent's own, refused, so mcp_tool fails", { skip: linux, timeout: 120_000 }, async (t) => {
@@ -875,10 +879,111 @@ test("AgentRun never reads, refreshes or sends an agent's sign-in, and has no us
       assert.equal(text.includes(banned), false, `${file} names ${banned}`);
     }
   }
-  // The sign-in folder's path is taken in two places: the sign-in that makes it for the agent, and the check that hands
-  // its path to the agent. Neither lists or opens what is in it.
+  // The sign-in folder's path is taken in two places: the sign-in that makes it for the agent, and the route that hands
+  // its path to the agent (harness-check's and a server's runs alike). Neither opens a file at all.
   const naming = files.filter((file) => readFileSync(file, "utf8").includes("signInHomeOf(")).map((file) => file.slice(serve.length));
-  assert.deepEqual(naming.sort(), ["harness-check.ts", "harness-sign-in.ts"]);
-  assert.doesNotMatch(readFileSync(join(serve, "harness-sign-in.ts"), "utf8"), /readdir|readFile|createReadStream|opendir/, "the sign-in reads nothing");
+  assert.deepEqual(naming.sort(), ["harness-recipe-entry.ts", "harness-sign-in.ts"]);
+  for (const name of naming) assert.doesNotMatch(readFileSync(join(serve, name), "utf8"), /readdir|readFile|createReadStream|opendir/, `${name} reads nothing`);
   assert.doesNotMatch(readFileSync(join(serve, "harness-check.ts"), "utf8"), /(readdir|readFile|createReadStream|opendir|stat)\w*\([^)]*signInHome/, "the check hands the folder's path on and reads nothing in it");
+});
+
+/** The note a passing check writes (harness-recipe.ts writeChecked), written here for the install as it now is. */
+async function noteChecked(data, file) {
+  const { pinnedDigest, pinnedTree, releaseFor, writeChecked } = await import("../dist/harness-recipe.js");
+  const { recipe, sha256: recipeSha } = loadRecipe(file);
+  const at = releaseFor(recipe, PLATFORM);
+  writeChecked(data, recipe.id, { recipe: recipeSha, binary: pinnedDigest(data, recipe, at, PLATFORM).sha256, tree: pinnedTree(data, recipe, at, PLATFORM).sha256, version: recipe.release.version, platform: PLATFORM });
+}
+
+test("a server takes a recipe it names only once its install is checked: hidden until then, by the code and the command that fix it, and never on the recipe's keys", { timeout: 60_000 }, async (t) => {
+  const [{ harnessIds, harnessOf, harnessRecipesEnv, harnessTable, tableIds }, { checkedNoteOf, signedInNoteOf }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/harness-recipe.js")]);
+  // Named but not installed: in the table, so a run naming it is refused in words, and listed nowhere.
+  const bare = join(await scratch(t), "agents");
+  const bareFile = await recipeFile(t, recipeOf());
+  const bareEnv = harnessRecipesEnv([bareFile], bare);
+  assert.ok(tableIds(bareEnv).includes("model-agent"));
+  assert.equal(harnessIds(bareEnv).includes("model-agent"), false);
+  assert.match(harnessOf(bareEnv, "model-agent").hidden(bareEnv), /^HARNESS_NOT_INSTALLED: .*Install it with: agentrun harness install --recipe/);
+
+  // Installed, never checked: hidden, and a run is refused, naming the check.
+  const proxy = await installed(t, recipeOf());
+  const env = harnessRecipesEnv([proxy.file], proxy.data);
+  const entry = harnessOf(env, "model-agent");
+  assert.match(entry.hidden(env), /^HARNESS_NOT_CHECKED: .*Check it with: agentrun harness-check --recipe/);
+  assert.match((await entry.refusal(env, undefined, { atStart: false }))?.reason ?? "", /HARNESS_NOT_CHECKED/);
+  // Checked for this recipe, binary and tree: listed, through this server's model proxy.
+  await noteChecked(proxy.data, proxy.file);
+  assert.equal(statSync(checkedNoteOf(proxy.data, "model-agent")).mode & 0o777, 0o600);
+  assert.equal(entry.hidden(env), undefined);
+  assert.ok(harnessIds(env).includes("model-agent"));
+  // A pass noted for another binary is no pass for this one.
+  const note = JSON.parse(readFileSync(checkedNoteOf(proxy.data, "model-agent"), "utf8"));
+  writeFileSync(checkedNoteOf(proxy.data, "model-agent"), JSON.stringify({ ...note, binary: "0".repeat(64) }));
+  assert.match(entry.hidden(env), /^HARNESS_NOT_CHECKED: .*changed since the last check that passed/);
+
+  // On its keys alone: never on a server, whatever its key, since a recipe's keys reach no run there.
+  const keyed = await installed(t, (o) => planOn(o));
+  await noteChecked(keyed.data, keyed.file);
+  const keyedEnv = { ...harnessRecipesEnv([keyed.file], keyed.data), MODEL_AGENT_API_KEY: "fake-test-key" };
+  assert.match(harnessOf(keyedEnv, "model-agent").hidden(keyedEnv), /^HARNESS_KEYS_UNSUPPORTED: /);
+
+  // With a sign-in: hidden until its owner signs the agent in, naming the command; then listed.
+  const signing = await installed(t, (o) => signingIn(o, { keyed: false }));
+  await noteChecked(signing.data, signing.file);
+  const signingEnv = harnessRecipesEnv([signing.file], signing.data);
+  assert.match(harnessOf(signingEnv, "model-agent").hidden(signingEnv), /^HARNESS_NOT_SIGNED_IN: .*on a server.*sign its agent in with: agentrun harness sign-in --recipe/);
+  writeFileSync(signedInNoteOf(signing.data, "model-agent"), "{}\n");
+  assert.equal(harnessOf(signingEnv, "model-agent").hidden(signingEnv), undefined);
+
+  // At the start: a recipe the loader refuses, or two recipes of one id, refuse it in words.
+  const foo = await recipeFile(t, recipeOf(undefined, { keys: ["FOO_CRED"] }));
+  assert.throws(() => harnessTable(harnessRecipesEnv([foo], bare)), /FOO_CRED is not named as a key/);
+  assert.throws(() => harnessTable(harnessRecipesEnv([bareFile, proxy.file], bare)), /names model-agent, which a harness module or another recipe already adds/);
+});
+
+test("a runner takes --harness-recipe as a server does, and the recipes a start names reach no run's environment, nor load from an operator's shell", async () => {
+  const [{ HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, harnessRecipesOf, harnessTable, tableIds }, { withoutFaux }, main] = await Promise.all([import("../dist/harness-table.js"), import("../dist/model.js"), import("../dist/runner/main.js")]);
+  assert.deepEqual(main.runnerArgs(["--data", "/srv/agents", "--harness-recipe", "/srv/a.json", "--harness-recipe=/srv/b.json"]).harnessRecipes, ["/srv/a.json", "/srv/b.json"]);
+  assert.equal("harnessRecipes" in main.runnerArgs(["--data", "/srv/agents"]), false);
+  // The flag over the setting; the setting comma-separated where no flag is given.
+  assert.deepEqual(harnessRecipesOf(["/srv/a.json"], { [HARNESS_RECIPES_SETTING]: "/srv/c.json" }), ["/srv/a.json"]);
+  assert.deepEqual(harnessRecipesOf([], { [HARNESS_RECIPES_SETTING]: "/srv/c.json, /srv/d.json" }), ["/srv/c.json", "/srv/d.json"]);
+  // What a start hands its table (AGENTRUN_HARNESS_RECIPES) is the server's own: cut from every run's environment.
+  const named = { [HARNESS_RECIPES_ENV]: JSON.stringify({ data: "/srv/agents", files: ["/srv/a.json"] }), KEEP: "1" };
+  assert.deepEqual(Object.keys(withoutFaux(named)), ["KEEP"]);
+  assert.deepEqual(Object.keys(main.besideRunEnv(named, {})), ["KEEP"]);
+  // And a malformed one is refused in words, never half read.
+  assert.throws(() => tableIds({ [HARNESS_RECIPES_ENV]: "{\"files\": [1]}" }), new RegExp(HARNESS_RECIPES_ENV));
+  assert.throws(() => harnessTable({ [HARNESS_RECIPES_ENV]: "not json" }), new RegExp(HARNESS_RECIPES_ENV));
+});
+
+test("a server runs a recipe it names on its owner's sign-in: checked first, then each run's agent handed its folder alone, and the vendor hears the sign-in from the agent", { skip: linux, timeout: 180_000 }, async (t) => {
+  const { data, file, origin } = await installed(t, (o) => signingIn(o, { keyed: false }));
+  assert.equal((await signIn(file, data)).status, 0);
+  const checked = await check(t, file, data, cliEnv());
+  assert.equal(checked.status, 0, `${checked.stdout}\n${checked.stderr}`);
+  assert.ok(existsSync(join(data, "harnesses", "model-agent.checked")), "the pass is noted");
+  const before = origin.messages().length;
+  const { api } = await serve(t, { data, harnessRecipes: [file] });
+  const offer = (await api("GET", "/capabilities")).body.harnesses.find((each) => each.id === "model-agent");
+  assert.deepEqual([offer?.label, offer?.available, offer?.promises?.billing], ["Model Agent", true, "plan"], JSON.stringify(offer));
+  const started = await startRun(api, "on-sign-in", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const { last } = await follow(api, started.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(last.status, "completed", JSON.stringify(last));
+  const heard = origin.messages().slice(before);
+  assert.ok(heard.length >= 1, "the run's turn reached the vendor");
+  assert.ok(heard.every((r) => r.headers["x-api-key"] === TOKEN), "on the owner's sign-in, read by the agent from its own folder");
+
+  // model.hosts holds on a run as on the check: an agent whose vendor is not among them never reaches it.
+  const elsewhere = await installed(t, (o) => {
+    const recipe = signingIn(o, { keyed: false });
+    return { ...recipe, model: { ...recipe.model, hosts: ["vendor.example.invalid"] } };
+  });
+  assert.equal((await signIn(elsewhere.file, elsewhere.data)).status, 0);
+  await noteChecked(elsewhere.data, elsewhere.file);
+  const second = await serve(t, { data: elsewhere.data, harnessRecipes: [elsewhere.file] });
+  const refused = await startRun(second.api, "elsewhere", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const ended = await follow(second.api, refused.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(ended.last.status, "failed", JSON.stringify(ended.last));
+  assert.equal(elsewhere.origin.messages().length, 0, "the vendor heard nothing: its host is not one the recipe names");
 });

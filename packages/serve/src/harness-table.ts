@@ -30,6 +30,7 @@ import { modelWire, wireOf, WIRES } from "./wires.js";
 import type { SkillCheck } from "./skills.js";
 import type { RunnerHarness } from "./runner/adapters/index.js";
 import { PLAN_PROVIDER, signedIn } from "./chatgpt-plan.js";
+import { recipeServerEntry } from "./harness-recipe-entry.js";
 
 /** A module of entries a test merges over the built-in ones (HarnessTableModule), by absolute path. */
 export const HARNESS_TABLE_ENV = "AGENTRUN_HARNESS_TABLE";
@@ -591,6 +592,36 @@ function modulesOf(env: NodeJS.ProcessEnv): string[] {
 
 const harnessId = new RegExp(HARNESS_ID_PATTERN);
 
+/** The setting that names the recipes a server's table adds and the data directory they are installed in, as a run's
+ *  process carries it (HARNESS_RECIPES_SETTING, `--harness-recipe`): JSON `{ "data": dir, "files": [absolute paths] }`. */
+export const HARNESS_RECIPES_ENV = "AGENTRUN_HARNESS_RECIPES";
+
+/** The recipes `env` names (HARNESS_RECIPES_ENV): none when it names none. */
+function recipesOf(env: NodeJS.ProcessEnv): { data: string; files: string[] } | undefined {
+  const given = env[HARNESS_RECIPES_ENV];
+  if (!given) return undefined;
+  const shape = `${HARNESS_RECIPES_ENV} is JSON { "data": the data directory, "files": recipe paths }`;
+  let parsed: { data?: unknown; files?: unknown } | null;
+  try {
+    parsed = JSON.parse(given) as { data?: unknown; files?: unknown } | null;
+  } catch {
+    throw new Error(shape);
+  }
+  if (!parsed || typeof parsed.data !== "string" || !Array.isArray(parsed.files) || !parsed.files.every((file) => typeof file === "string")) throw new Error(shape);
+  return parsed.files.length ? { data: parsed.data, files: parsed.files as string[] } : undefined;
+}
+
+/** The owner's setting that names harness recipes when no option does: recipe files, comma-separated. */
+export const HARNESS_RECIPES_SETTING = "AGENTRUN_SERVE_HARNESS_RECIPES";
+
+/** The recipe files `given` names (a server's or a runner's `--harness-recipe`, else HARNESS_RECIPES_SETTING). */
+export const harnessRecipesOf = (given: readonly string[] | undefined, env: NodeJS.ProcessEnv): string[] =>
+  given?.length ? [...given] : (env[HARNESS_RECIPES_SETTING] ?? "").split(",").map((name) => name.trim()).filter(Boolean);
+
+/** HARNESS_RECIPES_ENV for the recipe files `files` names, installed into `data`: none for none. */
+export const harnessRecipesEnv = (files: readonly string[], data: string): NodeJS.ProcessEnv =>
+  (files.length ? { [HARNESS_RECIPES_ENV]: JSON.stringify({ data: resolve(data), files: files.map((file) => resolve(file)) }) } : {});
+
 /** The table `env` runs on: the built-in entries; then, only under a test runner (node --test's NODE_TEST_CONTEXT, which a
  *  server's and a run's processes there carry), a test's module's (HARNESS_TABLE_ENV) merged over them by id; then the
  *  harnesses each of the owner's harness modules adds (HARNESS_MODULES_ENV), under a test runner or not. A module adds
@@ -602,8 +633,9 @@ const harnessId = new RegExp(HARNESS_ID_PATTERN);
 export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, HarnessEntry>> {
   const path = env.NODE_TEST_CONTEXT ? env[HARNESS_TABLE_ENV] : undefined;
   const modules = modulesOf(env);
-  if (!path && !modules.length) return BUILTIN;
-  const key = JSON.stringify([path ?? null, modules]);
+  const recipes = recipesOf(env);
+  if (!path && !modules.length && !recipes) return BUILTIN;
+  const key = JSON.stringify([path ?? null, modules, recipes ?? null]);
   let table = loaded.get(key);
   if (!table) {
     const built: Record<string, HarnessEntry> = { ...BUILTIN };
@@ -620,6 +652,13 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
         if (owned.length) throw Object.assign(new Error(`${HARNESS_KEY_OWNED}: harness module ${module}: its entry ${id} names ${owned.join(", ")} in ownKeys, a key a built-in harness owns and is handed alone: a module's harness takes none of ${BUILTIN_OWN_KEYS.join(", ")}`), { code: HARNESS_KEY_OWNED });
         built[id] = Object.freeze({ ...entry, id }) as HarnessEntry;
       }
+    }
+    // Then each recipe the owner names (HARNESS_RECIPES_ENV): loaded under its five rules, so a refused one, or one whose
+    // id a module or another recipe already adds, refuses the start in words (a recipe never takes a built-in's id).
+    for (const file of recipes?.files ?? []) {
+      const entry = recipeServerEntry(file, recipes!.data);
+      if (Object.hasOwn(built, entry.id)) throw new Error(`harness recipe ${file} names ${entry.id}, which a harness module or another recipe already adds`);
+      built[entry.id] = entry;
     }
     table = Object.freeze(built);
     loaded.set(key, table);
@@ -670,7 +709,8 @@ export const builtinHarness = (id: string | undefined): HarnessEntry | undefined
 /** The owner's table on `env`: the built-in entries and those its harness modules add (HARNESS_MODULES_ENV), never a test
  *  table's. What a run weighs and whether one fits (host.ts, runner/memory-claim.ts) read it, so a test's stand-in admits
  *  as the built-in harness it stands in for, and a module's harness as its entry declares. */
-export const ownerTable = (env: NodeJS.ProcessEnv): Readonly<Record<string, HarnessEntry>> => harnessTable(env[HARNESS_MODULES_ENV] ? { [HARNESS_MODULES_ENV]: env[HARNESS_MODULES_ENV] } : {});
+export const ownerTable = (env: NodeJS.ProcessEnv): Readonly<Record<string, HarnessEntry>> =>
+  harnessTable({ ...(env[HARNESS_MODULES_ENV] ? { [HARNESS_MODULES_ENV]: env[HARNESS_MODULES_ENV] } : {}), ...(env[HARNESS_RECIPES_ENV] ? { [HARNESS_RECIPES_ENV]: env[HARNESS_RECIPES_ENV] } : {}) });
 
 /** The entry of harness `id` (none: the default, pi) on the owner's table (ownerTable); undefined for one it has not. */
 export const ownerHarness = (env: NodeJS.ProcessEnv, id: string | undefined): HarnessEntry | undefined => {

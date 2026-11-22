@@ -33,7 +33,15 @@ agentrun harness-check --recipe examples/harness-recipe/antigravity.json
 The install downloads about 100 MB. The sign-in prints a Google address: open it in any browser, sign in, and paste the
 code back into the terminal. `harness-check` then runs on that sign-in, or on `ANTIGRAVITY_GEMINI_API_KEY` when it is
 set. It takes no `--model` for a plan-billed agent: it runs on the agent's default model, or on `model.id` when the
-recipe names one. One server, one owner: never share the sign-in or the server's runs on it.
+recipe names one. Once the check passes, a server that names the recipe runs its agent on that sign-in:
+
+```sh
+agentrun-serve --harness-recipe examples/harness-recipe/antigravity.json
+```
+
+An agent with `"harness": "antigravity"` then runs on it. One server, one owner: never share the sign-in or the
+server's runs on it. A server runs it on the sign-in alone; the key is for the check until a harness's own keys are
+saved on a server.
 
 ## Not yet checked
 

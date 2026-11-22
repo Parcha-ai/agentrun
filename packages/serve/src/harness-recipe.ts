@@ -9,7 +9,7 @@ import { commandData } from "./harness-owned.js";
 import { harnessesOf, installDirOf, shellWord } from "./harness-install.js";
 import { ENV_NAME, KEY_NAME, launchEnv } from "@parcha/agentrun-kernel";
 import { acpPackage } from "./acp-package.js";
-import { keyShaped } from "./secret-name.js";
+import { keyShaped, SECRET_SEGMENTS } from "./secret-name.js";
 import { SECRET_NAMES } from "./secrets.js";
 
 /** The codes a refused recipe carries, one per rule, and one for a file that is not a recipe at all. */
@@ -226,6 +226,9 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
       if (!KEY_NAME.test(name)) say(RECIPE_CODES.keys, `the key ${JSON.stringify(name)} is not a key's name (capitals, digits and _, at most 64)`);
       else if (serverKey(name)) say(RECIPE_CODES.keys, `${name} is a key this server holds for something else; a recipe names only keys saved for its own harness (save it under a name of its own, and hand it as ${name} with { "name", "env" })`);
       else if (SET_BY_ADAPTER.has(name)) say(RECIPE_CODES.env, `${name} is set by the adapter or the proxy, never by a key`);
+      // Shaped as a key's name (a KEY, TOKEN, SECRET... segment), so the one cut every child's environment takes
+      // (secrets.ts withoutSecrets) keeps it out of every run's tools and every other child, wherever it is set.
+      else if (!keyShaped(name)) say(RECIPE_CODES.keys, `the key ${name} is not named as a key: its name needs one of the segments ${SECRET_SEGMENTS.join(", ")} (${name}_KEY, say), so no child of the server is ever handed it by its name`);
       // The variable it reaches the agent as may be a provider's name the server holds a key under (GEMINI_API_KEY): the
       // value is this harness's own, read by its saved name, so the server's never reaches the agent. Never the
       // adapter's, the proxy's, or the server's own (AGENTRUN_, AGENT_MODEL_).
@@ -420,6 +423,31 @@ export const recipeSignInLine = (file: string, data: string, env: NodeJS.Process
 /** Whether the agent's own sign-in ended well on `data` (signedInNoteOf): nothing in its folder is read to say so.
  *  Whether the sign-in still holds is the agent's to say when it runs (an ACP -32000, Authentication required). */
 export const signedIn = (data: string, recipe: Recipe): boolean => recipe.signIn !== undefined && existsSync(signedInNoteOf(data, recipe.id));
+
+/** What a passing harness-check proved, by digest: the recipe file, the binary and every file beside it, on `platform`. A
+ *  server runs the recipe only while all three are still these (harness-recipe-entry.ts). */
+export type RecipeChecked = { readonly recipe: string; readonly binary: string; readonly tree: string; readonly version: string; readonly platform: string };
+
+/** AgentRun's own note of the last harness-check that passed for the recipe `id` on `data`: `<data>/harnesses/<id>.checked`,
+ *  beside the install and never in it. */
+export const checkedNoteOf = (data: string, id: string): string => join(harnessesOf(data), `${id}.checked`);
+
+/** Writes the note of a passing check (checkedNoteOf), over the one before it: open to its owner alone. */
+export function writeChecked(data: string, id: string, checked: RecipeChecked): void {
+  mkdirSync(harnessesOf(data), { recursive: true, mode: 0o700 });
+  writeFileSync(checkedNoteOf(data, id), `${JSON.stringify({ ...checked, at: new Date().toISOString() })}\n`, { mode: 0o600 });
+}
+
+/** The note of the last check that passed for `id` on `data`, or undefined where there is none or it is not one. */
+export function checkedOf(data: string, id: string): RecipeChecked | undefined {
+  try {
+    const note = JSON.parse(readFileSync(checkedNoteOf(data, id), "utf8")) as Partial<Record<keyof RecipeChecked, unknown>>;
+    const fields = ["recipe", "binary", "tree", "version", "platform"] as const;
+    return fields.every((field) => typeof note[field] === "string") ? (Object.fromEntries(fields.map((field) => [field, note[field]])) as RecipeChecked) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Installs the recipe's release into `<data>/harnesses/<id>` (the owner's command, rule 4): its archive downloaded and
  *  checked against the recipe's sha256, unpacked, and its binary checked against the recipe's pin, or recorded as the

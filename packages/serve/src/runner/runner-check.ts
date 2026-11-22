@@ -21,7 +21,7 @@ import { ARCHIL_SETTINGS_ENV } from "../archil-settings.js";
 import { BOX_ALLOW_ENV } from "../box-settings.js";
 import { TOOL_KEY_ROWS } from "../key-words.js";
 import { PRIVATE_HOSTS_ENV } from "../mcp-private-hosts.js";
-import { HARNESS_MODULES_SETTING } from "../harness-table.js";
+import { HARNESS_MODULES_SETTING, HARNESS_RECIPES_SETTING } from "../harness-table.js";
 import { GATEWAY_IDS_ENV } from "../model-gateway.js";
 import { BOX_CPUS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV, MCP_ALLOW_LOOPBACK_ENV } from "../start-switches.js";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
@@ -65,6 +65,8 @@ const FIXED: ReadonlySet<string> = new Set([
   // The harness modules a server loads (harness-table.ts): a runner without them claims their runs and has no harness to
   // run them on.
   HARNESS_MODULES_SETTING,
+  // And the harness recipes it runs (harness-table.ts), for the same reason.
+  HARNESS_RECIPES_SETTING,
   // A Docker computer's image and size (box-image.ts, workspace/computer-deps.ts dockerLimitsOf): read where the run's
   // computer starts, the runner.
   DOCKER_IMAGE_ENV,

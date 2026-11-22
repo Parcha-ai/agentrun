@@ -61,7 +61,7 @@ import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessTable, tableIds } from "./harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_RECIPES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessRecipesEnv, harnessTable, tableIds } from "./harness-table.js";
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, runsThatFit } from "./host.js";
 import { DEFAULT_HOST, elsewhereOf, listenOn, minFreeMibOf, takeOver, urlOf } from "./listen-first.js";
@@ -395,6 +395,9 @@ export type ServeOptions = {
   /** The owner's harness modules (harness-table.ts HARNESS_MODULES_ENV): packages or paths, each exporting a
    *  HarnessTableModule whose entries add harnesses of their own, for this server and its runs. Never a built-in one. */
   harnessModules?: readonly string[];
+  /** The owner's harness recipes (harness-table.ts HARNESS_RECIPES_ENV): recipe files installed into `data`, each adding
+   *  the harness it describes to this server and its runs once a harness-check of it passed there (HARNESS.md#a-recipe). */
+  harnessRecipes?: readonly string[];
   /** With `faux` only: Docker answers, so docker is available, and nothing asks Docker (place-offers.ts). */
   fauxDocker?: boolean;
   /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
@@ -508,7 +511,7 @@ const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_E
  *  startInProcessRunner). */
 export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
   // The owner's harness modules too (not a test switch): a run's process reads the same table as the server.
-  const env: NodeJS.ProcessEnv = { ...harnessModulesEnv(options.harnessModules ?? [], options.data), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
+  const env: NodeJS.ProcessEnv = { ...harnessModulesEnv(options.harnessModules ?? [], options.data), ...harnessRecipesEnv(options.harnessRecipes ?? [], options.data), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
   for (const [option, name] of FAUX_SWITCHES) if (options[option]) env[name] = resolve(options[option]);
@@ -1115,6 +1118,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // So is the harness modules list, from `harnessModules` alone (an operator names them with --harness-module or
   // AGENTRUN_SERVE_HARNESS_MODULES, which the CLI reads into the option).
   delete process.env[HARNESS_MODULES_ENV];
+  // And the recipes, from `harnessRecipes` alone (--harness-recipe or AGENTRUN_SERVE_HARNESS_RECIPES).
+  delete process.env[HARNESS_RECIPES_ENV];
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a computer's mount source below it must then be its own canonical path, through no link.
   const data = await realpath(resolve(options.data));
@@ -1202,7 +1207,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // shown nowhere.
   let secretStores: ServerSecrets | undefined;
   let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
-  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data), ...harnessRecipesEnv(options.harnessRecipes ?? [], data) };
   // The table, loaded once here: a harness module that is missing, names a built-in harness or gives half an entry refuses
   // the start, in words, before anything else opens.
   // The harness ids a definition may name here: the table's, the built-in ones and those the modules add, and one the
