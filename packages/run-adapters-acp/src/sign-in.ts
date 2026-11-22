@@ -9,13 +9,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
-import { launchEnv } from "@parcha/agentrun-kernel";
+import { ENV_NAME, launchEnv } from "@parcha/agentrun-kernel";
 import { ACP_CODES } from "./facts.js";
 import { startAgent } from "./host/agent.js";
 import { RESERVED_ENV } from "./recipe.js";
-
-/** A variable's name, as the folder's. */
-const KEY_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 /** How long a person has to sign in: Antigravity's own loopback server waits about as long. */
 export const SIGN_IN_MS = 10 * 60_000;
@@ -41,9 +38,9 @@ export interface SignInOptions {
  *  ACP_CODES failure (its method unlisted, refused, or the agent ended) whose words are ours and its exit status alone. */
 export async function signInAgent(options: SignInOptions): Promise<void> {
   // The folder's variable, and the recipe's env, never one the adapter sets nor one that changes what the agent's process
-  // loads or runs (the kernel's one list): refused before anything starts.
-  if (!KEY_NAME.test(options.homeEnv) || RESERVED_ENV.has(options.homeEnv) || launchEnv(options.homeEnv)) {
-    throw new Error(`${ACP_CODES.authFailed}: the sign-in folder's variable ${options.homeEnv} is not a variable's name, or is one the adapter sets or one that changes what the agent's process loads or runs`);
+  // loads or runs (the kernel's one list): refused before anything starts. Its name follows the loader's rule (ENV_NAME).
+  if (!ENV_NAME.test(options.homeEnv) || RESERVED_ENV.has(options.homeEnv) || launchEnv(options.homeEnv)) {
+    throw new Error(`${ACP_CODES.authFailed}: the sign-in folder's variable ${JSON.stringify(options.homeEnv)} is not a variable's name, or is one the adapter sets or one that changes what the agent's process loads or runs`);
   }
   const unsafe = Object.keys(options.env ?? {}).filter((name) => name === options.homeEnv || RESERVED_ENV.has(name) || launchEnv(name));
   if (unsafe.length) throw new Error(`${ACP_CODES.authFailed}: the env names ${unsafe.join(", ")}, which this sign-in sets or which change what the agent's process loads or runs`);

@@ -5,6 +5,10 @@
 // name the agent reads; the variable an agent reads its sign-in folder from; a recipe's env) refuses these names: a
 // value there would run code the pinned binary never named. The ACP adapter and serve's recipe loader both read it.
 
+/** An environment variable's name, as a recipe may write one (`GEMINI_HOME`, `agent_home`): the recipe loader and the
+ *  ACP adapter read the same rule, so the adapter never refuses a name the loader took. */
+export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
 /** Names refused whole. */
 export const LAUNCH_ENV: readonly string[] = Object.freeze([
   "PATH",

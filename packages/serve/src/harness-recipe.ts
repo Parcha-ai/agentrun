@@ -7,7 +7,7 @@ import { ARCHIVE_FORMATS, type ArchiveFormat, type ArchiveInstallOptions, archiv
 import { BUILTIN_HARNESS_IDS } from "./harness-table.js";
 import { commandData } from "./harness-owned.js";
 import { harnessesOf, installDirOf, shellWord } from "./harness-install.js";
-import { launchEnv } from "@parcha/agentrun-kernel";
+import { ENV_NAME, launchEnv } from "@parcha/agentrun-kernel";
 import { acpPackage } from "./acp-package.js";
 import { keyShaped } from "./secret-name.js";
 import { SECRET_NAMES } from "./secrets.js";
@@ -122,7 +122,6 @@ const BINARY_FIELDS = new Set(["command", "binary", "path", "bin", "executable",
 const ENV_FIELDS = new Set(["inheritEnv", "passEnv", "envFrom", "inherit", "envPassthrough", "passthroughEnv"]);
 /** Every variable of AGENT_VARS. */
 const SET_BY_ADAPTER: ReadonlySet<string> = new Set(Object.values(AGENT_VARS).flat());
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const ARCHIVE_FIELDS = new Set(["url", "format", "sha256", "cmd", "binarySha256", "treeSha256", "args"]);
 /** A value the host would fill in from its own environment: `$NAME` or `${NAME}`. */

@@ -4,7 +4,7 @@ export type { Admission, BeforeRequest, Refusal, HarnessRunner, HarnessRunnerOpt
 export { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
 export { CODEMODE, DEFER_CATALOG_OVER, defersCatalog, isCatalogWire, META_TOOLS, TOOLS_CALL, TOOLS_SEARCH } from "./tool-deferral.js";
 export { toolSchemaProblems } from "./schema-check.js";
-export { LAUNCH_ENV, LAUNCH_ENV_PREFIXES, launchEnv } from "./launch-env.js";
+export { ENV_NAME, LAUNCH_ENV, LAUNCH_ENV_PREFIXES, launchEnv } from "./launch-env.js";
 export { READ_SKILL_FILE, readSkillFileTool, SKILL_BYTES, skillProblems } from "./skill-files.js";
 export type { HostSkill, SkillFileList } from "./skill-files.js";
 export type { HarnessRunReason } from "./errors.js";

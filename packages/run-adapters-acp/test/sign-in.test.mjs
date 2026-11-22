@@ -196,3 +196,18 @@ test("a sign-in never points the agent's folder variable at one that changes wha
     await assert.rejects(signInAgent({ command: join(dir, 'never-started'), args: [], method: LOGIN, homeEnv, home: dir }), (error) => error.message.startsWith(`${ACP_CODES.authFailed}: `) && error.message.includes(homeEnv), homeEnv);
   }
 });
+
+test("a sign-in takes every folder variable the recipe loader takes (the kernel's one name rule): lowercase, _-led, long", async () => {
+  const { signInAgent } = await import('@parcha/agentrun-harness-acp');
+  const { ENV_NAME } = await import('@parcha/agentrun-kernel');
+  const dir = scratch();
+  for (const homeEnv of ['agent_home', '_AGENT_HOME', `AGENT_${'H'.repeat(100)}`]) {
+    assert.match(homeEnv, ENV_NAME, homeEnv);
+    // Past the name check, the sign-in goes on to start the agent, which is not there.
+    await assert.rejects(signInAgent({ command: join(dir, 'never-started'), args: [], method: LOGIN, homeEnv, home: dir }), (error) => !error.message.includes("sign-in folder's variable"), homeEnv);
+  }
+  for (const homeEnv of ['', '1HOME', 'AGENT-HOME', 'AGENT HOME', `A${'H'.repeat(128)}`]) {
+    assert.doesNotMatch(homeEnv, ENV_NAME, homeEnv);
+    await assert.rejects(signInAgent({ command: join(dir, 'never-started'), args: [], method: LOGIN, homeEnv, home: dir }), (error) => error.message.startsWith(`${ACP_CODES.authFailed}: `) && error.message.includes("sign-in folder's variable"), JSON.stringify(homeEnv));
+  }
+});
