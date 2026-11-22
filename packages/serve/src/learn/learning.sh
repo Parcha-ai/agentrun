@@ -3,8 +3,8 @@
 # dash), git 2.32 or later. The host writes it into the folder once per version as `.agentrun/learning-<sha8>.sh` and
 # runs `sh .agentrun/learning-<sha8>.sh <op> [args]` there, the folder its working directory, under an environment it
 # names whole. Each run is one process on the folder. The server and the runners beside it on one data directory run it
-# on one folder at once: what keeps them apart is git's own locks, the compare and swap on main, and the folder's own
-# lock on bringing the working tree and the snapshot in line with main.
+# on one folder at once: what keeps them apart is the folder's lock, held over each write (see lock), and the compare
+# and swap on main under it.
 #
 # The host computes everything it can (the tree, the front matter, the history, the log, the snapshot) and hands it in;
 # this script does the git plumbing, the file writes and the atomic swap, in this order, and nothing else:
@@ -14,22 +14,21 @@
 #      second merge of it, however it raced the first, exits 6 and writes nothing but the first one's diff file when a
 #      stop left it none;
 #   2. for a run's merge, `.agentrun/diffs/<run>.json`: each path's patch, parent against merge, as git diffs it;
-#   3. under the folder's lock (`.agentrun/inline.lock`, one writer at a time), main read again: when a newer commit
-#      landed since, its writer brings the folder in line with it under the same lock, and this one stops here, done;
-#      else the working tree brought in line with the new main (read-tree -u --reset), then
+#   3. the working tree brought in line with the new main (read-tree -u --reset);
 #   4. `.agentrun/snapshot.json`, written to a temporary name and moved into place, LAST.
-# So a reader that finds snapshot.json finds every file it names at its main, or a newer one (a write in flight), and a
+# All four under the folder's lock, taken before the compare and swap and let go after the snapshot: one write at a time,
+# so a reader that finds snapshot.json finds every file it names at its main, or a newer one (a write in flight), and a
 # snapshot is never replaced by an older main's. A stop between 1 and 2 leaves a run's ref with no diff file: `merged`
-# (and a second merge's exit 6) writes it from the ref. A lock whose holder was killed is taken over once it is older
-# than a minute.
+# (and a second merge's exit 6) writes it from the ref. A stop between 1 and 4 leaves the folder behind main until the
+# next write finds it so and rebuilds it (the host's learningRepair, the `snapshot` op).
 #
 # Ops:
 #   init                 make the folder a repository (git init, which leaves one that is there as it is, and finishes
 #                        one another init is making), then commit as `commit` does with no parent; main must not be
 #                        there yet (else 3, with main on stdout)
 #   commit <old> [run]   commit on main from <old>; with <run>, a run's merge, which writes its diff file
-#   snapshot <main>      the working tree and snapshot.json written again at <main>, which must be main under the
-#                        folder's lock (else 3)
+#   snapshot <main>      the working tree and snapshot.json written again at <main>, which must be main (else 3),
+#                        under the folder's lock
 #   read [commit]        main's (or <commit>'s) tree, its first-parent log and its blobs, for the host to build a
 #                        snapshot from; 1 when <commit> is not in the repository
 #   merged <run>         run <run>'s merge (its ref) on stdout, its diff file written from it when there is none; 1
@@ -44,9 +43,10 @@
 #   seed <commit>        (a run's merge) the commit the run was seeded from, which the repository held as its end began
 #                        and must hold still (else 4: "seed <commit>" on stdout): a reset since merges nothing, a
 #                        correction alone included
-# Exit: 0 done (the new main on stdout), 3 stale (main as it is on stdout), 4 a precondition failed, 5 main moved but
-# the files could not be brought in line (the new main on stdout; no snapshot written), 6 the run merged already (its
-# merge on stdout), else git's error on stderr.
+# Exit: 0 done (the new main on stdout), 3 stale (main as it is on stdout; also when the folder's lock could not be had
+# in time, nothing written), 4 a precondition failed, 5 main moved but the files could not be brought in line, or the
+# lock was lost before they were (the new main on stdout; no snapshot written), 6 the run merged already (its merge on
+# stdout), else git's error on stderr.
 set -u
 set -f
 
@@ -87,38 +87,72 @@ pause() {
   sleep 0.05 2> /dev/null || sleep 1
 }
 
-# A test's pause (AGENTRUN_LEARNING_PAUSE, a file's path): before the folder is brought in line with a new main,
-# "<file>.at" is written and the script waits until <file> is there.
+# A test's pause (AGENTRUN_LEARNING_PAUSE, a file's path): after the compare and swap, before the folder is brought in
+# line with the new main, "<file>.at" is written and the script waits until <file> is there.
 test_pause() {
   [ -n "${AGENTRUN_LEARNING_PAUSE:-}" ] || return 0
   : > "$AGENTRUN_LEARNING_PAUSE.at"
   while [ ! -e "$AGENTRUN_LEARNING_PAUSE" ]; do pause; done
 }
 
-# The folder's lock on bringing the working tree and the snapshot in line with main: a folder made by mkdir, which
-# one writer alone makes. Waited for up to 50 s (the host's deadline is 60 s). A lock older than a minute is one whose
-# holder was killed past its deadline: taken over.
-LOCK=.agentrun/inline.lock
-locked=
+# The folder's lock, held over each write from before its compare and swap to its snapshot: refs/agentrun/lock, a ref to
+# a blob of the holder's own ("lock <until> <nonce>", <until> in seconds since the epoch), made, taken over and removed
+# only by git's compare and swap on that ref, so one writer alone holds it. A holder killed inside its write keeps it
+# until its lease is past (LEASE seconds, past the host's 60 s deadline), and then exactly one waiting writer takes it
+# over: the swap from the dead holder's blob succeeds once. Waited for up to 50 s; a writer that can't have it in time
+# writes nothing (exit 3). AGENTRUN_LEARNING_LEASE is a test's shorter lease.
+LOCK_REF=refs/agentrun/lock
+LEASE=${AGENTRUN_LEARNING_LEASE:-70}
+held=
 lock() {
-  mkdir -p .agentrun || die "no .agentrun folder"
+  nonce=$$-$(od -An -N8 -tx1 /dev/urandom 2> /dev/null | tr -d ' \n')
   tries=0
-  until mkdir "$LOCK" 2> /dev/null; do
-    if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2> /dev/null)" ]; then
-      rmdir "$LOCK" 2> /dev/null
-      continue
+  while :; do
+    cur=$(g rev-parse -q --verify "$LOCK_REF" 2> /dev/null || true)
+    from=
+    if [ -z "$cur" ]; then
+      from=$ZERO
+    else
+      # A blob that can't be read is one its holder let go of as this read it (the ref goes first): the swap from it fails.
+      expiry=$(g cat-file blob "$cur" 2> /dev/null | awk '$1 == "lock" { print $2 }')
+      case $expiry in
+        '' | *[!0-9]*) from=$cur ;;
+        *) [ "$expiry" -lt "$(date +%s)" ] && from=$cur ;;
+      esac
+    fi
+    if [ -n "$from" ]; then
+      mine=$(printf 'lock %s %s\n' "$(($(date +%s) + LEASE))" "$nonce" | g hash-object -w --stdin) || die "the folder's lock could not be written"
+      if g update-ref "$LOCK_REF" "$mine" "$from" 2> /dev/null; then
+        held=$mine
+        return 0
+      fi
+      drop_blob "$mine"
     fi
     tries=$((tries + 1))
-    [ "$tries" -lt 1000 ] || die "another writer is bringing the learning folder in line with main: try again"
+    [ "$tries" -lt 1000 ] || return 1
     pause
   done
-  locked=1
 }
+# Whether this writer holds the lock still: false once its lease was past and another writer took it over.
+holding() {
+  [ -n "$held" ] && [ "$(g rev-parse -q --verify "$LOCK_REF" 2> /dev/null || true)" = "$held" ]
+}
+# The lock let go of, when this writer holds it still, and its blob removed (nothing else names it).
 unlock() {
-  if [ -n "$locked" ]; then
-    rmdir "$LOCK" 2> /dev/null
-    locked=
-  fi
+  [ -n "$held" ] || return 0
+  g update-ref -d "$LOCK_REF" "$held" 2> /dev/null
+  drop_blob "$held"
+  held=
+}
+# A loose object this script wrote for the lock, removed.
+drop_blob() {
+  rm -f "$GIT_DIR/objects/$(printf '%s' "$1" | cut -c1-2)/$(printf '%s' "$1" | cut -c3-)"
+}
+# The lock taken, or this write stale: main as it is on stdout, nothing written.
+lock_or_stale() {
+  lock && return 0
+  printf '%s\n' "$(main_now)"
+  exit 3
 }
 
 tmp=$(mktemp -d) || die "no temporary folder"
@@ -318,6 +352,7 @@ commit() {
   case $ref in
     *[!0-9a-z/-]*) die "the import ref is not one this script takes" ;;
   esac
+  lock_or_stale
   cur=$(main_now)
   if [ "$cur" != "$old" ]; then
     printf '%s\n' "$cur"
@@ -354,13 +389,11 @@ commit() {
   [ "${AGENTRUN_LEARNING_FAIL:-}" = before-diff ] && die "failed before the diff, as the test asked"
   # The diff before the working tree: a merge whose files could not be brought in line (exit 5) keeps its diff.
   [ -n "$run" ] && write_diff "$run"
-  lock
   test_pause
-  # A newer commit landed since this one: its writer brings the folder in line with it, under this lock, so an older
-  # main's tree and snapshot never replace its.
-  if [ "$(main_now)" != "$new" ]; then
+  # A lease that ran out (a write stalled past it) and was taken over: the files are the new holder's to write now.
+  if ! holding; then
     printf '%s\n' "$new"
-    exit 0
+    exit 5
   fi
   if ! check_out "$new"; then
     cat "$tmp/checkout" >&2
@@ -412,7 +445,7 @@ case $op in
     old=${2:-}
     hex40 "$old" || die "snapshot takes the main it is written at"
     take_stdin
-    lock
+    lock_or_stale
     cur=$(main_now)
     if [ "$cur" != "$old" ]; then
       printf '%s\n' "$cur"

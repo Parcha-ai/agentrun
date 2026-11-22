@@ -57,8 +57,8 @@ async function together(root, writers) {
   });
 }
 
-/** The folder agrees with itself: git finds nothing wrong, the working tree is main's, and snapshot.json is the
- *  snapshot main gives, rebuilt from git. Main's commit. */
+/** The folder agrees with itself: git finds nothing wrong, the working tree is main's, snapshot.json is the snapshot
+ *  main gives, rebuilt from git, and no writer holds the folder's lock. Main's commit. */
 async function whole(root) {
   git(root, ["fsck", "--strict", "--no-dangling"]);
   assert.equal(git(root, ["status", "--porcelain", "--untracked-files=all"]), "", "the working tree is main's");
@@ -68,6 +68,8 @@ async function whole(root) {
   const snapshot = await readSnapshot(ws);
   assert.deepEqual(snapshot, snapshotOfRead(parseRead(read.stdout)), "snapshot.json is main's");
   assert.equal(snapshot.main, git(root, ["rev-parse", "refs/heads/main"]));
+  const lock = spawnSync("git", ["-C", root, "rev-parse", "-q", "--verify", "refs/agentrun/lock"], { encoding: "utf8" });
+  assert.equal(lock.status, 1, `the folder's lock is let go of: ${lock.stdout}`);
   return snapshot;
 }
 

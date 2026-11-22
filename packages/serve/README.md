@@ -4025,7 +4025,8 @@ secret since, say) reads `[redacted]` whole, in the workflows, the log's `files`
 still answers the real name to a caller who knows it. A log page reads the snapshot alone (it keeps the newest 200
 changes). A cursor reads at the main it names while this server still holds that snapshot, else as the first page of
 `main` now. Every write to `main` (a run's merge, a person's corrections, retire, approve or restore) is one exec of the learning
-script, a compare and swap on `main`. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
+script, a compare and swap on `main` under the folder's lock (`refs/agentrun/lock`): one write at a time, from the server
+or any runner on its data directory, and a writer killed holding it holds it no longer than a lease of 70 s. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
 followed: a read or a write there answers `500`, and nothing is written.
 
 ### Approving a workflow that waits

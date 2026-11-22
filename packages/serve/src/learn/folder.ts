@@ -5,9 +5,10 @@
 //   create, retire, approve or restore and a run's merge alike (commitChange; learn/commit.ts learningCommit is the
 //   API callers use), and the folder's first commit
 //   (learningInit). The script is written into the folder once per version, `.agentrun/learning-<sha8>.sh`, and run
-//   there. The server and each runner beside it on the same data directory write the one folder: the script's compare
-//   and swap on main, a first commit's init that finishes another's, and its lock on bringing the working tree and the
-//   snapshot in line with main keep two writers from losing either's work or leaving an older main's snapshot.
+//   there. The server and each runner beside it on the same data directory write the one folder: the script's lock, held
+//   over each write from its compare and swap on main to its snapshot (a dead holder's taken over past its lease), and a
+//   first commit's init that finishes another's keep two writers from losing either's work or leaving an older main's
+//   snapshot.
 // - This side computes everything it can: the tree's changes, the commit's message and time, the front matter, each
 //   file's history and order, the log, and so the whole next snapshot (nextSnapshot), from the snapshot the write read
 //   and the change. The script does the git plumbing, the file writes and the atomic swap: the commit by compare and
@@ -688,9 +689,8 @@ export type Committed =
 /**
  * One write to main, one exec of the script: `change` on the snapshot it was computed from (`base`: none for the
  * folder's first commit, `op` "init"). The commit moves main only from `base.main` (compare and swap); then a merge's
- * diff file, the working tree and the next snapshot (nextSnapshot), last; or, when another writer's commit landed on
- * it by then, neither: that writer brings the folder in line with its newer main. Nothing is retried here: writeLearning
- * computes again on a main that moved.
+ * diff file, the working tree and the next snapshot (nextSnapshot), last, all under the folder's lock (stale when it
+ * can't be had in time). Nothing is retried here: writeLearning computes again on a main that moved.
  */
 export async function commitChange(ws: Workspace, base: Snapshot | undefined, change: FolderChange | undefined): Promise<Committed> {
   const seconds = Math.floor(Date.now() / 1000);
@@ -796,7 +796,7 @@ export async function learningRepair(ws: Workspace): Promise<Snapshot | undefine
     if (written.code === 0) return snapshot;
     if (written.code !== 3) throw failed("snapshot", written);
   }
-  // Other writers' commits kept landing as it was rebuilt: each of them rebuilds it after its own.
+  // Main kept moving under the rebuild: each move's writer placed its own snapshot, under the folder's lock.
   throw new FolderBusy();
 }
 
@@ -812,6 +812,8 @@ export async function learningInit(ws: Workspace): Promise<string> {
     const repaired = await learningRepair(ws);
     if (repaired) return repaired.main;
   }
+  // Stale with no main: another writer held the folder's lock past the wait, its first commit not made yet.
+  if ("stale" in result) throw new FolderBusy();
   if ("unaligned" in result) {
     const repaired = await learningRepair(ws);
     if (repaired) return repaired.main;
@@ -876,7 +878,8 @@ export async function writeLearning<T>(ws: Workspace, compute: (folder: FolderRe
     if ("refused" in done) throw new FolderRefused(done.refused);
     if ("merged" in done) throw new FolderMerged(done.merged);
     if ("unaligned" in done) {
-      // The commit landed: a rebuild that other writers' commits keep overtaking is theirs to finish.
+      // The commit landed. A rebuild overtaken each time by another writer's commit places nothing (the script checks main
+      // under the lock first), and that writer placed its own.
       const repaired = await learningRepair(ws).catch((error: unknown) => {
         if (error instanceof FolderBusy) return undefined;
         throw error;

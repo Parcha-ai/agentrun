@@ -343,7 +343,9 @@ first (a reclaimed run's two claims), writes nothing and reads the first's. A dr
 main as it was on the run's seed (or the commit a revision read it at) is a conflict, never written over. `main` moves
 only from the commit the change was made on (the script's compare and swap; a lost race writes nothing and the change
 is computed again), and the same exec writes the run's diff (`.agentrun/diffs/<run>.json`) and, last, the folder's
-snapshot (`.agentrun/snapshot.json`, what every read reads). A stop between the merge and its diff leaves the run's
+snapshot (`.agentrun/snapshot.json`, what every read reads), all under the folder's lock (`refs/agentrun/lock`, taken
+and let go by compare and swap on that ref, a dead holder's taken over once its lease is past): one write at a time, from
+the server or a runner on its data directory, so no snapshot is ever replaced by an older main's. A stop between the merge and its diff leaves the run's
 ref with no diff: the next read of the round's merge (the end step's, or a second merge's) writes it from the ref. A person's replace of `corrections.md` is one commit the
 same way, under the ETag they read. A workflow is never deleted by a run: a retired one stays in the folder and
 serves no run.
