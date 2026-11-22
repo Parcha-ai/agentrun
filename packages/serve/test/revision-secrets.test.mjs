@@ -46,6 +46,28 @@ test("an export names the keys the package declared at its apply after the serve
   assert.deepEqual(exported.body.report.remade.filter((entry) => entry.kind === "secrets"), [], JSON.stringify(exported.body.report));
 });
 
+test("a restored revision exports the package it came from: the key names its apply kept, carried through an edit after the restore", { timeout: 120_000 }, async (t) => {
+  const { server, templates, id } = await scoutServer(t);
+  const first = (await server.store.agents.revisions(id))[0].id;
+  await server.stop();
+  writeScout(templates, "2.0.0", []);
+  const upgraded = await serve(t, { data: server.data, templates });
+  const update = await upgraded.api("POST", "/templates/scout/apply", { agent_id: id });
+  assert.deepEqual([update.status, update.body.agent_change, update.body.revision_version], [200, "updated", 2], JSON.stringify(update.body));
+  const restored = await upgraded.api("POST", `/agents/${id}/current`, { revision: first });
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  const edit = await upgraded.api("PUT", `/agents/${id}/definition`, { definition: { instructions: "Look it up twice." } });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+
+  const read = (await upgraded.api("GET", `/agents/${id}`)).body;
+  assert.deepEqual([read.revisions, read.definition.instructions, read.template?.version], [3, "Look it up twice.", "1.0.0"], "the edit of the restored revision came from 1.0.0");
+  const exported = await upgraded.api("GET", `/agents/${id}/package`);
+  assert.equal(exported.status, 200, JSON.stringify(exported.body));
+  const manifest = manifestOf(exported.body);
+  assert.deepEqual([manifest.version, manifest.secrets], ["1.0.0", ["PARALLEL_API_KEY"]], "the version and keys of the package the current revision came from");
+  assert.deepEqual(exported.body.report.remade.filter((entry) => entry.kind === "secrets"), [], JSON.stringify(exported.body.report));
+});
+
 test("the same package applied again writes no revision: the key names it keeps are the same", { timeout: 120_000 }, async (t) => {
   const { server, id } = await scoutServer(t);
   const again = await server.api("POST", "/templates/scout/apply", { agent_id: id });
