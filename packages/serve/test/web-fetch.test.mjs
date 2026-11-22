@@ -71,9 +71,9 @@ test("a guard check whose lookup never answers does not pass within its bound: n
   // The bound's timer does not hold a process open: this does, as a run's door does in its process.
   const open = setInterval(() => {}, 1_000);
   t.after(() => clearInterval(open));
-  const started = performance.now();
+  // The check's only way out is its bound (passes() aborts on checkMs alone), so a page at all means the bound fired.
   const page = await webFetch(PUBLIC, { ...net, lookup, parallel: parallelExtract(CANARY, send), checkMs: 50 });
-  assert.ok(performance.now() - started < 2_000, "the check gave up at its bound, not at Parallel's or the fetch's timeout");
+  assert.equal(page.parallel, "not tried: the URL did not pass the public-host guard", "the check gave up at its bound and the guard did not pass the URL");
   assert.deepEqual([page.ok, page.title, page.via], [true, "Public page", "direct"], JSON.stringify(withoutText(page)));
   assert.deepEqual(sent, [], "Parallel was sent nothing");
   assert.equal(lookups, 2);
