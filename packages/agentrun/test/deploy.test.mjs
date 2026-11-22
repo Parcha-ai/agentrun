@@ -7,7 +7,7 @@
 // runs, and B, where it deploys.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,27 +74,14 @@ async function recorder(t, to) {
 
 /** The CLI in a child process; stdin closed (no terminal). */
 function cli(env, args, extra = {}) {
-  // `said(pattern)`: settled once the CLI's stderr so far matches, refused if it ends first.
-  const waiting = [];
-  let err = "";
-  const heard = () => {
-    for (const one of waiting.splice(0)) {
-      if (one.pattern.test(err)) one.resolve();
-      else waiting.push(one);
-    }
-  };
-  const ended = new Promise((resolve) => {
+  return new Promise((resolve) => {
     const child = spawn(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
+    let err = "";
     child.stdout.on("data", (chunk) => (out += chunk));
-    child.stderr.on("data", (chunk) => ((err += chunk), heard()));
-    child.on("close", (code) => {
-      for (const one of waiting.splice(0)) one.reject(new Error(`the CLI ended (${code}) before saying ${one.pattern}: ${err}`));
-      resolve({ code, out, err, json: () => JSON.parse(out) });
-    });
+    child.stderr.on("data", (chunk) => (err += chunk));
+    child.on("close", (code) => resolve({ code, out, err, json: () => JSON.parse(out) }));
   });
-  const said = (pattern) => new Promise((resolve, reject) => (waiting.push({ pattern, resolve, reject }), heard()));
-  return Object.assign(ended, { said });
 }
 
 const SKILL = (line = "Say what changed.") => `---
@@ -153,8 +140,8 @@ test("agentrun deploy DIR --to B: plan, apply and lock; up to date sends nothing
   const done = first.json();
   assert.equal(done.status, "deployed");
   const lock = JSON.parse(readFileSync(lockFile, "utf8"));
-  assert.deepEqual(Object.keys(lock).sort(), ["agent_id", "deployed_at", "package_sha256", "revision_id", "target", "workspace"]);
-  assert.deepEqual([lock.target, lock.workspace, lock.agent_id, lock.revision_id, lock.package_sha256], [proxy.base, null, done.agent_id, done.revision_id, done.package_sha256]);
+  assert.deepEqual(Object.keys(lock).sort(), ["agent_id", "deployed_at", "package_sha256", "revision_id", "target"]);
+  assert.deepEqual([lock.target, lock.agent_id, lock.revision_id, lock.package_sha256], [proxy.base, done.agent_id, done.revision_id, done.package_sha256]);
   assert.match(lock.package_sha256, /^[0-9a-f]{64}$/);
   const made = (await b.api("GET", `/agents/${lock.agent_id}`)).body;
   assert.deepEqual([made.revision, made.template.id, made.template.sha], [lock.revision_id, "upload:pr-alert", lock.package_sha256]);
@@ -197,7 +184,7 @@ test("agentrun deploy DIR --to B: plan, apply and lock; up to date sends nothing
   proxy.seen.length = 0;
   const refused = await deploy(pkg, "--yes");
   assert.equal(refused.code, 2, refused.err);
-  assert.match(refused.err, /edited in the cloud; --force to replace/);
+  assert.match(refused.err, new RegExp(`was edited on ${proxy.base} since this lock was written; --force to replace`));
   assert.deepEqual(proxy.seen.filter((line) => WRITES.test(line)), [], proxy.seen.join("\n"));
   const forced = await deploy(pkg, "--yes", "--force");
   assert.equal(forced.code, 0, forced.err);
@@ -292,8 +279,10 @@ test("agentrun deploy AGENT_ID: an agent of this install goes to another by its 
   assert.equal(done.package_sha256, exported.body.sha256);
   const there = (await b.api("GET", `/agents/${done.agent_id}`)).body;
   assert.deepEqual([there.template.id, there.template.sha], ["upload:pr-alert", exported.body.sha256]);
-  const locks = JSON.parse(readFileSync(join(dir, ".config", "agentrun", "deploy.json"), "utf8"));
-  assert.deepEqual(Object.values(locks).map((lock) => [lock.target, lock.agent_id, lock.package_sha256]), [[b.base, done.agent_id, exported.body.sha256]]);
+  // The lock is the CLI's own file, one per install and agent.
+  const config = join(dir, ".config", "agentrun");
+  const locks = readdirSync(config).filter((name) => /^deploy\.[0-9a-f]{16}\.json$/.test(name)).map((name) => JSON.parse(readFileSync(join(config, name), "utf8")));
+  assert.deepEqual(locks.map((lock) => [lock.target, lock.agent_id, lock.package_sha256]), [[b.base, done.agent_id, exported.body.sha256]]);
   assert.equal((await daily()).enabled, true, "without --pause-source the schedule stays on here");
 
   // Up to date, and --pause-source still turns the schedule off here.
@@ -402,7 +391,7 @@ test("deploy delete takes a 404 as gone only when the agent is not there: a targ
     const target = await fakeTarget(t, one.answers);
     const lockFile = join(pkg, ".agentrun", "deploy.json");
     mkdirSync(join(pkg, ".agentrun"), { recursive: true });
-    writeFileSync(lockFile, `${JSON.stringify({ target: target.base, workspace: null, agent_id: AGENT_ID, revision_id: "rev_1", package_sha256: null, deployed_at: new Date().toISOString() })}\n`);
+    writeFileSync(lockFile, `${JSON.stringify({ target: target.base, agent_id: AGENT_ID, revision_id: "rev_1", package_sha256: null, deployed_at: new Date().toISOString() })}\n`);
     const result = await cli(env, ["deploy", "delete", pkg, "--to", target.base, "--yes"], { AGENTRUN_API_KEY: "not-a-secret" });
     assert.equal(result.code, one.code, `${one.name}: ${result.err}\n${target.seen.join("\n")}`);
     assert.equal(existsSync(lockFile), one.kept, `${one.name}: the lock ${one.kept ? "is kept" : "is removed"}`);
@@ -557,7 +546,7 @@ test("a folder whose .agentrun, or its deploy.json, is a symbolic link is refuse
   const { dir, env } = scratch();
   const other = folder(dir, { name: "other" });
   mkdirSync(join(other, ".agentrun"));
-  const otherLock = `${JSON.stringify({ target: target.base, workspace: null, agent_id: "agt_other", revision_id: "rev_1", package_sha256: null, deployed_at: new Date().toISOString() })}\n`;
+  const otherLock = `${JSON.stringify({ target: target.base, agent_id: "agt_other", revision_id: "rev_1", package_sha256: null, deployed_at: new Date().toISOString() })}\n`;
   writeFileSync(join(other, ".agentrun", "deploy.json"), otherLock);
   const pkg = folder(dir);
   const key = { AGENTRUN_API_KEY: "not-a-secret" };
@@ -578,42 +567,12 @@ test("a folder whose .agentrun, or its deploy.json, is a symbolic link is refuse
   await each("\\.agentrun/deploy\\.json");
 });
 
-test("the CLI's deploy record is changed under its lock: a deploy waits while another holds it, and what the holder saved is kept", { timeout: 60_000 }, async (t) => {
-  const target = await fakeTarget(t, {});
-  const { dir, env } = scratch();
-  // An install with a token and no server record: its base is the default local one, which every command finds.
-  const data = join(dir, "install");
-  mkdirSync(data, { recursive: true });
-  writeFileSync(join(data, ".token"), "not-a-secret\n", { mode: 0o600 });
-  const source = "http://127.0.0.1:7340/v2";
-  const record = join(dir, ".config", "agentrun", "deploy.json");
-  const lockOf = (agent) => ({ target: target.base, workspace: null, agent_id: `${agent}_there`, revision_id: "rev_1", package_sha256: null, deployed_at: new Date().toISOString() });
-  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
-  const before = { [`${source} agt_x`]: lockOf("agt_x"), [`${source} agt_y`]: lockOf("agt_y") };
-  writeFileSync(record, `${JSON.stringify(before, null, 2)}\n`, { mode: 0o600 });
-  // Another CLI (this process, live) holds the record: it read it, and saves a lock of its own before it lets go.
-  const holder = join(`${record}.lock`, `${hostname()}-${process.pid}`);
-  mkdirSync(`${record}.lock`);
-  writeFileSync(holder, "");
-  const deleting = cli(env, ["deploy", "delete", "agt_x", "--yes", "--data", data], { AGENTRUN_API_KEY: "not-a-secret" });
-  // It says it waits, having written nothing; the holder saves and lets go only then.
-  await deleting.said(new RegExp(`Waiting for another agentrun deploy \\(process ${process.pid}\\) to save ${record.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-  assert.deepEqual(JSON.parse(readFileSync(record, "utf8")), before, "nothing written while another holds it");
-  writeFileSync(record,`${JSON.stringify({ ...before, [`${source} agt_z`]: lockOf("agt_z") }, null, 2)}\n`, { mode: 0o600 });
-  rmSync(holder);
-  rmdirSync(`${record}.lock`);
-  const done = await deleting;
-  assert.equal(done.code, 0, done.err);
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(record, "utf8"))).sort(), [`${source} agt_y`, `${source} agt_z`], "agt_x removed, and the holder's agt_z kept");
-  assert.equal(existsSync(`${record}.lock`), false, "the deploy let go of the record");
-});
-
 test("a folder's lock that names an address this CLI never deployed to gets no key: deploy, rollback and delete exit 2 with nothing sent, until --to names it; AgentRun cloud is trusted", { timeout: 60_000 }, async (t) => {
   const AGENT_ID = "agt_planted";
   const target = await fakeTarget(t, { [`GET /agents/${AGENT_ID}`]: [404, { error: { code: "not_found", message: "Not found." } }] });
   const plant = (pkg) => {
     mkdirSync(join(pkg, ".agentrun"), { recursive: true });
-    writeFileSync(join(pkg, ".agentrun", "deploy.json"), `${JSON.stringify({ target: target.base, workspace: null, agent_id: AGENT_ID, revision_id: "rev_1", package_sha256: null, deployed_at: new Date().toISOString() })}\n`);
+    writeFileSync(join(pkg, ".agentrun", "deploy.json"), `${JSON.stringify({ target: target.base, agent_id: AGENT_ID, revision_id: "rev_1", package_sha256: null, deployed_at: new Date().toISOString() })}\n`);
   };
   const { dir, env } = scratch();
   const pkg = folder(dir);

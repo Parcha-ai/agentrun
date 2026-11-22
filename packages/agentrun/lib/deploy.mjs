@@ -2,13 +2,15 @@
 // package is a folder (DIR, default the current one: its agent.md, skills/, rules/ and evals/ and the answer's schema,
 // nothing else of it) or an agent of this install (AGENT, read from its export, GET /agents/{id}/package). It is
 // uploaded (POST /templates/import {files}), its plan read (apply with dry_run) and printed, applied once confirmed (on
-// a terminal, or with --yes), and a lock written: DIR/.agentrun/deploy.json for a folder, the CLI config's deploy.json
-// (by this install's address and the agent's id) for an install's agent. The lock names the target, the agent and its
-// revision, and the package's sha256: the next deploy of the same package is up to date and sends nothing that writes;
-// a changed one writes the agent's next revision; one whose target was edited since the lock is refused unless --force. `deploy rollback` makes the agent's previous revision current; `deploy delete` deletes the
+// a terminal, or with --yes), and a lock written: DIR/.agentrun/deploy.json for a folder, a file of the CLI's config
+// (deploy.<hash>.json, by this install's address and the agent's id) for an install's agent. The lock names the target,
+// the agent and its revision, and the package's sha256: the next deploy of the same package is up to date and sends
+// nothing that writes; a changed one writes the agent's next revision; one whose target was edited since the lock is
+// refused unless --force. `deploy rollback` makes the agent's previous revision current; `deploy delete` deletes the
 // agent there and the lock here. Exit codes: 0 done or up to date, 2 refused (bad input, a link in the folder, edited on
 // the target, not confirmed), 3 not runnable yet (keys or MCP servers the target lacks: nothing is made, the setup page
-// printed when the target gives one), 1 the target refused otherwise or could not be reached, 4 no token for it.
+// printed when the target gives one), 1 the target refused otherwise or could not be reached, 4 no token for it, 5 an
+// operation the target does not offer.
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -23,10 +25,7 @@ const TREES = ["skills", "rules", "evals"];
 /** What an upload takes (the server's import limits): refused here before anything is read past them. */
 const MAX_FILES = 256;
 const MAX_BYTES = 8 * 1024 * 1024;
-const LOCK_FIELDS = ["target", "workspace", "agent_id", "revision_id", "package_sha256", "deployed_at"];
-/** The CLI's deploy record's lock (privateRecord): how often a change looks for it and how long it waits. */
-const LOCK_POLL_MS = 25;
-const LOCK_WAIT_MS = 10_000;
+const LOCK_FIELDS = ["target", "agent_id", "revision_id", "package_sha256", "deployed_at"];
 /** A hold's folder left empty this long (tryHold): its maker ended before naming itself. */
 const HOLD_EMPTY_MS = 60_000;
 
@@ -115,9 +114,16 @@ const filesBody = (files) => [...files].sort(([a], [b]) => (a < b ? -1 : a > b ?
   return Buffer.from(text, "utf8").equals(data) && Buffer.byteLength(JSON.stringify(text)) <= base64.length + 2 ? { path, encoding: "utf8", content: text } : { path, encoding: "base64", content: base64 };
 });
 
-/** A lock read back: its fields as written, or a refusal naming the file. */
-function lockOf(value, file, fail) {
-  if (value === undefined) return undefined;
+/** A lock read back from its file's text (none when there is no file): its fields as written, or a refusal naming the
+ *  file. */
+function lockOf(text, file, fail) {
+  if (text === undefined) return undefined;
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    value = null;
+  }
   const ok = value && typeof value === "object" && ["target", "agent_id", "revision_id"].every((field) => typeof value[field] === "string") && (value.package_sha256 === null || typeof value.package_sha256 === "string");
   if (!ok) throw fail(2, `${file} is not a deploy lock (target, agent_id, revision_id, package_sha256): fix or remove it.`);
   return Object.fromEntries(LOCK_FIELDS.map((field) => [field, value[field] ?? null]));
@@ -135,8 +141,9 @@ const writeAtomic = (file, text, mode) => {
  *  by an ended process of this machine is taken, and no live one is ever touched: the ended one's file is removed by
  *  its name alone, the folder only by whoever removed that file (rmdir keeps a folder that holds anything), and a
  *  release removes only its own. A folder left empty (its maker ended before naming itself) is taken once
- *  HOLD_EMPTY_MS old. The parent is made again if another command's cleanup removed it meanwhile. */
-function tryHold(held) {
+ *  HOLD_EMPTY_MS old. The parent is made again if another command's cleanup removed it meanwhile. `alive` says whether
+ *  a pid runs (cli.mjs). */
+function tryHold(held, alive) {
   const host = hostname();
   const me = `${host}-${process.pid}`;
   for (let tries = 0; tries < 5; tries++) {
@@ -193,24 +200,16 @@ function tryHold(held) {
 
 /** One command at a time per source (its hold: tryHold), so two deploys of one source never both read no lock and each
  *  make an agent. Another process's refuses the command (exit 2) with nothing sent. Answers its letting go. */
-function holdSource(held, fail) {
-  const { release, owner } = tryHold(held);
+function holdSource(held, cli) {
+  const { release, owner } = tryHold(held, cli.alive);
   if (release) return release;
-  throw fail(2, `Another agentrun deploy of this source is running${owner ? ` (process ${owner.pid}${owner.host === hostname() ? "" : ` on ${owner.host}`})` : ""}: try again once it ends, or remove ${held} if none is. Nothing was sent.`);
+  throw cli.fail(2, `Another agentrun deploy of this source is running${owner ? ` (process ${owner.pid}${owner.host === hostname() ? "" : ` on ${owner.host}`})` : ""}: try again once it ends, or remove ${held} if none is. Nothing was sent.`);
 }
-
-const alive = (pid) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
-};
 
 /** A folder's lock: DIR/.agentrun/deploy.json. Either a symbolic link is refused (nothing sent): the lock would be
  *  another folder's, which deploy, rollback and delete would then act on. */
-function folderLock(dir, fail) {
+function folderLock(dir, cli) {
+  const fail = cli.fail;
   for (const rel of [".agentrun", ".agentrun/deploy.json"]) {
     let linked = false;
     try {
@@ -224,7 +223,7 @@ function folderLock(dir, fail) {
   return {
     file,
     hold() {
-      const release = holdSource(`${file}.held`, fail);
+      const release = holdSource(`${file}.held`, cli);
       return () => {
         release();
         try {
@@ -234,86 +233,58 @@ function folderLock(dir, fail) {
         }
       };
     },
-    read() {
-      if (!existsSync(file)) return undefined;
-      let value;
-      try {
-        value = JSON.parse(readFileSync(file, "utf8"));
-      } catch {
-        value = null;
-      }
-      return lockOf(value, file, fail);
-    },
+    read: () => lockOf(existsSync(file) ? readFileSync(file, "utf8") : undefined, file, fail),
     write: (lock) => writeAtomic(file, `${JSON.stringify(lock, null, 2)}\n`),
     remove: () => rmSync(file, { force: true }),
   };
 }
 
-/** The CLI's own deploy record, its config's deploy.json (0600): an install agent's lock per `<install's address> <agent
- *  id>`, and under `targets` each address a deploy was sent to from here (a folder lock's target is trusted by it). A
- *  change that waits for another's says so on `io`. */
-function privateRecord(env, cli, fail, io) {
-  const file = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentrun", "deploy.json");
-  const all = () => {
-    const text = cli.privateFile(file);
-    if (text === undefined) return {};
-    try {
-      const value = JSON.parse(text);
-      if (value && typeof value === "object" && !Array.isArray(value) && (value.targets === undefined || (Array.isArray(value.targets) && value.targets.every((one) => typeof one === "string")))) return value;
-    } catch {
-      // refused below
-    }
-    throw fail(2, `${file} is not the CLI's deploy record (an object of locks by install and agent, and its targets): fix or remove it.`);
-  };
-  // Each change is read and written holding `<file>.lock` (tryHold), so two CLIs deploying at the same time never write
-  // back a record the other has changed since. A change waits for another's.
-  const update = (change) => {
-    const held = `${file}.lock`;
-    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-    let got;
-    for (let waited = 0; !(got = tryHold(held)).release; waited += LOCK_POLL_MS) {
-      if (waited >= LOCK_WAIT_MS) throw fail(1, `Another deploy holds ${file} (${held}${got.owner ? `, process ${got.owner.pid} on ${got.owner.host}` : ""}): try again once it ends, or remove ${held} if none is running.`);
-      if (waited === 0 && io) say(io, `Waiting for another agentrun deploy${got.owner ? ` (process ${got.owner.pid}${got.owner.host === hostname() ? "" : ` on ${got.owner.host}`})` : ""} to save ${file}.`);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_POLL_MS);
-    }
-    try {
-      writeAtomic(file, `${JSON.stringify(change(all()), null, 2)}\n`, 0o600);
-    } finally {
-      got.release();
-    }
-  };
+/** The CLI's own deploy files, in its config folder (made 0700): each install agent's lock (installLock), and under
+ *  deploy-targets/ an empty file for each address a deploy was sent to from here, named by the address's sha256 (a
+ *  folder lock's target is trusted by it: targetFor). Each is a file of its own written whole, so two CLIs deploying at
+ *  once never write back what the other changed. Each is read as a private file of this user's (cli.mjs privateFile). */
+function cliFiles(env, cli) {
+  const dir = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentrun");
+  const marker = (target) => join(dir, "deploy-targets", createHash("sha256").update(target).digest("hex"));
   return {
-    file,
-    all,
-    update,
-    knows: (target) => (all().targets ?? []).includes(target),
-    learn: (target) => update((record) => ((record.targets ?? []).includes(target) ? record : { ...record, targets: [...(record.targets ?? []), target] })),
+    dir,
+    knows: (target) => cli.privateFile(marker(target)) !== undefined,
+    learn(target) {
+      mkdirSync(dirname(marker(target)), { recursive: true, mode: 0o700 });
+      try {
+        writeFileSync(marker(target), "", { flag: "wx", mode: 0o600 });
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+      }
+    },
   };
 }
 
-/** An install agent's lock, in the CLI's own record (privateRecord). */
-function installLock(env, cli, source, agentId, fail, io) {
-  const record = privateRecord(env, cli, fail, io);
-  const key = `${source} ${agentId}`;
+/** An install agent's lock: the CLI's own file for `<install's address> <agent id>`, deploy.<hash>.json (0600), held by
+ *  deploy.<hash>.held beside it. */
+function installLock(env, cli, source, agentId) {
+  const { dir } = cliFiles(env, cli);
+  const name = `deploy.${createHash("sha256").update(`${source} ${agentId}`).digest("hex").slice(0, 16)}`;
+  const file = join(dir, `${name}.json`);
   return {
-    file: record.file,
+    file,
     hold() {
-      mkdirSync(dirname(record.file), { recursive: true, mode: 0o700 });
-      return holdSource(join(dirname(record.file), `deploy.${createHash("sha256").update(key).digest("hex").slice(0, 16)}.held`), fail);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      return holdSource(join(dir, `${name}.held`), cli);
     },
-    read: () => lockOf(record.all()[key], record.file, fail),
-    write: (lock) => record.update((all) => ({ ...all, [key]: lock })),
-    remove: () => record.update(({ [key]: _, ...rest }) => rest),
+    read: () => lockOf(cli.privateFile(file), file, cli.fail),
+    write: (lock) => writeAtomic(file, `${JSON.stringify(lock, null, 2)}\n`, 0o600),
+    remove: () => rmSync(file, { force: true }),
   };
 }
 
 /** Where a deploy may send this CLI's key: an address `--to` names, else the lock's target. An install agent's lock is
  *  the CLI's own; a folder's comes with the folder, so one from elsewhere can name any address: its target is used only
- *  where this CLI has deployed before (privateRecord `targets`) or it is AgentRun cloud, else `--to` must name it. */
+ *  where this CLI has deployed before (cliFiles `knows`) or it is AgentRun cloud, else `--to` must name it. */
 function targetFor({ values, env, cli }, from, lock, fail) {
   if (values.to !== undefined) return toOf(cli, values.to, env);
   if (lock === undefined || from.kind !== "folder") return lock?.target;
-  if (lock.target === toOf(cli, "cloud", env) || privateRecord(env, cli, fail).knows(lock.target)) return lock.target;
+  if (lock.target === toOf(cli, "cloud", env) || cliFiles(env, cli).knows(lock.target)) return lock.target;
   throw fail(2, `${from.lock.file} names ${lock.target} as its target, an address this CLI has not deployed to: pass --to ${lock.target} to deploy there. Nothing was sent (a lock comes with its folder, and the deploy sends your API key to its target).`);
 }
 
@@ -394,17 +365,17 @@ async function sourceOf({ values, args, env, io, cli, releases }, fail) {
   const dir = resolve(given);
   if (existsSync(dir) && statSync(dir).isDirectory()) {
     if (values["pause-source"]) throw fail(2, "--pause-source is for an agent deployed from an install (agentrun deploy AGENT_ID): a folder has no schedules running anywhere.");
-    // A lock this CLI writes teaches it the target (privateRecord), so the next deploy of the folder needs no --to.
-    const lock = folderLock(dir, fail);
+    // A lock this CLI writes teaches it the target (cliFiles), so the next deploy of the folder needs no --to.
+    const lock = folderLock(dir, cli);
     releases.push(lock.hold());
-    const write = (written) => (lock.write(written), privateRecord(env, cli, fail, io).learn(written.target));
+    const write = (written) => (lock.write(written), cliFiles(env, cli).learn(written.target));
     return { kind: "folder", dir, lock: { ...lock, write }, files: () => readFolder(dir, fail) };
   }
   if (/[\\/]/.test(given) || given.startsWith(".")) throw fail(2, `${given} is not a folder: deploy takes a package folder or an agent id of this install.`);
   // The install the agent is on: --base-url, else as every command finds it; never with AGENTRUN_API_KEY, which is the
   // target's token here.
   const source = remote(cli, values, { ...env, AGENTRUN_API_KEY: "" }, io, undefined);
-  const lock = installLock(env, cli, source.base, given, fail, io);
+  const lock = installLock(env, cli, source.base, given);
   releases.push(lock.hold());
   return {
     kind: "agent",
@@ -472,7 +443,7 @@ async function deploy(ctx) {
     const { status, value: agent } = await to.call("GET", `/agents/${enc(lock.agent_id)}`, undefined, [404, 410]);
     if (status !== 200) say(io, `The agent ${lock.agent_id} is gone from ${to.base}: deploying it anew.`);
     else {
-      if (agent.revision !== lock.revision_id && !values.force) throw fail(2, `The agent ${lock.agent_id} on ${to.base} was edited in the cloud; --force to replace it with this package (its current revision is not the one ${from.lock.file} names).`);
+      if (agent.revision !== lock.revision_id && !values.force) throw fail(2, `The agent ${lock.agent_id} was edited on ${to.base} since this lock was written; --force to replace it with this package (its current revision is not the one ${from.lock.file} names).`);
       if (agent.revision === lock.revision_id && lock.package_sha256 === sha && parameters === undefined) {
         say(io, `This package is up to date on ${to.base}: the agent ${lock.agent_id}, revision ${lock.revision_id}. Nothing was sent.`);
         if (from.kind === "agent") await sourceSchedules(io, from, values);
@@ -508,7 +479,7 @@ async function deploy(ctx) {
   // answer. The lock then names no package, so the next deploy of the same files applies again and makes it once it can.
   const there = new Set((applied.triggers ?? []).map((one) => one.name));
   const unmade = plan.triggers.filter((one) => one.action !== "remove" && !there.has(one.name)).map((one) => one.name);
-  const written = { target: to.base, workspace: null, agent_id: applied.agent_id, revision_id: applied.revision_id, package_sha256: unmade.length ? null : sha, deployed_at: new Date().toISOString() };
+  const written = { target: to.base, agent_id: applied.agent_id, revision_id: applied.revision_id, package_sha256: unmade.length ? null : sha, deployed_at: new Date().toISOString() };
   from.lock.write(written);
   for (const warning of applied.warnings ?? []) say(io, `Warning (${warning.field}): ${warning.message}`);
   if (unmade.length) say(io, `Not made on ${to.base} yet: ${unmade.join(", ")}. Until they are, the lock names no package, so the next deploy applies again (keeping the revision when nothing else changed).`);
@@ -530,8 +501,7 @@ async function locked(ctx) {
 async function rollback(ctx) {
   const { io, cli } = ctx;
   const { from, lock, to } = await locked(ctx);
-  const { value: agent } = await to.call("GET", `/agents/${enc(lock.agent_id)}`);
-  // Every page: the previous revision may be on any of them.
+  // Every page: the current revision and the one before it may be on any of them.
   const revisions = [];
   for (let cursor; ; ) {
     const { value: listed } = await to.call("GET", `/agents/${enc(lock.agent_id)}/revisions${cursor ? `?cursor=${enc(cursor)}` : ""}`);
@@ -539,7 +509,7 @@ async function rollback(ctx) {
     if (typeof listed.next_cursor !== "string" || !listed.next_cursor || listed.next_cursor === cursor) break;
     cursor = listed.next_cursor;
   }
-  const current = revisions.find((one) => one.revision === agent.revision);
+  const current = revisions.find((one) => one.current);
   const previous = revisions.filter((one) => current && one.version < current.version).sort((a, b) => b.version - a.version)[0];
   if (!previous) throw cli.fail(2, `The agent ${lock.agent_id} on ${to.base} has no revision before its current one: nothing to roll back to.`);
   await to.call("POST", `/agents/${enc(lock.agent_id)}/current`, { revision: previous.revision });
@@ -549,7 +519,7 @@ async function rollback(ctx) {
   const written = { ...lock, target: to.base, revision_id: previous.revision, package_sha256: null, deployed_at: new Date().toISOString() };
   from.lock.write(written);
   say(io, `Rolled back: the agent ${lock.agent_id} on ${to.base} runs revision ${previous.version} again (it was on ${current.version}).`);
-  io.stdout.write(`${JSON.stringify({ status: "rolled_back", target: to.base, agent_id: lock.agent_id, revision_id: previous.revision, version: previous.version, from_revision_id: agent.revision })}\n`);
+  io.stdout.write(`${JSON.stringify({ status: "rolled_back", target: to.base, agent_id: lock.agent_id, revision_id: previous.revision, version: previous.version, from_revision_id: current.revision })}\n`);
   return 0;
 }
 
