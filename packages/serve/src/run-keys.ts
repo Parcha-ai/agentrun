@@ -1,30 +1,29 @@
 // A run's own tool keys: `keys` on a run's start (POST /agents/{id}/runs, POST /runs) or on a message, by name, for the tool
 // keys its revision declares (declaredKeys). They are taken out of the body before anything reads it, as model_key is
 // (server.ts handedLaunchSecrets), sealed with the run's launch secrets (store/seal.ts sealRunLaunch), opened by its
-// claim for its tools alone (runner/claim-secrets.ts), and erased with the rest when the run's turn ends. Never stored,
-// logged or answered: only their names are read before the seal, for the checks a start makes.
+// claim for its tools alone (runner/claim-secrets.ts), and erased with the rest when the run's turn ends. Stored only
+// sealed with the run's launch, until its turn ends; never logged or answered: only their names are read before the seal,
+// for the checks a start makes.
 //
-// AGENTRUN_RUN_KEYS=1 (runKeysFrom): an install whose runs bring the tool keys it does not hold. A template's apply then
-// makes its agent though a tool key the template declares is not set here, and says so in a warning; a run of that
-// revision that does not carry the key is refused (409 agent_not_runnable, at keys.<NAME>). Off, nothing changes.
+// AGENTRUN_RUN_KEYS=1 (api-only.ts switchFrom): an install whose runs bring the tool keys it does not hold. A template's
+// apply then makes its agent though a tool key the template declares is not set here, and says so in a warning; a run of
+// that revision that does not carry the key is refused (409 agent_not_runnable, at keys.<NAME>), and no trigger is made
+// whose firings could not carry it (firingsOwe). Off, nothing changes.
 import { ApiError, type InputIssue } from "./errors.js";
 import { handedSecretOf } from "./handed-secret.js";
 import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
 import type { Revision } from "./agent-rows.js";
-import { needsOf, type RunNeeds } from "./run-secrets.js";
+import { needsOf, type RunNeeds, unlockedFields } from "./run-secrets.js";
 import type { TemplatePackage } from "./store/store.js";
-import { TOOL_FIELDS, TOOL_KEYS, unlocksTool } from "./tool-keys.js";
+import { TOOL_FIELDS } from "./tool-keys.js";
 import { isObject } from "./validate.js";
-import { RUN_KEYS_ENV } from "./run-keys-env.js";
-
-export { RUN_KEYS_ENV, runKeysFrom } from "./run-keys-env.js";
+import { RUN_KEYS_ENV } from "./api-only.js";
 
 /** A run's own tool keys, by name. */
 export type RunKeys = Readonly<Record<string, string>>;
 
-/** The tool keys a run of `tools` reads: each field of a tool key row (tool-keys.ts TOOL_KEYS) that unlocks one of them. */
-export const keysOfTools = (tools: readonly string[]): string[] =>
-  [...new Set(TOOL_KEYS.filter((row) => row.kind === "tool" && row.unlocks.some((unlock) => tools.some((name) => unlocksTool(unlock, name)))).flatMap((row) => row.fields as readonly string[]))];
+/** The tool keys a run of `tools` reads (run-secrets.ts unlockedFields, over tool-keys.ts TOOL_KEYS). */
+export const keysOfTools = (tools: readonly string[]): string[] => unlockedFields(tools);
 
 /** The tool keys a template's apply made `revision` with (its package's `secrets`, kept on the revision): the ones a run
  *  can carry. A model key is not one. */

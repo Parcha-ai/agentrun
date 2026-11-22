@@ -382,8 +382,6 @@ export function dataOnly(value: unknown, seen = new Set<object>()): unknown {
   }
 }
 
-export { cutDeep };
-
 // ---------------------------------------------------------------------------------------------------------------------
 // The store, as the run's process reads it: bound to the claim.
 

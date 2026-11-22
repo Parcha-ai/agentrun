@@ -16,8 +16,7 @@ import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
-import { apiOnlyFrom } from "./api-only.js";
-import { runKeysFrom } from "./run-keys-env.js";
+import { API_ONLY_ENV, RUN_KEYS_ENV, switchFrom } from "./api-only.js";
 import { harnessModulesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
@@ -513,8 +512,8 @@ process.on("SIGTERM", signalled);
 let apiOnly: boolean;
 let runKeys: boolean;
 try {
-  apiOnly = apiOnlyFrom(process.env);
-  runKeys = runKeysFrom(process.env);
+  apiOnly = switchFrom(process.env, API_ONLY_ENV, "serve the run API only", "the whole server");
+  runKeys = switchFrom(process.env, RUN_KEYS_ENV, "each run brings the tool keys this server does not hold");
 } catch (error) {
   console.error(`${(error as Error).message}\n\n${USAGE}`);
   process.exit(2);
