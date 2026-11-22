@@ -754,7 +754,6 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/settings\/model-gateway$/, name: "deleteModelGateway" },
   { method: "POST", pattern: /^\/settings\/model-gateway\/test$/, name: "testModelGateway" },
   { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
-  // The saved servers' names alone, for a host that builds runs from them (served API-only too: api-only.ts).
   { method: "GET", pattern: /^\/settings\/mcp-server-names$/, name: "listMcpServerNames" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/tools$/, name: "listComposioTools" },
@@ -5462,7 +5461,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
       case "listMcpServers":
         return send(res, 200, await mcpServers.list());
-      // Names only: no URL, auth type, header, tool or Composio record, so a token that may not read the list may read this.
+      // Names only: what the API-only profile serves in place of the list.
       case "listMcpServerNames":
         return send(res, 200, { names: (await listMcpServers(store)).map((row) => row.name).sort() });
       case "getMcpServer":
