@@ -157,9 +157,22 @@ test("in Chrome: a signed-in session is captured, the browser is released, and a
   const spec = (tag) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 120, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: { run: "vault", label: tag } });
   const signal = () => AbortSignal.timeout(60_000);
   const attachedLink = async (ref) => connectCdp((await provider.attach(ref, signal())).sdkCdpUrl);
+  // A page is used once its own document has loaded: the load lifecycle event of this navigation (its loaderId), never
+  // a fixed wait. A script run on the blank page before the navigation commits sets no cookie and no storage at `url`.
   const openPage = async (link, url) => {
-    const { targetId } = await link.send("Target.createTarget", { url }); const { sessionId } = await link.send("Target.attachToTarget", { targetId, flatten: true });
-    await new Promise((resolve) => setTimeout(resolve, 900)); return { targetId, eval: async (expression) => (await link.send("Runtime.evaluate", { expression, returnByValue: true }, sessionId)).result.value };
+    const { targetId } = await link.send("Target.createTarget", { url: "about:blank" }); const { sessionId } = await link.send("Target.attachToTarget", { targetId, flatten: true });
+    await link.send("Page.enable", {}, sessionId); await link.send("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId);
+    const loads = new Set(); let loaderId; let done;
+    const loaded = new Promise((resolve) => { done = resolve; });
+    const off = link.on((event) => {
+      if (event.sessionId !== sessionId || event.method !== "Page.lifecycleEvent" || event.params?.name !== "load") return;
+      loads.add(event.params.loaderId); if (event.params.loaderId === loaderId) done();
+    });
+    const navigated = await link.send("Page.navigate", { url }, sessionId);
+    assert.equal(navigated.errorText, undefined, `${url} opened`);
+    loaderId = navigated.loaderId; if (loads.has(loaderId)) done();
+    await loaded; off();
+    return { targetId, eval: async (expression) => (await link.send("Runtime.evaluate", { expression, returnByValue: true }, sessionId)).result.value };
   };
 
   // session A: sign in the way a site does, with a persistent cookie, an httpOnly session cookie, and local storage on two origins
