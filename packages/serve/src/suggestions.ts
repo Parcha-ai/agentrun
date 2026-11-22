@@ -47,7 +47,9 @@ const SHA = /^[0-9a-f]{40}$/;
 const ENUM_VALUE = /^[A-Za-z0-9][A-Za-z0-9 _.,:+-]{0,39}$/;
 const INPUT_TYPES = ["string", "number", "integer", "boolean"] as const;
 const OUTPUT_TYPES = [...INPUT_TYPES, "string_list"] as const;
-const LANGUAGES = { typescript: [".ts", ".mts", ".cts"], javascript: [".js", ".mjs", ".cjs"], python: [".py"], other: [".md"] } as const;
+// JavaScript names its module system by its extension: a .js file is ESM or CommonJS by the nearest package.json, which
+// the client cannot see, so it is never one.
+const LANGUAGES = { typescript: [".ts", ".mts", ".cts"], javascript: [".mjs", ".cjs"], python: [".py"], other: [".md"] } as const;
 const TOOLS = ["web_search", "web_fetch"] as const;
 const TIERS = ["fast", "balanced", "strong"] as const;
 const IMPACTS = ["high", "medium", "low"] as const;

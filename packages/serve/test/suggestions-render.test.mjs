@@ -33,6 +33,9 @@ test("the check keeps paths inside the repository, the client outside .github/ a
   assert.match(at({ path: ".agentrun/agents/x/agent.ts" }), /under \.github\/, \.git or \.agentrun\/agents\//);
   assert.match(at({ path: ".git/hooks/pre-commit.ts" }), /\.git/);
   assert.match(at({ path: "src/x.py" }), /does not end in \.ts or \.mts or \.cts for typescript/);
+  // A .js file's module system is the repository's package.json's: the client says which it is by its extension alone.
+  assert.match(at({ language: "javascript", path: "src/x.js" }), /does not end in \.mjs or \.cjs for javascript/);
+  for (const path of ["src/x.mjs", "src/x.cjs"]) assert.equal(typeof at({ language: "javascript", path }), "object", path);
   assert.match(checkSuggestion({ ...base(), evidence: [{ path: "../secret", line: 1, quote: "x" }] }), /evidence/);
   const callSite = (path) => checkSuggestion({ ...base(), integration: { ...base().integration, call_site: { ...base().integration.call_site, path } } });
   assert.equal(typeof callSite("src/a\u2028process.exit(7);//.ts"), "string", "a call site's path that ends a comment is refused");

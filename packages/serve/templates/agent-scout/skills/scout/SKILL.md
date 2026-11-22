@@ -82,6 +82,7 @@ The pull request adds a small client file the app calls; the app's own code is n
   `other` (any other language: the pull request then explains the HTTP call instead).
 - `integration.path`: a new file's path for the client, beside the code that will call it, named after the key
   (`src/support/ticket-triage-agent.ts`, `app/services/ticket_triage_agent.py`). It must not exist yet in `repo/`, must
-  not be under `.github/`, and uses the language's extension (`.ts`, `.mjs`, `.py`; for `other`, `.md`).
+  not be under `.github/`, and uses the language's extension (`.ts`, `.mts` or `.cts`; `.mjs` for an app that imports, `.cjs` for one that
+  requires, never `.js`; `.py`; for `other`, `.md`).
 - `integration.call_site`: `{path, line, note}`: where the app would call the client (the function from the evidence),
   and in one or two sentences what it passes and what it does with the answer.
