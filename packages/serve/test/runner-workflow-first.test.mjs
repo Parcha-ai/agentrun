@@ -912,9 +912,13 @@ test("held on give-backs: a revise whose draft failed at the held attempt is ask
   const bar = { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 0, agreed: 0, alone: 0, of: [] };
   const held = { workflow: "answer", digest: DIGEST, at: new Date(at).toISOString(), decided: "hold", via: "sdk", reason: "the connected agent gave back 5 reserved native turns in a row", check: { ...bar, released: 5 } };
   const failed = { workflow: "answer", digest: draftFailedDigest("past-5"), at: new Date(at + 1_000).toISOString(), decided: "hold", reason: "its draft failed its checks: workflow: no root. It is not promoted; the next due run compiles it once more", check: bar };
-  const past = pastRuns({ served: 0, byHand: 19 });
+  // Completed runs by hand, as the store lists them (outcome null: compile_after counts them, learn/compile.ts agentRun).
+  const byHand = (n) => pastRuns({ served: 0, byHand: n }).map((row) => ({ ...row, outcome: null }));
+  const past = byHand(19);
   const compiledBy = (runId, createdAt) => ({ runId, agentId: "agent-1", turn: null, createdAt, proposal: { state: "dropped", reason: "checker", detail: "d", compiled: { workflow: "answer", attempts: [{ ok: false, errors: ["workflow: no root"] }] }, draft_errors: ["workflow: no root"] } });
   const asksRevision = (gateway) => gateway.requests.some((request) => /One more turn: revise your learned workflow `answer`/.test(textOf(request.body)));
+  const early = await piRun(t, { promotions: [held, failed], past: byHand(18), keptBefore: [compiledBy("past-5", at + 2_000)] });
+  assert.ok(!asksRevision(early.gateway), "19 runs since the hold, the ending one counted: not yet");
   const again = await piRun(t, { promotions: [held, failed], past, keptBefore: [compiledBy("past-5", at + 2_000)] });
   assert.ok(asksRevision(again.gateway), "the failed revise's own learning, kept after its record, is not the once-more ask");
   const asked = await piRun(t, { promotions: [held, failed], past, keptBefore: [compiledBy("past-4", at + 3_000), compiledBy("past-5", at + 2_000)] });
