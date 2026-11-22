@@ -73,7 +73,7 @@ export function needsOf(t: TemplateView, { secrets = true, mcp = true } = {}): [
   if (mcp && t.mcp.length) out.push(["MCP", t.mcp.map((m) => `${m.toolkit} (${SOURCE_LABEL[m.source]}${m.required ? "" : ", optional"})`).join(", ")]);
   if (t.triggers.length) out.push(["Triggers", count(t.triggers.length, "trigger")]);
   if (t.budget?.per_run_usd) out.push(["Budget", `${dollars(t.budget.per_run_usd)} a run`]);
-  // A dollar cap can't stop a free model's run: the package's limit on its requests to one, under the server's.
+  // A dollar cap can't stop a free model, so the package may cap its requests (the server's limit still holds).
   if (t.budget?.max_requests) out.push(["Free-model requests", `at most ${t.budget.max_requests} a run`]);
   if (t.harness?.length) out.push(["Harness", t.harness.join(", ")]);
   if (t.model) out.push(["Model", `${t.model.tier}${t.model.prefer ? `, ${t.model.prefer} first` : ""}`]);

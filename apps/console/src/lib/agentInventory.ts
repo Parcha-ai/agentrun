@@ -3,7 +3,7 @@ import { backendSdkLabel, backendSdkOf } from "./backendSdk";
 import { cliLearningLabel, cliLearningOf } from "./cliLearning";
 import { nativeReadinessOf, nativeRuntimeLabel } from "./native";
 import { matchesFilter } from "./filter";
-import { observedSearchText, type ObservedSession } from "./observations";
+import { observedSearchTexts, type ObservedSession } from "./observations";
 
 /** An agent's source changes its controls, not whether it belongs in the inventory. */
 export function agentInventory(agents: readonly Agent[], sessions: readonly ObservedSession[], { archived = false, query = "" }: { archived?: boolean; query?: string } = {}) {
@@ -13,10 +13,10 @@ export function agentInventory(agents: readonly Agent[], sessions: readonly Obse
   // Only an explicit source association can replace a learning profile's separate card. A profile with no retained
   // linked session must remain reachable, including while source telemetry has not been read or is unavailable.
   const represented = new Set(latest.map((session) => session.learning?.agent_id).filter((id) => id && profiles.has(id)));
-  const shownAgents = listed.filter((agent) => !represented.has(agent.agent_id) && matchesFilter(query, agentSearchText(agent)));
+  const shownAgents = listed.filter((agent) => !represented.has(agent.agent_id) && matchesFilter(query, ...agentSearchTexts(agent)));
   const shownSessions = latest.filter((session) => {
     const profile = session.learning?.agent_id ? profiles.get(session.learning.agent_id) : undefined;
-    return matchesFilter(query, observedSearchText(session), profile && agentSearchText(profile));
+    return matchesFilter(query, ...observedSearchTexts(session), ...(profile ? agentSearchTexts(profile) : []));
   });
   return { agents: shownAgents, sessions: shownSessions, count: shownAgents.length + shownSessions.length };
 }
@@ -32,9 +32,10 @@ export function latestAgentSessions(sessions: readonly ObservedSession[]): Obser
   return [...latest.values()];
 }
 
-function agentSearchText(agent: Agent): string {
+/** What an agent is found by (matchesFilter drops the empty ones and lowercases). */
+function agentSearchTexts(agent: Agent): (string | null | undefined)[] {
   const native = nativeReadinessOf(agent), cli = cliLearningOf(agent.definition), sdk = backendSdkOf(agent.definition);
   return [agent.definition.name, agent.definition.description, agent.agent_id, agent.definition.harness, agent.definition.model,
     native?.project, native?.machine_id, native?.model, native && nativeRuntimeLabel(native.runtime),
-    cli?.project, cli && cliLearningLabel(cli.runtime), sdk && backendSdkLabel(sdk)].filter(Boolean).join(" ").toLowerCase();
+    cli?.project, cli && cliLearningLabel(cli.runtime), sdk && backendSdkLabel(sdk)];
 }
