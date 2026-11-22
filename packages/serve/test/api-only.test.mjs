@@ -1,9 +1,9 @@
 // The API-only profile (api-only.ts, AGENTRUN_API_ONLY=1): the server serves the run routes and a deploy's routes alone
 // (api-only-deploy.test.mjs), for a caller's backend, and refuses every other address with a 404 before the request is
 // read further: the console, the store page's data, sign-in, setup, settings writes, the MCP endpoint, triggers and their
-// webhook hooks, the agents list and their writes, and a live view's WebSocket. It has no owner. Its MCP servers are
-// listed, read, saved (a Composio server by api_key_env, a per_run one) and deleted by the token, their previews,
-// refreshes and sign-ins refused (api-only-mcp.test.mjs). The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
+// webhook hooks, the agents list and their writes, and a live view's WebSocket. It has no owner. Its token saves a
+// Composio server by api_key_env and deletes a server, and lists the servers' names (GET /settings/mcp-server-names);
+// their list, read, generic save, previews, refreshes and sign-ins are refused (api-only-mcp.test.mjs). The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
 // writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
 // run's learning) and its reset (DELETE learning), its learning's other writes and its own texts refused. A run's purge
 // (DELETE /runs/{id}) is served for a run of an agent its backend made (an inline run's, external), and refused with the
@@ -70,8 +70,8 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     // archive (and unarchive) before its delete.
     ["POST", "/v2/templates/x/apply"], ["GET", "/v2/agents/a1"], ["HEAD", "/v2/agents/a1"], ["GET", "/v2/agents/a1/revisions"],
     ["POST", "/v2/agents/a1/current"], ["POST", "/v2/agents/a1/archive"], ["POST", "/v2/agents/a1/unarchive"],
-    // The MCP servers a deploy's agents need: listed, read, saved (Composio's preset, a per_run URL server) and deleted.
-    ["GET", "/v2/settings/mcp-servers"], ["GET", "/v2/settings/mcp-servers/x"], ["HEAD", "/v2/settings/mcp-servers/x"], ["PUT", "/v2/settings/mcp-servers/x"],
+    // The MCP servers a deploy's agents need: a Composio server saved through the preset, and a server deleted. Their
+    // names are listed by GET /settings/mcp-server-names, above.
     ["PUT", "/v2/settings/mcp-servers/x/composio"], ["DELETE", "/v2/settings/mcp-servers/x"],
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
   for (const [method, raw] of [
@@ -80,6 +80,9 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["PUT", "/v2/settings/tool-keys/monid"], ["PUT", "/v2/settings/tools"], ["PUT", "/v2/settings/webhook"], ["GET", "/v2/settings/tools"],
     ["POST", "/v2/settings/mcp-servers/preview"], ["POST", "/v2/settings/mcp-servers/x/refresh"], ["POST", "/v2/settings/mcp-servers/composio/tools"],
     ["POST", "/v2/settings/mcp-servers/x/oauth/start"], ["GET", "/v2/settings/mcp-servers/x/composio/events"], ["PUT", "/v2/settings/mcp-servers/oauth/private-hosts"],
+    // No list or read of the MCP servers (their names route is the listing), and no save of a server at an address or
+    // with headers of the caller's own.
+    ["GET", "/v2/settings/mcp-servers"], ["GET", "/v2/settings/mcp-servers/x"], ["HEAD", "/v2/settings/mcp-servers/x"], ["PUT", "/v2/settings/mcp-servers/x"],
     ["POST", "/v2/mcp"], ["GET", "/v2/triggers"], ["POST", "/v2/triggers"], ["POST", "/v2/hooks/trg_1"],
     ["GET", "/v2/agents"], ["POST", "/v2/agents"], ["POST", "/v2/runs/run_1/approvals/a"], ["GET", "/v2/runs/run_1/browser"], ["POST", "/v2/runs/run_1/kill"],
     ["GET", "/v2/runs/run_1/browser/live/v/x"], ["POST", "/v2/runs/run_1/computer/live/v/x"], ["POST", "/v2/runs/run_1/computer/call"], ["POST", "/v2/runs/run_1/computer/release"],
@@ -377,6 +380,6 @@ test("off by default: the same routes are served without the profile", async (t)
 
 test("the banner says the server is API-only in place of the console's link", () => {
   const lines = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: "x".repeat(32), source: "env", apiOnly: true });
-  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run and deploy routes and the MCP servers are served; the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are refused."), lines.join("\n"));
+  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run and deploy routes, the MCP server names, a Composio server's save and a server's delete are served; the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are refused."), lines.join("\n"));
   assert.ok(!lines.some((line) => line.startsWith("Open ")), "no console link");
 });
