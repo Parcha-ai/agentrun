@@ -150,6 +150,11 @@ export interface components {
       needs: "key" | "model" | null;
       reason: string | null;
     };
+    store_schema?: {
+      version: number | null;
+      runner_floor: number | null;
+      known: number;
+    };
     learning: {
       pending: true;
       approve: boolean;
@@ -314,6 +319,11 @@ export interface components {
     output_schema?: components["JsonObject"];
     workflow?: components["JsonObject"];
     max_cost_usd?: number;
+    cli_learning?: {
+      runtime: "codex" | "claude-code";
+      connection_id: string;
+      project: string;
+    };
     sdk?: {
       runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
     } | {
@@ -499,6 +509,7 @@ export interface components {
       repick_max_chars?: number;
     };
     checkout?: "pull_request" | "none";
+    max_requests?: number;
   };
   Effort: "low" | "medium" | "high";
   Error: {
@@ -852,6 +863,23 @@ export interface components {
         cost_usd?: number | null;
       } | null;
     };
+    cli_learning?: {
+      runtime: "codex-cli" | "claude-code-cli";
+      session_id: string;
+      turn_id: string;
+      model: string | null;
+      learning_revision: string | null;
+      seed_observed: boolean;
+      policy_complete: boolean;
+      evidence_complete: boolean;
+      usage: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      } | null;
+    };
     native?: {
       runtime: string;
       project: string;
@@ -887,6 +915,8 @@ export interface components {
     kind: "agentic" | "workflow";
     archived_at: string | null;
     labels?: Record<string, string>;
+    stopped_for?: "budget" | null;
+    budget_refused_calls?: number;
     approvals?: "ask" | "never";
     last_progress_at?: string | null;
     recordings?: {
@@ -923,7 +953,7 @@ export interface components {
     };
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
       detail: string | null;
       at: string;
       workflows?: {
@@ -949,6 +979,7 @@ export interface components {
       call_id: string;
       args_preview: string;
       summary?: string;
+      asks_because?: string;
       requested_at: string;
       price?: number | "not metered" | "priced by usage";
       destructive?: true;
@@ -1110,6 +1141,23 @@ export interface components {
         cost_usd?: number | null;
       } | null;
     };
+    cli_learning?: {
+      runtime: "codex-cli" | "claude-code-cli";
+      session_id: string;
+      turn_id: string;
+      model: string | null;
+      learning_revision: string | null;
+      seed_observed: boolean;
+      policy_complete: boolean;
+      evidence_complete: boolean;
+      usage: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      } | null;
+    };
     native?: {
       runtime: string;
       project: string;
@@ -1145,11 +1193,13 @@ export interface components {
     kind: "agentic" | "workflow";
     archived_at: string | null;
     labels?: Record<string, string>;
+    stopped_for?: "budget" | null;
+    budget_refused_calls?: number;
     effort?: components["Effort"];
     error?: components["RunError"] | null;
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
       detail: string | null;
       workflows?: {
         file: string;
@@ -1174,6 +1224,7 @@ export interface components {
       call_id: string;
       args_preview: string;
       summary?: string;
+      asks_because?: string;
       requested_at: string;
       price?: number | "not metered" | "priced by usage";
       destructive?: true;
@@ -1331,7 +1382,7 @@ export interface components {
     tool_result_text?: string | null;
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
       detail: string | null;
     };
   };
@@ -1398,8 +1449,15 @@ export interface operations {
       template: string;
       version: string;
       agent_id: string;
+      revision_version: number;
+      agent_change: "made" | "updated" | "unchanged";
       servers: Record<string, string | null>;
-      trigger_ids: string[];
+      triggers: {
+        trigger_id: string;
+        name: string;
+        kind: "schedule" | "webhook" | "github" | "composio" | "email" | "feed";
+        enabled: boolean;
+      }[];
       warnings: components["InputIssue"][];
       webhook_secrets?: {
         trigger_id: string;
@@ -1462,6 +1520,71 @@ export interface operations {
   cancelRun: {
     body: never;
     answer: components["CancelResult"];
+  };
+  cliLearningEvents: {
+    body: {
+      sequence: number;
+      events: ({
+        type: "message";
+        role: "user" | "assistant";
+        text: string;
+      } | {
+        type: "text";
+        text: string;
+      } | {
+        type: "session";
+        session_id: string;
+      } | {
+        type: "workflow_check";
+        id: string;
+        digest: string;
+        outcome: "answered" | "handed_back" | "failed" | "skipped_write";
+        answer?: string;
+        reason?: string;
+        skipped?: {
+          tool: string;
+          unmarked?: true;
+        };
+        fresh_reads?: number;
+      } | {
+        type: "tool";
+        id: string;
+        name: string;
+        status: "started" | "completed" | "failed";
+        input?: unknown;
+        output?: unknown;
+        parent_tool_use_id?: string;
+      })[];
+    };
+    answer: {
+      accepted: true;
+    };
+  };
+  completeCliLearningRun: {
+    body: {
+      status: "completed" | "failed" | "cancelled";
+      answer: string;
+      error?: string;
+      model?: string;
+      session_id?: string;
+      usage?: {
+        input_tokens?: number | null;
+        output_tokens?: number | null;
+        cache_read_tokens?: number | null;
+        cache_write_tokens?: number | null;
+        cost_usd?: number | null;
+      };
+      evidence_complete?: boolean;
+      seed_observed?: boolean;
+      seed_revision?: string;
+      source_policy?: {
+        instructions: string;
+        complete: boolean;
+      };
+    };
+    answer: {
+      accepted: true;
+    };
   };
   completeRemoteCommand: {
     body: {
@@ -1912,6 +2035,10 @@ export interface operations {
       } | null;
     };
   };
+  deleteAgentLearning: {
+    body: never;
+    answer: never;
+  };
   deleteCalendar: {
     body: never;
     answer: never;
@@ -2097,6 +2224,23 @@ export interface operations {
       }[];
     };
   };
+  enrollCliLearning: {
+    body: {
+      runtime: "codex" | "claude-code";
+      project: string;
+      name?: string;
+    };
+    answer: {
+      connection_id: string;
+      agent_id: string;
+      runtime: "codex" | "claude-code";
+      project: string;
+      active: boolean;
+      last_hook_at?: string;
+      last_run_id?: string;
+      token: string;
+    };
+  };
   enrollRemoteConnector: {
     body: {
       label?: string;
@@ -2272,6 +2416,30 @@ export interface operations {
     body: never;
     answer: components["Capabilities"];
   };
+  getCapacity: {
+    body: never;
+    answer: {
+      at: string;
+      runs: {
+        queued: number;
+        executing: number;
+      };
+      runners: {
+        id: string;
+        version: string | null;
+        slots: number | null;
+        executing: number;
+        free_slots: number | null;
+        refused: boolean;
+        seen_at: string;
+      }[];
+      free_slots: number;
+      hand_backs: {
+        window_minutes: number;
+        count: number;
+      };
+    };
+  };
   getChatGPTSignIn: {
     body: never;
     answer: {
@@ -2297,6 +2465,15 @@ export interface operations {
         organization?: string;
         plan?: string;
       };
+    };
+  };
+  getCliLearningRun: {
+    body: never;
+    answer: {
+      run_id: string;
+      state: "running" | "processing" | "completed" | "failed" | "cancelled";
+      learning_run_id?: string;
+      learning: unknown;
     };
   };
   getComputerDaemon: {
@@ -2652,6 +2829,7 @@ export interface operations {
         updated_at: string;
         sequence: number;
         display_name: string;
+        project_name?: string;
         models: string[];
         usage: {
           input_tokens: number;
@@ -2664,6 +2842,13 @@ export interface operations {
           status: "reported" | "unavailable";
         };
         observation_only: true;
+        learning: {
+          state: "on" | "off" | "setup_required" | "unknown" | "unsupported";
+          reason: "ready" | "source_setup_required" | "source_unknown" | "delegated_session" | "connection_unavailable" | "server_disabled" | "agent_disabled" | "awaiting_activation";
+          agent_id?: string;
+          connection_id?: string;
+          mode?: "off" | "notes" | "corrections" | "workflows";
+        };
       }[];
       usage: {
         input_tokens: number | null;
@@ -2822,7 +3007,7 @@ export interface operations {
     answer: {
       run: string;
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
       detail: string | null;
       at: string;
       seed: string | null;
@@ -2935,6 +3120,8 @@ export interface operations {
         quantity: number | null;
         unit: "token" | "call" | "second" | "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
         basis: "reported" | "estimate" | "unpriced";
+        attempt: number | null;
+        billable: boolean;
         usd: number | null;
         so_far_usd?: number;
         unpriced?: number;
@@ -2968,6 +3155,8 @@ export interface operations {
           proxy_bytes: number | null;
         } | null;
         provider_record_status: "read" | "not_offered" | "not_found" | "failed" | "no_session" | null;
+        attempt: number | null;
+        billable: boolean;
       }[] | null;
       computer_intervals: {
         provider: string;
@@ -2984,7 +3173,10 @@ export interface operations {
         ended_at: string | null;
         kept: boolean;
         booked_seconds: number;
+        attempt: number | null;
+        billable: boolean;
       }[] | null;
+      infra_usd: number | null;
       reason: "running" | "not_booked" | "reopened" | null;
     };
   };
@@ -3051,6 +3243,27 @@ export interface operations {
         runs: number;
       };
       analytics: {
+        usage: {
+          tokens: number | null;
+          input: number | null;
+          output: number | null;
+          cache_read: number | null;
+          cache_write: number | null;
+          known_runs: number;
+          unknown_runs: number;
+          observed_sessions: number;
+          unknown_sessions: number;
+          partial_days: number;
+          retention_limited: boolean;
+          by_day: {
+            day: string;
+            tokens: number | null;
+          }[];
+          by_harness: {
+            harness: string;
+            tokens: number | null;
+          }[];
+        };
         filter: {
           from: string | null;
           to: string | null;
@@ -3062,6 +3275,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
+          runs_with_token_metrics: number;
           tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
@@ -3086,6 +3300,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
+          runs_with_token_metrics: number;
           tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
@@ -3097,6 +3312,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
+          runs_with_token_metrics: number;
           tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
@@ -3108,6 +3324,7 @@ export interface operations {
           needs_review: number;
           failed: number;
           runs_with_metrics: number;
+          runs_with_token_metrics: number;
           tokens: number | null;
           cost_usd: number | null;
           unknown_cost_runs: number;
@@ -3601,6 +3818,7 @@ export interface operations {
         secrets: string[];
         budget: {
           per_run_usd: number;
+          max_requests?: number;
         } | null;
         learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
@@ -3623,6 +3841,20 @@ export interface operations {
   listAllRuns: {
     body: never;
     answer: components["RunList"];
+  };
+  listCliLearning: {
+    body: never;
+    answer: {
+      connections: {
+        connection_id: string;
+        agent_id: string;
+        runtime: "codex" | "claude-code";
+        project: string;
+        active: boolean;
+        last_hook_at?: string;
+        last_run_id?: string;
+      }[];
+    };
   };
   listComposioEvents: {
     body: never;
@@ -3729,6 +3961,10 @@ export interface operations {
         groups: string[];
         tools: string[];
         settings: string[];
+        record: {
+          available: boolean;
+          why?: string;
+        };
         providers: {
           id: string;
           name: string;
@@ -3909,6 +4145,28 @@ export interface operations {
           stopped?: true;
           released?: number;
           fresh_reads?: number;
+          turns?: {
+            n: number;
+            agreed: number;
+            alone: number;
+            of: string[];
+            outcomes: {
+              answered: number;
+              handed_back: number;
+              failed: number;
+              skipped_write: number;
+            };
+            disagreements?: {
+              run: string;
+              input: string;
+              agent: string | null;
+              draft?: string;
+              escalated?: string;
+              failed?: true;
+              differs_on?: string;
+            }[];
+            fresh_reads?: number;
+          };
         };
         runs?: string[];
         inputs?: string[];
@@ -3998,6 +4256,28 @@ export interface operations {
             stopped?: true;
             released?: number;
             fresh_reads?: number;
+            turns?: {
+              n: number;
+              agreed: number;
+              alone: number;
+              of: string[];
+              outcomes: {
+                answered: number;
+                handed_back: number;
+                failed: number;
+                skipped_write: number;
+              };
+              disagreements?: {
+                run: string;
+                input: string;
+                agent: string | null;
+                draft?: string;
+                escalated?: string;
+                failed?: true;
+                differs_on?: string;
+              }[];
+              fresh_reads?: number;
+            };
           } | null;
         } | null;
       }[];
@@ -4196,6 +4476,7 @@ export interface operations {
         secrets: string[];
         budget: {
           per_run_usd: number;
+          max_requests?: number;
         } | null;
         learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
@@ -5012,6 +5293,18 @@ export interface operations {
     body: never;
     answer: never;
   };
+  revokeCliLearning: {
+    body: never;
+    answer: {
+      connection_id: string;
+      agent_id: string;
+      runtime: "codex" | "claude-code";
+      project: string;
+      active: boolean;
+      last_hook_at?: string;
+      last_run_id?: string;
+    };
+  };
   revokeRemoteConnector: {
     body: never;
     answer: {
@@ -5435,6 +5728,42 @@ export interface operations {
         email?: string;
         organization?: string;
         plan?: string;
+      };
+    };
+  };
+  startCliLearningRun: {
+    body: {
+      session_id: string;
+      turn_id: string;
+      input: string;
+      instructions: string;
+      policy_complete: boolean;
+      model?: string;
+    };
+    answer: {
+      run_id: string;
+      agent_id: string;
+      console_url: string;
+      token: string;
+      learning: {
+        enabled: boolean;
+        revision: string | null;
+        context: string;
+        workflows: {
+          name: string;
+          workflow: string;
+          description: string;
+        }[];
+        check?: {
+          id: string;
+          revision: string;
+          digest: string;
+          workflow: {
+            name: string;
+            workflow: string;
+            description: string;
+          };
+        };
       };
     };
   };

@@ -28,6 +28,7 @@ __all__ = [
     "ApplyTemplateBody",
     "ApplyTemplateBodyOverrides",
     "ApplyTemplateResponse",
+    "ApplyTemplateResponseTriggersItem",
     "ApplyTemplateResponseWebhookSecretsItem",
     "ArchiveAgentResponse",
     "ArchiveRunResponse",
@@ -54,8 +55,10 @@ __all__ = [
     "CapabilitiesPlacesBoxesItem",
     "CapabilitiesPlacesDefaultPlace1",
     "CapabilitiesPlacesDefaultPlace2",
+    "CapabilitiesResource",
     "CapabilitiesSecrets",
     "CapabilitiesServer",
+    "CapabilitiesStoreSchema",
     "CapabilitiesSwitchesValue",
     "CapabilitiesToolsItem",
     "CapabilitiesToolsItemResolves",
@@ -63,7 +66,20 @@ __all__ = [
     "CapabilitiesWorkflows",
     "CapabilitiesWorkflowsDecisions",
     "CapabilitiesWorkflowsDecisionsProvidersItem",
+    "CliLearningEventsBody",
+    "CliLearningEventsBodyEventsItem1",
+    "CliLearningEventsBodyEventsItem2",
+    "CliLearningEventsBodyEventsItem3",
+    "CliLearningEventsBodyEventsItem4",
+    "CliLearningEventsBodyEventsItem4Skipped",
+    "CliLearningEventsBodyEventsItem5",
+    "CliLearningEventsResponse",
+    "CliLearningResource",
     "CommitSha",
+    "CompleteCliLearningRunBody",
+    "CompleteCliLearningRunBodySourcePolicy",
+    "CompleteCliLearningRunBodyUsage",
+    "CompleteCliLearningRunResponse",
     "CompleteRemoteCommandBody",
     "CompleteRemoteCommandResponse",
     "CompleteSdkRunBody",
@@ -168,9 +184,11 @@ __all__ = [
     "CreateTriggerResponseTarget2",
     "CreateTriggerResponseTarget2Input",
     "Definition",
+    "DefinitionCliLearning",
     "DefinitionComputer",
     "DefinitionComputerGpu",
     "DefinitionInput",
+    "DefinitionInputCliLearning",
     "DefinitionInputComputer",
     "DefinitionInputComputerGpu",
     "DefinitionInputLearning",
@@ -270,6 +288,8 @@ __all__ = [
     "DiscoverNativeResponseTargetsItemConfigurationItem",
     "DiscoverNativeResponseTargetsItemSelector",
     "Effort",
+    "EnrollCliLearningBody",
+    "EnrollCliLearningResponse",
     "EnrollRemoteConnectorBody",
     "EnrollRemoteConnectorBodyCapabilities",
     "EnrollRemoteConnectorResponse",
@@ -335,9 +355,14 @@ __all__ = [
     "GetAgentResponseToolsItem",
     "GetCalendarResponse",
     "GetCapabilitiesResponse",
+    "GetCapacityResponse",
+    "GetCapacityResponseHandBacks",
+    "GetCapacityResponseRunnersItem",
+    "GetCapacityResponseRuns",
     "GetChatGPTSignInResponse",
     "GetClaudeLoginResponse",
     "GetClaudeLoginResponseAccount",
+    "GetCliLearningRunResponse",
     "GetEmailAccountResponse",
     "GetEmailAccountResponseImap",
     "GetEmailAccountResponseSmtp",
@@ -390,6 +415,7 @@ __all__ = [
     "GetObservationsResponseConnectorsItem",
     "GetObservationsResponseLimits",
     "GetObservationsResponseSessionsItem",
+    "GetObservationsResponseSessionsItemLearning",
     "GetObservationsResponseSessionsItemUsage",
     "GetObservationsResponseUsage",
     "GetObservationsResponseUsageDailyItem",
@@ -442,6 +468,9 @@ __all__ = [
     "GetStatsResponseAnalyticsTime",
     "GetStatsResponseAnalyticsToolsItem",
     "GetStatsResponseAnalyticsTotals",
+    "GetStatsResponseAnalyticsUsage",
+    "GetStatsResponseAnalyticsUsageByDayItem",
+    "GetStatsResponseAnalyticsUsageByHarnessItem",
     "GetStatsResponseArchived",
     "GetStatsResponseCost",
     "GetStatsResponseLearning",
@@ -541,6 +570,8 @@ __all__ = [
     "LimitsMaxCostUsd",
     "ListAgentsResponse",
     "ListAllRunsResponse",
+    "ListCliLearningResponse",
+    "ListCliLearningResponseConnectionsItem",
     "ListComposioEventsResponse",
     "ListComposioEventsResponseEventsItem",
     "ListComposioToolsBody",
@@ -560,6 +591,7 @@ __all__ = [
     "ListComputersResponseKindsItemProvidersItemGpuPerGpu",
     "ListComputersResponseKindsItemProvidersItemPersistent",
     "ListComputersResponseKindsItemProvidersItemSecretsItem",
+    "ListComputersResponseKindsItemRecord",
     "ListComputersResponsePairedItem",
     "ListComputersResponsePairedItemDevice",
     "ListComputersResponsePairedItemFeaturesValue",
@@ -586,6 +618,9 @@ __all__ = [
     "ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem",
     "ListLearningPromotionsResponsePromotionsItemCheckOutcomes",
     "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurns",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes",
     "ListLearningPromotionsResponseServingItem",
     "ListLearningPromotionsResponseServingItemAudit",
     "ListLearningPromotionsResponseServingItemChampion",
@@ -593,6 +628,9 @@ __all__ = [
     "ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem",
     "ListLearningPromotionsResponseServingItemChampionCheckOutcomes",
     "ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurns",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes",
     "ListLearningPromotionsResponseServingItemChampionNodesItem",
     "ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem",
     "ListLearningPromotionsResponseServingItemCheck",
@@ -768,6 +806,7 @@ __all__ = [
     "Resources",
     "ResumeRunResponse",
     "RevisionsResource",
+    "RevokeCliLearningResponse",
     "RevokeRemoteConnectorResponse",
     "RevokeRemoteConnectorResponseConnector",
     "RevokeRemoteConnectorResponseConnectorCapabilities",
@@ -777,6 +816,8 @@ __all__ = [
     "RotateWebhookSecretResponseDisabled",
     "Run",
     "RunClaim",
+    "RunCliLearning",
+    "RunCliLearningUsage",
     "RunComputer",
     "RunComputerHeld",
     "RunCreate",
@@ -817,6 +858,8 @@ __all__ = [
     "RunState",
     "RunStatus",
     "RunSummary",
+    "RunSummaryCliLearning",
+    "RunSummaryCliLearningUsage",
     "RunSummaryImportedFrom",
     "RunSummaryLearning",
     "RunSummaryLearningWorkflowsItem",
@@ -911,6 +954,12 @@ __all__ = [
     "StartChatGPTSignInResponse",
     "StartClaudeLoginResponse",
     "StartClaudeLoginResponseAccount",
+    "StartCliLearningRunBody",
+    "StartCliLearningRunResponse",
+    "StartCliLearningRunResponseLearning",
+    "StartCliLearningRunResponseLearningCheck",
+    "StartCliLearningRunResponseLearningCheckWorkflow",
+    "StartCliLearningRunResponseLearningWorkflowsItem",
     "StartMcpOAuthBody",
     "StartMcpOAuthResponse",
     "StartRunBody",
@@ -1138,6 +1187,7 @@ class Definition(_DefinitionRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
+    cli_learning: DefinitionCliLearning
     sdk: DefinitionSdk | DefinitionSdk2
     native: DefinitionNative
     model: str
@@ -1150,9 +1200,16 @@ class Definition(_DefinitionRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: bool | DefinitionLearning
     checkout: Literal["pull_request", "none"]
+    max_requests: int
 
 
 JsonObject: TypeAlias = "dict[str, Any]"
+
+
+class DefinitionCliLearning(TypedDict):
+    runtime: Literal["codex", "claude-code"]
+    connection_id: str
+    project: str
 
 
 class DefinitionSdk(TypedDict):
@@ -1633,6 +1690,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
+    cli_learning: DefinitionInputCliLearning
     sdk: DefinitionInputSdk | DefinitionInputSdk2
     native: DefinitionInputNative
     model: str
@@ -1645,6 +1703,13 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: bool | DefinitionInputLearning
     checkout: Literal["pull_request", "none"]
+    max_requests: int
+
+
+class DefinitionInputCliLearning(TypedDict):
+    runtime: Literal["codex", "claude-code"]
+    connection_id: str
+    project: str
 
 
 class DefinitionInputSdk(TypedDict):
@@ -2329,6 +2394,7 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     stopped: Literal[True]
     released: int
     fresh_reads: int
+    turns: ListLearningPromotionsResponsePromotionsItemCheckTurns
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckOutcomes(TypedDict):
@@ -2351,6 +2417,39 @@ class _ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemRequire
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
+    differs_on: str
+
+
+class _ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired(TypedDict):
+    n: int
+    agreed: int
+    alone: int
+    of: list[str]
+    outcomes: ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurns(_ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired, total=False):
+    disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem]
+    fresh_reads: int
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
+
+
+class _ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemRequired, total=False):
     draft: str
     escalated: str
     failed: Literal[True]
@@ -2448,6 +2547,7 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
     stopped: Literal[True]
     released: int
     fresh_reads: int
+    turns: ListLearningPromotionsResponseServingItemChampionCheckTurns
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckOutcomes(TypedDict):
@@ -2470,6 +2570,39 @@ class _ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemRe
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
+    differs_on: str
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired(TypedDict):
+    n: int
+    agreed: int
+    alone: int
+    of: list[str]
+    outcomes: ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurns(_ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired, total=False):
+    disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem]
+    fresh_reads: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem(_ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemRequired, total=False):
     draft: str
     escalated: str
     failed: Literal[True]
@@ -2502,9 +2635,12 @@ class _RunSummaryRequired(TypedDict):
 
 class RunSummary(_RunSummaryRequired, total=False):
     sdk: RunSummarySdk | RunSummarySdk2
+    cli_learning: RunSummaryCliLearning
     native: RunSummaryNative
     console_url: str
     labels: dict[str, str]
+    stopped_for: Literal["budget"] | None
+    budget_refused_calls: int
     effort: Effort
     error: RunError | None
     learning: RunSummaryLearning | None
@@ -2586,6 +2722,26 @@ class RunSummarySdk2(TypedDict):
 
 
 class RunSummarySdk2Usage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunSummaryCliLearning(TypedDict):
+    runtime: Literal["codex-cli", "claude-code-cli"]
+    session_id: str
+    turn_id: str
+    model: str | None
+    learning_revision: str | None
+    seed_observed: bool
+    policy_complete: bool
+    evidence_complete: bool
+    usage: RunSummaryCliLearningUsage | None
+
+
+class RunSummaryCliLearningUsage(TypedDict, total=False):
     input_tokens: int | None
     output_tokens: int | None
     cache_read_tokens: int | None
@@ -2678,7 +2834,7 @@ class RunErrorDetails(TypedDict):
 
 class _RunSummaryLearningRequired(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
 
 
@@ -2719,6 +2875,7 @@ class _RunSummaryPending2Required(TypedDict):
 
 class RunSummaryPending2(_RunSummaryPending2Required, total=False):
     summary: str
+    asks_because: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -2835,6 +2992,240 @@ class VerifyNativeResponseNativeCapabilities(TypedDict):
 class VerifyNativeResponseNativeRemote(TypedDict):
     connector_id: str
     target_id: str
+
+
+class GetCapacityResponse(TypedDict):
+    at: str
+    runs: GetCapacityResponseRuns
+    runners: list[GetCapacityResponseRunnersItem]
+    free_slots: int
+    hand_backs: GetCapacityResponseHandBacks
+
+
+class GetCapacityResponseRuns(TypedDict):
+    queued: int
+    executing: int
+
+
+class GetCapacityResponseRunnersItem(TypedDict):
+    id: str
+    version: str | None
+    slots: int | None
+    executing: int
+    free_slots: int | None
+    refused: bool
+    seen_at: str
+
+
+class GetCapacityResponseHandBacks(TypedDict):
+    window_minutes: int
+    count: int
+
+
+class _CompleteCliLearningRunBodyRequired(TypedDict):
+    status: Literal["completed", "failed", "cancelled"]
+    answer: str
+
+
+class CompleteCliLearningRunBody(_CompleteCliLearningRunBodyRequired, total=False):
+    error: str
+    model: str
+    session_id: str
+    usage: CompleteCliLearningRunBodyUsage
+    evidence_complete: bool
+    seed_observed: bool
+    seed_revision: str
+    source_policy: CompleteCliLearningRunBodySourcePolicy
+
+
+class CompleteCliLearningRunBodyUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class CompleteCliLearningRunBodySourcePolicy(TypedDict):
+    instructions: str
+    complete: bool
+
+
+class CompleteCliLearningRunResponse(TypedDict):
+    accepted: Literal[True]
+
+
+class _EnrollCliLearningBodyRequired(TypedDict):
+    runtime: Literal["codex", "claude-code"]
+    project: str
+
+
+class EnrollCliLearningBody(_EnrollCliLearningBodyRequired, total=False):
+    name: str
+
+
+class _EnrollCliLearningResponseRequired(TypedDict):
+    connection_id: str
+    agent_id: str
+    runtime: Literal["codex", "claude-code"]
+    project: str
+    active: bool
+    token: str
+
+
+class EnrollCliLearningResponse(_EnrollCliLearningResponseRequired, total=False):
+    last_hook_at: str
+    last_run_id: str
+
+
+class CliLearningEventsBody(TypedDict):
+    sequence: int
+    events: list[CliLearningEventsBodyEventsItem1 | CliLearningEventsBodyEventsItem2 | CliLearningEventsBodyEventsItem3 | CliLearningEventsBodyEventsItem4 | CliLearningEventsBodyEventsItem5]
+
+
+class CliLearningEventsBodyEventsItem1(TypedDict):
+    type: Literal["message"]
+    role: Literal["user", "assistant"]
+    text: str
+
+
+class CliLearningEventsBodyEventsItem2(TypedDict):
+    type: Literal["text"]
+    text: str
+
+
+class CliLearningEventsBodyEventsItem3(TypedDict):
+    type: Literal["session"]
+    session_id: str
+
+
+class _CliLearningEventsBodyEventsItem4Required(TypedDict):
+    type: Literal["workflow_check"]
+    id: str
+    digest: str
+    outcome: Literal["answered", "handed_back", "failed", "skipped_write"]
+
+
+class CliLearningEventsBodyEventsItem4(_CliLearningEventsBodyEventsItem4Required, total=False):
+    answer: str
+    reason: str
+    skipped: CliLearningEventsBodyEventsItem4Skipped
+    fresh_reads: int
+
+
+class _CliLearningEventsBodyEventsItem4SkippedRequired(TypedDict):
+    tool: str
+
+
+class CliLearningEventsBodyEventsItem4Skipped(_CliLearningEventsBodyEventsItem4SkippedRequired, total=False):
+    unmarked: Literal[True]
+
+
+class _CliLearningEventsBodyEventsItem5Required(TypedDict):
+    type: Literal["tool"]
+    id: str
+    name: str
+    status: Literal["started", "completed", "failed"]
+
+
+class CliLearningEventsBodyEventsItem5(_CliLearningEventsBodyEventsItem5Required, total=False):
+    input: Any
+    output: Any
+    parent_tool_use_id: str
+
+
+class CliLearningEventsResponse(TypedDict):
+    accepted: Literal[True]
+
+
+class _GetCliLearningRunResponseRequired(TypedDict):
+    run_id: str
+    state: Literal["running", "processing", "completed", "failed", "cancelled"]
+    learning: Any
+
+
+class GetCliLearningRunResponse(_GetCliLearningRunResponseRequired, total=False):
+    learning_run_id: str
+
+
+class ListCliLearningResponse(TypedDict):
+    connections: list[ListCliLearningResponseConnectionsItem]
+
+
+class _ListCliLearningResponseConnectionsItemRequired(TypedDict):
+    connection_id: str
+    agent_id: str
+    runtime: Literal["codex", "claude-code"]
+    project: str
+    active: bool
+
+
+class ListCliLearningResponseConnectionsItem(_ListCliLearningResponseConnectionsItemRequired, total=False):
+    last_hook_at: str
+    last_run_id: str
+
+
+class _RevokeCliLearningResponseRequired(TypedDict):
+    connection_id: str
+    agent_id: str
+    runtime: Literal["codex", "claude-code"]
+    project: str
+    active: bool
+
+
+class RevokeCliLearningResponse(_RevokeCliLearningResponseRequired, total=False):
+    last_hook_at: str
+    last_run_id: str
+
+
+class _StartCliLearningRunBodyRequired(TypedDict):
+    session_id: str
+    turn_id: str
+    input: str
+    instructions: str
+    policy_complete: bool
+
+
+class StartCliLearningRunBody(_StartCliLearningRunBodyRequired, total=False):
+    model: str
+
+
+class StartCliLearningRunResponse(TypedDict):
+    run_id: str
+    agent_id: str
+    console_url: str
+    token: str
+    learning: StartCliLearningRunResponseLearning
+
+
+class _StartCliLearningRunResponseLearningRequired(TypedDict):
+    enabled: bool
+    revision: str | None
+    context: str
+    workflows: list[StartCliLearningRunResponseLearningWorkflowsItem]
+
+
+class StartCliLearningRunResponseLearning(_StartCliLearningRunResponseLearningRequired, total=False):
+    check: StartCliLearningRunResponseLearningCheck
+
+
+class StartCliLearningRunResponseLearningWorkflowsItem(TypedDict):
+    name: str
+    workflow: str
+    description: str
+
+
+class StartCliLearningRunResponseLearningCheck(TypedDict):
+    id: str
+    revision: str
+    digest: str
+    workflow: StartCliLearningRunResponseLearningCheckWorkflow
+
+
+class StartCliLearningRunResponseLearningCheckWorkflow(TypedDict):
+    name: str
+    workflow: str
+    description: str
 
 
 class _CompleteRemoteCommandBodyRequired(TypedDict):
@@ -3869,6 +4260,7 @@ class _ListComputersResponseKindsItemRequired(TypedDict):
     groups: list[str]
     tools: list[str]
     settings: list[str]
+    record: ListComputersResponseKindsItemRecord
     providers: list[ListComputersResponseKindsItemProvidersItem]
 
 
@@ -3877,6 +4269,14 @@ class ListComputersResponseKindsItem(_ListComputersResponseKindsItemRequired, to
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
     shell_note: str
+
+
+class _ListComputersResponseKindsItemRecordRequired(TypedDict):
+    available: bool
+
+
+class ListComputersResponseKindsItemRecord(_ListComputersResponseKindsItemRecordRequired, total=False):
+    why: str
 
 
 class _ListComputersResponseKindsItemProvidersItemRequired(TypedDict):
@@ -4832,7 +5232,7 @@ class GetObservationsResponseConnectorsItem(TypedDict):
     storage_full: bool
 
 
-class GetObservationsResponseSessionsItem(TypedDict):
+class _GetObservationsResponseSessionsItemRequired(TypedDict):
     id: str
     connector_id: str
     source_id: str
@@ -4851,6 +5251,11 @@ class GetObservationsResponseSessionsItem(TypedDict):
     models: list[str]
     usage: GetObservationsResponseSessionsItemUsage
     observation_only: Literal[True]
+    learning: GetObservationsResponseSessionsItemLearning
+
+
+class GetObservationsResponseSessionsItem(_GetObservationsResponseSessionsItemRequired, total=False):
+    project_name: str
 
 
 class GetObservationsResponseSessionsItemUsage(TypedDict):
@@ -4862,6 +5267,17 @@ class GetObservationsResponseSessionsItemUsage(TypedDict):
     cache_hit_rate: float | None
     overflow: bool
     status: Literal["reported", "unavailable"]
+
+
+class _GetObservationsResponseSessionsItemLearningRequired(TypedDict):
+    state: Literal["on", "off", "setup_required", "unknown", "unsupported"]
+    reason: Literal["ready", "source_setup_required", "source_unknown", "delegated_session", "connection_unavailable", "server_disabled", "agent_disabled", "awaiting_activation"]
+
+
+class GetObservationsResponseSessionsItemLearning(_GetObservationsResponseSessionsItemLearningRequired, total=False):
+    agent_id: str
+    connection_id: str
+    mode: Literal["off", "notes", "corrections", "workflows"]
 
 
 class GetObservationsResponseUsage(TypedDict):
@@ -5075,9 +5491,12 @@ class _RunRequired(TypedDict):
 class Run(_RunRequired, total=False):
     effort: Effort
     sdk: RunSdk | RunSdk2
+    cli_learning: RunCliLearning
     native: RunNative
     console_url: str
     labels: dict[str, str]
+    stopped_for: Literal["budget"] | None
+    budget_refused_calls: int
     approvals: Literal["ask", "never"]
     last_progress_at: str | None
     recordings: list[RunRecordingsItem]
@@ -5130,6 +5549,26 @@ class RunSdk2(TypedDict):
 
 
 class RunSdk2Usage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunCliLearning(TypedDict):
+    runtime: Literal["codex-cli", "claude-code-cli"]
+    session_id: str
+    turn_id: str
+    model: str | None
+    learning_revision: str | None
+    seed_observed: bool
+    policy_complete: bool
+    evidence_complete: bool
+    usage: RunCliLearningUsage | None
+
+
+class RunCliLearningUsage(TypedDict, total=False):
     input_tokens: int | None
     output_tokens: int | None
     cache_read_tokens: int | None
@@ -5225,7 +5664,7 @@ class RunComputerHeld(_RunComputerHeldRequired, total=False):
 
 class _RunLearningRequired(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
     at: str
 
@@ -5267,6 +5706,7 @@ class _RunPending2Required(TypedDict):
 
 class RunPending2(_RunPending2Required, total=False):
     summary: str
+    asks_because: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -5493,7 +5933,7 @@ GetRunLearningResponse: TypeAlias = "GetRunLearningResponseObject | None"
 class _GetRunLearningResponseObjectRequired(TypedDict):
     run: str
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
     at: str
     seed: str | None
@@ -5836,7 +6276,7 @@ class TimelineRowComputerCallsItemStepsItemOn(_TimelineRowComputerCallsItemSteps
 
 class TimelineRowLearning(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
 
 
@@ -5890,6 +6330,7 @@ class GetRunUsageResponse(TypedDict):
     lines: list[GetRunUsageResponseLinesItem] | None
     browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
     computer_intervals: list[GetRunUsageResponseComputerIntervalsItem] | None
+    infra_usd: float | None
     reason: Literal["running", "not_booked", "reopened"] | None
 
 
@@ -5911,6 +6352,8 @@ class _GetRunUsageResponseLinesItemRequired(TypedDict):
     quantity: float | None
     unit: Literal["token", "call", "second", "vcpu_second", "gib_second", "gpu_second", "gb_month"]
     basis: Literal["reported", "estimate", "unpriced"]
+    attempt: int | None
+    billable: bool
     usd: float | None
 
 
@@ -5946,6 +6389,8 @@ class GetRunUsageResponseBrowserSessionsItem(TypedDict):
     charged_seconds: float | None
     provider_record: GetRunUsageResponseBrowserSessionsItemProviderRecord | None
     provider_record_status: Literal["read", "not_offered", "not_found", "failed", "no_session"] | None
+    attempt: int | None
+    billable: bool
 
 
 class GetRunUsageResponseBrowserSessionsItemProviderRecord(TypedDict):
@@ -5966,6 +6411,8 @@ class GetRunUsageResponseComputerIntervalsItem(TypedDict):
     ended_at: str | None
     kept: bool
     booked_seconds: float
+    attempt: int | None
+    billable: bool
 
 
 class GetRunUsageResponseComputerIntervalsItemGpu(TypedDict):
@@ -6156,6 +6603,7 @@ class _CapabilitiesRequired(TypedDict):
 
 
 class Capabilities(_CapabilitiesRequired, total=False):
+    store_schema: CapabilitiesStoreSchema
     workflows: CapabilitiesWorkflows
     links: CapabilitiesLinks
     home: CapabilitiesHome
@@ -6371,6 +6819,12 @@ class CapabilitiesLearningModel(TypedDict):
     model: str | None
     needs: Literal["key", "model"] | None
     reason: str | None
+
+
+class CapabilitiesStoreSchema(TypedDict):
+    version: int | None
+    runner_floor: int | None
+    known: int
 
 
 class _CapabilitiesLearningRequired(TypedDict):
@@ -6702,6 +7156,7 @@ class GetStatsResponseArchived(TypedDict):
 
 
 class GetStatsResponseAnalytics(TypedDict):
+    usage: GetStatsResponseAnalyticsUsage
     filter: GetStatsResponseAnalyticsFilter
     totals: GetStatsResponseAnalyticsTotals
     time: GetStatsResponseAnalyticsTime
@@ -6709,6 +7164,32 @@ class GetStatsResponseAnalytics(TypedDict):
     by_day: list[GetStatsResponseAnalyticsByDayItem]
     by_source: list[GetStatsResponseAnalyticsBySourceItem]
     tools: list[GetStatsResponseAnalyticsToolsItem]
+
+
+class GetStatsResponseAnalyticsUsage(TypedDict):
+    tokens: int | None
+    input: int | None
+    output: int | None
+    cache_read: int | None
+    cache_write: int | None
+    known_runs: int
+    unknown_runs: int
+    observed_sessions: int
+    unknown_sessions: int
+    partial_days: int
+    retention_limited: bool
+    by_day: list[GetStatsResponseAnalyticsUsageByDayItem]
+    by_harness: list[GetStatsResponseAnalyticsUsageByHarnessItem]
+
+
+class GetStatsResponseAnalyticsUsageByDayItem(TypedDict):
+    day: str
+    tokens: int | None
+
+
+class GetStatsResponseAnalyticsUsageByHarnessItem(TypedDict):
+    harness: str
+    tokens: int | None
 
 
 GetStatsResponseAnalyticsFilter = TypedDict("GetStatsResponseAnalyticsFilter", {"from": "str | None", "to": "str | None", "agent": "str | None"})
@@ -6720,6 +7201,7 @@ class GetStatsResponseAnalyticsTotals(TypedDict):
     needs_review: int
     failed: int
     runs_with_metrics: int
+    runs_with_token_metrics: int
     tokens: int | None
     cost_usd: float | None
     unknown_cost_runs: int
@@ -6746,6 +7228,7 @@ class GetStatsResponseAnalyticsByHarnessEffortItem(TypedDict):
     needs_review: int
     failed: int
     runs_with_metrics: int
+    runs_with_token_metrics: int
     tokens: int | None
     cost_usd: float | None
     unknown_cost_runs: int
@@ -6758,6 +7241,7 @@ class GetStatsResponseAnalyticsByDayItem(TypedDict):
     needs_review: int
     failed: int
     runs_with_metrics: int
+    runs_with_token_metrics: int
     tokens: int | None
     cost_usd: float | None
     unknown_cost_runs: int
@@ -6770,6 +7254,7 @@ class GetStatsResponseAnalyticsBySourceItem(TypedDict):
     needs_review: int
     failed: int
     runs_with_metrics: int
+    runs_with_token_metrics: int
     tokens: int | None
     cost_usd: float | None
     unknown_cost_runs: int
@@ -6807,13 +7292,22 @@ class _ApplyTemplateResponseRequired(TypedDict):
     template: str
     version: str
     agent_id: str
+    revision_version: int
+    agent_change: Literal["made", "updated", "unchanged"]
     servers: dict[str, str | None]
-    trigger_ids: list[str]
+    triggers: list[ApplyTemplateResponseTriggersItem]
     warnings: list[InputIssue]
 
 
 class ApplyTemplateResponse(_ApplyTemplateResponseRequired, total=False):
     webhook_secrets: list[ApplyTemplateResponseWebhookSecretsItem]
+
+
+class ApplyTemplateResponseTriggersItem(TypedDict):
+    trigger_id: str
+    name: str
+    kind: Literal["schedule", "webhook", "github", "composio", "email", "feed"]
+    enabled: bool
 
 
 class _ApplyTemplateResponseWebhookSecretsItemRequired(TypedDict):
@@ -6959,8 +7453,12 @@ class ImportTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
 
 
-class ImportTemplateResponseTemplateBudget(TypedDict):
+class _ImportTemplateResponseTemplateBudgetRequired(TypedDict):
     per_run_usd: float
+
+
+class ImportTemplateResponseTemplateBudget(_ImportTemplateResponseTemplateBudgetRequired, total=False):
+    max_requests: int
 
 
 class ListTemplatesResponse(TypedDict):
@@ -7080,8 +7578,12 @@ class ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
 
 
-class ListTemplatesResponseTemplatesItemBudget(TypedDict):
+class _ListTemplatesResponseTemplatesItemBudgetRequired(TypedDict):
     per_run_usd: float
+
+
+class ListTemplatesResponseTemplatesItemBudget(_ListTemplatesResponseTemplatesItemBudgetRequired, total=False):
+    max_requests: int
 
 
 class ListToolKeysResponse(TypedDict):
@@ -9170,6 +9672,14 @@ OPERATIONS: dict[str, Operation] = {
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "updateDefinition": Operation(method="PUT", path="/agents/{agent_id}/definition", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=True),
     "verifyNative": Operation(method="POST", path="/agents/{agent_id}/native/verify", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getCapacity": Operation(method="GET", path="/capacity", path_params=(), multi_segment=(), query=("window",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "completeCliLearningRun": Operation(method="POST", path="/cli-learning/runs/{run_id}/complete", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "enrollCliLearning": Operation(method="POST", path="/cli-learning/connections", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "cliLearningEvents": Operation(method="POST", path="/cli-learning/runs/{run_id}/events", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getCliLearningRun": Operation(method="GET", path="/cli-learning/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listCliLearning": Operation(method="GET", path="/cli-learning/connections", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "revokeCliLearning": Operation(method="DELETE", path="/cli-learning/connections/{connection_id}", path_params=("connection_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "startCliLearningRun": Operation(method="POST", path="/cli-learning/connections/{connection_id}/runs", path_params=("connection_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "completeRemoteCommand": Operation(method="POST", path="/connectors/{connector_id}/commands/{command_id}/complete", path_params=("connector_id", "command_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "enrollRemoteConnector": Operation(method="POST", path="/connectors/enrollment", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "importRemoteHistory": Operation(method="POST", path="/connectors/{connector_id}/targets/{target_id}/history", path_params=("connector_id", "target_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9194,6 +9704,7 @@ OPERATIONS: dict[str, Operation] = {
     "listLearningLog": Operation(method="GET", path="/agents/{agent_id}/learning/log", path_params=("agent_id",), multi_segment=(), query=("cursor", "limit"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "readLearningFile": Operation(method="GET", path="/agents/{agent_id}/learning/files/{file}", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=(), body=None, answer="json+text", secret=False, public_fields=(), tagged=True),
     "getLearnedWorkflowReplay": Operation(method="GET", path="/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}", path_params=("agent_id", "name", "digest", "replay_id"), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteAgentLearning": Operation(method="DELETE", path="/agents/{agent_id}/learning", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "retireLearningFile": Operation(method="POST", path="/agents/{agent_id}/learning/files/{file}/retire", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=("If-Match",), body=None, answer="text", secret=False, public_fields=(), tagged=True),
     "listLearnedWorkflowRevisions": Operation(method="GET", path="/agents/{agent_id}/learning/workflows/{name}/revisions", path_params=("agent_id", "name"), multi_segment=(), query=("limit",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putLearningCorrections": Operation(method="PUT", path="/agents/{agent_id}/learning/corrections", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="json", secret=False, public_fields=(), tagged=True),
@@ -9403,6 +9914,46 @@ class AgentsResource(Group):
         return self._call("verifyNative", (agent_id,), None, None, timeout=timeout)
 
 
+class CapabilitiesResource(Group):
+    """client.capabilities: one method per operation."""
+
+    def get_capacity(self, *, window: int | None = None, timeout: float | None = None) -> GetCapacityResponse:
+        """The runs waiting and held, the live runners and the recent hand-backs (GET /capacity)."""
+        return self._call("getCapacity", (), None, {"window": window}, timeout=timeout)
+
+
+class CliLearningResource(Group):
+    """client.cli_learning: one method per operation."""
+
+    def complete(self, run_id: str, body: CompleteCliLearningRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CompleteCliLearningRunResponse:
+        """Close an existing CLI prompt window exactly once (POST /cli-learning/runs/{run_id}/complete)."""
+        return self._call("completeCliLearningRun", (run_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def enroll(self, body: EnrollCliLearningBody, *, timeout: float | None = None) -> EnrollCliLearningResponse:
+        """Enable learning for an existing local CLI without launching it (POST /cli-learning/connections)."""
+        return self._call("enrollCliLearning", (), body, None, timeout=timeout)
+
+    def events(self, run_id: str, body: CliLearningEventsBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CliLearningEventsResponse:
+        """Upload bounded role-preserving CLI dialogue and tool evidence (POST /cli-learning/runs/{run_id}/events)."""
+        return self._call("cliLearningEvents", (run_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def get(self, run_id: str, *, timeout: float | None = None) -> GetCliLearningRunResponse:
+        """Read CLI prompt-window learning progress (GET /cli-learning/runs/{run_id})."""
+        return self._call("getCliLearningRun", (run_id,), None, None, timeout=timeout)
+
+    def list(self, *, timeout: float | None = None) -> ListCliLearningResponse:
+        """Read enrolled CLI learning connections (GET /cli-learning/connections)."""
+        return self._call("listCliLearning", (), None, None, timeout=timeout)
+
+    def revoke(self, connection_id: str, *, timeout: float | None = None) -> RevokeCliLearningResponse:
+        """Revoke CLI capture and guidance delivery, retaining history and learned files (DELETE /cli-learning/connections/{connection_id})."""
+        return self._call("revokeCliLearning", (connection_id,), None, None, timeout=timeout)
+
+    def start(self, connection_id: str, body: StartCliLearningRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartCliLearningRunResponse:
+        """Register one prompt window from an existing CLI session (POST /cli-learning/connections/{connection_id}/runs)."""
+        return self._call("startCliLearningRun", (connection_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+
 class ConnectorsResource(Group):
     """client.connectors: one method per operation."""
 
@@ -9517,6 +10068,10 @@ class LearningResource(Group):
     def replay(self, agent_id: str, name: str, digest: str, replay_id: str, *, timeout: float | None = None) -> GetLearnedWorkflowReplayResponse:
         """Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
         return self._call("getLearnedWorkflowReplay", (agent_id, name, digest, replay_id), None, None, timeout=timeout)
+
+    def reset(self, agent_id: str, *, timeout: float | None = None) -> None:
+        """Reset the agent's learning: everything it learned deleted, the agent and its runs kept (DELETE /agents/{agent_id}/learning)."""
+        return self._call("deleteAgentLearning", (agent_id,), None, None, timeout=timeout)
 
     def retire(self, agent_id: str, file: str, *, if_match: str | None = None, timeout: float | None = None) -> Tagged[str]:
         """Retire a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire)."""
@@ -10063,6 +10618,8 @@ class Resources:
     """The resource groups, each operation a method that sends it through `call`. `runs` is the client's own: RunsResource with the methods it writes by hand."""
 
     agents: AgentsResource
+    capabilities: CapabilitiesResource
+    cli_learning: CliLearningResource
     connectors: ConnectorsResource
     files: FilesResource
     home: HomeResource
@@ -10084,6 +10641,8 @@ class Resources:
     def __init__(self, call: Call) -> None:
         self._operation = call
         self.agents = AgentsResource(call)
+        self.capabilities = CapabilitiesResource(call)
+        self.cli_learning = CliLearningResource(call)
         self.connectors = ConnectorsResource(call)
         self.files = FilesResource(call)
         self.home = HomeResource(call)

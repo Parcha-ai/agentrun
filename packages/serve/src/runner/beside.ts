@@ -2,7 +2,7 @@
 // the template eval's in-process server (template-eval.ts), which would otherwise leave every run it starts queued.
 import { maxRunsOf } from "../host.js";
 import { durationMs } from "../print.js";
-import { type RunnerEvent, runnerCloseBoundMs } from "./runner.js";
+import { RUNNER_LOOPS, type RunnerEvent, runnerCloseBoundMs } from "./runner.js";
 
 /** How long a busy run may finish its turn when the server stops, unless --drain-timeout says (cli.ts). */
 export const DRAIN_TIMEOUT = "30s";
@@ -105,12 +105,10 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
   // are said in its name as the runner subcommand says them (main.ts troubleLine: a lost claim on stdout, an error on
   // stderr), so a lapse of its claims shows its cause.
   const { runLine } = await import("../print.js");
+  const { metricLine, startRunnerGauge } = await import("./runner-metrics.js");
   const name = runnerName();
   const said = (event: RunnerEvent) => {
-    const trouble = troubleLine(name, event);
-    if (trouble) return void (onLine ?? (event.type === "error" ? console.error : console.log))(trouble);
-    const line = runLine(event);
-    if (line) (onLine ?? console.log)(line);
+    for (const { line, error } of besideLines(name, event, { metricLine, troubleLine, runLine })) (onLine ?? (error ? console.error : console.log))(line);
     // The server's anonymous counts (telemetry.ts) hear a run's end: its state alone, never which run or agent.
     if (event.type === "ended") onRunEnded?.(event.status);
   };
@@ -125,7 +123,27 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
   // Its close waits for any first-use install its claims let go of to stop (its npm ended) before it lets go of the data.
   const { claimInstallsStopped } = await import("../harness-install.js");
   // The janitor's sweep is cut and waited for on a bound of its own, beside the runner's close, never before it.
-  return { runner, close: async () => { await Promise.all([swept?.close(), runner.close()]); await claimInstallsStopped(); await store.close(); seal.release(); } };
+  // Its gauge (runner-metrics.ts): the runs it holds of its loops, and the process's memory (the server's with it), every
+  // minute until its close.
+  const gauge = startRunnerGauge({ runner: name, held: () => runner.held().length, slots: held ?? RUNNER_LOOPS, write: (line) => (onLine ?? console.log)(line) });
+  return { runner, close: async () => { gauge.stop(); await Promise.all([swept?.close(), runner.close()]); await claimInstallsStopped(); await store.close(); seal.release(); } };
+}
+
+/** The lines runner `name` beside a server says for `event`, in order, each with whether it goes to stderr (`error`): its
+ *  metric line (runner-metrics.ts metricLine: a claim, a hand-back by cause, a lost claim, the drain), then its trouble
+ *  (main.ts troubleLine: a lost claim, an error) or else its run's start or end (print.ts runLine). A lost claim says
+ *  both its metric and its trouble. The three are handed in, as runnerBeside imports them on its start. */
+export function besideLines(name: string, event: RunnerEvent, say: { metricLine: (name: string, event: RunnerEvent) => string | undefined; troubleLine: (name: string, event: RunnerEvent) => string | undefined; runLine: (event: RunnerEvent) => string | undefined }): { line: string; error: boolean }[] {
+  const lines: { line: string; error: boolean }[] = [];
+  const metric = say.metricLine(name, event);
+  if (metric) lines.push({ line: metric, error: false });
+  const trouble = say.troubleLine(name, event);
+  if (trouble) lines.push({ line: trouble, error: event.type === "error" });
+  else {
+    const line = say.runLine(event);
+    if (line) lines.push({ line, error: false });
+  }
+  return lines;
 }
 
 /** A server and one runner beside it, both in this process, as the CLI's start composes them (cli.ts): the runner holds

@@ -11,6 +11,7 @@ import { type Problem, problem } from "@/lib/problem";
 import { templatePlaygroundHref, titleOf } from "@/lib/templatePackages";
 import { cn } from "@/lib/utils";
 import type { TemplateView } from "@/lib/v2";
+import { matchesFilter } from "@/lib/filter";
 
 const ICONS: Record<string, typeof FileText> = {
   "code-review": Code, "inbound-lead": Search, kyb: ShieldCheck,
@@ -37,8 +38,7 @@ export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "l
     );
     return () => { live = false; };
   }, [v2, tries]);
-  const query = search.trim().toLocaleLowerCase();
-  const shown = (packages ?? []).filter((template) => `${titleOf(template)} ${template.description} ${template.name} ${template.id} ${template.publisher ?? ""}`.toLocaleLowerCase().includes(query));
+  const shown = (packages ?? []).filter((template) => matchesFilter(search, titleOf(template), template.description, template.name, template.id, template.publisher));
   return <section className="mx-auto w-full max-w-page-wide px-5 pb-20 pt-10 md:px-12 md:pt-16" aria-labelledby={`${id}-heading`}>
     <header className="text-center">
       <h1 id={`${id}-heading`} className="text-2xl font-semibold leading-tight tracking-tight md:text-display">What do you want to build?</h1>

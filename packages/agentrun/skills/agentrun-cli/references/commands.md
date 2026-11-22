@@ -150,6 +150,93 @@ Check native CLI and sign-in without a paid model call.
 
 Route: `POST /agents/{agent_id}/native/verify`.
 
+## capabilities
+
+### `agentrun capabilities get-capacity`
+
+The runs waiting and held, the live runners and the recent hand-backs.
+
+Route: `GET /capacity`.
+
+- `--window INTEGER` (integer): The hand-back window in minutes, from 1 to 1440. Default 15.
+
+## cli-learning
+
+### `agentrun cli-learning complete RUN_ID`
+
+Close an existing CLI prompt window exactly once.
+
+Route: `POST /cli-learning/runs/{run_id}/complete`.
+
+- `--idempotency-key STRING` (string)
+- `--status completed|failed|cancelled` (string, one of these, required)
+- `--answer STRING` (string, required)
+- `--error STRING` (string)
+- `--model STRING` (string)
+- `--session-id STRING` (string)
+- `--evidence-complete` (boolean)
+- `--seed-observed` (boolean)
+- `--seed-revision STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun cli-learning enroll`
+
+Enable learning for an existing local CLI without launching it.
+
+Route: `POST /cli-learning/connections`.
+
+- `--runtime codex|claude-code` (string, one of these, required)
+- `--project STRING` (string, required)
+- `--name STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun cli-learning events RUN_ID`
+
+Upload bounded role-preserving CLI dialogue and tool evidence.
+
+Route: `POST /cli-learning/runs/{run_id}/events`.
+
+- `--idempotency-key STRING` (string)
+- `--sequence INTEGER` (integer, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun cli-learning get RUN_ID`
+
+Read CLI prompt-window learning progress.
+
+Route: `GET /cli-learning/runs/{run_id}`.
+
+### `agentrun cli-learning list`
+
+Read enrolled CLI learning connections.
+
+Route: `GET /cli-learning/connections`.
+
+### `agentrun cli-learning revoke CONNECTION_ID`
+
+Revoke CLI capture and guidance delivery, retaining history and learned files.
+
+Route: `DELETE /cli-learning/connections/{connection_id}`.
+
+### `agentrun cli-learning start CONNECTION_ID`
+
+Register one prompt window from an existing CLI session.
+
+Route: `POST /cli-learning/connections/{connection_id}/runs`.
+
+- `--idempotency-key STRING` (string, required)
+- `--session-id STRING` (string, required)
+- `--turn-id STRING` (string, required)
+- `--input STRING` (string, required)
+- `--instructions STRING` (string, required)
+- `--policy-complete` (boolean, required)
+- `--model STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ## connectors
 
 ### `agentrun connectors complete-remote-command CONNECTOR_ID COMMAND_ID`
@@ -397,6 +484,12 @@ Route: `GET /agents/{agent_id}/learning/files/{file}`.
 Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab).
 
 Route: `GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}`.
+
+### `agentrun learning reset AGENT_ID`
+
+Reset the agent's learning: everything it learned deleted, the agent and its runs kept.
+
+Route: `DELETE /agents/{agent_id}/learning`.
 
 ### `agentrun learning retire AGENT_ID FILE`
 
@@ -1079,7 +1172,7 @@ Route: `GET /stats`.
 
 - `--from STRING` (string): Runs started at or after this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.
 - `--to STRING` (string): Runs started before this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.
-- `--agent STRING` (string): One agent's runs.
+- `--agent STRING` (string): One agent's runs and associated source usage, or a connected session id to select that session's usage (with no recorded runs).
 
 ## stop
 

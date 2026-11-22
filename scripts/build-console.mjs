@@ -13,6 +13,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
+import { npmSpawnSync } from './npm-command.mjs';
 
 /** The console's build inputs, below the repository's root: with its own, the sources it imports through its aliases
  *  (vite.config.ts): the DSL's, the timeline library's, serve's tool-name grammar and pi-browser's core. */
@@ -46,8 +47,7 @@ export function stampConsole(root) {
 // `npm ci` runs through npm-ci-retry.mjs: once more after a network error, never after any other failure.
 const NPM_CI_RETRY = fileURLToPath(new URL('./npm-ci-retry.mjs', import.meta.url));
 const npm = (args, cwd) => {
-  const [bin, argv] = args[0] === 'ci' ? [process.execPath, [NPM_CI_RETRY, ...args.slice(1)]] : [process.platform === 'win32' ? 'npm.cmd' : 'npm', args];
-  const done = spawnSync(bin, argv, { cwd, stdio: 'inherit' });
+  const done = args[0] === 'ci' ? spawnSync(process.execPath, [NPM_CI_RETRY, ...args.slice(1)], { cwd, stdio: 'inherit' }) : npmSpawnSync(args, { cwd, stdio: 'inherit' });
   if (done.status !== 0) throw new Error(`npm ${args.join(' ')} in ${cwd} exited ${done.status ?? done.signal}`);
 };
 

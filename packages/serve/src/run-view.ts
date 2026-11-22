@@ -6,7 +6,7 @@
 // The pieces here so far: the cost reads (a run's cost, its paid tools' charges, the cost a view shows, what it has cost so
 // far when the total is unknown) and the served row transforms a view applies to the timeline (the over-cap row, the
 // paused run's waiting row). All read the same rows the timeline renders.
-import { type TimelineEvent, chargedTool, isMessageRow, NOTE_SUFFIX, registerLabel, registerTurnEnding, scrubUrls } from "./timeline/index.js";
+import { type TimelineEvent, CAP_REFUSED, CAP_WRAPUP, chargedTool, isMessageRow, NOTE_SUFFIX, registerLabel, registerTurnEnding, scrubUrls } from "./timeline/index.js";
 import type { RevisionKind } from "./agent-rows.js";
 import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal } from "./cap.js";
 import type { Turns } from "./turns.js";
@@ -25,7 +25,27 @@ import type { CostParts } from "@parcha/agentrun-kernel";
  *  pointer) and `forgotten` (its tombstoned ones), over the store (sign-ins-store.ts signInReads). */
 export type SignInReader = ReturnType<typeof signInReads>;
 import { KINDS } from "./runner/journal-kinds.js";
-import { ASKED_BECAUSE, ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
+import { ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
+
+/** How a run wound down for its spend cap (`max_cost_usd`), from its journal's root entries: the tool calls the cap's
+ *  wrap-up refused (CAP_REFUSED, each call once however often it was refused: a replay is the same call), and whether it
+ *  wound down under the cap it has now (`capUsd`, its newest raise's, else its start's): its model was told to wrap up
+ *  under that cap (a CAP_WRAPUP naming it; the free-request limit's note names none, and is no dollar cap's), or a call
+ *  was refused under it. A cap raised past a wrap-up is a new cap the run has not wound down under. `skip`: entries not
+ *  the job's (its end-of-run turn's), which count for neither. The view's `stopped_for` and `budget_refused_calls`. */
+export function windDownOf(entries: readonly { readonly kind?: string; readonly id?: unknown; readonly data?: unknown }[], capUsd: number | undefined, skip?: (id: number) => boolean): { readonly refusedCalls: number; readonly woundDown: boolean } {
+  const underCap = (cap: unknown): boolean => capUsd !== undefined && typeof cap === "number" && Math.abs(cap - capUsd) <= CAP_TOLERANCE;
+  const calls = new Set<string>();
+  let woundDown = false;
+  for (const entry of entries) {
+    if (entry.kind !== CAP_REFUSED && entry.kind !== CAP_WRAPUP) continue;
+    if (skip?.(Number(entry.id))) continue;
+    const data = (entry.data ?? {}) as { callId?: unknown; capUsd?: unknown };
+    if (entry.kind === CAP_REFUSED && typeof data.callId === "string") calls.add(data.callId);
+    if (underCap(data.capUsd)) woundDown = true;
+  }
+  return { refusedCalls: calls.size, woundDown };
+}
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -141,7 +161,8 @@ export type State = "working" | "waiting" | "idle";
 
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
-export type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: ApprovalPrice; destructive?: true; resolved?: true };
+/** `asks_because`: why the gate asked a call its setting allows (its ask's own `because`, never one of the call's arguments). */
+export type Approval = { id: string; tool: string; call_id: string; args_json: string; asks_because?: string; requested_at: string; price?: ApprovalPrice; destructive?: true; resolved?: true };
 /** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
 /** `by`: "message", a deny a person's message gave while the call waited (Runs.message); "setting", the allow or deny the tool's setting gave an ask that waited (the tool set to allow or deny since it asked). */
 /** `superseded`: the answer a stop or a cancel overrode before the run's process acted on it, or the person's allow a deny set since overrode, kept as it was given. */
@@ -158,7 +179,7 @@ export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decisio
 // command names the call), so the card's id is the call's id. ---
 
 /** An `agentrun.ask` entry's data: the tool call the gate parked for a person, as the runner wrote it. */
-type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: ApprovalPrice | null; destructive?: true };
+type AskEntry = { callId: string; tool: string; args: unknown; because?: string; requestedAt: string; price?: ApprovalPrice | null; destructive?: true };
 /** An ask's price as its card shows it (tool-gate.ts ApprovalPrice); undefined for none, or one of no known shape. */
 const priceOfAsk = (price: unknown): ApprovalPrice | undefined => (typeof price === "number" || price === "not metered" || price === "priced by usage" ? price : undefined);
 /** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
@@ -186,6 +207,7 @@ export function asksOf(entries: readonly JournalEntry[]): Map<string, Approval> 
       tool: d.tool,
       call_id: d.callId,
       args_json: JSON.stringify(d.args ?? {}) ?? "{}",
+      ...(typeof d.because === "string" ? { asks_because: d.because } : {}),
       requested_at: d.requestedAt,
       ...(price !== undefined ? { price } : {}),
       ...(d.destructive === true ? { destructive: true as const } : {}),
@@ -489,23 +511,22 @@ export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
-/** A call's approval summary, where its tool has one (tools.ts ToolEntry.approvalSummary), then why it asks when its tool
- *  asked about it itself (the card's ASKED_BECAUSE, the gate's), redacted as its arguments are. */
+/** A call's approval summary, where its tool has one (tools.ts ToolEntry.approvalSummary), redacted as its arguments are. */
 function summaryOf(approval: Pick<Approval, "tool" | "args_json">, redact: (text: string) => string): { summary?: string } {
   const summarize = toolOf(approval.tool)?.approvalSummary;
+  if (!summarize) return {};
   let args: unknown;
   try {
     args = JSON.parse(approval.args_json);
   } catch {
     return {};
   }
-  const because = typeof args === "object" && args !== null && typeof (args as Record<string, unknown>)[ASKED_BECAUSE] === "string" ? ((args as Record<string, unknown>)[ASKED_BECAUSE] as string) : undefined;
-  const parts = [summarize?.(args), because === undefined ? undefined : `Asks because ${because}.`].filter((part): part is string => part !== undefined);
-  return parts.length ? { summary: redact(parts.join("\n\n")) } : {};
+  const summary = summarize(args);
+  return summary === undefined ? {} : { summary: redact(summary) };
 }
 export const approvalOf = (run: Pick<RunView, "approvals" | "meta">, redact: (text: string) => string): PendingApproval | undefined => {
   const waiting = waitingApproval(run);
-  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), ...summaryOf(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}), ...(waiting.destructive ? { destructive: true as const } : {}) } : undefined;
+  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), ...summaryOf(waiting, redact), ...(waiting.asks_because !== undefined ? { asks_because: redact(waiting.asks_because) } : {}), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}), ...(waiting.destructive ? { destructive: true as const } : {}) } : undefined;
 };
 /** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
  *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so

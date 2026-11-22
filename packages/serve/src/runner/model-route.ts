@@ -20,7 +20,7 @@ import type { Wire } from "@parcha/agentrun-kernel";
 import { onOpenRouter, openRouterAttribution, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
 import type { ToolsAs } from "../local-models.js";
 import { chooseModel, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
-import { providerFor } from "../provider.js";
+import { gatewayHeadersAt, providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
 import { callsOfText, type PiContext, toolsAsText } from "./text-tools.js";
 
@@ -103,14 +103,17 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   const settings = { ...sees, ...(target.reasoning !== undefined ? { reasoning: target.reasoning } : {}), ...(target.contextWindow ? { contextWindow: target.contextWindow } : {}), ...(target.maxTokens ? { maxTokens: target.maxTokens } : {}), ...(target.thinkingLevelMap ? { thinkingLevelMap: target.thinkingLevelMap } : {}) };
   const route = { model: chosen.model.modelId, named: `${chosen.model.provider}/${chosen.model.modelId}`, price, cost: target.cost, ...(unpriced.has(chosen.model.modelId) ? { unpriced: true } : {}), outputCeiling: target.maxTokens ?? null, like: sees };
   // An Anthropic model speaks Messages itself: the network, at its catalog origin, its key read by name per request.
+  // Its requests name the claim's run, turn and attempt only where that origin is serve's own gateway (gatewayHeadersAt).
   if (chosen.model.provider === "anthropic") {
-    return { ...route, provider: { api: "anthropic-messages", origin: target.baseUrl ?? "https://api.anthropic.com", credential: () => env.ANTHROPIC_API_KEY ?? env.ANTHROPIC_AUTH_TOKEN ?? "" } };
+    const origin = target.baseUrl ?? "https://api.anthropic.com";
+    const headers = gatewayHeadersAt(env, origin);
+    return { ...route, provider: { api: "anthropic-messages", origin, credential: () => env.ANTHROPIC_API_KEY ?? env.ANTHROPIC_AUTH_TOKEN ?? "", ...(headers ? { headers } : {}) } };
   }
   // A Claude model of serve's gateway (model.ts gatewayWire), for a caller that speaks Messages: the gateway itself, on
   // Messages, so the prompt cache marks pi-ai puts on the request reach it (provider.ts).
   if (target.api === "anthropic-messages" && chosen.model.provider === MODEL_PROVIDER && wires.includes("anthropic-messages")) {
     const to = providerFor("anthropic-messages", env, chosen.model, "pi");
-    return { ...route, model: to.modelId, provider: { api: "anthropic-messages", origin: to.origin, credential: to.credential, auth: to.auth }, like: settings };
+    return { ...route, model: to.modelId, provider: { api: "anthropic-messages", origin: to.origin, credential: to.credential, auth: to.auth, ...(to.headers ? { headers: to.headers } : {}) }, like: settings };
   }
   // A model pi-ai speaks Responses to, for a caller that speaks it: that wire itself, where main sends it (provider.ts).
   if (target.api === "openai-responses" && wires.includes("openai-responses")) {
@@ -121,7 +124,7 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
     const plan = onPlan ? { price: () => null, unpriced: true as const } : {};
     return {
       ...route, model: to.modelId, ...plan,
-      provider: { api: "openai-responses", origin: to.origin, credential: to.credential, auth: to.auth, ...(onPlan ? { plan: true } : {}), ...(to.refused ? { refused: to.refused } : {}) },
+      provider: { api: "openai-responses", origin: to.origin, credential: to.credential, auth: to.auth, ...(to.headers ? { headers: to.headers } : {}), ...(onPlan ? { plan: true } : {}), ...(to.refused ? { refused: to.refused } : {}) },
       like: onPlan ? { ...settings, developerRole: true } : settings,
     };
   }

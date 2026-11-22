@@ -93,7 +93,7 @@ test("an agent's own tool asks the host's gate; a deny answers reject_once and t
   assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
   assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'never ran');
   const journaled = await streamRecords(store, 'acp.permission');
-  assert.deepEqual(journaled.map((r) => [r.type, r.callId === asked[0].callId]), [['asked', true], ['answered', true]]);
+  assert.deepEqual(journaled.map((r) => [r.type, r.callId === asked[0].callId]), [['asked', true], ['answered', true], ['given', true]]);
   assert.equal(journaled[1].answer, 'deny');
 });
 

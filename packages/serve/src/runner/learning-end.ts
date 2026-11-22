@@ -17,7 +17,9 @@
 //     keeps sealed (store-secrets.ts storeSecrets), the runner's secrets, the keys its claim handed it, and the sign-in
 //     pointers its row says it was handed, read back from the store (handed-values.ts handedValuesOf). A run whose
 //     pointers can't be read back learns nothing (the hook drops it, saying why), never over a shorter list.
-// A run whose seed could not be read keeps that drop.
+// A run whose seed could not be read keeps that drop. A run whose seed was read at or before a reset of its agent's
+// learning learns nothing at all, dropped at its entry with reason `reset`. Every read of the agent's runs here reads
+// only those after the reset (learn/compile.ts sinceReset).
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
@@ -25,10 +27,11 @@ import { correctionRefused, learningCommit, type LearningChange, type LearningCo
 import { CAPS, type Change, checkDraft, problemWords, type Problem, unstorable } from "../learn/index.js";
 import { repickSiteOf } from "../learn/check.js";
 import { repickLabelOf, repickRewrite } from "../learn/repick.js";
-import { folderAt, type FolderRead, type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
-import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
+import { folderAt, type FolderRead, holdsCommit, type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
+import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, sinceReset, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, draftFailedOf, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
+import { reviseAttemptOf } from "./promotion.js";
 import { loopOf, repickOf } from "../learning-setting.js";
-import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion } from "../learn/promote.js";
+import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, resetAtOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders, draftDryRun, draftFiles, draftMcpTools, unpricedCalls, WORKFLOWS_DIR } from "../learn/workflow-draft.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
@@ -37,7 +40,7 @@ import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { META_TOOLS } from "../meta-tool-names.js";
 import { holdsSecret, LEARNING_LABEL, secretsShown } from "../learning.js";
 import type { RunPath } from "../learning-cost.js";
-import { said, STOPPED } from "../learning-words.js";
+import { said, seedStopped } from "../learning-words.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import type { SignInReader } from "../run-view.js";
 import { type AlsoRow, FINAL_STATES, type LearningProposal, type McpServerRow, type Store } from "../store/store.js";
@@ -94,7 +97,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   // holds, and a run's process is given none but its own keys.
   if (held()) return heldEndOfRun();
   const env = deps.env ?? process.env;
-  const hookFor = (seed: string, round: number) => createReflectHook({
+  const hookFor = (seed: string, round: number, mustHold: string | undefined) => createReflectHook({
     round,
     // A run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be kept within it. The cap
     // is the run's now (capNowOf: its newest raise's, else its launch's), the one its requests were admitted under. Its
@@ -121,6 +124,9 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // A grade's feedback round always has something new, the grade's words (feedback-round.ts), whatever the job did.
     nothingNew: async (runId) => !pendingFeedbackOf(await runEntries(deps.store, runId, BACKGROUND_CONTEXT)) && onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
     feedback: async (runId) => {
+      // A source hook uploads task dialogue, not owner feedback addressed to AgentRun.
+      // CLI corrections are written explicitly through the owner corrections API.
+      if (launch.cli_learning) return [];
       const [entries, rows] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })]);
       return ownerWords(entries, rows);
     },
@@ -153,7 +159,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     commit: async ({ runId, agentId, round: at, draft, correction, refuse }) => {
       const reason = draft ? `Compiled the job as workflow ${draft.name}${correction !== undefined ? ", with its owner's correction" : ""}.` : "Its owner's correction.";
       const done = await commitDirect({ folder: () => deps.learningFolder(agentId), log: deps.log ?? (() => undefined) }, {
-        runId, round: at, reason, seed, files: draft ? draft.files.map((file) => ({ ...file })) : [],
+        runId, round: at, reason, seed, ...(mustHold ? { mustHold } : {}), files: draft ? draft.files.map((file) => ({ ...file })) : [],
         ...(draft?.held?.length ? { held: [...draft.held] } : {}), ...(draft?.bases ? { bases: draft.bases } : {}),
         ...(correction !== undefined ? { correction, refuseValues: refuse } : {}),
       });
@@ -165,15 +171,26 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // Why, as its start recorded it: a folder that could not be read, or a start that could not be made from it; a
     // start that records none names no reason.
     if (seedFailed(start)) {
-      const failed = start.seedFailed;
-      const why = failed === "unreadable" ? STOPPED.unreadable : failed === "not_copied" ? STOPPED.notCopied : STOPPED.noSeed;
+      const why = seedStopped(start.seedFailed);
       // Every end of it: the first's drop stands for a later one (the store keeps one a round, so it adds nothing new).
       return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(why) } } }] };
     }
+    // The one check at the entry of a run's learning end, before any merge, look-back, compile, draft check or record: a
+    // run whose seed was read at or before a reset of its agent's learning (its watermark, learn/promote.ts resetAtOf; a
+    // start that records no time is read as before it) learns nothing, whole. Its corrections and compile would land on
+    // what the reset left. Read by time alone: a Mode 2 run's end writes the folder on its disk, which never held the
+    // seed the server read from its own folder, so a commit missing here says nothing of a reset.
+    const reset = await resetAtOf(deps.store.settings, input.agentId);
+    if (reset !== undefined && !(start.seededAt !== undefined && start.seededAt > reset)) {
+      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "reset", detail: said.reset } } }] };
+    }
+    // The second wall, once the agent's learning was reset: a seed this folder holds now is one its merge must still
+    // find (commit.ts mustHold), so a reset after this check refuses the merge whole in the script.
+    const mustHold = reset !== undefined && (await withFolder(deps, input.agentId, (folder) => holdsCommit(folder.workspace, start.seed!))) ? start.seed! : undefined;
     // Which end of the run this is: the round after the newest it kept (a follow-up opened the run again after it), else
     // its first. A replayed end reads the same round: its rows are written only with the end that closes it.
     const prior = await deps.store.learning.proposal(input.runId);
-    return hookFor(start.seed!, prior ? prior.round + 1 : 1)(input);
+    return hookFor(start.seed!, prior ? prior.round + 1 : 1, mustHold)(input);
   };
 }
 
@@ -480,20 +497,24 @@ const workflowText = (doc: unknown): string => {
   return Buffer.byteLength(text) <= CAPS.file ? text : `${JSON.stringify(doc)}\n`;
 };
 
+/** The digest of the failed-draft record run `runId`'s compile keeps (recordDraftFailed): one per run. */
+const draftFailedDigest = (runId: string): string => createHash("sha256").update(`draft-failed\n${runId}`).digest("hex").slice(0, 16);
+
 /** Compile once: run `runId`'s compile turn whose drafts all failed their checks is the compile's attempt, kept as a
  *  promotion record of the shape a check's stop has (runner/promotion.ts stopUnchecked): a hold with nothing checked,
  *  its reason (DRAFT_FAILED) naming the failed checks. A first compile's earns the one recompile, as a check's hold
  *  does (the agent's next due run compiles once more: learn/compile.ts newCompileAttempt); a recompile's (a revision of
  *  a held workflow, or a new one after a first compile's failed drafts) stops (compileStoppedOf, heldNamesOf): nothing
- *  compiles it again. One record per run (its digest is the run's), written once: a claim that ends the run again
+ *  compiles it again. A revision of a connected agent's hold on give-backs is no recompile (runner/promotion.ts
+ *  reviseAttemptOf). One record per run (its digest is the run's), written once: a claim that ends the run again
  *  writes none. */
 export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "log">, input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }): Promise<void> {
   try {
     const records = await promotionsOf(deps.store.settings, input.agentId);
-    const attempt = input.compile.mode === "revise" ? 2 : newCompileAttempt(records);
+    const attempt = input.compile.mode === "revise" ? reviseAttemptOf(records, input.compile.held) : newCompileAttempt(records);
     const { compile_after, agree_min, alone_min } = await loopOfRun(deps.store, input.runId);
     const workflow = input.compile.mode === "revise" ? input.compile.workflow : input.workflow;
-    const digest = createHash("sha256").update(`draft-failed\n${input.runId}`).digest("hex").slice(0, 16);
+    const digest = draftFailedDigest(input.runId);
     const failed = input.errors.join("; ").slice(0, CHECK_TEXT_MAX) || "no draft passed";
     const reason = `${DRAFT_FAILED}: ${failed}. ${attempt === 2 ? "It was the recompile, so it stops: nothing compiles again until its owner acts" : "It is not promoted; the next due run compiles it once more"}`;
     const check = { compile_after, agree_min, alone_min, attempt, n: 0, agreed: 0, alone: 0, of: [], ...(attempt === 2 ? { stopped: true as const } : {}) };
@@ -548,19 +569,23 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
  *  session, also carries the owner's standing corrections it was laid with (`corrections`, its # Learned section), as an
  *  in-session compile reads them in its session. Undefined when it compiles nothing, or when the folder can't be read. */
 export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round?: number; input?: unknown; seedWorkflows?: number; corrections?: string }): Promise<CompileAsk | undefined> {
+  const { agentId } = input;
   // A revision is asked only of a workflow its promotion holds, once per hold. The workflows whose newest revision other
   // than their champion (learn/promote.ts championOf: it serves while that one is held) is held: the run's own may be one.
-  const records: PromotionRecord[] = await promotionsOf(deps.store.settings, input.agentId).catch(() => []);
+  const records: PromotionRecord[] = await promotionsOf(deps.store.settings, agentId).catch(() => []);
   const heldNames = heldNamesOf(records);
   // The loop's numbers on the agent's definition (the revision this run runs): the first compile waits for compile_after
   // completed agent runs, the ending one counted.
   const { compile_after: compileAfter } = await loopOfRun(deps.store, input.runId);
-  // The agent's latest runs, newest first: those after the ending one in the list started before it.
-  const listed = await deps.store.runs.list({ agentId: input.agentId, limit: Math.max(200, 2 * compileAfter) });
+  // The agent's latest runs, newest first: those after the ending one in the list started before it, and after its
+  // learning's reset (sinceReset): a run before the reset is never a compile's trace. None on a named disk: it learns
+  // nothing (learn/learning-of.ts).
+  const listed = await deps.store.runs.list({ agentId, disk: null, limit: Math.max(200, 2 * compileAfter) });
   const at = listed.findIndex((run) => run.id === input.runId);
-  const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === input.agentId);
+  const since = await sinceReset(deps.store, agentId);
+  const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === agentId && since(run));
   const done = earlier.filter(completedRun);
-  const byHand = (await lastOwnRuns(deps.store, input.agentId, compileAfter, input.runId)).length;
+  const byHand = (await lastOwnRuns(deps.store, agentId, compileAfter, input.runId)).length;
   const dueWith = (workflows: number) => compileDue({ completed: input.outcome === "completed", runs: byHand + (input.outcome === "completed" ? 1 : 0), workflows, compileAfter });
   const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown } } | null | undefined)?.compiled;
   // Compile once: a recompile whose drafts failed their checks stopped the agent's new compiles (recordDraftFailed).
@@ -623,10 +648,14 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   if (read.held) {
     // Once per hold: a run since it that compiled this workflow asked already, whatever came of it (its revision is on its
     // way to a replay, or its draft failed its checks), however many runs ago. Read from the agent's kept learning since
-    // the hold, never a window of its last runs; one that can't be read asks nothing.
-    const since = Date.parse(read.held.at);
-    const kept = await deps.store.learning.proposals(input.agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
-    if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return sayLeftOut(), undefined;
+    // the hold, never a window of its last runs; one that can't be read asks nothing. A draft that failed since, not stopped
+    // (only a revise of a connected agent's hold on give-backs: reviseAttemptOf), asks once more: counted from it, its own
+    // run's kept learning (written after its record, at the run's end) not counted.
+    const failed = records.findLast((one) => one.workflow === read.held!.workflow && draftFailedOf(one) && !one.check?.stopped && !(one.at < read.held!.at));
+    const since = Date.parse(failed?.at ?? read.held.at);
+    const kept = await deps.store.learning.proposals(agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
+    const asked = (one: LearningProposal) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow && draftFailedDigest(one.runId) !== failed?.digest;
+    if (!kept || kept.some(asked)) return sayLeftOut(), undefined;
     const { workflow, digest, reason, check, audit } = read.held;
     // A check's or an audit's disagreements are the agent's own inputs and answers: cut of the run's secrets as a trace is
     // (traceFrom).

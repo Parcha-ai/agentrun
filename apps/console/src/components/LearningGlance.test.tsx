@@ -194,4 +194,12 @@ describe("the Learning tab", () => {
     expect(host.querySelector('[data-testid="cost-and-workflow"]')).toBeNull();
     expect(host.querySelector('section[aria-label="Learned workflow"]')).toBeNull();
   });
+  it("leaves the cost of a run on a row of its own for a CLI agent, whose tab has no replay", async () => {
+    const cli = { ...AGENT, definition: { ...AGENT.definition, cli_learning: { runtime: "codex", connection_id: "connection", project: "/projects/example" } } } as typeof AGENT;
+    const host = draw(createElement(LearningTab, { agent: cli, v2: fixtureClient({}) as unknown as Client, server: "on" }));
+    await settle();
+    expect(host.querySelector('[data-testid="cost-per-run"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="cost-and-workflow"]')).toBeNull();
+    expect(host.querySelector('section[aria-label="Learned workflow"]')).toBeNull();
+  });
 });

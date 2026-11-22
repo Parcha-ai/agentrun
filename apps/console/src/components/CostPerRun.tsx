@@ -22,8 +22,10 @@ import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 const LIMIT = 1000;
 /** What a person does to get the chart: the short and the empty states say it. */
 export const HOW = "Turn learning on and run the same job about 20 times: each run's cost shows here, and where a learned workflow takes the job over, the line falls.";
-type LearningExecution = "hosted" | "native" | "sdk";
-const howFor = (execution: LearningExecution) => execution === "native"
+type LearningExecution = "hosted" | "native" | "sdk" | "cli";
+const howFor = (execution: LearningExecution) => execution === "cli"
+  ? "Costs include reported CLI usage and AgentRun learning. Compare similar tasks; owner corrections do not enable workflow takeover."
+  : execution === "native"
   ? "Native run costs include reported model usage and AgentRun learning. Compare repeated jobs; corrections do not enable workflow takeover."
   : execution === "sdk"
     ? "SDK run costs include reported backend usage and AgentRun learning. Your backend keeps launching jobs and binds the tools an accepted workflow can use."

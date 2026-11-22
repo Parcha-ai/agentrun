@@ -11,10 +11,10 @@
 // scripts/ci-timings.mjs`). A file it does not list weighs its suite's median; nothing is dropped for a missing weight.
 // The plan is a pure function of the checkout, so every job of a run computes the same one.
 //   node scripts/ci-plan.mjs [--pool <name>]   prints the test shards and their modelled seconds
-import { spawnSync } from 'node:child_process';
 import { existsSync, globSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isMain } from './is-main.mjs';
+import { npmSpawnSync } from './npm-command.mjs';
 
 /** scripts/ci-shards.json (pools, shard counts, root suites, whole suites) and scripts/ci-timings.json under `root`. */
 export function readConfig(root) {
@@ -29,7 +29,7 @@ const nodeTest = /^node --test((?: --test-(?:concurrency|timeout)=\d+)*)((?: (?:
 const VITEST = 'vitest --run';
 
 function listed(command, cwd, what) {
-  const done = spawnSync('npm', ['exec', '-c', command], { cwd, encoding: 'utf8' });
+  const done = npmSpawnSync(['exec', '-c', command], { cwd, encoding: 'utf8' });
   if (done.status !== 0) throw new Error(`${what}: \`${command}\` exited ${done.status ?? done.signal}: ${(done.stderr || '').trim().split('\n').slice(-3).join(' / ')}`);
   const files = done.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
   for (const file of files) if (!FILE.test(file)) throw new Error(`${what}: \`${command}\` printed "${file}", not a plain path`);

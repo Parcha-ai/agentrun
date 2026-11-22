@@ -40,6 +40,50 @@ export interface Claim {
   /** The runner that held the run when this claim took it over: its lease ran out with the run still running (that
    *  runner was lost, or lost its claim). Its loop says so on the run's timeline. Absent for any other claim. */
   readonly lost?: { readonly runner: string };
+  /** Which turn of the run this claim works and which attempt at it (run_attempts, RunAttemptRow): set by the claim that
+   *  took the run, absent on a claim read back (claimsOf) and on a store that keeps none (a test's). */
+  readonly turn?: number;
+  readonly attempt?: number;
+}
+
+/** Why a claim let its run go while the run was still at work, so another claim does that work again: `drain`, its
+ *  runner closed (a deploy, a scale-down) and handed the run back; `retry`, its loop ended interrupted on its own (or its
+ *  end was refused) and the run was released to be tried again; `lease_lapse`, its runner was there but could not renew
+ *  the claim before it ran out; `crash`, the claim's lease ran out with nothing said of it (its runner died). */
+export type AttemptCause = "drain" | "crash" | "lease_lapse" | "retry";
+
+/** One claim of a run (store schema `run_attempts`), written by the claim itself: the turn it works and its attempt at
+ *  it. A turn is the work one claim starts afresh: the run's first, a follow-up's, a resume after a park. A claim that
+ *  takes over a turn another claim was cut from (its run still running, and that claim let it go for `cut`, or its lease
+ *  ran out) works the same turn again: its attempt is one more, and `cause` says why the one before was cut. Infra's
+ *  work, not the run's: every request the cut attempt made is made again. `journalFrom`: the first journal entry id this
+ *  claim could write (the run's next id when it claimed), so each entry of the run's journal is read as its claim's. */
+export interface RunAttemptRow {
+  readonly runId: string;
+  readonly epoch: number;
+  readonly turn: number;
+  readonly attempt: number;
+  /** Why the attempt before was cut; null on a turn's first attempt. */
+  readonly cause: AttemptCause | null;
+  /** Why this claim let the run go with its turn unfinished (`drain`, `retry`, `lease_lapse`); null while it holds the
+   *  run, and when it ended the turn (an answer, a park, the run's end) or died without a word. */
+  readonly cut: Exclude<AttemptCause, "crash"> | null;
+  readonly runner: string;
+  readonly from: RunState;
+  readonly journalFrom: number;
+  /** When the claim took the run, on the store's clock (ms). */
+  readonly claimedAt: number;
+}
+
+/** Each claim of a run, its turn and attempt (RunAttemptRow): written in the claim's own transaction, its `cut` in its
+ *  release's. Data only: nothing reads it to decide what a run does. */
+export interface RunAttempts {
+  /** The claim at `epoch` lost its lease while its runner was there (runner.ts loseClaim): its cut, and the cause of the
+   *  claim that took the run over from it if that one was read as a crash. Unfenced and idempotent: a cut already said, or
+   *  a claim with no row, is left as it is. */
+  lapsed(runId: string, epoch: number): Promise<void>;
+  /** The run's claims, by epoch. */
+  forRun(runId: string): Promise<RunAttemptRow[]>;
 }
 
 /** A command the server wrote for a run (stop, cancel, steer, approve, deny, raise): one row, read by the run's runner in id order
@@ -237,6 +281,10 @@ export interface RunRow {
   readonly signInHanded: readonly string[] | null;
   /** The caller's labels, given at its start (RunLabels): opaque to the server, kept as given, {} when none. */
   readonly labels: RunLabels;
+  /** The disk the run's launch named as its own (a customer's Archil disk: the launch body's `archil_disk` of kind "launch"),
+   *  by its id, written once with the queued run; null for a run on the default disk (its launch named none, or its agent's
+   *  own). A run on a named disk learns nothing, so learning reads only runs with none (learn/learning-of.ts). */
+  readonly disk: string | null;
   readonly startedAt: number;
   readonly endedAt: number | null;
   /** When the run was purged (Runs.purge): its row is then a tombstone, its cost and times kept, everything else of it
@@ -861,16 +909,29 @@ export interface Runs {
   /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
+  /** Only the immutable CLI accounting identity/turn and (when requested) SDK completion usage. Projects these JSON
+   *  members in the database: no launch input, policy, sealed bytes, completion answer or replay events are returned.
+   *  Undefined for an absent run; absent members stay undefined. Historical identity may be read without completion.
+   *  An ordinary-store analytics read, not for Store.snapshot: PostgreSQL's specific NUL/surrogate extraction refusal falls back
+   *  to JS parsing that row's text at the prior full-row cost (never sealed bytes); other database failures propagate. */
+  usageMetadata(runId: string, options: { completion: boolean }): Promise<{
+    cli: Readonly<Record<string, unknown>>; completionUsage?: unknown;
+  } | undefined>;
   /** The learning start (the launch body's `learning` member, as stored: undefined when the body names none) of every run of
    *  agent `agentId` (no built-in learning run's) that has a launch row, in one read: what an agent-wide read (its cost per
    *  run, its learning view) needs of its runs at once, never a read a run. Only that member is read: no run's input, no
    *  sealed bytes. A run with no launch row has no entry. */
   learningStarts(agentId: string): Promise<{ runId: string; learning: unknown }[]>;
+  /** The ids of agent `agentId`'s runs started after `at` whose learning seed was read at or before it (the launch body's
+   *  `learning.seededAt`): a reset's watermark (learn/compile.ts sinceReset). Reads that one number of the runs started
+   *  after `at` alone. */
+  seededBefore(agentId: string, at: number): Promise<string[]>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
    *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value.
+   *  `disk`: only the runs on that disk (RunRow.disk), null for the default disk's; not given, every disk's.
    *  A purged run (Runs.purge) only with `purged`: the readers of money and counts (usage, stats, analytics) and an
    *  import's read of the sessions it holds, never a reader of a run's content. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number; purged?: boolean }): Promise<RunRow[]>;
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number; purged?: boolean }): Promise<RunRow[]>;
   /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
    *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
    *  behind, and its agent's archive time. `archived` filters on the run's archive or its agent's (true: either; false:
@@ -911,9 +972,10 @@ export interface Runs {
   costUnknown(options: { limit: number; after?: string }): Promise<string[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
-  /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs included (which list leaves
-   *  out): what deleting the agent stops and removes, with the runner that holds each (null: none) and its purge time. */
-  every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null }[]>;
+  /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs and purged runs included
+   *  (which list leaves out): what deleting the agent stops and removes, with the runner that holds each (null: none),
+   *  its purge time and its disk (RunRow.disk: where a learning folder of the agent may be, learn/learning-of.ts namedDisksOf). */
+  every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null; disk: string | null }[]>;
   /** The runs made from run `runId` that hold what it was given or did, by id: each run whose launch replays its input
    *  (the launch body's `replay.of`) or audits it (`audit.of`: its audit's shadow run), and each learning run its kept
    *  learning names (learning_proposals' learning_run_id). What purging the run purges with it. */
@@ -930,8 +992,9 @@ export interface Runs {
    *  purged first, and Runs.create, under the same row lock, makes none once it is purged. A run with no row, or one
    *  purged already, is no write. On SQLite, once it commits, a WAL checkpoint (TRUNCATE): with secure_delete on in every
    *  connection, neither the file nor its WAL keeps the purged bytes after it. A checkpoint another connection holds back
-   *  is retried once, then told to the store's `warn`; it never fails the purge. Postgres: the old row versions are the
-   *  database's until its VACUUM. */
+   *  leaves the scrub's marker, for the next start's scrub; a marker that cannot be written throws, the purge committed,
+   *  and the retried DELETE arranges it again (Store.purgeScrub). Postgres: the old row versions are the database's until
+   *  its VACUUM. */
   purge(runId: string, kept: PurgeKept): Promise<void>;
   /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
    *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,
@@ -1411,6 +1474,24 @@ export interface RunnerRow {
   readonly host: string | null;
   readonly port: number | null;
   readonly seenAt: number;
+  /** The runner's build (the serve package's version), and the most runs it holds at once (its loops): each null on a
+   *  row a runner of an earlier build wrote, or one that said neither (a refusing runner says no slots). */
+  readonly version: string | null;
+  readonly slots: number | null;
+}
+
+/** The store's runs and hand-backs as the capacity read counts them (GET /v2/capacity, capacity.ts), on the deadlines'
+ *  clock (fence.ts storeNow), read once for the whole answer. Counts and runner names only. */
+export interface RunCapacity {
+  /** The deadlines' clock when it was read. */
+  readonly at: number;
+  /** Runs a runner may claim now, by the claim's own rule (queued; handed back or its claim run out, past any backoff; a
+   *  parked run something wakes). */
+  readonly queued: number;
+  /** Runs a claim holds now (its lease not run out), by the runner that holds them. */
+  readonly held: ReadonlyMap<string, number>;
+  /** The hand-backs (hand_backs) within the window asked for. */
+  readonly handBacks: number;
 }
 
 /** How long a runner's row is kept once it stopped saying it is there (a runner that died without its close): its next
@@ -1424,7 +1505,7 @@ export interface Runners {
    *  `unlessLiveMs`, not over another incarnation's row of the same name seen within that: a process's put again of a row
    *  that went (pruned, a store restored) never takes back a later process's live one. False when such a row is there and
    *  nothing was written. */
-  put(row: Omit<RunnerRow, "seenAt" | "host" | "port"> & { readonly host?: string | null; readonly port?: number | null }, options?: { readonly unlessLiveMs?: number }): Promise<boolean>;
+  put(row: Omit<RunnerRow, "seenAt" | "host" | "port" | "version" | "slots"> & { readonly host?: string | null; readonly port?: number | null; readonly version?: string | null; readonly slots?: number | null }, options?: { readonly unlessLiveMs?: number }): Promise<boolean>;
   /** Marks the runner's row seen now and says on it where its relay answers (`at`, or null for nowhere), while the row is
    *  still this incarnation's. False when it is not (or there is none), and nothing was written. */
   renew(runner: string, incarnation: string, at: { readonly host: string; readonly port: number } | null): Promise<boolean>;
@@ -1435,6 +1516,8 @@ export interface Runners {
   live(staleMs: number): Promise<RunnerRow[]>;
   /** The runner's row gone, while it is still this incarnation's. */
   remove(runner: string, incarnation: string): Promise<void>;
+  /** The runs waiting for a runner and held by one, and the hand-backs within the last `windowMs` (RunCapacity). */
+  capacity(windowMs: number): Promise<RunCapacity>;
 }
 
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
@@ -1654,6 +1737,8 @@ export interface Store {
   readonly computerLedger: ComputerLedger;
   /** Each computer a run made, from its create to its proven delete. */
   readonly computerIntervals: ComputerIntervals;
+  /** Each claim of a run: the turn it works and its attempt at it, and why it let the run go unfinished. */
+  readonly runAttempts: RunAttempts;
   /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
   readonly pairedComputers: PairedComputers;
   /** The tokens minted for hosted machines that dial this server, each kept as its SHA-256. */
@@ -1681,6 +1766,15 @@ export interface Store {
    *  done; `left` says why it was kept, for the next start to finish. Postgres: `work` alone (a replaced row version is
    *  the database's until its vacuum). */
   secureRewrite?(work: () => Promise<number>, options?: SecureRewriteOptions): Promise<SecureRewrite>;
+  /** A DELETE of a run or agent already purged (agent-delete.ts): a purge can commit and then fail to write the scrub's
+   *  marker (Runs.purge), and its retry finds the row purged. SQLite with a file, when no marker is there: the purge's
+   *  WAL checkpoint again, and the marker when another connection still holds the log back; with the marker there, no
+   *  write, but the marker is the purge's too, so a rewrite under way that wrote it removes it only after a checkpoint
+   *  that truncates the log. Postgres and a store with no file: nothing. */
+  purgeScrub(): Promise<void>;
+  /** Reads the store's schema version and its runner floor now, without a lock or a write: a runner reads it at each
+   *  renewal (runner/main.ts), and stops once the floor is above the version its build knows. */
+  schemaState?(): Promise<StoreSchemaState>;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;
@@ -1692,7 +1786,7 @@ export interface Store {
   /** Gives the run back (no runner, no claimed_until; `state` when given; `wakeAt` and `backoffUntil` or none), in a
    *  durable commit (as flush). Fenced when the epoch moved on. Never a final state: the run's end commit is the one write
    *  that makes it final (a release asked for one is refused with a TypeError). */
-  release(claim: Claim, options?: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
+  release(claim: Claim, options?: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null; cut?: "drain" | "retry" }): Promise<void>;
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;
@@ -1864,6 +1958,31 @@ export class SchemaVersionUnknown extends Error {
     this.found = found;
     this.known = known;
   }
+}
+
+/** A store a later build migrated past what this runner can run beside: its schema is ahead of the version this build
+ *  knows, and its runner floor (a breaking migration's version) is above it. Run a runner of the server's release. A
+ *  SchemaVersionUnknown, so every caller that refuses an unknown schema refuses this one the same way (a runner's exit 3). */
+export class RunnerBelowFloor extends SchemaVersionUnknown {
+  readonly floor: number;
+  constructor(place: string, found: number, known: number, floor: number) {
+    super(place, found, known);
+    const store = place.startsWith("the ") ? place : `the store at ${place}`;
+    this.message = `${store} is schema version ${found}, and a runner on it must know version ${floor} or later (its runner floor: a later release changed the schema in a way an earlier runner cannot run beside); this runner knows ${known}. Run a runner of the server's release.`;
+    this.name = "RunnerBelowFloor";
+    this.floor = floor;
+  }
+}
+
+/** A store's schema version and its runner floor (Store.schemaState). */
+export interface StoreSchemaState {
+  /** The store's schema version; null when none is set up. */
+  readonly version: number | null;
+  /** The oldest schema version a runner's build must know to run on this store: a runner whose build knows less stops
+   *  claiming, hands its runs back and exits. On SQLite the version itself (a SQLite runner opens only its own version). */
+  readonly runnerFloor: number | null;
+  /** The version this build knows (its newest migration on Postgres, SCHEMA_VERSION on SQLite). */
+  readonly known: number;
 }
 
 /** A command for a run that is final, or that does not exist. */

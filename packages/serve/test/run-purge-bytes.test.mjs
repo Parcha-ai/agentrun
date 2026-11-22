@@ -4,19 +4,22 @@
 // checkpoints the WAL once it commits (sqlite/store.ts #purged). One sentinel, a word no other test holds, is in the raw
 // bytes of store.sqlite and its -wal before the purge; after it, it is in none of store.sqlite, -wal, -journal or -shm:
 // at once, after another checkpoint, and after the server closes. A checkpoint another connection's reader holds back
-// never fails the purge: it warns, and the next purge's checkpoint finishes; it waits only its own short busy wait, so
-// the store's other requests never queue behind the store's 10 s one. SQLite only: on Postgres a purged row's bytes stay
-// in its dead tuples until a write reuses the space VACUUM freed (a gap named in the purge docs, not closed).
+// never fails the purge: it leaves the scrub's marker, and the next start's scrub truncates the log; it waits only its
+// own short busy wait, so the store's other requests never queue behind the store's own. SQLite only: on Postgres a
+// purged row's bytes stay in its dead tuples until a write reuses the space VACUUM freed (a gap named in the purge docs,
+// not closed).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { purgeRun } from "../dist/agent-delete.js";
 import { openSqliteStore } from "../dist/store/index.js";
+import { forgetServed, viewOverStore } from "../dist/store-view.js";
 import { sqliteOnly } from "./store-target.mjs";
-import { follow, serve, startRun } from "./support.mjs";
+import { agent, follow, serve, startRun } from "./support.mjs";
 
 const FILES = ["store.sqlite", "store.sqlite-wal", "store.sqlite-journal", "store.sqlite-shm"];
 
@@ -78,81 +81,237 @@ test("a purged agent's sentinel, in its instructions and its run's input, is in 
   await goneFromBytes(data, word, stop);
 });
 
-test("a purge whose checkpoint a reader in another connection holds back still commits: it warns that the bytes may stay, and the next purge's checkpoint, once the reader is done, leaves the sentinel in none of the store's files", sqliteOnly("the SQLite store's WAL checkpoint"), async (t) => {
-  const word = `PURGE-SENTINEL-${randomBytes(6).toString("hex")}`;
-  const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const warned = [];
-  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), warn: (message) => warned.push(message) });
-  t.after(() => store.close());
+/** `promise`, or a failure in words once `ms` have passed: a test's own bound, short of the suite's. */
+const within = (promise, ms, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: not within ${ms} ms`)), ms).unref())]);
+
+/** A store at `dir` (its own data directory, or its file `store.sqlite` there) with agent-1 and run-1 ended, its input and
+ *  summary holding `word`. */
+async function storeWithRun(dir, word, options = {}) {
+  const store = await openSqliteStore({ ...options, dataDir: dir });
   await store.agents.create({ id: "agent-1", name: "agent-1" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
-  for (const id of ["run-1", "run-2"]) {
-    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: `Keep ${word} for ${id}.` } } });
-    const claim = await store.claim(id, "runner-test", { leaseMs: 30_000 });
-    assert.ok(claim, `run ${id} is claimed`);
-    await store.runs.update(claim, { state: "ended", costUsd: 0.01, summary: `It kept ${word}.` });
-  }
-  const kept = { meters: null, spend: { usd: null }, learning: null };
-
-  // A reader's snapshot from before the purge: the log's frames it reads stay, so no checkpoint can truncate it.
-  const reader = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });
-  reader.exec("BEGIN");
-  reader.prepare("SELECT count(*) AS n FROM runs").get();
-  await store.runs.purge("run-1", kept);
-  assert.equal((await store.runs.get("run-1")).purgedAt !== null, true, "the purge committed");
-  assert.equal(warned.length, 1, JSON.stringify(warned));
-  assert.match(warned[0], /purge of run run-1 committed, but its WAL checkpoint did not finish \(another connection held the log\)/);
-  assert.notDeepEqual(holding(dir, word), [], "while the reader holds the log, the store's bytes may hold the sentinel, as the warning says");
-  reader.exec("COMMIT");
-  reader.close();
-
-  await store.runs.purge("run-2", kept);
-  assert.equal(warned.length, 1, `the next purge's checkpoint finishes: ${JSON.stringify(warned)}`);
-  assert.deepEqual(holding(dir, word), [], "after the next purge's checkpoint, no store file holds the sentinel of either run");
-});
-
-test("a purge's checkpoint that a reader in another connection holds back never stalls the store's other requests: on the store's own 10 s busy wait, an unrelated write and read while it runs each answer in well under a second, and the purge itself returns in a moment", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const warned = [];
-  // The store's own busy wait (10 s): the checkpoint must wait on a short one of its own, not on this one.
-  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), warn: (message) => warned.push(message) });
-  t.after(() => store.close());
-  await store.agents.create({ id: "agent-1", name: "agent-1" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
-  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Purge me." } } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: `Keep ${word} for run-1.` } } });
   const claim = await store.claim("run-1", "runner-test", { leaseMs: 30_000 });
   assert.ok(claim, "run-1 is claimed");
-  await store.runs.update(claim, { state: "ended", costUsd: 0.01, summary: "Done." });
+  await store.runs.update(claim, { state: "ended", costUsd: 0.01, summary: `It kept ${word}.` });
+  return store;
+}
 
-  // A reader's snapshot from before the purge: it holds the log through the whole purge, both checkpoint tries included.
+/** A reader's snapshot from before a purge, in a connection of its own: the log's frames it reads stay, so no checkpoint
+ *  can truncate the log while it is open. */
+function heldReader(dir) {
   const reader = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });
-  t.after(() => reader.isOpen && reader.close());
   reader.exec("BEGIN");
   reader.prepare("SELECT count(*) AS n FROM runs").get();
+  return reader;
+}
 
-  const started = performance.now();
-  let settled = false;
-  const purging = store.runs.purge("run-1", { meters: null, spend: { usd: null }, learning: null }).finally(() => (settled = true));
-  // Unrelated requests, one after another, for as long as the purge runs (its checkpoint's tries and the pause between
-  // them): each is queued behind whichever checkpoint try is in flight when it is sent.
-  const waits = [];
-  for (let i = 0; i < 400 && (!settled || i < 3); i++) {
-    const at = performance.now();
-    await store.agents.create({ id: `other-${i}`, name: `other-${i}` }, { id: `rev-other-${i}`, kind: "agentic", body: { instructions: "Answer." } });
-    const wrote = performance.now();
-    assert.ok(await store.agents.get(`other-${i}`), `agent other-${i} reads back`);
-    waits.push({ write: Math.round(wrote - at), read: Math.round(performance.now() - wrote) });
-    if (!settled) await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  await purging;
-  const purgeMs = Math.round(performance.now() - started);
-  reader.exec("COMMIT");
-  reader.close();
+const KEPT = { meters: null, spend: { usd: null }, learning: null };
 
+test("a purge whose checkpoint a reader in another connection holds back still commits and leaves the scrub's marker: the next start's scrub truncates the log, and the sentinel is in none of the store's files", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
+  const word = `PURGE-SENTINEL-${randomBytes(6).toString("hex")}`;
+  const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
+  let reader;
+  t.after(() => reader?.isOpen && reader.close());
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = await storeWithRun(dir, word);
+  reader = heldReader(dir);
+  await store.runs.purge("run-1", KEPT);
   assert.equal((await store.runs.get("run-1")).purgedAt !== null, true, "the purge committed");
-  const slowest = Math.max(...waits.map(({ write, read }) => Math.max(write, read)));
-  assert.ok(slowest < 1_000, `no unrelated request waits on the checkpoint's busy wait: the slowest took ${slowest} ms of ${JSON.stringify(waits)}`);
-  assert.ok(purgeMs < 2_000, `the purge returns without the store's busy wait: it took ${purgeMs} ms`);
-  assert.equal(warned.length, 1, `the held checkpoint warns once: ${JSON.stringify(warned)}`);
-  assert.match(warned[0], /purge of run run-1 committed, but its WAL checkpoint did not finish \(another connection held the log\)/);
+  const marker = join(dir, "store.sqlite.scrub");
+  assert.ok(existsSync(marker), "its checkpoint held back, the purge leaves the scrub's marker for the next start");
+  // The reader's snapshot ends, its connection open: the store's close is not the last connection's, so it leaves the log
+  // as the held checkpoint left it (as a crash would).
+  reader.exec("COMMIT");
+  await store.close();
+  assert.ok(statSync(join(dir, "store.sqlite-wal")).size > 0, "the log keeps its frames past the store's close");
+  assert.notDeepEqual(holding(dir, word), [], "the store's bytes still hold the sentinel");
+
+  // The next start, on the same data: its scrub, the store's secureRewrite the server runs before it serves (server.ts,
+  // here with no row of its own to rewrite), truncates the log. The reader's connection stays open, so the log's size
+  // is the scrub's doing and not the last close's.
+  const next = await openSqliteStore({ dataDir: dir });
+  t.after(() => next.close());
+  assert.deepEqual(await next.secureRewrite(async () => 0), { rewritten: 0 }, "the scrub finishes");
+  assert.equal(existsSync(marker), false, "the next start's scrub is done: its marker is gone");
+  assert.equal(statSync(join(dir, "store.sqlite-wal")).size, 0, "and it truncated the log");
+  assert.deepEqual(holding(dir, word), [], "no store file holds the sentinel");
+});
+
+test("a purge whose checkpoint is held back while a rewrite that finds nothing to rewrite is under way keeps its scrub's marker: the rewrite never removes a marker a purge left, and the next start's scrub truncates the log", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
+  const word = `PURGE-SENTINEL-${randomBytes(6).toString("hex")}`;
+  const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
+  let reader;
+  t.after(() => reader?.isOpen && reader.close());
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = await storeWithRun(dir, word);
+  const marker = join(dir, "store.sqlite.scrub");
+  assert.equal(existsSync(marker), false, "no scrub is pending before the rewrite");
+  // A rewrite as the server runs one while it serves (server.ts sealMarked: no VACUUM), whose work the test holds until
+  // the purge is done, and which then finds nothing to rewrite (another write changed the row meanwhile).
+  let entered;
+  const inWork = new Promise((resolve) => (entered = resolve));
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const rewriting = store.secureRewrite(async () => (entered(), await held, 0), { vacuum: false });
+  await inWork;
+  reader = heldReader(dir);
+  await store.runs.purge("run-1", KEPT);
+  assert.equal((await store.runs.get("run-1")).purgedAt !== null, true, "the purge committed");
+  release();
+  const rewrote = await rewriting;
+  assert.ok(existsSync(marker), "the marker the purge left (its checkpoint held back) outlives the rewrite");
+  assert.deepEqual(rewrote, { rewritten: 0, left: "deferred" }, "the rewrite says the scrub is left to the next start");
+
+  reader.exec("COMMIT");
+  await store.close();
+  assert.notDeepEqual(holding(dir, word), [], "the store's bytes still hold the sentinel");
+  // The next start's scrub, as in the test above: it finds the marker, and truncates the log.
+  const next = await openSqliteStore({ dataDir: dir });
+  t.after(() => next.close());
+  assert.deepEqual(await next.secureRewrite(async () => 0), { rewritten: 0 }, "the scrub finishes");
+  assert.equal(existsSync(marker), false, "the next start's scrub is done: its marker is gone");
+  assert.equal(statSync(join(dir, "store.sqlite-wal")).size, 0, "and it truncated the log");
+  assert.deepEqual(holding(dir, word), [], "no store file holds the sentinel");
+});
+
+test("a purge's checkpoint that a reader in another connection holds back waits its own short busy wait, never the store's: on a store whose busy wait is ten minutes, the purge and a write sent behind it both answer", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
+  let reader;
+  // The reader goes first: a checkpoint still waiting on it (a regression) then ends, and the store closes.
+  t.after(() => reader?.isOpen && reader.close());
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // A checkpoint on the store's own busy wait would wait the reader out, ten minutes: far past this test's own bound.
+  const store = await storeWithRun(dir, "Purge me.", { busyTimeoutMs: 600_000 });
+  t.after(() => store.close());
+  reader = heldReader(dir);
+  const purging = store.runs.purge("run-1", KEPT);
+  const writing = store.agents.create({ id: "other", name: "other" }, { id: "rev-other", kind: "agentic", body: { instructions: "Answer." } });
+  await within(Promise.all([purging, writing]), 30_000, "the purge, and a write queued behind its checkpoint");
+  assert.equal((await store.runs.get("run-1")).purgedAt !== null, true, "the purge committed");
+  assert.ok(await store.agents.get("other"), "the write is in");
+});
+
+test("a purge that commits, its checkpoint held back, and then cannot write the scrub's marker fails in words, and still drops what the process served of the run: its answer and input are in no in-process cache, and the next DELETE finds it purged", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
+  const word = `PURGE-SENTINEL-${randomBytes(6).toString("hex")}`;
+  const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
+  let reader;
+  let store;
+  t.after(() => reader?.isOpen && reader.close());
+  t.after(() => store?.close());
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // A run with a launch the view reads back (its input, title and place), ended with an answer.
+  store = await openSqliteStore({ dataDir: dir });
+  await store.agents.create({ id: "agent-1", name: "agent-1" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: `Keep ${word} for run-1.` }, title: "Kept", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-test", { leaseMs: 30_000 });
+  assert.ok(claim, "run-1 is claimed");
+  await store.runs.update(claim, { state: "ended", outcome: "completed", costUsd: 0.01, summary: `It kept ${word}.`, endedAt: Date.now() });
+  // A read fills the view's answer and input slots; forgetServed says what it held, and the next read fills them again.
+  const deps = { origin: "", serverSecrets: () => [] };
+  const read = async () => assert.equal((await viewOverStore(store, "run-1", deps)).result.final_answer, `It kept ${word}.`);
+  await read();
+  assert.deepEqual(forgetServed(store, "run-1").slice(0, 2), ["answer run-1", "input run-1"], "a read keeps its answer and input");
+  await read();
+
+  // The checkpoint held back by a reader, and the marker's path a directory: the marker's write fails (EISDIR), as a
+  // full disk's would, after the purge committed.
+  reader = heldReader(dir);
+  const marker = join(dir, "store.sqlite.scrub");
+  mkdirSync(marker);
+  const host = {
+    store,
+    madeFrom: async () => [],
+    forgetCopies: async () => {},
+    forgetRun: async () => {},
+    kept: async () => KEPT,
+    turnOver: async () => false,
+    waitMs: 0,
+    pollMs: 20,
+  };
+  await assert.rejects(purgeRun(host, "run-1"), (error) => /^The purge committed, but its WAL checkpoint was held back and the scrub's marker could not be written \(EISDIR/.test(error.message), "the purge fails in words: a fault the server answers 500 and logs");
+  assert.notEqual((await store.runs.get("run-1")).purgedAt, null, "the purge committed");
+  assert.deepEqual(forgetServed(store, "run-1"), [], "nothing the process served of the run is kept: its answer and input went with the purge");
+  // The next DELETE: a purged run is no work (204).
+  assert.equal(await purgeRun(host, "run-1"), undefined, "the next DELETE finds it purged");
+  assert.deepEqual(forgetServed(store, "run-1"), [], "and nothing of it is kept after");
+});
+
+/** The server's log held back by a reader of the test's own, and its scrub's marker path a directory: a purge that
+ *  commits then cannot write the marker (EISDIR, as a full disk's write fails). `free()` makes the path writable again. */
+function markerUnwritable(t, data) {
+  const reader = heldReader(data);
+  t.after(() => reader.isOpen && reader.close());
+  const marker = join(data, "store.sqlite.scrub");
+  mkdirSync(marker);
+  return { marker, free: () => rmSync(marker, { recursive: true }) };
+}
+
+test("a run's DELETE retried after its purge committed and could not write the scrub's marker arranges the scrub again: 204 with the marker written, and a DELETE with the marker there writes nothing new", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
+  const { api, data } = await serve(t);
+  const run = (await startRun(api, "calc", "What is 2 + 2?")).run_id;
+  await follow(api, run, ["completed"]);
+  const { marker, free } = markerUnwritable(t, data);
+  const failed = await api("DELETE", `/runs/${run}`);
+  assert.deepEqual([failed.status, failed.body.error?.code], [500, "internal"], JSON.stringify(failed.body));
+  free();
+  // The client's retry, the log still held back: the run is purged, and its purge's scrub is arranged again.
+  const retried = await api("DELETE", `/runs/${run}`);
+  assert.equal(retried.status, 204, JSON.stringify(retried.body));
+  assert.ok(existsSync(marker) && statSync(marker).isFile(), "the retry writes the scrub's marker the purge could not");
+  writeFileSync(marker, "the marker as it was\n");
+  const again = await api("DELETE", `/runs/${run}`);
+  assert.equal(again.status, 204, JSON.stringify(again.body));
+  assert.equal(readFileSync(marker, "utf8"), "the marker as it was\n", "with the marker there, a DELETE of the purged run writes nothing new");
+});
+
+test("a run's DELETE retried while a rewrite that finds nothing to rewrite holds the marker, after its purge could not write it, keeps that marker for the purge: the rewrite never removes it, and the next start's scrub truncates the log", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
+  const word = `PURGE-SENTINEL-${randomBytes(6).toString("hex")}`;
+  const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
+  let reader;
+  t.after(() => reader?.isOpen && reader.close());
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = await storeWithRun(dir, word);
+  const host = { store, madeFrom: async () => [], forgetCopies: async () => {}, forgetRun: async () => {}, kept: async () => KEPT, turnOver: async () => false, waitMs: 0, pollMs: 20 };
+  reader = heldReader(dir);
+  const marker = join(dir, "store.sqlite.scrub");
+  mkdirSync(marker);
+  await assert.rejects(purgeRun(host, "run-1"), /the scrub's marker could not be written \(EISDIR/, "the purge commits, and its marker's write fails");
+  rmSync(marker, { recursive: true });
+  // A rewrite as the server runs one while it serves (no VACUUM): its own marker is written, and its work is held while
+  // the client's retry finds the marker there; then it finds nothing to rewrite.
+  let entered;
+  const inWork = new Promise((resolve) => (entered = resolve));
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const rewriting = store.secureRewrite(async () => (entered(), await held, 0), { vacuum: false });
+  await inWork;
+  assert.ok(existsSync(marker), "the rewrite's marker is there");
+  assert.equal(await purgeRun(host, "run-1"), undefined, "the retry answers 204");
+  release();
+  assert.deepEqual(await rewriting, { rewritten: 0, left: "deferred" }, "the rewrite leaves the scrub to the next start");
+  assert.ok(existsSync(marker), "the marker the retry found outlives the rewrite: the purge's scrub stays arranged");
+
+  reader.exec("COMMIT");
+  await store.close();
+  assert.notDeepEqual(holding(dir, word), [], "the store's bytes still hold the sentinel");
+  const next = await openSqliteStore({ dataDir: dir });
+  t.after(() => next.close());
+  assert.deepEqual(await next.secureRewrite(async () => 0), { rewritten: 0 }, "the next start's scrub finishes");
+  assert.equal(statSync(join(dir, "store.sqlite-wal")).size, 0, "and it truncated the log");
+  assert.deepEqual(holding(dir, word), [], "no store file holds the sentinel");
+});
+
+test("an agent's DELETE retried after its purge committed and could not write the scrub's marker arranges the scrub again, and drops its purge's mark: 204 with the marker written", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
+  const { api, data, store } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("scrubbed", { instructions: "Answer." }))).status, 201);
+  assert.equal((await api("POST", "/agents/scrubbed/archive")).status, 200);
+  const { marker, free } = markerUnwritable(t, data);
+  const failed = await api("DELETE", "/agents/scrubbed");
+  assert.deepEqual([failed.status, failed.body.error?.code], [500, "internal"], JSON.stringify(failed.body));
+  assert.equal((await store.agents.get("scrubbed")).purgedAt !== null, true, "the agent's purge committed");
+  free();
+  const retried = await api("DELETE", "/agents/scrubbed");
+  assert.equal(retried.status, 204, JSON.stringify(retried.body));
+  assert.ok(existsSync(marker) && statSync(marker).isFile(), "the retry writes the scrub's marker the purge could not");
+  assert.equal(await store.settings.get("agent.purging.scrubbed"), undefined, "its purge's mark goes with the retry");
 });

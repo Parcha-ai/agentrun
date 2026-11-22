@@ -15,10 +15,12 @@ const flow = { name: 'status', description: 'Read release status.', workflow: { 
 const nextFlow = { ...flow, description: 'Newer status draft.', workflow: { ...flow.workflow, root: { ...flow.workflow.root, args: { mode: 'new' } } } };
 const TASK = '{"release":"r1"}';
 const RELEASES = 5;
-async function setup(t, runtime = 'eve', runner = true) {
+// compile_after 1 unless a test sets it: the check decides on one native turn, as a managed check of such an agent
+// decides on its one input. The workflow is landed, so no compile is due either way.
+async function setup(t, runtime = 'eve', runner = true, learning = { compile_after: 1 }) {
   const server = await serve(t, { runner });
   const id = `shadow-${runtime}`;
-  assert.equal((await server.api('POST', '/agents', { definition: { id, name: id, instructions: 'Report readiness.', sdk: { runtime }, learning: { compile_after: 200 }, tools: [] } })).status, 201);
+  assert.equal((await server.api('POST', '/agents', { definition: { id, name: id, instructions: 'Report readiness.', sdk: { runtime }, learning, tools: [] } })).status, 201);
   await landWorkflows(server.data, id, [flow]);
   const start = async (key, input = TASK) => {
     const response = await server.api('POST', `/agents/${id}/sdk-runs`, { runtime, input, instructions: 'Report readiness.', workflow_tools: [tool] }, { 'Idempotency-Key': key });
@@ -112,13 +114,143 @@ test('a different native answer holds the draft, and the held digest is not chec
   await cancel(server, next);
 });
 
+// The evidence bar of a managed check: it decides once, on compile_after inputs. A connected agent's check collects its
+// native turns until it holds compile_after of them, the native agent answering each, and then decides once on them all.
+const DIGEST = workflowDigest({ workflow: JSON.stringify(flow.workflow) });
+async function checkTurn(server, key, answer = '{"ready":true}') {
+  const receipt = await server.start(key);
+  assert.equal(receipt.learning.check?.digest, DIGEST, `${key} checks the draft`);
+  assert.deepEqual(receipt.learning.workflows, [], `${key}: the native agent answers it, no workflow serves`);
+  await finish(server, receipt, report(receipt, { answer }));
+  return receipt;
+}
+function stillChecking(records, turns) {
+  assert.equal(championOf(records, flow.name), undefined, `${turns} checked turn(s) promote nothing`);
+  const waiting = promotionOf(records, flow.name, DIGEST);
+  assert.equal(waiting.decided, 'replaying', JSON.stringify(waiting));
+  assert.equal(waiting.via, 'sdk');
+  assert.equal(waiting.runs, undefined, 'it waits for the next turn the draft takes');
+  assert.equal(waiting.check.n, undefined, 'a check still collecting turns has no decision\'s numbers');
+  assert.equal(waiting.check.turns?.n, turns, JSON.stringify(waiting.check));
+  assert.match(waiting.reason, new RegExp(`${turns} of 3 native turns`));
+  return waiting;
+}
+
+test('one agreeing native turn does not promote a draft its agent checks on compile_after turns; the third decides', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  const first = await checkTurn(server, 'turn-1');
+  stillChecking(await server.records(), 1);
+  const second = await server.start('turn-2');
+  assert.equal(second.learning.check?.digest, DIGEST, 'the next turn the draft takes checks it');
+  const concurrent = await server.start('while-checking');
+  assert.equal(concurrent.learning.check, undefined, 'one turn at a time is reserved');
+  assert.deepEqual(concurrent.learning.workflows, [], 'an unpromoted draft never serves');
+  await cancel(server, concurrent);
+  await finish(server, second, report(second));
+  stillChecking(await server.records(), 2);
+  const third = await checkTurn(server, 'turn-3');
+  const champion = championOf(await server.records(), flow.name);
+  assert.equal(champion?.digest, DIGEST);
+  assert.equal(champion.via, 'sdk');
+  assert.deepEqual([champion.check.n, champion.check.agreed, champion.check.alone], [3, 3, 3]);
+  assert.deepEqual(champion.check.of, [third.run_id, second.run_id, first.run_id], 'the turns it decided on, newest first');
+  assert.deepEqual(champion.check.outcomes, { answered: 3, handed_back: 0, failed: 0, skipped_write: 0 });
+  assert.equal(champion.check.turns, undefined, 'the decision carries the numbers, not the turns collected');
+  assert.match(champion.reason, /checked on 3 of the agent's inputs.*: promoted$/);
+  const served = await server.start('served');
+  assert.equal(served.learning.check, undefined);
+  assert.deepEqual(served.learning.workflows.map(one => one.name), [flow.name]);
+  await cancel(server, served);
+});
+
+test('compile_after checked turns with too few agreeing hold the draft; a disagreement alone does not hold it early', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  const first = await checkTurn(server, 'differs', '{"ready":false}');
+  const waiting = stillChecking(await server.records(), 1);
+  assert.deepEqual(waiting.check.turns.disagreements.map(one => one.run), [first.run_id]);
+  await checkTurn(server, 'agrees-1');
+  await checkTurn(server, 'agrees-2');
+  const held = promotionOf(await server.records(), flow.name, DIGEST);
+  assert.equal(held.decided, 'hold', JSON.stringify(held));
+  assert.equal(championOf(await server.records(), flow.name), undefined);
+  assert.deepEqual([held.check.n, held.check.agreed, held.check.alone], [3, 2, 3], '2 of 3 agree: under agree_min 0.8');
+  assert.deepEqual(held.check.disagreements.map(one => one.run), [first.run_id]);
+  assert.equal(held.check.turns, undefined);
+  assert.equal(held.check.attempt, 1);
+  assert.match(held.reason, /recompiles it once/);
+  assert.ok(heldNamesOf(await server.records()).has(flow.name), 'its hold asks the one recompile');
+});
+
+test('a turn past its deadline is one failed row of the turns collected, not a decision of its own', async t => {
+  const server = await setup(t, 'eve', false, { compile_after: 3 });
+  const abandoned = await server.start('abandoned');
+  await expire(server, abandoned);
+  const swept = await server.start('sweeps');
+  assert.equal(swept.learning.check?.digest, DIGEST, 'the check still collects turns, so the sweeping turn is reserved');
+  const records = await server.records();
+  assert.equal(championOf(records, flow.name), undefined);
+  const reserved = promotionOf(records, flow.name, DIGEST);
+  assert.equal(reserved.decided, 'replaying', JSON.stringify(reserved));
+  assert.deepEqual(reserved.runs, [swept.run_id]);
+  assert.equal(reserved.check.n, undefined);
+  assert.equal(reserved.check.turns?.n, 1, JSON.stringify(reserved.check));
+  assert.equal(reserved.check.turns.outcomes.failed, 1);
+  assert.deepEqual(reserved.check.turns.of, [abandoned.run_id]);
+  assert.match(reserved.reason, /1 of 3 native turns/);
+  await cancel(server, swept);
+});
+
+test('a turn lands once: a deadline, a give-back or a second settle that read the same reservation finds it gone', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  const receipt = await server.start('settled');
+  const reserved = promotionOf(await server.records(), flow.name, DIGEST);
+  assert.deepEqual(reserved.runs, [receipt.run_id]);
+  await finish(server, receipt, report(receipt));
+  const collected = stillChecking(await server.records(), 1);
+  // Each read the reservation before the completion's row landed, as a deadline sweep and a settle can at once.
+  const { releaseSdkCheck, sdkCheckDeadline, sdkCheckTurn } = await import('../dist/runner/promotion.js');
+  const deps = { store: server.store, agentId: server.id, shown: async () => secretsShown([]), log() {} };
+  const late = [
+    await sdkCheckDeadline(deps, reserved),
+    await releaseSdkCheck(deps, reserved, 'its native turn ended before the backend completed it'),
+    await sdkCheckTurn(deps, reserved, { of: receipt.run_id, input: TASK, agent: '{"ready":true}', outcome: 'answered', answer: '{"ready":false}' }, was => was?.replay_id === reserved.replay_id),
+  ];
+  assert.deepEqual(late.map(one => one?.won), [false, false, false], 'none of them lands');
+  const after = promotionOf(await server.records(), flow.name, DIGEST);
+  assert.deepEqual(after, collected, 'the completion\'s row stands: no failed row, no release, no second row');
+  assert.deepEqual(after.check.turns.outcomes, { answered: 1, handed_back: 0, failed: 0, skipped_write: 0 });
+  assert.equal(after.check.released, undefined);
+});
+
+/** A reserved turn that fails, so it cannot be the check's baseline: given back, and counted. */
+async function giveBack(server, key) {
+  const receipt = await server.start(key);
+  assert.equal(receipt.learning.check?.digest, DIGEST, `${key} is reserved`);
+  await finish(server, receipt, report(receipt), { status: 'failed' });
+}
+
+test('only give-backs in a row stop the check: a turn that lands starts the count again', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  for (let at = 1; at < RELEASES; at++) await giveBack(server, `before-${at}`);
+  assert.equal((await server.latest(flow.name)).check.released, RELEASES - 1);
+  await checkTurn(server, 'turn-1');
+  assert.equal(stillChecking(await server.records(), 1).check.released, undefined, 'the landed turn starts the count again');
+  for (let at = 1; at < RELEASES; at++) await giveBack(server, `between-${at}`);
+  assert.equal((await server.latest(flow.name)).check.released, RELEASES - 1, `${2 * (RELEASES - 1)} give-backs, never ${RELEASES} in a row`);
+  await checkTurn(server, 'turn-2');
+  const third = await checkTurn(server, 'turn-3');
+  const champion = championOf(await server.records(), flow.name);
+  assert.equal(champion?.digest, DIGEST, 'the third turn decides it');
+  assert.deepEqual([champion.check.n, champion.check.agreed, champion.check.of[0]], [3, 3, third.run_id]);
+  assert.equal(champion.check.released, undefined, 'no turn was given back since the last one landed');
+});
+
 // A turn that cannot be the check's baseline gives the reservation back: nothing is decided, and the next turn the draft
 // takes is reserved in its place.
 const releases = {
   'incomplete evidence': first => [report(first), { evidence_complete: false }],
   'failed check': first => [report(first, { outcome: 'failed', answer: undefined, reason: 'No trustworthy input binding.' })],
   'missing check': () => [undefined],
-  'cancelled task': first => [report(first), { status: 'cancelled' }],
   'workflow-assisted turn': first => [report(first), {}, assisted],
   'skipped write': first => [report(first, { outcome: 'skipped_write', answer: undefined, skipped: { tool: tool.name }, reason: 'This exact call was absent from the native recording.' })],
   'redacted answer': (first, server) => [report(first, { answer: first.token }), { answer: server.token }],
@@ -142,27 +274,76 @@ for (const [scenario, turn] of Object.entries(releases)) test(`a turn that canno
   assert.deepEqual((await server.latest(flow.name)).runs, [next.run_id]);
   await finish(server, next, report(next));
   const champion = championOf(await server.records(), flow.name);
-  assert.equal(champion?.check.released, 1, 'the promotion says how many turns were given back');
+  assert.equal(champion?.check.released, undefined, 'the turn that landed started the give-back count again');
   assert.deepEqual(champion?.check.of, [next.run_id]);
 });
 
-test(`${RELEASES} given-back turns stop the check with nothing checked and no recompile`, async t => {
+test('a cancelled turn is given back uncounted: cancels never stop the check', async t => {
   const server = await setup(t);
-  for (let at = 1; at <= RELEASES; at++) {
+  const { settleSdkCheck } = await import('../dist/sdk/check.js');
+  for (let at = 1; at <= RELEASES + 1; at++) {
     const receipt = await server.start(`cancel-${at}`);
-    assert.ok(receipt.learning.check, `turn ${at} is reserved`);
-    await finish(server, receipt, report(receipt), { status: 'cancelled' });
+    assert.equal(receipt.learning.check?.digest, DIGEST, `cancel ${at} is reserved`);
+    if (at % 2) await finish(server, receipt, report(receipt), { status: 'cancelled' });
+    else {
+      // The run stopped before the backend completed its turn.
+      const deps = await settleDeps(server, receipt);
+      await settleSdkCheck({ ...deps, inbox: { ...deps.inbox, completion: undefined, closed: 'cancelled' } });
+      await cancel(server, receipt);
+    }
+    const waiting = await server.latest(flow.name);
+    assert.equal(waiting.decided, 'replaying', `cancel ${at} leaves it waiting: ${waiting.reason}`);
+    assert.equal(waiting.check.released, undefined, 'a cancel is not a give-back');
+    assert.doesNotMatch(waiting.reason, /of 5/);
   }
-  const stopped = await server.latest(flow.name);
-  assert.equal(stopped.decided, 'hold');
-  assert.equal(stopped.check.stopped, true);
-  assert.equal(stopped.check.released, RELEASES);
-  assert.equal(stopped.check.n, 0);
-  assert.match(stopped.reason, /^nothing to check it on: the connected agent gave back 5 reserved native turns/);
-  assert.ok(!heldNamesOf(await server.records()).has(flow.name), 'a stop with nothing checked asks no recompile');
-  const after = await server.start('after-stop');
-  assert.equal(after.learning.check, undefined);
+  const landed = await server.start('lands');
+  await finish(server, landed, report(landed));
+  assert.equal(championOf(await server.records(), flow.name)?.digest, DIGEST);
+});
+
+test(`${RELEASES} give-backs in a row hold the check, never for good: the next compile's revision is checked afresh`, async t => {
+  const server = await setup(t);
+  for (let at = 1; at <= RELEASES; at++) await giveBack(server, `failed-${at}`);
+  const held = await server.latest(flow.name);
+  assert.equal(held.decided, 'hold');
+  assert.equal(held.check.stopped, undefined, 'give-backs never stop it for good');
+  assert.equal(held.check.released, RELEASES);
+  assert.equal(held.check.n, 0);
+  assert.match(held.reason, /the connected agent gave back 5 reserved native turns in a row/);
+  assert.ok(heldNamesOf(await server.records()).has(flow.name), 'its hold asks the next compile for a revision');
+  const after = await server.start('after-hold');
+  assert.equal(after.learning.check, undefined, 'the held digest is not checked again');
   await cancel(server, after);
+  await land(server);
+  const next = await server.start('recompiled');
+  const digest = workflowDigest({ workflow: JSON.stringify(nextFlow.workflow) });
+  assert.equal(next.learning.check?.digest, digest, 'the revision reserves a turn');
+  const fresh = await server.latest(flow.name);
+  assert.equal(fresh.check.released, undefined, 'its give-back count starts at 0');
+  assert.equal(fresh.check.attempt, 1, 'give-backs spend no recompile');
+  await finish(server, next, report(next));
+  assert.equal(championOf(await server.records(), flow.name)?.digest, digest, 'and it can promote');
+});
+
+// #3390 review: the revise a give-back hold asks is no recompile either. Its draft failing its checks is that attempt's
+// failed draft (asked once more), and only a second failed revise is the recompile's, which stops.
+test('a revise of a give-back hold whose draft fails is asked once more; a second failure stops', async t => {
+  const server = await setup(t);
+  for (let at = 1; at <= RELEASES; at++) await giveBack(server, `failed-${at}`);
+  const held = await server.latest(flow.name);
+  const { recordDraftFailed } = await import('../dist/runner/learning-end.js');
+  const runId = held.runs[0];
+  const compile = { mode: 'revise', workflow: flow.name, held: { workflow: flow.name, digest: held.digest, reason: held.reason, check: held.check }, reference: '', traces: [], tools: [], judges: false };
+  await recordDraftFailed({ store: server.store, log() {} }, { runId, agentId: server.id, compile, workflow: flow.name, errors: ['workflow: no root'] });
+  const first = await server.latest(flow.name);
+  assert.deepEqual([first.check.attempt, first.check.stopped], [1, undefined], 'the held attempt, not the recompile');
+  assert.match(first.reason, /compiles it once more/);
+  assert.ok(heldNamesOf(await server.records()).has(flow.name), 'still asks a revision');
+  const later = await server.start('compiles-again');
+  await cancel(server, later);
+  await recordDraftFailed({ store: server.store, log() {} }, { runId: later.run_id, agentId: server.id, compile, workflow: flow.name, errors: ['workflow: no root'] });
+  const second = await server.latest(flow.name);
+  assert.deepEqual([second.check.attempt, second.check.stopped], [2, true], 'the second failed revise is the recompile, and it stops');
 });
 
 test('a JSON task the draft does not take, and a protected start, reserve no check', async t => {
@@ -218,7 +399,7 @@ test('a turn closed before the backend completed it gives its check back; an exp
   await settleSdkCheck({ ...deps, inbox: { ...deps.inbox, closed: 'cancelled' } });
   const waiting = await server.latest(flow.name);
   assert.equal(waiting.decided, 'replaying');
-  assert.equal(waiting.check.released, 1);
+  assert.equal(waiting.check.released, undefined, 'a stopped run is a cancel, not a give-back');
   assert.match(waiting.reason, /stopped before the backend completed it/);
   const second = await server.start('expires');
   const later = await settleDeps(server, second);
@@ -320,7 +501,7 @@ test('server-native learned_workflow tool also withholds drafts without promotio
 
 test('shadow agreement uses the owner-selected decision fields, not unrelated response text', async t => {
   const server = await setup(t);
-  await server.api('PUT', `/agents/${server.id}/definition`, { definition: { instructions: 'Report readiness.', learning: { compile_after: 200, agree_on: ['ready'], agree_min: 1, alone_min: 1 } } });
+  await server.api('PUT', `/agents/${server.id}/definition`, { definition: { instructions: 'Report readiness.', learning: { compile_after: 1, agree_on: ['ready'], agree_min: 1, alone_min: 1 } } });
   const first = await server.start('decision-fields');
   await finish(server, first, report(first, { answer: '{"ready":true,"explanation":"Different phrasing"}' }));
   const champion = championOf(await server.records(), flow.name);

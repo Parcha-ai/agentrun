@@ -24,6 +24,7 @@ import type { Place } from "./workspace/place.js";
  *  the old path recomputed; here they are pinned at start, and optional (a built-in run may name none). */
 export interface RunLaunch {
   readonly sdk?: SdkBinding & {instructions: string; model?: string; workflow_tools?: SdkWorkflowTool[]; workflow_adapters?: SdkWorkflowAdapter[]};
+  readonly cli_learning?: {runtime: "codex-cli" | "claude-code-cli"; connection_id: string; connection_generation: string; session_id: string; turn_id: string; instructions: string; policy_complete: boolean; model?: string};
   readonly native?: NativeBinding;
   /** The start request's body, as the person or trigger gave it, or an object a built-in run names. */
   readonly input: unknown;
@@ -52,6 +53,10 @@ export interface RunLaunch {
   /** The uploaded file ids the run was started with, in order (the create body's file_ids, already checked ready): the
    *  runner copies them into the run's work/inputs/ at its claim, as the old start copied them before the process ran. */
   readonly files?: readonly string[];
+  /** The server copied `files` into the run's folder (work/inputs/) when it started the run, before its row was written:
+   *  a run on an Archil disk (Mode 2, uploads-archil.ts placeRunFiles). Its claim reads no upload (uploads.ts
+   *  filesToCopy). Absent: the claim copies them from the server's data directory, as before. */
+  readonly filesPlaced?: true;
   /** The run's learning start, when its agent learns and the server's learning is on, decided once here so the runner reads
    *  no learning folder or git: `seed`, the learning commit's sha (or null when the seed could not be read); `section`,
    *  the exact # Learned text to lay into the prompt (its owner's corrections, learning.ts learnedSection); `workflows`,
@@ -59,8 +64,9 @@ export interface RunLaunch {
    *  never answered by a learned workflow and asked for no workflow draft at its end (a native run, an SDK run with no
    *  workflow binding); `model`, the model an SDK run's compile turn is asked on (its agent's own); `seedFailed`, why it
    *  starts with nothing learned when it does (SeedFailed); `use`, a run started with `learning: "use"` (learning.ts
-   *  RUN_LEARNING_USE): it starts from all of the above and keeps nothing. Absent when the run does not learn. */
-  readonly learning?: { readonly seed: string | null; readonly section: string; readonly workflows?: readonly string[]; readonly noWorkflows?: true; readonly model?: string; readonly seedFailed?: SeedFailed; readonly use?: true };
+   *  RUN_LEARNING_USE): it starts from all of the above and keeps nothing; `seededAt`, when its seed was read (learning.ts
+   *  Seed.at), which the agent's reset watermark is read against. Absent when the run does not learn. */
+  readonly learning?: { readonly seed: string | null; readonly section: string; readonly workflows?: readonly string[]; readonly noWorkflows?: true; readonly model?: string; readonly seedFailed?: SeedFailed; readonly use?: true; readonly seededAt?: number };
   /** `false`: the run never starts on a learned workflow, even one that fits its input (RunCreate `workflow_first`,
    *  runner/workflow-first.ts); its agent takes it from its first turn. Absent: a fitting one serves first. */
   readonly workflowFirst?: false;
@@ -149,6 +155,7 @@ export function launchBody(launch: RunLaunch): Json {
   return {
     input: launch.input,
     ...(launch.sdk ? {sdk:launch.sdk as unknown as Json}:{}),
+    ...(launch.cli_learning ? {cli_learning:launch.cli_learning as unknown as Json}:{}),
     ...(launch.native ? {native:launch.native}:{}),
     title: launch.title,
     ...(launch.repo !== undefined ? { repo: launch.repo } : {}),
@@ -163,7 +170,8 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.boxAllow !== undefined ? { box_allow: launch.boxAllow } : {}),
     ...(launch.boxAllowSet ? { box_allow_set: true } : {}),
     ...(launch.files?.length ? { files: launch.files } : {}),
-    ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}) } } : {}),
+    ...(launch.filesPlaced ? { files_placed: true } : {}),
+    ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}), ...(launch.learning.seededAt !== undefined ? { seededAt: launch.learning.seededAt } : {}) } } : {}),
     ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
     ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest } } : {}),
     ...(launch.audit ? { audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest } } : {}),
@@ -183,7 +191,18 @@ function readLearning(value: unknown): NonNullable<RunLaunch["learning"]> | unde
   const seed = typeof value.seed === "string" ? value.seed : null;
   const section = typeof value.section === "string" ? value.section : "";
   const workflows = Array.isArray(value.workflows) ? value.workflows.filter((name): name is string => typeof name === "string") : [];
-  return { seed, section, ...(workflows.length ? { workflows } : {}), ...(value.noWorkflows === true ? { noWorkflows: true as const } : {}), ...(typeof value.model === "string" && value.model !== "" ? { model: value.model } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}), ...(value.use === true ? { use: true as const } : {}) };
+  return { seed, section, ...(workflows.length ? { workflows } : {}), ...(value.noWorkflows === true ? { noWorkflows: true as const } : {}), ...(typeof value.model === "string" && value.model !== "" ? { model: value.model } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}), ...(value.use === true ? { use: true as const } : {}), ...(typeof value.seededAt === "number" && Number.isFinite(value.seededAt) ? { seededAt: value.seededAt } : {}) };
+}
+
+/** The launch a runner runs (runner/dispatch.ts, run-child-host.ts): on a disk the launch names as its own (kind
+ *  "launch"), its learning start holds no seed, # Learned section or learned workflow, whatever the body says (a start
+ *  made before its run's disk was read, or written by hand), as the server's seed is the default disk's, never that
+ *  disk's (learn/learning-of.ts): the run starts with nothing learned (`other_disk`), its flags kept. Any other launch as
+ *  read. readLaunchBody keeps the body as written: a finished run's views show what it ran. */
+export function launchOnItsDisk(launch: RunLaunch): RunLaunch {
+  if (!launch.learning || launch.archilDisk?.kind !== "launch") return launch;
+  const { noWorkflows, model, use } = launch.learning;
+  return { ...launch, learning: { seed: null, section: "", seedFailed: "other_disk", ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}) } };
 }
 
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
@@ -201,6 +220,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     input: stored.input,
     ...(isObject(stored.sdk) && sdkBindingOf(stored.sdk) && typeof stored.sdk.instructions === "string" ? {sdk: stored.sdk as unknown as NonNullable<RunLaunch["sdk"]>} : {}),
     ...(nativeOf(stored) ? {native:nativeOf(stored)}:{}),
+    ...(isObject(stored.cli_learning) && ["codex-cli", "claude-code-cli"].includes(String(stored.cli_learning.runtime)) && typeof stored.cli_learning.instructions === "string" ? {cli_learning:stored.cli_learning as unknown as NonNullable<RunLaunch["cli_learning"]>} : {}),
     title: typeof stored.title === "string" ? stored.title : "",
     ...(typeof stored.repo === "string" ? { repo: stored.repo } : {}),
     place,
@@ -214,6 +234,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(boxAllow !== undefined ? { boxAllow } : {}),
     ...(stored.box_allow_set === true ? { boxAllowSet: true as const } : {}),
     ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
+    ...(stored.files_placed === true ? { filesPlaced: true as const } : {}),
     ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { seed: null, section: "" } } : {}),
     ...(stored.workflow_first === false ? { workflowFirst: false as const } : {}),
     ...(readReplay(stored.replay) ? { replay: readReplay(stored.replay)! } : {}),
@@ -234,10 +255,11 @@ export const learningStartOf = (launch: RunLaunch): RunLaunch["learning"] => lau
 export const learningStartOfStored = (stored: unknown): RunLaunch["learning"] => (stored === undefined ? undefined : readLearning(stored) ?? { seed: null, section: "" });
 
 /** Why a learning run starts with nothing learned, as main says it: its agent's learning folder could not be read
- *  (`unreadable`, STOPPED.unreadable), or what was read could not be made into its start (`not_copied`,
- *  STOPPED.notCopied). */
-export type SeedFailed = "unreadable" | "not_copied";
-const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied"];
+ *  (`unreadable`, STOPPED.unreadable), what was read could not be made into its start (`not_copied`,
+ *  STOPPED.notCopied), or its launch names a disk of its own, whose learning folder the server does not read
+ *  (`other_disk`, STOPPED.otherDisk): a run on a named disk learns nothing (learn/learning-of.ts). */
+export type SeedFailed = "unreadable" | "not_copied" | "other_disk";
+const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied", "other_disk"];
 
 /** A learning start with no seed (no commit of main, runs-over-store.ts learningStartFor): the run learns nothing, is
  *  never asked what to keep, and so is never told it learns. Why is its `seedFailed`, when its start records one. */

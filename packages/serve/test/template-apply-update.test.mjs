@@ -147,10 +147,13 @@ test("an apply with agent_id writes a new revision of that agent: the same id, i
   assert.equal(run.status, 202, JSON.stringify(run.body));
   assert.equal((await api("GET", `/agents/${first.agent_id}`)).body.revisions, 1);
 
+  assert.equal(first.revision_version, 1, "a fresh apply names the revision it wrote: the agent's first");
   const again = await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "an apply with agent_id updates that agent in place");
   assert.equal(again.agent_id, first.agent_id, "the same agent");
   const read = (await api("GET", `/agents/${first.agent_id}`)).body;
   assert.equal(read.revisions, 2, "a new revision of it");
+  assert.equal(again.revision_version, read.definition.version, "the update names the revision it wrote, the agent's current one");
+  assert.equal(again.revision_version, 2);
   assert.match(read.definition.instructions, /dogs/, "the new revision is the package with the new parameters");
   assert.equal(read.template?.id, "digest");
   assert.deepEqual((await api("GET", "/agents")).body.agents.map((one) => one.agent_id), [first.agent_id], "no second agent");
@@ -210,7 +213,7 @@ test("an update reconciles triggers by name: the same name changed in place (a f
   assert.equal(after["new-pr"].id, before["new-pr"].id, "new-pr is the same trigger, changed in place");
   assert.equal(after["new-pr"].target.input.content, "Say who opened it, and what it changes.", "new-pr has 0.2.0's input");
   assert.equal((await second.api("GET", `/triggers/${before.daily.id}`)).status, 404, "daily is gone");
-  assert.deepEqual(again.trigger_ids, [after["new-pr"].id, after.weekly.id], "the answer lists its triggers in the package's order");
+  assert.deepEqual(again.triggers.map((one) => one.trigger_id), [after["new-pr"].id, after.weekly.id], "the answer lists its triggers in the package's order");
   // Its source unchanged, the update leaves its next poll where it was (never one at once): at that time, its seen items
   // held, the one new pull request fires, and there is no second "watching from now".
   assert.equal(after["new-pr"].next_at, before["new-pr"].next_at, "new-pr's next poll as it was");
@@ -229,6 +232,18 @@ test("an update keeps the agent's learned corrections", { timeout: 60_000 }, asy
   assert.equal(put.status, 200, JSON.stringify(put.body));
   await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "an update keeps the agent, and so its corrections");
   assert.equal((await api("GET", `/agents/${first.agent_id}/learning/corrections`)).body.text, text, "the owner's corrections are kept");
+});
+
+test("each apply answer says what it did to the agent: made (rev 1), updated (rev 2), and an update that changes nothing unchanged at the same rev 2, no revision written", { timeout: 60_000 }, async (t) => {
+  const { api } = await served(t);
+  const first = await applied(api, "digest", { parameters: { topic: "cats" } });
+  assert.deepEqual([first.agent_change, first.revision_version], ["made", 1]);
+  const again = await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "an update that changes the parameters");
+  assert.deepEqual([again.agent_change, again.revision_version], ["updated", 2]);
+  const same = await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "the same update again");
+  assert.deepEqual([same.agent_change, same.revision_version], ["unchanged", 2], `nothing to update: ${JSON.stringify(same)}`);
+  const read = (await api("GET", `/agents/${first.agent_id}`)).body;
+  assert.deepEqual([read.revisions, read.definition.version], [2, 2], "no revision written");
 });
 
 test("a fresh apply of a template whose same parameters already made a live agent still makes one, with a warning naming the agent there", { timeout: 60_000 }, async (t) => {
@@ -520,7 +535,7 @@ test("a trigger moved to another agent while an update holds its read of the age
 test("a feed trigger an apply skipped (its feeds left empty) is no trigger of the package's: one the owner then makes by that name outlives the next update", { timeout: 90_000 }, async (t) => {
   const server = await served(t, { templates: await templates(t, V1, { extra: { watch: WATCH } }) });
   const made = await applied(server.api, "watch", {});
-  assert.deepEqual(made.trigger_ids, [], "status, its feeds left empty, was skipped");
+  assert.deepEqual(made.triggers, [], "status, its feeds left empty, was skipped");
   const mine = await server.api("POST", "/triggers", ownerTrigger("status", made.agent_id));
   assert.equal(mine.status, 201, JSON.stringify(mine.body));
   await updated(server.api, "watch", { agent_id: made.agent_id }, "watch again, its feeds still empty");

@@ -27,3 +27,18 @@ describe("an agent card's title row", () => {
     expect(row.textContent).toContain("agentic");
   });
 });
+
+describe("the agents page's search", () => {
+  it("finds an agent by each word typed, in any order, as the console's other filters do", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentsList, { agents: [{ ...agent, agent_id: "a1" }, { ...agent, agent_id: "other", definition: { ...agent.definition, name: "Other", description: "Reads mail." } }] })));
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="Search agents"]')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "agentrun hello");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("Hello, AgentRun");
+    expect(host.textContent).not.toContain("Reads mail.");
+  });
+});

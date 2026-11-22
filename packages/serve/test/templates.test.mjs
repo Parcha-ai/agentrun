@@ -100,7 +100,15 @@ test("a tool-call budget is no field: a definition's max_tool_calls and a manife
   const issues = definitionIssues({ name: "a", instructions: "x", max_tool_calls: 30 });
   assert.deepEqual(issues.map((i) => [i.field, i.reason]), [["definition.max_tool_calls", "not_allowed"]]);
   const problems = await problemsOf(t, ({ edit }) => edit(/^budget: .*\n/m, "budget: { per_run_usd: 0.50, tool_calls: 30 }\n"));
-  assert.ok(problems.some((p) => /budget is \{per_run_usd: a number above 0\}/.test(p)), JSON.stringify(problems));
+  assert.ok(problems.some((p) => /budget is \{per_run_usd: a number above 0/.test(p)), JSON.stringify(problems));
+});
+
+test("a manifest's budget.max_requests is a whole number above 0: the package lists it; 0, a fraction or a word is refused, naming it", async (t) => {
+  assert.deepEqual(await problemsOf(t, ({ edit }) => edit(/^budget: .*\n/m, "budget: { per_run_usd: 2, max_requests: 20 }\n")), []);
+  for (const bad of ["0", "2.5", "lots", "-3"]) {
+    const problems = await problemsOf(t, ({ edit }) => edit(/^budget: .*\n/m, `budget: { per_run_usd: 2, max_requests: ${bad} }\n`));
+    assert.ok(problems.some((p) => /budget is \{per_run_usd: a number above 0, max_requests: a whole number of free-model requests above 0, when given\}/.test(p)), `${bad}: ${JSON.stringify(problems)}`);
+  }
 });
 
 test("the validator refuses a malformed package, naming each problem", async (t) => {
@@ -251,7 +259,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   const applied = await api("POST", "/templates/code-review/apply", { parameters: AGENTRUN });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   meets("/templates/{template}/apply", "post", "201", applied.body);
-  assert.deepEqual([applied.body.template, applied.body.version, applied.body.trigger_ids], ["code-review", "0.4.0", []]);
+  assert.deepEqual([applied.body.template, applied.body.version, applied.body.triggers], ["code-review", "0.4.0", []]);
   const skipped = applied.body.warnings.find((w) => w.field === "mcp.github");
   assert.match(skipped?.message ?? "", /No saved MCP server is github github, so the agent was made without its tools/, JSON.stringify(applied.body.warnings));
   assert.equal(applied.headers.get("location"), `/v2/agents/${applied.body.agent_id}`);
@@ -331,8 +339,7 @@ test("an apply that makes a webhook trigger hands back its signing secret once, 
   const body = { parameters: { icp: "B2B fintech, 50-2000 people, US or EU", post_to: "none" } };
   const applied = await owner("POST", "/templates/inbound-lead/apply", body, { "idempotency-key": "lead-1" });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const hooks = [];
-  for (const id of applied.body.trigger_ids) if ((await api("GET", `/triggers/${id}`)).body.source.kind === "webhook") hooks.push(id);
+  const hooks = applied.body.triggers.filter((one) => one.kind === "webhook").map((one) => one.trigger_id);
   assert.ok(hooks.length > 0, "inbound-lead makes a webhook trigger");
   assert.deepEqual(applied.body.webhook_secrets.map((one) => one.trigger_id), hooks);
   for (const one of applied.body.webhook_secrets) {
@@ -341,7 +348,7 @@ test("an apply that makes a webhook trigger hands back its signing secret once, 
   }
   // A retry under the key: the same agent and triggers, the secrets never again.
   const again = await owner("POST", "/templates/inbound-lead/apply", body, { "idempotency-key": "lead-1" });
-  assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body.agent_id, again.body.trigger_ids], [201, "true", applied.body.agent_id, applied.body.trigger_ids]);
+  assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body.agent_id, again.body.triggers], [201, "true", applied.body.agent_id, applied.body.triggers]);
   assert.ok(!JSON.stringify(again.body).includes("whsec_"));
   for (const one of again.body.webhook_secrets) assert.match(one.note, /shown once, in this apply's first answer; rotate it in the console/);
   for (const id of hooks) assert.ok(!JSON.stringify((await api("GET", `/triggers/${id}`)).body).includes("whsec_"), "no GET shows it");
@@ -358,7 +365,7 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
   const body = { parameters: { topic: "solar", words: 200 } };
   const applied = await api("POST", "/templates/nightly/apply", body, { "idempotency-key": "nightly-1" });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const [id] = applied.body.trigger_ids;
+  const [{ trigger_id: id }] = applied.body.triggers;
   const trigger = (await api("GET", `/triggers/${id}`)).body;
   assert.deepEqual([trigger.name, trigger.enabled, trigger.source.cron], ["Morning brief", true, "0 9 * * *"]);
   assert.deepEqual(trigger.target, { kind: "start_run", agent_id: applied.body.agent_id, input: { content: "Today's brief on solar." } });
@@ -677,7 +684,7 @@ test("an apply whose parameters, filled in, make a body over POST /v2/agents' 1 
 test("market-monitor's schedule comes from its parameters: Monday 08:00 UTC by default, the owner's own when given, and a bad one refuses the apply before anything is made", async (t) => {
   const { api } = await serve(t);
   const apply = (parameters) => api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)", ...parameters } });
-  const sourceOf = async (applied) => (await api("GET", `/triggers/${applied.body.trigger_ids[0]}`)).body.source;
+  const sourceOf = async (applied) => (await api("GET", `/triggers/${applied.body.triggers[0].trigger_id}`)).body.source;
   const plain = await apply({});
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
   assert.deepEqual(await sourceOf(plain), { kind: "schedule", cron: "0 8 * * 1", timezone: "UTC" });

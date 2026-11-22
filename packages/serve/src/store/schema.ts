@@ -19,7 +19,9 @@
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
 // (IMPORTED_TEMPLATES), as it does the one-answer index. A hosted machine's minted token (minted_tokens, MINTED_TOKENS) is
 // added the same way, and so is each runner's word that it is there and whether it refused to claim (runners, RUNNERS),
-// and each computer a run made, from its create to its proven delete (computer_intervals, COMPUTER_INTERVALS).
+// and each computer a run made, from its create to its proven delete (computer_intervals, COMPUTER_INTERVALS). Each runner's
+// version and slots (runners.version, .slots: RUNNERS_ADDED), each hand-back (hand_backs, HAND_BACKS) and each claim of a
+// run with the turn it works and its attempt at it (run_attempts, RUN_ATTEMPTS) are added the same way.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -36,9 +38,10 @@
 // .incarnation), the run the machine works for (.run), why the server refused to relay its dial (.refused), and where each
 // such runner takes the dials the server relays to it (runners.host and .port, dial-relay.ts). Version 14 keeps when a run or
 // an agent was purged (runs.purged_at, agents.purged_at; DELETE /runs/{id} and /agents/{id}, agent-delete.ts): its row is
-// then a tombstone, its content gone and its cost kept. The server upgrades these in place at its open (listingUpgrade from
-// 11, relayUpgrade from 12, then purgeUpgrade from 13); a runner waits for it.
-export const SCHEMA_VERSION = 14;
+// then a tombstone, its content gone and its cost kept. Version 15 keeps the disk a run's launch named as its own
+// (runs.disk; a run on one learns nothing, learn/learning-of.ts). The server upgrades these in place at its open
+// (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13, then diskUpgrade from 14); a runner waits for it.
+export const SCHEMA_VERSION = 15;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -68,6 +71,17 @@ export const RUNS_COST_UPPER_BOUND = `ALTER TABLE runs ADD COLUMN ${COST_UPPER_B
 /** A run's labels (JSON, null for none): in STORE_DDL, and added at a server open to a store an earlier build of this version
  *  made, as RUNS_COST_UPPER_BOUND is (a run started before reads as given none). */
 export const RUNS_LABELS = `ALTER TABLE runs ADD COLUMN ${json("labels", true)}`;
+/** Version 14 → 15 on SQLite (the server's open, sqlite/store.ts), given the runs' columns now: each run's disk
+ *  (RunRow.disk), written for every run already there from its launch body, as a new run's is at its create, and the
+ *  version, in one durable write. A run whose launch named no disk of its own reads as the default disk's, and so does a
+ *  run purged before (its launch body gone): nothing of it is left to learn from. */
+export function diskUpgrade(runColumns: ReadonlySet<string>): readonly string[] {
+  return [
+    ...(runColumns.has("disk") ? [] : ["ALTER TABLE runs ADD COLUMN disk TEXT"]),
+    "UPDATE runs SET disk = (SELECT json_extract(body, '$.archil_disk.disk_id') FROM run_launch WHERE run_launch.run_id = runs.id AND json_extract(body, '$.archil_disk.kind') = 'launch')",
+    "UPDATE store_meta SET schema_version = 15 WHERE singleton = 1",
+  ];
+}
 /** A trigger's package mark (TriggerRow.templateId): the id of the template package whose apply made or last kept it, null
  *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as
  *  RUNS_LABELS is (a trigger made before reads as no package's). */
@@ -162,7 +176,55 @@ export const RUNNERS = `CREATE TABLE IF NOT EXISTS runners (
     refused TEXT,
     host TEXT,
     port INTEGER,
-    seen_at INTEGER NOT NULL
+    seen_at INTEGER NOT NULL,
+    version TEXT,
+    slots INTEGER
+  ) STRICT`;
+/** What a runner says of itself for the server's capacity read (GET /v2/capacity, capacity.ts): its build's version
+ *  (`version`) and the most runs it holds at once (`slots`), each null on a row an earlier build wrote. In RUNNERS, and
+ *  added where missing at a server open to a runners table an earlier build of this version made, as
+ *  COMPUTER_INTERVALS_ADDED is: nullable, so nothing is copied and no row is refused. */
+export const RUNNERS_ADDED: Readonly<Record<string, string>> = {
+  version: "ALTER TABLE runners ADD COLUMN version TEXT",
+  slots: "ALTER TABLE runners ADD COLUMN slots INTEGER",
+};
+/** Each hand-back (store.release that leaves its run running: a runner's drain, a loop that closed itself, a claim given
+ *  back): the run, the runner that let it go, the epoch it let go of and when, on the deadlines' clock. Counts and ids
+ *  only; the capacity read (capacity.ts) counts the rows within its window. A release's own write keeps it, in the same
+ *  transaction, and removes the rows older than HAND_BACKS_KEPT_MS. In STORE_DDL, and made at a server open on a store an
+ *  earlier build of this version made. */
+export const HAND_BACKS = `CREATE TABLE IF NOT EXISTS hand_backs (
+    run_id TEXT NOT NULL,
+    runner TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    at INTEGER NOT NULL
+  ) STRICT`;
+/** The hand-backs by time, for the capacity read's window and the release's prune. */
+export const HAND_BACKS_AT = "CREATE INDEX IF NOT EXISTS hand_backs_at ON hand_backs (at)";
+/** A run's hand-backs, for its purge and its delete (dropRunContent), so neither scans every hand-back kept. */
+export const HAND_BACKS_RUN = "CREATE INDEX IF NOT EXISTS hand_backs_run ON hand_backs (run_id)";
+/** How long a hand-back's row is kept: the longest window the capacity read takes. */
+export const HAND_BACKS_KEPT_MS = 24 * 60 * 60_000;
+
+/** Each claim of a run (store.runAttempts, RunAttemptRow): the turn it works and its attempt at it, why the attempt before
+ *  was cut (`cause`: drain, crash, lease_lapse, retry; null on a turn's first), why this one let the run go unfinished
+ *  (`cut`), its runner, the run's state it took the run from, the first journal entry id it could write
+ *  (`journal_from`) and when it claimed. Written in the claim's own transaction, its cut in its release's. Data only:
+ *  the usage read (run-usage.ts) splits a run's cost by it, and nothing decides what a run does on it. In STORE_DDL, and
+ *  added at a server open to a store an earlier build of this version made, as COMPUTER_INTERVALS is: a claim made before
+ *  it has no row. */
+export const RUN_ATTEMPTS = `CREATE TABLE IF NOT EXISTS run_attempts (
+    run_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    turn INTEGER NOT NULL CHECK (turn >= 1),
+    attempt INTEGER NOT NULL CHECK (attempt >= 1),
+    cause TEXT CHECK (cause IS NULL OR cause IN ('drain', 'crash', 'lease_lapse', 'retry')),
+    cut TEXT CHECK (cut IS NULL OR cut IN ('drain', 'lease_lapse', 'retry')),
+    runner TEXT NOT NULL,
+    from_state TEXT NOT NULL,
+    journal_from INTEGER NOT NULL,
+    claimed_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, epoch)
   ) STRICT`;
 
 /** Version 13 → 14 on SQLite (the server's open, sqlite/store.ts), given the runs' and the agents' columns now: when each
@@ -370,6 +432,10 @@ export const STORE_DDL: readonly string[] = [
     -- server and only filtered on (runs.list). Null when it was given none. Added at a server open to a store an earlier
     -- build of this version made (RUNS_LABELS), its runs reading as given none.
     ${json("labels", true)},
+    -- The disk the run's launch named as its own (RunRow.disk: a customer's Archil disk, by its id), set once with the queued
+    -- run from its launch body; null for the default disk's. Learning reads an agent's runs on one disk alone. Version 15
+    -- (diskUpgrade): added then and written from each run's launch. A purge keeps it on the run's tombstone.
+    disk TEXT,
     started_at INTEGER NOT NULL,
     ended_at INTEGER,
     -- The run's listing (RUN_LISTING_COLUMNS): what a runs list shows of it, kept on its row so a list reads rows alone.
@@ -626,8 +692,12 @@ export const STORE_DDL: readonly string[] = [
   IMPORTED_TEMPLATES,
   MINTED_TOKENS,
   RUNNERS,
+  HAND_BACKS,
+  HAND_BACKS_AT,
+  HAND_BACKS_RUN,
   COMPUTER_INTERVALS,
   COMPUTER_INTERVALS_RUN,
+  RUN_ATTEMPTS,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD

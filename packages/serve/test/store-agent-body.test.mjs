@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { AgentBodyInvalid, bodyOf, canonical } from "../dist/store/agent-body.js";
+import { AgentBodyInvalid, bodyOf, canonical, cliLearningOf } from "../dist/store/agent-body.js";
 
 const refused = (pattern) => (error) => error instanceof AgentBodyInvalid && (!pattern || pattern.test(error.message));
 const A = { kind: "agentic", instructions: "Research the company.", skills: { "read/SKILL.md": "Read the site." }, tools: ["read"] };
@@ -29,6 +29,20 @@ test("a revision keeps the harness it names, in its body; a harness that is not 
   assert.equal(bodyOf({ ...A, harness: "claude-agent" }).body.harness, "claude-agent");
   assert.equal(bodyOf({ ...WF, harness: "codex" }).body.harness, "codex");
   for (const harness of ["", "Claude", "claude agent", 3]) assert.throws(() => bodyOf({ ...A, harness }), refused(/harness/), String(harness));
+});
+
+test("CLI enrollment bindings accept registered native runtime strings without coercing other values", () => {
+  const binding = { connection_id: "connection-1", project: "/fixture/project" };
+  for (const runtime of ["codex", "claude-code"]) {
+    const cli_learning = { ...binding, runtime };
+    assert.deepEqual(cliLearningOf({ cli_learning }), cli_learning);
+    assert.deepEqual(bodyOf({ ...A, cli_learning }).body.cli_learning, cli_learning);
+  }
+  for (const runtime of [["codex"], { toString: () => "codex" }, "codex-cli", "claude-agent", "external", "toString", "__proto__", null]) {
+    const cli_learning = { ...binding, runtime };
+    assert.equal(cliLearningOf({ cli_learning }), undefined, "only a registered native runtime string forms a binding");
+    assert.throws(() => bodyOf({ ...A, cli_learning }), refused(/cli_learning/));
+  }
 });
 
 test("tool settings are kept as the caller made them canonical (bodyOf keeps them as given); an empty map keeps none; a non-object is refused", () => {

@@ -140,6 +140,12 @@ describe("the story", () => {
     expect(storyOf({ ...base, corrections: 1 })[0]).toMatchObject({ key: "corrections", value: "1 correction", detail: "yours, given whole to every later run", state: "done" });
     expect(storyOf(base)[0]).toMatchObject({ value: "0 corrections", detail: "none yet: grade a run with a correction, or write one here", state: "now" });
   });
+  it("a CLI connection reports owner corrections without promising workflow compilation or takeover", () => {
+    const stages = storyOf({ ...base, corrections: 2, runs: 30, execution: "cli" });
+    expect(stages.map(s => s.key)).toEqual(["corrections", "compiled"]);
+    expect(stages[1]!.detail).toContain("approved tool connection");
+    expect(stages.some(s => /compiles at|Took over|Cheaper/.test(s.detail + s.title))).toBe(false);
+  });
   it("a native agent's story keeps to corrections: no compile, takeover or cheaper runs promised", () => {
     const stages = storyOf({ ...base, corrections: 4, runs: 9, execution: "native" });
     expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([["corrections", "4 corrections", "done"], ["compiled", "Corrections", "later"]]);

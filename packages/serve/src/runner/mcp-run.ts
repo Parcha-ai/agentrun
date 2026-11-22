@@ -18,6 +18,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions } from "../mcp-gateway.js";
+import { type MediaReader, meterFor, publicMedia } from "../fal-price.js";
+import { FAUX_ENV } from "../model.js";
+import { fetchOptions } from "../web-fetch-direct.js";
+import { fakeSaveOptions, type WebFake } from "../web-fake.js";
+import type { SaveSlots } from "../web-save.js";
 import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
@@ -72,6 +77,9 @@ export interface McpForClaimOptions {
   readonly fetch?: typeof fetch;
   readonly callBounds?: { callMs?: number; connectMs?: number };
   readonly githubTimer?: GithubTimer;
+  /** Whether the run has a spend cap, and the reader of a metered job's input media (McpGatewayOptions). */
+  readonly capped?: McpGatewayOptions["capped"];
+  readonly media?: McpGatewayOptions["media"];
   /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
   readonly hold?: (values: string[]) => void;
 }
@@ -100,6 +108,10 @@ export interface ClaimMcp {
   /** Drops every credential held: the pass ended, the claim is lost, or its signal aborted. */
   release(): void;
 }
+
+/** A claim's reader of a metered job's input media: through the guard web_save downloads by (an eval's web fake, a faux
+ *  module, else the public network), in `slots`. */
+export const mediaForClaim = (env: NodeJS.ProcessEnv, web?: WebFake, slots?: SaveSlots): MediaReader => publicMedia(async () => (web ? fakeSaveOptions(web) : fetchOptions(env, FAUX_ENV)), slots);
 
 /** The wire names a subagent's `grant` gives of the run's MCP and monid tools, by the gate's keys; else the grant's own. */
 export function catalogSessionNames(catalog: Pick<ClaimMcp, "tools" | "catalogOf"> | undefined, grant: string): string[] {
@@ -160,9 +172,14 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     },
     beforeCall: step.beforeCall,
     work: options.work,
+    // fal's submission keys are scoped to the run (fal-price.ts falKeys): the same on every claim of it, so a retry after
+    // a resume still dedupes.
+    run: options.claim.runId,
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.callBounds ? { bounds: options.callBounds } : {}),
+    ...(options.capped ? { capped: options.capped } : {}),
+    ...(options.media ? { media: options.media } : {}),
   });
   const catalog = new Map<string, string>();
   const declared = new Map<string, ReadonlySet<string>>();
@@ -195,7 +212,9 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       const parsed = mcpNameOf(name);
       const pinned = parsed && Object.hasOwn(pin, parsed.server) ? pin[parsed.server] : undefined;
       if (!pinned?.tools.some((tool) => tool.name === parsed!.tool)) return undefined;
-      return pinned.prices && Object.hasOwn(pinned.prices, parsed!.tool) ? pinned.prices[parsed!.tool]! : "not metered";
+      if (pinned.prices && Object.hasOwn(pinned.prices, parsed!.tool)) return pinned.prices[parsed!.tool]!;
+      // A metered server's job is priced from its input, when the call runs: no price to show before it.
+      return meterFor(pinned)?.bills(parsed!.tool) ? undefined : "not metered";
     },
     effectOf: (name) => pinnedEffect(pin, name),
     fresh: () => step.fresh(),

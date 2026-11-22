@@ -275,6 +275,9 @@ export interface AskData {
   readonly tool: string;
   /** The call's input as the gate saw it; null when it had none. */
   readonly args?: unknown;
+  /** Why a call its setting allows asks a person anyway (a tool's own ask, tools.ts ToolEntry.asks): the gate's alone,
+   *  never one of the call's arguments. */
+  readonly because?: string;
   /** When it was asked (ISO), from the loop's clock; a re-ask on a resume keeps the first. */
   readonly requestedAt?: string;
   /** Its approval price (a catalog tool's, the spec's mcp priceOf); null when it has none. */
@@ -405,7 +408,7 @@ export interface EndData {
 export interface JobEndData {
   readonly end: EndData;
   readonly failedWith?: string;
-  readonly endedAt?: number;
+  readonly endedAt: number;
 }
 
 /** An escalated workflow run's review as its end keeps it: the escalation's kind, the escalate node's label (else the node

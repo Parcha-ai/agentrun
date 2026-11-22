@@ -56,8 +56,8 @@ import type { McpPin } from "../mcp-gateway.js";
 import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
-import { agentRun, lastOwnRuns, newCompileAttempt } from "../learn/compile.js";
-import { type CheckBar, type CheckDisagreement, type CheckRecord, checkPasses, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf } from "../learn/promote.js";
+import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset } from "../learn/compile.js";
+import { type CheckBar, type CheckDisagreement, type CheckRecord, type CheckTurns, checkPasses, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
@@ -346,13 +346,15 @@ async function loopOfRevision(deps: Pick<PromotionDeps, "store" | "revisionId">)
 /** Which check of a compile a new revision's is: 2 when the workflow's newest record of another revision is a first
  *  check's hold, an audit's hold or a hold by its reason alone (holdRefused: the DSL refuses a serving revision), or a
  *  first compile's failed draft (this revision is its one recompile), else 1. A stop with nothing checked
- *  (stopUnchecked) is no first check's hold: it spends no recompile. A workflow's first revision after a first compile
- *  whose drafts failed under another name (learn/compile.ts newCompileAttempt) is that compile's recompile too. */
+ *  (stopUnchecked) is no first check's hold: it spends no recompile, and neither does a connected agent's hold on its
+ *  give-backs (heldOnGiveBacks: the revision after it is the same attempt). A workflow's first revision after a first
+ *  compile whose drafts failed under another name (learn/compile.ts newCompileAttempt) is that compile's recompile too. */
 export function attemptOf(records: readonly PromotionRecord[], name: string, digest: string): 1 | 2 {
   const before = records.findLast((one) => one.workflow === name && one.digest !== digest);
   if (!before) return newCompileAttempt(records.filter((one) => one.digest !== digest));
   if (before.decided !== "hold") return 1;
   if (before.audit) return before.audit.stopped ? 1 : 2;
+  if (before.check && heldOnGiveBacks(before.check)) return before.check.attempt;
   return !before.check || (before.check.attempt === 1 && !before.check.stopped) ? 2 : 1;
 }
 
@@ -376,16 +378,19 @@ const checkable = (deps: Pick<PromotionDeps, "runId">, row: RunRow): boolean =>
  *  never push them out of the read. And `audited`: an audit hold's disagreeing shadow runs (auditInputsOf), each ended.
  *  Of those, the ones whose input `workflow` takes (fits), each with its launch read back; one with an uploaded file is
  *  never an input. With how many of the agent's runs it looked at (`looked`) and why each it looked at is no input
- *  (`unfit`, `files`). */
+ *  (`unfit`, `files`). Every one of them a run on no named disk (one on a named disk learns nothing, learn/learning-of.ts)
+ *  since the agent's learning's reset (sinceReset), the named and audited ones included. */
 async function checkInputs(deps: Pick<PromotionDeps, "store" | "agentId" | "runId">, workflow: LearnedWorkflow, pick: { readonly of: readonly string[]; readonly n: number }, audited: readonly string[] = []): Promise<{ inputs: ReplayInput[]; looked: number; unfit: number; files: number }> {
   const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
-  const named = (await Promise.all(pick.of.map((id) => deps.store.runs.get(id)))).filter((row): row is RunRow => row !== undefined && checkable(deps, row));
+  const since = await sinceReset(deps.store, deps.agentId);
+  const learns = (row: RunRow) => (row.disk ?? null) === null && since(row);
+  const named = (await Promise.all(pick.of.map((id) => deps.store.runs.get(id)))).filter((row): row is RunRow => row !== undefined && checkable(deps, row) && learns(row));
   const last = pick.n ? await lastOwnRuns(deps.store, deps.agentId, pick.n + pick.of.length, deps.runId) : [];
   const own = [...named, ...last.filter((row) => !pick.of.includes(row.id)).slice(0, pick.n)];
   // And an audit hold's disagreeing shadow runs: the agent's answers the recompile must say too.
   for (const id of audited) {
     const row = await deps.store.runs.get(id);
-    if (row && row.state === "ended" && !own.some((one) => one.id === id)) own.push(row);
+    if (row && row.state === "ended" && learns(row) && !own.some((one) => one.id === id)) own.push(row);
   }
   const out: ReplayInput[] = [];
   let files = 0;
@@ -470,7 +475,7 @@ async function stopUnchecked(deps: DecideDeps, name: string, digest: string, bar
  *  draft did: its answer when it answered alone, why it handed the input back, or failed (or skipped a write). A
  *  reserved input whose replay run was never created, or never ended, by the check's deadline failed (`unstarted` for
  *  the first). */
-type CheckRow = { readonly of: string; readonly input: string; readonly agent: string | null; readonly outcome: ReplayOutcome; readonly answer: string | null; readonly escalated?: string; readonly skipped?: Skipped; readonly unstarted?: true; readonly compared?: Compared };
+export type CheckRow = { readonly of: string; readonly input: string; readonly agent: string | null; readonly outcome: ReplayOutcome; readonly answer: string | null; readonly escalated?: string; readonly skipped?: Skipped; readonly unstarted?: true; readonly compared?: Compared };
 
 /** Decides `ahead`, the check at work for a revision older than the laid (newest) one, as a claim laying it would
  *  (relaunch, then settleCheck) once its runs ended: its text read at its record's commit, its verdict standing (promote
@@ -554,45 +559,59 @@ async function settleCheck(deps: PromotionDeps, workflow: LearnedWorkflow, diges
   return decided.record?.decided === "replaying" ? undefined : decided.record;
 }
 
-/** Decides a check on its rows: each input it ran on (a skipped write is none) agreed when the draft answered it alone
- *  with the agent's recorded answer (learn/promote.ts compareAnswers, the audit's one comparison: on the bar's agree_on
- *  when it names fields, else equal, or the same decision by the grader's verdict its replay run kept), alone
- *  when it answered it with no escalate and no failed step. Promoted when it clears the bar (checkPasses); else held with the inputs it did not agree on, which the
- *  agent's next run's compile turn reads as data (its one recompile); a recompile's check that holds it too stops:
- *  nothing compiles again. No grade, refit, queue or second replay. Kept only while `still` holds of the digest's record
- *  (the one write: of two claims at once, one decides). */
-export async function decideCheck(deps: DecideDeps, name: string, digest: string, bar: CheckBar, read: { rows: readonly CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number; exactMismatchReason?: string; fresh_reads?: number }, still: Parameters<typeof recordPromotion>[3], extra: Partial<PromotionRecord>) {
-  const now = deps.now ?? Date.now;
-  const ran = read.rows.filter((row) => row.outcome !== "skipped_write");
+/** A check's rows scored on its bar, added to `before` (a connected agent's turns checked so far): each input it ran on
+ *  (a skipped write is none) agreed when the draft answered it alone with the agent's recorded answer (learn/promote.ts
+ *  compareAnswers, the audit's one comparison: on the bar's agree_on when it names fields, else equal, or the same
+ *  decision by the grader's verdict its replay run kept), alone when it answered it with no escalate and no failed step;
+ *  the inputs it did not agree on, each text cut of the host's secrets whole, then shortened (learn/secrets.ts
+ *  excerptShown); and the fast model that compared, when it read any input's answers. */
+async function scoreRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: readonly CheckRow[], before: CheckTurns | undefined) {
+  const ran = rows.filter((row) => row.outcome !== "skipped_write");
   const alone = (row: CheckRow) => row.outcome === "answered";
   // Compared on the bar's agree_on when it names paths (the definition's), else equal answers agree and the grader's
   // verdict decides the rest; with no grader (no fast model), the whole answer.
   const compared = new Map(ran.map((row) => [row, compareAnswers(row.answer, row.agent, bar.agree_on, row.compared)]));
   const agrees = (row: CheckRow) => alone(row) && compared.get(row)!.same;
-  const score = { n: ran.length, agreed: ran.filter(agrees).length, alone: ran.filter(alone).length };
-  const ok = checkPasses(score, bar);
-  // The fast model that compared, when it read any input's answers.
+  const score = { n: (before?.n ?? 0) + ran.length, agreed: (before?.agreed ?? 0) + ran.filter(agrees).length, alone: (before?.alone ?? 0) + ran.filter(alone).length };
   const grader = [...compared.values()].find((one) => one.grader !== undefined)?.grader;
-  // Each text is cut of the host's secrets whole, then shortened (learn/secrets.ts excerptShown).
   const shown = await deps.shown();
   const cut = (text: string) => excerptShown(text, shown, CHECK_TEXT_MAX);
-  const disagreements: CheckDisagreement[] = ran.filter((row) => !agrees(row)).map((row) => {
+  const disagreements: CheckDisagreement[] = [...(before?.disagreements ?? []), ...ran.filter((row) => !agrees(row)).map((row) => {
     const differs = row.outcome === "answered" ? compared.get(row)!.differs_on : undefined;
     return {
       run: row.of, input: cut(row.input), agent: row.agent === null ? null : cut(row.agent),
       ...(row.outcome === "answered" ? { draft: cut(row.answer ?? "") } : row.outcome === "handed_back" ? { escalated: cut(row.escalated ?? "") } : { failed: true as const }),
       ...(differs ? { differs_on: cut(differs) } : {}),
     };
-  });
+  })];
+  return { score, disagreements, grader };
+}
+
+/** Two outcome counts added. */
+const outcomesAdded = (a: ReplayOutcomes, b: ReplayOutcomes | undefined): ReplayOutcomes =>
+  b ? { answered: a.answered + b.answered, handed_back: a.handed_back + b.handed_back, failed: a.failed + b.failed, skipped_write: a.skipped_write + b.skipped_write } : a;
+
+/** Decides a check on its rows, with a connected agent's turns checked before them (`before`), scored on its bar
+ *  (scoreRows). Promoted when it clears the bar (checkPasses); else held with the inputs it did not agree on, which the
+ *  agent's next run's compile turn reads as data (its one recompile); a recompile's check that holds it too stops:
+ *  nothing compiles again. No grade, refit, queue or second replay. Kept only while `still` holds of the digest's record
+ *  (the one write: of two claims at once, one decides). */
+export async function decideCheck(deps: DecideDeps, name: string, digest: string, bar: CheckBar, read: { rows: readonly CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number; exactMismatchReason?: string; fresh_reads?: number; before?: CheckTurns }, still: Parameters<typeof recordPromotion>[3], extra: Partial<PromotionRecord>) {
+  const now = deps.now ?? Date.now;
+  const { before } = read;
+  const { score, disagreements, grader } = await scoreRows(deps, bar, read.rows, before);
+  const ok = checkPasses(score, bar);
   const stopped = !ok && bar.attempt === 2;
   const pct = (value: number) => `${(value * 100).toFixed(1)}%`;
   const shares = checkShares(score);
   // Inputs stopped at a write the recording lacks are no evidence either way; one stopped at an MCP tool its server listed
   // with no readOnlyHint names that tool (skipWordsOf), never a data problem.
   const tools = skippedToolsOf(read.rows);
-  const { skipped_write: skipped, failed } = read.outcomes;
+  const outcomes = outcomesAdded(read.outcomes, before?.outcomes);
+  const { skipped_write: skipped, failed } = outcomes;
   const { hint, why: skipWhy } = skipWordsOf(tools, skipped);
-  const numbers = { of: read.rows.map((row) => row.of), cost_usd: read.cost, outcomes: read.outcomes, ...(read.unstarted ? { unstarted: read.unstarted } : {}), ...(tools.length ? { skipped_tools: tools } : {}), ...(read.fresh_reads ? { fresh_reads: read.fresh_reads } : {}) };
+  const fresh = (read.fresh_reads ?? 0) + (before?.fresh_reads ?? 0);
+  const numbers = { of: [...read.rows.map((row) => row.of), ...(before?.of ?? [])], cost_usd: read.cost, outcomes, ...(read.unstarted ? { unstarted: read.unstarted } : {}), ...(tools.length ? { skipped_tools: tools } : {}), ...(fresh ? { fresh_reads: fresh } : {}) };
   // Every input skipped at a write (each reserved input counts: one never created or never ended failed, so this is the
   // only way to none): nothing to check it on, so it stops, never promoted unchecked, and asks no recompile.
   if (!score.n) {
@@ -637,13 +656,22 @@ async function reserve(deps: PromotionDeps, workflow: LearnedWorkflow, digest: s
 /** An input a replay runs on: the agent run whose input it is, and that run's launch. */
 type ReplayInput = { readonly run: string; readonly launch: RunLaunch };
 
-/** How many of a connected agent's reserved native turns its check gives back before it stops. A turn is given back
- *  when it cannot be the check's baseline: cancelled or failed, a learned workflow or nested call in it, redacted
- *  evidence, no shadow report, or a shadow that did not answer. One or two are ordinary (a person cancels a task, an
- *  input carries a secret); five say the integration cannot give one (a client with no shadow check, inputs it never
- *  resolves, a draft whose shadow always refuses), and each reserved turn runs without the champion. The fifth stops it
- *  with nothing checked (stopUnchecked), which asks no recompile: a revision would have no baseline either. */
+/** How many of a connected agent's reserved native turns its check gives back in a row (failed, a learned workflow or
+ *  nested call in it, redacted evidence, no shadow report, or a shadow that did not answer; never a cancel, and a turn
+ *  that lands starts the count again) before it holds the draft, never promoted and never stopped for good, for the next
+ *  compile to revise and check afresh: five in a row say the integration cannot give a baseline now, not that it never will. */
 export const SDK_CHECK_RELEASES = 5;
+/** Whether a hold's check is a connected agent's held on SDK_CHECK_RELEASES give-backs in a row (releaseSdkCheck): only
+ *  a connected agent's check counts give-backs. */
+const heldOnGiveBacks = (check: CheckRecord | undefined): boolean => (check?.released ?? 0) >= SDK_CHECK_RELEASES;
+
+/** Which attempt a revision compile of `held` is when its draft fails its checks (runner/learning-end.ts
+ *  recordDraftFailed): 2, the recompile, for any hold but a connected agent's on give-backs, which spends none: its
+ *  check's own attempt, until a revise of it has failed once already (the workflow's newest record that failed draft). */
+export function reviseAttemptOf(records: readonly PromotionRecord[], held: { readonly workflow: string; readonly check?: CheckRecord }): 1 | 2 {
+  if (!held.check || !heldOnGiveBacks(held.check)) return 2;
+  return newCompileAttempt(records.filter((one) => one.workflow === held.workflow)) === 2 ? 2 : held.check.attempt;
+}
 
 /** A connected agent's draft reserved on one native turn: what its start hands the caller (sdk/runs.ts receipt). */
 export type SdkWorkflowCheck = { id: string; revision: string; digest: string; workflow: LearnedWorkflow };
@@ -675,7 +703,7 @@ export const sdkInputText = (launch: RunLaunch | undefined): string => {
  *  check on the native turn `runId`: the first the turn takes (`takes`) with no decision yet, or one waiting for a turn,
  *  while no other revision of its workflow is checked; the guarded write keeps one reservation per workflow across
  *  concurrent starts. First each SDK check of a candidate's workflow is moved on: one whose turn is past
- *  REPLAY_DEADLINE_MS is decided as one failed row (sdkCheckDeadline), and one waiting at a revision the folder moved
+ *  REPLAY_DEADLINE_MS is one failed row of its turns (sdkCheckDeadline), and one waiting at a revision the folder moved
  *  past is set aside. A managed replay's record (no `via`) is never touched here. */
 export async function reserveSdkCheck(deps: DecideDeps, turn: { readonly runId: string; readonly revision: string | null; readonly learning: unknown; readonly flows: readonly LearnedWorkflow[]; readonly takes: (flow: LearnedWorkflow) => boolean }): Promise<SdkWorkflowCheck | undefined> {
   const { revision } = turn;
@@ -695,34 +723,71 @@ export async function reserveSdkCheck(deps: DecideDeps, turn: { readonly runId: 
     const own = promotionOf(records, flow.name, digest);
     if ((own && !waitingSdk(own)) || blocking(records, flow.name, digest).length) continue;
     const id = uuidv7();
+    const check = own?.check ?? { ...loopOf(turn.learning), attempt: attemptOf(records, flow.name, digest) };
     const reserved = await recordPromotion(deps.store.settings, deps.agentId, {
       workflow: flow.name, digest, at: iso(now()), decided: "replaying", via: "sdk",
-      reason: "Checking it in the connected agent against one independent native turn before it can be reused.",
-      replay_id: id, runs: [turn.runId], inputs: [turn.runId], commit: revision,
-      check: own?.check ?? { ...loopOf(turn.learning), attempt: attemptOf(records, flow.name, digest) },
+      reason: `Checking it in the connected agent against an independent native turn before it can be reused: ${sdkTurnsWords(check)}.`,
+      replay_id: id, runs: [turn.runId], inputs: [turn.runId], commit: revision, check,
     }, (was, current) => (own ? waitingSdk(was) && was!.replay_id === own.replay_id : was === undefined) && blocking(current, flow.name, digest).length === 0);
     if (reserved.won) return { id, revision, digest, workflow: flow };
   }
 }
 
+/** How far a connected agent's check is: its turns checked of the compile_after it decides on. */
+const sdkTurnsWords = (check: CheckRecord): string =>
+  `${check.turns?.n ?? 0} of ${plural(check.compile_after, "native turn")} checked so far; it decides once on all of them, as a managed check does on the agent's inputs`;
+
+/** One native turn's row of a connected agent's check: its shadow answered or handed back (sdk/check.ts settleSdkCheck),
+ *  or the turn did not settle by REPLAY_DEADLINE_MS, a failed row (sdkCheckDeadline). A managed check decides once, on
+ *  its compile_after inputs, and so does this one: the turn that makes compile_after decides on every turn collected
+ *  (decideCheck, the same bar); a turn before it is scored and kept (check.turns), the record gives back its reserved
+ *  turn, and the check waits for the next turn the draft takes, nothing decided or promoted, the agent answering
+ *  meanwhile. No turn holds it early, as no input of a managed check does. Its rows are never skipped (a shadow stopped
+ *  at a write gives its turn back), so each is one of the n. Kept only while `still` holds of the digest's record; a
+ *  check a newer revision overtook keeps no turn (it would hide the newer record), as a release does. */
+export async function sdkCheckTurn(deps: DecideDeps, record: PromotionRecord & { readonly check: CheckRecord }, row: CheckRow, still: Parameters<typeof recordPromotion>[3], read: { exactMismatchReason?: string; fresh_reads?: number } = {}) {
+  // A turn that lands starts the give-back count again (SDK_CHECK_RELEASES counts them in a row).
+  const { turns: before, released: _released, ...bar } = record.check;
+  const outcomes = { ...NO_OUTCOMES, [row.outcome]: 1 };
+  // The turn lands once: its completion and its deadline can both read the reservation, and the first to write takes
+  // the turn off it, so the second finds it gone (heldTurn) and never adds the turn twice or replaces the first's row.
+  const turnStill: typeof still = (was, current) => still(was, current) && heldTurn(was, record);
+  if ((before?.n ?? 0) + 1 >= bar.compile_after)
+    return decideCheck(deps, record.workflow, record.digest, bar, { rows: [row], cost: null, outcomes, unstarted: 0, ...read, ...(before ? { before } : {}) }, turnStill, sdkExtra(record));
+  if (overtaken(await promotionsOf(deps.store.settings, deps.agentId), record)) {
+    deps.log(`workflow-first: ${record.workflow} at ${record.digest} checked a native turn; a newer revision has a record since, so it is left as it is`);
+    return;
+  }
+  const { score, disagreements } = await scoreRows(deps, bar, [row], before);
+  const fresh = (before?.fresh_reads ?? 0) + (read.fresh_reads ?? 0);
+  const turns: CheckTurns = { ...score, of: [row.of, ...(before?.of ?? [])], outcomes: outcomesAdded(outcomes, before?.outcomes), ...(disagreements.length ? { disagreements } : {}), ...(fresh ? { fresh_reads: fresh } : {}) };
+  const check = { ...bar, turns };
+  const { runs: _runs, inputs: _inputs, ...rest } = record;
+  const kept = await recordPromotion(deps.store.settings, deps.agentId, {
+    ...rest, at: iso((deps.now ?? Date.now)()), check,
+    reason: `Waiting for the next native turn of the connected agent that it takes: ${sdkTurnsWords(check)}. Nothing was promoted.`,
+  }, (was, current) => turnStill(was, current) && !overtaken(current, was!));
+  if (kept.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest}: ${sdkTurnsWords(check)}`);
+  return kept;
+}
+
 /** A connected agent's check whose native turn did not settle it by REPLAY_DEADLINE_MS (the backend never completed the
- *  turn, or the server stopped before the run's end): decided as every check is (decideCheck), on one failed row. Its
- *  hold asks the one recompile, and a recompile's check that ends here stops (`stopped`): an abandoned check never
- *  restarts its budget. */
+ *  turn, or the server stopped before the run's end): one failed row of its turns (sdkCheckTurn), as a managed check's
+ *  replay run not ended by its deadline is a failed input. The hold the turns end in asks the one recompile, and a
+ *  recompile's check held so stops (`stopped`): an abandoned check never restarts its budget. */
 export async function sdkCheckDeadline(deps: DecideDeps, pending: PromotionRecord) {
   const runId = pending.runs?.[0];
-  if (!runId || !pending.check || overtaken(await promotionsOf(deps.store.settings, deps.agentId), pending)) return;
+  const { check } = pending;
+  if (!runId || !check || overtaken(await promotionsOf(deps.store.settings, deps.agentId), pending)) return;
   const launch = await deps.store.runs.launch(runId).then((one) => readLaunchBody(one.body), () => undefined);
-  return decideCheck(deps, pending.workflow, pending.digest, pending.check, {
-    rows: [{ of: runId, input: sdkInputText(launch), agent: null, outcome: "failed", answer: null }],
-    cost: null, outcomes: { ...NO_OUTCOMES, failed: 1 }, unstarted: 0,
-  }, (was, current) => sameReplay(was, pending) && !overtaken(current, was!), sdkExtra(pending));
+  return sdkCheckTurn(deps, { ...pending, check }, { of: runId, input: sdkInputText(launch), agent: null, outcome: "failed", answer: null },
+    (was, current) => sameReplay(was, pending) && !overtaken(current, was!));
 }
 
 /** Gives back a connected agent's reserved native turn that cannot be its check's baseline (`cause`): the check waits for
- *  the next turn the draft takes, nothing decided or promoted, and the turn counts toward SDK_CHECK_RELEASES, whose last
- *  stops it with nothing checked (stopUnchecked: no recompile). `counted` false: no turn ran (its start was not
- *  admitted). Kept only while the record is still this reservation. */
+ *  the next turn the draft takes, nothing decided or promoted, the turns it checked kept on the record. A `counted` turn
+ *  (not a cancel, not a start that was never admitted) counts toward SDK_CHECK_RELEASES in a row, whose last holds the
+ *  draft for the next compile, whose revision is checked afresh. Kept only while the record is still this reservation. */
 export async function releaseSdkCheck(deps: DecideDeps, record: PromotionRecord, cause: string, counted = true) {
   if (!record.check) return;
   if (overtaken(await promotionsOf(deps.store.settings, deps.agentId), record)) {
@@ -732,26 +797,33 @@ export async function releaseSdkCheck(deps: DecideDeps, record: PromotionRecord,
   const released = (record.check.released ?? 0) + (counted ? 1 : 0);
   const why = excerptShown(cause, await deps.shown(), CHECK_TEXT_MAX);
   // Overtaken is read again inside the write: a newer revision's record can land while the cause is being cut.
-  const still = (was: PromotionRecord | undefined, current: readonly PromotionRecord[]) => sameReplay(was, record) && !overtaken(current, was!);
+  const still = (was: PromotionRecord | undefined, current: readonly PromotionRecord[]) => sameReplay(was, record) && heldTurn(was, record) && !overtaken(current, was!);
   const bar = { ...record.check, ...(released ? { released } : {}) };
-  if (released >= SDK_CHECK_RELEASES) return stopUnchecked(deps, record.workflow, record.digest, bar, `the connected agent gave back ${plural(released, "reserved native turn")} with no answer to check it against (the last: ${why})`, still, {}, sdkExtra(record));
+  const at = iso((deps.now ?? Date.now)());
+  if (released >= SDK_CHECK_RELEASES) {
+    // A hold, never `stopped`: it asks the next compile for a revision (learn/compile.ts heldNamesOf), checked afresh.
+    const reason = `the connected agent gave back ${plural(released, "reserved native turn")} in a row with no answer to check it against (the last: ${why}). It is not promoted; the agent's next compile revises it, and the revision is checked afresh`;
+    const held = await recordPromotion(deps.store.settings, deps.agentId, { workflow: record.workflow, digest: record.digest, at, decided: "hold", reason, check: { ...bar, n: 0, agreed: 0, alone: 0, of: [] }, ...seedOf(deps), ...sdkExtra(record) }, still);
+    if (held.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest} held: ${reason}`);
+    return held;
+  }
   const { runs: _runs, inputs: _inputs, ...rest } = record;
   const kept = await recordPromotion(deps.store.settings, deps.agentId, {
-    ...rest, at: iso((deps.now ?? Date.now)()), check: bar,
-    reason: `Waiting for a native turn of the connected agent that it takes: ${why}, so that turn was given back${counted ? ` (${released} of ${SDK_CHECK_RELEASES} before the check stops)` : ""}. Nothing was promoted.`,
+    ...rest, at, check: bar,
+    reason: `Waiting for a native turn of the connected agent that it takes: ${why}, so that turn was given back${counted ? ` (${released} of ${SDK_CHECK_RELEASES} in a row before it is held for a recompile)` : ""}. Nothing was promoted.`,
   }, still);
   if (kept.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest} waits for another native turn: ${why}`);
   return kept;
 }
 
 /** A connected agent's check waiting at a revision the folder moved past (an owner's edit landed a newer one): set aside
- *  with nothing checked, never promoted, and `stopped` as any stop with nothing checked, so it spends no recompile
- *  (attemptOf): the newer revision is the one checked next. */
+ *  with nothing decided, never promoted (the turns it checked kept on the record), and `stopped` as any stop with
+ *  nothing checked, so it spends no recompile (attemptOf): the newer revision is the one checked next. */
 async function setAside(deps: DecideDeps, pending: PromotionRecord) {
   if (!pending.check) return;
   await recordPromotion(deps.store.settings, deps.agentId, {
     ...pending, at: iso((deps.now ?? Date.now)()), decided: "hold",
-    reason: `${NOTHING_TO_CHECK}: a newer revision of it landed before a native turn of the connected agent checked it. It is not promoted; the newer revision is checked instead`,
+    reason: `${NOTHING_TO_CHECK}: a newer revision of it landed before the connected agent's native turns finished checking it. It is not promoted; the newer revision is checked instead`,
     check: { ...pending.check, n: 0, agreed: 0, alone: 0, of: [], stopped: true },
   }, (was, current) => waitingSdk(was) && was!.replay_id === pending.replay_id && !overtaken(current, was!));
 }
@@ -785,6 +857,10 @@ function replayLaunchOf(deps: PromotionDeps): ReplayLaunch {
  *  id. A replay settled meanwhile, and a newer replay of the same revision its owner started since (a held revision may
  *  be replayed again), are not: an older replay's late decision never lands over a newer one. */
 const sameReplay = (was: PromotionRecord | undefined, record: PromotionRecord): boolean => was?.decided === "replaying" && was.replay_id === record.replay_id;
+/** Whether `was` still reserves `record`'s native turn (a connected agent's check: one turn reserved at a time, its run
+ *  first in `runs`). A turn's row (sdkCheckTurn) and its give-back (releaseSdkCheck) each take the turn off the record, so
+ *  a second writer that read the same reservation finds it gone. */
+const heldTurn = (was: PromotionRecord | undefined, record: PromotionRecord): boolean => record.runs?.[0] !== undefined && was?.runs?.[0] === record.runs[0];
 
 /** Cancels each of `record`'s replay runs not ended, as a person's cancel is (an in-flight one stops, what it spent booked
  *  on its row): once its check is decided with runs still at work (past its deadline). How many were sent their cancel. The

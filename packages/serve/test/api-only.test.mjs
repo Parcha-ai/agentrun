@@ -3,14 +3,15 @@
 // data, sign-in, setup, settings writes, MCP, triggers and their webhook hooks, agents, and a live view's WebSocket. It
 // has no owner. The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
 // writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
-// run's learning), its learning's writes and its own texts refused. Off by default: the same server without it serves
-// those routes as before.
+// run's learning) and its reset (DELETE learning), its learning's other writes and its own texts refused. A run's purge
+// (DELETE /runs/{id}) is served for a run of an agent its backend made (an inline run's, external), and refused with the
+// profile's 404 for a run of an agent made here. Off by default: the same server without it serves those routes as before.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { test } from "node:test";
 import { ended } from "./learn-support.mjs";
-import { serve, withEnv } from "./support.mjs";
+import { follow, serve, startRun, withEnv } from "./support.mjs";
 
 const { API_ONLY_ENV, API_ONLY_ROUTES, apiOnlyFrom, servedApiOnly } = await import("../dist/api-only.js");
 const { ROUTES } = await import("../dist/server.js");
@@ -22,7 +23,7 @@ const notSecret = (name) => `not-a-secret-${name}`;
 /** The learning reads the profile serves, for the backend whose inline runs made the agent: the loop, the promotions,
  *  the cost per run and a run's learning ({agent}, {run} filled in by each test). */
 const LEARNING_READS = ["/v2/agents/{agent}/learning/loop", "/v2/agents/{agent}/learning/promotions", "/v2/agents/{agent}/learning/cost", "/v2/runs/{run}/learning"];
-/** The learning routes it still refuses: every write, and every read that serves the learning's own text (corrections,
+/** The learning routes it still refuses: every write but the reset (served, with the agent's delete), and every read that serves the learning's own text (corrections,
  *  files, the log, a workflow's revisions, the audits, a run's diff). */
 const LEARNING_REFUSED = [
   ["GET", "/v2/agents/{agent}/learning"], ["GET", "/v2/agents/{agent}/learning/corrections"], ["PUT", "/v2/agents/{agent}/learning/corrections"],
@@ -57,8 +58,8 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/runs/run_1/usage"], ["HEAD", "/v2/runs/run_1/usage"],
     ["PUT", "/v2/runs/run_1/grade"], ["POST", "/v2/runs/run_1/messages"], ["POST", "/v2/runs/run_1/stop"], ["POST", "/v2/runs/run_1/cancel"],
     ["GET", "/v2/runs/run_1/files"], ["GET", "/v2/runs/run_1/files/out/report.md"], ["POST", "/v2/files"], ["GET", "/v2/files/file_1"],
-    ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"],
-    ["GET", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1"], ["GET", "/v2/computers/daemon"],
+    ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"], ["GET", "/v2/capacity"],
+    ["GET", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1"], ["DELETE", "/v2/agents/a1/learning"], ["DELETE", "/v2/runs/run_1"], ["GET", "/v2/computers/daemon"],
     ["GET", "/v2/computers"], ["HEAD", "/v2/computers"], ["GET", "/v2/workspace/archil"], ["HEAD", "/v2/workspace/archil"],
     ["GET", "/v2/runs/run_1/computer"], ["POST", "/v2/runs/run_1/computer/take-over"], ["POST", "/v2/runs/run_1/computer/hand-back"],
     ["POST", "/v2/runs/run_1/computer/viewer"], ["GET", "/v2/runs/run_1/computer/live/v/x"], ["HEAD", "/v2/runs/run_1/computer/live/computer-viewer.js"],
@@ -69,7 +70,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["POST", "/v2/setup"], ["POST", "/v2/auth/sign-in"], ["GET", "/v2/auth/session"],
     ["PUT", "/v2/settings/tool-keys/monid"], ["PUT", "/v2/settings/tools"], ["PUT", "/v2/settings/mcp-servers/x"], ["PUT", "/v2/settings/webhook"], ["GET", "/v2/settings/tools"],
     ["POST", "/v2/mcp"], ["GET", "/v2/triggers"], ["POST", "/v2/triggers"], ["POST", "/v2/hooks/trg_1"],
-    ["GET", "/v2/agents"], ["POST", "/v2/agents"], ["DELETE", "/v2/runs/run_1"], ["POST", "/v2/runs/run_1/approvals/a"], ["GET", "/v2/runs/run_1/browser"], ["POST", "/v2/runs/run_1/kill"],
+    ["GET", "/v2/agents"], ["POST", "/v2/agents"], ["POST", "/v2/runs/run_1/approvals/a"], ["GET", "/v2/runs/run_1/browser"], ["POST", "/v2/runs/run_1/kill"],
     ["GET", "/v2/runs/run_1/browser/live/v/x"], ["POST", "/v2/runs/run_1/computer/live/v/x"], ["POST", "/v2/runs/run_1/computer/call"], ["POST", "/v2/runs/run_1/computer/release"],
     ["GET", "/v2/openapi.json"], ["POST", "/v2/templates/x/apply"], ["GET", "/v2/v2/runs"],
     ["POST", "/v2/computers/pairings"], ["POST", "/v2/computers/pair"], ["GET", "/v2/computers/attach"],
@@ -98,7 +99,11 @@ async function send(server, method, path, { token = true, body, headers = {} } =
 test("an API-only server serves a run's routes with the token", async (t) => {
   const server = await serve(t, { apiOnly: true, runner: false });
   assert.equal((await send(server, "GET", "/v2/health", { token: false })).status, 200, "health");
-  assert.equal((await send(server, "GET", "/v2/capabilities")).status, 200, "capabilities");
+  const capabilities = await send(server, "GET", "/v2/capabilities");
+  assert.equal(capabilities.status, 200, "capabilities");
+  // The store's schema and runner floor beside this build's, for a deploy's skew check (runnerfloor/1).
+  const { version, runner_floor: floor, known } = capabilities.body.store_schema;
+  assert.ok(Number.isSafeInteger(known) && version === known && Number.isSafeInteger(floor) && floor <= known, JSON.stringify(capabilities.body.store_schema));
   const runs = await send(server, "GET", "/v2/runs");
   assert.equal(runs.status, 200, `the runs list: ${JSON.stringify(runs.body)}`);
   assert.equal((await send(server, "GET", "/v2/usage")).status, 200, "usage");
@@ -139,6 +144,90 @@ test("an API-only server serves an agent's Archil disk, read and removed, with t
   assert.deepEqual([removed.status, removed.body], [200, { on: false, archil_disk: null, removed: null }], "nothing to remove");
   assert.equal((await send(server, "GET", "/v2/agents/agent_missing/archil")).status, 404, "an agent it does not have is the route's own 404");
   assert.equal((await send(server, "GET", `/v2/agents/${agent}/archil`, { token: false })).status, 401, "and takes the token");
+});
+
+/** An inline run of the expert `expert` its backend sends (`external`), with `content` its input and `extra` its
+ *  definition's other fields: its answer's body ({agent_id, run_id}). */
+async function inlineRun(server, expert, content, extra = {}) {
+  const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "backend", kind: "expert", id: expert, version: 1 }, definition: { name: `Expert ${expert}`, instructions: "Answer the question.", skills: [], tools: [], harness: "pi", ...extra }, input: { content } } });
+  assert.equal(inline.status, 202, JSON.stringify(inline.body));
+  return inline.body;
+}
+
+/** `answer` is 410 purged, its tombstone the run's. */
+const purged = (answer, run, what) => assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.run_id], [410, "purged", run], `${what}: ${JSON.stringify(answer.body)}`);
+/** The window /usage is read over: every run a test starts. */
+const WINDOW = "from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z";
+
+test("an API-only server purges a run of an agent its backend made (an inline run's, external): 204, every read of it 410 purged, a second DELETE 204, its cost kept in /usage; an unknown run is the route's own 404; it takes the token", { timeout: 120_000 }, async (t) => {
+  const server = await serve(t, { apiOnly: true });
+  const { run_id: run } = await inlineRun(server, "erase-1", "What is six times seven.");
+  await ended(server.api, run);
+  const usage = (await send(server, "GET", `/v2/usage?${WINDOW}`)).body;
+
+  const none = await send(server, "DELETE", `/v2/runs/${run}`, { token: false });
+  assert.deepEqual([none.status, none.body.error?.code], [401, "unauthenticated"], JSON.stringify(none.body));
+  assert.equal((await server.store.runs.get(run)).purgedAt, null, "nothing purged without the token");
+
+  const deleted = await send(server, "DELETE", `/v2/runs/${run}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  purged(await send(server, "GET", `/v2/runs/${run}`), run, "its read");
+  purged(await send(server, "GET", `/v2/runs/${run}/timeline`), run, "its timeline");
+  assert.equal((await send(server, "DELETE", `/v2/runs/${run}`)).status, 204, "a second DELETE: purged before");
+  assert.deepEqual((await send(server, "GET", `/v2/usage?${WINDOW}`)).body, usage, "what it cost stays in /usage");
+
+  const missing = await send(server, "DELETE", "/v2/runs/run_missing");
+  assert.deepEqual([missing.status, missing.body.error?.message], [404, "no run run_missing"], "a run it does not have is the route's own 404");
+});
+
+test("an API-only server refuses DELETE of a run of an agent made here with the profile's 404, as before: nothing purged", { timeout: 120_000 }, async (t) => {
+  // The agent made on the whole server, then the same data served API-only (its agents' routes are refused there).
+  const whole = await serve(t);
+  const { run_id: run } = await startRun(whole.api, "here", "What is six times seven.");
+  await follow(whole.api, run, ["completed"]);
+  await whole.stop();
+  const server = await serve(t, { apiOnly: true, runner: false, data: whole.data });
+
+  const refused = await send(server, "DELETE", `/v2/runs/${run}`);
+  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.message], [404, "not_found", `this server serves the run API only (AGENTRUN_API_ONLY=1): /v2/runs/${run} is not served here`], JSON.stringify(refused.body));
+  assert.equal((await server.store.runs.get(run)).purgedAt, null, "nothing purged");
+  assert.equal((await send(server, "GET", `/v2/runs/${run}`)).status, 200, "the run reads as before");
+});
+
+test("an API-only server's purge of a run of a learning agent (its expert's id `<workspace>:<expert>`) leaves the agent and its other runs alone", { timeout: 180_000 }, async (t) => {
+  const server = await serve(t, { apiOnly: true, learning: "on" });
+  const first = await inlineRun(server, "ws_1:expert-9", "What is six times seven.", { learning: true });
+  await ended(server.api, first.run_id);
+  const second = await inlineRun(server, "ws_1:expert-9", "What is six times eight.", { learning: true });
+  assert.equal(second.agent_id, first.agent_id, "one agent for the expert");
+  await ended(server.api, second.run_id);
+
+  assert.equal((await send(server, "DELETE", `/v2/runs/${first.run_id}`)).status, 204);
+  purged(await send(server, "GET", `/v2/runs/${first.run_id}`), first.run_id, "the purged run");
+  const other = await send(server, "GET", `/v2/runs/${second.run_id}`);
+  assert.deepEqual([other.status, other.body.status, other.body.result?.final_answer], [200, "completed", "On What is six times eight.: done."], `its other run: ${JSON.stringify(other.body)}`);
+  assert.equal((await send(server, "GET", `/v2/runs/${second.run_id}/timeline`)).status, 200, "its other run's timeline");
+  assert.equal((await send(server, "GET", `/v2/agents/${first.agent_id}/learning/loop`)).status, 200, "the agent's learning");
+  const agent = await server.store.agents.get(first.agent_id);
+  assert.deepEqual([agent.purgedAt, agent.archivedAt], [null, null], "the agent is neither purged nor archived");
+  const listed = await send(server, "GET", `/v2/agents/${first.agent_id}/runs`);
+  assert.deepEqual(listed.body.runs.map((one) => one.run_id), [second.run_id], `the agent's list: its other run alone: ${JSON.stringify(listed.body)}`);
+});
+
+test("an API-only server answers 409 run_not_final to DELETE of a live run of an agent its backend made, nothing purged; once cancelled, it purges it", { timeout: 120_000 }, async (t) => {
+  const server = await serve(t, { apiOnly: true });
+  const { run_id: run } = await inlineRun(server, "erase-live", "Take your time.");
+  await follow(server.api, run, ["working"]);
+
+  const refused = await send(server, "DELETE", `/v2/runs/${run}`);
+  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.runs], [409, "run_not_final", [run]], JSON.stringify(refused.body));
+  assert.equal((await server.store.runs.get(run)).purgedAt, null, "nothing purged");
+  assert.equal((await send(server, "GET", `/v2/runs/${run}`)).status, 200, "the run is kept");
+
+  assert.equal((await send(server, "POST", `/v2/runs/${run}/cancel`)).status, 202);
+  await follow(server.api, run, ["cancelled"]);
+  assert.equal((await send(server, "DELETE", `/v2/runs/${run}`)).status, 204);
+  purged(await send(server, "GET", `/v2/runs/${run}`), run, "the cancelled run");
 });
 
 test("an API-only server serves an inline-run agent's learning reads with the token (loop, promotions, cost, a run's learning), and refuses its learning's writes and texts", { timeout: 120_000 }, async (t) => {
