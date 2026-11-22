@@ -101,7 +101,7 @@ const deferred = () => {
 
 /** A store with run-1 queued, a runner on the adapter loop under `capUsd` (undefined: no cap), the model held at `hold`
  *  and billed at `billed` a request, its root and children answered by `fetch`. `judged`: each request the cap judged. */
-async function wrapRun(t, { capUsd, hold, billed, fetch, tools, onLedger, model, price }) {
+async function wrapRun(t, { capUsd, hold, billed, fetch, tools, onLedger, model, price, hooks }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-cap-wrap-up-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -120,7 +120,7 @@ async function wrapRun(t, { capUsd, hold, billed, fetch, tools, onLedger, model,
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
     runCap: { capUsd: () => (typeof capUsd === "function" ? capUsd() : capUsd), modelOf: () => model ?? priced(hold), judged: (request, answer) => void judged.push(answer) },
-    hooks: quiet,
+    hooks: hooks ?? quiet,
     gate: () => "allow",
   }), { restartLimit: MAX_RESTARTS });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
@@ -320,6 +320,34 @@ test("a call a running script makes is never refused by the wrap-up (the tool in
   assert.equal(results[0]?.isError, false, JSON.stringify(results));
   assert.match(results[0].text, /both ran/);
   assert.deepEqual(results[1], { text: WRAP_UP_TEXT, isError: true }, JSON.stringify(results));
+});
+
+test("a refusal is kept under the cap it was judged under: a raise landing while the gate reads the run's spend is the next call's", async (t) => {
+  // The case above, with a raise to $2 the moment the gate has read the cap for the model's own read (the second read the
+  // gate is asked about; the script's is the first): that read is refused under $0.0045, and kept so, never under $2.
+  const HOLD = 0.004;
+  let capNow = 1_000;
+  let reads = 0;
+  let raiseAfterNextRead = false;
+  const cap = () => {
+    if (!raiseAfterNextRead) return capNow;
+    raiseAfterNextRead = false;
+    const judged = capNow;
+    capNow = 2;
+    return judged;
+  };
+  const hooks = { beforeIntent: async (call) => void (call.tool === "read" && (reads += 1) === 2 && (raiseAfterNextRead = true)), beforeResult: async () => {} };
+  const { tools } = suiteTools();
+  const lower = { name: "lower", replaySafe: true, run: async () => ((capNow = 0.0045), "lowered") };
+  const requests = [];
+  const origin = scriptedOrigin([{ call: "codemode", args: { script: "await tools.lower({}); await tools.read({}); return 'both ran';" } }, { call: "read" }, { say: "answered" }], requests);
+  const [first, rest] = [billedAt(origin, 0.002, HOLD), billedAt(origin, 0.001, HOLD)];
+  const fetch = (url, init) => ((JSON.parse(String(init.body)).messages ?? []).some((message) => message.role === "assistant") ? rest : first)(url, init);
+  const { server } = await wrapRun(t, { capUsd: cap, hold: HOLD, fetch, tools: { ...tools, lower }, price: (_model, usage) => (usage.output * HOLD) / OUTPUT, hooks });
+  assert.equal(reads, 2, "the gate was asked about both reads");
+  assert.equal(capNow, 2, "the raise landed");
+  assert.deepEqual(resultsIn(requests)[1], { text: WRAP_UP_TEXT, isError: true }, "the model's read was refused under $0.0045");
+  assert.deepEqual((await refusalsKept(server)).map((data) => data.capUsd), [0.0045], "kept under the cap it was refused under");
 });
 
 test("a run with no cap is unchanged: every child runs its whole script and every spawn is made", async (t) => {

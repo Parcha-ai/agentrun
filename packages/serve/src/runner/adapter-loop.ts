@@ -2214,8 +2214,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // spend and each request or paid step still out at its hold and bound, read from the run's records at each call. A
         // hold-only step still open (a browser session's reserve) is no spend in its records, but the cap holds it in
         // flight: it counts at its hold too. One a lost claim left open was given back at this claim's open (bookCut).
-        // Its answer is the words a call reads once the run wraps up (wrap-up.ts wrapUpText), undefined while it does not.
-        const wrapUp = async (): Promise<string | undefined> => {
+        // Its answer is the words a call reads once the run wraps up (wrap-up.ts wrapUpText), with the cap it was judged
+        // under (read once, before the spend reads it awaits: a raise landing meanwhile is the next call's), undefined while
+        // it does not.
+        const wrapUpAt = async (): Promise<{ words: string; capUsd: number } | undefined> => {
           // A run whose spec gives no cap (no runCap) has none to wrap up at, as overCap reads it.
           if (!spec.runCap) return undefined;
           const capUsd = capNow();
@@ -2231,19 +2233,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // is priced at least as high): none yet, no wrap-up, as no tool call comes before a request.
           if (!wrappingUp(capUsd, taken, reserveOf(capNote.lastFigures))) return undefined;
           // A cap below what the model needs for one more step and an answer is named in the words, by the same rule.
-          return wrapUpText(capUsd, capNote.lastModel, stepAndAnswerFor(capNote.lastFigures, (step0Usd) => typicalCost(capNote.costs, step0Usd)), capNote.lastEffort);
+          return { words: wrapUpText(capUsd, capNote.lastModel, stepAndAnswerFor(capNote.lastFigures, (step0Usd) => typicalCost(capNote.costs, step0Usd)), capNote.lastEffort), capUsd };
         };
+        /** The wrap-up's words alone (wrapUpAt). */
+        const wrapUp = async (): Promise<string | undefined> => (await wrapUpAt())?.words;
         // The wrap-up's refusal of a call (the gate's, wrapUp's words): kept on the run's root as a CAP_REFUSED entry, its
         // call and the cap it was refused under, so the run's view says it wound down for its cap (store-view.ts
         // windDownOf: `stopped_for`, `budget_refused_calls`). A call refused again (a replay) is the same call: the reader
         // counts each call once. Not written once the journal is sealed; a write that fails is warned and the call is
-        // refused all the same. The cap is read only once the wrap-up refuses (wrapUp says none for a run with no cap,
-        // whose spec has no runCap for capNow to read).
+        // refused all the same. The cap kept is the one the refusal was judged under (wrapUpAt's), never one read after it.
         const wrapUpRefusal = async (callId: string): Promise<string | undefined> => {
-          const words = await wrapUp();
-          if (words === undefined || gate?.sealed) return words;
-          const capUsd = capNow();
-          if (capUsd === undefined) return words;
+          const refusal = await wrapUpAt();
+          if (refusal === undefined) return undefined;
+          const { words, capUsd } = refusal;
+          if (gate?.sealed) return words;
           try {
             await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_REFUSED, data: { callId, capUsd } as unknown as JsonValue }), context);
             await deps.flush();
