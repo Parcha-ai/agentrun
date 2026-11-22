@@ -610,6 +610,9 @@ test("agentrun deploy DIR to an API-only install with its token: the upload, pla
   assert.match(first.err, /! trigger\s+daily\s+schedule skipped: The pr-alert template's trigger daily \(schedule\) was not made: this server serves the run API only \(AGENTRUN_API_ONLY=1\) and has no launch hook/);
   assert.match(first.err, /! trigger\s+inbound\s+webhook skipped: The pr-alert template's trigger inbound \(webhook\) was not made: this server serves the run API only \(AGENTRUN_API_ONLY=1\), which serves no route or setting a webhook trigger needs/);
   assert.deepEqual(await hosted.store.triggers.list(done.agent_id), [], "no trigger made there");
+  // And stdout's answer says the same: each skipped trigger is a warning with its reason.
+  const skipped = done.warnings.filter((one) => one.field.startsWith("triggers.")).map((one) => [one.field, one.reason, one.message.match(/trigger (\w+) \((\w+)\) was not made/)?.slice(1)]);
+  assert.deepEqual(skipped, [["triggers.0", "not_set_up_here", ["daily", "schedule"]], ["triggers.1", "not_an_option", ["inbound", "webhook"]]]);
 
   // A changed skill is the agent's next revision there, and rollback makes the first current again.
   writeFileSync(join(pkg, "skills", "check", "SKILL.md"), SKILL("Say what changed, and who changed it."));
