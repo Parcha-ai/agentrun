@@ -91,6 +91,17 @@ test("a run's journal cut is of its own keys alone, names included, and goes wit
   assert.ok(redact.carried("run_theirs"), "the other run's stay");
 });
 
+test("a carried key all of digits, written as a JSON number, is cut too: its digits in the number, or the same number written otherwise", () => {
+  const redact = heldRedactor((text) => text);
+  // Two keys of digits alone: one the number shows as written, one whose leading zero a number drops.
+  const plain = "4111111111111111";
+  const padded = "0522222222222222";
+  carryTo(redact, "run_digits")([plain, padded]);
+  const cut = redact.carried("run_digits");
+  const out = cutDeep({ args: { pin: Number(plain), big: BigInt(plain), list: [Number(plain)], zero: Number(padded) }, count: 3 }, cut, true);
+  assert.deepEqual(out, { args: { pin: "[redacted]", big: "[redacted]", list: ["[redacted]"], zero: "[redacted]" }, count: 3 }, "each number showing a carried key is cut, another number kept");
+});
+
 test("two names cut to one are both kept, the later numbered", () => {
   const one = newKey("one");
   const two = newKey("two");
