@@ -20,9 +20,9 @@ const TOKEN = 'fake-signin-token-Qz7Wv9Lm2Np4Rs6Tx8Yb3Kc5Hd';
 const KEY = 'fake-harness-key-Hb4Tn8Wq2Lx6Rz9Pc3Vm7Kd5Js';
 const SERVER_KEY = 'fake-server-key-Mw3Xk7Qp9Zt2Lr6Nb8Vc4Hf5Dg';
 const LOGIN = 'fake-login';
-const API_KEY = 'fake-api-key';
+const KEY_METHOD = 'fake-api-key';
 /** The fake: it lists both methods, reads its login from $FAKE_LOGIN_HOME/token.json and its key from FAKE_VENDOR_KEY. */
-const AUTH = { methods: [LOGIN, API_KEY], home: { method: LOGIN, env: 'FAKE_LOGIN_HOME', file: 'token.json' }, key: { method: API_KEY, env: 'FAKE_VENDOR_KEY' } };
+const AUTH = { methods: [LOGIN, KEY_METHOD], home: { method: LOGIN, env: 'FAKE_LOGIN_HOME', file: 'token.json' }, key: { method: KEY_METHOD, env: 'FAKE_VENDOR_KEY' } };
 
 /** The folder the person's own login left (or not: `made` false), as the agent itself writes it. */
 function loginFolder(dir, made = true) {
@@ -43,14 +43,14 @@ async function leftBehind(store, events, lines) {
 
 test("the key route: a key saved under the harness's own name reaches the agent under the name it reads, the server's own value under that name never does", async (t) => {
   const dir = scratch();
-  const recipe = fakeRecipe(dir, { script: [{ say: 'one' }], auth: AUTH }, { keys: ['FAKE_SAVED_KEY'], keyEnv: { FAKE_SAVED_KEY: 'FAKE_VENDOR_KEY' }, authMethod: API_KEY });
+  const recipe = fakeRecipe(dir, { script: [{ say: 'one' }], auth: AUTH }, { keys: ['FAKE_SAVED_KEY'], keyEnv: { FAKE_SAVED_KEY: 'FAKE_VENDOR_KEY' }, authMethod: KEY_METHOD });
   const lines = [];
   const { session, store, events } = await openSession(t, recipe, { options: { env: { PATH: process.env.PATH, FAKE_SAVED_KEY: KEY, FAKE_VENDOR_KEY: SERVER_KEY }, log: (...line) => lines.push(line) } });
   await session.send('a');
   assert.equal((await session.turnEnd()).status, 'completed');
   const said = fakeEvents(recipe);
   const auth = said.find((e) => e.type === 'authenticate');
-  assert.equal(auth?.methodId, API_KEY);
+  assert.equal(auth?.methodId, KEY_METHOD);
   assert.equal(auth.sha, sha(KEY), "the harness's key, never the server's");
   assert.ok(said.findIndex((e) => e.type === 'authenticate') < said.findIndex((e) => e.type === 'new'), 'before the session opened');
   const left = await leftBehind(store, events, lines);
