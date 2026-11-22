@@ -14,6 +14,11 @@ sign-in and configuration. Turn **Self-improving** On separately to give later r
 corrections. Eligible server-run and SDK agents can also compile checked workflows; CLI capture has no workflow
 bridge. Imported history stays historical and does not automatically train the agent.
 
+New source connections also keep their setup in sync by default. A supported complete setup can **Move to AgentRun**
+from the same agent page, retaining its identity and history. Destination accounts and unsupported tools/settings
+appear as prerequisites. See [source sync and Move](../../docs/source-sync.md) for scope, project continuity,
+conflicts and current compatibility; `--no-sync` opts out when connecting.
+
 For a source on a different laptop, VM or container, choose **Connection setup → Another machine** and use the
 matching [Python source connector](../../connector/README.md). Remote execution currently needs the server and
 connector from the same reviewed development checkout; the published observation-only CLI does not include it.
@@ -723,6 +728,24 @@ AGENTRUN_DOCKER_IMAGE=python:3.12-bookworm AGENTRUN_BOXES=docker node packages/s
 `sh`, `sleep` and `setsid`, and `bash` for the `bash` tool when there is one (else `sh`). The image's own entrypoint
 never runs; the box's first process is a `sleep` of its lifetime.
 
+**The media image.** For an agent that makes video, the computer package keeps a second recipe,
+`packages/computer/media/Dockerfile`: the default image's base, by the same digest, and its programs, plus Node 24 from
+its official tarball (each architecture's sha256 checked), Chromium (also on PATH as `chrome`), FFmpeg and FFprobe,
+Noto (with CJK and colour emoji), Liberation and DejaVu fonts, and the [HyperFrames](https://github.com/heygen-com/hyperframes)
+CLI at an exact version. On amd64 it also has the `chrome-headless-shell` build that CLI pins, by sha256, so a render
+needs no download. The CLI's usage reports and update check are off unless a command turns them on. Nothing builds it for
+you, and no agent setting picks it: build it, then name its tag in `AGENTRUN_DOCKER_IMAGE`. From the repository's root:
+
+```sh
+tag=agentrun-media:$(sha256sum packages/computer/media/Dockerfile | cut -c1-12)
+docker build -t "$tag" - < packages/computer/media/Dockerfile
+AGENTRUN_DOCKER_IMAGE=$tag AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
+```
+
+The tag is the recipe's hash, so an edit to the recipe is a new tag, and a tag already on this machine is used as it is
+(nothing is pulled). It is about 2.7 GB on disk. An agent that needs it says so with
+[`computer.needs`](#computers), so a server on another image fails its runs in words instead of running them.
+
 ### In the published image
 
 The published image, `ghcr.io/parcha-ai/agentrun-server`, runs Docker sandboxes on the Docker of the host it runs on,
@@ -830,6 +853,28 @@ and the Docker provider runs the container with them (`--cpu-quota`, `--memory` 
 They apply to Docker computers only: a vendor's computer (Daytona, Modal, E2B, Orgo, a phone, a hosted browser) is the
 size its provider makes it, and is never given them. A value the Docker provider refuses stops the server's start, in
 the provider's words.
+
+**What a sandbox needs.** A sandbox may list the programs its agent's work needs on the box's PATH:
+`"computer": {"kind": "sandbox", "provider": "docker", "needs": ["chrome", "ffmpeg", "ffprobe", "hyperframes"]}`, 1 to
+32 program names (letters, digits, `.`, `_`, `+` and `-`; no path), each once. It says what the box must have, never which
+image it is: a Docker box's image is still `AGENTRUN_DOCKER_IMAGE`'s, and another provider's is its own. Each run's
+claim asks the box it started, before the run's first model request: one `sh` with the names as its arguments, which
+prints those `command -v` does not find, searching the folders the agent's shell searches (`/usr/local/sbin`,
+`/usr/local/bin`, `/usr/sbin`, `/usr/bin`, `/sbin`, `/bin`), never a PATH the image sets. A box that lacks one, or that cannot be asked, is let go and the run ends
+`failed` (`run_failed`), its words naming what is missing and how to give the box an image that has it:
+
+```text
+This agent's sandbox on Docker lacks chrome, ffmpeg, ffprobe, and hyperframes, which the agent needs (computer.needs),
+so nothing ran. Set AGENTRUN_DOCKER_IMAGE to an image that has them and restart the server. For video (chrome, ffmpeg,
+ffprobe, hyperframes), build the media image: ...
+```
+
+Nothing is installed and nothing falls back. A provider whose image is a setting of its own (Daytona's
+`AGENTRUN_DAYTONA_SNAPSHOT`) is named in the fix instead. Only a sandbox takes `needs` (422 `not_allowed` on another
+kind; a stored setting or a launch's computer that has them on another kind fails the run at claim in words, nothing
+started); an agent without it is checked for nothing, and its revision is as before. A template states them as `needs`
+beside `computer: [shell]` ([templates](templates/README.md)), and apply writes them onto the sandbox it picks, or
+refuses where the shell here is no sandbox.
 
 **A lost sandbox.** A run's sandbox can be lost mid-run: its vendor deleted it (from its own console or API), or no
 longer has it. The tool call in flight when the loss is confirmed fails with code `gone`: `the computer <name> was lost
@@ -2087,6 +2132,15 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 (or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
 value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
 `url` is `https`, or `http` on loopback.
+
+A server advertising MCP resources also lists three AgentRun-generated read operations, including when it has no
+tools: `agentrun_list_resources` (`resource: "list"`), `agentrun_list_resource_templates` (`resource: "templates"`)
+and `agentrun_read_resource` (`resource: "read"`). The first two take `{}`; read takes `{uri}`. They are granted,
+pinned and gated like tools, using the same destination credential, but dispatch MCP resource methods. URIs are
+passed to that server rather than fetched directly. Resource lists include all pages within 500 entries, 1 MiB
+and one call deadline; exceeding a bound fails without a partial list. Text uses the ordinary answer filing and
+credential scrub. A binary resource containing a connection credential is withheld. These three names are reserved:
+an upstream ordinary tool with one of them makes preview or save fail. A name alone never grants resource authority.
 
 ### Composio
 

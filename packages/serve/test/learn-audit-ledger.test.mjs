@@ -779,3 +779,13 @@ test("(r4) a served run's all-in is unknown while its shadow is queued or runnin
   assert.deepEqual(await allInOf(storeWith({ id: "audit.served-1", state: "ended", costUsd: 0.25 }), served), { cost_usd: 0.2, learning_usd: 0.25, total_usd: 0.45 });
   assert.deepEqual(await allInOf(storeWith(undefined), served), { cost_usd: 0.2, learning_usd: 0, total_usd: 0.2 }, "never drawn: nothing beside it");
 });
+
+test('a moved project refuses an auxiliary audit before starting a shadow and preserves its learning configuration', async t => {
+  const { startAudit } = await import('../dist/runner/audit.js');
+  const learning = { audit_every: 1 }, f = servedStore(0, learning, DIGEST), logs = [];
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'moved-audit-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const launch = { input: { content: 'Work.' }, title: 'Work', place: { mode: 'runner' }, learning: startAt('0'.repeat(40)), sourceProject: { version: 1, sourceId: 'a'.repeat(64), baselineRevision: 'rev-1', digest: 'b'.repeat(64), receipt: 'c'.repeat(64) } };
+  await startAudit({ store: f.store, agentId: 'agent-1', revisionId: 'rev-1', context: {}, learning: learningStoreOf(dir, 'agent-1'), shown: async () => ({ text: text => text }), log: line => logs.push(line), runId: 'source-run', launch }, { name: 'answer', digest: DIGEST });
+  assert.deepEqual(f.made, []); assert.match(logs.join('\n'), /project placement/i);
+  assert.deepEqual((await f.store.agents.revision('rev-1')).body.learning, learning);
+});

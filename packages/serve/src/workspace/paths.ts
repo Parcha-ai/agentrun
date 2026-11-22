@@ -68,6 +68,14 @@ export const homeKey = (agentId: string): string => `agents/${agentDirName(agent
 /** Agent `agentId`'s home, the root of its home Workspace: `<data>/disk/agents/<agent>/home`. */
 export const agentHomeFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, homeKey(agentId));
 
+/** Immutable source bundles, private to the server and outside every run's tool root. */
+export const sourceSnapshotsKey = (agentId: string): string => `agents/${agentDirName(agentId)}/source-snapshots`;
+export const sourceSnapshotsFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, sourceSnapshotsKey(agentId));
+
+/** A run's source placement receipt, beside work/ so its tools cannot rewrite the admission proof. */
+export const sourceRunControlKey = (agentId: string, runId: string): string => `agents/${agentDirName(agentId)}/runs/${checkId(runId, "run")}/source-control`;
+export const sourceRunControlFolder = (dataDir: string, agentId: string, runId: string): string => join(dataDir, DISK_DIR, sourceRunControlKey(agentId, runId));
+
 /** Run `runId`'s scratch folder on this machine: `<data>/scratch/<agent>/<run>`. Outside the disk, so no Workspace
  *  holds it, in either mode. */
 export const scratchFolder = (dataDir: string, agentId: string, runId: string): string =>

@@ -21,6 +21,7 @@ import { ApiError } from "./errors.js";
 import { LearningInFlight } from "./learn/delete.js";
 import { FINAL_STATES, type PurgeKept, type RunState, RunsMadeFromLeft, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
 import { forgetServed } from "./store-view.js";
+import { requireSourceIOIdle } from "./source-sync/io.js";
 
 /** The delete of an agent's learning: the server's is the learning module's deleteLearning, its learning store removed
  *  whole (learn/delete.ts), and its records. Idempotent; refuses with LearningInFlight while learning work of the agent
@@ -96,6 +97,7 @@ export async function deleteExternalAgent(host: AgentDeleteHost, agentId: string
   await host.refuse(agentId);
   await stopRuns(host, agentId);
   await host.at?.("after_step_1", agentId);
+  await requireSourceIOIdle(host.store, agentId);
 
   // 2. Its learning.
   await learningGone(host, agentId);
@@ -127,6 +129,7 @@ export async function purgeAgent(host: AgentDeleteHost, agentId: string): Promis
   // Marked before anything goes, and kept until its tombstone is written: a purge stopped part way leaves the agent
   // refusing an unarchive and every write (server.ts agentWrite) until a DELETE finishes it.
   await host.store.settings.put(purgingKey(agentId), true);
+  await requireSourceIOIdle(host.store, agentId);
   await learningGone(host, agentId);
   await host.at?.("after_step_2", agentId);
   await thingsGone(host, agentId);

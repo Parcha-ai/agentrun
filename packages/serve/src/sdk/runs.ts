@@ -1,10 +1,12 @@
 // Backend SDK calls remain in their application. This inbox only records their evidence and immutable completion;
 // the ordinary fenced runner owns journals, reflection, checking and learning commits.
+import { cliCaptureOf } from "../source-sync/capture.js";
+import { sourceKey } from "../source-sync/registry.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { inspectWorkflow, resolveSchemaForWorkflow } from "@parcha/agentrun-dsl";
 import { ApiError } from "../errors.js";
 import { canonical, isObject, cliLearningOf, learningSettingForBody, type AgenticBody } from "../store/agent-body.js";
-import type { Claim, RunOrigin, Store } from "../store/store.js";
+import type { Claim, RunOrigin, Store, SettingsGuard } from "../store/store.js";
 import type { AgentEntry } from "../agents-store.js";
 import { uuidv7 } from "../agents-store.js";
 import { launchBody, type RunLaunch } from "../run-launch.js";
@@ -233,6 +235,14 @@ export class SdkRuns {
     const workflow = cli ? undefined : sdkWorkflowManifest(body.workflow_tools, body.workflow_adapters);
     if (workflow && canonical(this.clean(workflow)) !== canonical(workflow))
       refuse("The workflow manifest contains a protected value; keep credentials in the backend.");
+    const expectedCurrent = entry.agent.currentRevision;
+    const managedLearning = learningSettingForBody(entry.revision?.body);
+    const capture = cli ? await cliCaptureOf(this.store, entry) : undefined;
+    const sourceGuards: SettingsGuard[] = cli ? [{ key: `cli-learning-connection:${cli.connection_id}`, fields: { active: true, generation: cli.connection_generation, agent_id: entry.agent.id } }] : [];
+    if (capture) {
+      entry = { ...entry, revision: capture.revision };
+      if (capture.source) sourceGuards.push({ key: sourceKey(entry.agent.id), fields: { id: capture.source.id, capture_revision: capture.source.capture_revision } });
+    }
     const binding = sdkOf(entry.revision?.body);
     if (cli) {
       if (cliLearningOf(entry.revision?.body)?.connection_id !== cli.connection_id)
@@ -268,7 +278,7 @@ export class SdkRuns {
     // their words, as any start is (prepareLaunch), before the caller holds a receipt it would run on.
     await refuseWhileNoRunner(this.store.runners);
     // A connected agent's run names no disk.
-    const learning = await learningStartFor(deps, entry, pinned.revision, { ...revisionBody, learning: learningSettingForBody(revisionBody) } as never, {
+    const learning = await learningStartFor(deps, entry, pinned.revision, { ...revisionBody, learning: cli ? managedLearning : learningSettingForBody(revisionBody) } as never, {
       disk: null,
       noWorkflows: !workflow,
       ...(compile.model ? { model: compile.model } : {}),
@@ -334,7 +344,7 @@ export class SdkRuns {
           ...(cli && cleanedInput !== input ? { evidence_incomplete: true } : {}),
         } satisfies SdkInbox);
         await this.store.runs.create(
-          { id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) },
+          { id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(cli ? { expectedCurrent, settingsGuards: sourceGuards } : {}), ...(origin ? { origin } : {}) },
           { body: launchBody(launch) },
         );
       } catch (error) {

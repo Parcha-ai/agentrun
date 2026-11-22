@@ -47,6 +47,7 @@ import { envValue, type KeyEnv } from "../key-meta.js";
 import { fauxComputers } from "../faux-computers.js";
 import { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
 import { startJanitor } from "../workspace/computer-janitor.js";
+import { projectRunEnded } from "../source-sync/checkpoints.js";
 import { runEndComputers } from "../workspace/run-end-computers.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
@@ -324,7 +325,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts), said as warnings.
     await sweepEndedScratch(store, options.dataDir, { log: warn });
     // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
-    const runEnded = typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn }) : undefined;
+    const runEnded = projectRunEnded(store, typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn }) : undefined);
     runner = startRunner({
       store,
       createLoop,
@@ -334,7 +335,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),
-      ...(runEnded ? { runEnded } : {}),
+      runEnded,
       // A runner on a disk of its own claims nothing while the server keeps runs' folders on the server's disk (Mode 1),
       // and says why on its presence row (disk-free.ts): those runs wait for a runner on the server's disk.
       claimGate: diskFreeGate(store, options.dataDir, env, kind),

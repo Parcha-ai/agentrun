@@ -35,7 +35,7 @@ import {
 import { acknowledgeInDrive, attachInDrive, cliPath, CODEX_CLI, DriveFiles, SANDBOX_DOC } from './host/sandbox.js';
 import { AppServer, type RpcNotification, type RpcServerRequest } from './app-server.js';
 import { codeMode } from './code-mode.js';
-import { danglingCalls, settleCall } from './transcript.js';
+import { danglingCalls, nextRolloutOrdinal, settleCall } from './transcript.js';
 import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.js';
 import {
   callIdOf,
@@ -448,6 +448,9 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     const clamps = new Map<string, ReturnType<typeof setTimeout>>();
     try {
       if (resume) {
+        // Validate before the bridge can approve or dispatch another effect. Earlier versions could retain a synthetic
+        // result without a native ordinal; preserve that history and refuse rather than repair it or replay its effect.
+        nextRolloutOrdinal(lines);
         // A resumed thread's host calls with no output, before Codex starts on it: one that never started (no intent in
         // the session's records) runs now through the bridge under its own id (gate, intent, run, result); one the log
         // finished is answered with its recorded result; one with an intent and no outcome is left to the recovery below,
