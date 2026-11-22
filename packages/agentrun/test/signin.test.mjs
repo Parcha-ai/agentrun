@@ -165,6 +165,9 @@ test("login --to: a URL off the target's origin, a redirect, or a malformed answ
     "metadata not JSON": () => ({ "GET /auth/device": () => [200, { "content-type": "application/json" }, "{not json"] }),
     "metadata missing its token endpoint": (at) => ({ "GET /auth/device": () => json(200, { ...ok(at), token_endpoint: undefined }) }),
     "metadata too large": (at) => ({ "GET /auth/device": () => json(200, { ...ok(at), padding: "x".repeat(70_000) }) }),
+    "grant not JSON": () => ({ "POST /auth/device/code": () => [200, { "content-type": "application/json" }, "{not json"] }),
+    "grant an array": () => ({ "POST /auth/device/code": () => json(200, [grant]) }),
+    "grant too large": () => ({ "POST /auth/device/code": () => json(200, { ...grant, padding: "x".repeat(70_000) }) }),
     "grant with no expiry": () => ({ "POST /auth/device/code": () => json(200, { ...grant, expires_in: 0 }) }),
     "grant interval a string": () => ({ "POST /auth/device/code": () => json(200, { ...grant, interval: "5" }) }),
     "grant user code with a control character": () => ({ "POST /auth/device/code": () => json(200, { ...grant, user_code: "KQ7\u001b[2J" }) }),
@@ -199,6 +202,32 @@ test("login --to: a token answer that redirects or is malformed is refused, exit
     assert.equal(server.polls().length, 1, name);
     assert.equal(server.of("POST", "/auth/device/token2").length, 0, `${name}: no redirect followed`);
   }
+});
+
+test("login --to: a 503 waits as long as its Retry-After asks, as an HTTP date too, past the doubled interval, then polls on", async (t) => {
+  const { env, config } = scratch();
+  let n = 0;
+  const answers = [
+    // Interval 1 s: doubled, the next poll would come 2 s on; the date asks 3 s or more (it is whole seconds).
+    () => json(503, "", { "retry-after": new Date(Math.ceil((Date.now() + 4000) / 1000) * 1000).toUTCString() }),
+    () => issued,
+  ];
+  const server = await deviceServer(t, { routes: () => ({ "POST /auth/device/token": () => answers[Math.min(n++, answers.length - 1)]() }) });
+  const result = await cli(env, ["login", "--to", server.base]);
+  assert.equal(result.code, 0, result.err);
+  assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { base_url: server.base, api_key: TOKEN });
+  const polls = server.polls();
+  assert.equal(polls.length, 2);
+  assert.ok(polls[1].at - polls[0].at >= 3900, `the date's wait was kept: ${polls[1].at - polls[0].at} ms`);
+});
+
+test("Retry-After: delay seconds or an HTTP date, in ms from now, never cut short; anything else, or a time past, is none", async () => {
+  const { retryAfterMs } = await import(DEVICE);
+  const now = Date.parse("2026-11-22T04:00:00Z");
+  assert.equal(retryAfterMs("4", now), 4000);
+  assert.equal(retryAfterMs("600", now), 600_000, "a wait past 300 s is the server's to ask; the code's expiry bounds it");
+  assert.equal(retryAfterMs("Sun, 22 Nov 2026 04:00:10 GMT", now), 10_000);
+  for (const value of [null, "", "0", "-5", "1.5", "4s", "soon", "Sun, 22 Nov 2026 03:59:00 GMT", "9".repeat(400)]) assert.equal(retryAfterMs(value, now), 0, String(value));
 });
 
 test("the device checks: an http target or URL off loopback is refused, and so is every URL off the target's origin", async () => {
