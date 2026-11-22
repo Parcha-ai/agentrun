@@ -9,6 +9,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { feed, posts } from "./feed-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 
 const { API_ONLY_TRIGGER_KINDS, apiOnlyTriggerSkipped } = await import("../dist/api-only.js");
@@ -158,6 +159,33 @@ test("an API-only server unarchives an agent it archived, so an archive sent by 
   assert.deepEqual(back.body.triggers_off, [], JSON.stringify(back.body));
   const [schedule] = await server.store.triggers.list(agent);
   assert.deepEqual([schedule.name, schedule.enabled, schedule.disabled ?? null, typeof schedule.nextAt], ["morning", true, null, "number"], JSON.stringify(schedule));
+});
+
+test("an API-only unarchive names a feed trigger that its first check turned off again: what is off is read after each turn-on, never assumed", { timeout: 60_000 }, async (t) => {
+  const blog = await feed(t, { format: "rss", title: "Posts", items: posts(1) });
+  const server = await deployServer(t, { apiOnly: true, feedsAt: () => blog.url }, `---
+name: deployed
+version: 1.0.0
+description: Writes a note on each new post.
+budget: { per_run_usd: 0.5 }
+tools: []
+triggers:
+  - name: posts
+    source: { kind: feed, urls: ["https://blog.example/feed.xml"], every_s: 900 }
+    target: { kind: start_run, input: { content: "A new post." } }
+---
+Write a short note on the post.
+`);
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: {} });
+  assert.deepEqual([applied.status, applied.body.triggers?.length], [201, 1], JSON.stringify(applied.body));
+  const agent = applied.body.agent_id;
+  assert.equal((await send(server, "POST", `/v2/agents/${agent}/archive`)).status, 200);
+  blog.fail(410);
+  const back = await send(server, "POST", `/v2/agents/${agent}/unarchive`);
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  const [row] = await server.store.triggers.list(agent);
+  assert.deepEqual([row.enabled, row.disabled?.reason], [false, "source_unreadable"], JSON.stringify(row));
+  assert.deepEqual(back.body.triggers_off, [{ id: row.id, name: "posts" }], JSON.stringify(back.body));
 });
 
 test("off by default: the whole server's unarchive turns none of its triggers on, and names each one its archive turned off, as before", { timeout: 60_000 }, async (t) => {
