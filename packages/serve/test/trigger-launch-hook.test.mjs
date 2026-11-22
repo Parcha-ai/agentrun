@@ -11,7 +11,7 @@ import { follow, serve } from "./support.mjs";
 import { fakeClock, firings, made, schedule } from "./trigger-support.mjs";
 
 const { mintSecret, verify } = await import("../dist/standard-webhooks.js");
-const { LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
+const { LAUNCH_HOOK_LATE_START_MS, LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
 
 /** A host's hook on 127.0.0.1: each request kept (its headers and body), answered by `answer`. One the sender cut short
  *  (its bound passed mid-body, or the test's end) is answered 400, never left to throw in the test. */
@@ -120,6 +120,68 @@ test("the host starts the firing's run through the API with trigger_firing: the 
   assert.equal((await runsOf(api, "nightly")).length, 1, "the host's one run");
 });
 
+test("a host may answer 2xx first and start the firing's run after: within the bound from fired_at its one start is the firing's, counted by the overlap check, and a second answers the same run", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const sent = [];
+  const hook = await hookServer(t, (res, body) => {
+    sent.push(body);
+    answerJson(res, 202, {});
+  });
+  // No runner: the host's run stays queued, so it is still active at the next time.
+  const { api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } });
+  await made(api, "nightly");
+  const created = await api("POST", "/triggers", schedule("nightly", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.id;
+  clock.to("2026-06-01T00:10:00Z");
+  const [handed] = await firings(api, id, 1);
+  assert.deepEqual([handed.status, handed.run_id], ["sent", null], "the host answered first, with no run yet");
+
+  clock.to("2026-06-01T00:15:00Z");
+  const ref = { trigger_id: id, firing_id: handed.key };
+  const late = await api("POST", "/agents/nightly/runs", { input: sent[0].input, max_cost_usd: 0.5, trigger_firing: ref });
+  assert.equal(late.status, 202, JSON.stringify(late.body));
+  const runId = late.body.run_id;
+  assert.deepEqual((await api("GET", `/runs/${runId}`)).body.trigger, { id, firing_key: handed.key }, "the run is the trigger's, as one started first would be");
+  const [now] = (await api("GET", `/triggers/${id}/firings`)).body.firings;
+  assert.deepEqual([now.key, now.status, now.run_id], [handed.key, "started", runId], "the firing ends up started with the host's run");
+  assert.equal((await api("GET", `/triggers/${id}`)).body.last_run_id, runId);
+
+  clock.to("2026-06-01T00:20:00Z");
+  const [next] = await firings(api, id, 2);
+  assert.deepEqual([next.status, next.run_id], ["skipped", null], JSON.stringify(next));
+  assert.match(next.reason, new RegExp(runId), "the overlap check counts the late run");
+  assert.equal(hook.got.length, 1, "the overlapping time was never handed to the host");
+
+  clock.to("2026-06-01T00:25:00Z");
+  const again = await api("POST", "/agents/nightly/runs", { input: sent[0].input, max_cost_usd: 0.5, trigger_firing: ref });
+  assert.deepEqual([again.status, again.body.run_id, again.headers.get("idempotent-replayed")], [202, runId, "true"], "a second start answers the first run, past the bound too");
+  assert.equal((await runsOf(api, "nightly")).length, 1, "one run for the firing");
+});
+
+test("a firing whose host answered 2xx with no run starts none once the bound from its fired_at has passed: not_due, in words", { timeout: 120_000 }, async (t) => {
+  assert.equal(LAUNCH_HOOK_LATE_START_MS, 10 * 60_000);
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const hook = await hookServer(t, (res) => answerJson(res, 200, {}));
+  const { api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } });
+  await made(api, "nightly");
+  const created = await api("POST", "/triggers", schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  clock.to("2026-06-01T00:10:00Z");
+  const [handed] = await firings(api, created.body.id, 1);
+  assert.deepEqual([handed.status, handed.run_id], ["sent", null]);
+
+  clock.to("2026-06-01T00:20:01Z");
+  const late = await api("POST", "/agents/nightly/runs", { input: { content: "Late." }, max_cost_usd: 0.5, trigger_firing: { trigger_id: created.body.id, firing_id: handed.key } });
+  assert.equal(late.status, 422, JSON.stringify(late.body));
+  const [issue] = late.body.error.fields;
+  assert.deepEqual([issue.field, issue.reason], ["trigger_firing.firing_id", "not_due"]);
+  assert.match(issue.message, /10 minutes/);
+  assert.deepEqual(await runsOf(api, "nightly"), [], "no run for it");
+  const [still] = (await api("GET", `/triggers/${created.body.id}/firings`)).body.firings;
+  assert.deepEqual([still.status, still.run_id], ["sent", null]);
+});
+
 test("a server without the launch hook refuses a run for a trigger firing", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, {});
   await made(api, "nightly");
@@ -167,4 +229,14 @@ test("the hook setting: off unless both are set, refused in words when half set 
     }
   }
   assert.equal(LAUNCH_HOOK_TIMEOUT_MS, 10_000);
+});
+
+test("the hook's URL is https off this machine: plain http only to 127.0.0.0/8, ::1 or localhost, else refused in words", () => {
+  const secret = mintSecret();
+  for (const url of ["https://host.example/hook", "https://10.0.0.5/hook", "http://127.0.0.1:8080/hook", "http://127.4.5.6/hook", "http://[::1]:9000/hook", "http://localhost:3000/hook", "http://LOCALHOST/hook"]) {
+    assert.equal(launchHookFrom({ url, secret })?.url, url, url);
+  }
+  for (const url of ["http://host.example/hook", "http://10.0.0.5/hook", "http://128.0.0.1/hook", "http://[::2]/hook", "http://localhost.host.example/hook", "http://127.0.0.1.host.example/hook"]) {
+    assert.throws(() => launchHookFrom({ url, secret }), (error) => /https/.test(error.message) && /127\.0\.0\.0\/8, ::1 or localhost/.test(error.message) && !error.message.includes(secret.slice(6)), url);
+  }
 });

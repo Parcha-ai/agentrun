@@ -104,3 +104,12 @@ test("half the launch hook setting stops the start in words, never saying the se
   assert.match(output.join(""), /AGENTRUN_LAUNCH_HOOK_URL/);
   assert.ok(!output.join("").includes(secret));
 });
+
+test("a plain http hook URL off this machine stops the start in words: a firing's input can carry a person's data", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const secret = mintSecret();
+  const { output, exited } = started(t, join(dir, "agents"), { AGENTRUN_LAUNCH_HOOK_URL: "http://host.example/agentrun/firings", AGENTRUN_LAUNCH_HOOK_SECRET: secret });
+  assert.equal(await exited, 2);
+  assert.match(output.join(""), /AGENTRUN_LAUNCH_HOOK_URL is http to host\.example/);
+  assert.ok(!output.join("").includes(secret));
+});
