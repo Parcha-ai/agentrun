@@ -1,25 +1,29 @@
 // An agent's current revision written as a template package (GET /v2/agents/{id}/package): the reverse of an apply. Its
 // grants of saved MCP servers become needs by source and toolkit, its triggers bodies with no agent and no secret, and
 // what names this host (its box, its computer's provider, its pins of this server's listings, its place) is left out.
-// What can't travel is said in two lists: `blocked` (the agent would not work elsewhere, so `agentrun export` writes
-// nothing) and `remade` (the target sets it up again: a webhook's secret, a sign-in, a paired computer, learned state).
+// What can't travel is said in two lists: `blocked` (the agent would not work elsewhere, or a field it copies holds a
+// credential in the clear, so `agentrun export` writes nothing) and `remade` (the target sets it up again: a webhook's
+// secret, a sign-in, a paired computer, learned state).
 // The answer's files are read back with readPackage before they are answered, so what is answered is a package.
 import { createHash } from "node:crypto";
 import { stringify } from "yaml";
 import { LOOPBACK } from "./mcp-oauth.js";
 import { MANIFEST, memoryFiles, onServerNames, type Package, PackageError, readPackage } from "./templates.js";
 import { isMcpName, isMonidName, mcpToolName, parseToolName } from "./tool-names.js";
-import { permissionKeys, SHELL_FAMILY } from "./tool-gate.js";
+import { isPinKeys, permissionKeys, SHELL_FAMILY } from "./tool-gate.js";
 import { toolOf } from "./tools.js";
-import { SEALED_FIELD, SEALED_MASK } from "./trigger-composio.js";
+import { configSecrets, SEALED_FIELD, SEALED_MASK } from "./trigger-composio.js";
 import { CATCHUP_WINDOW_S } from "./triggers.js";
 import { isObject, type Json, MODEL_TIER_NAMES, stable } from "./validate.js";
 import { PAIRED_ID_PREFIX } from "./workspace/attached-computers.js";
 
 /** A package's file as the API carries it: text as itself, anything else base64. */
 export type PackageFile = { path: string; encoding: "utf8" | "base64"; content: string };
+/** What an export's note can be about: the document's enum of them (openapi.ts), so a note of a kind not here fails the
+ *  build, and an answer the document does not list fails its schema check. */
+export const EXPORT_NOTE_KINDS = ["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "secrets", "input_schema", "budget", "package"] as const;
 /** One thing an export could not carry as it is here: what it is, which one, and why, in words. */
-export type ExportNote = { kind: string; name: string; reason: string };
+export type ExportNote = { kind: (typeof EXPORT_NOTE_KINDS)[number]; name: string; reason: string };
 export type AgentPackage = { name: string; files: PackageFile[]; sha256: string; report: { blocked: ExportNote[]; remade: ExportNote[] } };
 /** A saved MCP server as an export reads it: its address, its auth type, what it is (mcp-sources.ts) and its tools. */
 export type SavedServer = { url: string; auth: string; source: { source: string; toolkit: string | null }; tools: readonly { name: string }[] };
@@ -67,6 +71,13 @@ const REMADE_TRIGGERS: Record<string, string> = {
 const FIELD_KEYS = ["type", "title", "description", "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "enum", "examples", "default"];
 const ITEM_KEYS = ["type", "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "enum"];
 const pick = (from: Json, keys: readonly string[]): Json => Object.fromEntries(keys.flatMap((key) => (from[key] !== undefined ? [[key, from[key]]] : [])));
+
+/** Each field of `value`, a part of the agent an export copies as it is, that holds a credential in the clear, as its
+ *  path from `at` (source.urls.0, target.input.api_key): by the walk a composio trigger's config is sealed by
+ *  (trigger-composio.ts configSecrets: a field named like a credential, at any depth, and an address that carries one,
+ *  such as a query's token). The field, never the value. */
+const clearIn = (value: unknown, at: string): string[] => configSecrets(value).map((secret) => [at, ...secret.path].join("."));
+const IN_THE_CLEAR = "It holds a credential in the clear, and a package carries no credential: take it out of this field here, then export again.";
 
 /** `schema`, a compiled input schema, as the manifest's `inputs` that compile to it again; undefined for one that is not a
  *  closed object of fields. Whether it compiles back the same is checked once the package is read. */
@@ -145,7 +156,16 @@ export function agentPackage(input: ExportInput): AgentPackage {
     const toolkit = saved.source.toolkit ?? server;
     toolkits[server] = toolkit;
     const pin: Json = {};
-    for (const tool of granted) if (settings[mcpToolName(server, tool)]?.pin !== undefined) pin[tool] = settings[mcpToolName(server, tool)]!.pin;
+    // A pin travels as it is, so one that holds a credential in the clear is blocked, and left out. Its values are read
+    // (a scalar, a one-of list); a keys pin holds the names of the fields a call may give, never a value, so it is not.
+    for (const tool of granted) {
+      const held = settings[mcpToolName(server, tool)]?.pin;
+      if (held === undefined) continue;
+      const values = isObject(held) ? Object.fromEntries(Object.entries(held).filter(([, value]) => !isPinKeys(value))) : held;
+      const clear = clearIn(values, `pin.${tool}`);
+      for (const field of clear) blocked.push({ kind: "pin", name: `${server}: ${field}`, reason: IN_THE_CLEAR });
+      if (!clear.length) pin[tool] = held;
+    }
     const reason = origin?.mcp.find((need) => need.source === saved.source.source && need.toolkit === toolkit)?.reason;
     // Required where a composio trigger runs on it (as a package's composio trigger must); else skipped where none matches.
     mcp.push({ source: saved.source.source, toolkit, tools: granted, ...(composioServers.has(server) ? { required: true } : {}), ...(reason ? { reason } : {}), ...(Object.keys(pin).length ? { pin } : {}) });
@@ -212,11 +232,19 @@ export function agentPackage(input: ExportInput): AgentPackage {
       }
       source.server = toolkits[source.server];
     }
+    // Its source and input travel as they are, so one that holds a credential in the clear (a feed URL's ?token=, an
+    // input's api_key) is blocked, and left out.
+    const runInput = target.input ?? {};
+    const clear = [...clearIn(source, "source"), ...clearIn(runInput, "target.input")];
+    if (clear.length) {
+      for (const field of clear) blocked.push({ kind: "trigger", name: `${triggerName}: ${field}`, reason: IN_THE_CLEAR });
+      continue;
+    }
     triggers.push({
       name: triggerName, ...(view.enabled === false ? { enabled: false } : {}), source,
       ...(typeof view.catchup_window_s === "number" && view.catchup_window_s !== CATCHUP_WINDOW_S ? { catchup_window_s: view.catchup_window_s } : {}),
       ...(typeof view.max_active_runs === "number" ? { max_active_runs: view.max_active_runs } : {}),
-      target: { kind: "start_run", input: target.input ?? {}, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort !== undefined ? { effort: target.effort } : {}) },
+      target: { kind: "start_run", input: runInput, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort !== undefined ? { effort: target.effort } : {}) },
     });
     if (Object.hasOwn(REMADE_TRIGGERS, kind)) remade.push({ kind: "trigger", name: triggerName, reason: `${REMADE_TRIGGERS[kind]}${sealed.length ? ` Its sealed config (${sealed.join(", ")}) is set again there.` : ""}` });
   }

@@ -743,10 +743,31 @@ AGENTRUN_DOCKER_IMAGE=$tag AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
 The tag is the recipe's hash, so an edit to the recipe is a new tag, and a tag already on this machine is used as it is
-(nothing is pulled). Its Debian packages come from snapshot.debian.org at one instant, and the CLI's npm dependencies
-from the registry as it stood at that instant (by date, not by content), so two builds of one tag install the same
-Debian packages. It is about 2.7 GB on disk. An agent that needs it says so with
+(nothing is pulled). Its Debian packages come from snapshot.debian.org (over https) at one instant, and the CLI's npm
+dependencies from the registry as it stood at that instant (by date, not by content), so two builds of one tag install
+the same Debian packages. It is about 2.7 GB on disk. An agent that needs it says so with
 [`computer.needs`](#computers), so a server on another image fails its runs in words instead of running them.
+
+**The documents image.** For an agent that writes decks, documents and sheets, the computer package keeps a third
+recipe, the folder `packages/computer/documents`: the default image's base, by the same digest, and its programs, with
+its Debian packages from snapshot.debian.org at one instant, plus python-pptx, python-docx and openpyxl for `python3`
+(each with every package it needs, pinned by version and sha256, wheels only) and pptxgenjs, docx and exceljs for `node`
+(at exact versions, their dependencies as the registry stood at that same instant, no install script run). The Node
+libraries are linked as `/node_modules`, so a script in any folder requires or imports them. They are the folder's
+`documents.sh`, the one layer both builds run. Build it and name its tag in `AGENTRUN_DOCKER_IMAGE`:
+
+```sh
+tag=agentrun-documents:$(cat packages/computer/documents/Dockerfile packages/computer/documents/documents.sh | sha256sum | cut -c1-12)
+docker build -t "$tag" packages/computer/documents
+AGENTRUN_DOCKER_IMAGE=$tag AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
+```
+
+It is about 920 MB on disk. On Daytona, `python3 packages/computer/box/build-daytona.py --documents` builds the box
+image with the same layer on top as the snapshot `agentrun-documents-<hash>` (the box recipe's snapshot,
+`agentrun-box-<hash>`, is unchanged); name it in `AGENTRUN_DAYTONA_SNAPSHOT`. An agent that needs them says so in
+`computer.needs` (`["python-pptx", "pptxgenjs"]`), and a box without them ends its runs in words naming this image's
+build, before any model request. Neither is published, and no agent setting picks one: a server's Docker image, or its
+Daytona snapshot, is one for every agent.
 
 ### In the published image
 
@@ -858,10 +879,13 @@ the provider's words.
 
 **What a sandbox needs.** A sandbox may list the programs its agent's work needs on the box's PATH:
 `"computer": {"kind": "sandbox", "provider": "docker", "needs": ["chrome", "ffmpeg", "ffprobe", "hyperframes"]}`, 1 to
-32 program names (letters, digits, `.`, `_`, `+` and `-`; no path), each once. It says what the box must have, never which
+32 names (letters, digits, `.`, `_`, `+` and `-`; no path), each once. A name may also be a library the agent's code
+loads: a Python package by the name pip installs it by (`python-pptx`), which the box's `python3` has installed, or a
+Node package (`pptxgenjs`), which a script of the box's `node` requires (from `node_modules` of the folder the check
+runs in or any folder above it, up to `/node_modules`). It says what the box must have, never which
 image it is: a Docker box's image is still `AGENTRUN_DOCKER_IMAGE`'s, and another provider's is its own. Each run's
 claim asks the box it started, before the run's first model request: one `sh` with the names as its arguments, which
-prints those `command -v` does not find, searching the folders the agent's shell searches (`/usr/local/sbin`,
+prints those that are neither a program `command -v` finds nor such a library, searching the folders the agent's shell searches (`/usr/local/sbin`,
 `/usr/local/bin`, `/usr/sbin`, `/usr/bin`, `/sbin`, `/bin`), never a PATH the image sets. A box that lacks one, or that cannot be asked, is let go and the run ends
 `failed` (`run_failed`), its words naming what is missing and how to give the box an image that has it:
 
@@ -1354,6 +1378,38 @@ answer 401 for it. Model spend that would run after the turn ends is never sent 
 Jev and the other decision providers run on their own keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`,
 `OPENROUTER_API_KEY`), which are not model keys and which a run's key does not replace. On a run that brings its own
 key, no model key is on the env its decision nodes run under, so Jev's route on an openrouter.ai gateway's key is off.
+
+### Per-run tool keys
+
+A caller can hand a run its own tool keys with `keys` on `POST /v2/runs`, `POST /v2/agents/{agent_id}/runs` and
+`POST /v2/runs/{run_id}/messages`: `{"PARALLEL_API_KEY": "..."}`. The run's tools use each one in place of the server's
+key of that name. The names a run can carry are the tool keys: `PARALLEL_API_KEY` (`web_search`, `web_fetch`, Parallel
+decisions), `MONID_API_KEY`, `BROWSERBASE_API_KEY` with `BROWSERBASE_PROJECT_ID` or `KERNEL_API_KEY` (`browser`) and
+`TYPESAFE_API_KEY` (Jev). A model key goes in `model_key`, above.
+
+```sh
+curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer $AGENTRUN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d "{\"input\": {\"content\": \"Find the release notes\"}, \"keys\": {\"PARALLEL_API_KEY\": \"$CUSTOMER_PARALLEL_KEY\"}}"
+```
+
+- A name that is not a tool key, or one no tool of the run's revision reads (its tools, its workflow's nodes and
+  decision providers, and the keys its template declares), is 422 at `keys.<NAME>`, the value never echoed.
+- The keys are taken out of the body before anything reads it, as `model_key` is: never in the run's saved body, its
+  timeline, its view, a log or an `Idempotency-Key`'s fingerprint. They are sealed with the run's launch, opened at
+  each claim for its tools alone, and erased by the write that ends its turn. Since no read after that could cut
+  them, the runner cuts them from everything the run writes, as it writes it.
+- A message's `keys` replace the run's in the message's own write, read from the run's next claim on; a turn still
+  going keeps the keys it opened. `keys: {}` leaves the run none. A message without them keeps the run's, which are
+  none once its last turn ended.
+
+**A server that holds no tool keys: `AGENTRUN_RUN_KEYS=1`.** Off, a template's apply refuses a tool key the server does
+not hold (409, as before). With the setting on, the apply makes the agent and says, in a warning, which tool keys
+each run must bring. A run of that agent without one of them is 409 `agent_not_runnable` at `keys.<NAME>`, before
+anything is made, and so is a message that would start a turn without it. `MONID_API_KEY` stays the server's even with
+the setting on: an agent's monid tools are checked with it when the agent is saved, before any run, so a template that
+grants them is still refused at its apply (409 at `secrets.MONID_API_KEY`) where the server has none. A run can still
+bring its own monid key to use in place of the server's.
 
 ### Direct Particle-1
 
@@ -3578,7 +3634,7 @@ stays in every total.
   kept. The log and a workflow's revisions leave out its merges, known by the run the log names for each (its newest 200
   changes). Its learned workflows leave main with the rebuild, so their files read `404`; a workflow still at a commit
   whose `workflow.json` a purged run changed last (by the commits' run trailers over the whole history, past those 200)
-  is refused by every read too: its file read is `410 purged`, a champion read by its digest reads no commit, a later merge's diff shows the file as added (never the purged text), an SDK start sent again whose receipt
+  is refused by every read too: its file read is `410 purged`, a champion read by its digest reads no commit, a later merge's diff shows its files as added (never the purged text), an SDK start sent again whose receipt
   delivered it is `410 purged`, and no run lays or serves it, so the agent takes the run as when no champion serves. A
   second `DELETE` finds the purge marked and only finishes removing the old history, if a purge was cut short. It covers
   the agent's one learning store, local or on code.storage.

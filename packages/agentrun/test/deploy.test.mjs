@@ -74,14 +74,27 @@ async function recorder(t, to) {
 
 /** The CLI in a child process; stdin closed (no terminal). */
 function cli(env, args, extra = {}) {
-  return new Promise((resolve) => {
+  // `said(pattern)`: settled once the CLI's stderr so far matches, refused if it ends first.
+  const waiting = [];
+  let err = "";
+  const heard = () => {
+    for (const one of waiting.splice(0)) {
+      if (one.pattern.test(err)) one.resolve();
+      else waiting.push(one);
+    }
+  };
+  const ended = new Promise((resolve) => {
     const child = spawn(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
-    let err = "";
     child.stdout.on("data", (chunk) => (out += chunk));
-    child.stderr.on("data", (chunk) => (err += chunk));
-    child.on("close", (code) => resolve({ code, out, err, json: () => JSON.parse(out) }));
+    child.stderr.on("data", (chunk) => ((err += chunk), heard()));
+    child.on("close", (code) => {
+      for (const one of waiting.splice(0)) one.reject(new Error(`the CLI ended (${code}) before saying ${one.pattern}: ${err}`));
+      resolve({ code, out, err, json: () => JSON.parse(out) });
+    });
   });
+  const said = (pattern) => new Promise((resolve, reject) => (waiting.push({ pattern, resolve, reject }), heard()));
+  return Object.assign(ended, { said });
 }
 
 const SKILL = (line = "Say what changed.") => `---
@@ -296,20 +309,76 @@ test("agentrun deploy AGENT_ID: an agent of this install goes to another by its 
   assert.match(missing.err, /does not export agent_nope/);
 });
 
-/** A target that answers each "METHOD path" (under /v2) with `answers[key]` ([status, body]), else 404; the requests it saw. */
+/** A target that answers each "METHOD path" (under /v2) with `answers[key]` ([status, body]), else 404; the requests it
+ *  saw, and each one's body by its key (`bodies`). */
 async function fakeTarget(t, answers) {
   const seen = [];
+  const bodies = {};
   const fake = createServer((req, res) => {
     const key = `${req.method} ${req.url.replace(/^\/v2/, "")}`;
     seen.push(key);
-    req.resume();
-    const [status, body] = answers[key] ?? [404, { error: { code: "not_found", message: "Not found." } }];
-    res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    let text = "";
+    req.on("data", (chunk) => (text += chunk));
+    req.on("end", () => {
+      if (text) bodies[key] = JSON.parse(text);
+      const [status, body] = answers[key] ?? [404, { error: { code: "not_found", message: "Not found." } }];
+      res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    });
   });
   await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (fake.closeAllConnections(), fake.close(resolve))));
-  return { base: `http://127.0.0.1:${fake.address().port}/v2`, seen };
+  return { base: `http://127.0.0.1:${fake.address().port}/v2`, seen, bodies };
 }
+
+test("a folder's upload is its package alone: agent.md, skills/, rules/, evals/ and the answer's schema the manifest names at its root, never a .env, a key, a README or another folder beside them; no agent.md is refused with nothing sent; deploy delete removes the upload with its agent", { timeout: 180_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const key = { AGENTRUN_API_KEY: "not-a-secret" };
+  const fake = await fakeTarget(t, {});
+  // A project folder with no agent.md: refused before anything is read or sent.
+  const project = join(dir, "project");
+  mkdirSync(join(project, "skills"), { recursive: true });
+  writeFileSync(join(project, "README.md"), "# project\n");
+  const none = await cli(env, ["deploy", project, "--to", fake.base, "--yes"], key);
+  assert.equal(none.code, 2, none.err);
+  assert.match(none.err, /has no agent\.md: a package is a folder with agent\.md/);
+  assert.deepEqual(fake.seen, [], "nothing sent");
+
+  const pkg = folder(dir, { extra: ["output: { schema: answer.schema.json }"] });
+  mkdirSync(join(pkg, "rules"));
+  writeFileSync(join(pkg, "rules", "STYLE.md"), "Keep it short.\n");
+  mkdirSync(join(pkg, "evals", "today", "graders"), { recursive: true });
+  writeFileSync(join(pkg, "evals", "today", "prompt.md"), "What changed today?\n");
+  writeFileSync(join(pkg, "evals", "today", "graders", "says.md"), "---\ntype: llm\n---\nPass if it says what changed.\n");
+  writeFileSync(join(pkg, "answer.schema.json"), `${JSON.stringify({ type: "object", properties: { summary: { type: "string" } }, required: ["summary"] })}\n`);
+  writeFileSync(join(pkg, ".env"), "PARALLEL_API_KEY=not-a-secret\n");
+  writeFileSync(join(pkg, "key.pem"), "not-a-secret\n");
+  writeFileSync(join(pkg, "README.md"), "# pr-alert\n");
+  mkdirSync(join(pkg, "node_modules", "left-pad"), { recursive: true });
+  writeFileSync(join(pkg, "node_modules", "left-pad", "index.js"), "module.exports = {};\n");
+  await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], key);
+  const sent = fake.bodies["POST /templates/import"]?.files?.map((file) => file.path);
+  assert.deepEqual(sent, ["agent.md", "answer.schema.json", "evals/today/graders/says.md", "evals/today/prompt.md", "rules/STYLE.md", "skills/check/SKILL.md"], fake.seen.join("\n"));
+  // A schema named in another folder is not sent, nor anything of that folder: the target takes no folder but skills/,
+  // rules/ and evals/, and refuses such a package in its own words.
+  const nested = folder(dir, { name: "nested", extra: ["output: { schema: schemas/answer.schema.json }"] });
+  mkdirSync(join(nested, "schemas"));
+  writeFileSync(join(nested, "schemas", "answer.schema.json"), "{}\n");
+  writeFileSync(join(nested, "schemas", "draft.schema.json"), "{}\n");
+  await cli(env, ["deploy", nested, "--to", fake.base, "--yes"], key);
+  assert.deepEqual(fake.bodies["POST /templates/import"]?.files?.map((file) => file.path), ["agent.md", "skills/check/SKILL.md"]);
+
+  // A real target takes it whole (its answer's schema read from the root), and deploy delete leaves no upload there.
+  const b = await server(t, dir, env, "b");
+  const uploads = async () => (await b.api("GET", "/templates")).body.templates.filter((one) => !one.bundled).map((one) => one.id);
+  const done = await cli(env, ["deploy", pkg, "--to", b.base, "--yes"], { AGENTRUN_API_KEY: b.token });
+  assert.equal(done.code, 0, done.err);
+  const made = (await b.api("GET", `/agents/${done.json().agent_id}`)).body;
+  assert.deepEqual(made.definition.output_schema?.required, ["summary"], JSON.stringify(made.definition));
+  assert.deepEqual(await uploads(), ["upload:pr-alert"]);
+  const gone = await cli(env, ["deploy", "delete", pkg, "--yes"], { AGENTRUN_API_KEY: b.token });
+  assert.equal(gone.code, 0, gone.err);
+  assert.deepEqual(await uploads(), [], "the upload went with the only agent applied from it");
+});
 
 test("deploy delete takes a 404 as gone only when the agent is not there: a target that did not archive or delete it keeps the lock and exits 2", { timeout: 60_000 }, async (t) => {
   const AGENT_ID = "agt_kept";
@@ -393,39 +462,48 @@ test("one command at a time per source: a deploy, rollback or delete of a folder
   assert.equal(existsSync(join(pkg, ".agentrun")), false, "let go of when the command ended");
 });
 
-/** A target that answers each request 404 after `ms`, counting the requests in flight at once (`most`). */
-async function slowTarget(t, ms) {
-  const state = { seen: [], most: 0, now: 0 };
+/** A target that holds each request's 404 until `release()` (each one after that is answered at once), counting the
+ *  requests in flight at once (`most`, `now`). `reached` settles at its first request; `changed` is called at each. */
+async function slowTarget(t) {
+  const waiting = [];
+  let reach;
+  let open = false;
+  const answer = (res) => res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "not_found", message: "Not found." } }));
+  const state = { seen: [], most: 0, now: 0, reached: new Promise((resolve) => (reach = resolve)), changed: () => {} };
   const fake = createServer((req, res) => {
     state.seen.push(`${req.method} ${req.url.replace(/^\/v2/, "")}`);
     state.most = Math.max(state.most, ++state.now);
     req.resume();
-    setTimeout(() => {
-      state.now--;
-      res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "not_found", message: "Not found." } }));
-    }, ms);
+    res.on("close", () => state.now--);
+    if (open) return answer(res);
+    waiting.push(res);
+    reach();
+    state.changed();
   });
   await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (fake.closeAllConnections(), fake.close(resolve))));
-  return Object.assign(state, { base: `http://127.0.0.1:${fake.address().port}/v2` });
+  const release = () => {
+    open = true;
+    for (const res of waiting.splice(0)) answer(res);
+  };
+  return Object.assign(state, { release, base: `http://127.0.0.1:${fake.address().port}/v2` });
 }
 
 test("a hold is let go of only by its owner: a command that ends removes its own file, never a hold another process has made in its place", { timeout: 60_000 }, async (t) => {
-  const slow = await slowTarget(t, 2000);
+  const slow = await slowTarget(t);
   const { dir, env } = scratch();
   const pkg = folder(dir);
   const held = join(pkg, ".agentrun", "deploy.json.held");
   const key = { AGENTRUN_API_KEY: "not-a-secret" };
   const running = cli(env, ["deploy", pkg, "--to", slow.base, "--yes"], key);
-  for (let i = 0; !slow.seen.length; i++) {
-    assert.ok(i < 400, "the deploy reached the target");
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+  // At the target, so holding: its file replaced by another live process's before it ends.
+  await slow.reached;
   const [theirs] = readdirSync(held);
   assert.ok(theirs.startsWith(`${hostname()}-`), theirs);
   rmSync(join(held, theirs));
   const live = `${hostname()}-${process.pid}`;
   writeFileSync(join(held, live), "");
+  slow.release();
   const ended = await running;
   assert.equal(ended.code, 1, ended.err);
   assert.deepEqual(readdirSync(held), [live], "the ended command removed only its own");
@@ -434,17 +512,28 @@ test("a hold is let go of only by its owner: a command that ends removes its own
 });
 
 test("commands racing to take a hold left by an ended process never overlap: at most one is at the target at a time, and each lets go", { timeout: 120_000 }, async (t) => {
-  const slow = await slowTarget(t, 1500);
+  const slow = await slowTarget(t);
   const { dir, env } = scratch();
   const pkg = folder(dir);
   const held = join(pkg, ".agentrun", "deploy.json.held");
   mkdirSync(held, { recursive: true });
   writeFileSync(join(held, `${hostname()}-${spawnSync(process.execPath, ["-e", ""]).pid}`), "");
   const key = { AGENTRUN_API_KEY: "not-a-secret" };
-  const ended = await Promise.all(Array.from({ length: 8 }, () => cli(env, ["deploy", pkg, "--to", slow.base, "--yes"], key)));
+  const running = Array.from({ length: 8 }, () => cli(env, ["deploy", pkg, "--to", slow.base, "--yes"], key));
+  // The target answers only once each command has ended or is there: the one holding waits at the target while every
+  // other one ends, so two holding at once would both be there.
+  let exited = 0;
+  await new Promise((resolve) => {
+    const settled = () => exited + slow.now === running.length && resolve();
+    slow.changed = settled;
+    for (const one of running) one.then(() => (exited++, settled()));
+  });
+  slow.release();
+  const ended = await Promise.all(running);
   for (const one of ended) assert.ok(one.code === 1 || one.code === 2, `the target's 404, or refused: ${one.code} ${one.err}`);
   assert.ok(slow.seen.length >= 1, "the ended process's hold was taken");
   assert.equal(slow.most, 1, "never two at the target at once");
+  assert.equal(ended.filter((one) => one.code === 2).length, running.length - 1, "every other one refused while it held");
   assert.equal(existsSync(join(pkg, ".agentrun")), false, "each let go");
 });
 
@@ -492,8 +581,10 @@ test("the CLI's deploy record is changed under its lock: a deploy waits while an
   mkdirSync(`${record}.lock`);
   writeFileSync(holder, "");
   const deleting = cli(env, ["deploy", "delete", "agt_x", "--yes", "--data", data], { AGENTRUN_API_KEY: "not-a-secret" });
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  writeFileSync(record, `${JSON.stringify({ ...before, [`${source} agt_z`]: lockOf("agt_z") }, null, 2)}\n`, { mode: 0o600 });
+  // It says it waits, having written nothing; the holder saves and lets go only then.
+  await deleting.said(new RegExp(`Waiting for another agentrun deploy \\(process ${process.pid}\\) to save ${record.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.deepEqual(JSON.parse(readFileSync(record, "utf8")), before, "nothing written while another holds it");
+  writeFileSync(record,`${JSON.stringify({ ...before, [`${source} agt_z`]: lockOf("agt_z") }, null, 2)}\n`, { mode: 0o600 });
   rmSync(holder);
   rmdirSync(`${record}.lock`);
   const done = await deleting;

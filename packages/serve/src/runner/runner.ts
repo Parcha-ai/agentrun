@@ -25,7 +25,7 @@ import { isFenced, type RunnerStore } from "./store-port.js";
 import { FINAL_STATES, type RunState } from "../store/store.js";
 import { Unanswered } from "../store/postgres/connection.js";
 import { clearWaitEnded } from "../browser-wait-ended.js";
-import { heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
+import { cutDeep, heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 import { keepPresence, type Presence } from "./presence.js";
 
@@ -361,17 +361,23 @@ export function startRunner(options: RunnerOptions): Runner {
    *  then the run is ending, before the loop's teardown, so a renew answered Fenced by that end's epoch is never a lost
    *  claim. The patch lands exactly when the batch that writes its effect (the record it is staged with) is stored
    *  (RunStorage.commit): a group commit stores its batches in order up to the first it refuses, so the end's batch can
-   *  land while a later sibling is refused, and an end whose own batch is refused has not landed. */
+   *  land while a later sibling is refused, and an end whose own batch is refused has not landed. What it writes and
+   *  stages is cut of the run's own tool keys (redact.ts carry), its names too: they are erased at its turn's end, so no
+   *  read could. */
   const fenced = (journal: Journal, fence: { lost: boolean }, runId: string, ended: () => void): Journal => {
     /** The effect of the final patch staged and not yet landed, as the store keeps it until a commit stores it. */
     let finalEffect: number | undefined;
+    const carriedOut = <T>(given: T): T => {
+      const carried = redact.carried(runId);
+      return carried ? cutDeep(given, carried, true) : given;
+    };
     return new Proxy(journal, {
       get(target, property) {
         const value: unknown = Reflect.get(target, property, target);
         if (typeof value !== "function") return value;
         if (property === "stage") {
           return (staged: { run?: { state?: string }; also?: unknown; effect?: unknown } | undefined, ...rest: unknown[]) => {
-            const result = value.call(target, staged, ...rest);
+            const result = value.call(target, carriedOut(staged), ...rest);
             // As the store keeps it: a run patch or rows staged again replace the one staged before.
             if (staged?.run !== undefined || staged?.also !== undefined) finalEffect = FINAL.has(staged.run?.state ?? "") ? Number(staged.effect) : undefined;
             return result;
@@ -385,7 +391,7 @@ export function startRunner(options: RunnerOptions): Runner {
           const effect = finalEffect;
           const batches = (Array.isArray(args[0]) ? args[0] : [args[0]]) as unknown[];
           const at = effect === undefined ? -1 : batches.findIndex((batch) => (Array.isArray(batch) ? batch : [batch]).some((write) => Number((write as { value?: { id?: unknown } } | undefined)?.value?.id) === effect));
-          return (value.apply(target, args) as Promise<{ stored?: number }>).then((result) => {
+          return (value.apply(target, [carriedOut(args[0]), ...args.slice(1)]) as Promise<{ stored?: number }>).then((result) => {
             if (at >= 0 && at < (result?.stored ?? 0) && finalEffect === effect) {
               finalEffect = undefined;
               ended();
@@ -777,8 +783,12 @@ export function startRunner(options: RunnerOptions): Runner {
     } catch (error) {
       emit({ type: "error", runId: claim.runId, step: isFenced(error) ? "release (fenced)" : "release", message: message(error) });
     } finally {
-      // Only its own entry: a run this runner lost and claimed again holds a new one under the same id.
-      if (runs.get(claim.runId) === held) runs.delete(claim.runId);
+      // Only its own entry: a run this runner lost and claimed again holds a new one under the same id. Its own keys go
+      // with it: a next claim opens them again.
+      if (runs.get(claim.runId) === held) {
+        runs.delete(claim.runId);
+        redact.dropCarried(claim.runId);
+      }
     }
   };
 

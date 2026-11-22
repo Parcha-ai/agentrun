@@ -178,9 +178,9 @@ Any other word runs a program from your `PATH`, as git does: `agentrun NAME [arg
 of the arguments, no shell between, on this terminal's input and output, and exits with its exit code. A tool adds a
 command to the CLI by installing `agentrun-NAME`. The CLI's own commands always come first, NAME is one plain word, and
 a relative or empty `PATH` entry, which would mean the working directory, is never searched. A signal sent to `agentrun`
-reaches the command, and `agentrun` exits when it does. On Windows it looks for `agentrun-NAME` with each extension in
-`PATHEXT`, in order; a batch file (`.bat`, `.cmd`) is refused, since Node runs one only through `cmd.exe`, which would
-read the arguments again.
+reaches the command, and `agentrun` exits when it does. On Windows it looks for `agentrun-NAME` with `.com`, `.exe`,
+`.bat` or `.cmd`, in that order; a batch file (`.bat`, `.cmd`) is refused, since Node runs one only through `cmd.exe`,
+which would read the arguments again.
 
 `runs wait RUN_ID` waits until the run ends or waits on a person and prints it; `runs start AGENT_ID ... --wait` starts
 a run and does the same. Its exit code says how it stopped: 0 completed, 1 failed or cancelled, 8 it waits on a person

@@ -4,7 +4,6 @@ export { ACP_CODES, acpFacts, type AcpFacts } from "./facts.js";
 export { homePath, MODEL_ID, recipeProblems, RESERVED_ENV, type AcpBilling, type AcpRecipe, type AcpRefusal } from "./recipe.js";
 export { CALL_STREAM, contextNote, MODEL_STREAM, PERMISSION_STREAM, PROMPT_STREAM, REASK_LIMIT, SESSION_STREAM, sentSubmissions, TOOLS_STREAM } from "./harness.js";
 export { STATE_BUDGET, STATE_STREAM, stateBudgetPassed, stateFiles, type StateRecord } from "./state.js";
-export { SIGN_IN_MS, signInAgent, type SignInOptions } from "./sign-in.js";
 export type { ConfineChild } from "./host/child.js";
 export { GOOSE_INSTALL, GOOSE_NOT_INSTALLED, gooseFacts } from "./goose-facts.js";
 export { gooseAdapter, gooseRecipe, recipeFile, type AcpRecipeFile, type AcpRecipeName, type GooseAdapterOptions, type GooseRecipeOptions } from "./goose.js";

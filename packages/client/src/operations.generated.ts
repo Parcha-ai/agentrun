@@ -633,6 +633,7 @@ export type RunCreateInline = {
   max_cost_usd?: number;
   quote_id?: string;
   model_key?: string;
+  keys?: Record<string, string>;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   } | ComposioRunBinding>;
@@ -892,6 +893,7 @@ export type MessageCreate = {
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   } | ComposioRunBinding>;
+  keys?: Record<string, string>;
 };
 
 export type MessageResult = {
@@ -910,6 +912,7 @@ export type RunCreate = {
   max_cost_usd?: number;
   quote_id?: string;
   model_key?: string;
+  keys?: Record<string, string>;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   } | ComposioRunBinding>;
@@ -1938,12 +1941,12 @@ export type GetAgentPackageResponse = {
   sha256: string;
   report: {
     blocked: Array<{
-      kind: string;
+      kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
       name: string;
       reason: string;
     }>;
     remade: Array<{
-      kind: string;
+      kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
       name: string;
       reason: string;
     }>;
