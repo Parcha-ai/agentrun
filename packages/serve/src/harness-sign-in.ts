@@ -75,14 +75,36 @@ export async function signInHarness(options: SignInHarnessOptions): Promise<{ ok
   const timeoutMs = options.timeoutMs ?? SIGN_IN_MS;
   let timedOut = false;
   const ended = await new Promise<{ code: number | null; signal: NodeJS.Signals | null } | { error: string }>((done) => {
-    const child = spawn(binary, args, { cwd: scratch, env, stdio: "inherit" });
+    // In a process group of its own, so that whatever it starts (a launcher that does not exec the agent, a helper the
+    // agent forks) ends with it: on the timeout, and when this command is interrupted (Ctrl-C reaches this process alone
+    // now, and is passed on to the group). The terminal's stdin, stdout and stderr stay the agent's.
+    const child = spawn(binary, args, { cwd: scratch, env, stdio: "inherit", detached: true });
+    const group = (signal: NodeJS.Signals) => {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, signal);
+      } catch {
+        // The group is gone already.
+      }
+    };
+    const stop = () => {
+      group("SIGTERM");
+      setTimeout(() => group("SIGKILL"), 5_000).unref();
+    };
+    const passOn = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+    for (const signal of passOn) process.on(signal, stop);
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+      stop();
     }, timeoutMs);
-    child.once("error", (error) => (clearTimeout(timer), done({ error: (error as NodeJS.ErrnoException).code ?? error.message })));
-    child.once("exit", (code, signal) => (clearTimeout(timer), done({ code, signal })));
+    const settle = (result: { code: number | null; signal: NodeJS.Signals | null } | { error: string }) => {
+      clearTimeout(timer);
+      for (const signal of passOn) process.off(signal, stop);
+      // Whatever it left behind in its group goes with it.
+      group("SIGKILL");
+      done(result);
+    };
+    child.once("error", (error) => settle({ error: (error as NodeJS.ErrnoException).code ?? error.message }));
+    child.once("exit", (code, signal) => settle({ code, signal }));
   });
   rmSync(scratch, { recursive: true, force: true });
   if ("error" in ended) return refuse(HARNESS_SIGN_IN_FAILED, `${recipe.label} could not be started (${ended.error})`);

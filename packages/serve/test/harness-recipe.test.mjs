@@ -747,6 +747,39 @@ test("`agentrun harness sign-in` says how the agent's own sign-in ended, and ref
   assert.match(died.stderr, /HARNESS_SIGN_IN_FAILED: [^\n]*exit status 2/);
 });
 
+test("a sign-in that runs out of time ends with everything it started: a launcher that never execs the agent leaves no child behind", { skip: linux, timeout: 60_000 }, async (t) => {
+  const { signInHarness } = await import("../dist/harness-sign-in.js");
+  const origin = await fakeAnthropic({ step: checkStep });
+  t.after(() => origin.close());
+  const dir = await scratch(t);
+  const pidFile = join(dir, "child.pid");
+  // The launcher starts a child of its own and waits on it, so killing the launcher alone would leave the child running.
+  const built = await release(t, `sleep 300 & echo $! > '${pidFile}'; echo $$ > '${pidFile}.shell'; wait\n`);
+  const recipe = signingIn(origin, { keyed: false });
+  const file = await recipeFile(t, { ...recipe, release: { ...recipe.release, archives: { [PLATFORM]: { ...recipe.release.archives[PLATFORM], sha256: built.archiveSha } } } });
+  const data = join(dir, "agents");
+  await installRecipe(loadRecipe(file).recipe, file, data, { fetch: servedFetch(built.bytes) });
+  const done = await signInHarness({ recipe: file, data, env: cliEnv(), timeoutMs: 1_000 });
+  assert.equal(done.ok, false);
+  assert.equal(done.code, "HARNESS_SIGN_IN_FAILED");
+  assert.match(done.message, /was not signed in within/);
+  assert.equal(existsSync(join(data, "harnesses", "model-agent.signed-in")), false, "no note for a sign-in that ran out of time");
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return !/^State:\s+Z/m.test(readFileSync(`/proc/${pid}/status`, "utf8"));
+    } catch {
+      return false;
+    }
+  };
+  for (const name of ["child.pid", "child.pid.shell"]) {
+    const pid = Number(readFileSync(join(dir, name), "utf8"));
+    const deadline = Date.now() + 5_000;
+    while (alive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(alive(pid), false, `${name} (${pid}) outlived the sign-in`);
+  }
+});
+
 test("a recipe's keys and sign-in are checked: keys handed under the name the agent reads, keyMethod with keys, signIn on plan billing alone, the agent's own sign-in flags and the one flag naming its folder", () => {
   const plan = { billing: "plan", maxTurns: 8, maxToolCalls: 8 };
   const KEY = { name: "MODEL_AGENT_GEMINI_API_KEY", env: "GEMINI_API_KEY" };
