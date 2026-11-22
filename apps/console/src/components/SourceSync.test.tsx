@@ -108,3 +108,14 @@ it('pins the unresolved receipts shown when the owner opens project recovery', a
   await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent === 'Use saved project')!.click());
   expect(x.calls.find(call => call.path.endsWith('/project-review'))?.body).toEqual({ receipts: [{ run_id: 'first-run', entry_id: 4 }] });
 });
+
+it('pins the missing-end attempt shown before a later crash changes the recovery choice', async () => {
+  const problem: SourceSyncStatus = { ...ready, moved: true, state: 'needs_attention', project_issues: [{ run_id: 'crashed-run', entry_id: null, attempt_epoch: 3, status: 'uncertain' }] };
+  let latest = problem;
+  const x = await show(problem, path => path.endsWith('/project-review') ? { ...ready, moved: true, state: 'moved' } : latest);
+  await act(async () => [...x.host.querySelectorAll('button')].find(button => button.textContent === 'Continue with saved project')!.click());
+  latest = { ...problem, project_issues: [{ run_id: 'crashed-run', entry_id: null, attempt_epoch: 5, status: 'uncertain' }] };
+  await act(async () => window.dispatchEvent(new Event('focus')));
+  await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent === 'Use saved project')!.click());
+  expect(x.calls.find(call => call.path.endsWith('/project-review'))?.body).toEqual({ receipts: [{ run_id: 'crashed-run', entry_id: null, attempt_epoch: 3 }] });
+});

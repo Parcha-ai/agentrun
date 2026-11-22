@@ -76,7 +76,8 @@ export interface RunAttemptRow {
 }
 
 /** Each claim of a run, its turn and attempt (RunAttemptRow): written in the claim's own transaction, its `cut` in its
- *  release's. Data only: nothing reads it to decide what a run does. */
+ *  release's. The source-project recovery read also uses the actual claim identity and journal boundary to report a
+ *  terminal attempt with no checkpoint; it never infers a completed capture or retries work from these rows. */
 export interface RunAttempts {
   /** The claim at `epoch` lost its lease while its runner was there (runner.ts loseClaim): its cut, and the cause of the
    *  claim that took the run over from it if that one was read as a crash. Unfenced and idempotent: a cut already said, or
@@ -949,11 +950,16 @@ export interface Runs {
   usageMetadata(runId: string, options: { completion: boolean }): Promise<{
     cli: Readonly<Record<string, unknown>>; completionUsage?: unknown;
   } | undefined>;
-  /** Committed source-project checkpoint fields on terminal root entries, in run/id order. A run may have reopened
-   *  since an earlier terminal receipt; its immutable candidate remains discoverable. Purged content is excluded.
+  /** Source-project recovery fields in run/id order: committed terminal root entries, including an absent checkpoint
+   *  for a placed run. A terminal placed run's latest actual claim with no terminal root entry follows its real rows
+   *  with entryId:null and attemptEpoch, never an invented journal ID. Active/queued/parked and unclaimed runs gain no
+   *  synthetic row. A real row's optional attemptEpoch is its owning claim, derived from persisted journal boundaries,
+   *  never trusted from its receipt; absent attempt metadata cannot prove a placed receipt. A run may have reopened
+   *  since an earlier terminal receipt; its immutable candidate remains discoverable and cannot conceal a later claimed
+   *  attempt lacking its end. Purged content is excluded.
    *  Projects only named checkpoint fields; no model output, replay, input or sealed launch content. Ordinary-store
    *  scope: the PostgreSQL Unicode compatibility fallback cannot run inside an already failed snapshot transaction. */
-  projectCheckpoints(filter: { agentId: string; runId?: string }): Promise<{ runId: string; revisionId: string; entryId: number; checkpoint: unknown }[]>;
+  projectCheckpoints(filter: { agentId: string; runId?: string }): Promise<{ runId: string; revisionId: string; entryId: number | null; attemptEpoch?: number; checkpoint: unknown }[]>;
   /** The learning start (the launch body's `learning` member, as stored: undefined when the body names none) of every run of
    *  agent `agentId` (no built-in learning run's) that has a launch row, in one read: what an agent-wide read (its cost per
    *  run, its learning view) needs of its runs at once, never a read a run. Only that member is read: no run's input, no

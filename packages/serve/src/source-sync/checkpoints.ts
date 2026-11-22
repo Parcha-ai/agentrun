@@ -23,7 +23,9 @@ export interface ProjectDiscarded {
 }
 export type ProjectCheckpoint = ProjectCandidate | ProjectUncertain | ProjectDiscarded;
 export interface ProjectCheckpointStatus {
-  readonly runId: string; readonly entryId: number; readonly status: "published" | "pending" | "conflict" | "uncertain";
+  readonly runId: string; readonly entryId: number | null; readonly status: "published" | "pending" | "conflict" | "uncertain";
+  /** A terminal claim with no journal end has no entry ID. Its actual claim epoch pins the owner's review. */
+  readonly attemptEpoch?: number;
   readonly revision?: string; readonly digest?: string; readonly reason?: string;
 }
 const hex = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
@@ -52,7 +54,7 @@ export async function projectBaseline(store: Store, runId: string): Promise<{ so
   let baseline = { sourceId: placed.sourceId, revision: placed.baselineRevision, digest: placed.digest, epoch: 0 };
   for (const row of await store.runs.projectCheckpoints({ agentId: run.agentId, runId })) {
     const candidate = candidateOf(row.checkpoint);
-    if (candidate && candidate.runId === runId && candidate.sourceId === baseline.sourceId && candidate.epoch > baseline.epoch && candidate.epoch <= run.epoch
+    if (candidate && candidate.runId === runId && candidate.sourceId === baseline.sourceId && candidate.epoch === row.attemptEpoch && candidate.epoch > baseline.epoch && candidate.epoch <= run.epoch
       && candidate.baselineRevision === baseline.revision && candidate.baselineDigest === baseline.digest)
       baseline = { sourceId: baseline.sourceId, revision: candidate.revision, digest: candidate.digest, epoch: candidate.epoch };
   }
@@ -72,10 +74,17 @@ async function processCheckpoints(store: Store, agentId: string, options: { runI
   const chains = new Map<string, { sourceId: string; revision: string; digest: string; epoch: number }>();
   const pending = new Map<string, RevisionRow>();
   for (const row of rows) {
-    const uncertain = (reason: string): ProjectCheckpointStatus => ({ runId: row.runId, entryId: row.entryId, status: "uncertain", reason });
+    const uncertain = (reason: string): ProjectCheckpointStatus => ({ runId: row.runId, entryId: row.entryId, ...(row.attemptEpoch === undefined ? {} : { attemptEpoch: row.attemptEpoch }), status: "uncertain", reason });
     const candidate = candidateOf(row.checkpoint), run = await store.runs.get(row.runId);
     if (!run || run.agentId !== agentId || run.revisionId !== row.revisionId) { results.push(uncertain("project_not_settled")); continue; }
     const launch = readLaunchBody((await store.runs.launch(row.runId))?.body);
+    if (row.entryId === null) {
+      // Absence is durable failure evidence, never a reconstructed candidate or permission to discard writes.
+      const placed = launch?.sourceProject, binding = sourceSyncOf((await store.agents.revision(row.revisionId))?.body);
+      results.push(uncertain(placed && binding?.id === placed.sourceId && binding.project === placed.digest && placed.baselineRevision === row.revisionId
+        ? "project_not_settled" : "project_baseline_invalid"));
+      continue;
+    }
     if (launch?.audit || launch?.replay) {
       const receipt = row.checkpoint as Partial<ProjectDiscarded> | null, placed = launch.sourceProject;
       const binding = sourceSyncOf((await store.agents.revision(row.revisionId))?.body);
@@ -83,7 +92,12 @@ async function processCheckpoints(store: Store, agentId: string, options: { runI
       // candidate from a learning run must never become the agent's next project revision.
       if (placed && binding?.id === placed.sourceId && binding.project === placed.digest && placed.baselineRevision === row.revisionId
         && receipt?.version === 1 && receipt.status === "discarded" && receipt.runId === row.runId && receipt.sourceId === placed.sourceId
-        && Number.isSafeInteger(receipt.epoch) && receipt.epoch! >= 1 && receipt.epoch! <= run.epoch && receipt.reason === "auxiliary_project_changes_not_applied") continue;
+        && Number.isSafeInteger(receipt.epoch) && receipt.epoch! >= 1 && receipt.epoch === row.attemptEpoch && receipt.epoch! <= run.epoch && receipt.reason === "auxiliary_project_changes_not_applied") {
+        // A later settled auxiliary attempt supersedes that run's earlier failed saves without publishing files.
+        // Independent source-write receipts remain untouched, even when this run's project issue is resolved.
+        for (let index = results.length - 1; index >= 0; index--) if (results[index]!.runId === row.runId) results.splice(index, 1);
+        continue;
+      }
       results.push(uncertain("auxiliary_project_changes_not_applied")); continue;
     }
     let chain = chains.get(row.runId);
@@ -96,13 +110,13 @@ async function processCheckpoints(store: Store, agentId: string, options: { runI
     if (!candidate) {
       const receipt = row.checkpoint as Partial<ProjectUncertain> | null;
       const reason = receipt?.version === 1 && receipt.status === "uncertain" && receipt.runId === row.runId && receipt.sourceId === chain.sourceId
-        && Number.isSafeInteger(receipt.epoch) && receipt.epoch! >= 1 && receipt.epoch! <= run.epoch
+        && Number.isSafeInteger(receipt.epoch) && receipt.epoch! >= 1 && receipt.epoch === row.attemptEpoch && receipt.epoch! <= run.epoch
         && (receipt.reason === "project_not_settled" || receipt.reason === "project_capture_failed" || receipt.reason === "project_baseline_invalid")
         ? receipt.reason : "project_not_settled";
       results.push(uncertain(reason)); continue;
     }
     if (candidate.runId !== row.runId || candidate.sourceId !== chain.sourceId || candidate.baselineRevision !== chain.revision
-      || candidate.baselineDigest !== chain.digest || candidate.epoch <= chain.epoch || candidate.epoch > run.epoch) { results.push(uncertain("project_baseline_invalid")); continue; }
+      || candidate.baselineDigest !== chain.digest || candidate.epoch !== row.attemptEpoch || candidate.epoch <= chain.epoch || candidate.epoch > run.epoch) { results.push(uncertain("project_baseline_invalid")); continue; }
     chains.set(row.runId, { sourceId: candidate.sourceId, revision: candidate.revision, digest: candidate.digest, epoch: candidate.epoch });
     const status = (state: "published" | "pending" | "conflict"): ProjectCheckpointStatus => ({ runId: row.runId, entryId: row.entryId, status: state, revision: candidate.revision, digest: candidate.digest });
     const baseline = await store.agents.revision(candidate.baselineRevision) ?? pending.get(candidate.baselineRevision), binding = sourceSyncOf(baseline?.body);

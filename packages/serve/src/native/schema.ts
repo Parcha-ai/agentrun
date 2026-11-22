@@ -42,7 +42,12 @@ Object.assign(NATIVE_PATHS,{
  '/connectors/{connector_id}/commands/{command_id}/complete':{post:{...workerMark,operationId:'completeRemoteCommand',summary:'Complete a source command once under its valid lease',parameters:[connectorId,commandId],requestBody:body(object({lease_token:text,result:{},error:text},['lease_token'])),responses:{'200':response(object({accepted:{const:true}}))}}}
 });
 
-const sourceProjectIssue=object({run_id:text,entry_id:{type:'integer',minimum:1},status:{enum:['pending','conflict','uncertain']},reason:text},['run_id','entry_id','status']);
+const sourceProjectIdentities = [
+ object({run_id:text,entry_id:{type:'integer',minimum:1}}),
+ object({run_id:text,entry_id:{type:'null'},attempt_epoch:{type:'integer',minimum:1}}),
+];
+const sourceProjectReceipt = {oneOf:sourceProjectIdentities};
+const sourceProjectIssue = {oneOf:sourceProjectIdentities.map(identity => object({...identity.properties,status:{enum:['pending','conflict','uncertain']},reason:text},[...identity.required,'status']))};
 const sourceStatus=object({project_issues:{type:'array',items:sourceProjectIssue},enabled:{type:'boolean'},moved:{type:'boolean'},state:{enum:['needs_connection','paused','syncing','needs_attention','ready','moved','conflict']},blockers:{type:'array',items:object({code:text,message:text,path:text},['code','message'])},snapshot:text,current_snapshot:text,connection:object({connector_id:text,target_id:text}),files:{type:'integer'},bytes:{type:'integer'},skills:{type:'integer'},tools:{type:'integer'},tool_connections:{type:'array',items:object({name:text,ready:{type:'boolean'},selected:text,candidates:{type:'array',items:object({name:text,auth:text})}},['name','ready','candidates'])}},['enabled','moved','state','blockers']);
 Object.assign(NATIVE_PATHS,{
  '/connectors/{connector_id}/targets/{target_id}/sync/grant':{post:{...workerMark,operationId:'grantSourceSync',summary:'Read or establish this explicitly authorized source sync grant without re-enabling a paused grant',parameters:[connectorId,targetId],requestBody:body(object({})),responses:{'200':response(opaqueObject)}}},
@@ -61,5 +66,5 @@ Object.assign(NATIVE_PATHS, {
 });
 
 Object.assign(NATIVE_PATHS, {
- '/agents/{agent_id}/source/project-review': { post: { ...mark, operationId:'reviewSourceProject', summary:'Acknowledge exact unresolved run receipts and allow later runs to use the saved project', parameters:[id], requestBody:body(object({receipts:{type:'array',minItems:1,maxItems:1000,items:object({run_id:text,entry_id:{type:'integer',minimum:1}})}})), responses:{'200':response(sourceStatus)} } }
+ '/agents/{agent_id}/source/project-review': { post: { ...mark, operationId:'reviewSourceProject', summary:'Acknowledge exact unresolved run receipts and allow later runs to use the saved project', parameters:[id], requestBody:body(object({receipts:{type:'array',minItems:1,maxItems:1000,items:sourceProjectReceipt}})), responses:{'200':response(sourceStatus)} } }
 });

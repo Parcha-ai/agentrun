@@ -108,7 +108,11 @@ test('a superseded checkpoint writer prevents deletion after the replacement cla
     assert.equal((await other.settings.all({ prefix: sourceIOPrefix('agent') })).length, 1);
     finish.resolve(); const candidate = await pending;
     assert.equal(candidate.status, 'candidate'); assert.equal(candidate.epoch, claim.epoch);
-    assert.deepEqual(await other.runs.projectCheckpoints({ agentId: 'agent' }), [], 'a local candidate never bypasses the terminal journal fence');
+    assert.deepEqual(await other.runs.projectCheckpoints({ agentId: 'agent' }), [{ runId: 'one', revisionId: 'base', entryId, attemptEpoch: replacement.epoch, checkpoint: {} }],
+      'the replacement end is missing a checkpoint; the uncommitted old candidate never bypasses the terminal journal fence');
+    const { projectCheckpointStatuses } = await import('../dist/source-sync/checkpoints.js');
+    assert.equal((await projectCheckpointStatuses(other, 'agent'))[0].status, 'uncertain');
+    assert.equal((await other.agents.get('agent')).currentRevision, 'base', 'the orphan candidate never advances the saved project');
     await requireSourceIOIdle(other, 'agent');
   } finally { finish.resolve(); await pending.catch(() => {}); await tools.end(); }
 });

@@ -26,7 +26,7 @@ test("checkpoint discovery reads only committed terminal receipts, scoped to the
   const id = await finish(journal, own, { output: "unrelated output".repeat(65_536) });
   await store.agents.create({ id: "other", name: "Other" }, { id: "rev-other", kind: "agentic", body: {} });
   const other = await opened(store, "other-run", "other", "rev-other"); await finish(other.journal, checkpoint("other-run"));
-  assert.deepEqual(await store.runs.projectCheckpoints({ agentId: "agent-1" }), [{ runId: "one", revisionId: "rev-1", entryId: id, checkpoint: own }]);
+  assert.deepEqual(await store.runs.projectCheckpoints({ agentId: "agent-1" }), [{ runId: "one", revisionId: "rev-1", entryId: id, attemptEpoch: 1, checkpoint: own }]);
   assert.deepEqual(await store.runs.projectCheckpoints({ agentId: "agent-1", runId: "missing" }), []);
   assert.deepEqual(await store.runs.projectCheckpoints({ agentId: "other", runId: "one" }), []);
   await journal.close(); await other.journal.close();
@@ -57,5 +57,5 @@ test("an uncertain checkpoint retains its fixed diagnostic stage without unrelat
   const { journal } = await opened(store, "uncertain");
   const own = { version: 1, status: "uncertain", sourceId: "a".repeat(64), runId: "uncertain", epoch: 1, reason: "project_not_settled", stage: "sync" };
   const id = await finish(journal, own, { summary: "unrelated private output".repeat(10_000) }); await journal.close();
-  assert.deepEqual(await store.runs.projectCheckpoints({ agentId: "agent-1" }), [{ runId: "uncertain", revisionId: "rev-1", entryId: id, checkpoint: own }]);
+  assert.deepEqual(await store.runs.projectCheckpoints({ agentId: "agent-1" }), [{ runId: "uncertain", revisionId: "rev-1", entryId: id, attemptEpoch: 1, checkpoint: own }]);
 });

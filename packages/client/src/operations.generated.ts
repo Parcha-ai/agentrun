@@ -1356,6 +1356,12 @@ export type BindSourceToolResponse = {
     entry_id: number;
     status: "pending" | "conflict" | "uncertain";
     reason?: string;
+  } | {
+    run_id: string;
+    entry_id: null;
+    attempt_epoch: number;
+    status: "pending" | "conflict" | "uncertain";
+    reason?: string;
   }>;
   enabled: boolean;
   moved: boolean;
@@ -1627,6 +1633,12 @@ export type GetSourceSyncResponse = {
     entry_id: number;
     status: "pending" | "conflict" | "uncertain";
     reason?: string;
+  } | {
+    run_id: string;
+    entry_id: null;
+    attempt_epoch: number;
+    status: "pending" | "conflict" | "uncertain";
+    reason?: string;
   }>;
   enabled: boolean;
   moved: boolean;
@@ -1878,6 +1890,12 @@ export type MoveSourceAgentResponse = {
       entry_id: number;
       status: "pending" | "conflict" | "uncertain";
       reason?: string;
+    } | {
+      run_id: string;
+      entry_id: null;
+      attempt_epoch: number;
+      status: "pending" | "conflict" | "uncertain";
+      reason?: string;
     }>;
     enabled: boolean;
     moved: boolean;
@@ -1945,6 +1963,12 @@ export type ResolveSourceSyncResponse = {
       entry_id: number;
       status: "pending" | "conflict" | "uncertain";
       reason?: string;
+    } | {
+      run_id: string;
+      entry_id: null;
+      attempt_epoch: number;
+      status: "pending" | "conflict" | "uncertain";
+      reason?: string;
     }>;
     enabled: boolean;
     moved: boolean;
@@ -1981,12 +2005,22 @@ export type ReviewSourceProjectBody = {
   receipts: Array<{
     run_id: string;
     entry_id: number;
+  } | {
+    run_id: string;
+    entry_id: null;
+    attempt_epoch: number;
   }>;
 };
 export type ReviewSourceProjectResponse = {
   project_issues?: Array<{
     run_id: string;
     entry_id: number;
+    status: "pending" | "conflict" | "uncertain";
+    reason?: string;
+  } | {
+    run_id: string;
+    entry_id: null;
+    attempt_epoch: number;
     status: "pending" | "conflict" | "uncertain";
     reason?: string;
   }>;
@@ -2036,6 +2070,12 @@ export type SetSourceSyncResponse = {
   project_issues?: Array<{
     run_id: string;
     entry_id: number;
+    status: "pending" | "conflict" | "uncertain";
+    reason?: string;
+  } | {
+    run_id: string;
+    entry_id: null;
+    attempt_epoch: number;
     status: "pending" | "conflict" | "uncertain";
     reason?: string;
   }>;

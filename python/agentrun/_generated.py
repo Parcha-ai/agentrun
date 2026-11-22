@@ -46,7 +46,8 @@ __all__ = [
     "BindSourceToolResponse",
     "BindSourceToolResponseBlockersItem",
     "BindSourceToolResponseConnection",
-    "BindSourceToolResponseProjectIssuesItem",
+    "BindSourceToolResponseProjectIssuesItem1",
+    "BindSourceToolResponseProjectIssuesItem2",
     "BindSourceToolResponseToolConnectionsItem",
     "BindSourceToolResponseToolConnectionsItemCandidatesItem",
     "CallMcpBody",
@@ -487,7 +488,8 @@ __all__ = [
     "GetSourceSyncResponse",
     "GetSourceSyncResponseBlockersItem",
     "GetSourceSyncResponseConnection",
-    "GetSourceSyncResponseProjectIssuesItem",
+    "GetSourceSyncResponseProjectIssuesItem1",
+    "GetSourceSyncResponseProjectIssuesItem2",
     "GetSourceSyncResponseToolConnectionsItem",
     "GetSourceSyncResponseToolConnectionsItemCandidatesItem",
     "GetStatsResponse",
@@ -763,7 +765,8 @@ __all__ = [
     "MoveSourceAgentResponseSource",
     "MoveSourceAgentResponseSourceBlockersItem",
     "MoveSourceAgentResponseSourceConnection",
-    "MoveSourceAgentResponseSourceProjectIssuesItem",
+    "MoveSourceAgentResponseSourceProjectIssuesItem1",
+    "MoveSourceAgentResponseSourceProjectIssuesItem2",
     "MoveSourceAgentResponseSourceToolConnectionsItem",
     "MoveSourceAgentResponseSourceToolConnectionsItemCandidatesItem",
     "NextAction",
@@ -853,17 +856,20 @@ __all__ = [
     "ResolveSourceSyncResponseSource",
     "ResolveSourceSyncResponseSourceBlockersItem",
     "ResolveSourceSyncResponseSourceConnection",
-    "ResolveSourceSyncResponseSourceProjectIssuesItem",
+    "ResolveSourceSyncResponseSourceProjectIssuesItem1",
+    "ResolveSourceSyncResponseSourceProjectIssuesItem2",
     "ResolveSourceSyncResponseSourceToolConnectionsItem",
     "ResolveSourceSyncResponseSourceToolConnectionsItemCandidatesItem",
     "Resources",
     "ResumeRunResponse",
     "ReviewSourceProjectBody",
-    "ReviewSourceProjectBodyReceiptsItem",
+    "ReviewSourceProjectBodyReceiptsItem1",
+    "ReviewSourceProjectBodyReceiptsItem2",
     "ReviewSourceProjectResponse",
     "ReviewSourceProjectResponseBlockersItem",
     "ReviewSourceProjectResponseConnection",
-    "ReviewSourceProjectResponseProjectIssuesItem",
+    "ReviewSourceProjectResponseProjectIssuesItem1",
+    "ReviewSourceProjectResponseProjectIssuesItem2",
     "ReviewSourceProjectResponseToolConnectionsItem",
     "ReviewSourceProjectResponseToolConnectionsItemCandidatesItem",
     "RevisionsResource",
@@ -1010,7 +1016,8 @@ __all__ = [
     "SetSourceSyncResponse",
     "SetSourceSyncResponseBlockersItem",
     "SetSourceSyncResponseConnection",
-    "SetSourceSyncResponseProjectIssuesItem",
+    "SetSourceSyncResponseProjectIssuesItem1",
+    "SetSourceSyncResponseProjectIssuesItem2",
     "SetSourceSyncResponseToolConnectionsItem",
     "SetSourceSyncResponseToolConnectionsItemCandidatesItem",
     "SignIn",
@@ -1200,7 +1207,7 @@ class _BindSourceToolResponseRequired(TypedDict):
 
 
 class BindSourceToolResponse(_BindSourceToolResponseRequired, total=False):
-    project_issues: list[BindSourceToolResponseProjectIssuesItem]
+    project_issues: list[BindSourceToolResponseProjectIssuesItem1 | BindSourceToolResponseProjectIssuesItem2]
     snapshot: str
     current_snapshot: str
     connection: BindSourceToolResponseConnection
@@ -1211,13 +1218,24 @@ class BindSourceToolResponse(_BindSourceToolResponseRequired, total=False):
     tool_connections: list[BindSourceToolResponseToolConnectionsItem]
 
 
-class _BindSourceToolResponseProjectIssuesItemRequired(TypedDict):
+class _BindSourceToolResponseProjectIssuesItem1Required(TypedDict):
     run_id: str
     entry_id: int
     status: Literal["pending", "conflict", "uncertain"]
 
 
-class BindSourceToolResponseProjectIssuesItem(_BindSourceToolResponseProjectIssuesItemRequired, total=False):
+class BindSourceToolResponseProjectIssuesItem1(_BindSourceToolResponseProjectIssuesItem1Required, total=False):
+    reason: str
+
+
+class _BindSourceToolResponseProjectIssuesItem2Required(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class BindSourceToolResponseProjectIssuesItem2(_BindSourceToolResponseProjectIssuesItem2Required, total=False):
     reason: str
 
 
@@ -2477,7 +2495,7 @@ class _GetSourceSyncResponseRequired(TypedDict):
 
 
 class GetSourceSyncResponse(_GetSourceSyncResponseRequired, total=False):
-    project_issues: list[GetSourceSyncResponseProjectIssuesItem]
+    project_issues: list[GetSourceSyncResponseProjectIssuesItem1 | GetSourceSyncResponseProjectIssuesItem2]
     snapshot: str
     current_snapshot: str
     connection: GetSourceSyncResponseConnection
@@ -2488,13 +2506,24 @@ class GetSourceSyncResponse(_GetSourceSyncResponseRequired, total=False):
     tool_connections: list[GetSourceSyncResponseToolConnectionsItem]
 
 
-class _GetSourceSyncResponseProjectIssuesItemRequired(TypedDict):
+class _GetSourceSyncResponseProjectIssuesItem1Required(TypedDict):
     run_id: str
     entry_id: int
     status: Literal["pending", "conflict", "uncertain"]
 
 
-class GetSourceSyncResponseProjectIssuesItem(_GetSourceSyncResponseProjectIssuesItemRequired, total=False):
+class GetSourceSyncResponseProjectIssuesItem1(_GetSourceSyncResponseProjectIssuesItem1Required, total=False):
+    reason: str
+
+
+class _GetSourceSyncResponseProjectIssuesItem2Required(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class GetSourceSyncResponseProjectIssuesItem2(_GetSourceSyncResponseProjectIssuesItem2Required, total=False):
     reason: str
 
 
@@ -2836,7 +2865,7 @@ class _MoveSourceAgentResponseSourceRequired(TypedDict):
 
 
 class MoveSourceAgentResponseSource(_MoveSourceAgentResponseSourceRequired, total=False):
-    project_issues: list[MoveSourceAgentResponseSourceProjectIssuesItem]
+    project_issues: list[MoveSourceAgentResponseSourceProjectIssuesItem1 | MoveSourceAgentResponseSourceProjectIssuesItem2]
     snapshot: str
     current_snapshot: str
     connection: MoveSourceAgentResponseSourceConnection
@@ -2847,13 +2876,24 @@ class MoveSourceAgentResponseSource(_MoveSourceAgentResponseSourceRequired, tota
     tool_connections: list[MoveSourceAgentResponseSourceToolConnectionsItem]
 
 
-class _MoveSourceAgentResponseSourceProjectIssuesItemRequired(TypedDict):
+class _MoveSourceAgentResponseSourceProjectIssuesItem1Required(TypedDict):
     run_id: str
     entry_id: int
     status: Literal["pending", "conflict", "uncertain"]
 
 
-class MoveSourceAgentResponseSourceProjectIssuesItem(_MoveSourceAgentResponseSourceProjectIssuesItemRequired, total=False):
+class MoveSourceAgentResponseSourceProjectIssuesItem1(_MoveSourceAgentResponseSourceProjectIssuesItem1Required, total=False):
+    reason: str
+
+
+class _MoveSourceAgentResponseSourceProjectIssuesItem2Required(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class MoveSourceAgentResponseSourceProjectIssuesItem2(_MoveSourceAgentResponseSourceProjectIssuesItem2Required, total=False):
     reason: str
 
 
@@ -2934,7 +2974,7 @@ class _ResolveSourceSyncResponseSourceRequired(TypedDict):
 
 
 class ResolveSourceSyncResponseSource(_ResolveSourceSyncResponseSourceRequired, total=False):
-    project_issues: list[ResolveSourceSyncResponseSourceProjectIssuesItem]
+    project_issues: list[ResolveSourceSyncResponseSourceProjectIssuesItem1 | ResolveSourceSyncResponseSourceProjectIssuesItem2]
     snapshot: str
     current_snapshot: str
     connection: ResolveSourceSyncResponseSourceConnection
@@ -2945,13 +2985,24 @@ class ResolveSourceSyncResponseSource(_ResolveSourceSyncResponseSourceRequired, 
     tool_connections: list[ResolveSourceSyncResponseSourceToolConnectionsItem]
 
 
-class _ResolveSourceSyncResponseSourceProjectIssuesItemRequired(TypedDict):
+class _ResolveSourceSyncResponseSourceProjectIssuesItem1Required(TypedDict):
     run_id: str
     entry_id: int
     status: Literal["pending", "conflict", "uncertain"]
 
 
-class ResolveSourceSyncResponseSourceProjectIssuesItem(_ResolveSourceSyncResponseSourceProjectIssuesItemRequired, total=False):
+class ResolveSourceSyncResponseSourceProjectIssuesItem1(_ResolveSourceSyncResponseSourceProjectIssuesItem1Required, total=False):
+    reason: str
+
+
+class _ResolveSourceSyncResponseSourceProjectIssuesItem2Required(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class ResolveSourceSyncResponseSourceProjectIssuesItem2(_ResolveSourceSyncResponseSourceProjectIssuesItem2Required, total=False):
     reason: str
 
 
@@ -2985,12 +3036,18 @@ class ResolveSourceSyncResponseSourceToolConnectionsItemCandidatesItem(TypedDict
 
 
 class ReviewSourceProjectBody(TypedDict):
-    receipts: list[ReviewSourceProjectBodyReceiptsItem]
+    receipts: list[ReviewSourceProjectBodyReceiptsItem1 | ReviewSourceProjectBodyReceiptsItem2]
 
 
-class ReviewSourceProjectBodyReceiptsItem(TypedDict):
+class ReviewSourceProjectBodyReceiptsItem1(TypedDict):
     run_id: str
     entry_id: int
+
+
+class ReviewSourceProjectBodyReceiptsItem2(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
 
 
 class _ReviewSourceProjectResponseRequired(TypedDict):
@@ -3001,7 +3058,7 @@ class _ReviewSourceProjectResponseRequired(TypedDict):
 
 
 class ReviewSourceProjectResponse(_ReviewSourceProjectResponseRequired, total=False):
-    project_issues: list[ReviewSourceProjectResponseProjectIssuesItem]
+    project_issues: list[ReviewSourceProjectResponseProjectIssuesItem1 | ReviewSourceProjectResponseProjectIssuesItem2]
     snapshot: str
     current_snapshot: str
     connection: ReviewSourceProjectResponseConnection
@@ -3012,13 +3069,24 @@ class ReviewSourceProjectResponse(_ReviewSourceProjectResponseRequired, total=Fa
     tool_connections: list[ReviewSourceProjectResponseToolConnectionsItem]
 
 
-class _ReviewSourceProjectResponseProjectIssuesItemRequired(TypedDict):
+class _ReviewSourceProjectResponseProjectIssuesItem1Required(TypedDict):
     run_id: str
     entry_id: int
     status: Literal["pending", "conflict", "uncertain"]
 
 
-class ReviewSourceProjectResponseProjectIssuesItem(_ReviewSourceProjectResponseProjectIssuesItemRequired, total=False):
+class ReviewSourceProjectResponseProjectIssuesItem1(_ReviewSourceProjectResponseProjectIssuesItem1Required, total=False):
+    reason: str
+
+
+class _ReviewSourceProjectResponseProjectIssuesItem2Required(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class ReviewSourceProjectResponseProjectIssuesItem2(_ReviewSourceProjectResponseProjectIssuesItem2Required, total=False):
     reason: str
 
 
@@ -3387,7 +3455,7 @@ class _SetSourceSyncResponseRequired(TypedDict):
 
 
 class SetSourceSyncResponse(_SetSourceSyncResponseRequired, total=False):
-    project_issues: list[SetSourceSyncResponseProjectIssuesItem]
+    project_issues: list[SetSourceSyncResponseProjectIssuesItem1 | SetSourceSyncResponseProjectIssuesItem2]
     snapshot: str
     current_snapshot: str
     connection: SetSourceSyncResponseConnection
@@ -3398,13 +3466,24 @@ class SetSourceSyncResponse(_SetSourceSyncResponseRequired, total=False):
     tool_connections: list[SetSourceSyncResponseToolConnectionsItem]
 
 
-class _SetSourceSyncResponseProjectIssuesItemRequired(TypedDict):
+class _SetSourceSyncResponseProjectIssuesItem1Required(TypedDict):
     run_id: str
     entry_id: int
     status: Literal["pending", "conflict", "uncertain"]
 
 
-class SetSourceSyncResponseProjectIssuesItem(_SetSourceSyncResponseProjectIssuesItemRequired, total=False):
+class SetSourceSyncResponseProjectIssuesItem1(_SetSourceSyncResponseProjectIssuesItem1Required, total=False):
+    reason: str
+
+
+class _SetSourceSyncResponseProjectIssuesItem2Required(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class SetSourceSyncResponseProjectIssuesItem2(_SetSourceSyncResponseProjectIssuesItem2Required, total=False):
     reason: str
 
 

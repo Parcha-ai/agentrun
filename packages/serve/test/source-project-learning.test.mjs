@@ -181,13 +181,21 @@ for (const outcome of ['lost-committed', 'lost-absent', 'refused']) test(`auxili
 
 for (const kind of ['audit', 'replay']) test(`${kind} can never publish even a structurally valid forged project candidate`, async () => {
   const candidate = projectCandidate({ sourceId: binding.id, runId: kind, epoch: 1, baselineRevision: 'revision', baselineDigest: binding.project, digest: 'f'.repeat(64) });
-  const store = { runs: { projectCheckpoints: async () => [{ runId: kind, revisionId: 'revision', entryId: 1, checkpoint: candidate }],
+  const store = { runs: { projectCheckpoints: async () => [{ runId: kind, revisionId: 'revision', entryId: 1, attemptEpoch: 1, checkpoint: candidate }],
     get: async () => ({ id: kind, agentId: 'agent', revisionId: 'revision', epoch: 1 }), launch: async () => ({ body: launchBody({ ...base, [kind]: check }) }) },
     agents: { revision: async () => ({ id: 'revision', agentId: 'agent', kind: 'agentic', body: { sourceSync: binding }, skills: null, mcpPin: null }),
       get: async () => ({ currentRevision: 'revision', archivedAt: null, purgedAt: null }), addRevision: async () => assert.fail('auxiliary writes reached current project publication') } };
   const statuses = await reconcileProjectCheckpoints(store, 'agent');
   assert.equal(statuses.length, 1); assert.equal(statuses[0].status, 'uncertain');
   assert.equal(statuses[0].reason, 'auxiliary_project_changes_not_applied');
-  store.runs.projectCheckpoints = async () => [{ runId: kind, revisionId: 'revision', entryId: 2, checkpoint: { version: 1, status: 'discarded', sourceId: binding.id, runId: kind, epoch: 1, reason: 'auxiliary_project_changes_not_applied' } }];
+  store.runs.projectCheckpoints = async () => [{ runId: kind, revisionId: 'revision', entryId: 2, attemptEpoch: 1, checkpoint: { version: 1, status: 'discarded', sourceId: binding.id, runId: kind, epoch: 1, reason: 'auxiliary_project_changes_not_applied' } }];
   assert.deepEqual(await projectCheckpointStatuses(store, 'agent'), [], 'successful auxiliary settlement cannot block the next normal run');
+  store.runs.get = async () => ({ id: kind, agentId: 'agent', revisionId: 'revision', epoch: 2 });
+  store.runs.projectCheckpoints = async () => [{ runId: kind, revisionId: 'revision', entryId: 3, attemptEpoch: 2, checkpoint: { version: 1, status: 'discarded', sourceId: binding.id, runId: kind, epoch: 1, reason: 'auxiliary_project_changes_not_applied' } }];
+  assert.equal((await projectCheckpointStatuses(store, 'agent'))[0]?.status, 'uncertain', 'a stale discard cannot settle a later attempt');
+  store.runs.projectCheckpoints = async () => [
+    { runId: kind, revisionId: 'revision', entryId: 2, attemptEpoch: 1, checkpoint: {} },
+    { runId: kind, revisionId: 'revision', entryId: 3, attemptEpoch: 2, checkpoint: { version: 1, status: 'discarded', sourceId: binding.id, runId: kind, epoch: 2, reason: 'auxiliary_project_changes_not_applied' } },
+  ];
+  assert.deepEqual(await projectCheckpointStatuses(store, 'agent'), [], 'a later bound discard settles this auxiliary run without publishing its files');
 });

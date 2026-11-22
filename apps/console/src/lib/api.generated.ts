@@ -1543,12 +1543,18 @@ export interface operations {
       server: string;
     };
     answer: {
-      project_issues?: {
+      project_issues?: ({
         run_id: string;
         entry_id: number;
         status: "pending" | "conflict" | "uncertain";
         reason?: string;
-      }[];
+      } | {
+        run_id: string;
+        entry_id: null;
+        attempt_epoch: number;
+        status: "pending" | "conflict" | "uncertain";
+        reason?: string;
+      })[];
       enabled: boolean;
       moved: boolean;
       state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
@@ -3348,12 +3354,18 @@ export interface operations {
   getSourceSync: {
     body: never;
     answer: {
-      project_issues?: {
+      project_issues?: ({
         run_id: string;
         entry_id: number;
         status: "pending" | "conflict" | "uncertain";
         reason?: string;
-      }[];
+      } | {
+        run_id: string;
+        entry_id: null;
+        attempt_epoch: number;
+        status: "pending" | "conflict" | "uncertain";
+        reason?: string;
+      })[];
       enabled: boolean;
       moved: boolean;
       state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
@@ -4943,12 +4955,18 @@ export interface operations {
     answer: {
       agent: components["Agent"];
       source: {
-        project_issues?: {
+        project_issues?: ({
           run_id: string;
           entry_id: number;
           status: "pending" | "conflict" | "uncertain";
           reason?: string;
-        }[];
+        } | {
+          run_id: string;
+          entry_id: null;
+          attempt_epoch: number;
+          status: "pending" | "conflict" | "uncertain";
+          reason?: string;
+        })[];
         enabled: boolean;
         moved: boolean;
         state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
@@ -5526,12 +5544,18 @@ export interface operations {
     answer: {
       agent: components["Agent"];
       source: {
-        project_issues?: {
+        project_issues?: ({
           run_id: string;
           entry_id: number;
           status: "pending" | "conflict" | "uncertain";
           reason?: string;
-        }[];
+        } | {
+          run_id: string;
+          entry_id: null;
+          attempt_epoch: number;
+          status: "pending" | "conflict" | "uncertain";
+          reason?: string;
+        })[];
         enabled: boolean;
         moved: boolean;
         state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
@@ -5580,18 +5604,28 @@ export interface operations {
   };
   reviewSourceProject: {
     body: {
-      receipts: {
+      receipts: ({
         run_id: string;
         entry_id: number;
-      }[];
+      } | {
+        run_id: string;
+        entry_id: null;
+        attempt_epoch: number;
+      })[];
     };
     answer: {
-      project_issues?: {
+      project_issues?: ({
         run_id: string;
         entry_id: number;
         status: "pending" | "conflict" | "uncertain";
         reason?: string;
-      }[];
+      } | {
+        run_id: string;
+        entry_id: null;
+        attempt_epoch: number;
+        status: "pending" | "conflict" | "uncertain";
+        reason?: string;
+      })[];
       enabled: boolean;
       moved: boolean;
       state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
@@ -6037,12 +6071,18 @@ export interface operations {
       enabled: boolean;
     };
     answer: {
-      project_issues?: {
+      project_issues?: ({
         run_id: string;
         entry_id: number;
         status: "pending" | "conflict" | "uncertain";
         reason?: string;
-      }[];
+      } | {
+        run_id: string;
+        entry_id: null;
+        attempt_epoch: number;
+        status: "pending" | "conflict" | "uncertain";
+        reason?: string;
+      })[];
       enabled: boolean;
       moved: boolean;
       state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";

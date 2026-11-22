@@ -50,7 +50,12 @@ new run from the current saved project.
 
 If a run's project save is uncertain or conflicted, the agent page links its run for review. **Continue with saved
 project** acknowledges only the listed receipts and permits later runs to use the current saved project. It does
-not apply the unresolved changes or erase their evidence. A later failed save needs a new review.
+not apply the unresolved changes or erase their evidence. A later failed save needs a new review. This includes a
+child crash before checkpointing and a terminal claim whose journal end could not be written. Recovery reports the
+missing save from the durable run and claim records; it does not reconstruct a candidate from leftover files.
+An API review names the exact `entry_id`, or `entry_id: null` with `attempt_epoch` when no end exists. A previous
+review or saved checkpoint cannot cover a later failed attempt. Running and queued tasks are not treated as failed
+merely because their checkpoint is still pending.
 
 Source changes continue syncing after Move. If both sides changed files or settings, automatic application pauses.
 Choose **Keep AgentRun and pause sync**, or review **Use source version**. Replacing with a source snapshot retains

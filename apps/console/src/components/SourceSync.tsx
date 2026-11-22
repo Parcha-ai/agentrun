@@ -4,12 +4,15 @@ import { CodingAgentAction } from "@/components/CodingAgentAction";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, problemOf } from "@/lib/client";
 import type { ConnectorEnrollment } from "@/lib/connectors";
-import type { SourceSyncStatus } from "@/lib/sourceSync";
+import type { SourceSyncStatus, SourceProjectReceipt } from "@/lib/sourceSync";
 
 const words: Record<SourceSyncStatus["state"], string> = {
   needs_connection: "Sync not connected", paused: "Sync paused", syncing: "Syncing setup…", needs_attention: "Needs attention",
   ready: "Ready to move", moved: "Runs on AgentRun", conflict: "Settings changed in both places",
 };
+const projectReceiptOf = (issue: NonNullable<SourceSyncStatus["project_issues"]>[number]): SourceProjectReceipt => issue.entry_id === null
+  ? { run_id: issue.run_id, entry_id: null, attempt_epoch: issue.attempt_epoch }
+  : { run_id: issue.run_id, entry_id: issue.entry_id };
 
 /** One connected agent keeps its page, identity and run history through Move. Polls never overwrite a newer action. */
 export function SourceSyncPanel({ agent, v2, onAgent }: { agent: Agent; v2: Client; onAgent: (agent: Agent) => void }) {
@@ -17,7 +20,7 @@ export function SourceSyncPanel({ agent, v2, onAgent }: { agent: Agent; v2: Clie
   const [busy, setBusy] = useState(false), [enrollment, setEnrollment] = useState<ConnectorEnrollment | null>(null);
   const [expired, setExpired] = useState(false);
   const [confirmSource, setConfirmSource] = useState<{ revision: string; snapshot: string } | null>(null);
-  const [reviewProject, setReviewProject] = useState<{ run_id: string; entry_id: number }[] | null>(null);
+  const [reviewProject, setReviewProject] = useState<SourceProjectReceipt[] | null>(null);
   const epoch = useRef(0), mutation = useRef(false), alive = useRef(true);
   const id = agent.agent_id;
   useEffect(() => {
@@ -75,7 +78,7 @@ export function SourceSyncPanel({ agent, v2, onAgent }: { agent: Agent; v2: Clie
     {status && status.state !== "needs_connection" && <div className="flex items-center gap-3"><span id={`source-sync-${id}`} className="flex-1 text-body">Keep source in sync</span><Switch labelledBy={`source-sync-${id}`} checked={status.enabled} disabled={busy || !!agent.archived_at} busy={busy} onChange={() => void enable()} /></div>}
     {status?.files !== undefined && <p className="text-small text-muted-foreground">{status.files.toLocaleString()} files · {status.skills ?? 0} skills · {status.tools ?? 0} tool connections</p>}
     {!!status?.blockers.length && <Banner tone="warning"><ul className="space-y-2">{status.blockers.map((item, i) => <li key={`${item.code}-${i}`}>{item.message}</li>)}</ul></Banner>}
-    {!!status?.project_issues?.length && <div className="space-y-2"><ul className="space-y-1 text-small">{status.project_issues.map(issue => <li key={`${issue.run_id}-${issue.entry_id}`}><a href={`#/runs/${encodeURIComponent(issue.run_id)}`} className="underline underline-offset-2">Review run {issue.run_id}</a>{issue.status === "pending" ? " · saving project" : issue.status === "conflict" ? " · another version was saved first" : " · project save could not be verified"}</li>)}</ul><Button size="sm" disabled={busy || status.project_issues.some(issue => issue.status === "pending")} onClick={() => setReviewProject(status.project_issues!.map(({ run_id, entry_id }) => ({ run_id, entry_id })))}>Continue with saved project</Button></div>}
+    {!!status?.project_issues?.length && <div className="space-y-2"><ul className="space-y-1 text-small">{status.project_issues.map(issue => <li key={`${issue.run_id}-${issue.entry_id ?? `attempt-${issue.attempt_epoch}`}`}><a href={`#/runs/${encodeURIComponent(issue.run_id)}`} className="underline underline-offset-2">Review run {issue.run_id}</a>{issue.status === "pending" ? " · saving project" : issue.status === "conflict" ? " · another version was saved first" : " · project save could not be verified"}</li>)}</ul><Button size="sm" disabled={busy || status.project_issues.some(issue => issue.status === "pending")} onClick={() => setReviewProject(status.project_issues!.map(projectReceiptOf))}>Continue with saved project</Button></div>}
     {status?.tool_connections?.filter(tool => !tool.ready).map(tool => <Field key={tool.name} label={`Connection for ${tool.name}`} hint={tool.candidates.length ? "Choose the destination account this agent should use." : "Connect this tool server in Settings, then return here."}>
       {tool.candidates.length > 0 ? <Picker label={`Connection for ${tool.name}`} value="" disabled={busy} placeholder="Choose a connection" options={tool.candidates.map(candidate => ({ value: candidate.name, label: `${candidate.name}${candidate.auth === "none" ? " · no sign-in" : " · saved account"}` }))} onChange={server => { if (server) void change(async () => { const next = await v2.bindSourceTool(id, tool.name, server); if (alive.current) setStatus(next); }); }} /> : <a href="#/settings/mcp" className="text-small underline underline-offset-2">Connect tool server</a>}
     </Field>)}

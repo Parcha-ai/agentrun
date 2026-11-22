@@ -112,3 +112,86 @@ for (const [mutant, reason, outcome] of [
   if (outcome) assert.equal(result.state.outcome, outcome, JSON.stringify(result));
   assert.equal(result.trace[0], `observe ${result.state.outcome}`, 'the counterexample starts with an actual capture outcome');
 });
+
+// The parent's failure end, or a row-only terminal update after a journal failure, need not contain a checkpoint.
+// This model adds that absence boundary to the existing ownership model. It does not infer that an active writer
+// stopped, clear its I/O fence, recover an effect, or publish the mutable run directory. A later attempt cannot use
+// an earlier published receipt or acknowledgment as evidence that its own project edits were saved.
+function checkCrashReceipts(mutant) {
+  const pending = [false, true].map(auxiliary => ({
+    state: { auxiliary, phase: 'queued', epoch: 0, terminalEntry: null, receipt: null, entry: 0, published: 0, ack: null },
+    trace: ['admit placed project'],
+  }));
+  const seen = new Set(), coverage = new Set();
+  const identity = s => s.terminalEntry === null
+    ? `run:missing:attempt:${s.epoch}` : `run:entry:${s.terminalEntry}`;
+  while (pending.length) {
+    const { state: s, trace } = pending.pop(), key = JSON.stringify(s);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const terminal = s.phase === 'terminal' && s.epoch > 0;
+    const receipt = s.receipt;
+    const currentReceipt = receipt && (receipt.epoch === s.epoch || mutant === 'trust-prior-receipt');
+    const bound = currentReceipt && (receipt.binding === 'bound' || mutant === `ignore-${receipt.binding}`);
+    const candidate = bound && receipt.kind === 'candidate' && (!s.auxiliary || mutant === 'publish-auxiliary');
+    const discarded = bound && receipt.kind === 'discarded' && (s.auxiliary || mutant === 'discard-ordinary');
+    const rejected = terminal && !candidate && !discarded;
+    const issue = (terminal || mutant === 'block-unfinished' && s.phase !== 'terminal') && !candidate && !discarded
+      && !(mutant === 'hide-missing' && !currentReceipt)
+      && !(mutant === 'trust-prior-publication' && s.published > 0);
+    const acknowledged = issue && (s.ack === identity(s) || mutant === 'reuse-prior-ack' && s.ack !== null);
+    const visible = issue && !acknowledged;
+    const publish = terminal && candidate;
+    const violation = reason => ({ valid: false, reason, state: s, trace, checked: seen.size });
+    coverage.add(s.phase);
+    if (terminal && !currentReceipt) coverage.add(`missing-attempt-${s.epoch}`);
+    if (terminal && !currentReceipt && s.published > 0 && s.published < s.epoch) coverage.add('missing-after-publication');
+    if (terminal && !currentReceipt && s.ack !== null && s.ack !== identity(s)) coverage.add('missing-after-ack');
+    if (terminal && bound && receipt.kind === 'discarded') coverage.add(s.auxiliary ? 'auxiliary-discard' : 'ordinary-discard');
+    if (terminal && currentReceipt) coverage.add(receipt.binding);
+    // The oracle deliberately describes admissible evidence, independently of the mutated guards above.
+    const exact = receipt?.epoch === s.epoch && receipt.binding === 'bound';
+    const saved = exact && receipt.kind === 'candidate' && !s.auxiliary;
+    const auxiliaryDiscard = exact && receipt.kind === 'discarded' && s.auxiliary;
+    const expectedIssue = terminal && !saved && !auxiliaryDiscard;
+    if (publish && !saved) return violation('orphan-project-published');
+    if (!terminal && issue) return violation('unfinished-run-invented-as-crash');
+    if (terminal && issue !== expectedIssue) return violation('terminal-project-evidence-misclassified');
+    if (expectedIssue && s.ack !== identity(s) && !visible) return violation('earlier-ack-hid-new-attempt');
+    if (expectedIssue && s.ack === identity(s) && visible) return violation('exact-reviewed-issue-still-blocked');
+
+    const next = (patch, action) => pending.push({ state: { ...s, ...patch }, trace: [...trace, action] });
+    if ((s.phase === 'queued' || s.phase === 'terminal') && s.epoch < 2)
+      next({ phase: 'running', epoch: s.epoch + 1, terminalEntry: null }, 'claim next attempt');
+    if (s.phase === 'running') next({ phase: 'parked' }, 'park while approval waits');
+    if (s.phase === 'running' || s.phase === 'parked') {
+      next({ phase: 'terminal', terminalEntry: null }, 'parent dies; recovery records terminal row without an end');
+      next({ phase: 'terminal', terminalEntry: s.entry + 1, entry: s.entry + 1, receipt: null }, 'parent writes failure end without checkpoint');
+      for (const kind of ['candidate', 'discarded', 'uncertain']) for (const binding of ['bound', 'other-run', 'other-source', 'other-revision', 'other-epoch'])
+        next({ phase: 'terminal', terminalEntry: s.entry + 1, entry: s.entry + 1,
+          receipt: { kind, binding, epoch: s.epoch } }, `commit ${binding} ${kind} receipt`);
+    }
+    if (publish && s.published !== s.epoch) next({ published: s.epoch }, 'publish verified current candidate');
+    if (rejected && s.ack !== identity(s)) next({ ack: identity(s) }, 'owner acknowledges this exact unresolved issue');
+  }
+  return { valid: true, checked: seen.size, coverage: [...coverage].sort() };
+}
+
+test('terminal missing project receipts remain visible across crash, reopen, prior publication and acknowledgment', () => {
+  const result = checkCrashReceipts();
+  assert.equal(result.valid, true, JSON.stringify(result));
+  assert.deepEqual(result.coverage, ['queued', 'running', 'parked', 'terminal', 'missing-attempt-1', 'missing-attempt-2',
+    'missing-after-publication', 'missing-after-ack', 'auxiliary-discard', 'ordinary-discard',
+    'bound', 'other-run', 'other-source', 'other-revision', 'other-epoch'].sort());
+});
+
+for (const mutant of ['hide-missing', 'trust-prior-receipt', 'trust-prior-publication', 'reuse-prior-ack',
+  'block-unfinished', 'ignore-other-run', 'ignore-other-source', 'ignore-other-revision', 'ignore-other-epoch',
+  'publish-auxiliary', 'discard-ordinary']) test(`project crash-receipt model rejects ${mutant}`, () => {
+  const result = checkCrashReceipts(mutant);
+  assert.equal(result.valid, false, JSON.stringify(result));
+  assert.equal(result.trace[0], 'admit placed project');
+  if (mutant === 'reuse-prior-ack') assert.equal(result.reason, 'earlier-ack-hid-new-attempt');
+  if (mutant === 'block-unfinished') assert.equal(result.reason, 'unfinished-run-invented-as-crash');
+  if (mutant === 'publish-auxiliary') assert.equal(result.reason, 'orphan-project-published');
+});

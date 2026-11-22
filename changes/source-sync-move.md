@@ -17,6 +17,11 @@ Completed checkpoint reads that refuse staged Git changes, secrets or unsupporte
 only after scratch, cache, tools and provider cleanup settle under the original claim. The rejected save remains
 visible and unpublished. Failed commands, changed files, lost write acknowledgments and uncertain cleanup retain
 their receipts and continue to block deletion.
+Terminal moved runs whose child crashed before checkpointing now require project review instead of silently starting
+from an older saved project. Recovery reads the committed end, or the exact terminal claim when no end could be
+written; it never invents a checkpoint or publishes orphan files. Missing-end reviews use `entry_id: null` and the
+required `attempt_epoch`, so reviewing an earlier failure cannot acknowledge a later one. Active and queued runs
+are not classified as failed merely because their checkpoint is still pending.
 Moved projects on local storage now place attachments before restoring project files, pin their exact input paths,
 and refuse collisions before admission. Claims and follow-ups reuse the placed files; checkpoints exclude those
 attachments while retaining authored files in the same inputs directory.

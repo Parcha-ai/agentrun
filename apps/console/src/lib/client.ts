@@ -1,4 +1,4 @@
-import type { SourceSyncStatus } from "./sourceSync";
+import type { SourceSyncStatus, SourceProjectReceipt } from "./sourceSync";
 import type { Observations } from "./observations";
 import type { NativeBinding, NativeRuntime, NativeSelector, NativeTarget } from "./native";
 import type { ConnectorEnrollment, ConnectorEnrollmentCapabilities, RemoteConnector } from "./connectors";
@@ -151,7 +151,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     setSourceSync: (id: string, enabled: boolean) => call<SourceSyncStatus>("PATCH", `${agent(id)}/source`, { body: { enabled } }),
     moveToAgentRun: (id: string) => call<{ agent: Agent; source: SourceSyncStatus }>("POST", `${agent(id)}/source/move`, { body: {} }),
     resolveSourceSync: (id: string, revision: string, snapshot: string) => call<{ agent: Agent; source: SourceSyncStatus }>("POST", `${agent(id)}/source/resolve`, { body: { revision, snapshot } }),
-    reviewSourceProject: (id: string, receipts: { run_id: string; entry_id: number }[]) => call<SourceSyncStatus>("POST", `${agent(id)}/source/project-review`, { body: { receipts } }),
+    reviewSourceProject: (id: string, receipts: SourceProjectReceipt[]) => call<SourceSyncStatus>("POST", `${agent(id)}/source/project-review`, { body: { receipts } }),
     bindSourceTool: (id: string, tool: string, server: string) => call<SourceSyncStatus>("POST", `${agent(id)}/source/tools`, { body: { tool, server } }),
     getNative: (id: string) => call<{ native: NativeBinding | null }>("GET", `${agent(id)}/native`),
     verifyNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/verify`, { body: {} }),
