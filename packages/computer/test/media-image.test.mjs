@@ -5,7 +5,10 @@
 // exact version. It names no key and no second image picker: an operator builds it and names its tag in
 // AGENTRUN_DOCKER_IMAGE. The package ships it.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { DOCKER_BASE, DOCKER_RECIPE } from "../dist/index.js";
 
@@ -61,15 +64,45 @@ test("its HyperFrames reports nothing home and checks for no update, unless the 
 
 // With no network HyperFrames embeds a system font it can't fetch from Google Fonts, compressed to WOFF2 in WASM: about a
 // minute of CPU for Noto Color Emoji alone, on every render, since a box's cache starts empty. The image compresses each
-// of its fonts once, at build, into the cache HyperFrames reads by HYPERFRAMES_FONT_CACHE_DIR, by HyperFrames' own
-// fontToDataUri (its key and its bytes, never a copy of its scheme), and its script points HyperFrames there.
-test("its system fonts are compressed for HyperFrames at build, and its script points HyperFrames' font cache at them", () => {
-  const dir = "/usr/local/share/hyperframes/fonts";
-  assert.match(RUNS, new RegExp(`export HYPERFRAMES_FONT_CACHE_DIR="\\$\\{HYPERFRAMES_FONT_CACHE_DIR:-${dir}\\}"`), "the script names the baked cache unless the caller names one");
-  const fill = INSTRUCTIONS.findIndex((line) => line.startsWith("RUN ") && line.includes("fontToDataUri") && line.includes(`${dir}/local-compression-v1`));
+// of its fonts once, at build, by HyperFrames' own fontToDataUri (its key and its bytes, never a copy of its scheme).
+test("its system fonts are compressed for HyperFrames at build, by HyperFrames itself, from the image's own fonts", () => {
+  const fill = INSTRUCTIONS.findIndex((line) => line.startsWith("RUN ") && line.includes("fontToDataUri") && line.includes(`${BAKED}/local-compression-v1`));
   assert.ok(fill > 0, "a RUN fills the cache with HyperFrames' fontToDataUri");
   assert.ok(fill > INSTRUCTIONS.findIndex((line) => /npm install --global .*hyperframes@/.test(line)), "after HyperFrames is installed");
   assert.match(INSTRUCTIONS[fill], /\/usr\/share\/fonts/, "from the image's own fonts");
+});
+
+// The `hyperframes` script, as the Dockerfile writes it, run by sh with its last line (exec node) swapped for one that
+// says the font cache it hands HyperFrames. That cache stays in HOME, writable, as HyperFrames' Google Fonts downloads
+// need it to be (a read-only one makes HyperFrames warn "unwritable ... chmod 755" on every render), and its compression
+// folder is a link to the one compressed at build. A cache the caller names is left alone.
+const BAKED = "/usr/local/share/hyperframes/fonts";
+function wrapper() {
+  const block = DOCKERFILE.slice(DOCKERFILE.indexOf("printf '%s\\n'"), DOCKERFILE.indexOf("> /usr/local/bin/hyperframes"));
+  const lines = [...block.slice("printf '%s\\n'".length).matchAll(/'([^']*)'/g)].map((match) => match[1]);
+  assert.match(lines.at(-1), /^exec node \/usr\/local\/lib\/node_modules\/hyperframes\/bin\/hyperframes\.mjs "\$@"$/);
+  return [...lines.slice(0, -1), 'printf %s "$HYPERFRAMES_FONT_CACHE_DIR"'].join("\n");
+}
+function cacheFor(env) {
+  return execFileSync("sh", ["-c", wrapper()], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
+}
+
+test("its script keeps HyperFrames' font cache in HOME and links its compression folder to the one made at build", (t) => {
+  const home = mkdtempSync(join(tmpdir(), "media-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const cache = join(home, ".cache", "hyperframes", "fonts");
+  assert.equal(cacheFor({ HOME: home }), cache);
+  assert.equal(readlinkSync(join(cache, "local-compression-v1")), `${BAKED}/local-compression-v1`);
+  assert.equal(cacheFor({ HOME: home }), cache, "a second run in the same HOME");
+  assert.equal(readlinkSync(join(cache, "local-compression-v1")), `${BAKED}/local-compression-v1`);
+});
+
+test("its script leaves a font cache the caller names alone", (t) => {
+  const home = mkdtempSync(join(tmpdir(), "media-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const named = join(home, "mine");
+  assert.equal(cacheFor({ HOME: home, HYPERFRAMES_FONT_CACHE_DIR: named }), named);
+  assert.deepEqual(readdirSync(home), [], "nothing made in HOME");
 });
 
 test("the package ships it", () => {
