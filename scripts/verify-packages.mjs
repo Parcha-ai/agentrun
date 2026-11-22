@@ -93,8 +93,9 @@ const allowedExtraFiles = {
   // the provider reads at run time to check an image (src/mount-archil.ts), its Dockerfile and install.sh (the build's
   // steps, which a vendor that builds in its own account runs), and the scripts that build it
   // as a Daytona snapshot, a Modal image or an E2B template, and the recipe's hash with its types (dist/box-image.js names
-  // the published image by it, which Agent37 registers as a template).
-  computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/install.sh', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/recipe.mjs', 'package/box/recipe.d.mts', 'package/box/README.md'],
+  // the published image by it, which Agent37 registers as a template). And the media image's recipe (media/Dockerfile),
+  // which an operator builds for a Docker box that renders video.
+  computer: ['package/media/Dockerfile', 'package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/install.sh', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/recipe.mjs', 'package/box/recipe.d.mts', 'package/box/README.md'],
   agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs', 'package/lib/service.mjs', 'package/lib/tailscale.mjs', 'package/lib/harness.mjs', 'package/lib/public-url.mjs', 'package/lib/doctor.mjs', 'package/install.sh'],
 };
 const allowedEndpoints = {
@@ -192,7 +193,7 @@ const usedEndpoints = new Set();
 const daemonMachines = { amd64: 0x3e, arm64: 0xb7 };
 const egressCode = ['egress-main.js', 'egress-proxy.js', 'egress-table.js'];
 const requiredFiles = {
-  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', 'package/box/recipe.mjs', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), `package/dist/${DAEMON_RECORD}`],
+  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/media/Dockerfile', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', 'package/box/recipe.mjs', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), `package/dist/${DAEMON_RECORD}`],
   // What serve loads of the ACP adapter at runtime: its entry, Goose's and Cursor's recipes (recipeFile), and the stdio MCP
   // bridge an agent's MCP client starts by path (STDIO_BRIDGE), which no import reaches, so the import smoke alone misses it.
   // And the fake ACP agent a harness module's author tests on, which ./testing starts by path.

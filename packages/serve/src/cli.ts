@@ -37,6 +37,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve validate-template DIR
        agentrun-serve install-harness goose|cursor [--data DIR]
        agentrun-serve install-harness --recipe FILE [--data DIR]
+       agentrun-serve sign-in-harness --recipe FILE [--data DIR]
        agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
@@ -258,6 +259,31 @@ if (process.argv[2] === "install-harness") {
     console.error(error.message);
     process.exit(1);
   }
+}
+
+// A person's own sign-in to a recipe's agent, by the agent itself in this terminal (harness-sign-in.ts): its address
+// printed by the agent, its redirect landing on the agent. 0 once its sign-in folder holds something, 1 when it did not
+// sign in (its code), 2 for usage. No key is read. `agentrun harness sign-in` runs it.
+if (process.argv[2] === "sign-in-harness") {
+  const usage = (message: string): never => (console.error(`agentrun-serve sign-in-harness: ${message}\n\n${USAGE}`), process.exit(2));
+  const read = () => {
+    try {
+      return parseArgs({ args: process.argv.slice(3), options: { recipe: { type: "string" }, data: { type: "string" } } });
+    } catch (error) {
+      return usage((error as Error).message);
+    }
+  };
+  const { values } = read();
+  if (!values.recipe) usage("--recipe FILE names the recipe whose agent signs in.");
+  const { signInHarness } = await import("./harness-sign-in.js");
+  const data = resolve(values.data ?? defaultData());
+  const done = await signInHarness({ recipe: values.recipe!, data, env: process.env, say: (line) => console.error(line) });
+  if (!done.ok) {
+    console.error(done.message);
+    process.exit(1);
+  }
+  console.log(`Signed in: the agent keeps its sign-in in ${done.home}, for runs you start and attend; every other run, harness-check's among them, runs on the recipe's keys.`);
+  process.exit(0);
 }
 
 // A recipe's agent run for real and judged (harness-check.ts): its report written as JSON, its stages and the three facts

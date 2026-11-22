@@ -24,7 +24,7 @@ import { DOCTOR } from '../packages/agentrun/lib/doctor.mjs';
 import { OPEN, SERVICE, STOP } from '../packages/agentrun/lib/service.mjs';
 import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
 import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from '../packages/agentrun/lib/template.mjs';
-import { HARNESS_CHECK, HARNESS_INSTALL } from '../packages/agentrun/lib/harness.mjs';
+import { HARNESS_CHECK, HARNESS_INSTALL, HARNESS_SIGN_IN } from '../packages/agentrun/lib/harness.mjs';
 import { EXPORT } from '../packages/agentrun/lib/export.mjs';
 import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
 import { pythonProblems, pythonText } from './clients/python.mjs';
@@ -43,7 +43,7 @@ const TYPES = 'apps/console/src/lib/api.generated.ts';
 // may begin with one.
 const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill', 'service', 'stop', 'doctor', 'harness-check', 'export'];
 // The CLI's hand-written commands: none may be a generated one too.
-const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, HARNESS_INSTALL, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR] };
+const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, HARNESS_INSTALL, HARNESS_SIGN_IN, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR] };
 const SCALAR = ['string', 'number', 'integer', 'boolean'];
 const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'body-type', 'help'];
 // Headers the CLI sets itself.

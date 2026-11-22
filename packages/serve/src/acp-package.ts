@@ -45,6 +45,9 @@ export type AcpPackage = {
   verifyPinnedBinaryAsync(path: string, sha256: string): Promise<void>;
   treeDigest(root: string): Promise<string>;
   verifyPinnedTree(root: string, sha256: string): Promise<void>;
+  /** A person's own sign-in by the agent itself (harness-sign-in.ts): its stderr this process's, never read. Absent from a
+   *  package from before it. */
+  signInAgent?(options: { command: string; args: readonly string[]; method: string; homeEnv: string; home: string; env?: Readonly<Record<string, string>>; from?: Readonly<Record<string, string | undefined>>; timeoutMs?: number }): Promise<void>;
 };
 
 const requireHere = createRequire(import.meta.url);

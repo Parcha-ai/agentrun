@@ -325,6 +325,17 @@ test('the computer image recipe (the root helper, its Dockerfile and its two bui
   await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/computer\/box\/agentrun-other/);
 });
 
+test('the media image recipe (packages/computer/media/Dockerfile) is archived and scanned as text; another file there still stops the export', async t => {
+  const f = await fixture(t);
+  await f.write('packages/computer/media/Dockerfile', '# fixture\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes('agentrun-dsl-source/packages/computer/media/Dockerfile\n'));
+  assert.equal(receipt.files.find(file => file.path === 'packages/computer/media/Dockerfile')?.kind, 'text');
+  await f.write('packages/computer/media/Containerfile', '# fixture\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/computer\/media\/Containerfile/);
+});
+
 test('inventory generation works without build output and does not produce an archive', async t => {
   const f = await fixture(t);
   await f.run('--inventory-only');
