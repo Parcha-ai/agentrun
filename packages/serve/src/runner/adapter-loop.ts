@@ -782,6 +782,13 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         else answer += event.delta;
       } else if (event.type === "tool_start" || event.type === "text_end") void flushText().catch(() => undefined);
       else if (event.type === "turn_end") void flushText(event).catch(() => undefined);
+      else if (event.type === "notice") {
+        // The adapter's own words (the ACP mirror past its budget): a phase row after what the model said before it.
+        void flushText().catch(() => undefined);
+        void inTurn(async () => {
+          await harness.commit((tx) => tx.appendEntry(root.id, { kind: HOST_PHASE, data: { summary: event.text, at: now() } as unknown as JsonValue }), context);
+        }).catch(() => undefined);
+      }
     },
     flushText,
     flushSaid: () => (answer === undefined && text.trim() !== "" ? flushText(undefined, true) : Promise.resolve()),
