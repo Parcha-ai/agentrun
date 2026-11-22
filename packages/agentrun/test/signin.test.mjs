@@ -257,7 +257,7 @@ test("a URL off the target's origin, a redirect, or a malformed answer is refuse
     const result = await signIn(server);
     refusedClean(result, 1, /./);
     assert.equal(server.polls().length, 0, `${name}: no poll`);
-    assert.equal(result.said, "", `${name}: no code shown`);
+    assert.equal(result.said, `Signing in to ${server.origin}.\n`, `${name}: the server named, no code shown`);
     assert.equal(server.of("GET", "/auth/device2").length + server.of("POST", "/auth/device/code2").length, 0, `${name}: no redirect followed`);
   }
   assert.deepEqual(other.requests, [], "nothing was sent to the other origin");

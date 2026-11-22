@@ -3,8 +3,9 @@
 // and approves there; the token endpoint then answers a token, which login keeps where it keeps a pasted one. Every URL
 // fetched is on the target's own origin, over https unless the target is on this machine; no redirect is followed; each
 // answer's size and shape are checked before any of it is used. Every request names this CLI and its version
-// (User-Agent), so the page that approves a code can say what asked for it. The device code and the token are never
-// printed, never in an error and never in argv.
+// (User-Agent), so the page that approves a code can say what asked for it. The flow's first line names the server
+// signed in to, and a line says so when the address to open is on another origin. The device code and the token are
+// never printed, never in an error and never in argv.
 import { readFileSync } from "node:fs";
 
 /** What each request of the flow names itself: this package and its version. */
@@ -145,6 +146,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *  SignInError that says nothing was written. */
 export async function deviceSignIn(base, offer, io, { wait = sleep, now = Date.now } = {}) {
   const target = new URL(base);
+  // The server first, before anything else of the flow: a server named by a stale or wrong AGENTRUN_BASE_URL is seen
+  // before any code is approved.
+  io.stderr.write(`Signing in to ${target.origin}.\n`);
   const unreached = (url, error) => refuse(3, `Cannot reach ${url.origin} for the device sign-in (${why(error)}); ${NOTHING}.`);
 
   let meta;
@@ -189,6 +193,11 @@ export async function deviceSignIn(base, offer, io, { wait = sleep, now = Date.n
 
   // The metadata's verification_uri first, when it names one, as the open-source connector's client does.
   const open = m.verification_uri ?? g.verification_uri;
+  // An address to open on another origin than the server's is taken, not refused: a self-hosted install may serve its
+  // console on another origin, and this CLI cannot know which. So the line names both origins, and a server that hands
+  // out another service's code, to keep the token approved there, is seen before the code is approved.
+  const elsewhere = [...new Set([open, g.verification_uri_complete].filter((at) => at != null).map((at) => new URL(at).origin))].filter((origin) => origin !== target.origin);
+  if (elsewhere.length) io.stderr.write(`The code is approved at ${elsewhere.join(" and ")}, not at ${target.origin}. Approve it only if ${target.origin} is the server you meant to sign in to.\n`);
   io.stderr.write(`Open ${open} and enter the code ${g.user_code}${g.verification_uri_complete ? ` (or open ${g.verification_uri_complete})` : ""}.\n`);
   io.stderr.write(`Waiting for the sign-in to be approved there; the code expires in ${Math.ceil(g.expires_in / 60)} min.\n`);
 
