@@ -92,7 +92,8 @@ const INIT_SCRIPT = [
  *  install is checked too. */
 const STDIO_SCRIPT = ["# agentrun-computer: stdio", "d=$1; r=$2", HELD, 'held "$d" >&2 || exit 6', ROOT, `exec $p env -i PATH=${PATH} AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" "$d" stdio`].join("\n");
 
-const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
+/** One word for a shell, single-quoted. */
+export const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
 /** One string for a shell: `sh -c '<script>' sh '<arg>' ...`, every word quoted. */
 export const shellCommand = (script: string, args: readonly string[]) => ["sh", "-c", quote(script), "sh", ...args.map(quote)].join(" ");
 /** One argv as one shell line, every word but a plain one ("sh", "-c") single-quoted: for a vendor whose exec takes a line. */

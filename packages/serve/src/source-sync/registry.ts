@@ -1,7 +1,8 @@
 /** Source ownership survives Move. Snapshot bytes commit first; these small rows publish their digests under the
  * connector's revocation guards. Managed revisions carry the cutover receipt, so a crash cannot restore native work. */
 import { createHash, randomBytes } from "node:crypto";
-import { getAgent, uuidv7, type AgentEntry } from "../agents-store.js";
+import { getAgent, type AgentEntry } from "../agents-store.js";
+import { uuidv7 } from "../ids.js";
 import { ApiError } from "../errors.js";
 import type { SourceSnapshot, SourceSnapshotBlocker } from "../native/source-snapshot-types.js";
 import { canonical, isObject, type AgenticBody } from "../store/agent-body.js";

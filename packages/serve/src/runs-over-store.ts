@@ -17,13 +17,14 @@ import { launchNative } from "./native/connection.js";
 import { randomBytes } from "node:crypto";
 import type { Revision } from "./agent-rows.js";
 import type { MessageOrigin } from "./timeline/index.js";
-import { type AgentEntry, type ExternalRef, externalKey, getAgent } from "./agents-store.js";
+import { type AgentEntry, type ExternalRef, externalKey, getAgent, ownedElsewhere } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
 import { holdOf } from "./computer-held.js";
 import { computerOfPlace, settingOfDefinition } from "./computer-setting.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { labelsOf } from "./run-labels.js";
 import { harnessOfBody } from "./harness.js";
+import { uuidv7 } from "./ids.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
 import { chooseWorkflows, learnedSection, type LearningMode, learnsOf, RUN_LEARNING_USE, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
@@ -198,7 +199,8 @@ export async function message(
   if (nativeOf(launchBody)) throw new ApiError("input_invalid", "Native jobs do not support in-session steering or follow-up messages. Start a new native run.");
   // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished). Another
   // system's agent is archived only by its delete: said so, as every run of it is refused (AgentDeleting).
-  if (moment.archived === "agent" && (await store.agents.get(moment.agentId))?.externalRef != null) throw new AgentDeleting(moment.agentId);
+  const archivedAgent = moment.archived === "agent" ? await store.agents.get(moment.agentId) : null;
+  if (archivedAgent && ownedElsewhere(archivedAgent)) throw new AgentDeleting(moment.agentId);
   if (moment.archived !== undefined) throw archivedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
   if (moment.cancelled) throw finished(moment);
@@ -404,16 +406,6 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------------
-
-/** A UUIDv7 run id: time-ordered, so a listing by start time is stable, and unique per run. */
-export function uuidv7(now = Date.now()): string {
-  const bytes = randomBytes(16);
-  bytes.writeUIntBE(now, 0, 6);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
 
 /** The revision's body fields a start reads: its default cap, its place, and (agentic) its tools, for the place
  *  fallback. Read with the shapes the old start read them with. */

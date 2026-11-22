@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { after } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { foldSession } from '@parcha/agentrun-kernel/kernel';
-import { journalRecords, transcriptOf } from '@parcha/agentrun-kernel/process';
+import { journalRecords, readJournal, transcriptOf } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import assert from 'node:assert/strict';
 import { ACP_CODES, acpAdapter, CURSOR_PIN, cursorRelease } from '@parcha/agentrun-harness-acp';
@@ -107,9 +107,21 @@ export async function stateOf(store, key = 's1') {
   return foldSession(key, await store.read(key));
 }
 
-/** What stream `name` of the session's journal holds, in order. */
+/** What stream `name` of the session's journal holds, in order. A record offloaded to the blob stream reads undefined
+ *  here: resolvedRecords reads it back. */
 export async function streamRecords(store, name, key = 's1') {
   return journalRecords(await stateOf(store, key), name).map((record) => record.data);
+}
+
+/** What stream `name` holds as the adapter reads it at a resume: each offloaded record read back from the blob stream. */
+export async function resolvedRecords(store, name, key = 's1') {
+  const state = await stateOf(store, key);
+  return (await readJournal({ world: { store: { read: () => store.read(key) } }, runId: key, state: () => state }, name)).map((record) => record.data);
+}
+
+/** The bytes the whole session's records hold, as JSON: what a resume reads back. */
+export async function sessionBytes(store, key = 's1') {
+  return (await store.read(key)).reduce((sum, record) => sum + Buffer.byteLength(JSON.stringify(record)), 0);
 }
 
 /** The session's transcript entries (messages and turn ends), in order. */
