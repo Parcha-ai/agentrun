@@ -3221,8 +3221,10 @@ export type ListComputersResponse = {
     tools: Array<string>;
     settings: Array<string>;
     record: {
-      available: boolean;
-      why?: string;
+      available: true;
+    } | {
+      available: false;
+      why: string;
     };
     providers: Array<{
       id: string;

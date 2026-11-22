@@ -4167,8 +4167,10 @@ export interface operations {
         tools: string[];
         settings: string[];
         record: {
-          available: boolean;
-          why?: string;
+          available: true;
+        } | {
+          available: false;
+          why: string;
         };
         providers: {
           id: string;

@@ -628,7 +628,8 @@ __all__ = [
     "ListComputersResponseKindsItemProvidersItemGpuPerGpu",
     "ListComputersResponseKindsItemProvidersItemPersistent",
     "ListComputersResponseKindsItemProvidersItemSecretsItem",
-    "ListComputersResponseKindsItemRecord",
+    "ListComputersResponseKindsItemRecord1",
+    "ListComputersResponseKindsItemRecord2",
     "ListComputersResponsePairedItem",
     "ListComputersResponsePairedItemDevice",
     "ListComputersResponsePairedItemFeaturesValue",
@@ -4888,7 +4889,7 @@ class _ListComputersResponseKindsItemRequired(TypedDict):
     groups: list[str]
     tools: list[str]
     settings: list[str]
-    record: ListComputersResponseKindsItemRecord
+    record: ListComputersResponseKindsItemRecord1 | ListComputersResponseKindsItemRecord2
     providers: list[ListComputersResponseKindsItemProvidersItem]
 
 
@@ -4899,11 +4900,12 @@ class ListComputersResponseKindsItem(_ListComputersResponseKindsItemRequired, to
     shell_note: str
 
 
-class _ListComputersResponseKindsItemRecordRequired(TypedDict):
-    available: bool
+class ListComputersResponseKindsItemRecord1(TypedDict):
+    available: Literal[True]
 
 
-class ListComputersResponseKindsItemRecord(_ListComputersResponseKindsItemRecordRequired, total=False):
+class ListComputersResponseKindsItemRecord2(TypedDict):
+    available: Literal[False]
     why: str
 
 

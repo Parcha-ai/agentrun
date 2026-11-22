@@ -11,11 +11,11 @@
 // re-read, a touch) are not put again. While a directory the computer's user can't read hides what the sink holds under
 // it (files.list lists one without what it holds), a sync writes nothing and fails in words.
 import { createHash } from "node:crypto";
-import { pullTarStream } from "./files.js";
+import { pullTarStream, pushTar } from "./files.js";
 import { WORKSPACE } from "./mount.js";
 import { type ComputerClient, type FileEntry, MAX_CHUNK_BYTES, MAX_LIST_DEPTH, MAX_LIST_ENTRIES } from "./protocol.js";
-import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
-import { untarStream } from "./tar.js";
+import { type ComputerErrorCode, fail, failAs, ok, type Result } from "./result.js";
+import { type TarEntry, tarStream, untarStream } from "./tar.js";
 
 /** The most entries (files, directories and links) a synced folder holds: over it, a sync fails, kind limit. */
 export const SYNC_MAX_ENTRIES = 20_000;
@@ -31,7 +31,7 @@ const RACY_MS = 1000;
  * own clock tick, never leaves a file at it, and the newest mtime in a listing that holds such a write is still one of
  * the computer's clock, as the racy rule needs. Not 1970: a zip of the folder can't hold a time before 1980.
  */
-export const PUSHED_MTIME = 946_684_800;
+const PUSHED_MTIME = 946_684_800;
 const TOO_MANY = `the run's folder holds more than ${SYNC_MAX_ENTRIES} entries, the most a synced folder holds`;
 const FILE_MODE = 0o644;
 const DIR_MODE = 0o755;
@@ -174,9 +174,31 @@ export class FolderSync {
 	}
 
 	/**
-	 * The manifest of a folder just pushed from the sink, each file at PUSHED_MTIME, read, never guessed: what it lists is
-	 * what the sink holds, so nothing is pulled, and a later write moves a file's mtime off the one it lists. Over a cap,
-	 * it fails, kind limit.
+	 * `entries` (the sink's copy of the folder) pushed into the computer's folder as one streaming tar, each file at
+	 * PUSHED_MTIME, then the baseline taken: the rule a push into a synced folder keeps, in one place. None: an empty
+	 * folder, nothing pushed, the baseline still taken. A failure says which step it was: "could not be pushed into the
+	 * computer: ..." or "pushed into the computer could not be listed: ...", its code kept.
+	 */
+	async push(entries: AsyncIterable<TarEntry> | Iterable<TarEntry>, options: { signal?: AbortSignal } = {}): Promise<Result<void>> {
+		const stamp = (entry: TarEntry): TarEntry => (entry.type === "file" ? { ...entry, mtime: PUSHED_MTIME } : entry);
+		const source = Symbol.asyncIterator in entries ? entries[Symbol.asyncIterator]() : entries[Symbol.iterator]();
+		const first = await source.next();
+		if (!first.done) {
+			const stamped = (async function* () {
+				yield stamp(first.value);
+				for (let next = await source.next(); !next.done; next = await source.next()) yield stamp(next.value);
+			})();
+			const pushed = await pushTar(this.#client, this.#root, tarStream(stamped), options);
+			if (!pushed.ok) return failAs(pushed.error, `could not be pushed into the computer: ${pushed.error.message}`);
+		}
+		const listed = await this.baseline(options);
+		return listed.ok ? listed : failAs(listed.error, `pushed into the computer could not be listed: ${listed.error.message}`);
+	}
+
+	/**
+	 * The manifest of a folder just pushed from the sink, each file at PUSHED_MTIME (push() does both), read, never
+	 * guessed: what it lists is what the sink holds, so nothing is pulled, and a later write moves a file's mtime off the
+	 * one it lists. Over a cap, it fails, kind limit.
 	 */
 	async baseline(options: { signal?: AbortSignal } = {}): Promise<Result<void>> {
 		const listed = await this.#list(options.signal);

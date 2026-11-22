@@ -38,7 +38,7 @@ const SUBJECT: Record<CarriedField, string> = {
 export function refusal(field: CarriedField, value: unknown, kind: ComputerKindView | undefined, provider: ProviderView | undefined): string | undefined {
   const off = (why: string) => `${SUBJECT[field]} is off: ${why}.`;
   if (!kind) return off("this server doesn't list that kind");
-  if (field === "record") return kind.record.available ? undefined : off(kind.record.why ?? "this server can't record it");
+  if (field === "record") return kind.record.available ? undefined : off(kind.record.why);
   if (kind.kind === "none") return off("with no computer, there is nothing to hold it");
   if (!kind.settings.includes(field)) return off(`a ${kind.kind} doesn't take it`);
   // A sandbox's needs are the sandbox's on any provider: its run checks them in the box it starts.
