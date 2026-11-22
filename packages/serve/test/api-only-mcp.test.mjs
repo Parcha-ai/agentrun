@@ -467,6 +467,34 @@ test("API-only: the token's per_run save over a server it did not save (a row wr
   assert.equal((await token("DELETE", "/settings/mcp-servers/mine")).status, 204, "the token's own, to delete");
 });
 
+test("store: the API-only token's held save over a row the token did not save, with the credential the gate read (per_run, none sealed), is 412, writing nothing: the row and its record stay as they were", async (t) => {
+  const listed = await startFakeMcp();
+  t.after(() => listed.close());
+  const elsewhere = await startFakeMcp();
+  t.after(() => elsewhere.close());
+  const { McpServersOverStore } = await import("../dist/mcp-servers-store.js");
+  const { saveMcpServer } = await import("../dist/mcp-store.js");
+  const { mcpSourceKey } = await import("../dist/mcp-sources.js");
+  const { credentialMark } = await import("../dist/mcp-secret-writes.js");
+  const { store } = await storeOn(t);
+  const seal = Buffer.alloc(32, 9);
+  const registry = new McpServersOverStore(store, { AGENTRUN_SEAL_KEY: seal.toString("base64").replace(/=+$/, "") }, "test");
+  registry.attach("http://127.0.0.1:1", "http://127.0.0.1:1", true);
+  registry.apiOnly = true;
+  registry.tokenOrigins = [originOf(listed.url)];
+  // The gate read the token's own row and let the save through against its credential (per_run, none sealed); since, a
+  // row the token did not save took its place (written by hand, no record) with that same credential, so the store's
+  // conditional write alone would land on it.
+  const hand = await saveMcpServer(store, seal, { name: "gw", url: elsewhere.url, auth: "per_run", tools: [] });
+  await assert.rejects(registry.save("gw", { url: listed.url, auth: { type: "per_run" } }, undefined, credentialMark(hand), undefined, undefined, undefined, undefined, true), (error) => {
+    assert.equal(error.code, "precondition_failed", error.message);
+    return true;
+  });
+  const row = await store.mcp.server("gw");
+  assert.deepEqual([row.url, row.auth], [elsewhere.url, "per_run"], "the row stays as it was");
+  assert.equal(await store.settings.get(mcpSourceKey("gw")), undefined, "no record written");
+});
+
 test("API-only: a Composio save takes no url or headers from its body: each is 422 not_allowed, nothing is sent to Composio or the address", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const elsewhere = await startFakeMcp();
