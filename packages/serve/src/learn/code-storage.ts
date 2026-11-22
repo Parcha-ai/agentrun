@@ -10,7 +10,7 @@
 // - log: main's history, a page at a time, from the commit asked (every commit here is on main's first-parent line);
 // - diff: GET repos/diff of the commit, each file's raw diff cut to its hunks;
 // - save: the preconditions and markers read at `old` (each a read at that commit), then ONE commit
-//   (POST repos/commit-pack) on main with expected_head_sha `old`, the marker file in it. A stale `old` is a 409
+//   (POST repos/commit-pack) on main with expected_target_sha `old` (40 zeros before main), the marker file in it. A stale `old` is a 409
 //   conflict, nothing written; a tree the same as `old`'s is refused "no changes to commit" (unchanged). The first
 //   save makes the repository (POST repos; one there already is fine) and commits with no expected head, after reading
 //   main is not there (code.storage takes no compare and swap on a branch not made yet);
@@ -28,6 +28,8 @@ const PAGE = 100;
 const CALL_TIMEOUT_MS = 30_000;
 /** How many bodies are read at once. */
 const PARALLEL = 16;
+/** The head a commit names for a branch not made yet. */
+const NO_COMMIT = "0".repeat(40);
 
 type Scope = "git:read" | "git:write" | "repo:write";
 
@@ -279,7 +281,8 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
       target_branch: "main",
       commit_message: save.message,
       author: { name: IDENTITY.name, email: IDENTITY.email },
-      ...(old ? { expected_head_sha: old } : {}),
+      // The head it read, or 40 zeros for main not made yet: a first save racing another is stale too, never a second root.
+      expected_target_sha: old ?? NO_COMMIT,
       files: [...(save.deletes ?? []).filter((path) => !writes.some((write) => write.path === path)).map((path) => ({ path, operation: "delete" })), ...blobs.map(({ path, id }) => ({ path, content_id: id, operation: "upsert", mode: "100644" }))],
     };
     const lines = [JSON.stringify({ metadata }), ...blobs.map(({ id, text }) => JSON.stringify({ blob_chunk: { content_id: id, data: Buffer.from(text, "utf8").toString("base64"), eof: true } }))];

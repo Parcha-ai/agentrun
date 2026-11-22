@@ -17,6 +17,8 @@
 //   written. A save that changes nothing is `unchanged`, never an error;
 // - remove: every commit gone (a reset, an agent's or a person's erasure); the next save makes the store again, empty.
 //   Removing a store that is gone already is done.
+// A commit's time is the store's: the local folder commits at the save's `at`; code.storage dates each commit on its own
+// clock (its API takes no date), so a snapshot's times (the writer's clock) may be a second or so off a rebuild's.
 
 /** A file at a commit: its path, its git mode, its bytes. */
 export type StoreFile = { path: string; mode: "100644" | "100755" | "120000"; body: Buffer };

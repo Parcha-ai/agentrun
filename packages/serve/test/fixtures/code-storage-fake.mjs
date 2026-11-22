@@ -3,13 +3,17 @@
 // - the repo is taken from the bearer JWT's `repo` claim, never from the request; the JWT is ES256, signed with the
 //   org's key, and its `iss` is the org (a token for another org, or a bad signature, is 401);
 // - a commit (POST /repos/commit-pack, ndjson: one metadata line, then base64 blob chunks) moves `target_branch` only
-//   from `expected_head_sha`: a stale head is 409 with result.status "conflict" and writes nothing; a tree the same as
+//   from `expected_target_sha` (40 zeros for a branch not made yet; `expected_head_sha`, its deprecated name, alike): a
+//   stale head is 409 with result.status "conflict" and writes nothing; a metadata field the API does not name is 400
+//   (its schema takes no other); with neither, the branch moves unconditionally, as the API's does; a tree the same as
 //   the head's is refused with result.status "precondition_failed", "no changes to commit";
 // - a repo deleted is 404 to every read, and the same id made again starts empty (no main: /repos/files 404).
 // Commit ids are sha1 hex of their own fields, not git's: a store reads them back, never recomputes them.
 import { createHash, createPublicKey, KeyObject, verify } from "node:crypto";
 
 const ZERO = "0".repeat(40);
+/** The fields commit-pack's metadata takes (its schema's additionalProperties is false). */
+const METADATA = new Set(["target_branch", "commit_message", "author", "committer", "files", "base_branch", "base_is_ephemeral", "target_is_ephemeral", "ephemeral", "ephemeral_base", "expected_head_sha", "expected_target_sha"]);
 
 /** A fake code.storage org `name`, its key's public half `publicKey` (PEM or KeyObject). `fetch` is what the adapter
  *  is handed; `calls` every request it made ({ method, path, repo }); `repos` the store, by id. */
@@ -110,7 +114,10 @@ export function codeStorageFake({ name = "example-org", publicKey } = {}) {
     }
     const old = repo.main;
     const result = (status, message, success = false, extra = {}) => ({ branch: "main", old_sha: old ?? ZERO, new_sha: extra.new_sha ?? ZERO, success, status, ...(message ? { message } : {}) });
-    if (meta.expected_head_sha !== undefined && meta.expected_head_sha !== (old ?? ZERO)) return json(409, { commit: null, result: result("conflict", "expected head does not match") });
+    const unknown = Object.keys(meta).filter((key) => !METADATA.has(key));
+    if (unknown.length) return fail(400, `commit-pack's metadata takes no ${unknown.join(", ")}`);
+    const expected = meta.expected_target_sha ?? meta.expected_head_sha;
+    if (expected !== undefined && expected !== (old ?? ZERO)) return json(409, { commit: null, result: result("conflict", "expected head does not match") });
     const tree = new Map(treeOf(repo, old));
     for (const file of meta.files) {
       if (file.operation === "delete") tree.delete(file.path);

@@ -79,6 +79,18 @@ for (const [kind, make] of Object.entries(STORES)) {
     assert.equal(await store.head(), won[0].saved);
   });
 
+  test(`${kind}: two first saves on an empty store at once: exactly one makes main, the other is stale`, async (t) => {
+    const store = await make(t);
+    const results = await Promise.all([save(store, null, [{ path: "corrections.md", text: "- a\n" }]), save(store, null, [{ path: "corrections.md", text: "- b\n" }])]);
+    const won = results.filter((result) => "saved" in result);
+    const lost = results.filter((result) => "stale" in result);
+    assert.equal(won.length, 1, JSON.stringify(results));
+    assert.equal(lost.length, 1, JSON.stringify(results));
+    assert.equal(lost[0].stale, won[0].saved);
+    assert.equal(await store.head(), won[0].saved);
+    assert.deepEqual((await store.log(won[0].saved)).map((commit) => commit.parent), [null], "one root");
+  });
+
   test(`${kind}: a save that changes nothing is unchanged, never an error`, async (t) => {
     const store = await make(t);
     const one = (await save(store, null, [{ path: "corrections.md", text: "- one\n" }])).saved;

@@ -65,12 +65,29 @@ function shaped(snapshot) {
   }
 }
 
+/** How far a commit's time in the snapshot (the writer's clock at its save) may be from the time the store gives the
+ *  commit: none on the local store, where git commits at the save's time; a store that dates each commit on its own
+ *  clock (code.storage) may be a second or so apart. */
+let skewMs = 0;
+/** `snapshot` with each commit time (`at`) masked, after checking it is within skewMs of the same place in `other`. */
+function timesWithin(snapshot, other, path = "") {
+  if (Array.isArray(snapshot)) return snapshot.map((item, i) => timesWithin(item, other?.[i], `${path}[${i}]`));
+  if (!snapshot || typeof snapshot !== "object") return snapshot;
+  return Object.fromEntries(Object.entries(snapshot).map(([key, value]) => {
+    if (key !== "at" || typeof value !== "string") return [key, timesWithin(value, other?.[key], `${path}.${key}`)];
+    const apart = Math.abs(Date.parse(value) - Date.parse(other?.[key]));
+    assert.ok(apart <= skewMs, `${path}.at: ${value} and ${other?.[key]} are ${apart} ms apart`);
+    return [key, "(time)"];
+  }));
+}
+
 /** The snapshot main keeps is main's: what a rebuild from its tree and history gives, and its shape v1. */
 async function matchesMain(store) {
   forgetBodies();
   const snapshot = await readSnapshot(store);
   shaped(snapshot);
-  assert.deepEqual(snapshot, await readSnapshot(rebuilt(store)), "the snapshot the commit kept is the one main gives, rebuilt from its tree");
+  const again = await readSnapshot(rebuilt(store));
+  assert.deepEqual(timesWithin(snapshot, again), timesWithin(again, snapshot), "the snapshot the commit kept is the one main gives, rebuilt from its tree");
   // Each body main holds is the blob the snapshot names.
   const files = new Map((await onMain(store)).map((file) => [file.path, file.body]));
   if (snapshot.corrections) assert.equal(blobOid(files.get(CORRECTIONS)), snapshot.corrections.oid);
@@ -90,9 +107,11 @@ const edited = (corrections) => ({ by: { person: "edited", file: CORRECTIONS }, 
 const person = (kind, name, readme) => ({ by: { person: kind, file: `workflows/${name}/README.md`, ...(kind === "approved" ? { approved: true } : {}) }, writes: [{ path: `workflows/${name}/README.md`, text: readme }] });
 
 /**
- * The suite: `make(t)` gives a fresh, empty learning store.
+ * The suite: `make(t)` gives a fresh, empty learning store; `skew`, how far apart (ms) a store's commit times may be from
+ * the save's (its own clock's).
  */
-export function folderSuite(backend, make) {
+export function folderSuite(backend, make, { skew = 0 } = {}) {
+  skewMs = skew;
   test(`${backend}: init then a merge lands, one save each, and the snapshot is main's: oids, front matter, history and log`, async (t) => {
     const store = await make(t);
     assert.equal(await readSnapshot(store), undefined, "no snapshot before the store's first commit");

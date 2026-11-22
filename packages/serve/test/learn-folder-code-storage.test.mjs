@@ -12,4 +12,4 @@ let n = 0;
 folderSuite("code.storage", async () => {
   const fake = codeStorageFake({ name: "example-org", publicKey });
   return codeStorageLearningStore({ name: "example-org", key, apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => `srv${++n}` }, "agent-one");
-});
+}, { skew: 2_000 });
