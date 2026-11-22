@@ -22,12 +22,16 @@ const server = (t, dir, env, name) => serverOf(t, { data: join(dir, name), env, 
 /** The CLI with `extra` on its environment; stdin closed (no terminal). */
 const cli = (env, args, extra = {}) => agentrun({ ...env, ...extra }, args);
 
-/** A loopback proxy in front of `to` that records each request's method and path: what a deploy sent. */
+/** Whether a request to one of this file's fakes is the CLI's, an API request under /v2/. Another process on the machine
+ *  may send `GET /` to any new loopback listener: a fake neither counts nor parses it. */
+const ours = (req) => req.url.startsWith("/v2/");
+
+/** A loopback proxy in front of `to` that records each API request's method and path: what a deploy sent. */
 async function recorder(t, to) {
   const seen = [];
   const target = new URL(to);
   const proxy = createServer((req, res) => {
-    seen.push(`${req.method} ${req.url}`);
+    if (ours(req)) seen.push(`${req.method} ${req.url}`);
     const out = request({ host: target.hostname, port: target.port, path: req.url, method: req.method, headers: req.headers }, (answer) => {
       res.writeHead(answer.statusCode, answer.headers);
       answer.pipe(res);
@@ -260,6 +264,7 @@ async function fakeTarget(t, answers) {
   const seen = [];
   const bodies = {};
   const fake = createServer((req, res) => {
+    if (!ours(req)) return void res.writeHead(404).end();
     const key = `${req.method} ${req.url.replace(/^\/v2/, "")}`;
     seen.push(key);
     let text = "";
@@ -422,8 +427,8 @@ test("one command at a time per source: a deploy, rollback or delete of a folder
   assert.equal(existsSync(join(pkg, ".agentrun")), false, "let go of when the command ended");
 });
 
-/** A target that holds each request's 404 until `release()` (each one after that is answered at once), counting the
- *  requests in flight at once (`most`, `now`). `reached` settles at its first request; `changed` is called at each. */
+/** A target that holds each API request's 404 until `release()` (each one after that is answered at once), counting the
+ *  ones in flight at once (`most`, `now`). `reached` settles at its first request; `changed` is called at each. */
 async function slowTarget(t) {
   const waiting = [];
   let reach;
@@ -431,6 +436,7 @@ async function slowTarget(t) {
   const answer = (res) => res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "not_found", message: "Not found." } }));
   const state = { seen: [], most: 0, now: 0, reached: new Promise((resolve) => (reach = resolve)), changed: () => {} };
   const fake = createServer((req, res) => {
+    if (!ours(req)) return void res.writeHead(404).end();
     state.seen.push(`${req.method} ${req.url.replace(/^\/v2/, "")}`);
     state.most = Math.max(state.most, ++state.now);
     req.resume();
