@@ -171,6 +171,11 @@ reached, 4 for a missing or refused token and 5 when the server does not offer t
 `runs list` and every other that takes `--cursor`) prints one page; `--all` follows `next_cursor` and prints every page
 as one list.
 
+Any other word runs a program from your `PATH`, as git does: `agentrun NAME [args]` runs `agentrun-NAME` with the rest
+of the arguments, no shell between, on this terminal's input and output, and exits with its exit code. A tool adds a
+command to the CLI by installing `agentrun-NAME`. The CLI's own commands always come first, NAME is one plain word, and
+a relative or empty `PATH` entry, which would mean the working directory, is never searched.
+
 `runs wait RUN_ID` waits until the run ends or waits on a person and prints it; `runs start AGENT_ID ... --wait` starts
 a run and does the same. Its exit code says how it stopped: 0 completed, 1 failed or cancelled, 8 it waits on a person
 (a question, its spend cap, a stopped turn, a paused workflow run), with a line on stderr saying what to do next, such as
