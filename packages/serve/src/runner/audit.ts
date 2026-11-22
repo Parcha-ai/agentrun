@@ -39,7 +39,8 @@ import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEv
 import { lastRunsOf, sinceReset } from "../learn/compile.js";
 import { readLearning, writeLearning } from "../learn/folder.js";
 import type { LearningStore } from "../learn/store.js";
-import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
+import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, refusedOf, servingOf } from "../learn/promote.js";
+import { holdsTextOf, recordLearningOf } from "../purged-workflow.js";
 import { excerptShown } from "../learn/secrets.js";
 import type { Shown } from "../learning.js";
 import { auditRoomOf } from "./learning-end.js";
@@ -350,7 +351,8 @@ async function addLines(deps: AuditDeps, lines: readonly LedgerLine[], agreed?: 
 async function holdByLedger(deps: AuditDeps, all: readonly AuditRow[]): Promise<void> {
   if (!all.length) return;
   const loop = await auditLoopOfRevision(deps.store, deps.revisionId);
-  for (const { workflow, digest } of servingOf(await promotionsOf(deps.store.settings, deps.agentId))) {
+  const records = await promotionsOf(deps.store.settings, deps.agentId);
+  for (const { workflow, digest } of servingOf(records, await refusedOf(records, holdsTextOf(deps.learning)))) {
     if (digest !== null) await applyHold(deps, all, loop, workflow, digest);
   }
 }
@@ -389,6 +391,6 @@ async function applyHold(deps: AuditDeps, rows: readonly AuditRow[], loop: Audit
     audit: { window: loop.hold_window, disagree: loop.hold_disagree, rows: hold.rows.length, disagreements, ...(stopped ? { stopped: true as const } : {}) },
     ...(current.commit ? { commit: current.commit } : {}),
   };
-  const kept = await recordPromotion(store.settings, agentId, record, (was) => was?.decided === "promote" && was.at === current.at);
+  const kept = await recordPromotion(store.settings, agentId, record, (was) => was?.decided === "promote" && was.at === current.at, recordLearningOf(deps.learning, store));
   if (kept.won) log(`workflow-first: ${workflow} at ${digest} ${stopped ? `stopped (${said}, a second hold within ${loop.stop_window} served runs)` : reason}`);
 }

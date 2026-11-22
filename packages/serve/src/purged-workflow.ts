@@ -9,7 +9,10 @@
 //   - A run's seed (learning.ts seedAt) leaves it out, so no claim lays, checks, replays or serves it, and a champion
 //     read at its commit finds none: the run goes on as it does when no champion serves.
 import { ApiError } from "./errors.js";
-import type { Snapshot } from "./learn/folder.js";
+import { type Snapshot, snapshotAt } from "./learn/folder.js";
+import { type HoldsText, type RecordLearning, workflowDigestOf } from "./learn/promote.js";
+import { FolderUnreadable, type LearningStore } from "./learn/store.js";
+import { WORKFLOWS_DIR } from "./learn/workflow-draft.js";
 import type { RunRow, Store } from "./store/index.js";
 
 const isoOrNull = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
@@ -41,4 +44,34 @@ export async function purgedWorkflows(snapshot: Snapshot | undefined, store: Pic
     if (row && row.purgedAt !== null) purged.set(name, row);
   }
   return purged;
+}
+
+/** Whether a learning commit holds a workflow at a digest (learn/promote.ts HoldsText), read from the store itself: its
+ *  workflows/<workflow>/workflow.json there, by workflowDigestOf. False for a commit the store no longer holds (a purge
+ *  rewrote it, a reset removed it); a store that cannot answer throws. */
+export const holdsTextOf = (learning: LearningStore): HoldsText => async (workflow, digest, commit) => {
+  const files = await learning.read(commit, [`${WORKFLOWS_DIR}/${workflow}/workflow.json`]);
+  const file = files?.[0];
+  return file !== undefined && workflowDigestOf(file.body.toString("utf8")) === digest;
+};
+
+/** What a promotion record naming a learning commit is checked against (learn/promote.ts recordPromotion): agent's
+ *  learning store `learning` (is the commit on main's history now, does it hold the revision) and the runs of `store`
+ *  (is the run whose merge wrote the revision there purged, purgedWorkflows). Each read that fails throws. */
+export function recordLearningOf(learning: LearningStore, store: Pick<Store, "runs">): RecordLearning {
+  return {
+    holds: holdsTextOf(learning),
+    onMain: async (commit) => {
+      const main = await learning.head();
+      if (main === null) return false;
+      const history = await learning.log(main);
+      if (!history) throw new FolderUnreadable(false, "the agent's learning moved while its history was read: the promotion is not kept, send it again");
+      return history.some(({ sha }) => sha === commit);
+    },
+    writerPurged: async (workflow, commit) => {
+      const snapshot = await snapshotAt(learning, commit);
+      if (!snapshot) throw new FolderUnreadable(false, "the learning commit a promotion names could not be read: the promotion is not kept");
+      return (await purgedWorkflows(snapshot, store)).has(workflow);
+    },
+  };
 }

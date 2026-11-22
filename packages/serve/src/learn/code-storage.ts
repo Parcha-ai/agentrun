@@ -25,7 +25,7 @@
 //   by the next call. Never restore_commit: it keeps the old commits reachable, so it is no erasure. No call lists
 //   repositories.
 import { createHash, createPrivateKey, type KeyObject, randomUUID, sign } from "node:crypto";
-import { type ChainCommit, CODE_STORAGE_ENV, COMMIT, FolderUnreadable, IDENTITY, type LearningStore, MARKER_KEY, MOVED_FILE, PATCH_CAP, purgedMarker, type Rewritten, runMarker, runOfKey, type Saved, type StoreCommit, type StoreDiffFile, type StoreFile, type StoreSave } from "./store.js";
+import { type ChainCommit, CODE_STORAGE_ENV, COMMIT, FolderUnreadable, IDENTITY, type LearningStore, MARKER_KEY, MOVED_FILE, PATCH_CAP, purgedMarker, type Rewritten, runMarker, runMarkerText, runOfKey, type Saved, type StoreCommit, type StoreDiffFile, type StoreFile, type StoreSave } from "./store.js";
 import type { CodeStorageSettings } from "./store-of.js";
 
 /** How long a token is good for. */
@@ -184,7 +184,8 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
         return text;
       }
     };
-    /** A read's JSON, or undefined on a 404 (no repository, no main, no such commit or path). */
+    /** A read's JSON, or undefined on a 404 (no repository, no main, no such commit or path): what a 404 means is each
+     *  caller's to tell (a commit read alone, `holds`), never an empty answer (gone). */
     async function getJson<T>(what: string, path: string, query: Record<string, string | undefined>): Promise<T | undefined> {
       const response = await call(what, "GET", path, ["git:read"], { query });
       if (response.status === 404) return void (await response.body?.cancel());
@@ -196,9 +197,32 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
     const commitOf = (view: CommitView): StoreCommit => ({ sha: view.sha, parent: view.parent_shas?.[0] ?? null, at: view.date ?? view.committer_date ?? view.author_date ?? "", message: view.message ?? "" });
     const holds = async (commit: string): Promise<CommitView | undefined> => (await getJson<{ commit: CommitView }>("commit", "repos/commit", { sha: commit }))?.commit;
 
+    /** A 404 on a read of `what` that a repository holding its commit answers, read as the store unavailable (retryable):
+     *  never an empty or short answer. */
+    const gone = (what: string): FolderUnreadable => unavailable(new CodeStorageFailed(what, 404, "not found where the repository holds it"));
+    /** A 404 on a read at commit `ref`: undefined when the store does not hold the commit (a reset or purge since),
+     *  else the store unavailable (gone). */
+    const notHeld = async (what: string, ref: string): Promise<undefined> => {
+      if (await holds(ref)) throw gone(what);
+      return undefined;
+    };
+
+    /** main's commit. Null only when the repository is confirmed absent (its lookup by exact id, GET repo, is 404) or
+     *  holds no main (made, never committed to: its branch list names none); any other 404 is the store unavailable. */
     async function head(): Promise<string | null> {
       const page = await getJson<{ commits: CommitView[] }>("history", "repos/commits", { branch: "main", limit: "1" });
-      return page?.commits[0]?.sha ?? null;
+      if (page) {
+        const sha = page.commits[0]?.sha;
+        if (!sha) throw gone("history");
+        return sha;
+      }
+      const repo = await call("repository", "GET", "repo", ["git:read"]);
+      if (!repo.ok && repo.status !== 404) throw unavailable(new CodeStorageFailed("repository", repo.status, await bodyOf(repo)));
+      await repo.body?.cancel();
+      if (repo.status === 404) return null;
+      const branches = await getJson<{ branches?: { name?: string }[]; has_more?: boolean }>("branches", "repos/branches", { limit: "100" });
+      if (branches && !branches.has_more && !(branches.branches ?? []).some((one) => one.name === "main")) return null;
+      throw gone("history");
     }
 
     /** The paths at `ref` (a commit), or undefined when the store does not hold it. */
@@ -207,7 +231,7 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
       let cursor: string | undefined;
       do {
         const page = await getJson<{ entries?: { path: string; type?: string; mode?: string }[]; paths?: string[]; next_cursor?: string | null; has_more?: boolean }>("files", "repos/files", { ref, recursive: "true", ...(cursor ? { cursor } : {}) });
-        if (!page) return undefined;
+        if (!page) return cursor ? Promise.reject(gone("files")) : notHeld("files", ref);
         const entries = page.entries ?? (page.paths ?? []).map((path) => ({ path, type: "blob", mode: "100644" }));
         for (const entry of entries) {
           if (entry.type !== undefined && entry.type !== "blob" && entry.type !== "symlink") continue;
@@ -223,15 +247,15 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
     async function bodies(ref: string, files: readonly { path: string; mode: StoreFile["mode"] }[]): Promise<StoreFile[] | undefined> {
       const out: (StoreFile | undefined)[] = new Array(files.length);
       let next = 0;
-      let gone = false;
+      let missing = false;
       const worker = async () => {
-        while (next < files.length && !gone) {
+        while (next < files.length && !missing) {
           const i = next++;
           const file = files[i]!;
           const response = await call("file", "GET", "repos/file", ["git:read"], { query: { path: file.path, ref } });
           if (response.status === 404) {
             await response.body?.cancel();
-            gone = true;
+            missing = true;
             return;
           }
           if (!response.ok) throw unavailable(new CodeStorageFailed("file", response.status, await bodyOf(response)));
@@ -239,7 +263,8 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
         }
       };
       await Promise.all(Array.from({ length: Math.min(PARALLEL, files.length) }, worker));
-      return gone ? undefined : (out as StoreFile[]);
+      // A file its commit's listing named, 404 by itself: the commit gone since (undefined), or the store unavailable.
+      return missing ? notHeld("file", ref) : (out as StoreFile[]);
     }
 
     async function read(ref: string, only?: readonly string[]): Promise<StoreFile[] | undefined> {
@@ -255,7 +280,8 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
       let cursor: string | undefined;
       do {
         const page = await getJson<{ commits: CommitView[]; next_cursor?: string | null; has_more?: boolean }>("history", "repos/commits", { branch: "main", limit: String(PAGE), ...(path ? { path } : {}), ...(cursor ? { cursor } : {}) });
-        if (!page) return;
+        // A page of a main log() just read a commit of: never a history read short.
+        if (!page) throw gone("history");
         for (const view of page.commits) yield commitOf(view);
         cursor = page.has_more && page.next_cursor ? page.next_cursor : undefined;
       } while (cursor);
@@ -263,21 +289,21 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
 
     /** `commits` with each one's whole message: a listing gives its subject line alone (no body, no trailers), so each
      *  is read by itself (GET repos/commit), PARALLEL at a time, and kept (`messages`: a commit never changes). One the
-     *  store no longer holds (a reset or purge since) is undefined. */
-    async function whole(commits: StoreCommit[]): Promise<StoreCommit[] | undefined> {
+     *  listing named that reads 404 by itself is the store unavailable (a reset since, retryable: the next read finds the
+     *  commit gone), never a history with a commit left out. */
+    async function whole(commits: StoreCommit[]): Promise<StoreCommit[]> {
       let next = 0;
-      let gone = false;
       const worker = async () => {
-        while (next < commits.length && !gone) {
+        while (next < commits.length) {
           const { sha } = commits[next++]!;
           if (messages.has(sha)) continue;
           const view = await holds(sha);
-          if (!view) return void (gone = true);
+          if (!view) throw gone("commit");
           messages.set(sha, view.message ?? "");
         }
       };
       await Promise.all(Array.from({ length: Math.min(PARALLEL, commits.length) }, worker));
-      return gone ? undefined : commits.map((commit) => ({ ...commit, message: messages.get(commit.sha)! }));
+      return commits.map((commit) => ({ ...commit, message: messages.get(commit.sha)! }));
     }
 
     async function log(ref: string, options: { limit?: number; path?: string } = {}): Promise<StoreCommit[] | undefined> {
@@ -287,11 +313,11 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
       if (!own) return undefined;
       messages.set(own.sha, own.message ?? "");
       if (limit === 1 && !options.path) return [commitOf(own)];
-      return whole(await listed(ref, own, limit, options.path));
+      return whole(await listed(ref, limit, options.path));
     }
 
     /** log's commits as listed (each message its subject line alone). */
-    async function listed(ref: string, own: CommitView, limit: number, path: string | undefined): Promise<StoreCommit[]> {
+    async function listed(ref: string, limit: number, path: string | undefined): Promise<StoreCommit[]> {
       // The commits on main newer than `ref`, which its own history leaves out.
       const newer = new Set<string>();
       if (!path) {
@@ -303,12 +329,19 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
           out.push(commit);
           if (out.length >= limit) break;
         }
-        return found ? out : [commitOf(own)];
+        // A commit the store holds that main's listing never reaches: a listing that can't be trusted now.
+        if (!found) throw gone("history");
+        return out;
       }
+      let reached = false;
       for await (const commit of history()) {
-        if (commit.sha === ref) break;
+        if (commit.sha === ref) {
+          reached = true;
+          break;
+        }
         newer.add(commit.sha);
       }
+      if (!reached) throw gone("history");
       const out: StoreCommit[] = [];
       for await (const commit of history(path)) {
         if (newer.has(commit.sha)) continue;
@@ -321,7 +354,7 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
     async function diff(commit: string): Promise<StoreDiffFile[] | undefined> {
       if (!COMMIT.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
       const got = await getJson<{ files?: { path: string; state?: string; raw?: string; bytes?: number }[]; filtered_files?: { path: string; state?: string }[] }>("diff", "repos/diff", { sha: commit });
-      if (!got) return undefined;
+      if (!got) return notHeld("diff", commit);
       // The API sends git's raw letter (A, M, D, T, U; R and C with a score): A added, D deleted, any other modified.
       const status = (state: string | undefined): StoreDiffFile["status"] => (state?.[0] === "A" ? "added" : state?.[0] === "D" ? "deleted" : "modified");
       const out: StoreDiffFile[] = [];
@@ -384,7 +417,7 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
         if (!(await still())) return { moved: true };
         await make();
       }
-      const writes = [...save.writes, ...(save.run ? [{ path: runMarker(save.run), text: "" }] : [])].map(({ path, text }) => ({ path, mode: "100644", body: Buffer.from(text, "utf8") }));
+      const writes = [...save.writes, ...(save.run ? [{ path: runMarker(save.run), text: runMarkerText(save) }] : [])].map(({ path, text }) => ({ path, mode: "100644", body: Buffer.from(text, "utf8") }));
       const done = await pack(save.message, old, writes, (save.deletes ?? []).filter((path) => !writes.some((write) => write.path === path)));
       if ("stale" in done) return { stale: await head() };
       return done;

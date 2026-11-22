@@ -10,7 +10,8 @@
 //   commit is 201; a tree the same as the head's is 412 with result.status "precondition_failed", "no changes to commit";
 // - a listing of commits (GET /repos/commits) gives each one's subject line alone (its message's first paragraph as one
 //   line, no body, no trailers); only a commit read by itself (GET /repos/commit) gives its whole message;
-// - a repo deleted is 404 to every read, and the same id made again starts empty (no main: /repos/files 404).
+// - a repo deleted is 404 to every read (its lookup by exact id, GET /repo, included), and the same id made again starts
+//   empty (no main: /repos/files 404, no branch in GET /repos/branches).
 // Commit ids are sha1 hex of their own fields, not git's: a store reads them back, never recomputes them.
 import { createHash, createPublicKey, KeyObject, verify } from "node:crypto";
 
@@ -177,6 +178,9 @@ export function codeStorageFake({ name = "example-org", publicKey } = {}) {
     if (!can("git:read")) return fail(403, "insufficient permissions");
     if (!repo) return fail(404, "repository not found");
     const at = (ref) => (ref === "main" || !ref ? repo.main : repo.commits.has(ref) ? ref : undefined);
+    // The repository looked up by its exact id (the SDK's findOne), and its branches: main once a commit made it.
+    if (path === "repo") return json(200, { default_branch: "main", created_at: "2026-01-01T00:00:00Z" });
+    if (path === "repos/branches") return json(200, { branches: repo.main ? [{ name: "main", head_sha: repo.main }] : [], next_cursor: null, has_more: false });
     if (path === "repos/files") {
       const sha = at(q.get("ref"));
       if (!sha) return fail(404, "ref not found");

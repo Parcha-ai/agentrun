@@ -115,7 +115,7 @@ export function createSdkLoop(
               const agent = agentId ?? (await host.store.runs.get(claim.runId))?.agentId;
               if (!agent) return;
               await settleSdkCheck({
-                store: host.store, agentId: agent, launch, inbox,
+                store: host.store, learning: learningStoreOf(host.data, agent), agentId: agent, launch, inbox,
                 shown: async () => secretsShown(Object.values(await storeSecrets(host.store, host.sealKey, host.data)), { local: true }),
                 log: (line) => host.log?.(line),
               });

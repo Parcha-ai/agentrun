@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentLearningFolder, DISK_DIR } from "../workspace/paths.js";
 import { blobOid } from "./folder.js";
-import { type ChainCommit, COMMIT, FolderUnreadable, IDENTITY, type LearningStore, MARKER_KEY, type Rewritten, type Saved, type StoreCommit, type StoreDiffFile, type StoreFile, type StoreSave } from "./store.js";
+import { type ChainCommit, COMMIT, FolderUnreadable, IDENTITY, type LearningStore, MARKER_KEY, type Rewritten, runMarkerText, type Saved, type StoreCommit, type StoreDiffFile, type StoreFile, type StoreSave } from "./store.js";
 
 /** The script, as built beside this file. */
 const SCRIPT = fileURLToPath(new URL("./learning.sh", import.meta.url));
@@ -108,7 +108,7 @@ async function level(data: string, dir: string, make: boolean): Promise<boolean>
 function importStream(ref: string, save: StoreSave, markers: readonly string[]): Buffer {
   const parts: Buffer[] = [];
   const add = (text: string) => parts.push(Buffer.from(text, "utf8"));
-  const writes = [...save.writes, ...markers.map((path) => ({ path, text: "" }))];
+  const writes = [...save.writes, ...markers.map((path) => ({ path, text: runMarkerText(save) }))];
   writes.forEach(({ text }, i) => {
     const data = Buffer.from(text, "utf8");
     add(`blob\nmark :${i + 1}\ndata ${data.length}\n`);

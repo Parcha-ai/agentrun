@@ -21,11 +21,11 @@ import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
 import { type Snapshot, snapshotAt } from "../learn/folder.js";
-import { purgedRun } from "../purged-workflow.js";
+import { holdsTextOf, purgedRun } from "../purged-workflow.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 import type { SdkWorkflowCheckEvent } from "./check.js";
-import { promotionOf, promotionsOf, resetAtOf } from "../learn/promote.js";
+import { promotionOf, promotionsOf, refusedOf, resetAtOf } from "../learn/promote.js";
 import { championTextOf, releaseSdkCheck, reserveSdkCheck, type SdkWorkflowCheck } from "../runner/promotion.js";
 import { sdkTakes, workflowDigest } from "../runner/workflow-first.js";
 
@@ -364,7 +364,7 @@ export class SdkRuns {
       // A turn is a check only when it can be one's baseline: no protected value in its task or policy, and an input the
       // draft takes (sdkTakes). A prose turn whose input the client cannot resolve is given back (releaseSdkCheck).
       const takes = (flow: LearnedWorkflow) => !redacted && sdkTakes(flow, input, resolveSchemaForWorkflow as never);
-      const checkDeps = { store: this.store, agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }) };
+      const checkDeps = { store: this.store, learning: learningStoreOf(this.data, entry.agent.id), agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }) };
       const check = learning ? await reserveSdkCheck(checkDeps, { runId, revision: learning.seed, learning: revisionBody.learning, flows: selected.candidates, takes }) : undefined;
       // A shadow check needs the original agent's own answer, not an answer produced by its existing champion.
       const workflows = check ? [] : selected.workflows;
@@ -501,7 +501,7 @@ export class SdkRuns {
     const atCommit = async (name: string, commit: string) =>
       chooseWorkflows(await seedAt(learning, commit, this.store), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
     for (const flow of flows) {
-      const { text: serving, champion } = await championTextOf(records, flow, atCommit);
+      const { text: serving, champion } = await championTextOf(records, flow, atCommit, await refusedOf(records, holdsTextOf(learning), [flow.name]));
       if (serving && compatible(serving)) {
         workflows.push(serving);
         commits[serving.name] = serving === flow ? seed.sha! : champion!.commit!;

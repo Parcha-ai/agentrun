@@ -32,7 +32,7 @@ import type { LearningStore } from "../learn/store.js";
 import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, sinceReset, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, draftFailedOf, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
 import { heldOnGiveBacks, reviseAttemptOf, sdkInputText } from "./promotion.js";
 import { loopOf, repickOf } from "../learning-setting.js";
-import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, resetAtOf } from "../learn/promote.js";
+import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, refusedOf, resetAtOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders, draftDryRun, draftFiles, draftMcpTools, unpricedCalls, WORKFLOWS_DIR } from "../learn/workflow-draft.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
@@ -59,6 +59,7 @@ import { sdkDraftTools, type SdkWorkflowTool } from "../sdk/workflows.js";
 import { runnerSecrets } from "./redact.js";
 import { mcpNameOf } from "../tool-names.js";
 import { held, heldEndOfRun } from "./held.js";
+import { holdsTextOf, recordLearningOf } from "../purged-workflow.js";
 
 /** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
  *  the agent's learning store (learn/store-of.ts learningStoreOf), the runner's environment (the host's secrets a draft or
@@ -497,7 +498,7 @@ export const draftFailedDigest = (runId: string): string => createHash("sha256")
  *  compiles it again. A revision of a connected agent's hold on give-backs is no recompile (runner/promotion.ts
  *  reviseAttemptOf). One record per run (its digest is the run's), written once: a claim that ends the run again
  *  writes none. */
-export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "log">, input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }): Promise<void> {
+export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "log" | "learningStore">, input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }): Promise<void> {
   try {
     const records = await promotionsOf(deps.store.settings, input.agentId);
     const attempt = input.compile.mode === "revise" ? reviseAttemptOf(records, input.compile.held) : newCompileAttempt(records);
@@ -507,7 +508,7 @@ export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "l
     const failed = input.errors.join("; ").slice(0, CHECK_TEXT_MAX) || "no draft passed";
     const reason = `${DRAFT_FAILED}: ${failed}. ${attempt === 2 ? "It was the recompile, so it stops: nothing compiles again until its owner acts" : "It is not promoted; the next due run compiles it once more"}`;
     const check = { compile_after, agree_min, alone_min, attempt, n: 0, agreed: 0, alone: 0, of: [], ...(attempt === 2 ? { stopped: true as const } : {}) };
-    const kept = await recordPromotion(deps.store.settings, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined);
+    const kept = await recordPromotion(deps.store.settings, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined, recordLearningOf(deps.learningStore(input.agentId), deps.store));
     if (kept.won) deps.log?.(`learning: run ${input.runId}: the compile of ${workflow} failed its checks (attempt ${attempt}${attempt === 2 ? ", stopped" : ""})`);
   } catch (error) {
     deps.log?.(`learning: run ${input.runId}: the compile's failed drafts were not recorded: ${error instanceof Error ? error.message : String(error)}`);
@@ -564,7 +565,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   // A revision is asked only of a workflow its promotion holds, once per hold. The workflows whose newest revision other
   // than their champion (learn/promote.ts championOf: it serves while that one is held) is held: the run's own may be one.
   const records: PromotionRecord[] = await promotionsOf(deps.store.settings, agentId).catch(() => []);
-  const heldNames = heldNamesOf(records);
+  const heldNames = heldNamesOf(records, await refusedOf(records, holdsTextOf(deps.learningStore(agentId))));
   // The loop's numbers on the agent's definition (the revision this run runs): the first compile waits for compile_after
   // completed agent runs, the ending one counted.
   const { compile_after: compileAfter } = await loopOfRun(deps.store, input.runId);

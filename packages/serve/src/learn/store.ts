@@ -87,6 +87,21 @@ export interface LearningStore {
 /** The host's folder in every commit: the snapshot and the marker files. Never learned, never laid into a run. */
 export const HOST_DIR = ".agentrun";
 export const runMarker = (key: string): string => `${HOST_DIR}/runs/${key}`;
+/** A run's marker's body: the paths its merge wrote (each it writes or deletes, the host's own left out), whether or not
+ *  their bytes changed. Kept through every rewrite, it is what a purge reads a learned file's owner from (learn/purge.ts:
+ *  the run whose merge last wrote the path), never which bytes changed. */
+export const runMarkerText = (save: Pick<StoreSave, "writes" | "deletes">): string =>
+  `${JSON.stringify({ v: 1, wrote: [...new Set([...save.writes.map(({ path }) => path), ...(save.deletes ?? [])])].filter((path) => !path.startsWith(`${HOST_DIR}/`)).sort() })}\n`;
+/** The paths a run's marker body names (runMarkerText), or undefined for one that names none (an earlier release's,
+ *  empty). */
+export function wroteOf(body: Buffer): string[] | undefined {
+  try {
+    const held = JSON.parse(body.toString("utf8")) as { v?: unknown; wrote?: unknown };
+    return held.v === 1 && Array.isArray(held.wrote) && held.wrote.every((path) => typeof path === "string") ? (held.wrote as string[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 /** The marker a run's purge leaves on main (learn/purge.ts): no key of that run merges after. */
 export const purgedMarker = (runId: string): string => `${HOST_DIR}/purged/${runId}`;
 /** The file a store's rewrite fences the main it moves off with (code.storage): a commit holding it is no history to keep. */

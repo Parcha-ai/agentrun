@@ -24,7 +24,6 @@
 // than doing the job by hand; it does not catch one that answers wrong with confidence. The spec builders
 // (adapter-run-spec.ts, cli-run-spec.ts) choose here, once per claim; the adapter loop serves it (adapter-loop.ts, before
 // the first input), through the run's own learned_workflow tool, gate, record and ledger.
-import { createHash } from "node:crypto";
 import { type LearnedWorkflow, LEARNING_LABEL } from "../learning.js";
 import type { RunLaunch } from "../run-launch.js";
 import { COST_WINDOW, type RunPath, SERVED_PATHS } from "../learning-cost.js";
@@ -34,7 +33,7 @@ export { COST_WINDOW };
 import { KINDS } from "./journal-kinds.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
 import { endedIn, type LoopRow, loopsOf, replaySkippedIn } from "../learned-nodes.js";
-import { type Compared, comparedOf, type CostStop, sameAnswer } from "../learn/promote.js";
+import { type Compared, comparedOf, type CostStop, sameAnswer, workflowDigestOf } from "../learn/promote.js";
 import type { Skipped } from "../learn/replay-calls.js";
 
 /** The root entry a run served workflow-first keeps, once the workflow's call ended: which workflow, at which learned
@@ -207,7 +206,7 @@ export function sdkTakes(workflow: LearnedWorkflow, task: string, resolve: Param
 }
 
 /** A learned workflow's digest: the first 16 hex of its text's sha256. A new revision of it is a new digest. */
-export const workflowDigest = (workflow: Pick<LearnedWorkflow, "workflow">): string => createHash("sha256").update(workflow.workflow).digest("hex").slice(0, 16);
+export const workflowDigest = (workflow: Pick<LearnedWorkflow, "workflow">): string => workflowDigestOf(workflow.workflow);
 
 /** The workflow a run serves first (`serve`), or the one the money rule stopped (`revise`), or neither: the run is
  *  agentic, its claim laid learned workflows (`workflows`: the active ones the seed lay chose, so learning is neither off

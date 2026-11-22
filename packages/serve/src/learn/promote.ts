@@ -405,11 +405,58 @@ export const promotionOf = (records: readonly PromotionRecord[], workflow: strin
 /** The champion of `workflow`: the newest record of the digest promoted last, while that digest's newest record still
  *  says promote. A newer revision replaying or held never stops it; it stops when a newer revision's check promotes that
  *  one (then the champion), or when its own newest record is a hold (a held revision its owner replays, askReplay, that
- *  promotes wins again). The money rule stops it on its own (runner/workflow-first.ts). Undefined: none. */
-export function championOf(records: readonly PromotionRecord[], workflow: string): PromotionRecord | undefined {
-  const last = lastPromotedOf(records, workflow);
-  const now = last === undefined ? undefined : promotionOf(records, workflow, last);
+ *  promotes wins again). The money rule stops it on its own (runner/workflow-first.ts). Undefined: none. Read with the
+ *  refused records skipped (`refused`, refusedOf): a revision whose commit no longer holds it never serves, and the one
+ *  promoted before it does, whatever the refused one's newest decision. */
+export function championOf(records: readonly PromotionRecord[], workflow: string, refused: Refused = NOTHING_REFUSED): PromotionRecord | undefined {
+  const live = liveOf(records, refused);
+  const last = lastPromotedOf(live, workflow);
+  const now = last === undefined ? undefined : promotionOf(live, workflow, last);
   return now?.decided === "promote" ? now : undefined;
+}
+
+/** The promote records whose learning commit no longer holds their revision (refusedOf): a purge's rewrite took the
+ *  text out of every tree, or the commit is one the store no longer holds, or it could not be read (fails closed). Every
+ *  champion reader skips them (championOf, servingOf, servingStateOf, heldNamesOf), so the revision promoted before one
+ *  serves again, whatever the refused one's newest decision. `unread`: a read failed, so the trim drops nothing
+ *  (trimPromotions). By workflow, digest and commit, so it holds of any copy of the records read. */
+export type Refused = { readonly keys: ReadonlySet<string>; readonly unread: boolean };
+export const NOTHING_REFUSED: Refused = { keys: new Set(), unread: false };
+const refusedKey = (one: Pick<PromotionRecord, "workflow" | "digest" | "commit">): string => `${one.workflow}\n${one.digest}\n${one.commit ?? ""}`;
+export const isRefused = (refused: Refused, one: PromotionRecord): boolean => one.commit !== undefined && refused.keys.has(refusedKey(one));
+const liveOf = (records: readonly PromotionRecord[], refused: Refused): readonly PromotionRecord[] => (refused.keys.size ? records.filter((one) => !isRefused(refused, one)) : records);
+/** Whether learning commit `commit` holds `workflow` at `digest` (its workflows/<workflow>/workflow.json, by
+ *  workflowDigestOf): false when it holds another text or none, or the store no longer holds the commit; throws when it
+ *  cannot tell (the store unreadable). The one structural read of the refused rule (learn/folder.ts holdsTextOf). */
+export type HoldsText = (workflow: string, digest: string, commit: string) => Promise<boolean>;
+/** A learned workflow's digest: its workflow.json's sha256, the first 16 hex (what a run serving it records). */
+export const workflowDigestOf = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 16);
+
+/** The refused promote records of `records` (Refused), for `workflows` (all when absent): each workflow's promote records
+ *  that name a commit, newest first, read (`holds`) until one holds its revision. Those after it and the one found are
+ *  what championOf reads; older ones are never read (none of them can serve while a newer one does). A promote record
+ *  naming no commit (an earlier release's) is never refused and ends the walk. Never throws: a read that fails refuses
+ *  its record and marks the answer `unread`. */
+export async function refusedOf(records: readonly PromotionRecord[], holds: HoldsText, workflows?: readonly string[]): Promise<Refused> {
+  const keys = new Set<string>();
+  let unread = false;
+  const seen = new Map<string, boolean>();
+  for (const workflow of workflows ?? [...new Set(records.map((one) => one.workflow))]) {
+    for (const one of [...records].reverse()) {
+      if (one.workflow !== workflow || one.decided !== "promote") continue;
+      if (one.commit === undefined) break;
+      const key = refusedKey(one);
+      if (!seen.has(key)) {
+        seen.set(key, await holds(workflow, one.digest, one.commit).catch(() => {
+          unread = true;
+          return false;
+        }));
+      }
+      if (seen.get(key)) break;
+      keys.add(key);
+    }
+  }
+  return { keys, unread };
 }
 
 /** The newest promotion of `workflow` at `digest`: the promote record that began its newest run of promote records (its
@@ -447,10 +494,10 @@ export function replayingOf(records: readonly PromotionRecord[], workflow: strin
 /** What each learned workflow with a record serves, by name: `digest`, its champion's (championOf; null: none serves,
  *  the agent takes its runs), and `replaying`, the revision other than it whose check is at work (null: none). What the
  *  promotions list says beside the records (GET /agents/{id}/learning/promotions). */
-export function servingOf(records: readonly PromotionRecord[]): { workflow: string; digest: string | null; replaying: string | null }[] {
+export function servingOf(records: readonly PromotionRecord[], refused: Refused = NOTHING_REFUSED): { workflow: string; digest: string | null; replaying: string | null }[] {
   const names = [...new Set(records.map((one) => one.workflow))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   return names.map((workflow) => {
-    const digest = championOf(records, workflow)?.digest ?? null;
+    const digest = championOf(records, workflow, refused)?.digest ?? null;
     return { workflow, digest, replaying: replayingOf(records, workflow, digest)[0]?.digest ?? null };
   });
 }
@@ -466,10 +513,10 @@ export type ServingState = "serving" | "checking" | "held" | "stopped";
 /** Whether the money rule stops `workflow` at `digest` from running first: runner/workflow-first.ts costStopOf over the
  *  agent's runs, the decision a run's claim reads (workflowFirstOf). */
 export type CostStop = (workflow: string, digest: string) => boolean;
-export function servingStateOf(records: readonly PromotionRecord[], workflow: string, costStop: CostStop): ServingState {
+export function servingStateOf(records: readonly PromotionRecord[], workflow: string, costStop: CostStop, refused: Refused = NOTHING_REFUSED): ServingState {
   const newest = records.findLast((one) => one.workflow === workflow);
   if (newest === undefined || newest.decided === "replaying") return "checking";
-  const champion = championOf(records, workflow);
+  const champion = championOf(records, workflow, refused);
   if (champion) return costStop(workflow, champion.digest) ? "stopped" : "serving";
   return newest.decided === "hold" && (newest.check?.stopped || newest.audit?.stopped) ? "stopped" : "held";
 }
@@ -479,8 +526,8 @@ export function servingStateOf(records: readonly PromotionRecord[], workflow: st
  *  any field, so a field added later is cut too: a workflow's name whole (`shown.name`), any other text of its part
  *  (`shown.text`: a reason, a digest, a run id). Numbers and the rest as they are. A replaying record's `launch` (a run
  *  launch: its notes, model and plane) never leaves: aggregates only. */
-export function promotionsShown(records: readonly PromotionRecord[], shown: { readonly text: (text: string) => string; readonly name: (name: string) => string }): { promotions: PromotionRecord[]; serving: ReturnType<typeof servingOf> } {
-  return { promotions: records.map(({ launch: _, ...one }) => shownDeep(one, shown) as PromotionRecord), serving: servingOf(records).map((one) => shownDeep(one, shown) as ReturnType<typeof servingOf>[number]) };
+export function promotionsShown(records: readonly PromotionRecord[], shown: { readonly text: (text: string) => string; readonly name: (name: string) => string }, refused: Refused = NOTHING_REFUSED): { promotions: PromotionRecord[]; serving: ReturnType<typeof servingOf> } {
+  return { promotions: records.map(({ launch: _, ...one }) => shownDeep(one, shown) as PromotionRecord), serving: servingOf(records, refused).map((one) => shownDeep(one, shown) as ReturnType<typeof servingOf>[number]) };
 }
 
 /** `value` cut as the promotions read cuts its records (promotionsShown), at any depth and under any field: a workflow's
@@ -503,23 +550,68 @@ export type Recorded = { readonly record: PromotionRecord | undefined; readonly 
 const blankedRuns = (record: PromotionRecord | undefined): string[] =>
   [...(record?.check?.disagreements ?? []), ...(record?.check?.turns?.disagreements ?? [])].filter((one) => isDeepStrictEqual(one, blankCheck(one))).map((one) => one.run);
 
+/** What a promotion record naming a learning commit is checked against before it is kept (recordPromotion), over the
+ *  agent's learning store and its runs (purged-workflow.ts recordLearningOf). Each throws when it cannot tell. */
+export type RecordLearning = {
+  readonly holds: HoldsText;
+  /** Whether `commit` is on the learning's main history now (a purge's rewrite moved main off the commits before it). */
+  readonly onMain: (commit: string) => Promise<boolean>;
+  /** Whether the run whose merge wrote `workflow` as `commit` holds it is purged. */
+  readonly writerPurged: (workflow: string, commit: string) => Promise<boolean>;
+};
+
+/** The words a promote kept as a hold starts with when its revision is not the learning's now (recordPromotion). */
+export const NOT_ON_MAIN = "its revision is not on the agent's learning now";
+
+/** A replay check refused before it starts: the revision it would check is not the learning's now (recordPromotion). */
+export class PromotionRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PromotionRefused";
+  }
+}
+
+/** Why `record`'s commit no longer stands for its revision, or undefined when it does: the commit is not on main's
+ *  history now (a purge rewrote it after the claim that recorded it read its seed), it does not hold the revision's
+ *  text, or the run that wrote the revision is purged. Throws when a read fails. */
+async function standsNot(record: PromotionRecord & { commit: string }, learning: RecordLearning): Promise<string | undefined> {
+  if (!(await learning.onMain(record.commit))) return `the learning commit it was checked at is not on its main (a purge rewrote it)`;
+  if (!(await learning.holds(record.workflow, record.digest, record.commit))) return `the learning commit it was checked at no longer holds it`;
+  if (await learning.writerPurged(record.workflow, record.commit)) return `the run that wrote it was purged`;
+  return undefined;
+}
+
 /** Keeps `record` as the newest of its workflow at its digest, when `still` holds of the one there now (none: undefined)
  *  and of every record kept (`items`: a check across revisions, one at a time, in the same guarded write): so of two
  *  claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). What the one
  *  there now has blanked is blanked in `record` too (forgetRunIn): a record built on a copy read before a run's purge
- *  (a connected agent's next turn, release or decision carries its turns on) never writes that run's text back. */
-export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean): Promise<Recorded> {
-  let out: Recorded = { record, won: true };
+ *  (a connected agent's next turn, release or decision carries its turns on) never writes that run's text back.
+ *  A promote or replaying record naming a learning commit is first checked against the agent's learning (`learning`,
+ *  standsNot): a promote whose commit no longer stands for its revision (a check at work while its run was purged) is
+ *  kept as a hold that says why (NOT_ON_MAIN), so the check ends and never serves the revision; a replaying one is
+ *  refused (PromotionRefused), nothing written. A read that fails throws, nothing written. The trim reads the refused
+ *  records (refusedOf) over the records and this one. `learning` undefined: a record kept with nothing read (a fixture's
+ *  seed, written by hand); every caller in the server passes its agent's (learn/store-of.ts, purged-workflow.ts
+ *  recordLearningOf). */
+export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, learning: RecordLearning | undefined): Promise<Recorded> {
+  let written = record;
+  if (learning && record.commit !== undefined && (record.decided === "promote" || record.decided === "replaying")) {
+    const why = await standsNot(record as PromotionRecord & { commit: string }, learning);
+    if (why !== undefined && record.decided === "replaying") throw new PromotionRefused(`${record.workflow} at ${record.digest} is not checked: ${why}`);
+    if (why !== undefined) written = { ...record, decided: "hold", reason: `${NOT_ON_MAIN}: ${why}` };
+  }
+  const refused = learning ? await refusedOf([...(await promotionsOf(settings, agentId)), written], learning.holds) : NOTHING_REFUSED;
+  let out: Recorded = { record: written, won: true };
   await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
     const items = writtenOf(saved);
-    const now = promotionOf(items, record.workflow, record.digest);
+    const now = promotionOf(items, written.workflow, written.digest);
     if (!still(now, items)) {
       out = { record: now, won: false };
       return items;
     }
-    const kept = blankedRuns(now).reduce(forgetRunIn, record);
+    const kept = blankedRuns(now).reduce(forgetRunIn, written);
     out = { record: kept, won: true };
-    return trimPromotions([...items, kept]);
+    return trimPromotions([...items, kept], refused);
   });
   return out;
 }
@@ -528,16 +620,23 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
  *  before, whatever was dropped: championOf reads the digest promoted last and its newest record, so the trim keeps both
  *  (a held last revision is never trimmed into handing the champion back), and a replaying revision's newest record (what
  *  its settle, its runs' claims and the one-check-at-a-time rule read: dropped, a newer revision would start a second
- *  check while its runs run, and its verdict would never land). The rest is the newest records. */
-export function trimPromotions(items: readonly PromotionRecord[]): PromotionRecord[] {
-  if (items.length <= PROMOTIONS_KEPT) return [...items];
+ *  check while its runs run, and its verdict would never land). The rest is the newest records. The champion is kept as
+ *  read with the refused records skipped (`refused`, refusedOf) and as read without; when a refused read failed
+ *  (`unread`), nothing is dropped. */
+export function trimPromotions(items: readonly PromotionRecord[], refused: Refused = NOTHING_REFUSED): PromotionRecord[] {
+  // A refused read that failed leaves the champion unknown: nothing is dropped until a read tells.
+  if (items.length <= PROMOTIONS_KEPT || refused.unread) return [...items];
   const keep = new Set<number>();
   for (const workflow of new Set(items.map((one) => one.workflow))) {
     for (const one of replayingOf(items, workflow, null)) keep.add(items.lastIndexOf(one));
-    const last = lastPromotedOf(items, workflow);
-    if (last === undefined) continue;
-    keep.add(items.findLastIndex((one) => one.workflow === workflow && one.digest === last && one.decided === "promote"));
-    keep.add(items.findLastIndex((one) => one.workflow === workflow && one.digest === last));
+    // The champion as read with the refused records skipped, and as read without: both stay.
+    for (const skip of refused.keys.size ? [NOTHING_REFUSED, refused] : [NOTHING_REFUSED]) {
+      const live = (one: PromotionRecord) => one.workflow === workflow && !isRefused(skip, one);
+      const last = items.findLast((one) => live(one) && one.decided === "promote")?.digest;
+      if (last === undefined) continue;
+      keep.add(items.findLastIndex((one) => live(one) && one.digest === last && one.decided === "promote"));
+      keep.add(items.findLastIndex((one) => live(one) && one.digest === last));
+    }
   }
   for (let i = items.length - 1, room = PROMOTIONS_KEPT - keep.size; i >= 0 && room > 0; i--) {
     if (keep.has(i)) continue;

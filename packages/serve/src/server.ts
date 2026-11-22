@@ -75,7 +75,7 @@ import { LEARNING_LABEL, secretsShown, type LearningMode, learningOf, learnsOf, 
 import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
 import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, forgetRunLearning, learningLog, pendingCount, type PurgedOf, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/workflow-draft.js";
-import { purgedRun } from "./purged-workflow.js";
+import { holdsTextOf, purgedRun } from "./purged-workflow.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -130,7 +130,7 @@ import { codeStorageFromEnv, learningStoreFromEnv, learningStoreOf } from "./lea
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
+import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, refusedOf, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
@@ -5592,16 +5592,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // over the same records and the money rule's decision, costStopOverStore), so the view never says a workflow serves
         // that does not run first.
         const records = await promotionsOf(store.settings, id);
+        const refused = await refusedOf(records, holdsTextOf(learningStoreOf(data, id)));
         const costStop = await costStopOverStore(store, id);
         const body = entry.revision?.body as AgenticBody | undefined;
         const modelEnv = !body || sdkOf(body) || nativeOf(body) ? env : envAtPlace(env, resolvePlace(body.place as Place | undefined, fallbackPlace(entry.revision!.kind === "workflow" ? "workflow" : "agentic", body.tools ?? [])));
-        return send(res, 200, { ...await agentLearning(data, id, await learningShown(id), counts, impact, (workflow) => servingStateOf(records, workflow, costStop), purgedOf), learning_model: await learningModelOf(modelEnv, entry.revision) });
+        return send(res, 200, { ...await agentLearning(data, id, await learningShown(id), counts, impact, (workflow) => servingStateOf(records, workflow, costStop, refused), purgedOf), learning_model: await learningModelOf(modelEnv, entry.revision) });
       }
       case "getLearningCost": {
         await needAgent(id);
         // The agent's cost per run over the one store (agentCostOverStore): each ended run's figures and path, aggregates only.
         const { limit, csv } = learningCostQuery(url);
-        const read = await agentCostOverStore(store, id, limit);
+        const read = await agentCostOverStore(store, id, limit, holdsTextOf(learningStoreOf(data, id)));
         // Each workflow's name as the other learning reads show it: one that holds a secret or a sign-in's value is cut.
         const shown = await learningShown(id);
         const cost = { ...read, runs: read.runs.map((run) => (run.workflow === null ? run : { ...run, workflow: shown.name(run.workflow) })), workflows: read.workflows.map((one) => ({ ...one, workflow: shown.name(one.workflow) })), bill: { ...read.bill, revisions: read.bill.revisions.map((one) => ({ ...one, workflow: shown.name(one.workflow) })), holds: read.bill.holds.map((one) => ({ ...one, workflow: shown.name(one.workflow), reason: shown.text(one.reason) })) } };
@@ -5618,13 +5619,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // (promotionsShown: a reason as well as each workflow's name). Beside what serves, each one's state, its check's
         // numbers and its audit line (learn/audit.ts servingLinesOf), at the agent's numbers.
         const records = await promotionsOf(store.settings, id);
+        // A record whose learning commit no longer holds its revision (a purge took it out) serves nothing, and the one
+        // promoted before it serves again (learn/promote.ts refusedOf): what serves here is what a run's claim serves.
+        const refused = await refusedOf(records, holdsTextOf(learningStoreOf(data, id)));
         const shown = await learningShown(id);
-        const shownRead = promotionsShown(records, shown);
+        const shownRead = promotionsShown(records, shown, refused);
         // A ledger that can't be read now leaves each audit line at no rows, never the read refused.
         const loop = auditLoopOf((entry.revision?.body as { learning?: unknown } | undefined)?.learning);
         // Each one's state with the money rule's decision a run's launch reads (costStopOverStore): a champion it stopped
         // running first reads `stopped`.
-        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), loop, await costStopOverStore(store, id));
+        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), loop, await costStopOverStore(store, id), refused);
         // Why its runs are never audited, when the agent can call a tool that writes (learn/audit.ts auditWriterOf, the
         // rule startAudit reads); and how many of the serving revision's runs a trigger started (never audited).
         const writer = auditWriterOf(entry.revision ?? undefined);
@@ -5633,7 +5637,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // first), then main: never by paging the workflow's history. Its nodes with their tiers and code checks, and the
         // check it was promoted on; nodes null when no commit read holds its text (or the folder can't be read now).
         const championRead = async (workflow: string, digest: string) => {
-          const champion = championOf(records, workflow);
+          const champion = championOf(records, workflow, refused);
           const record = champion?.digest === digest ? champion : undefined;
           const commits = records.filter((one) => one.workflow === workflow && one.digest === digest && one.commit).map((one) => one.commit!).reverse();
           const read = await workflowAtDigest(data, id, workflow, digest, commits, store).catch(() => undefined);
@@ -5645,7 +5649,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           }
           return shownDeep({ digest, commit: read?.commit ?? null, nodes: doc === undefined ? null : workflowNodesOf(doc), check: record?.check ?? null }, shown);
         };
-        const serving = await Promise.all(servingOf(records).map(async (one, i) => ({
+        const serving = await Promise.all(servingOf(records, refused).map(async (one, i) => ({
           ...shownRead.serving[i]!, ...lines[i]!, audits_off: auditsOff,
           not_auditable: one.digest === null ? 0 : await notAuditableOf(store, id, one.workflow, one.digest, loop).catch(() => 0),
           champion: one.digest === null ? null : await championRead(one.workflow, one.digest),
