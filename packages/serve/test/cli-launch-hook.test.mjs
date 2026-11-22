@@ -30,9 +30,11 @@ function filesHolding(root, value) {
   return out;
 }
 
-/** The CLI started on `data` with `extra` in its environment, its output kept; stopped with the test. */
+/** The CLI started on `data` with `extra` in its environment, its output kept; stopped with the test. On loopback with no
+ *  public address its setup is open, so the test client makes the owner's session it writes the trigger from. */
 function started(t, data, extra) {
-  const env = { ...process.env, AGENTRUN_ACCOUNTS: "0", AGENTRUN_TOKEN: TOKEN, ...extra };
+  const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, ...inherited } = process.env;
+  const env = { ...inherited, AGENTRUN_TOKEN: TOKEN, ...extra };
   const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { env, stdio: ["ignore", "pipe", "pipe"] });
   const output = [];
   child.stdout.on("data", (chunk) => output.push(String(chunk)));
@@ -81,10 +83,10 @@ test("a server with the launch hook hands a trigger's firing to the host, which 
   assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
   const fired = await api("POST", `/triggers/${trigger.body.id}/fire`, undefined, { "idempotency-key": "demo-1" });
   assert.equal(fired.status, 202, JSON.stringify(fired.body));
-  assert.deepEqual(received, [{ refused: undefined, id: fired.body.firing.key }], "one signed POST, its webhook-id the firing's");
+  assert.deepEqual(received, [{ refused: undefined, id: fired.body.key }], "one signed POST, its webhook-id the firing's");
   const runs = (await api("GET", "/runs?agent=digest")).body.runs;
   assert.equal(runs.length, 1, "the host's run alone");
-  assert.deepEqual([fired.body.firing.status, fired.body.firing.run_id], ["sent", runs[0].run_id], JSON.stringify(fired.body));
+  assert.deepEqual([fired.body.status, fired.body.run_id], ["sent", runs[0].run_id], JSON.stringify(fired.body));
   const { last } = await follow(api, runs[0].run_id, ["completed", "failed", "cancelled"], { deadlineMs: 120_000 });
   assert.equal(last.status, "completed");
 

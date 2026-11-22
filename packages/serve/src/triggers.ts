@@ -21,6 +21,8 @@
 // late timer does not drift. Of the times that came while the server was down, or its timer late past LATE_MS, the
 // latest fires if it is within the trigger's catch-up window and the rest are one `missed` row; the schedule goes on from
 // now. A failed firing queues a trigger.failed webhook message.
+// With the launch hook set (trigger-launch-hook.ts), a firing that would start a run goes the same way up to the start,
+// then is handed to the host instead: sent when the host takes it, skipped with why when it does not.
 import { createHash, randomBytes } from "node:crypto";
 import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "./timeline/index.js";
 import { agentDeleting, purgedAgent } from "./agents.js";
@@ -29,6 +31,7 @@ import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
 import { carriesPrevious, type Clock, PAYLOAD_KEPT_BYTES, type PollResult, second, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { handToHost, type HookFiring, type LaunchHook } from "./trigger-launch-hook.js";
 import { MAX_EVERY_S } from "./trigger-schedule.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
 
@@ -179,6 +182,9 @@ export type TriggerDeps = {
   publicUrl?: string;
   /** What source `kind`'s sender keeps of its triggers, when it is set up from here (TriggerUpstream); none for the rest. */
   upstream?(kind: string): TriggerUpstream | undefined;
+  /** The launch hook (AGENTRUN_LAUNCH_HOOK_URL): set, a firing that would start a run here is handed to the host
+   *  instead (trigger-launch-hook.ts); a message_run firing starts no run and is sent here as ever. */
+  launchHook?: LaunchHook;
 };
 
 const REAL_CLOCK: TriggerClock = {
@@ -320,6 +326,8 @@ export class Triggers {
   /** Each polled trigger's count of turn-ons: a poll that sees it changed keeps nothing, its cursor read before. */
   private readonly restarts = new Map<string, number>();
   private closed = false;
+  /** Aborted by close: a firing being handed to the host is cut short and left due. */
+  private readonly stopping = new AbortController();
 
   constructor(private readonly deps: TriggerDeps) {
     this.store = deps.store;
@@ -344,6 +352,7 @@ export class Triggers {
 
   close(): void {
     this.closed = true;
+    this.stopping.abort();
     this.timer?.clear();
     this.timer = undefined;
   }
@@ -1007,6 +1016,7 @@ export class Triggers {
       const now = await this.find(triggerId);
       if (!now) return;
       if (now.target.kind === "message_run") return void (await this.send(now, firing));
+      if (this.deps.launchHook) return void (await this.handed(now, firing, this.deps.launchHook));
       let started: { run_id: string };
       try {
         const attrs = firing.attrs as Record<string, string> | null | undefined;
@@ -1119,6 +1129,30 @@ export class Triggers {
   private async answered(triggerId: string, key: string, error: unknown, runId?: string): Promise<void> {
     if (error instanceof ApiError && RETRYABLE.has(error.code)) return this.failedTry(triggerId, key, error);
     await this.failed(triggerId, key, errorOf(error), runId);
+  }
+
+  /** A start_run firing handed to the host by the launch hook, never started here: sent once the host takes it, with the
+   *  run it names when that is a run of the trigger's agent here (the overlap check reads it as the trigger's last run);
+   *  skipped with why on any other answer or none. The server's stop leaves it due, so the next start hands it again
+   *  under the same webhook-id. */
+  private async handed(trigger: Trigger, firing: FiringRow, hook: LaunchHook): Promise<void> {
+    if (trigger.target.kind !== "start_run") return;
+    const agentId = trigger.target.agent_id;
+    const sent: HookFiring = {
+      firing_id: firing.key, trigger_id: trigger.id, agent_id: agentId, revision_id: (await this.store.agents.get(agentId))?.currentRevision ?? null,
+      input: this.inputOf(trigger, firing), fired_at: second(firing.nominalAt),
+    };
+    const handed = await handToHost(hook, sent, this.stopping.signal);
+    if (this.closed || "stopped" in handed) return;
+    if ("skipped" in handed) {
+      await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: handed.skipped });
+      this.deps.say({ condition: "trigger_hook_skipped", trigger: trigger.id, firing: firing.key });
+      return;
+    }
+    const run = handed.run_id ? await this.store.runs.get(handed.run_id) : undefined;
+    const runId = run?.agentId === agentId ? run.id : undefined;
+    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", reason: "Handed to the host by the launch hook.", ...(runId ? { runId } : {}) }, { reset: true });
+    this.deps.say({ condition: "trigger_handed", trigger: trigger.id, firing: firing.key, ...(runId ? { run: runId } : {}) });
   }
 
   private async started(triggerId: string, key: string, runId: string): Promise<void> {

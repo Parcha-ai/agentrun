@@ -35,6 +35,7 @@ import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, RunnerBelowFloor, SchemaVersionUnknown, type Store, StoreAwaitsServer, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
+import { LAUNCH_HOOK_SECRET_ENV } from "../trigger-launch-hook.js";
 import { FAUX_BROWSER_ENV } from "../tools.js";
 import { claimViewOpener } from "../computer-live.js";
 import { LOOPBACK as LIVE_LOOPBACK, runnerLiveOf } from "../live-reach.js";
@@ -146,9 +147,9 @@ export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, w
 }
 
 /** The runner's own secrets, which a run never gets, not even in the runner's in-process environment: the server's
- *  tokens (the token and the token list) and API key, the seal key (the runner holds it as its sealKey), and the store's connection (its URL holds a
- *  database password). */
-const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name.startsWith("AGENTRUN_STORE_");
+ *  tokens (the token and the token list) and API key, the seal key (the runner holds it as its sealKey), the store's connection (its URL holds a
+ *  database password), and the launch hook's signing secret (the server's alone). */
+const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name === LAUNCH_HOOK_SECRET_ENV || name.startsWith("AGENTRUN_STORE_");
 
 /** A run's environment as the runner hands its loops (AdapterSpecDeps.env): this process's, less the runner's own
  *  secrets, with every other secret the launcher's pipe handed it (a model key, a tool key, a box key) readable by name

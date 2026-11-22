@@ -177,6 +177,7 @@ import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
 import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
 import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
 import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps } from "./template-import.js";
@@ -321,6 +322,9 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
+  /** The launch hook (AGENTRUN_LAUNCH_HOOK_URL and _SECRET, trigger-launch-hook.ts): each trigger firing that would start
+   *  a run is handed to the host instead, which starts it through the API. None, firings start their runs here. */
+  launchHook?: LaunchHook;
   /** Another Archil control plane than the key's region's, and its fetch, and another maker of a disk's file API: a
    *  test's fakes, for the server's own Archil calls (a launch's disk read, the settings' test, an agent's disk removed,
    *  a deleted agent's run folder removed from a disk its launch named). */
@@ -2092,6 +2096,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     // A Composio trigger's instance, and the project's subscription, are made and kept on Composio with its server's key.
     upstream: (kind) => (kind === "composio" ? composioTriggers : undefined),
+    ...(options.launchHook ? { launchHook: options.launchHook } : {}),
   });
   const composioTriggers = new ComposioTriggers({
     control: options.composioControl ?? {},

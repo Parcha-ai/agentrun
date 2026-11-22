@@ -273,6 +273,8 @@ What each takes, from its environment alone:
 | `AGENTRUN_TOKEN` | optional | | The API token. Unset, the server makes one in `/data/.token` and prints it once. |
 | `AGENTRUN_TOKENS` | optional | | More API tokens, as `id:secret` entries separated by commas ([Rotating the API token](#rotating-the-api-token)). Any of them opens what the token opens; the log names the id used. A secret, like the token. |
 | Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AGENT_MODEL`, ...) | optional | optional | The runner makes a run's model requests; the server checks a run's model can run before it starts it. Give the same ones to both. With none, Continue with ChatGPT in the console, or save a key there. |
+| `AGENTRUN_LAUNCH_HOOK_URL` | optional | | The host's address: each trigger firing that would start a run is POSTed there, signed, and the host starts the run through the API ([Launch hook](../packages/serve/README.md#launch-hook)). Set with the secret below, or neither. |
+| `AGENTRUN_LAUNCH_HOOK_SECRET` | optional | | The `whsec_` secret the launch hook signs with. A secret: the server's alone, never a runner's or a run's. |
 | `AGENTRUN_API_ONLY` | optional | | `1` serves the run routes alone, for a server behind its caller's backend: the console, sign-in, setup, settings, MCP, triggers and hooks are `404`, and there are no accounts ([API only](../packages/serve/README.md#api-only)). Unset or `0`, the whole server. |
 
 The server listens where `--listen` says: above, its container's own address (its hostname), where Docker publishes the

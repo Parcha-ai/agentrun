@@ -3157,6 +3157,33 @@ page to sign in to, so no setup code is printed. The token works as it does on e
 Its routes for agents are refused too, so on an API-only server a run is launched inline (`POST /runs` with its
 definition), or on an agent made before the profile was turned on.
 
+### Launch hook
+
+For an install that hosts agents for other people, where the host decides who pays for each run and with which keys,
+set `AGENTRUN_LAUNCH_HOOK_URL` to the host's address and `AGENTRUN_LAUNCH_HOOK_SECRET` to a Standard Webhooks secret
+(`whsec_` and 32 random bytes in base64; it is one of the server's own secrets, never a run's). Each trigger firing that
+would start a run (a schedule, a feed, a webhook, Composio, GitHub or email trigger, or Run now) is then POSTed to the
+host, and this server starts no run for it:
+
+```json
+{ "firing_id": "fir_...", "trigger_id": "trg_...", "agent_id": "digest", "revision_id": "rev_...",
+  "input": { "content": "Summarize yesterday's issues.\n\n(Started by the schedule ...)" },
+  "fired_at": "2026-06-01T00:10:00Z" }
+```
+
+The POST carries `webhook-id` (the firing's id, the same if it is handed again), `webhook-timestamp` and
+`webhook-signature` as [webhooks](#webhooks) do: check them with any Standard Webhooks library before reading the
+body. The host starts the run (`POST /v2/agents/{agent_id}/runs` with the input, its own `model_key`, `keys` and
+`max_cost_usd`, under `Idempotency-Key: <firing_id>` so a firing handed twice starts one run) and answers 2xx within
+10 s, `{"run_id": "run_..."}` if it likes. The firing reads `sent` ("Handed to the host by the launch hook."), with that
+run as its `run_id` when it is one of the agent's here, so the trigger's overlap check sees it. Any other answer, a
+redirect included (it is not followed), no answer in 10 s, or no connection, and the firing reads `skipped` with why;
+a skip is no failure and never turns the trigger off, and the server does not try that firing again. A firing the
+server's stop cuts short stays due and is handed again at the next start, under the same `webhook-id`. A `message_run`
+target starts no run and is unchanged. The start prints the hook's origin, never its path or the secret; one of the two
+set without the other, a URL that is not http or https or holds a user or password, or a secret that is not a
+`whsec_` one of 24 bytes or more stops the start, in words.
+
 ## Uploads
 
 A run's input files. Send one in one call, its bytes the body and its path in the query:

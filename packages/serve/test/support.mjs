@@ -114,6 +114,12 @@ export const startServe = async (options) => launchFor(await startServeBuilt({ w
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
+/** For a test that sets every launcher secret: the launch hook's secret as a server takes it (`whsec_` and a 32-byte key)
+ *  that still holds `canary` as text (base64url, which the key's decoding reads), and the hook's URL a start needs beside
+ *  it (a port nothing answers; a test that fires no trigger never reaches it). */
+export const launchHookCanary = (canary) => (assert.ok(canary.length <= 43, canary), `whsec_${canary.padEnd(43, "k")}`);
+export const LAUNCH_HOOK_URL = { AGENTRUN_LAUNCH_HOOK_URL: `${NO_SLACK}/firings` };
+
 // No test reaches a box provider: the boxes the environment running the suite lists are not the tests'. A server here,
 // or one a test starts in a process of its own, probes none, Docker included (on by default when AGENTRUN_BOXES is not
 // set, boxes.ts): a test that wants a box lists it itself, with its endpoint on loopback (boxes.test.mjs), or unsets the
