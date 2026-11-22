@@ -1222,7 +1222,8 @@ describe("the Screen tab's live screen has the run's steps beside it", () => {
       });
       await settle();
     };
-    const list = () => host.querySelector('ol[aria-label="The run\'s steps"]') as HTMLOListElement | null;
+    // The box that scrolls: a named region the keyboard can stop on, the list inside it.
+    const list = () => host.querySelector('[role="region"][aria-label="The run\'s steps"]') as HTMLElement | null;
     // A step's words without its time of day, which is the reader's own clock's.
     const said = () => [...(list()?.querySelectorAll("li") ?? [])].map((li) => (li.textContent ?? "").replace(/^\d{1,2}:\d{2}\s?[AP]M/, ""));
     const panel = () => host.querySelector('section[aria-label="Screen"]') as HTMLElement;
@@ -1281,6 +1282,31 @@ describe("the Screen tab's live screen has the run's steps beside it", () => {
     height = 580;
     await p.draw([...ROWS, ...NEXT, row("thinking", "Thinking: Try the menu instead.", at(20))]);
     expect(box.scrollTop, "follows again").toBe(580);
+  });
+
+  it("follows a step whose words change without a new step: a call's result takes its call's place", async () => {
+    const p = mount();
+    const call = row("tool_use", "computer_act", at(12), { tool_name: "computer_act", tool_use_id: "b1" });
+    await p.draw([...ROWS, call]);
+    const box = p.list()!;
+    let height = 400;
+    Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(box, "clientHeight", { configurable: true, get: () => 100 });
+    await act(async () => { box.scrollTop = 300; box.dispatchEvent(new Event("scroll", { bubbles: true })); });
+    // The result folds into its call's step (the count stays), with words that take more lines.
+    height = 470;
+    await p.draw([...ROWS, call, row("tool_result", "Clicked the check box “Nonstop only”, clicked the pop-up “Sort”, clicked “Price: low to high”: ok", at(14), { tool_name: "computer_act", tool_use_id: "b1", tool_status: "success" })]);
+    expect(p.said().filter((s) => s !== " Working")).toHaveLength(4);
+    expect(box.scrollTop, "followed the longer words").toBe(470);
+  });
+
+  it("the list's box is a named region the keyboard can stop on: it scrolls and holds no control", async () => {
+    const p = mount();
+    await p.draw(ROWS);
+    const box = p.list()!;
+    expect(box.getAttribute("tabindex")).toBe("0");
+    expect(box.querySelector("button, a, input")).toBeNull();
+    expect(box.querySelector("ol")).toBeTruthy();
   });
 
   it("is wider than the reading column with its steps, and the reading column's width alone", async () => {

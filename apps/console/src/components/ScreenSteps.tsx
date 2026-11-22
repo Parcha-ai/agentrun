@@ -26,7 +26,7 @@ function StepsBox({ hint, children }: { hint: string; children: ReactNode }) {
     </div>
   );
 }
-const LIST = "relative max-h-72 min-h-0 flex-1 divide-y overflow-auto xl:max-h-none";
+const LIST = "relative max-h-72 min-h-0 flex-1 overflow-auto xl:max-h-none";
 const LINE = "flex w-full items-start gap-3 px-4 py-2 text-left";
 
 /** One step's line: when, then the label and the title the Timeline tab gives the same row. A failed step reads as failed. */
@@ -72,7 +72,7 @@ export function RunVideoSteps({ video, steps }: { video: HTMLVideoElement | null
   };
   return (
     <StepsBox hint="Click a step to jump to it">
-      <ol ref={list} aria-label="The recording's steps" className={LIST}>
+      <ol ref={list} aria-label="The recording's steps" className={cn(LIST, "divide-y")}>
         {steps.map(({ step, at }, i) => (
           <li key={step.row.id}>
             <button type="button" onClick={() => jump(at)} aria-current={i === now ? "step" : undefined} className={cn(LINE, "hover:bg-accent", i === now && "bg-accent")}>
@@ -89,23 +89,26 @@ export function RunVideoSteps({ video, steps }: { video: HTMLVideoElement | null
 const END_SLACK = 24;
 
 /** The run's steps so far, beside its live screen: the timeline's own steps and words (lib/timeline's `steps`, less the
- *  run's cost row), oldest first, each at its time of day. The list stays at its newest step as steps come, until the
- *  reader scrolls up to read an earlier one; back at the end, it follows again. `working`: the run is working now, said
- *  under the newest step. */
+ *  run's cost row), oldest first, each at its time of day. The list stays at its newest step as steps come and as a
+ *  step's words change (a call's become its result's, which can take more lines), until the reader scrolls up to read
+ *  an earlier one; back at the end, it follows again. `working`: the run is working now, said under the newest step.
+ *  The box scrolls and holds no control, so it takes the focus itself: the keyboard scrolls it. */
 export function RunLiveSteps({ rows, working }: { rows: readonly TimelineRow[]; working: boolean }) {
   const told = useMemo(() => stepsOf(rows).filter((step) => step.row.kind !== "usage"), [rows]);
-  const list = useRef<HTMLOListElement | null>(null);
+  const box = useRef<HTMLDivElement | null>(null);
   const atEnd = useRef(true);
   useLayoutEffect(() => {
-    const box = list.current;
-    if (box && atEnd.current) box.scrollTop = box.scrollHeight;
-  }, [told.length, working]);
+    const el = box.current;
+    if (el && atEnd.current) el.scrollTop = el.scrollHeight;
+  }, [told, working]);
   return (
     <StepsBox hint={`${told.length} ${told.length === 1 ? "step" : "steps"} so far`}>
-      <ol ref={list} aria-label="The run's steps" className={LIST} onScroll={(e) => { const box = e.currentTarget; atEnd.current = box.scrollHeight - box.scrollTop - box.clientHeight < END_SLACK; }}>
-        {told.map(({ row }) => <li key={row.id} className={LINE}><StepWords when={clock(row.timestamp)} row={row} wide /></li>)}
-        {working && <li className={cn(LINE, "items-center text-small text-muted-foreground")}><Spinner /> Working</li>}
-      </ol>
+      <div ref={box} role="region" aria-label="The run's steps" tabIndex={0} className={LIST} onScroll={(e) => { const el = e.currentTarget; atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < END_SLACK; }}>
+        <ol className="divide-y">
+          {told.map(({ row }) => <li key={row.id} className={LINE}><StepWords when={clock(row.timestamp)} row={row} wide /></li>)}
+          {working && <li className={cn(LINE, "items-center text-small text-muted-foreground")}><Spinner /> Working</li>}
+        </ol>
+      </div>
     </StepsBox>
   );
 }

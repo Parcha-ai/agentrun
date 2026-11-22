@@ -14,7 +14,7 @@ import { check } from "../harness.mjs";
 /** The frame and the list, as laid out now. */
 const measure = () => {
   const box = (el) => { const r = el.getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), width: Math.round(r.width), height: Math.round(r.height) }; };
-  const list = document.querySelector('ol[aria-label="The run\'s steps"]');
+  const list = document.querySelector('[role="region"][aria-label="The run\'s steps"]');
   return {
     frame: box(document.querySelector('iframe[title="The run\'s screen"]')),
     list: box(list),
@@ -44,7 +44,7 @@ export default {
     await page.getByRole("tab", { name: "Screen" }).click({ timeout: 45_000 });
     const frame = page.locator('iframe[title="The run\'s screen"]');
     await frame.waitFor({ timeout: 45_000 });
-    await page.locator('ol[aria-label="The run\'s steps"] li').first().waitFor();
+    await page.locator('[role="region"][aria-label="The run\'s steps"] li').first().waitFor();
     // The frame as an element, to tell a new one from the same one.
     await frame.evaluate((el) => { el.dataset.e2e = "first"; });
 
@@ -81,6 +81,6 @@ export default {
     const answered = await api("POST", `/runs/${encodeURIComponent(runId)}/messages`, { content: "Yes, that is all." });
     check(answered.status === 202, `answering the run answered ${answered.status}`);
     await page.getByText("The browser closed when the run ended.").waitFor({ timeout: 45_000 });
-    check(await page.locator('ol[aria-label="The run\'s steps"]').count() === 0, "an ended run's closed screen has no steps beside it");
+    check(await page.locator('[role="region"][aria-label="The run\'s steps"]').count() === 0, "an ended run's closed screen has no steps beside it");
   },
 };
