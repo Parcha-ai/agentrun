@@ -5,8 +5,8 @@
 // racing another writer; the store's own transactions make each write atomic.
 //
 // The run counts an agent view shows (runs.count, runs.live) are E3's run reads, not this module's; agentView takes them.
-import { randomBytes } from "node:crypto";
 import { purgedAgent } from "./agents.js";
+import { uuidv7 } from "./ids.js";
 import { agentLink } from "./console-links.js";
 import { approvalsOf } from "./approvals.js";
 import { ApiError, invalid } from "./errors.js";
@@ -21,32 +21,6 @@ import {
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
 import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer-setting.js";
 import { type DefinitionBody, type Json, skillIssues, skillNames } from "./validate.js";
-
-/** The last millisecond a UUIDv7 was minted in, and how many were minted in it. */
-let mintedMs = -1;
-let mintedInMs = 0;
-
-/** A UUIDv7: time-ordered, so a listing by (created_at, id) is stable, and unique per revision, per minted agent and per
- *  upload (uploads.ts lists files by id, newest first). Two
- *  minted in one millisecond keep their order: the 12 bits after the time count them up (RFC 9562's monotonic counter),
- *  and a clock that steps back keeps the last millisecond, so each id sorts after the one before it. Without that, two
- *  edits in one millisecond tie on created_at and their random ids could number the newer revision first. */
-export function uuidv7(now = Date.now()): string {
-  if (now > mintedMs) {
-    mintedMs = now;
-    mintedInMs = 0;
-  } else if (++mintedInMs > 0xfff) {
-    mintedMs += 1;
-    mintedInMs = 0;
-  }
-  const bytes = randomBytes(16);
-  bytes.writeUIntBE(mintedMs, 0, 6);
-  bytes[6] = 0x70 | (mintedInMs >> 8);
-  bytes[7] = mintedInMs & 0xff;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -79,7 +53,7 @@ function storeError(error: unknown): never {
 
 /** Whether another system owns `agent`: an inline run with `external` made it (its `externalRef` set), so the system that
  *  sent it sends its deletes, the agent's whole (DELETE /agents/{id}) and, on an API-only server, a run's purge. */
-export const ownedElsewhere = (agent: AgentRow): boolean => agent.externalRef !== null;
+export const ownedElsewhere = (agent: AgentRow): agent is AgentRow & { externalRef: string } => agent.externalRef !== null;
 
 /** Refuses a write to an externally owned agent: one that mirrors an agent in another system (its `externalRef` set) is
  *  read-only here — its source is the truth, which writes a new version by running it. Edits, set-current and archive are
@@ -99,7 +73,7 @@ export const externalKey = ({ source, kind, id }: ExternalRef): string => `${sou
 /** The agent's reference in its source and the version its current revision maps there, or null for an agent of this
  *  server's own. */
 export function externalOf(agent: AgentRow, revision: RevisionRow | null): (ExternalRef & { version: string | null }) | null {
-  if (agent.externalRef === null) return null;
+  if (!ownedElsewhere(agent)) return null;
   const [source = "", kind = "", ...id] = agent.externalRef.split(":");
   return { source, kind, id: id.join(":"), version: revision?.externalVersion ?? null };
 }

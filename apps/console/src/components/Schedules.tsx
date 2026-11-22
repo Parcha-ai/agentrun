@@ -530,6 +530,15 @@ async function allAgents(v2: Client): Promise<Agent[]> {
   return out;
 }
 
+/** A refusal's issues split for a form: those under the fields it shows (`shown`), each in its place, and the rest, said
+ *  above it. */
+function splitRefusal(found: ReturnType<typeof issuesOf>, shown: ReadonlySet<string>): { issues: Record<string, string>; rest: string[] } {
+  return {
+    issues: Object.fromEntries(Object.entries(found.fields).filter(([k]) => shown.has(k))),
+    rest: [...found.rest, ...Object.entries(found.fields).filter(([k]) => !shown.has(k)).map(([, v]) => v)],
+  };
+}
+
 /** What each create-trigger form keeps beside its draft: every agent for the picker and the picked one's default cap
  *  (with one, the form's own cap may be left empty: `capOptional`); the Idempotency-Key keeper (a create sent again
  *  unchanged, a lost answer or a second click, reuses its key and makes one trigger; an edited one gets a new key); whether
@@ -547,8 +556,9 @@ function useTriggerCreate(v2: Client, agentId: string, loadAgents = true) {
   useEffect(() => { if (loadAgents) allAgents(v2).then(setAgents, () => setAgents([])); }, [v2, loadAgents]);
   const agentCap = agentCapOf(agents, agentId);
   const refused = (found: ReturnType<typeof issuesOf>, shown: ReadonlySet<string>) => {
-    setIssues(Object.fromEntries(Object.entries(found.fields).filter(([k]) => shown.has(k))));
-    setRest([...found.rest, ...Object.entries(found.fields).filter(([k]) => !shown.has(k)).map(([, v]) => v)]);
+    const split = splitRefusal(found, shown);
+    setIssues(split.issues);
+    setRest(split.rest);
   };
   return { agents, agentCap, capOptional: agentCap !== undefined, issues, setIssues, rest, setRest, saving, setSaving, keys, open, refused };
 }
@@ -1178,10 +1188,10 @@ function FilterForm({ v2, go, trigger }: { v2: Client; go: (hash: string) => voi
       if (open.current) go(hashOf(trigger.id));
     } catch (err) {
       if (!open.current) return;
-      const refused = issuesOf(err);
       const shown = acceptFields(hook || app ? rules.map((r) => r.where.length) : githubRulesOf(picks).map((r) => r.where.length));
-      setIssues(Object.fromEntries(Object.entries(refused.fields).filter(([k]) => shown.has(k))));
-      setRest([...refused.rest, ...Object.entries(refused.fields).filter(([k]) => !shown.has(k)).map(([, v]) => v)]);
+      const split = splitRefusal(issuesOf(err), shown);
+      setIssues(split.issues);
+      setRest(split.rest);
       setSaving(false);
     }
   };
