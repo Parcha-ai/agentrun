@@ -135,6 +135,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun capabilities`: get-capacity
 - `agentrun cli-learning`: complete, enroll, events, get, list, revoke, start
 - `agentrun connectors`: complete-remote-command, enroll-remote-connector, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, register-remote-connector, remote-command-events, revoke-remote-connector
+- `agentrun deploy SOURCE`: Deploy an agent's package to another AgentRun: upload, plan, apply, lock (deploy rollback, deploy delete)
 - `agentrun doctor`: Check how this AgentRun is set up (Node, the server, its service, address, password, models, switches, Docker) and print what to change; read-only (exit 0 ok or warnings, 1 a check failed, 3 no server answering)
 - `agentrun export AGENT`: Write an agent's current revision as a template package folder, and say what the target sets up again
 - `agentrun files`: create, delete, get, list, upload

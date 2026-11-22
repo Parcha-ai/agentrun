@@ -28,8 +28,17 @@ __all__ = [
     "ApplyTemplateBody",
     "ApplyTemplateBodyOverrides",
     "ApplyTemplateResponse",
-    "ApplyTemplateResponseTriggersItem",
-    "ApplyTemplateResponseWebhookSecretsItem",
+    "ApplyTemplateResponseObject11",
+    "ApplyTemplateResponseObject11TriggersItem",
+    "ApplyTemplateResponseObject11WebhookSecretsItem",
+    "ApplyTemplateResponseObject12",
+    "ApplyTemplateResponseObject12Plan",
+    "ApplyTemplateResponseObject12PlanComputer",
+    "ApplyTemplateResponseObject12PlanTriggersItem",
+    "ApplyTemplateResponseObject12PlanUnmatchedMcpItem",
+    "ApplyTemplateResponseObject2",
+    "ApplyTemplateResponseObject2TriggersItem",
+    "ApplyTemplateResponseObject2WebhookSecretsItem",
     "ArchiveAgentResponse",
     "ArchiveRunResponse",
     "CallMcpBody",
@@ -555,6 +564,7 @@ __all__ = [
     "ImportRemoteTargetResponseNativeRemote",
     "ImportRemoteTargetResponseNativeSelector",
     "ImportTemplateBody",
+    "ImportTemplateBodyFilesItem",
     "ImportTemplateResponse",
     "ImportTemplateResponseTemplate",
     "ImportTemplateResponseTemplateAuthor",
@@ -7312,11 +7322,14 @@ class GetStatsResponseLearning(TypedDict):
 
 
 class ApplyTemplateBody(TypedDict, total=False):
+    dry_run: bool
     parameters: dict[str, Any]
     servers: dict[str, str]
     grants: list[str]
     agent_id: str
     overrides: ApplyTemplateBodyOverrides
+    revision: str
+    sha: str
 
 
 class ApplyTemplateBodyOverrides(TypedDict, total=False):
@@ -7325,46 +7338,123 @@ class ApplyTemplateBodyOverrides(TypedDict, total=False):
     approvals: Literal["ask", "never"]
 
 
-class _ApplyTemplateResponseRequired(TypedDict):
+ApplyTemplateResponse: TypeAlias = "ApplyTemplateResponseObject11 | ApplyTemplateResponseObject12 | ApplyTemplateResponseObject2"
+
+
+class _ApplyTemplateResponseObject11Required(TypedDict):
     template: str
     version: str
     agent_id: str
+    revision_id: str | None
     revision_version: int
     agent_change: Literal["made", "updated", "unchanged"]
     servers: dict[str, str | None]
-    triggers: list[ApplyTemplateResponseTriggersItem]
+    triggers: list[ApplyTemplateResponseObject11TriggersItem]
     warnings: list[InputIssue]
 
 
-class ApplyTemplateResponse(_ApplyTemplateResponseRequired, total=False):
-    webhook_secrets: list[ApplyTemplateResponseWebhookSecretsItem]
+class ApplyTemplateResponseObject11(_ApplyTemplateResponseObject11Required, total=False):
+    webhook_secrets: list[ApplyTemplateResponseObject11WebhookSecretsItem]
 
 
-class ApplyTemplateResponseTriggersItem(TypedDict):
+class ApplyTemplateResponseObject11TriggersItem(TypedDict):
     trigger_id: str
     name: str
     kind: Literal["schedule", "webhook", "github", "composio", "email", "feed"]
     enabled: bool
 
 
-class _ApplyTemplateResponseWebhookSecretsItemRequired(TypedDict):
+class _ApplyTemplateResponseObject11WebhookSecretsItemRequired(TypedDict):
     trigger_id: str
     secret: SecretMeta
 
 
-class ApplyTemplateResponseWebhookSecretsItem(_ApplyTemplateResponseWebhookSecretsItemRequired, total=False):
+class ApplyTemplateResponseObject11WebhookSecretsItem(_ApplyTemplateResponseObject11WebhookSecretsItemRequired, total=False):
     signing_secret: str
     secret_set: Literal[True]
     note: str
 
 
-class _ImportTemplateBodyRequired(TypedDict):
+class ApplyTemplateResponseObject12(TypedDict):
+    plan: ApplyTemplateResponseObject12Plan
+
+
+class ApplyTemplateResponseObject12Plan(TypedDict):
+    action: Literal["create", "revise"]
+    agent_id: str | None
+    current_revision_id: str | None
+    missing_secrets: list[str]
+    unmatched_mcp: list[ApplyTemplateResponseObject12PlanUnmatchedMcpItem]
+    triggers: list[ApplyTemplateResponseObject12PlanTriggersItem]
+    computer: ApplyTemplateResponseObject12PlanComputer | None
+
+
+class ApplyTemplateResponseObject12PlanUnmatchedMcpItem(TypedDict):
     source: str
+    toolkit: str
+    required: bool
 
 
-class ImportTemplateBody(_ImportTemplateBodyRequired, total=False):
+class _ApplyTemplateResponseObject12PlanTriggersItemRequired(TypedDict):
+    name: str
+    kind: str
+    action: Literal["create", "update", "remove", "skip"]
+
+
+class ApplyTemplateResponseObject12PlanTriggersItem(_ApplyTemplateResponseObject12PlanTriggersItemRequired, total=False):
+    reason: str
+
+
+class ApplyTemplateResponseObject12PlanComputer(TypedDict):
+    kind: str
+    provider: str | None
+
+
+class _ApplyTemplateResponseObject2Required(TypedDict):
+    template: str
+    version: str
+    agent_id: str
+    revision_id: str | None
+    revision_version: int
+    agent_change: Literal["made", "updated", "unchanged"]
+    servers: dict[str, str | None]
+    triggers: list[ApplyTemplateResponseObject2TriggersItem]
+    warnings: list[InputIssue]
+
+
+class ApplyTemplateResponseObject2(_ApplyTemplateResponseObject2Required, total=False):
+    webhook_secrets: list[ApplyTemplateResponseObject2WebhookSecretsItem]
+
+
+class ApplyTemplateResponseObject2TriggersItem(TypedDict):
+    trigger_id: str
+    name: str
+    kind: Literal["schedule", "webhook", "github", "composio", "email", "feed"]
+    enabled: bool
+
+
+class _ApplyTemplateResponseObject2WebhookSecretsItemRequired(TypedDict):
+    trigger_id: str
+    secret: SecretMeta
+
+
+class ApplyTemplateResponseObject2WebhookSecretsItem(_ApplyTemplateResponseObject2WebhookSecretsItemRequired, total=False):
+    signing_secret: str
+    secret_set: Literal[True]
+    note: str
+
+
+class ImportTemplateBody(TypedDict, total=False):
+    source: str
+    files: list[ImportTemplateBodyFilesItem]
     dry_run: bool
     trust_publisher: bool
+
+
+class ImportTemplateBodyFilesItem(TypedDict):
+    path: str
+    encoding: Literal["utf8", "base64"]
+    content: str
 
 
 class ImportTemplateResponse(TypedDict):
@@ -10548,7 +10638,7 @@ class TemplateResource(Group):
         return self._call("deleteTemplate", (template,), None, None, timeout=timeout)
 
     def import_(self, body: ImportTemplateBody, *, timeout: float | None = None) -> ImportTemplateResponse:
-        """Import a template package from a public GitHub repository, or preview it (dry_run) (POST /templates/import)."""
+        """Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run) (POST /templates/import)."""
         return self._call("importTemplate", (), body, None, timeout=timeout)
 
     def list(self, *, timeout: float | None = None) -> ListTemplatesResponse:

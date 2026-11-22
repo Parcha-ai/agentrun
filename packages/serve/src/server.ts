@@ -147,7 +147,7 @@ import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { composioMadeKey, composioPerRun } from "./composio-made.js";
 import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
-import { ComposioTriggers } from "./composio-triggers.js";
+import { ComposioTriggers, composioNoPublicUrl } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
 import type { SourceRecord } from "./mcp-sources.js";
@@ -179,9 +179,9 @@ import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
 import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
-import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps } from "./template-import.js";
-import { templateInstallLink, templateLink } from "./console-links.js";
-import { GITHUB_HOSTS } from "./template-source.js";
+import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
+import { templateInstallLink, templateLink, templatesLink } from "./console-links.js";
+import { GITHUB_HOSTS, IMPORT_LIMITS } from "./template-source.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, inputSchemaOf, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, loadToolSettings, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { wakeAnsweredBySetting } from "./settings-wake.js";
@@ -231,6 +231,9 @@ const IDEMPOTENCY_FILE = ".idempotency.json";
  *  computer kind; `browser`, the browser's own), then its page, files or WebSocket. Both are served by the same code. */
 const LIVE_PATH = /^\/v2\/runs\/([^/]+)\/(computer|browser)\/live(\/.*)$/;
 const MAX_BODY = 1 << 20;
+/** POST /v2/templates/import's body: an upload's files at the import's own limit, base64 (4/3) with room for the JSON
+ *  around them. */
+const TEMPLATE_UPLOAD_BODY = Math.ceil((IMPORT_LIMITS.packageBytes * 4) / 3) + MAX_BODY;
 /** The starts that may begin setup's import without ending it (a worker that failed, a process that ended) before the
  *  owner's yes is dropped: an import that fails the same way each time is not taken up at every start for good. */
 const IMPORT_STARTS = 3;
@@ -2054,7 +2057,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A template import reads GitHub's own hosts alone (a test's faux GitHub in their place), with an installation token of
   // the App when GitHub is connected (tokenForListing: metadata read, the least there is), else anonymously, and says why.
   const importDeps: TemplateImportDeps = {
-    registry, store,
+    registry, store, apiOnly: options.apiOnly === true,
     reach: async (signal) => {
       const api = options.templateImportApi ?? GITHUB_API;
       const hosts = options.templateImportApi ? [new URL(options.templateImportApi).host] : GITHUB_HOSTS;
@@ -2067,6 +2070,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // is a server secret while it may be in use.
   mcpServers.appToken = (signal) => githubConnect.tokenForListing(signal);
   secretStores.add("github-tokens", () => githubConnect.liveTokens());
+  /** Why a trigger of `kind` can't be on here now (its connection), or undefined: what a create of an enabled one is
+   *  refused with, and what an apply's plan says of the triggers it would make. */
+  const triggerUnavailable = async (kind: string): Promise<ApiError | undefined> => (kind === "github" && !githubConnection() ? new ApiError("github_not_connected", "This server has no GitHub App: Connect GitHub in Settings, then make the trigger (or turn it on).") : kind === "email" && !(await openAccount(store, sealKey)) ? noAccount() : undefined);
   const triggers: Triggers = new Triggers({
     // The server's own store (the one it opened) holds the triggers a person writes and reads; a test may inject another
     // (startServe's `store`).
@@ -2074,7 +2080,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clock: options.triggerClock,
     ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
     adapters,
-    unavailable: async (kind) => (kind === "github" && !githubConnection() ? new ApiError("github_not_connected", "This server has no GitHub App: Connect GitHub in Settings, then make the trigger (or turn it on).") : kind === "email" && !(await openAccount(store, sealKey)) ? noAccount() : undefined),
+    unavailable: triggerUnavailable,
     // The email trigger's account, its password opened as it polls (email/account.ts): never kept in the engine.
     // A feed trigger's reach: where its reads may go, as an MCP server's requests may (mcp-oauth.ts feedAt), and a test's
     // or an eval's route to its fake feeds (feedsAt).
@@ -3089,16 +3095,75 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (error instanceof ApiError && error.code === "not_found") return false;
     throw error;
   };
-  /** applyTemplate's work, in its turn on the agent where it has agent_id. */
-  async function applyWith(template: Package, body: Json) {
-    const { parameters, grants: asked, servers: picks, model: override, choice, approvals, agentId } = applyBodyOf(template, body);
+  /** POST /templates/{id}/apply {dry_run: true}: the apply's plan, from the same reads and checks as the apply
+   *  (prepareApply), with nothing written: whether it makes an agent or revises the one agent_id names (and its current
+   *  revision), the keys and MCP servers this server lacks (where the apply would refuse with 409, the plan lists them),
+   *  what becomes of each trigger (made, changed in place, removed, or skipped for a connection this server lacks), and
+   *  the computer it picks. Any other refusal is the apply's own. */
+  async function planTemplate(template: Package, body: Json) {
+    const p = await prepareApply(template, body, { plan: true });
+    // A monid grant is pinned to monid's listing when the agent is saved (saveable: monidPinOf), read with the monid key:
+    // with none here the apply is refused, so the plan lists the key. A grant the agent's current pin carries reads
+    // nothing (pinMonid with no key answers before any request).
+    const definition = isObject(p.made.agent) && isObject(p.made.agent.definition) ? p.made.agent.definition : {};
+    const tools = Array.isArray(definition.tools) ? definition.tools.filter((tool): tool is string => typeof tool === "string") : [];
+    const was = p.onto?.revision?.kind === "agentic" ? p.onto.revision : undefined;
+    const unread = !env[MONID_KEY_ENV]?.trim() && (await pinMonid(tools, { key: undefined, ...(was ? { previous: { grants: (was.body as AgenticBody).tools ?? [], pin: was.monidPin ?? null } } : {}) }));
+    const missing = unread && "refused" in unread && !p.missing.includes(MONID_KEY_ENV) ? [...p.missing, MONID_KEY_ENV] : p.missing;
+    const planned: { name: string; kind: string; action: "create" | "update" | "remove" | "skip"; reason?: string }[] = [];
+    for (const [i, trigger] of p.made.triggers.entries()) {
+      const name = String(trigger.name).trim();
+      const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
+      if (p.emptyFeeds.has(i)) {
+        planned.push({ name, kind, action: "skip", reason: feedTriggerEmpty(p.pkg.name, trigger, isObject(p.pkg.triggers[i]?.source) ? p.pkg.triggers[i]!.source.urls : undefined) });
+        continue;
+      }
+      const was = p.hadByName.get(name);
+      if (was && isObject(was.source) && was.source.kind === kind && !p.remade.has(i)) {
+        planned.push({ name, kind, action: "update" });
+        continue;
+      }
+      // Made (again), on unless the owner had turned the old one off: a connection this server lacks skips it, as the
+      // apply's create does (notSetUpYet), or refuses the apply. A Composio trigger is skipped for want of a public URL
+      // (any trigger, on or off), read here; its account and subscription are Composio's to answer, which a plan never asks.
+      const refusal = kind === "composio" && !options.publicUrl ? composioNoPublicUrl() : trigger.enabled !== false && !(was && !was.enabled) ? await triggerUnavailable(kind) : undefined;
+      if (refusal && notSetUpYet(kind, refusal.code)) planned.push({ name, kind, action: "skip", reason: refusal.message });
+      else if (refusal) throw refusal;
+      else planned.push({ name, kind, action: "create", ...(was ? { reason: `The agent's ${name} trigger is removed and made again: its kind or its Composio server, event or config changed.` } : {}) });
+    }
+    for (const row of p.removing) planned.push({ name: row.name, kind: isObject(row.source) ? String(row.source.kind) : "", action: "remove" });
+    const computer = p.pick && !("refused" in p.pick) ? p.pick.computer as { kind: string; provider?: string } : undefined;
+    return {
+      plan: {
+        action: p.onto ? "revise" : "create",
+        agent_id: p.onto?.agent.id ?? null,
+        current_revision_id: p.onto?.revision?.id ?? null,
+        missing_secrets: missing,
+        unmatched_mcp: p.unsaved.map((need) => ({ source: need.source, toolkit: need.toolkit, required: need.required })),
+        triggers: planned,
+        computer: computer ? { kind: computer.kind, provider: computer.provider ?? null } : null,
+      },
+    };
+  }
+
+  /** What an apply reads and checks before its first write, the same for its plan (`plan`) and itself: the body
+   *  (applyBodyOf), the agent agent_id names, the keys and MCP servers, the computer, the model, the agent and triggers it
+   *  makes and how they meet the agent's, every refusal but the keys' and MCP servers' (which the plan lists). */
+  async function prepareApply(template: Package, body: Json, { plan }: { plan: boolean }) {
+    const { parameters, grants: asked, servers: picks, model: override, choice, approvals, agentId, revision: expected, sha } = applyBodyOf(template, body);
+    // The package the caller read (its sha): another stored under this id since (an upload of the same name) is not what
+    // they planned or confirmed.
+    if (sha !== undefined && (template.origin?.sha ?? null) !== sha) throw new ApiError("precondition_failed", `The ${template.name} template stored here is not the package of sha ${sha} (another was stored under ${template.id} since): nothing was changed. Read it again (GET /templates), then apply.`);
     // With agent_id, the apply writes a new revision of that agent (one this template made) in place of making another:
-    // everything below checks the package as a fresh apply does, through the same code.
+    // everything below checks the package as a fresh apply does, through the same code. With `revision`, only onto the
+    // revision the caller read: the write below is held to the revision read here (ifCurrent), so one written in between
+    // is 412 as well.
     const onto = agentId === undefined ? undefined : await templateAgentOf(agentId, template);
+    if (onto && expected !== undefined && (onto.revision?.id ?? null) !== expected) throw new ApiError("precondition_failed", `The agent ${onto.agent.id}'s current revision is ${onto.revision?.id ?? "none"}, not ${expected} (an edit, or another apply, wrote one since it was read): nothing was changed. Read it again, then apply.`);
     // An update's triggers are reconciled by name with the ones the agent has (below), read with the agent: each write to
     // one is made only while it is still this agent's (TriggerOwn.onAgent), so one a PATCH moves away meanwhile is left.
     const had = onto ? await store.triggers.list(onto.agent.id) : [];
-    if (onto && options.templateApplyRead) await options.templateApplyRead(onto.agent.id);
+    if (onto && !plan && options.templateApplyRead) await options.templateApplyRead(onto.agent.id);
     // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made.
     const declared = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])].sort();
     const missing = declared.filter((name) => !secret(name, storedKeys));
@@ -3114,7 +3179,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // of a saved server that happens to be named as its toolkit.
     const grants = asked.filter((tool) => Object.hasOwn(servers, mcpToolOf(tool)?.server ?? "")).map((tool) => onServerName(tool, servers));
     const needed = unsaved.filter((need) => need.required);
-    if (missing.length || needed.length) {
+    if (!plan && (missing.length || needed.length)) {
       const fix = "Add it in Settings → API Keys, or set it where AgentRun starts, then apply the template again.";
       throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `a ${need.source} MCP server of the toolkit ${need.toolkit}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}.`, fix: mcpSetUp(need) }))] });
     }
@@ -3127,15 +3192,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}, so the agent was made without its tools (${need.tools.join(", ")}).`, fix: mcpSetUp(need) }));
     // A model choice the owner picked is its model on its harness, or a refusal naming the model: never the tier's model
-    // in its place. So is a package's `prefer` (packageModel's `refused`), outside a gateway.
-    const unrunnable = choice && (await choiceUnrunnable(env, choice, offers.find((offer) => offer.id === choice.harness)));
+    // in its place. So is a package's `prefer` (packageModel's `refused`), outside a gateway. A plan whose keys are
+    // missing lists them and goes on: a model refused for want of one of them is the same lack, and once they are added
+    // the next plan reads the model again.
+    const lacking = plan && missing.length > 0;
+    const unrunnable = choice && !lacking && (await choiceUnrunnable(env, choice, offers.find((offer) => offer.id === choice.harness)));
     if (choice && unrunnable) {
       const message = `The ${pkg.name} template's choice ${choice.label} runs ${choice.model} on ${choice.harness}, which this server can't run: ${unrunnable.replace(/\.$/, "")}. Nothing was created.`;
       throw new ApiError("agent_not_runnable", message, { fields: [{ field: "overrides.choice", reason: NOT_SET_UP, message, fix: "Apply with the default or another choice, or, where the model only wants a key, add it in Settings → Model keys." }] });
     }
     const harness = choice ? choice.harness : pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
     const picked = choice ? { model: choice.model } : override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
-    if ("refused" in picked && picked.refused) {
+    if ("refused" in picked && picked.refused && !lacking) {
       const message = `The ${pkg.name} template prefers ${pkg.model?.prefer}, which this server can't run on ${harness ?? DEFAULT_HARNESS}: ${picked.refused.why}. Nothing was created.`;
       throw new ApiError("agent_not_runnable", message, { fields: [{ field: "model", reason: NOT_SET_UP, message, fix: picked.refused.fix }] });
     }
@@ -3212,6 +3280,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // changes. Which triggers are the package's is on each trigger (its mark), not here.
     const digest = parametersDigest(sealKey, stable(parameters));
     const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters_digest: digest, secrets: declared };
+    return { pkg, onto, missing, unsaved, saved, mapped, grants, pick, made, emptyFeeds, hadByName, remade, resent, removing, digest, origin, warned: [...skipped, ...kept, ...modelWarnings, ...computerWarnings] };
+  }
+
+  /** applyTemplate's work, in its turn on the agent where it has agent_id: prepareApply's reads and checks, then its
+   *  writes. */
+  async function applyWith(template: Package, body: Json) {
+    const { pkg, onto, saved, mapped, grants, made, emptyFeeds, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
     // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
     // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
     const twins: InputIssue[] = onto ? [] : (await agents.list())
@@ -3345,7 +3420,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // What the apply did to the agent: made it, wrote a new revision, or wrote none (an update whose package and
     // parameters the current revision already holds: commitAgent keeps that revision).
     const agentChange = !onto ? "made" : entry.revision?.id === onto.revision?.id ? "unchanged" : "updated";
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_id: entry.revision?.id ?? null, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...warned, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
     return { applied, minted, updated: onto !== undefined };
   }
 
@@ -5469,14 +5544,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg) })) });
       }
       case "importTemplate": {
-        // Read from GitHub and checked; a dry run answers it (200), else it is stored and served (201). The answer shows the
-        // package whole, its instructions and every skill file, for a person to read before they apply it.
-        const body = await bodyOf(req);
+        // Read from GitHub, or uploaded whole ({files}), and checked; a dry run answers it (200), else it is stored and
+        // served (201). The answer shows the package whole, its instructions and every skill file, for a person to read
+        // before they apply it. An upload's body carries the package's bytes (base64 among them), up to the import's own
+        // limit (TEMPLATE_UPLOAD_BODY).
+        const body = await bodyOf(req, TEMPLATE_UPLOAD_BODY);
         const done = new AbortController();
         res.once("close", () => done.abort());
         const imported = await importTemplate(importDeps, body, done.signal);
         const pickView = await computerHere([imported.pkg]);
-        return send(res, imported.status, { template: { ...packageView(imported.pkg), computer_here: pickView(imported.pkg) }, ...(({ instructions, skill_files }) => ({ instructions, skill_files }))(packageDetail(imported.pkg)), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
+        const uploaded = imported.pkg.id.startsWith(UPLOAD_PREFIX);
+        return send(res, imported.status, { template: { ...packageView(imported.pkg), computer_here: pickView(imported.pkg) }, ...(({ instructions, skill_files }) => ({ instructions, skill_files }))(packageDetail(imported.pkg)), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : uploaded ? templatesLink(linkOrigin(req)) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
       }
       case "deleteTemplate":
         await deleteTemplate(importDeps, id);
@@ -5485,6 +5563,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const pkg = registry.get(id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         const body = await bodyOf(req);
+        // A dry run writes nothing, so it keeps no Idempotency-Key record either: a retry reads the plan again.
+        if (body.dry_run === true) return send(res, 200, await planTemplate(pkg, body));
         // The Idempotency-Key's record keeps the agent and triggers, so a retry under the key gets the same apply; it never
         // keeps a webhook trigger's secret (below).
         let minted = new Map<string, string>();

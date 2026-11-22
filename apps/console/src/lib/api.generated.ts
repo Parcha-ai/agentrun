@@ -1436,6 +1436,7 @@ export interface operations {
   };
   applyTemplate: {
     body: {
+      dry_run?: boolean;
       parameters?: Record<string, unknown>;
       servers?: Record<string, string>;
       grants?: string[];
@@ -1445,11 +1446,58 @@ export interface operations {
         choice?: string;
         approvals?: "ask" | "never";
       };
+      revision?: string;
+      sha?: string;
     };
     answer: {
       template: string;
       version: string;
       agent_id: string;
+      revision_id: string | null;
+      revision_version: number;
+      agent_change: "made" | "updated" | "unchanged";
+      servers: Record<string, string | null>;
+      triggers: {
+        trigger_id: string;
+        name: string;
+        kind: "schedule" | "webhook" | "github" | "composio" | "email" | "feed";
+        enabled: boolean;
+      }[];
+      warnings: components["InputIssue"][];
+      webhook_secrets?: {
+        trigger_id: string;
+        secret: components["SecretMeta"];
+        signing_secret?: string;
+        secret_set?: true;
+        note?: string;
+      }[];
+    } | {
+      plan: {
+        action: "create" | "revise";
+        agent_id: string | null;
+        current_revision_id: string | null;
+        missing_secrets: string[];
+        unmatched_mcp: {
+          source: string;
+          toolkit: string;
+          required: boolean;
+        }[];
+        triggers: {
+          name: string;
+          kind: string;
+          action: "create" | "update" | "remove" | "skip";
+          reason?: string;
+        }[];
+        computer: {
+          kind: string;
+          provider: string | null;
+        } | null;
+      };
+    } | {
+      template: string;
+      version: string;
+      agent_id: string;
+      revision_id: string | null;
       revision_version: number;
       agent_change: "made" | "updated" | "unchanged";
       servers: Record<string, string | null>;
@@ -3763,7 +3811,12 @@ export interface operations {
   };
   importTemplate: {
     body: {
-      source: string;
+      source?: string;
+      files?: {
+        path: string;
+        encoding: "utf8" | "base64";
+        content: string;
+      }[];
       dry_run?: boolean;
       trust_publisher?: boolean;
     };
