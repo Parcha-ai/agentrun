@@ -131,10 +131,11 @@ Two clients call the same API from code, with the same server and token. `@parch
 
 ## Commands
 
-- `agentrun agents`: archive, connect-native, create, delete-agent, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, list, list-learning-audits, list-learning-promotions, package, runs, unarchive, update, verify-native
+- `agentrun agents`: archive, bind-source-tool, connect-native, create, delete-agent, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, get-source-sync, list, list-learning-audits, list-learning-promotions, move-source-agent, package, resolve-source-sync, review-source-project, runs, set-source-sync, unarchive, update, verify-native
 - `agentrun capabilities`: get-capacity
 - `agentrun cli-learning`: complete, enroll, events, get, list, revoke, start
-- `agentrun connectors`: complete-remote-command, enroll-remote-connector, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, register-remote-connector, remote-command-events, revoke-remote-connector
+- `agentrun connectors`: complete-remote-command, enroll-remote-connector, grant-source-sync, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, publish-source-sync, register-remote-connector, remote-command-events, revoke-remote-connector, source-sync-failure
+- `agentrun deploy SOURCE`: Deploy an agent's package to another AgentRun: upload, plan, apply, lock (deploy rollback, deploy delete)
 - `agentrun doctor`: Check how this AgentRun is set up (Node, the server, its service, address, password, models, switches, Docker) and print what to change; read-only (exit 0 ok or warnings, 1 a check failed, 3 no server answering)
 - `agentrun export AGENT`: Write an agent's current revision as a template package folder, and say what the target sets up again
 - `agentrun files`: create, delete, get, list, upload

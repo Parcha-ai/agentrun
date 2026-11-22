@@ -11,7 +11,7 @@ const { LearningInFlight } = await import("../dist/learn/delete.js");
 /** A host over a fake store: `runs` maps run id to its state; a cancelled run reads `stopped` from the next read on
  *  (after `endAfter` reads). `cannot` names runs whose cancel answers false; `busy` makes the learning delete refuse
  *  (LearningInFlight), `fails` makes it throw another error. */
-function fakeHost({ runs = { r1: "ended", r2: "working" }, cannot = [], busy = false, fails = false, endAfter = 1, waitMs = 2_000, upstreamFails = false } = {}) {
+function fakeHost({ runs = { r1: "ended", r2: "working" }, cannot = [], busy = false, fails = false, endAfter = 1, waitMs = 2_000, upstreamFails = false, sourceWriting = false } = {}) {
   const calls = [];
   const states = new Map(Object.entries(runs));
   const cancelled = new Map();
@@ -20,6 +20,11 @@ function fakeHost({ runs = { r1: "ended", r2: "working" }, cannot = [], busy = f
     get origin() {
       return this;
     },
+    settings: { all: async ({ prefix }) => {
+      assert.match(prefix, /^source-sync\.io\.[a-f0-9]{64}\.$/);
+      calls.push('source-io');
+      return sourceWriting ? [{ key: prefix + 'fixture', value: { kind: 'snapshot' } }] : [];
+    } },
     triggers: { list: async (agentId) => { calls.push(`triggers.list:${agentId}`); return [{ id: "t1" }]; } },
     runs: {
       every: async () => {
@@ -72,6 +77,7 @@ test("the delete runs in its order: refuse, cancel each run going and wait for i
   assert.deepEqual(calls, [
     "refuse:a",
     "cancel:r2",
+    "source-io",
     "learning:a:going=0",
     "triggers.list:a",
     "removeTriggerThere:t1",
@@ -92,7 +98,7 @@ test("the delete runs in its order: refuse, cancel each run going and wait for i
 test("a trigger's registration upstream is removed before its row; one that fails there keeps the row and stops the delete before anything else of step 3", async () => {
   const { host, calls } = fakeHost({ upstreamFails: true });
   await assert.rejects(deleteExternalAgent(host, "a"), /not removed upstream/);
-  assert.deepEqual(calls, ["refuse:a", "cancel:r2", "learning:a:going=0", "triggers.list:a", "removeTriggerThere:t1"]);
+  assert.deepEqual(calls, ["refuse:a", "cancel:r2", "source-io", "learning:a:going=0", "triggers.list:a", "removeTriggerThere:t1"]);
 });
 
 test("a run this server cannot end is 409 runs_in_flight before the learning delete, after the refusal; nothing of step 3 is done", async () => {
@@ -110,11 +116,18 @@ test("a run still going at the wait's end is 409 runs_in_flight; the learning de
 test("the learning delete's refusal (LearningInFlight) is 409 learning_busy with its words and what is in flight; nothing of step 3 is done", async () => {
   const { host, calls } = fakeHost({ busy: true });
   await assert.rejects(deleteExternalAgent(host, "a"), (error) => error.code === "learning_busy" && error.status === 409 && /learning is at work in r9/.test(error.message) && JSON.stringify(error.extra.details) === JSON.stringify({ runs: ["r9"] }));
-  assert.deepEqual(calls, ["refuse:a", "cancel:r2", "learning:a:going=0"]);
+  assert.deepEqual(calls, ["refuse:a", "cancel:r2", "source-io", "learning:a:going=0"]);
 });
 
 test("any other failure of the learning delete is thrown as it is, never learning_busy; nothing of step 3 is done", async () => {
   const { host, calls } = fakeHost({ fails: true });
   await assert.rejects(deleteExternalAgent(host, "a"), (error) => error.code === undefined && /could not be read/.test(error.message));
-  assert.deepEqual(calls, ["refuse:a", "cancel:r2", "learning:a:going=0"]);
+  assert.deepEqual(calls, ["refuse:a", "cancel:r2", "source-io", "learning:a:going=0"]);
+});
+
+
+test('unresolved source writes refuse deletion after its durable mark and before any learning or filesystem removal', async () => {
+  const { host, calls } = fakeHost({ sourceWriting: true });
+  await assert.rejects(deleteExternalAgent(host, 'a'), error => error.code === 'agent_not_runnable' && /source operation/.test(error.message));
+  assert.deepEqual(calls, ['refuse:a', 'cancel:r2', 'source-io']);
 });

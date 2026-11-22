@@ -5,11 +5,11 @@
 // validate and template eval, which check and run a package folder on this machine, are template.mjs's, harness install
 // (the harness its owner installs: goose) is harness.mjs's, and service
 // (AgentRun as a launchd or systemd user service) and stop (the AgentRun the installer started in the background) are
-// service.mjs's, doctor (how this AgentRun is set up, read-only) is doctor.mjs's, and export (an agent written as a
-// template package folder) is export.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf,
-// below).
+// service.mjs's, doctor (how this AgentRun is set up, read-only) is doctor.mjs's, export (an agent written as a template
+// package folder) is export.mjs's, and deploy (an agent's package sent to another AgentRun, with its lock, rollback and
+// delete) is deploy.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
 import { spawn } from "node:child_process";
-import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, fstatSync, openSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir, constants as osConstants } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -22,9 +22,11 @@ import { SKILL_INSTALL } from "./skill.mjs";
 import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from "./template.mjs";
 import { HARNESS_CHECK, HARNESS_INSTALL, HARNESS_SIGN_IN } from "./harness.mjs";
 import { EXPORT } from "./export.mjs";
+import { DEPLOY, DEPLOY_DELETE, DEPLOY_ROLLBACK } from "./deploy.mjs";
 
-/** The hand-written commands that run as they are given (`run`), beside the table's. */
-const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, HARNESS_INSTALL, HARNESS_SIGN_IN, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR];
+/** The hand-written commands that run as they are given (`run`), beside the table's. A command of one word that has
+ *  verbs too (deploy) comes after them: `run` takes the first whose words match. */
+const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, HARNESS_INSTALL, HARNESS_SIGN_IN, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR, DEPLOY_ROLLBACK, DEPLOY_DELETE, DEPLOY];
 export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
 const START = "start it with `npx @parcha/agentrun`, or pass --base-url (or set AGENTRUN_BASE_URL) to the address the server printed";
@@ -45,11 +47,11 @@ const usageError = (message) => new Exit(2, message);
 const flag = (name) => name.replace(/_/g, "-").toLowerCase();
 
 /** The words of `argv` that are not flags, past the values of the flags placed before a command (--data, --base-url,
- *  and the server's --port). */
+ *  and the server's --port) or before a verb (deploy's --to and --params). */
 export function words(argv) {
   const found = [];
   for (let i = 0; i < argv.length; i++) {
-    if (["--data", "--base-url", "--port"].includes(argv[i])) i++;
+    if (["--data", "--base-url", "--port", "--to", "--params"].includes(argv[i])) i++;
     else if (!argv[i].startsWith("-")) found.push(argv[i]);
   }
   return found;
@@ -530,15 +532,39 @@ async function local(entry, argv, env, io) {
 /** An external command's name: one plain word, so agentrun-NAME is a file in a folder of PATH, never a path below one. */
 const EXTERNAL_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
+/** The extensions Windows tries on a program's bare name: PATHEXT's entries (each `.WORD`), else its default. */
+const pathExtOf = (env) => {
+  const given = (env.PATHEXT ?? "").split(";").filter((ext) => /^\.[A-Za-z0-9]{1,16}$/.test(ext));
+  return given.length ? given : [".COM", ".EXE", ".BAT", ".CMD"];
+};
+
+const isFile = (file) => {
+  try {
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+};
+
 /** The program agentrun-NAME: the first regular file of that name this user may run, in PATH's folders in order. A
- *  relative or empty entry means the working directory, which any checkout can fill, so it is never searched. */
-function externalOf(name, env) {
+ *  relative or empty entry means the working directory, which any checkout can fill, so it is never searched. On
+ *  Windows, which has no execute bit, it is agentrun-NAME with each extension of PATHEXT in turn, as git looks a command
+ *  up there, matched in any case by the folder's own listing. `platform` is for the tests; the paths are this machine's. */
+export function externalOf(name, env, platform = process.platform) {
   if (!EXTERNAL_NAME.test(name)) return undefined;
+  const stem = `agentrun-${name}`;
+  const extensions = platform === "win32" ? pathExtOf(env).map((ext) => `${stem}${ext}`.toLowerCase()) : undefined;
   for (const dir of (env.PATH ?? "").split(delimiter)) {
     if (!isAbsolute(dir)) continue;
-    const file = join(dir, `agentrun-${name}`);
     try {
-      if (!statSync(file).isFile()) continue;
+      if (extensions) {
+        const named = new Map(readdirSync(dir).map((entry) => [entry.toLowerCase(), entry]));
+        const found = extensions.map((wanted) => named.get(wanted)).find((entry) => entry !== undefined && isFile(join(dir, entry)));
+        if (found !== undefined) return join(dir, found);
+        continue;
+      }
+      const file = join(dir, stem);
+      if (!isFile(file)) continue;
       accessSync(file, constants.X_OK);
       return file;
     } catch {
@@ -549,13 +575,28 @@ function externalOf(name, env) {
 }
 
 /** `file` run with `args`: no shell, this process's stdin, stdout and stderr, and its exit code, or 128 plus the number
- *  of the signal that ended it. Ctrl-C and Ctrl-\ reach it from the terminal, so this process waits for it rather than
- *  end first; a SIGTERM or SIGHUP sent to this process alone is passed on to it. */
-function external(file, args, env, io) {
+ *  of the signal that ended it. A signal sent to this process is passed on to it, and this process waits for it rather
+ *  than end first. A terminal's Ctrl-C or Ctrl-\ goes to its whole process group, so the command gets that one twice,
+ *  from the terminal and from here, as under foreground-child: the cost of never swallowing one sent to agentrun alone.
+ *  On Windows a Ctrl-C reaches every process on the console and Node's kill ends a process outright, so there it is only
+ *  held. `platform` is for the tests. */
+export function external(file, args, env, io, platform = process.platform) {
+  // Node runs a .bat or .cmd only through cmd.exe, which reads the arguments again (% expands; " ^ & | < > ! are its
+  // own), and no quoting holds for every argument: none is run.
+  if (platform === "win32" && /\.(?:bat|cmd)$/i.test(file)) {
+    io.stderr.write(`${file} is a batch file, which Node runs only through cmd.exe, and cmd.exe would read the arguments again: agentrun runs no command through a shell. Run it yourself, or install agentrun-NAME as an .exe.\n`);
+    return Promise.resolve(126);
+  }
   return new Promise((resolve) => {
-    const child = spawn(file, args, { stdio: "inherit", env, shell: false });
+    let child;
+    try {
+      child = spawn(file, args, { stdio: "inherit", env, shell: false });
+    } catch (error) {
+      io.stderr.write(`Cannot run ${file} (${error.code ?? error.name}).\n`);
+      return resolve(126);
+    }
     const pass = (signal) => child.kill(signal);
-    const handlers = [["SIGINT", () => {}], ["SIGQUIT", () => {}], ["SIGTERM", pass], ["SIGHUP", pass]];
+    const handlers = [["SIGINT", platform === "win32" ? () => {} : pass], ["SIGQUIT", pass], ["SIGTERM", pass], ["SIGHUP", pass]];
     for (const [signal, handler] of handlers) process.on(signal, handler);
     let done = false;
     const end = (code) => {

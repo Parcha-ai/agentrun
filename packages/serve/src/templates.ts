@@ -97,6 +97,21 @@ const PLACEHOLDER = /\$\{parameters\.([^}]*)\}/g;
 const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
+/** The `name` agent.md's front matter gives (`text`), as text, or undefined: what an upload's folder is named before
+ *  readPackage checks it whole (the name read as readPackage's front matter reads it). */
+export function manifestName(text: string): string | undefined {
+  const match = FRONT.exec(text);
+  if (!match) return undefined;
+  const doc = parseDocument(match[1]!, { schema: "core", merge: false, uniqueKeys: true, strict: true });
+  if (doc.errors.length) return undefined;
+  try {
+    const data: unknown = doc.toJS({ maxAliasCount: 0 });
+    return isObject(data) && typeof data.name === "string" ? data.name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** An MCP server a package uses, by where it comes from (`source`, `toolkit`), never by the name an owner saves it under:
  *  inside the package its tools are `mcp:<toolkit>/<tool>`. `tools`, those the agent uses and the package asks the owner to
  *  grant (a consent screen shows each, with `reason`), and `allow`, those of them expected to run without asking (reads);
@@ -162,11 +177,12 @@ export const fieldsOf = (schema: Json): Record<string, Json> => schema.propertie
 const SCHEDULE_FIELDS = ["cron", "timezone"];
 /** Where an imported package came from (POST /v2/templates/import): its source as given, ref and all (the ref an upgrade
  *  reads again), the full commit SHA that ref was at when it was read, which is what was imported, and the GitHub account
- *  that publishes it. */
+ *  that publishes it. An upload's source is its id, its sha the package's sha256, its publisher empty. */
 export type PackageOrigin = { source: string; sha: string; publisher: string };
 export type Package = {
   /** Its identity here, the one apply and delete take: a bundled package's name (`kyb`); an imported one's source without
-   *  its ref (`github:<owner>/<repo>[/<path>]`), so the bundled kyb and an imported kyb are two packages. */
+   *  its ref (`github:<owner>/<repo>[/<path>]`), so the bundled kyb and an imported kyb are two packages; an upload's
+   *  `upload:<name>`. */
   id: string;
   /** Null for a package this server ships. */
   origin: PackageOrigin | null;
@@ -1025,7 +1041,8 @@ export function readPackages(dir: string = TEMPLATES_DIR): Package[] {
 /** A package as GET /v2/templates lists it: what an apply asks for and makes. */
 export function packageView(p: Package) {
   return {
-    id: p.id, bundled: p.origin === null, source: p.origin?.source ?? null, sha: p.origin?.sha ?? null, publisher: p.origin?.publisher ?? null,
+    // An upload has no publisher: its own owner sent it.
+    id: p.id, bundled: p.origin === null, source: p.origin?.source ?? null, sha: p.origin?.sha ?? null, publisher: p.origin?.publisher || null,
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
     category: p.category ?? null, tags: p.tags,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
@@ -1073,14 +1090,20 @@ export class TemplateRegistry {
   }
 }
 
-/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, servers?, overrides?: {model?, choice?, approvals?}, agent_id?}`), checked
+/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, servers?, overrides?: {model?, choice?, approvals?}, agent_id?, revision?, sha?, dry_run?}`), checked
  *  against the package: the parameters as given (a blank one at its default), the MCP tools the owner allows (each one the
  *  package lists, by its gate name), and the model asked for in place of the package's: one of its own (`model`), or one
- *  of the package's model choices by id (`choice`), never both. 422 naming every field that is wrong. */
-export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; choice?: ModelChoice; approvals?: Approvals; agentId?: string } {
-  const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides", "agent_id"]);
+ *  of the package's model choices by id (`choice`), never both. `revision` (with agent_id) and `sha` are what the caller
+ *  read: the agent's current revision and the package's sha, each held to them (412 when another). 422 naming every field
+ *  that is wrong. */
+export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; choice?: ModelChoice; approvals?: Approvals; agentId?: string; revision?: string; sha?: string; dryRun: boolean } {
+  const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides", "agent_id", "revision", "sha", "dry_run"]);
+  if (body.dry_run !== undefined && typeof body.dry_run !== "boolean") issues.push({ field: "dry_run", reason: "wrong_type", message: "dry_run is true or false: true answers the apply's plan and writes nothing" });
   // The agent an update writes onto (the server checks it was made from this package): text, else a 422 with the rest.
   if (body.agent_id !== undefined && !(typeof body.agent_id === "string" && body.agent_id.trim())) issues.push({ field: "agent_id", reason: "wrong_type", message: `agent_id is the id of an agent the ${p.name} template made: the apply writes a new revision of it in place of making another` });
+  if (body.revision !== undefined && !(typeof body.revision === "string" && body.revision)) issues.push({ field: "revision", reason: "wrong_type", message: "revision is the id of the agent's revision you read (GET /agents/{agent_id} `revision`): the apply writes only while it is still the current one" });
+  else if (body.revision !== undefined && body.agent_id === undefined) issues.push({ field: "revision", reason: "not_allowed", message: "revision is the agent's current revision as you read it, so it goes with agent_id: an apply without one makes a new agent" });
+  if (body.sha !== undefined && !(typeof body.sha === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(body.sha))) issues.push({ field: "sha", reason: "bad_format", message: "sha is the package's sha as you read it (GET /templates `sha`): a commit's 40 hex characters, or an upload's 64" });
   const listed = p.mcp.flatMap(({ toolkit, tools }) => tools.map((tool) => mcpToolName(toolkit, tool)));
   const grants: string[] = [];
   if (body.grants !== undefined && !Array.isArray(body.grants)) issues.push({ field: "grants", reason: "wrong_type", message: "grants is a list of the package's MCP tools, by the package's own names (mcp:<toolkit>/<tool>), the owner allows" });
@@ -1121,7 +1144,7 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants:
     else if (overrides.choice !== undefined && !choice) issues.push({ field: "overrides.choice", reason: "not_an_option", message: choices.length ? `overrides.choice is one of ${choices.map((one) => one.id).join(", ")}: the package's model choices, by id.` : `The package ${p.name} offers no model choices: leave overrides.choice out.` });
   }
   if (issues.length) throw invalid(issues);
-  return { parameters, grants, servers, ...(typeof body.agent_id === "string" ? { agentId: body.agent_id.trim() } : {}), ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(choice ? { choice } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
+  return { parameters, grants, servers, dryRun: body.dry_run === true, ...(typeof body.agent_id === "string" ? { agentId: body.agent_id.trim() } : {}), ...(typeof body.revision === "string" ? { revision: body.revision } : {}), ...(typeof body.sha === "string" ? { sha: body.sha } : {}), ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(choice ? { choice } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
 }
 
 /** The model a package's agent gets here, as `{model?, warning?}`: its `prefer` when this server runs it on `harness`

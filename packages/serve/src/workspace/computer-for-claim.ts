@@ -244,6 +244,8 @@ export interface ClaimComputer {
    *  stopped (compute-cost.ts): run before the run's end or park is written (the spec's beforeRelease), so the end's
    *  cost holds it. Absent where nothing is metered. */
   settle?(): Promise<void>;
+  /** Strict durable folder sync for project checkpoints; distinct from metering settlement. */
+  syncProject?(signal?: AbortSignal): Promise<void>;
   release(why?: ViewEnd): Promise<void>;
   /** The claim's release at the run's park, for `cause`: a computer it `keeps` is kept for KEEP_MS (computer-kept.ts),
    *  its live view closed with the park's cause and the keep's time (ParkedEnd) and its hold ended, but the machine left
@@ -1216,6 +1218,24 @@ export async function computerForClaim(
     ...(keeps ? { keeps: keeps.kind } : {}),
     ...(meter ? { settle: () => meter.stopAll() } : {}),
     release,
+    async syncProject(signal) {
+      const cancellation = signal && deps.signal ? AbortSignal.any([signal, deps.signal]) : signal ?? deps.signal;
+      cancellation?.throwIfAborted();
+      if (started.sync) { if (!(await started.sync()).ok) throw new Error("The project folder could not be durably synchronized."); }
+      else if (resolved.folder === "bind") {
+        // A bind is already this Workspace's filesystem, so there is no remote folder delta to pull. File tools
+        // fsync their own writes, but arbitrary shell edits need this final syncfs after dispatch has settled.
+        // Use the supplied host Workspace, never the lost-aware computer client (which could recreate a machine).
+        const flushed = await deps.workspace.exec(["/usr/bin/sync", "-f", "."], {
+          env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, timeoutMs: 30_000, maxOutput: 1024,
+          ...(cancellation ? { signal: cancellation } : {}),
+        });
+        if (flushed.code !== 0 || flushed.signal || flushed.timedOut || flushed.truncated)
+          throw new Error("The bound project folder could not be durably synchronized.");
+      }
+      else if (runComputer && "check" in runComputer && runComputer.check) throw new Error("This mounted project has no verified synchronization capability.");
+      cancellation?.throwIfAborted();
+    },
     async park(cause: ParkCause): Promise<boolean> {
       if (!keeps || !settings || released) {
         await release();

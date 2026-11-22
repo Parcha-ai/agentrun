@@ -14,6 +14,11 @@ sign-in and configuration. Turn **Self-improving** On separately to give later r
 corrections. Eligible server-run and SDK agents can also compile checked workflows; CLI capture has no workflow
 bridge. Imported history stays historical and does not automatically train the agent.
 
+New source connections also keep their setup in sync by default. A supported complete setup can **Move to AgentRun**
+from the same agent page, retaining its identity and history. Destination accounts and unsupported tools/settings
+appear as prerequisites. See [source sync and Move](../../docs/source-sync.md) for scope, project continuity,
+conflicts and current compatibility; `--no-sync` opts out when connecting.
+
 For a source on a different laptop, VM or container, choose **Connection setup → Another machine** and use the
 matching [Python source connector](../../connector/README.md). Remote execution currently needs the server and
 connector from the same reviewed development checkout; the published observation-only CLI does not include it.
@@ -2151,6 +2156,15 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 (or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
 value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
 `url` is `https`, or `http` on loopback.
+
+A server advertising MCP resources also lists three AgentRun-generated read operations, including when it has no
+tools: `agentrun_list_resources` (`resource: "list"`), `agentrun_list_resource_templates` (`resource: "templates"`)
+and `agentrun_read_resource` (`resource: "read"`). The first two take `{}`; read takes `{uri}`. They are granted,
+pinned and gated like tools, using the same destination credential, but dispatch MCP resource methods. URIs are
+passed to that server rather than fetched directly. Resource lists include all pages within 500 entries, 1 MiB
+and one call deadline; exceeding a bound fails without a partial list. Text uses the ordinary answer filing and
+credential scrub. A binary resource containing a connection credential is withheld. These three names are reserved:
+an upstream ordinary tool with one of them makes preview or save fail. A name alone never grants resource authority.
 
 ### Composio
 

@@ -29,8 +29,9 @@ export type ExportInput = {
   definition: Json;
   /** The revision's skill files, by path under the agent's skills folder. */
   skills: Readonly<Record<string, string>>;
-  /** The package the agent was applied from (agentView's `template`), and that package as this server holds it now. */
-  template: { id: string; version: string } | null;
+  /** The package the agent was applied from (agentView's `template`) with the key names its apply kept (absent on a
+   *  revision applied before they were kept), and that package as this server holds it now. */
+  template: { id: string; version: string; secrets?: readonly string[] } | null;
   origin: Package | undefined;
   servers: ReadonlyMap<string, SavedServer>;
   /** The agent's triggers as GET /triggers shows them: those that start its runs, and those that message one of them. */
@@ -260,10 +261,12 @@ export function agentPackage(input: ExportInput): AgentPackage {
   const inputSchema = isObject(definition.input_schema) ? definition.input_schema : undefined;
   const inputs = inputSchema && inputsOf(inputSchema);
   if (inputSchema && !inputs) blocked.push({ kind: "input_schema", name: "inputs", reason: "Its input schema is not a closed object of fields, which is what a package's inputs are." });
-  const secrets = [...new Set([...(sameVersion ? origin!.secrets : []), ...((plain ?? []).some(isMonidName) ? ["MONID_API_KEY"] : [])])].sort();
-  // The keys a package names are read from the package as this server holds it: one updated or removed since the apply
-  // may name others, so the ones the agent was applied with are unknown here.
-  if (template && !sameVersion) remade.push({ kind: "secrets", name: template.id, reason: `The keys version ${template.version} of ${template.id} names are not known here: ${origin ? `this server holds version ${origin.version}` : "this server no longer holds it"}. Save the keys the agent uses on the target, and name them under secrets in ${MANIFEST}.` });
+  // The keys its package declared, as its apply kept them; for a revision applied before they were kept, the package as
+  // this server holds it, which names them only while it is the same version.
+  const declared = template?.secrets ?? (sameVersion ? origin!.secrets : []);
+  const secrets = [...new Set([...declared, ...((plain ?? []).some(isMonidName) ? ["MONID_API_KEY"] : [])])].sort();
+  // Such a revision of a package updated or removed since its apply: the keys it was applied with are unknown here.
+  if (template && !template.secrets && !sameVersion) remade.push({ kind: "secrets", name: template.id, reason: `The keys version ${template.version} of ${template.id} names are not known here: ${origin ? `this server holds version ${origin.version}` : "this server no longer holds it"}. Save the keys the agent uses on the target, and name them under secrets in ${MANIFEST}.` });
   const bash = settings.bash?.policy;
   // Bash's policy holds every shell tool, and a package writes it only beside bash: a shell tool kept without bash would
   // run there what the policy refuses here.
