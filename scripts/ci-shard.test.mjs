@@ -1,5 +1,6 @@
 // ci-shard's time limits, on a made-up repository: a test that never settles fails by its --test-timeout, named, and a suite
 // that never exits is killed at the shard's limit with everything it started, the shard failing with a line that names it.
+// A suite that fails says how: its exit status, or the signal that ended it.
 // A script of a shape ci-shard does not know fails the shard before anything runs. A cancel that reaches ci-shard stops its
 // suite the same way the limit does.
 import assert from 'node:assert/strict';
@@ -100,10 +101,25 @@ test('a test that never settles fails by --test-timeout, named in the shard\'s l
   // Node 24 applies --test-timeout to each test; Node 22 to each test file, so there the file is the name the log gives.
   assert.match(output, major >= 24 ? /✖ a test that never settles/ : /not ok \d+ - test\/hang\.test\.mjs/, output);
   assert.match(output, /^failed: npm exec -w stall -c "node --test --test-timeout=1000 test\/hang\.test\.mjs"$/m, output);
-  assert.doesNotMatch(output, /::error::ci-shard/, 'the shard\'s limit did not fire');
+  assert.match(output, /^::error::ci-shard: npm exec -w stall -c "node --test --test-timeout=1000 test\/hang\.test\.mjs" exited with status 1$/m, output);
+  assert.doesNotMatch(output, /the shard's [\d.]+-minute limit/, 'the shard\'s limit did not fire');
   // Its time against its model, failed or not: how a stale scripts/ci-timings.json shows in the log.
   assert.match(output, /^ci-shard: any-1 ran \d+ s, modelled \d+ s$/m, output);
   assert.ok(seconds < 25, `${seconds} s`);
+});
+
+// A suite ended by a signal before it printed anything (a SIGKILL to its whole process group, as a test that signals pid 0
+// sends) left an empty group in the log and a bare `failed:` line. The suite's group is its own (ci-shard starts it
+// detached), so the kill below reaches the suite alone, never ci-shard or this file.
+test('a suite ended by a signal before it prints anything is named with the signal, and the commands after it still run', { timeout: 90_000 }, async (t) => {
+  const root = repo('signalled', {
+    'test/signalled.test.mjs': "import test from 'node:test'; test('signals its own process group', () => { process.kill(0, 'SIGKILL'); });",
+  });
+  const { status, output } = await shard(t, root, 'any-1', { CI_SHARD_TEST_TIMEOUT_MS: '60000', CI_SHARD_TIMEOUT_MS: '30000' });
+  assert.equal(status, 1, output);
+  assert.match(output, /^::error::ci-shard: npm exec -w stall -c "node --test --test-timeout=60000 test\/signalled\.test\.mjs" was ended by SIGKILL$/m, output);
+  assert.match(output, /^failed: npm exec -w stall -c "node --test --test-timeout=60000 test\/signalled\.test\.mjs"$/m, output);
+  assert.match(output, /::group::npm exec -c "node --test --test-timeout=60000 release\/ok\.test\.mjs"/, 'the suite after it ran');
 });
 
 test('a suite whose tests pass but whose process never exits is killed at the shard\'s limit, with what it started; the commands after it are not run, and each is named', { timeout: 90_000 }, async (t) => {
