@@ -7,12 +7,15 @@
 //   starts it decides whose credential the server's runs use.
 // - Removing a server that holds a credential drops it (read from the store); the private-network OAuth hosts count whole,
 //   since they widen where a sign-in sends its code and tokens.
-// A server with no credential, a save that keeps the sealed one (prices, tools, url), a preview and a refresh (each keeps
-// nothing new) stay open to a token.
+// - The token removes only a server the token saved (its source record's mark, mcp-sources.ts): the owner's stays the
+//   owner's, sealed or not, and nothing of it reaches Composio.
+// A server the token saved with no credential, a save that keeps the sealed one (prices, tools, url), a preview and a
+// refresh (each keeps nothing new) stay open to a token.
 import { COMPOSIO_TOOLKIT } from "./composio-preset.js";
 import type { InputIssue } from "./errors.js";
 import { secretShapes } from "./learn/secrets.js";
 import { urlOf } from "./mcp-probe.js";
+import { mcpSourceKey, savedByToken } from "./mcp-sources.js";
 import { registerNotSecretWrite, registerSecretPage, registerSecretWrite, type SecretRequest } from "./secret-writes.js";
 import type { McpCredentialMark } from "./store/index.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
@@ -29,9 +32,10 @@ export function mcpWritesSecret(operation: string, body: unknown): boolean {
   return token !== undefined || (isObject(headers) && Object.keys(headers).length > 0);
 }
 
-/** The least of a saved server's row a save's check reads: its auth type, its sealed credential and when that was set. */
-type SavedRow = { auth: string; sealed: unknown; credentialChangedAt?: number | null };
-type SavedServers = { mcp: { server(name: string): Promise<SavedRow | undefined> } };
+/** The least of a saved server's row a save's check reads: its auth type, its sealed credential and when that was set,
+ *  and when the row was made (its source record is bound to it). */
+type SavedRow = { auth: string; sealed: unknown; credentialChangedAt?: number | null; createdAt?: number };
+type SavedServers = { mcp: { server(name: string): Promise<SavedRow | undefined> }; settings: { get(key: string): Promise<unknown> } };
 
 /** A saved server's credential as a writer read it (McpCredentialMark): its auth type, whether one is sealed, and when it
  *  was set. A save let through against one mark writes only while the row still has it, in the store's one statement
@@ -52,19 +56,23 @@ export async function mcpSaveDropsSecret(body: unknown, request: SecretRequest):
   return type !== was.auth;
 }
 
-/** Whether removing the server its path names drops a credential: it holds a sealed one. A server saved with none (an
- *  eval's fake, say) is the token's to remove; the removal lands only while that is still so (request.seen). */
-export async function mcpDeleteDropsSecret(_body: unknown, request: SecretRequest): Promise<boolean> {
+/** Whether removing the server its path names is refused to the token: it holds a sealed credential, or the token did not
+ *  save it (its source record has no token's mark, mcp-sources.ts savedByToken): an owner's server stays the owner's,
+ *  sealed or not. A server the token saved with none (an eval's fake, say) is the token's to remove; the removal lands
+ *  only while its credential is still none (request.seen) and it is still the token's (McpServers.remove checks again). */
+export async function mcpDeleteRefused(_body: unknown, request: SecretRequest): Promise<boolean> {
   const [name] = request.params;
   if (!name) return false;
-  const was = await (request.store as SavedServers).mcp.server(name);
+  const store = request.store as SavedServers;
+  const was = await store.mcp.server(name);
   request.seen = credentialMark(was);
-  return !!was && was.sealed !== null && was.sealed !== undefined;
+  if (!was) return false;
+  return (was.sealed !== null && was.sealed !== undefined) || !savedByToken(await store.settings.get(mcpSourceKey(name)), was.createdAt);
 }
 
 /** MCP's operations the one gate reads: the predicates above decide each request. */
 export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts", "deleteMcpServer"] as const;
-const STORED: Partial<Record<(typeof MCP_SECRET_OPERATIONS)[number], (body: unknown, request: SecretRequest) => Promise<boolean>>> = { saveMcpServer: mcpSaveDropsSecret, deleteMcpServer: mcpDeleteDropsSecret };
+const STORED: Partial<Record<(typeof MCP_SECRET_OPERATIONS)[number], (body: unknown, request: SecretRequest) => Promise<boolean>>> = { saveMcpServer: mcpSaveDropsSecret, deleteMcpServer: mcpDeleteRefused };
 for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (body) => mcpWritesSecret(operation, body), STORED[operation]);
 // The Composio preset takes the owner's API key and seals it as an MCP header: both routes are the owner's session alone,
 // whatever the body (the listing sends the key too, and only the session may type one).

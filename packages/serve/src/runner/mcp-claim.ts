@@ -28,8 +28,9 @@
 // A per-run Composio server (composio-made.ts composioPerRun) is bound by each run's caller ({composio_user_id,
 // connected_account_id?} in mcp_auth, sealed in its launch): its entry carries them as `query` (mcp-gateway.ts).
 // A Composio server saved with api_key_env (composio-made.ts key_env) seals no key: each open reads the variable's value
-// now, for an address on Composio's origin alone (composioEnvKey). Unset, or a row at another address, the claim is
-// refused before the loop starts (pinOf), in words naming it, and nothing is sent.
+// as the runner was handed it at its start (secrets.ts secret, never its environment), for an address on Composio's origin
+// alone (composioEnvKey), and only for a server the run is granted: the run's process never holds it. Unset, or a row at
+// another address, the claim is refused before the loop starts (pinOf), in words naming it, and nothing is sent.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again
@@ -287,8 +288,8 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     const account = row.auth === "headers" ? await composioAccount(name, row) : undefined;
     if (account && "unopened" in account) return entry({ unopened: account.unopened }), { awaited: false };
     const query = account?.query;
-    // Its key read from the environment (api_key_env): the variable's value now, for an address on Composio's origin alone;
-    // else its calls refused unsent, naming why (composioEnvKey).
+    // Its key named by api_key_env: the value the runner was handed at its start, for an address on Composio's origin
+    // alone; else its calls refused unsent, naming why (composioEnvKey).
     const keyEnv = await keyEnvOf(store, name, row);
     if (keyEnv) {
       const got = composioEnvKey(name, row.url, keyEnv, options.composioMcpOrigin);

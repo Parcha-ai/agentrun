@@ -1,6 +1,7 @@
 // The API-only profile (AGENTRUN_API_ONLY=1): a server that runs behind its caller's backend serves the run routes and a
 // deploy's routes alone, and refuses every other address before anything else reads the request: the console at "/" and
-// its assets, sign-in and setup, settings but the MCP servers' names, a Composio server's save and a server's delete, the
+// its assets, sign-in and setup, settings but the MCP servers' names, a Composio server's save and the delete of a server
+// the token saved (the secret-write gate refuses the rest, mcp-secret-writes.ts), the
 // MCP endpoint, triggers and their webhook hooks, the rest of agents and templates. Off by default.
 import type { Route } from "./server.js";
 import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
@@ -30,8 +31,9 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *    turned off on again when the server has the launch hook): its token already makes agents through inline runs, so it
  *    gains no new power. A trigger the apply can't make here is skipped, and said (apiOnlyTriggerSkipped);
  *  - an API-only server has no owner, so the token is the backend's own, as with take-over: it saves the Composio servers
- *    its agents need through the preset (saveComposioServer) and deletes a server, and never writes a secret
- *    (secret-writes.ts). A Composio server names its key by api_key_env (COMPOSIO_API_KEY, read at each use, sent to
+ *    its agents need through the preset (saveComposioServer) and deletes a server it saved (mcp-secret-writes.ts
+ *    mcpDeleteRefused), and never writes a secret (secret-writes.ts). A Composio server names its key by api_key_env
+ *    (COMPOSIO_API_KEY, on the launcher's list of secrets, read at each use through secrets.ts secret, sent to
  *    Composio's origin alone: composio-made.ts composioEnvKey), and its body names no address or headers. There is no list
  *    or read of the servers here (listMcpServerNames above is the listing), and no generic save (saveMcpServer), so the
  *    token saves no server at an address or with headers of its own. Previews, refreshes, sign-ins and Composio's

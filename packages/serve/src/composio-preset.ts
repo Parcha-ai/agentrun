@@ -5,7 +5,8 @@
 // metered like every other. The four meta tools Composio adds (serve/src/mcp-meta.ts) stay refused; the helper actions
 // that connect an account are left off the server's address. The key goes only to Composio and into the sealed header: it
 // is never logged, echoed or put in an error. A save may name it instead by a variable of the server's environment
-// (`api_key_env`, COMPOSIO_API_KEY only): the server then keeps the name, seals nothing, and reads the value at each use.
+// (`api_key_env`, COMPOSIO_API_KEY only, a secret the launcher hands the server and each runner over its pipe): the server
+// then keeps the name, seals nothing, and reads the value at each use (composio-made.ts composioKeyFromEnv).
 import { randomBytes } from "node:crypto";
 import { COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioKeyFromEnv, type Cleanup, type ComposioMade, type Made, type Thing } from "./composio-made.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";

@@ -9,6 +9,7 @@
 // same with what the record it replaces made that the new one no longer stands on (droppedOf). An auth config the owner
 // names in a save (auth_config_id) is the owner's from that save on, whoever made it: the record written says it was not
 // made here, and every other record's claim to have made it is let go (releasedOf), so no delete or save removes it.
+import { secret } from "./secrets.js";
 import { isObject } from "./validate.js";
 
 /** A thing on Composio by its id, and whether this server made it. */
@@ -18,8 +19,8 @@ export type Made = { id: string; made: boolean };
  *  under it. `per_run`: saved with `user_id: "per_run"` (COMPOSIO_PER_RUN), its address names no user and no account,
  *  and each run names its own (mcp_auth, composioPerRun); `user` is then that word and `accounts` empty. Only a save made
  *  since the mode exists writes it, so a server saved before for a Composio user literally named "per_run" keeps that
- *  user until it is saved again. `key_env`: saved with `api_key_env`, its key is read from this variable of the server's
- *  environment at each use, and its row seals no credential (composioKeyFromEnv). */
+ *  user until it is saved again. `key_env`: saved with `api_key_env`, its key is the value of this variable the server and
+ *  each runner were started with, read at each use, and its row seals no credential (composioKeyFromEnv). */
 export type ComposioMade = { user: string; auth_config: (Made & { named?: true }) | null; accounts: Made[]; per_run?: true; key_env?: typeof COMPOSIO_KEY_ENV };
 
 /** The one variable a Composio save may name for its key (`api_key_env`). Composio's host is fixed in code, so no other
@@ -75,10 +76,11 @@ export function madeToWrite(found: ComposioMade, was: ComposioMade | undefined, 
   return { user: found.user, auth_config: config, accounts: [...accounts, ...kept], ...(found.per_run ? { per_run: true as const } : {}), ...(found.key_env ? { key_env: found.key_env } : {}) };
 }
 
-/** The value of `name`, a server's key variable (ComposioMade.key_env), in `env` as it is now: trimmed, none when unset,
- *  blank or longer than any key. Read at each use, never kept. */
-export function composioKeyFromEnv(name: typeof COMPOSIO_KEY_ENV = COMPOSIO_KEY_ENV, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const value = env[name]?.trim();
+/** The value of `name`, a server's key variable (ComposioMade.key_env), as this process (the server, or a runner) was
+ *  handed it at its start: over the launcher's pipe, so its environment never holds it (secrets.ts secret; the launcher
+ *  names it among its secrets). Trimmed; none when unset, blank or longer than any key. Read at each use, never kept. */
+export function composioKeyFromEnv(name: typeof COMPOSIO_KEY_ENV = COMPOSIO_KEY_ENV): string | undefined {
+  const value = secret(name)?.trim();
   return value && value.length <= 8192 ? value : undefined;
 }
 
@@ -95,7 +97,7 @@ const originOf = (url: string): string => {
 };
 
 /** The key the server `server` (its address `url`) reads from `name`, its record's key_env, for a request to that address:
- *  the variable's value now, only while the address is on Composio's origin (`origin`, COMPOSIO_ORIGIN; a test's fake
+ *  the variable's value as this process was started with it (composioKeyFromEnv), only while the address is on Composio's origin (`origin`, COMPOSIO_ORIGIN; a test's fake
  *  through the server's and runner's seam). Otherwise why not, in words, and the caller sends nothing: `not_allowed`, an
  *  address no preset save writes (a row written by hand); `missing`, the variable unset. Every read of such a key for a
  *  request to the server's address goes through here: a save's and a refresh's listing, a run's start, a claim. */

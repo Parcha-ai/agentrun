@@ -20,7 +20,7 @@ import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
 import { COMPOSIO_PER_RUN, COMPOSIO_USER, composioListingAddress, composioServerId } from "./composio-preset.js";
-import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
+import { mcpSourceKey, ownersRecord, type RecordedRow, recordedForAnother, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
@@ -60,7 +60,7 @@ function changedMeanwhile(name: string, saved: McpServerRow | undefined): McpSer
 export type ComposioHandle = ({ id: string; key: string } | { unusable: true }) & { cleanup?: Cleanup };
 function composioHandleOf(removed: RemovedMcpServer | undefined, cleanup: Cleanup | undefined, keyEnv: typeof COMPOSIO_KEY_ENV | undefined): ComposioHandle {
   const id = removed ? composioServerId(removed.url) : undefined;
-  // A server saved with api_key_env seals no key: its variable's value now.
+  // A server saved with api_key_env seals no key: its variable's value, as this process was started with it.
   const key = composioKeyOf(removed?.opened) ?? (keyEnv && composioKeyFromEnv(keyEnv));
   return { ...(id && key ? { id, key } : { unusable: true as const }), ...(cleanup ? { cleanup } : {}) };
 }
@@ -295,8 +295,9 @@ export class McpServersOverStore {
    *  server's record now owns or the caller removes. `guard`, a preset row's: the turn its write and cleanup take, once
    *  the listing is done (never across it), and the check of the triggers that use it, made in that turn before a write
    *  that leaves what they stand on (an ordinary save moving the row off Composio, a preset save as another user or auth
-   *  config): refused, nothing written. */
-  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord, stands?: ComposioMade, dropped?: (left: ComposioDropped) => void, guard?: SaveGuard) {
+   *  config): refused, nothing written. `byToken`: the API token makes the save (a request the secret-write gate read), so
+   *  a row it makes is recorded as the token's (mcp-sources.ts savedByToken), for its delete. */
+  async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord, stands?: ComposioMade, dropped?: (left: ComposioDropped) => void, guard?: SaveGuard, byToken = false) {
     nameOf(name);
     const was = await this.store.mcp.server(name);
     // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one.
@@ -378,6 +379,13 @@ export class McpServersOverStore {
         const stood = recordedMade(await this.store.settings.get(composioMadeKey(name)), was!.createdAt);
         if (moved || (made && stands && (!stood || stood.user !== stands.user || Boolean(stood.per_run) !== Boolean(stands.per_run) || (stood.auth_config?.id ?? null) !== (stands.auth_config?.id ?? null)))) await guard.inUse();
       }
+      // Who saved the row (mcp-sources.ts `by`): the token marks a row it makes, and keeps the mark on its own; the owner's
+      // row stays the owner's under the token's save; the owner's save over the token's row drops the mark first, so the
+      // token's delete never takes the row the owner is saving.
+      const recorded = was ? await this.store.settings.get(mcpSourceKey(name)) : undefined;
+      const wasToken = was !== undefined && savedByToken(recorded, was.createdAt);
+      const mark = byToken && (was === undefined || wasToken);
+      if (wasToken && !byToken) await this.store.settings.put(mcpSourceKey(name), ownersRecord(recorded as Record<string, unknown>));
       const saved = keeping
         // Re-applied only onto a row that still holds a credential of this auth type, at the address this save read: never
         // onto another one's, nor over a row another save moved meanwhile (a Composio save over it, whose cleanup removed the
@@ -386,7 +394,9 @@ export class McpServersOverStore {
         ? await this.rewriteKeeping(name, was!, fields, "save", (fresh) => fresh.auth === auth.type && fresh.sealed !== null && fresh.url === was!.url)
         // A new credential, or none: written only while the row's credential is still `against`, in the store's one statement.
         : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin }));
-      if (source) await this.store.settings.put(mcpSourceKey(name), storedSource(source, saved, !made && source === standIn));
+      if (source) await this.store.settings.put(mcpSourceKey(name), storedSource(source, saved, !made && source === standIn, mark));
+      // A row the token made with no source given: url with none, as an unrecorded row reads (sourceOf), marked.
+      else if (mark && !wasToken) await this.store.settings.put(mcpSourceKey(name), storedSource({ source: "url", toolkit: null }, saved, false, true));
       // The Composio MCP server the row named before, when the preset made it (the row was a preset server) and the row names
       // it no longer: a preset save over it made a new one, or an ordinary save moved the row off Composio.
       const madeBefore = wasPreset && (made || moved) ? composioServerId(was!.url) : undefined;
@@ -490,9 +500,12 @@ export class McpServersOverStore {
    *  none: removing it drops no secret); the row goes only while it is still that, in the store's one statement, so a
    *  credential saved meanwhile is never dropped by it. An OAuth one's sign-in is then let go at its authorization server
    *  (its refresh token revoked, RFC 7009, where its metadata names a revocation_endpoint), behind the answer: best effort,
-   *  never holding or failing the removal. A claimed run sees the removal at its next call (runner/mcp-claim.ts check). */
-  async remove(name: string, checkedAgainst?: McpCredentialMark): Promise<{ composio?: ComposioHandle }> {
+   *  never holding or failing the removal. A claimed run sees the removal at its next call (runner/mcp-claim.ts check).
+   *  `byToken`: the API token removes it, which it may only while the row is one the token saved (savedByToken): checked
+   *  again here, after the gate's check, so the owner's save over it meanwhile is never removed. */
+  async remove(name: string, checkedAgainst?: McpCredentialMark, byToken = false): Promise<{ composio?: ComposioHandle }> {
     const row = await this.need(name);
+    if (byToken && !savedByToken(await this.store.settings.get(mcpSourceKey(name)), row.createdAt)) changedMeanwhile(name, undefined);
     // Whether it is a Composio preset server: from its record (source composio), read before the row goes.
     const preset = row.auth === "headers" && (await this.sourceOf(row)).source === "composio";
     // What it stands on at Composio, as its save recorded it (none: saved before that was recorded, or not a preset).
@@ -667,7 +680,8 @@ export class McpServersOverStore {
    *  read and checked, never the one saved now: a save at another address with a new credential while the caller waited
    *  (its address check, a listing) must never have that credential sent to the old address. */
   private async opened(name: string, row: McpServerRow, field: string): Promise<Opened> {
-    // A Composio server saved with api_key_env: its key is its variable's value now, refused by name when unset.
+    // A Composio server saved with api_key_env: its key is its variable's value as the server was started with it
+    // (composioKeyFromEnv), refused by name when unset.
     // Sent to Composio's origin alone (composioEnvKey): a row at any other address is refused by name, and nothing is sent.
     const keyEnv = await this.keyEnvOf(row);
     if (keyEnv) {

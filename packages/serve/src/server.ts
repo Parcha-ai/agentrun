@@ -4461,8 +4461,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // non-secret edit on the same route still goes through. A body that does not read counts as the plane says of none.
     // What a stored predicate read to let the request through (SecretRequest.seen): the operation's write is refused if
     // that changed before it lands, so a write allowed against one stored credential never lands over another.
+    // `byToken`: the gate read this request as the API token's, so an MCP server it saves is recorded as the token's, and
+    // it removes only one the token saved (mcp-sources.ts savedByToken).
     let secretSeen: unknown;
+    let byToken = false;
     if (isSecretWriteOperation(found.name) && req.headers.authorization !== undefined && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
+      byToken = true;
       const body = req.method === "DELETE" || req.method === "GET" ? undefined : await bodyOf(req).catch(() => undefined);
       // A segment that is not valid percent-encoding is taken as it came: the request goes on to the token's own check.
       const params = (found.pattern.exec(path) ?? []).slice(1).map((part) => {
@@ -5439,7 +5443,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = await bodyOf(req);
         // A server that isn't a Composio preset's is saved at once, as ever: no save waits on another's listing.
         if (!(await mcpServers.composioPreset(id))) {
-          const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined);
+          const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, undefined, undefined, byToken);
           await refreshMcpMeta();
           return send(res, 200, saved);
         }
@@ -5456,7 +5460,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           }),
           inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS),
         };
-        const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, (left) => (over.dropped = left), guard);
+        const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, (left) => (over.dropped = left), guard, byToken);
         await refreshMcpMeta();
         return send(res, 200, over.note ? { ...saved, composio: over.note } : saved);
       }
@@ -5477,7 +5481,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answer = await inComposioTurn(async () => {
           const over: { dropped?: ComposioDropped } = {};
           const guard: SaveGuard = { turn: (work) => composioTriggers.inTurnOf(id, work), inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS) };
-          const saved = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, secretSeen as McpCredentialMark | undefined, made, stands, (left) => (over.dropped = left), guard), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+          const saved = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, secretSeen as McpCredentialMark | undefined, made, stands, (left) => (over.dropped = left), guard, byToken), id, stopping.signal, async () => (await mcpServers.get(id)).url);
           await refreshMcpMeta();
           return over.dropped ? { ...saved, composio: await composioLeft(id, over.dropped) } : saved;
         });
@@ -5542,7 +5546,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // its Composio project's turn, so a trigger still being made on it is counted (composio-triggers.ts deleting). All of
         // it in the Composio turn, so a Composio save still at work finishes first and its record is counted.
         const forgotten = await inComposioTurn(async () => {
-          const { composio: made } = await composioTriggers.deleting(id, () => mcpServers.remove(id, secretSeen as McpCredentialMark | undefined));
+          const { composio: made } = await composioTriggers.deleting(id, () => mcpServers.remove(id, secretSeen as McpCredentialMark | undefined, byToken));
           await refreshMcpMeta();
           return !made ? undefined : "unusable" in made ? composioNote(id, made.cleanup) : await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal, made.cleanup);
         });
