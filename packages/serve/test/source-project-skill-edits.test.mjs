@@ -1,7 +1,7 @@
 // Ordinary owner saves must change future immutable project placement, never an already admitted run's files.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { chmod, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { agent, serve } from './support.mjs';
@@ -194,6 +194,8 @@ for (const guidance of [true, false]) test(`owner-added ${guidance ? 'skills' : 
   const { tmpdir } = await import('node:os');
   const scratchDir = await mkdtemp(join(tmpdir(), 'owner-skill-git-')); t.after(() => rm(scratchDir, { recursive: true, force: true }));
   const work = localWorkspace(started.folder), scratch = localWorkspace(scratchDir);
+  const parentModes = { '.agents': 0o710, '.agents/skills': 0o750, '.agents/skills/group': 0o711 };
+  for (const [path, mode] of Object.entries(parentModes)) await chmod(join(started.folder, path), mode);
   const git = async (...args) => {
     const answer = await work.exec(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', ...args],
       { env: { PATH: '/usr/bin:/bin', LANG: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }, timeoutMs: 3000 });
@@ -207,4 +209,6 @@ for (const guidance of [true, false]) test(`owner-added ${guidance ? 'skills' : 
     git: (work, options) => captureGit(work, scratch, options) });
   for (const path of [...(guidance ? ['project/.agents/skills/group/added/SKILL.md'] : []), 'project/.agents/skills/group/added/reference.json'])
     assert.ok(captured.entries.some(entry => entry.path === path), 'Git ignore rules cannot discard an explicitly saved owner skill');
+  for (const [path, mode] of Object.entries(parentModes))
+    assert.equal(captured.entries.find(entry => entry.path === `project/${path}`)?.mode, mode, 'retained ignored parent directories keep their exact modes');
 });

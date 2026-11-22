@@ -139,7 +139,7 @@ export async function captureProject(options: ProjectCaptureOptions): Promise<So
   }
   const before = git?.inventory ?? await inventory(work, options.exclude, cap, signal);
   const selected = (entry: InventoryEntry): boolean => entry.path !== ".git" && (!git || entry.path === "" || git.files.some(path => entry.path === path || entry.type === "directory" && contains(entry.path, path))
-    || retainedSkills.some(path => contains(path, entry.path)));
+    || retainedSkills.some(path => contains(path, entry.path) || entry.type === "directory" && contains(entry.path, path)));
   const entries = baseline.entries.filter(entry => entry.role === "instruction").map(entry => ({ ...entry }));
   const blobs: Record<string, string> = Object.create(null), observed = new Map<string, string>(); let expanded = 0;
   const keep = (bytes: Uint8Array): string => { const sha = hash(bytes); blobs[sha] = Buffer.from(bytes).toString("base64"); return sha; };
