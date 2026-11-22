@@ -443,6 +443,10 @@ test("Docker: no box warns with the reason and the fix", async () => {
   assert.match(missing.check("docker").summary, /Docker is not installed/);
 });
 
+/** Whether a request to the CLI test's server is the CLI's, an API request under /v2/. Another process on the machine
+ *  may send `GET /` to any new loopback listener: the server neither records nor reads it. */
+const ours = (req) => req.url.startsWith("/v2/");
+
 /** A port probe at `port`: the `GET /` another process on the machine may send to any new loopback listener. Its status. */
 async function portProbe(port) {
   const res = await fetch(`http://127.0.0.1:${port}/`);
@@ -462,6 +466,7 @@ async function cli(argv, env) {
 test("through the CLI: --json's shape and exit codes, the token sent only to capabilities and never printed, --base-url refused", async (t) => {
   const seen = [];
   const server = createServer((req, res) => {
+    if (!ours(req)) return void res.writeHead(404).end();
     seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
     const send = (status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
     if (req.url === "/v2/health") return send(200, { status: "ok", checks: { store: "ok", disk: "ok" } });
