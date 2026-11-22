@@ -11,4 +11,4 @@ Launch hook: a run the host starts for a handed firing (`trigger_firing`) now st
 
 A hook that does not take a firing is now a failed try under the trigger's retry policy, no longer `skipped`. The firing's error is `hook_failed`, and its reason names the status, `timeout` or the connection's error code, never the hook's URL, which can carry a query token. No answer, no connection, a 5xx or a 429 keeps the firing `due` with `retry_at`, to be handed again on the trigger's backoff; any other answer, a redirect included, fails it. Each counts toward the failure streak, auto-pause and `trigger.failed`.
 
-A host start that lands while its firing waits on a retry makes the firing `started` with that run, so the overlap check, `max_active_runs` and `last_run_id` count it.
+A host start that lands while its firing waits on a retry makes the firing `started` with that run, so the overlap check, `max_active_runs` and `last_run_id` count it. One that lands just as the server records the hook's 2xx no longer sets the started firing back to `sent`: it stays `started`, and `max_active_runs` counts its run.

@@ -307,13 +307,13 @@ for (const [restart, hooked] of [["the hook still set", true], ["the hook since 
   const second = await serve(t, { data, triggerClock: clock, runner: false, ...(hooked ? { launchHook: { url: hook.url, secret } } : {}) });
   const read = async () => (await second.api("GET", `/triggers/${id}/firings`)).body.firings[0];
   assert.ok(await until(async () => (await read()).status === "started"), JSON.stringify(await read()));
-  assert.deepEqual([(await read()).run_id, hook.got.length], [runId, 1], "started with the host's run, never handed again");
+  assert.deepEqual([(await read()).run_id, posts(hook).length], [runId, 1], "started with the host's run, never handed again");
 
   clock.to("2026-06-01T00:20:00Z");
   const [next] = await firings(second.api, id, 2);
   assert.deepEqual([next.status, next.run_id], ["skipped", null], JSON.stringify(next));
   assert.match(next.reason, new RegExp(runId), "skipped naming the host's run");
-  assert.equal(hook.got.length, 1, "the time its run overlapped was never handed to the host");
+  assert.equal(posts(hook).length, 1, "the time its run overlapped was never handed to the host");
 });
 
 test("a firing that waited on its trigger's max_active_runs is handed when its room comes, 30 minutes after its fired_at, and its host gets its 10 minutes from that answer", { timeout: 180_000 }, async (t) => {

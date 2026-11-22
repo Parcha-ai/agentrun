@@ -359,13 +359,13 @@ export class Triggers {
   }
 
   /** At the server's start: every enabled trigger whose source no longer reads turned off, each failure's trigger.failed
-   *  queued that is not yet, with the launch hook each sent firing whose host's run is in the store started with it
-   *  (relink), every firing an earlier server left due driven again (its origin key makes a run it already started the
-   *  same run), the times missed while it was down recorded, and the timer armed. */
+   *  queued that is not yet, each sent firing whose host's run is in the store started with it (relink), every firing an
+   *  earlier server left due driven again (its origin key makes a run it already started the same run), the times missed
+   *  while it was down recorded, and the timer armed. */
   async start(): Promise<void> {
     const now = this.clock.now();
     await this.offUnreadable((await this.all()).filter((t) => t.enabled && this.problem(t.source)), now);
-    if (this.deps.launchHook) await this.relink();
+    await this.relink();
     await this.tick();
   }
 
@@ -1181,9 +1181,9 @@ export class Triggers {
     if (this.closed) return;
     if (linked) return void (await this.handedRan(trigger.id, firing.key, linked.run_id));
     if (handed instanceof HookFailed) return void (await this.answered(trigger.id, firing.key, handed));
-    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", reason: HANDED_NO_RUN, keepAttrs: true, startBy: this.clock.now() + LAUNCH_HOOK_LATE_START_MS }, { reset: true });
-    // The host may start the run right after its answer: one it started between the read above and this write is read
-    // again here.
+    // Sent only while it has no run: a host start between the read above and this write left it started with its run.
+    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", reason: HANDED_NO_RUN, keepAttrs: true, startBy: this.clock.now() + LAUNCH_HOOK_LATE_START_MS, noRun: true }, { reset: true });
+    // The host may start the run right after its answer: one it started after this write is read again here.
     const after = await this.deps.runOf(firing.key);
     if (this.closed) return;
     if (after) return void (await this.handedRan(trigger.id, firing.key, after.run_id));
