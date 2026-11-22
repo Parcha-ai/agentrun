@@ -632,11 +632,12 @@ Route: `POST /workspace/archil/test`.
 
 ### `agentrun login`
 
-Check a server's token, read from stdin, and keep it with the server's address in the config file.
+Sign in to a server, with a device code when it offers one, else a token read from stdin, and keep the token with the server's address in the config file.
 
-Route: `GET /agents?limit=1, to check the token`.
+Route: `GET /capabilities, then its device sign-in; else GET /agents?limit=1, to check a token from stdin`.
 
-- `--base-url URL` (string, this CLI's own): the server's API, ending /v2 (default AGENTRUN_BASE_URL)
+- `--to URL|cloud` (string, this CLI's own): the server, /v2 added when its address lacks it; cloud is AgentRun cloud (AGENTRUN_CLOUD_URL, else https://api.agentrun.ai). When its capabilities offer a device sign-in, prints an address and a code to approve there, else reads the token from stdin
+- `--base-url URL` (string, this CLI's own): the server's API, ending /v2 (default AGENTRUN_BASE_URL); the token from stdin
 
 ## logout
 
