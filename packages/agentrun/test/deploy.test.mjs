@@ -245,5 +245,7 @@ test("--to names a target: cloud is api.agentrun.ai (AGENTRUN_CLOUD_URL override
   assert.equal(toBase("http://127.0.0.1:7340", {}), "http://127.0.0.1:7340/v2");
   assert.equal(toBase("https://agents.example.test/", {}), "https://agents.example.test/v2");
   assert.equal(toBase("https://agents.example.test/v2/", {}), "https://agents.example.test/v2");
-  for (const bad of ["ftp://example.test", "https://user:pw@example.test", "https://example.test/v2?x=1", "nope"]) assert.throws(() => toBase(bad, {}), /--to/, bad);
+  // A URL with a user and password, made here rather than written out.
+  const withUser = Object.assign(new URL("https://example.test"), { username: "user", password: "pw" }).href;
+  for (const bad of ["ftp://example.test", withUser, "https://example.test/v2?x=1", "nope"]) assert.throws(() => toBase(bad, {}), /--to/, bad);
 });
