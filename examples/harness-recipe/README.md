@@ -14,8 +14,8 @@ What each part does:
   `ANTIGRAVITY_GEMINI_API_KEY`, reaches the agent as `GEMINI_API_KEY`, and the adapter tells it ACP `authenticate` with
   `gemini-api-key` before any session opens. The server's own `GEMINI_API_KEY`, if it holds one, never reaches the agent.
 - `signIn`: the agent's own `oauth-personal`, a person's Google account, on runs its one owner starts and attends.
-  `GEMINI_HOME` points the agent at the folder it keeps that sign-in in. See [Vendor terms](../../HARNESS.md#vendor-terms)
-  for what Google allows it on.
+  `GEMINI_HOME` points the agent at the folder it keeps that sign-in in. [Vendor terms](../../HARNESS.md#vendor-terms)
+  links Google's terms and states AgentRun's own, narrower rule for it.
 - `model`: plan billing. Google bills the key's project (or, on a sign-in, the person's plan); AgentRun sees none of
   those requests, so the adapter stops a run at 20 turns or 40 tool calls. `hosts` names the Gemini API.
 - `declares`: the agent's `initialize` advertises `loadSession` and MCP over HTTP.
