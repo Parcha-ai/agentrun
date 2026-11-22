@@ -1,6 +1,7 @@
 import { KeyRound } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ChatGPTSignIn, WhatRunsHere } from "@/components/ChatGPTSignIn";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { KEY_ADVICE, KeyForm } from "@/components/KeysPage";
 import { RunError } from "@/components/RunError";
 import { Button } from "@/components/ui/button";
@@ -58,7 +59,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
   if (planOffered && planView.state === "signed_in") return (
     <section className="border-b bg-card px-5 py-5 md:px-8" aria-label="Model key">
       <div className="flex gap-3">
-        <KeyRound className="mt-1 size-4 shrink-0 text-success-text" aria-hidden />
+        <ProviderIcon id="openai" className="mt-1" />
         <div className="min-w-0 flex-1 space-y-3">
           <h2 className="text-prose font-semibold">Signed in with ChatGPT</h2>
           <ChatGPTSignIn v2={v2} view={planView} onView={moved} />
@@ -78,7 +79,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
           {needs === "model"
             ? <p className="text-body text-muted-foreground">The server's AGENT_MODEL names a model it doesn't know, so an agent that names no model can't run. Set AGENT_MODEL to a provider/model-id where the server starts, or name a model in each agent.</p>
             : required
-            ? <p className="text-body text-muted-foreground">This server's default model is <span className="font-mono">{model}</span>, and no {required.label} key is set, so an agent that names no model can't run. Save the {required.label} key: such an agent then runs on that model.</p>
+            ? <p className="text-body text-muted-foreground">This server's default model is <span className="inline-flex items-center gap-1.5 align-bottom font-mono"><ProviderIcon id={model!} kind="model" />{model}</span>, and no {required.label} key is set, so an agent that names no model can't run. Save the {required.label} key: such an agent then runs on that model.</p>
             : planOffered
             ? <>
                 <p className="text-body text-muted-foreground">This server has no model yet, so an agent that names no model can't run.</p>
@@ -99,7 +100,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
           {keysShown && rows && writable && (
             <div className="flex flex-wrap gap-2" role="group" aria-label="Provider">
               {offered!.map((k) => (
-                <Button key={k.id} size="sm" variant={pick === k.id ? "solid" : "primary"} aria-pressed={pick === k.id} onClick={() => { setPick(pick === k.id ? null : k.id); setProblem(null); }}>{k.label}</Button>
+                <Button key={k.id} size="sm" variant={pick === k.id ? "solid" : "primary"} aria-pressed={pick === k.id} onClick={() => { setPick(pick === k.id ? null : k.id); setProblem(null); }}><ProviderIcon id={k.id} />{k.label}</Button>
               ))}
             </div>
           )}

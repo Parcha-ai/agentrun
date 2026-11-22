@@ -1,5 +1,6 @@
 import { Copy, SquareTerminal } from "lucide-react";
 import { useRef, useState } from "react";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { Banner, Button, type ButtonProps, Dialog, Field, Picker, Textarea } from "@/components/ui";
 import { CODING_AGENTS, type CodingAgentChoice, type CodingAgentContext, codingAgentOf, codingAgentPrompt, saveCodingAgent, savedCodingAgent } from "@/lib/codingAgentHandoff";
 import { cn } from "@/lib/utils";
@@ -47,7 +48,7 @@ export function CodingAgentDialog({ open, onClose, context, serverUrl = "/v2", c
         <Field label="Application" hint={to.instruction}>
           <Picker label="Application" autoFocus value={choice} className="w-full sm:w-72"
             onChange={(v) => { const next = codingAgentOf(v as CodingAgentChoice).id; saveCodingAgent(next); setChoice(next); setCopied("no"); }}
-            options={CODING_AGENTS.map((a) => ({ value: a.id, label: a.label }))} />
+            options={CODING_AGENTS.map((a) => ({ value: a.id, label: a.label, icon: <ProviderIcon id={a.id} kind="harness" /> }))} />
         </Field>
         <Field label="Prompt" note="Review it and edit it before you copy it. It holds the task and no credential: your coding agent signs in to the server on its own.">
           <Textarea ref={text} value={prompt} rows={14} spellCheck={false} className="resize-y text-small leading-relaxed"

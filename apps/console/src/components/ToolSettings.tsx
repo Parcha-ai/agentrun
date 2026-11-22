@@ -1,4 +1,6 @@
+import { Plug, Wrench } from "lucide-react";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
+import { ProviderIcon, toolProviderId } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
 import { HARNESS_ORDER, issuesFor, PIN_BROKEN, PIN_HOLDS, pinLine, providerHelp, providerLabel, resolution, DENY_ONLY, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
@@ -50,13 +52,15 @@ export const ASK_OFF = "Ask is off on this server: approving a call takes the ow
  *  Ask, where it can't be answered here (`ask_needs`), is offered disabled, with why. `refused`: whether a row's tool is
  *  refused by the server's deny, which holds for every agent (SERVER_DENY, said under it); `locked`, whether that also
  *  holds its permission at deny here (an agent's table: its own setting holds nothing over it). An MCP tool's row may
- *  carry its effect's mark (`effectOf`), a line under its name (`detailOf`), and a shorter name (`labelOf`); setting one
+ *  carry its effect's mark (`effectOf`), a line under its name (`detailOf`), a shorter name (`labelOf`) and its known
+ *  provider's icon (`iconOf`); setting one
  *  that `confirmAllowOf` names (a destructive tool) to allow asks again in place, and only "Allow without asking" saves it.
  *  `fallbackWordOf`: where a row's fallback is not its default, what it is instead ("allow reads"), said in its place. */
-export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, refused = () => false, locked = false, unattended = false, noteOf, labelOf, detailOf, effectOf, confirmAllowOf = () => false, fallbackWordOf, onEdit }: {
+export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbackOf = (g) => g.default_permission, resolvesOf, issues, busy = false, refused = () => false, locked = false, unattended = false, noteOf, labelOf, iconOf, detailOf, effectOf, confirmAllowOf = () => false, fallbackWordOf, onEdit }: {
   label: string;
   fallbackWordOf?: (name: string) => string | undefined;
   labelOf?: (name: string) => ReactNode;
+  iconOf?: (name: string) => ReactNode;
   detailOf?: (name: string) => ReactNode;
   effectOf?: (name: string) => ToolEffect | undefined;
   confirmAllowOf?: (name: string) => boolean;
@@ -126,7 +130,7 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                 <Fragment key={name}>
                   <tr data-tool={name} data-set={set || permissionSet ? "" : undefined} className="border-b align-top last:border-b-0">
                     <td className="px-3 py-2.5 font-mono text-body">
-                      <span className="flex flex-wrap items-center gap-2">{labelOf?.(name) ?? name}{effect && <EffectMark effect={effect} />}</span>
+                      <span className="flex flex-wrap items-center gap-2">{iconOf?.(name) ?? <ProviderIcon id={name} kind="tool" />}{labelOf?.(name) ?? name}{effect && <EffectMark effect={effect} />}</span>
                       {detail ? <span data-tool-detail className="mt-0.5 block text-small text-muted-foreground">{detail}</span> : null}
                     </td>
                     {permissions && <td className="px-3 py-2">
@@ -145,9 +149,9 @@ export function ToolTable({ label, rows, settings, fallbackOf, permissionFallbac
                       {t ? <>
                         <Picker small label={`${name} provider`} value={provider} disabled={busy} onChange={(v) => pick(v as ToolSetting["provider"])}
                           className={cn("w-96 max-w-full", set && "border-primary text-primary")}
-                          options={t.providers.map((p) => ({ value: p, label: `${providerLabel(p, name)}${p === fallback ? " (default)" : ""}` }))} />
+                          options={t.providers.map((p) => ({ value: p, label: `${providerLabel(p, name)}${p === fallback ? " (default)" : ""}`, icon: <ProviderIcon id={toolProviderId(p, name)} fallback={Wrench} /> }))} />
                         {providerHelp(provider, name) && <span className="mt-1 block max-w-[300px] text-label text-muted-foreground">{providerHelp(provider, name)}</span>}
-                        {set && <span className="mt-1 block font-mono text-label text-muted-foreground">default: {providerLabel(fallback, name)}</span>}
+                        {set && <span className="mt-1 flex items-center gap-1.5 font-mono text-label text-muted-foreground">default: <ProviderIcon id={toolProviderId(fallback, name)} fallback={Wrench} className="size-3" />{providerLabel(fallback, name)}</span>}
                       </> : none}
                     </td>}
                     {providers && <td className="px-3 py-2.5">{t ? resolvesOf(t, provider) : none}</td>}
@@ -191,7 +195,10 @@ function ConfirmAllow({ name, keep, busy, onAllow, onKeep }: { name: string; kee
 /** A resolution, said plainly: an unavailable one in the warning colour with the server's reason. */
 export function Resolves({ value, prefix, tool }: { value: string | undefined; prefix?: string; tool?: string }) {
   const r = resolution(value, tool);
-  return <span className={cn("block font-mono text-small", r.unavailable ? "text-warning-text" : "text-muted-foreground")}>{prefix}{r.text}</span>;
+  return <span className={cn("flex items-center gap-1.5 font-mono text-small", r.unavailable ? "text-warning-text" : "text-muted-foreground")}>
+    {value && !r.unavailable && <ProviderIcon id={toolProviderId(value, tool ?? "")} fallback={Wrench} className="size-3" />}
+    <span>{prefix}{r.text}</span>
+  </span>;
 }
 
 /** What a capability resolves to on each harness, one line each. A harness this server can't run (capabilities'
@@ -280,6 +287,12 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
           wait, so the server refuses the start (its asks blocker, runnable.ts), in the same words. */}
       <p className="-mt-1 mb-2 text-small text-muted-foreground">Each of these tools takes this server's setting (its default here) unless it is changed here. {callTools ? "A call node can't wait for an approval: a tool set to ask stops the run from starting. Set it to allow." : unattended ? "Never ask is on: a tool on ask runs without waiting for you. A tool set to deny still holds." : "A tool on ask makes the run wait for your approval at each call."}</p>
       <ToolTable label="This agent's tool settings" unattended={unattended} rows={rows} settings={value} fallbackOf={(t) => t.provider} issues={byTool} onEdit={(edit) => onChange(edit(value))}
+        iconOf={(name) => {
+          const grant = grantOf(name);
+          if (!grant) return undefined;
+          const source = mcpServers?.find((s) => s.name === grant.server)?.source;
+          return <ProviderIcon id={source === "github" || source === "composio" ? source : "mcp"} fallback={Plug} />;
+        }}
         // An MCP tool's effect as its server's read marks it; setting a destructive one to allow takes a second click.
         effectOf={(name) => listedTool(name)?.effect} confirmAllowOf={(name) => listedTool(name)?.effect === "destructive"}
         // A pin: the agent's own, the server's beside it where it pins the tool too; the server's alone where only it does.

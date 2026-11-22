@@ -1,5 +1,6 @@
 import { ChevronRight, ExternalLink, X } from "lucide-react";
 import { useState } from "react";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { Dialog } from "@/components/ui/dialog";
@@ -24,7 +25,7 @@ export function StateChip({ state }: { state: string | undefined }) {
 export function ProviderChip({ provider }: { provider: string | null | undefined }) {
   if (!provider) return null;
   const v = provider === "parallel" ? "--wf-parallel" : provider === "openrouter" ? "--wf-openrouter" : "--wf-jev";
-  return <span className="caps inline-flex h-5 items-center border px-1.5 text-micro leading-none" style={{ color: `hsl(var(${v}))`, borderColor: `hsl(var(${v}) / .6)`, background: `hsl(var(${v}) / .12)` }}>{provider}</span>;
+  return <span className="caps inline-flex h-5 items-center gap-1 border px-1.5 text-micro leading-none" style={{ color: `hsl(var(${v}))`, borderColor: `hsl(var(${v}) / .6)`, background: `hsl(var(${v}) / .12)` }}><ProviderIcon id={provider} className="size-3" />{provider}</span>;
 }
 
 const TONE_TEXT: Record<string, string> = { good: "text-success-text", warn: "text-warning-text", bad: "text-destructive-text" };
@@ -51,6 +52,7 @@ export function NodeDrawer({ data, selected, onSelect, onClose, fileUrl }: { dat
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <p className="caps flex items-center gap-1.5 text-label text-muted-foreground">
+              {meta.tool ? <ProviderIcon id={meta.tool} kind="tool" className="size-3.5" /> : !meta.decision && run?.model ? <ProviderIcon id={run.model} kind="model" className="size-3.5" /> : null}
               {meta.decision ? node.kind : kindWithModel(node.kind, run)}{meta.tool ? ` · ${toolName(meta.tool)}` : node.via ? ` · ${node.via}` : ""}
               {meta.tool && mcpCallTool(meta.tool) && <McpMark />}
               {item && <><ChevronRight className="size-3" aria-hidden /> item {item.index + 1}</>}
@@ -60,7 +62,7 @@ export function NodeDrawer({ data, selected, onSelect, onClose, fileUrl }: { dat
               <StateChip state={item ? item.status : run?.status} />
               {item && (() => { const o = itemOutcome(data, mapPath!, item); return o.outcome ? <span className="font-mono text-label" title={o.pNote}>outcome <b className={TONE_TEXT[o.tone ?? ""]}>{o.outcome}</b>{o.p !== undefined && <span className="text-muted-foreground"> · {p2(o.p)}</span>}</span> : null; })()}
               {meta.decision && <ProviderChip provider={meta.provider} />}
-              {meta.decision && (run?.model ?? meta.model) && <span className="font-mono text-label text-muted-foreground">{run?.model ?? meta.model}</span>}
+              {meta.decision && (run?.model ?? meta.model) && <span className="inline-flex items-center gap-1.5 font-mono text-label text-muted-foreground"><ProviderIcon id={(run?.model ?? meta.model)!} kind="model" className="size-3" />{run?.model ?? meta.model}</span>}
               {run?.branch && <span className="font-mono text-label">took <b>{run.branch}</b></span>}
               {!item && time !== undefined && <span className="font-mono text-label text-muted-foreground">{ms(time)}</span>}
             </div>
@@ -185,7 +187,7 @@ function Jury({ data, path, onSelect }: { data: RunGraph; path: string; onSelect
           <li key={d.id ?? d.executionPath}>
             <button type="button" className="flex w-full items-center gap-3 px-4 py-2 text-left font-mono text-small hover:bg-accent" onClick={() => onSelect({ path: d.node!, item: null })}>
               <span className="w-[92px] shrink-0"><ProviderChip provider={d.provider} /></span>
-              <span className="w-[132px] shrink-0 truncate" title={d.model ?? ""}>{d.model ?? label(d)}</span>
+              <span className="inline-flex w-[132px] shrink-0 items-center gap-1.5" title={d.model ?? ""}>{d.model && <ProviderIcon id={d.model} kind="model" className="size-3" />}<span className="truncate">{d.model ?? label(d)}</span></span>
               <Bar p={a.noul} strong tick={0.5} tone={a.noul >= 0.5 ? "fg" : "muted"} />
               <span className="w-10 text-right tabular-nums">{p2(a.noul)}</span>
             </button>
@@ -307,7 +309,7 @@ export function VerdictCard({ d, fileUrl, zoom }: { d: Decision; fileUrl: FileUr
     <section className="border bg-card">
       <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
         <ProviderChip provider={d.provider} />
-        <span className="min-w-0 flex-1 truncate font-mono text-small">{d.model ?? "default model"}</span>
+        <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 font-mono text-small">{d.model && <ProviderIcon id={d.model} kind="model" className="size-3" />}<span className="truncate">{d.model ?? "default model"}</span></span>
         <Chip tone={tone}>{d.status === "cancelled" ? "outcome unknown" : d.status}</Chip>
       </header>
       <dl className="grid grid-cols-[minmax(0,1fr)_100px_92px] border-b font-mono text-small">
@@ -399,6 +401,7 @@ export function ToolCard({ e, fileUrl, zoom, compact = false }: { e: Effect; fil
     <section className="border bg-card">
       <header className="flex items-center gap-2 border-b px-4 py-2.5">
         <span className="caps inline-flex h-5 items-center border border-wf-tool/[.6] bg-wf-tool/[.12] px-1.5 text-micro leading-none text-wf-tool">tool</span>
+        <ProviderIcon id={e.tool} kind="tool" className="size-3.5" />
         <span className="min-w-0 flex-1 truncate font-mono text-small" title={e.tool}>{toolName(e.tool)}</span>
         {mcpCallTool(e.tool) && <McpMark />}
         <span className="font-mono text-label tabular-nums text-muted-foreground">{e.endedAt ? ms(span(e.startedAt, e.endedAt)) : ""}</span>

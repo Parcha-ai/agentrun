@@ -1,4 +1,5 @@
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { cn } from "@/lib/utils";
 
 /** A description longer than this many characters is more than the card's three lines hold: More shows the rest. */
@@ -17,9 +18,10 @@ const NAME_CUT = 32, TAG_CUT = 40, ALERT_CUT = 60;
  *  description and the reasons; Less closes it. More never ticks the tool.
  *
  *  Long unbroken text (a base64 example, a shell line, an MCP tool's id) wraps anywhere and never widens the card or its
- *  column. `note`: a word beside the name ("not metered"). `warn`: its border says something is wrong with it. */
-export function ToolCard({ value, name, note, blurb, description, tag, why, alert, on, disabled, warn, onToggle }: {
-  value: string; name: string; note?: ReactNode; blurb?: string; description?: string; tag?: string; why?: string; alert?: string;
+ *  column. `icon`: its resolved provider when the caller knows it, otherwise the tool's namespace or a generic tool.
+ *  `note`: a word beside the name ("not metered"). `warn`: its border says something is wrong with it. */
+export function ToolCard({ value, name, icon, note, blurb, description, tag, why, alert, on, disabled, warn, onToggle }: {
+  value: string; name: string; icon?: ReactNode; note?: ReactNode; blurb?: string; description?: string; tag?: string; why?: string; alert?: string;
   on: boolean; disabled: boolean; warn?: boolean; onToggle: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -49,6 +51,7 @@ export function ToolCard({ value, name, note, blurb, description, tag, why, aler
     <label data-tool-card={value} className={cn("flex w-full min-w-0 flex-col border px-3 py-2.5 font-mono text-body", open ? "min-h-36" : "h-36 overflow-hidden", on && "border-foreground", warn && "border-warning/60", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
       <span className="flex min-w-0 items-center gap-3">
         <input type="checkbox" value={value} checked={on} disabled={disabled} onChange={onToggle} className="shrink-0 accent-primary" />
+        {icon ?? <ProviderIcon id={value} kind="tool" />}
         {/* Cut to one line on the card, whole in its title when cut; whole, wrapping, once More opens (an MCP tool's id has
             no spaces, and tools from one server share a long prefix). */}
         <span ref={nameRef} title={hover(name, longName)} className={cn("min-w-0", open ? "[overflow-wrap:anywhere]" : "truncate")}>{name}</span>

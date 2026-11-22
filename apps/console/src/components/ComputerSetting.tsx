@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Switch } from "@/components/ui/switch";
 import { BY_THE_MINUTE, type Carried, type CarriedField, carry, type Dropped, METERED, pickable, pickKind, recorded, refusal, whyNot } from "@/lib/computers";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { cn } from "@/lib/utils";
 import type { Computer, ComputerKindView } from "@/lib/v2";
 
@@ -34,15 +35,15 @@ export function ComputerSetting({ kinds, value, onChange, error, warning }: {
         {kinds.map((k) => {
           const can = pickable(k);
           const why = can ? undefined : whyNot(k);
-          const ready = k.providers.filter((p) => p.ready).map((p) => p.name).join(", ");
+          const ready = k.providers.filter((p) => p.ready);
           return (
             <div key={k.kind} data-kind={k.kind} className={cn("border px-4 py-3", value.kind === k.kind ? "border-foreground" : "border-border", !can && "opacity-60")}>
               <label className={cn("flex items-start gap-3", can ? "cursor-pointer" : "cursor-not-allowed")}>
                 <input type="radio" name="computer-kind" value={k.kind} checked={value.kind === k.kind} disabled={!can && value.kind !== k.kind}
                   onChange={() => pick(k)} className="mt-1 accent-primary" />
                 <span className="min-w-0">
-                  <span className="block text-lead font-semibold">{kindName(k.kind)}</span>
-                  <span className="mt-0.5 block text-small text-muted-foreground">{can ? (k.kind === "none" ? "The run's folder only" : ready) : "Not available here"}</span>
+                  <span className="flex items-center gap-2 text-lead font-semibold"><ProviderIcon id={k.kind} kind="compute" />{kindName(k.kind)}</span>
+                  <span className="mt-0.5 block text-small text-muted-foreground">{can ? (k.kind === "none" ? "The run's folder only" : ready.map((p, i) => <span key={p.id} className="inline-flex items-center gap-1"><ProviderIcon id={p.id} kind="compute" className="size-3" />{p.name}{i < ready.length - 1 ? ", " : ""}</span>)) : "Not available here"}</span>
                 </span>
               </label>
               {why && (
@@ -65,7 +66,7 @@ export function ComputerSetting({ kinds, value, onChange, error, warning }: {
                   <input type="radio" name="computer-provider" value={p.id} checked={value.provider === p.id} disabled={!p.ready && value.provider !== p.id}
                     onChange={() => choose(picked, carry({ kind: picked.kind, provider: p.id }, value, picked))} className="mt-1 accent-primary" />
                   <span className="min-w-0">
-                    <span className="flex flex-wrap items-baseline gap-2"><span className="text-body font-semibold">{p.name}</span>{p.metered && <span className="caps text-label text-muted-foreground">Metered</span>}</span>
+                    <span className="flex flex-wrap items-center gap-2"><ProviderIcon id={p.id} kind="compute" /><span className="text-body font-semibold">{p.name}</span>{p.metered && <span className="caps text-label text-muted-foreground">Metered</span>}</span>
                     {/* A browser's time is counted in a run's cap; a sandbox's, desktop's or phone's vendor minutes are not. */}
                     {p.metered && BY_THE_MINUTE.has(picked.kind) && <span className="mt-0.5 block text-small text-muted-foreground">{METERED}</span>}
                     {!p.ready && p.why && <span className="mt-0.5 block text-small">{p.why}</span>}

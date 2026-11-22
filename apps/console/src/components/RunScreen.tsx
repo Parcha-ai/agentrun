@@ -1,5 +1,6 @@
 import { Download, Globe, Maximize2, Minimize2, Monitor, Smartphone, Terminal } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { RunLiveSteps, RunVideoSteps, SCREEN_WITH_STEPS } from "@/components/ScreenSteps";
 import { Chip } from "@/components/ui/chip";
@@ -297,7 +298,7 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
     <div className={cn("mx-auto w-full px-5 md:px-8", beside ? "max-w-7xl" : "max-w-4xl")}>
     <section aria-label="Screen" className="border">
       <header className="flex flex-wrap items-center gap-3 border-b px-4 py-2.5">
-        <Icon className="size-4 text-muted-foreground" aria-hidden />
+        {machine?.provider ? <ProviderIcon id={machine.provider} kind="compute" fallback={Icon} /> : <Icon className="size-4 text-muted-foreground" aria-hidden />}
         <span className="caps text-small font-semibold">{live ? "Live" : NAMES[kind]}</span>
         {/* Who drives, for a desktop or a phone: GET /computer's hold is theirs. A browser is taken over in its own viewer,
             which says who has it; the served hold doesn't follow that take, so it isn't said here. */}

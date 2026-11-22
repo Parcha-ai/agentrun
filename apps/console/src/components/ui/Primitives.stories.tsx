@@ -3,6 +3,7 @@ import { Archive, Bot, Copy, History, LayoutDashboard, MoreHorizontal, Pencil, P
 import { useId, useState } from "react";
 import { Block, Themes } from "@/design/Themes";
 import { Banner, Button, Checkbox, Chip, ConfirmDialog, CopyButton, Dialog, Field, Input, Menu, MenuItem, MenuSeparator, NavItem, Picker, Radio, Segmented, Spinner, Switch, tabPanelProps, Tabs, Textarea, Tip, ToastProvider, useToast } from ".";
+import { ProviderIcon } from "@/components/ProviderIcon";
 
 // Every primitive in every variant and state, in both themes. docs/console-design-system.md says which to reach for.
 const meta: Meta = { title: "Design system/Primitives" };
@@ -65,7 +66,7 @@ function FieldsDemo() {
       <Field label="Effort"><Picker value="medium" onChange={() => {}} label="Effort" options={[{ value: "low", label: "low" }, { value: "medium", label: "medium" }, { value: "high", label: "high" }]} /></Field>
       <div>
         <p id="model-label" className="caps mb-2 text-small font-semibold">Model (Picker)</p>
-        <Picker label="Model" value={model} onChange={setModel} className="w-full" options={[{ value: "sonnet", label: "Claude Sonnet" }, { value: "opus", label: "Claude Opus" }, { value: "haiku", label: "Claude Haiku" }]} />
+        <Picker label="Model" value={model} onChange={setModel} className="w-full" options={[{ value: "sonnet", label: "Claude Sonnet" }, { value: "opus", label: "Claude Opus" }, { value: "haiku", label: "Claude Haiku" }].map((option) => ({ ...option, icon: <ProviderIcon id="anthropic" kind="model" /> }))} />
       </div>
       <Field group label="Where it runs" note="A sandbox keeps the agent's files off this machine.">
         <div className="space-y-2">

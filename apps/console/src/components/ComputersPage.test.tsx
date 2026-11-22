@@ -115,6 +115,15 @@ describe("Settings → Computers", () => {
     expect(p.host.innerHTML).not.toContain(FAKE);
   });
 
+  it("shows each compute provider's decorative icon beside its name", async () => {
+    const page = await open(server([view()]).v2);
+    for (const [kind, name, provider] of [["Sandbox", "Docker", "docker"], ["Sandbox", "E2B", "e2b"], ["Sandbox", "Daytona", "daytona"], ["Desktop", "Orgo", "orgo"], ["Browser", "Kernel", "kernel"]]) {
+      const icon = page.row(kind, name).querySelector(`img[data-provider-icon="${provider}"]`);
+      expect(icon, name).not.toBeNull();
+      expect(icon?.getAttribute("alt")).toBe("");
+    }
+  });
+
   it("is a Settings tab, at #/settings/computers", () => {
     expect(SETTINGS_PAGES.map((p) => p.label)).toContain("Computers");
     expect(route("#/settings/computers")).toEqual({ section: "settings", settings: "computers" });

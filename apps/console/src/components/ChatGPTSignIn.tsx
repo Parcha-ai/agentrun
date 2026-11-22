@@ -1,4 +1,5 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { ProviderIcon, providerIdForModel } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
 import { Input } from "@/components/ui/field";
@@ -111,7 +112,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
   const alert = problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>;
   if (v.state === "signed_in") return (
     <div className="space-y-2">
-      <p className="text-body font-semibold">{signedInAs(v)}</p>
+      <p className="flex items-center gap-2 text-body font-semibold"><ProviderIcon id="openai" />{signedInAs(v)}</p>
       <PlanDisclosure />
     </div>
   );
@@ -119,7 +120,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
   if (!pending) return (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
-        <Button type="button" size="sm" variant="solid" disabled={busy} onClick={() => void start()}>Continue with ChatGPT</Button>
+        <Button type="button" size="sm" variant="solid" disabled={busy} onClick={() => void start()}><ProviderIcon id="openai" />Continue with ChatGPT</Button>
         {beside}
       </div>
       {alert}
@@ -192,6 +193,7 @@ export function ChatGPTRow({ v2, writable, whyNot, onChange }: { v2: Client; wri
   return (
     <li aria-label="ChatGPT plan" className="border-b p-4 last:border-b-0">
       <p className="flex flex-wrap items-center gap-2">
+        <ProviderIcon id="openai" />
         <span className="font-mono text-prose font-semibold">ChatGPT plan</span>
         <Chip tone={state.tone}>{state.words}</Chip>
       </p>
@@ -235,10 +237,10 @@ export function WhatRunsHere({ harnesses, routePrefix }: { harnesses: readonly H
           const chip = harnessChip(h);
           return (
             <li key={h.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2.5 last:border-b-0">
-              <span className="font-mono text-body font-semibold">{harnessLabel(h.id)}</span>
+              <span className="inline-flex items-center gap-2 font-mono text-body font-semibold"><ProviderIcon id={h.id} kind="harness" />{harnessLabel(h.id)}</span>
               <Chip tone={chip.tone}>{chip.text}</Chip>
               {h.available && !h.needs?.length
-                ? h.default_model && <span className="font-mono text-small text-muted-foreground">{modelLabel(h.default_model, routePrefix).text}</span>
+                ? h.default_model && <span className="inline-flex items-center gap-2 font-mono text-small text-muted-foreground"><ProviderIcon id={providerIdForModel(h.default_model, routePrefix) ?? h.default_model} kind="model" />{modelLabel(h.default_model, routePrefix).text}</span>
                 : h.reason && <span className="text-small text-muted-foreground">{h.reason}</span>}
             </li>
           );

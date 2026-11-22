@@ -1,5 +1,6 @@
 import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { Github } from "lucide-react";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Banner } from "@/components/ui/banner";
@@ -133,7 +134,7 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
                   <span className="text-muted-foreground">Organization (optional): the App is made under it</span>
                   <Input name="org" value={org} onChange={(e) => setOrg(e.target.value)} disabled={busy} placeholder="your-org" className="h-9 w-auto" />
                 </label>
-                <Button type="button" variant="solid" onClick={() => void connect()} disabled={busy}><Github aria-hidden />{opening ? "Opening GitHub…" : "Connect GitHub"}</Button>
+                <Button type="button" variant="solid" onClick={() => void connect()} disabled={busy}><ProviderIcon id="github" fallback={Github} />{opening ? "Opening GitHub…" : "Connect GitHub"}</Button>
               </div>
               <Checkbox className="mt-3" checked={write} onChange={(e) => setWrite(e.target.checked)} disabled={busy}
                 label="Let AgentRun open pull requests for suggested agents"
@@ -144,7 +145,7 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
           {connection && (
             <section aria-label="GitHub App" className="border bg-card p-4">
               <div className="flex flex-wrap items-center gap-2 text-lead">
-                <Github className="size-4 text-muted-foreground" aria-hidden />
+                <ProviderIcon id="github" fallback={Github} />
                 {appHref ? <a href={appHref} target="_blank" rel="noopener noreferrer" className="font-mono underline underline-offset-2">{connection.slug}</a> : <span className="font-mono">{connection.slug}</span>}
                 <span className="font-mono text-small text-muted-foreground">App {connection.app_id}</span>
               </div>

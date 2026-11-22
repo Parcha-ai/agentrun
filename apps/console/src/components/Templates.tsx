@@ -2,6 +2,7 @@ import { agentHash } from "@/components/AgentPage";
 import { ArrowLeft, Check, LayoutTemplate } from "lucide-react";
 import { FieldInput, FieldIssues as Issues } from "@/components/FieldInput";
 import { Picker } from "@/components/ui/picker";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { SecretOnce } from "@/components/Schedules";
@@ -537,7 +538,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
                 <input type="radio" name="model-choice" value={c.id} className="mt-1 accent-primary" checked={choice === c.id} onChange={() => { setChoice(c.id); setIssues((was) => was.filter((i) => i.field !== "overrides.choice" && !(i.field.startsWith("secrets.") && !t.secrets.includes(i.field.slice("secrets.".length))))); }} />
                 <span className="min-w-0">
                   <span className="font-mono text-body" data-choice-label>{c.label}</span>
-                  {"model" in c && <span className="block font-mono text-label text-muted-foreground">{c.model} on {c.harness}</span>}
+                  {"model" in c && <span className="flex flex-wrap items-center gap-2 font-mono text-label text-muted-foreground"><ProviderIcon id={c.model} kind="model" />{c.model} on <ProviderIcon id={c.harness} kind="harness" />{c.harness}</span>}
                   {c.warning && <span className="mt-1 block text-small text-warning-text" data-choice-warning={c.id}>{c.warning}</span>}
                   {c.note && <span className="mt-1 block text-small text-muted-foreground" data-choice-note={c.id}>{c.note}</span>}
                   {/* A key the picked choice alone needs, refused at apply: its words and fix here, under the choice. */}

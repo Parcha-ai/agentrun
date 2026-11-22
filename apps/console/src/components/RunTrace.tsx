@@ -4,13 +4,20 @@ import { Banner } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
 import { ListFilter } from "@/components/ListFilter";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { Segmented } from "@/components/ui/segmented";
 import { Spinner } from "@/components/ui/spinner";
 import { tabPanelProps, Tabs } from "@/components/ui/tabs";
 import { bytes, compact, isEstimate, runEnded, soFar } from "@/lib/format";
+import { computerProviderForTool } from "@/lib/computers";
 import { BASIS_WORDS, type Bar, between, bookedWords, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
 import { cn } from "@/lib/utils";
 import type { Run, RunTrace as Trace, RunUsage, TraceSpan, UsageLine } from "@/lib/v2";
+
+function TraceProviderIcon({ span, computer }: { span: Pick<TraceSpan, "kind" | "name">; computer?: Run["computer"] }) {
+  const provider = span.kind === "tool" ? computerProviderForTool(span.name, computer) : undefined;
+  return <ProviderIcon id={provider ?? span.name} kind={provider ? "compute" : span.kind} className="size-3.5" />;
+}
 
 /** A run's trace (GET /v2/runs/{id}/trace), read when its tab opens and again each time `version` moves (the run's
  *  rows, its status, its end). One read is out at a time and none is dropped: a move while one is out, or within half a
@@ -266,7 +273,7 @@ function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose }: { s
             <Chip><Swatch className={span.kind === "model" ? "bg-trace-model" : "bg-trace-tool"} />{span.decision ? "Decision" : span.kind === "model" ? "Model request" : "Tool call"}</Chip>
             <Chip tone={STATUS[span.status].tone}>{STATUS[span.status].word}</Chip>
           </div>
-          <h2 className="mt-2 break-words font-mono text-lead font-semibold">{span.name}</h2>
+          <h2 className="mt-2 flex items-center gap-2 font-mono text-lead font-semibold"><TraceProviderIcon span={span} computer={run.computer} /><span className="min-w-0 break-words">{span.name}</span></h2>
         </div>
         <Button size="icon" variant="ghost" aria-label="Close call details" onClick={onClose}><X aria-hidden /></Button>
       </div>
@@ -356,7 +363,7 @@ function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose }: { s
             {made.slice(0, 12).map((child) => (
               <li key={child.id} className="border-b">
                 <button type="button" className="flex min-h-6 w-full items-center gap-2 py-1.5 text-left font-mono text-small hover:bg-accent" onClick={() => onPick(child.id)}>
-                  <Swatch className={mark(child)} /><span className="min-w-0 flex-1 truncate">{child.name}</span>
+                  <Swatch className={mark(child)} /><TraceProviderIcon span={child} computer={run.computer} /><span className="min-w-0 flex-1 truncate">{child.name}</span>
                   <span className="shrink-0 text-muted-foreground">{spanMs(child, now) !== null ? duration(spanMs(child, now)!) : STATUS[child.status].word}</span>
                 </button>
               </li>
@@ -482,7 +489,7 @@ function CostByLine({ usage, lines }: { usage: RunUsage; lines: readonly UsageLi
 
 /** The run's requests and calls added up: what stands out, where the time and the cost went, each request's input and
  *  cost in the order they ran, and the same by model and by tool. */
-function Breakdown({ trace, usage, now, onPick, selected }: { trace: Trace; usage: RunUsage | null; now: number; onPick: (id: string) => void; selected: string | null }) {
+function Breakdown({ trace, usage, computer, now, onPick, selected }: { trace: Trace; usage: RunUsage | null; computer?: Run["computer"]; now: number; onPick: (id: string) => void; selected: string | null }) {
   const totals = useMemo(() => traceTotals(trace, now), [trace, now]);
   const tools = useMemo(() => byTool(trace.spans, now), [trace, now]);
   const models = useMemo(() => byModel(trace.spans, trace.model_requests === "priced"), [trace]);
@@ -605,7 +612,7 @@ function Breakdown({ trace, usage, now, onPick, selected }: { trace: Trace; usag
               <tbody>
                 {models.map((m) => (
                   <tr key={m.name} className="border-b last:border-b-0">
-                    <th scope="row" className="px-3 py-2 text-left font-mono font-normal">{m.name}</th>
+                    <th scope="row" className="px-3 py-2 text-left font-mono font-normal"><span className="inline-flex items-center gap-2"><TraceProviderIcon span={{ kind: "model", name: m.name }} />{m.name}</span></th>
                     <td className={td}>{m.requests}</td><td className={cn(td, m.failed > 0 && "text-destructive-text")}>{m.failed}</td>
                     <td className={td}>{compact(m.tokens.input + m.tokens.cache_read + m.tokens.cache_write)}</td><td className={td}>{m.cache !== null ? percent(m.cache) : NONE}</td>
                     <td className={td}>{compact(m.tokens.output)}</td><td className={td}>{m.perSecond !== null ? Math.round(m.perSecond).toLocaleString("en-US") : NONE}</td>
@@ -627,7 +634,7 @@ function Breakdown({ trace, usage, now, onPick, selected }: { trace: Trace; usag
               <tbody>
                 {tools.map((row) => (
                   <tr key={row.name} className="border-b last:border-b-0">
-                    <th scope="row" className="px-3 py-2 text-left font-mono font-normal">{row.name}</th>
+                    <th scope="row" className="px-3 py-2 text-left font-mono font-normal"><span className="inline-flex items-center gap-2"><TraceProviderIcon span={{ kind: "tool", name: row.name }} computer={computer} />{row.name}</span></th>
                     <td className={td}>{row.calls}</td><td className={cn(td, row.failed > 0 && "text-destructive-text")}>{row.failed}</td>
                     <td className={td}><span className="inline-flex items-center gap-2"><span aria-hidden className="inline-block h-1.5 w-16 bg-accent"><span className="trace-mark block h-full bg-trace-tool" style={{ width: `${(row.totalMs / toolMs) * 100}%` }} /></span>{duration(row.totalMs)}</span></td>
                     <td className={td}>{row.p50 !== null ? duration(row.p50) : NONE}</td><td className={td}>{row.p95 !== null ? duration(row.p95) : NONE}</td>
@@ -812,7 +819,7 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
           // still have its cost by line.
           usage?.lines?.length ? <section aria-label="Where the cost went" className="border bg-card p-4"><CostByLine usage={usage} lines={usage.lines} /></section>
             : <p className="border bg-card p-4 font-mono text-body text-muted-foreground">{live ? "No model request has answered and no tool has been called yet." : "This run made no model request and called no tool."}</p>
-        ) : view === "breakdown" ? <Breakdown trace={trace} usage={usage} now={now} onPick={pick} selected={selected?.id ?? null} /> : (
+        ) : view === "breakdown" ? <Breakdown trace={trace} usage={usage} computer={run.computer} now={now} onPick={pick} selected={selected?.id ?? null} /> : (
           <>
             <section aria-label="Overview of the run" className="border bg-card">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-1.5">
@@ -889,6 +896,7 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
                             className={cn("flex h-control-sm w-full min-w-0 items-center gap-2 text-left font-mono -outline-offset-2", nested === 1 && "pl-4", nested === 2 && "pl-8")}>
                             <span aria-hidden className={cn("trace-mark h-4 w-1 shrink-0", mark(span))} />
                             <span className="caps w-10 shrink-0 text-label text-muted-foreground">{KIND_WORD[span.kind]}</span>
+                            <TraceProviderIcon span={span} computer={run.computer} />
                             <span className="max-w-64 shrink-0 truncate" title={span.name}>{span.name}</span>
                             {(span.input_preview || span.agent_label) && <span className="min-w-0 flex-1 truncate text-muted-foreground">{span.agent_label ? `${span.agent_label} ` : ""}{span.input_preview ?? ""}</span>}
                           </button>

@@ -3,6 +3,7 @@ import { Archive, ArchiveRestore, ArrowLeft, Ban, CircleDollarSign, Square } fro
 import { useState } from "react";
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { RunKind } from "@/components/RunKind";
 import { capWords, leastCap, RaiseCap, suggestedCap } from "@/components/NeedsYou";
 import { ScheduleChip } from "@/components/ScheduleChip";
@@ -47,6 +48,7 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }
   // Where it ran, as its start resolved it.
   const sdk = backendSdkOf(run);
   const cli = cliRunOf(run);
+  const runtime = cli?.runtime ?? run.native?.runtime ?? run.sdk?.runtime;
   const ranIn = cli ? "your CLI" : sdk ? "your backend" : runPlaceWords(run.place);
   const state = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review, run.computer);
   const view = sdk || cli ? { ...state, canStop: false, canCancel: false } : state;
@@ -71,6 +73,7 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }
         <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1.5 shrink-0 p-1.5 hover:text-foreground">
           <ArrowLeft className="size-3.5" aria-hidden />
         </button>
+        {runtime && <ProviderIcon id={runtime} kind="harness" className="size-3.5" />}
         <a href={agentHash(run.agent_id)} className="-my-1 truncate py-1 hover:text-foreground hover:underline">{agentName}</a>
         <span aria-hidden>/</span>
         <span className="truncate">Run {runLabel(run.run_id)}</span>
@@ -88,9 +91,9 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }
             <StatusBadge run={run} />
             {archived && <Chip tone="muted">Archived</Chip>}
             {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
-            <span className="font-mono"><RunKind run={run} named /> · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
-            {cli && <span className="font-mono">{cliRunLabel(cli.runtime)} · {cli.model ?? "Model not reported"}</span>}
-            {sdk && <span className="font-mono">{backendSdkLabel(sdk)} · {run.sdk?.model ?? "Model not reported"}</span>}
+            <span className="inline-flex flex-wrap items-center gap-1.5 font-mono"><span><RunKind run={run} named /> · rev {run.agent_version}</span>{ranIn && <><span aria-hidden> · </span>{!sdk && !cli && <ProviderIcon id={run.place.mode === "sandbox" ? run.place.box : "runner"} kind="compute" />}{ranIn}</>}</span>
+            {cli && <span className="inline-flex items-center gap-1.5 font-mono">{cliRunLabel(cli.runtime)} · {cli.model && <ProviderIcon id={cli.model} kind="model" className="size-3.5" />}{cli.model ?? "Model not reported"}</span>}
+            {sdk && <span className="inline-flex items-center gap-1.5 font-mono">{backendSdkLabel(sdk)} · {run.sdk?.model && <ProviderIcon id={run.sdk.model} kind="model" className="size-3.5" />}{run.sdk?.model ?? "Model not reported"}</span>}
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's
                 spend cap when it has one, as the run is read now (a raise reads the run again, so the new cap shows). */}

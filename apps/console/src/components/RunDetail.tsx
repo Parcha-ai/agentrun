@@ -299,7 +299,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {tab === "report" && view.final && !run.result?.final_answer?.trim() && !run.result?.output && !rows.some((r) => r.kind === "final_answer" && r.text?.trim()) && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-body text-muted-foreground">{NO_ANSWER}{view.canMessage ? " Send a follow-up below to ask for one." : ""}</p>
           )}
-          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} ended={runEnded(run.status)} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} files={files} onOpen={show} />}
+          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} ended={runEnded(run.status)} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} files={files} onOpen={show} computer={run.computer} />}
           {(tab === "report" || tab === "timeline") && <RunGrade run={run} graded={runGrade} onGrade={grade} onOpenTimeline={tab === "timeline" ? undefined : () => setTab("timeline")} />}
           {(tab === "report" || tab === "timeline") && <RunUsed used={learning?.used ?? null} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}

@@ -10,6 +10,7 @@ import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
 import type { UploadLimits } from "@/components/FilePicker";
 import { NotHere, ProblemCard } from "@/components/Problem";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { ProviderIcon, providerIdForModel, toolProviderId } from "@/components/ProviderIcon";
 import { editAgentPrompt, queryRunsPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -23,18 +24,19 @@ import { Button } from "@/components/ui/button";
 import { Banner, Chip, Tabs, tabPanelProps } from "@/components/ui";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { type Agent, runsWhere } from "@/lib/agentForm";
+import { computerProviderForTool } from "@/lib/computers";
 import { type Client, ClientError } from "@/lib/client";
 import { cost, runEnded, soFar, when, runTitle } from "@/lib/format";
 import { waitingOf } from "@/lib/learning";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
-import { placeLabel, type Places } from "@/lib/place";
+import { computerOfPlace, placeLabel, type Places } from "@/lib/place";
 import { providerLabel, resolution } from "@/lib/toolSettings";
 import { type Problem, problem } from "@/lib/problem";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import { rangeFrom, type Stats } from "@/lib/mission";
-import type { Run } from "@/lib/v2";
+import type { Computer, Run } from "@/lib/v2";
 import { drawnNodeCount, nodesWord } from "@/lib/wfGraph";
 import { pageToolbarClass } from "@/components/ui/toolbar";
 import { matchesFilter } from "@/lib/filter";
@@ -167,6 +169,8 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   const offText = off ? `${off.id} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
   // Where it runs: its own place, else the server's default place for it, marked as such (#1790: resolved at each run).
   const where = runsWhere(agent, places);
+  const computer = (d.computer as Computer | undefined) ?? (where ? computerOfPlace(where.place) : undefined);
+  const shownModel = native ? native.model : sdk || cli ? undefined : d.model ?? fallback;
   const runsLabel = `${placeLabel(where?.place)}${where?.byDefault ? " (server default)" : ""}`;
   // Explain a known absent default without blocking observation or the handoff that can configure it.
   // Explicit models and older servers leave readiness to the execution path.
@@ -229,9 +233,14 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
           </button>
           <dl id="agent-facts" className={cn("grid grid-cols-2 gap-3", !factsOpen && "max-sm:hidden")} aria-label="Current revision">
             {overviewFacts.map(([k, v, title]) => (
-              <div key={k} className="min-w-0 border bg-card p-4"><dt className="mb-2 text-label text-muted-foreground">{k}</dt><dd className="break-words text-body font-semibold" title={title}>{v}</dd></div>
+              <div key={k} className="min-w-0 border bg-card p-4"><dt className="mb-2 text-label text-muted-foreground">{k}</dt><dd className="flex min-w-0 items-center gap-1.5 break-words text-body font-semibold" title={title}>
+                {(k === "Harness" || k === "Runtime") && <ProviderIcon id={cli?.runtime ?? sdk?.runtime ?? native?.runtime ?? d.harness ?? "pi"} kind="harness" />}
+                {k === "Model" && shownModel && <ProviderIcon id={providerIdForModel(shownModel, routePrefix) ?? shownModel} kind="model" />}
+                {k === "Runs" && <ProviderIcon id={where?.place.mode === "sandbox" ? where.place.box : "runner"} kind="compute" />}
+                <span className="min-w-0">{v}</span>
+              </dd></div>
             ))}
-            {!workflow && !native && !sdk && !cli && <div className="col-span-2 border bg-card p-4"><dt className="mb-2 text-label text-muted-foreground">Tools</dt><dd className="break-words text-small">{!workflow && agent.tools ? (agent.tools.length ? <ul className="space-y-2" aria-label="Tools">{agent.tools.map((tool) => <li key={tool.name}><span title={tool.blurb}>{tool.name}</span>{tool.provider ? ` · ${providerLabel(tool.provider, tool.name)}` : ""}{tool.permission ? ` · ${tool.permission}` : ""}{resolution(tool.resolved, tool.name).unavailable && <span data-unavailable className="text-warning-text" title={tool.resolved}> · unavailable</span>}</li>)}</ul> : "none") : d.tools.join(", ") || "None configured"}</dd></div>}
+            {!workflow && !native && !sdk && !cli && <div className="col-span-2 border bg-card p-4"><dt className="mb-2 text-label text-muted-foreground">Tools</dt><dd className="break-words text-small">{!workflow && agent.tools ? (agent.tools.length ? <ul className="space-y-2" aria-label="Tools">{agent.tools.map((tool) => <li key={tool.name} className="flex items-start gap-1.5"><ProviderIcon id={tool.provider ? toolProviderId(tool.provider, tool.name) : computerProviderForTool(tool.name, computer) ?? tool.name} kind="tool" /><span className="min-w-0"><span title={tool.blurb}>{tool.name}</span>{tool.provider ? ` · ${providerLabel(tool.provider, tool.name)}` : ""}{tool.permission ? ` · ${tool.permission}` : ""}{resolution(tool.resolved, tool.name).unavailable && <span data-unavailable className="text-warning-text" title={tool.resolved}> · unavailable</span>}</span></li>)}</ul> : "none") : d.tools.join(", ") || "None configured"}</dd></div>}
           </dl>
           {(native || cli || agent.source_sync) && <SourceSyncPanel agent={agent} v2={v2} onAgent={onAgent} />}
           {offText && <Banner tone="warning" aria-label="Harness not available">{offText}</Banner>}

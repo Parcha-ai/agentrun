@@ -4,14 +4,16 @@ import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { callWords, type ComputerCallRow } from "@timeline/computer";
 import { nameOf } from "@timeline/labels";
 import { isFeedbackRow } from "@timeline/origin";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { Chip } from "@/components/ui/chip";
 import { Spinner } from "@/components/ui/spinner";
 import { chargeWords, clock, markdown, openLinkedFile } from "@/lib/format";
+import { computerProviderForTool } from "@/lib/computers";
 import { mcpToolLabel } from "@/lib/mcp";
 import { rowDetail, rowFailed, rowPaused, rowRefused, type Step, steps } from "@/lib/timeline";
 import { kindWithModel, ranOnWords } from "@/lib/nodeModel";
 import { cn } from "@/lib/utils";
-import type { LearnedNode, RunFile, TimelineRow } from "@/lib/v2";
+import type { LearnedNode, Run, RunFile, TimelineRow } from "@/lib/v2";
 import { NO_ANSWER } from "@/lib/viewing";
 
 const ICON: Record<string, typeof Brain> = {
@@ -87,6 +89,7 @@ const took = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)
 /** pi-browser's tools. Their wire names ("run", "snapshot") say nothing of the browser, so their rows take the name the
  *  timeline library gives each (nameOf: "Open or act on a page in the browser", as a run's tool counts show it). */
 const BROWSER = new Set<string>(BROWSER_TOOL_NAMES);
+type TimelineComputer = Pick<NonNullable<Run["computer"]>, "kind" | "provider">;
 /** A built-in tool's label as a person reads it, whatever the harness calls it ("Fetch" for web_fetch and WebFetch, "Shell"
  *  for bash); any other id as words ("browser_release" is "Browser release"). */
 // A Map, so a tool named like an Object property (`__proto__`, `constructor`: an imported session names its own tools)
@@ -126,12 +129,14 @@ const WAITING_CHIP: Record<string, string> = { budget: "Paused at cap" };
 
 /** One step: a failed one reads as failed. A server row marked `paused` (the run paused at its cap) shows a pause icon,
  *  muted like any server row. */
-function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; last: boolean; ended: boolean; waitingChip?: string; files?: RunFile[]; onOpen?: (file: RunFile) => void }) {
+function Row({ step, last, ended, waitingChip, files, onOpen, computer }: { step: Step; last: boolean; ended: boolean; waitingChip?: string; files?: RunFile[]; onOpen?: (file: RunFile) => void; computer?: TimelineComputer }) {
   // The row a step shows, and so its label: the one place a row is read for display.
   const row = step.row;
   const [open, setOpen] = useState(false);
   const paused = rowPaused(row);
   const Icon = paused ? CirclePause : ICON[row.kind] ?? Flag;
+  const tool = row.tool_name;
+  const computerProvider = tool ? computerProviderForTool(tool, computer) : undefined;
   // What the row says on its line: its title, or where the page shows what it asks.
   const shown = step.above ? (row.kind === "tool_approval_requested" ? "Waits for your approval above." : "Asked you the question above.") : title(row);
   // What opens under it; none when it is the line's own words (the same sentence twice is no more to read).
@@ -142,7 +147,9 @@ function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; la
     <li className="relative flex gap-3">
       <div className="flex w-7 shrink-0 flex-col items-center">
         <span className={cn("mt-3 flex size-7 items-center justify-center border bg-background", (row.kind === "waiting" || awaitsApproval(row)) && "border-warning/60 text-warning-text", failed && "border-destructive/60 text-destructive-text")}>
-          <Icon className="size-3.5" aria-hidden />
+          {!paused && tool && (row.kind === "tool_use" || row.kind === "tool_result")
+            ? <ProviderIcon id={computerProvider ?? tool} kind={computerProvider ? "compute" : "tool"} fallback={Icon} className="size-3.5" />
+            : <Icon className="size-3.5" aria-hidden />}
         </span>
         {!last && <span className="w-px flex-1 bg-border" aria-hidden />}
       </div>
@@ -152,6 +159,7 @@ function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; la
             <span className="flex min-w-0 items-center gap-2 text-body text-muted-foreground">
               {/* A label can be long (a trigger's name, up to 200 characters, spaces or none): cut to the row's width, so it
                   never widens the page or runs over the time; whole on hover. */}
+              {row.kind === "tool_approval_requested" && tool && <ProviderIcon id={computerProvider ?? tool} kind={computerProvider ? "compute" : "tool"} className="size-3.5" />}
               <span data-label className="min-w-0 truncate" title={label(row)}>{label(row)}</span>
               {/* A call's own charge (a browser call's session time): on its row, never a row of its own. */}
               {(row.kind === "tool_use" || row.kind === "tool_result") && row.usage && <span className="font-mono text-label">· {chargeWords(row.usage, { ended })}</span>}
@@ -177,7 +185,7 @@ function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; la
         {open && detail && row.kind === "final_answer" && <article className="report mt-3 max-h-80 max-w-none overflow-auto border bg-card p-3" onClick={openLinkedFile((path) => { const f = files?.find((x) => x.path === path); if (f) onOpen?.(f); })} dangerouslySetInnerHTML={{ __html: markdown(detail, onOpen && files ? { paths: files.map((f) => f.path) } : undefined) }} />}
         {open && detail && row.kind !== "final_answer" && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-small leading-[1.7]">{detail}</pre>}
         {row.learned_nodes?.length ? <LearnedNodes nodes={row.learned_nodes} /> : null}
-        {row.computer_calls?.length ? <ComputerCalls calls={row.computer_calls} dropped={row.computer_calls_dropped ?? 0} /> : null}
+        {row.computer_calls?.length ? <ComputerCalls calls={row.computer_calls} dropped={row.computer_calls_dropped ?? 0} provider={computer?.provider} /> : null}
       </div>
     </li>
   );
@@ -188,7 +196,7 @@ function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; la
  *  first it started, what it did in the words its step's row and a movie's caption use (callWords: "Opened TextEdit",
  *  "Selected all (⌘A), typed into the text box"), a failed call's code, and how long it took. Never what was typed: the
  *  server keeps none of it. */
-function ComputerCalls({ calls, dropped }: { calls: readonly ComputerCallRow[]; dropped: number }) {
+function ComputerCalls({ calls, dropped, provider }: { calls: readonly ComputerCallRow[]; dropped: number; provider?: string }) {
   const [open, setOpen] = useState(false);
   const failed = calls.filter((call) => !call.ok).length;
   const count = calls.length + dropped;
@@ -198,7 +206,7 @@ function ComputerCalls({ calls, dropped }: { calls: readonly ComputerCallRow[]; 
     <div className="mt-2">
       <button type="button" className="caps flex items-center gap-1 text-label text-muted-foreground hover:text-foreground" onClick={() => setOpen((v) => !v)} aria-expanded={open}
         aria-label={`${open ? "Hide" : "Show"} the computer calls`}>
-        <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} aria-hidden /><Monitor className="size-3" aria-hidden />{said}
+        <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} aria-hidden />{provider ? <ProviderIcon id={provider} kind="compute" fallback={Monitor} className="size-3" /> : <Monitor className="size-3" aria-hidden />}{said}
       </button>
       {open && (
         <ol aria-label="The computer calls" className="mt-2 divide-y border bg-card">
@@ -238,7 +246,7 @@ function LearnedNodes({ nodes }: { nodes: LearnedNode[] }) {
             <li key={i} className="flex items-center gap-3 px-3 py-1.5">
               <span data-status={n.status} className="contents"><Chip tone={NODE_TONE[n.status] ?? "muted"} className="w-[5.5rem] justify-center">{n.status}</Chip></span>
               <span className="min-w-0 flex-1 truncate text-body" title={n.label}>{n.label}</span>
-              <span data-kind className="font-mono text-label text-muted-foreground" title={ranOnWords(n) || undefined}>{kindWithModel(n.kind, n)}</span>
+              <span data-kind className="inline-flex items-center gap-1.5 font-mono text-label text-muted-foreground" title={ranOnWords(n) || undefined}>{n.model && <ProviderIcon id={n.model} kind="model" className="size-3" />}{kindWithModel(n.kind, n)}</span>
               <span className="w-14 text-right font-mono text-label text-muted-foreground">{took(n.duration_ms)}</span>
             </li>
           ))}
@@ -251,7 +259,9 @@ function LearnedNodes({ nodes }: { nodes: LearnedNode[] }) {
 /** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
  *  a question once; repeated failures once): newest last, older steps folded behind "1 earlier step" or "N earlier steps". `asking`: the
  *  waiting row of the question the page shows above while the run waits on it; its step points there. */
-export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpen, ended = false }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
+export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpen, ended = false, computer }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
+  /** The computer pinned to this run, used only for calls that run on that computer. */
+  computer?: TimelineComputer;
   /** Whether the run has ended (runEnded of its status): a charge's words then say what is known, never "so far". The run
    *  page and the agent page's latest run both pass it. */
   ended?: boolean;
@@ -275,7 +285,7 @@ export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpe
           <ChevronRight className="size-3" aria-hidden /> {hidden} earlier {hidden === 1 ? "step" : "steps"}
         </button>
       )}
-      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} ended={ended} waitingChip={step.row.id === current && waitingOn ? WAITING_CHIP[waitingOn] : undefined} files={files} onOpen={onOpen} />)}</ol>
+      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} ended={ended} waitingChip={step.row.id === current && waitingOn ? WAITING_CHIP[waitingOn] : undefined} files={files} onOpen={onOpen} computer={computer} />)}</ol>
       {live && <Working title="Working" note="Steps appear as the agent takes them." spin />}
     </div>
   );

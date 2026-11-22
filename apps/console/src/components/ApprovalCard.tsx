@@ -1,5 +1,6 @@
 import { ShieldQuestion } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { Textarea } from "@/components/ui/field";
@@ -59,7 +60,7 @@ export function ApprovalCard({ pending, onAnswer, compact = false, heading }: Ap
     <section aria-label="Approval required" className={cn("min-w-0 border border-warning/50 bg-warning/5", compact ? "p-4" : "p-4 md:p-5")}>
       {heading}
       <p className={cn("caps flex items-center gap-2 text-label text-warning-text", heading && "mt-2")}><ShieldQuestion className="size-3.5" aria-hidden /> Approval required</p>
-      <p className="mt-2 text-prose leading-snug">The agent wants to run <span className="break-all font-mono text-lead">{pending.tool}</span>.{destructive && <> <Chip tone="error" title="Its server marks this tool destructive: it may delete or overwrite.">Destructive</Chip></>}</p>
+      <p className="mt-2 text-prose leading-snug">The agent wants to run <span className="inline-flex max-w-full items-center gap-1.5 align-bottom font-mono text-lead"><ProviderIcon id={pending.tool ?? ""} kind="tool" /><span className="break-all">{pending.tool}</span></span>.{destructive && <> <Chip tone="error" title="Its server marks this tool destructive: it may delete or overwrite.">Destructive</Chip></>}</p>
       {pending.asks_because && <p className="mt-2 text-prose leading-snug">Asks because {pending.asks_because}.</p>}
       <pre aria-label={`${pending.tool} arguments`} title={pending.args_preview} className={cn("mt-2 overflow-auto whitespace-pre-wrap break-all border bg-card p-3 font-mono text-small leading-[1.6]", compact ? "max-h-28" : "max-h-64")}>{argsShown(pending.args_preview)}</pre>
       {price && <p className="mt-2 font-mono text-small text-muted-foreground">{price}</p>}

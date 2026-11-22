@@ -1,9 +1,13 @@
+import { Plug } from "lucide-react";
 import type { ReactNode } from "react";
 import { matchesFilter } from "@/lib/filter";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { ToolCard } from "@/components/ToolCard";
 import { Button } from "@/components/ui/button";
 import { grantOf, grantProblem, type McpServer, type McpTool, mcpGrant, staleGrants } from "@/lib/mcp";
 import { SERVER_DENY } from "@/lib/toolSettings";
+
+const sourceIcon = (source?: McpServer["source"]) => <ProviderIcon id={source === "github" || source === "composio" ? source : "mcp"} fallback={Plug} />;
 
 /** The Tools step's MCP servers: a group per saved server with a box per tool it lists, ticked when `tools` grants
  *  `mcp:<server>/<tool>`; then each grant that no saved server answers for (its server deleted, or the tool no longer
@@ -21,8 +25,9 @@ export function McpToolPicker({ servers, tools, harness, harnesses, filter, onCh
     const on = tools.includes(grant);
     const off = (!runs || !!refused) && !on;
     const said = warn ?? refused ?? (on && !runs ? `Won't run on ${harness}.` : undefined);
+    const source = Array.isArray(servers) ? servers.find((s) => s.name === grantOf(grant)?.server)?.source : undefined;
     return (
-      <li key={grant} className="min-w-0"><ToolCard value={grant} name={name} note={note} description={description} alert={said} on={on} disabled={off} warn={!!warn} onToggle={() => toggle(grant)} /></li>
+      <li key={grant} className="min-w-0"><ToolCard value={grant} name={name} icon={sourceIcon(source)} note={note} description={description} alert={said} on={on} disabled={off} warn={!!warn} onToggle={() => toggle(grant)} /></li>
     );
   };
   // The built-in tools' grid: columns of at least 18rem that a card's content never widens.
@@ -42,7 +47,7 @@ export function McpToolPicker({ servers, tools, harness, harnesses, filter, onCh
       {notHere}
       {cards.servers.map(({ s, kept }) => (
         <section key={s.name} aria-label={`MCP server ${s.name}`}>
-          <p className="caps mb-2 text-label font-semibold text-muted-foreground">{s.name} · MCP server</p>
+          <p className="caps mb-2 flex items-center gap-2 text-label font-semibold text-muted-foreground">{sourceIcon(s.source)}{s.name} · MCP server</p>
           {/* A tool its server's read says no price meters: its calls run outside the run's cost and cap. */}
           {grid(kept.map((t) => box(mcpGrant(s.name, t.name), t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantProblem(t, harness) ?? (t.permission === "deny" ? SERVER_DENY : undefined), s.not_metered?.includes(t.name) ? "not metered" : undefined)))}
         </section>

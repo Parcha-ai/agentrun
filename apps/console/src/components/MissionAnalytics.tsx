@@ -1,4 +1,5 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { cn } from "@/lib/utils";
 import { Picker } from "@/components/ui/picker";
 import { Segmented } from "@/components/ui/segmented";
@@ -113,7 +114,7 @@ function HarnessTable({ rows, basis, unified }: { rows: Analytics["by_harness_ef
               const cover = coverage(g);
               return (
                 <tr key={`${g.harness}:${g.effort ?? ""}`} className="border-b font-mono last:border-b-0">
-                  <td className={td}>{g.harness}</td>
+                  <td className={td}><span className="inline-flex items-center gap-2"><ProviderIcon id={g.harness} kind="harness" />{g.harness}</span></td>
                   <td className={cn(td, !g.effort && "text-muted-foreground")}>{g.effort ?? "unset"}</td>
                   <td className={td}>{g.runs}</td>
                   <td className={td}>{percent(successRate(g))}</td>
@@ -138,7 +139,7 @@ function ToolsTable({ tools }: { tools: Analytics["tools"] }) {
           <tbody>
             {tools.map((x) => (
               <tr key={x.tool} className="border-b font-mono last:border-b-0">
-                <td className={td} title={x.tool}>{x.label}</td><td className={td}>{compact(x.calls)}</td>
+                <td className={td}><span className="inline-flex items-center gap-2"><ProviderIcon id={x.tool} kind="tool" /><span title={x.tool}>{x.label}</span></span></td><td className={td}>{compact(x.calls)}</td>
                 <td className={cn(td, x.errors > 0 && "text-destructive-text")}>{compact(x.errors)}</td>
                 <td className={td}>{percent(x.calls ? x.errors / x.calls : null)}</td>
               </tr>

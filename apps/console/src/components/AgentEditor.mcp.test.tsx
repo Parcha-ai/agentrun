@@ -66,6 +66,21 @@ describe("the Tools step's MCP servers", () => {
     expect(html).toMatch(/value="mcp:fake\/add"[^>]*checked=""|checked=""[^>]*value="mcp:fake\/add"/);
   });
 
+  it("uses the saved MCP source's icon on the server and its tools, never a custom server's name", () => {
+    const servers: McpServer[] = [{ ...FAKE, name: "repo-tools", source: "github" }, { ...FAKE, name: "connected-apps", source: "composio" }, { ...FAKE, name: "github", source: "url" }];
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(McpToolPicker, { servers, tools: [], harness: "pi", filter: "", onChange: () => {} })));
+    for (const server of servers.slice(0, 2)) {
+      const section = host.querySelector(`[aria-label="MCP server ${server.name}"]`)!;
+      expect(section.querySelector(`:scope > p [data-provider-icon="${server.source}"]`)).not.toBeNull();
+      for (const card of section.querySelectorAll("[data-tool-card]")) {
+        expect(card.querySelector(`[data-provider-icon="${server.source}"]`)).not.toBeNull();
+      }
+    }
+    expect(host.querySelector('[aria-label="MCP server github"]')!.querySelector("img")).toBeNull();
+  });
+
   it("marks each tool its server's read says is not metered, and no other", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);

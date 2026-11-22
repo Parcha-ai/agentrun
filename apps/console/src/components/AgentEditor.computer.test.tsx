@@ -90,6 +90,25 @@ describe("AgentEditor, the Computer step", () => {
   const kindRadio = (host: HTMLElement, kind: string) => host.querySelector(`input[name="computer-kind"][value="${kind}"]`) as HTMLInputElement | null;
   const providerRadio = (host: HTMLElement, id: string) => host.querySelector(`input[name="computer-provider"][value="${id}"]`) as HTMLInputElement | null;
 
+  it("updates the shell tool's provider icon with the unsaved sandbox choice, leaving file tools generic", () => {
+    const computers = KINDS.map((k) => k.kind === "sandbox" ? { ...k, providers: k.providers.map((p) => ({ ...p, ready: true })) } : k);
+    const { host, click } = mount({ agent: agent({ computer: { kind: "sandbox", provider: "docker" }, place: { mode: "sandbox", box: "docker" }, tools: ["read", "bash"] }), caps: { ...listed, computers }, step: "tools" });
+    const step = (name: string) => click([...host.querySelectorAll("ol button")].find((b) => b.textContent?.includes(name)));
+    const shell = () => host.querySelector('[data-tool-card="bash"]')!;
+    expect(shell().querySelector('[data-provider-icon="docker"]')).not.toBeNull();
+    expect(host.querySelector('[data-tool-card="read"] img')).toBeNull();
+    step("Computer");
+    click(providerRadio(host, "daytona"));
+    step("Tools");
+    expect(shell().querySelector('[data-provider-icon="daytona"]')).not.toBeNull();
+    expect(shell().querySelector('[data-provider-icon="docker"]')).toBeNull();
+    expect(host.querySelector('[data-tool-card="read"] img')).toBeNull();
+    step("Computer");
+    click(kindRadio(host, "none"));
+    step("Tools");
+    expect(shell().querySelector("img")).toBeNull();
+  });
+
   it("shows each kind the server lists, in its order; a kind not offered is greyed with the server's why and a link to the Computers settings", () => {
     const { host } = mount({ agent: agent(), caps: listed, step: "computer" });
     expect([...host.querySelectorAll('input[name="computer-kind"]')].map((x) => (x as HTMLInputElement).value)).toEqual(["none", "sandbox", "desktop", "phone", "browser"]);
@@ -97,6 +116,17 @@ describe("AgentEditor, the Computer step", () => {
     expect(card(host, "browser")!.textContent).toContain("fixture: no provider of a browser computer can run here");
     expect(card(host, "browser")!.querySelector('a[href="#/settings/computers"]')).not.toBeNull();
     expect(kindRadio(host, "desktop")!.disabled).toBe(false);
+  });
+
+  it("keeps the compute provider's icon beside its name, including a disabled provider", () => {
+    const { host, click } = mount({ agent: agent(), caps: listed, step: "computer" });
+    click(kindRadio(host, "desktop"));
+    for (const id of ["orgo", "e2b"]) {
+      const label = providerRadio(host, id)!.closest("label")!;
+      expect(label.querySelector(`[data-provider-icon="${id}"]`), id).not.toBeNull();
+      expect(label.querySelector("img")?.getAttribute("alt")).toBe("");
+    }
+    expect(providerRadio(host, "e2b")!.disabled).toBe(true);
   });
 
   it("greys a kind offered with no provider ready, in its provider's words", () => {

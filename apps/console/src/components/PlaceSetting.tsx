@@ -1,4 +1,5 @@
 import { type ReactNode, useState } from "react";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { defaultPlaceOf, type ToolOffer } from "@/lib/agentForm";
 import { type Place, type Places, placeOf } from "@/lib/place";
 import { cn } from "@/lib/utils";
@@ -33,7 +34,7 @@ export function PlaceSetting({ value, saved, places, tools, picked, onChange, er
   const option = (id: "runner" | "sandbox", label: string, note: ReactNode, onPick: () => void, disabled = false) => (
     <label className={cn("flex items-start gap-3 border px-4 py-3", mode === id ? "border-foreground" : "border-border", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
       <input type="radio" name="place" value={id} checked={mode === id} disabled={disabled} onChange={onPick} className="mt-1 accent-primary" />
-      <span><span className="block text-lead font-semibold">{label}</span><span className="mt-0.5 block text-small text-muted-foreground">{note}</span></span>
+      <span><span className="flex items-center gap-2 text-lead font-semibold"><ProviderIcon id={id} kind="compute" />{label}</span><span className="mt-0.5 block text-small text-muted-foreground">{note}</span></span>
     </label>
   );
   return (
@@ -46,7 +47,7 @@ export function PlaceSetting({ value, saved, places, tools, picked, onChange, er
       {noBox && (
         <div className="mt-3 border px-4 py-3 text-small text-muted-foreground" role="status">
           <p>No box is set up on this server, so this agent runs on the server.</p>
-          <ul className="mt-1">{places.boxes.map((b) => <li key={b.id}><span className="font-mono">{b.id}</span>{b.reason ? `: ${b.reason}` : ""}</li>)}</ul>
+          <ul className="mt-1">{places.boxes.map((b) => <li key={b.id}><span className="inline-flex items-center gap-1.5 font-mono"><ProviderIcon id={b.id} kind="compute" />{b.id}</span>{b.reason ? `: ${b.reason}` : ""}</li>)}</ul>
         </div>
       )}
       {mode === "sandbox" && (
@@ -55,7 +56,7 @@ export function PlaceSetting({ value, saved, places, tools, picked, onChange, er
             <li key={b.id} className="border-b last:border-b-0">
               <label className={cn("flex items-start gap-3 px-4 py-2.5", b.available ? "cursor-pointer" : "cursor-not-allowed text-muted-foreground")}>
                 <input type="radio" name="box" value={b.id} checked={box === b.id} disabled={!b.available && box !== b.id} onChange={() => toSandbox(b.id)} className="mt-1 accent-primary" />
-                <span className="min-w-0"><span className="block font-mono text-body">{b.id}</span>{!b.available && b.reason && <span className="mt-0.5 block text-small">{b.reason}</span>}</span>
+                <span className="min-w-0"><span className="flex items-center gap-2 font-mono text-body"><ProviderIcon id={b.id} kind="compute" />{b.id}</span>{!b.available && b.reason && <span className="mt-0.5 block text-small">{b.reason}</span>}</span>
               </label>
             </li>
           ))}

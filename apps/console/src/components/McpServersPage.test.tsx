@@ -99,6 +99,21 @@ describe("Settings → MCP servers, adding one", () => {
     expect(p.input(input.name).value).toBe("");
   });
 
+  it("uses the server's declared source for its tools' icons, keeping custom URLs generic", async () => {
+    const p = await open(server([[
+      saved({ name: "company-code", source: "github" }),
+      saved({ name: "crm", source: "composio" }),
+      saved({ name: "github", source: "url" }),
+    ]]).v2);
+    for (const [name, source] of [["company-code", "github"], ["crm", "composio"]]) {
+      const row = p.row(name);
+      expect(row.querySelector(`[data-provider-icon="${source}"]`)).not.toBeNull();
+      expect(row.querySelector(`tr[data-tool="mcp:${name}/add"] [data-provider-icon="${source}"]`)).not.toBeNull();
+    }
+    expect(p.row("github").querySelector("img")).toBeNull();
+    expect(p.row("github").querySelector('.lucide-plug')).not.toBeNull();
+  });
+
   it("previews the tools and the protocol, then saves: the exact requests, and the token gone from the page", async () => {
     const s = server([[], [saved()]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved()) : undefined));
     const p = await open(s.v2);

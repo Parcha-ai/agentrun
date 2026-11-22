@@ -14,6 +14,9 @@
   --foreground: 240 10% 3.9%;
   --card: 0 0% 100%;
   --card-foreground: 240 10% 3.9%;
+  /* Fixed light badges preserve vendor logos in either theme; fallback marks use the paired dark ink. */
+  --provider-icon-surface: 0 0% 100%;
+  --provider-icon-foreground: 240 10% 3.9%;
   --muted: 240 4.8% 95.9%;
   --muted-foreground: 240 4% 43%;
   /* The hover and "you are here" surface of a neutral control. */
@@ -73,6 +76,7 @@
   --radius: 0px;
   --radius-composer: 1rem;
   --radius-action: 0.5rem;
+  --radius-provider-icon: 50%;
   /* Lines are 1px. 2px marks where you are (the active nav item, the open tab) and the focus ring. */
   --border-width: 1px;
   --border-width-strong: 2px;
@@ -112,6 +116,8 @@
   --foreground: 0 0% 95%;
   --card: 240 5% 12%;
   --card-foreground: 0 0% 95%;
+  --provider-icon-surface: 0 0% 100%;
+  --provider-icon-foreground: 240 10% 3.9%;
   --muted: 240 5% 18%;
   --muted-foreground: 240 5% 66%;
   --accent: 240 5% 18%;
