@@ -664,6 +664,63 @@ test("agentrun deploy DIR to an API-only install of a package whose one trigger 
   assert.doesNotMatch(again.err, /Not made on/);
 });
 
+test("agentrun deploy with no lock for a target that has an agent made from the package with these parameters: exit 2, nothing applied, naming it; --agent ID deploys onto it, --agent new makes another; with a lock, --agent naming another agent is refused", { timeout: 300_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const target = await serve(t, { runner: false });
+  const proxy = await recorder(t, target.baseUrl);
+  const pkg = folder(dir);
+  const lockFile = join(pkg, ".agentrun", "deploy.json");
+  const key = { AGENTRUN_API_KEY: target.token };
+  const applies = (from) => proxy.seen.slice(from).filter((one) => /^POST \/v2\/templates\/[^/]+\/apply$/.test(one)).length;
+  const agents = async () => (await target.api("GET", "/agents")).body.agents.map((one) => one.agent_id).sort();
+  const dailies = async () => (await target.api("GET", "/triggers")).body.triggers.filter((one) => one.name === "daily").length;
+  const lockAgent = () => JSON.parse(readFileSync(lockFile, "utf8")).agent_id;
+
+  // No such agent there: the first deploy makes one, as before.
+  const first = await cli(env, ["deploy", pkg, "--to", proxy.base, "--yes"], key);
+  assert.equal(first.code, 0, first.err);
+  const made = first.json();
+  assert.deepEqual([made.status, made.agent_change], ["deployed", "made"]);
+  assert.deepEqual(await agents(), [made.agent_id]);
+
+  // The lock gone (as one 0.1.0-beta.53 wrote for an install's agent is not read): the plan names that agent, and the
+  // deploy stops before its apply, naming it and both ways on.
+  rmSync(lockFile);
+  let from = proxy.seen.length;
+  const refused = await cli(env, ["deploy", pkg, "--to", proxy.base, "--yes"], key);
+  assert.equal(refused.code, 2, refused.err);
+  assert.equal(applies(from), 1, "the plan's dry run, and no apply");
+  assert.match(refused.err, new RegExp(`The agent ${made.agent_id} on .* was made from this package with these parameters`));
+  assert.match(refused.err, new RegExp(`--agent ${made.agent_id} deploys onto it, --agent new makes another`));
+  assert.deepEqual([await agents(), existsSync(lockFile)], [[made.agent_id], false]);
+
+  // --agent ID: that agent, with no second agent and no second trigger, and the lock names it.
+  const onto = await cli(env, ["deploy", pkg, "--to", proxy.base, "--yes", "--agent", made.agent_id], key);
+  assert.equal(onto.code, 0, onto.err);
+  assert.equal(onto.json().agent_id, made.agent_id);
+  assert.deepEqual([await agents(), await dailies(), lockAgent()], [[made.agent_id], 1, made.agent_id]);
+
+  // With the lock, --agent naming another agent (or new) is refused with nothing sent; naming the locked one is the
+  // deploy it would be without it.
+  from = proxy.seen.length;
+  for (const other of ["agt_another", "new"]) {
+    const wrong = await cli(env, ["deploy", pkg, "--yes", "--agent", other], key);
+    assert.equal(wrong.code, 2, wrong.err);
+    assert.match(wrong.err, new RegExp(`names the agent ${made.agent_id} on .*: --agent ${other} names another`));
+  }
+  assert.deepEqual(proxy.seen.slice(from), [], "nothing sent");
+  const same = await cli(env, ["deploy", pkg, "--yes", "--agent", made.agent_id], key);
+  assert.equal(same.code, 0, same.err);
+  assert.equal(same.json().status, "up_to_date");
+
+  // --agent new, with no lock: another agent, on purpose, and the lock names it.
+  rmSync(lockFile);
+  const another = await cli(env, ["deploy", pkg, "--to", proxy.base, "--yes", "--agent", "new"], key);
+  assert.equal(another.code, 0, another.err);
+  assert.notEqual(another.json().agent_id, made.agent_id);
+  assert.deepEqual([await agents(), lockAgent()], [[made.agent_id, another.json().agent_id].sort(), another.json().agent_id]);
+});
+
 /** The CLI signed in to `base` with `token` (its config file, 0600): how it reaches an install it does not run. */
 function signedIn(dir, base, token) {
   mkdirSync(join(dir, ".config", "agentrun"), { recursive: true });
