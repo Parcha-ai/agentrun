@@ -227,6 +227,27 @@ test("a revision promoted, held, then promoted again by a replay serves again", 
   assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: DIGEST, replaying: null }]);
 });
 
+// #3458 round 2, rule (3), red before its fix: the trim reads which records are refused (learn/promote.ts refusedOf),
+// and a read that fails leaves the champion unknown, so the trim drops nothing until a read tells. Fails closed for
+// serving (the record is refused), never for keeping.
+test("round 2 (3): a promotion written while the learning can't be read trims nothing", async (t) => {
+  const w = await world(t);
+  const settings = w.store().settings;
+  const at = new Date().toISOString();
+  const champion = { workflow: "answer", digest: "aaaaaaaaaaaaaaaa", at, decided: "promote", reason: "checked: promoted", commit: "c".repeat(40) };
+  const filler = Array.from({ length: PROMOTIONS_KEPT }, (_, i) => ({ workflow: "other", digest: `other-${i}`, at, decided: "hold", reason: "held" }));
+  const items = [champion, ...filler];
+  assert.equal(trimPromotions(items, { keys: new Set(), unread: true }).length, items.length, "trimPromotions: an unread refusal drops nothing");
+  await settings.put("learning.promotions.agent-1", { v: 1, items });
+  const unreadable = async () => {
+    throw new Error("the learning can't be read right now");
+  };
+  await recordPromotion(settings, "agent-1", { workflow: "other", digest: "other-new", at, decided: "hold", reason: "held" }, () => true, { holds: unreadable, onMain: unreadable, writerPurged: unreadable });
+  const kept = await promotionsOf(settings, "agent-1");
+  assert.equal(kept.length, items.length + 1, "every record kept, the new one too");
+  assert.deepEqual(kept[0], champion, "the oldest record, the champion, still there");
+});
+
 test("a running replay's cost is null while a run's cost is unknown, never 0; once decided, what its runs cost", async (t) => {
   const w = await world(t);
   w.gradedRuns.forEach((of, i) => w.replayRun(`a-${i}`, of, { state: "running" }));

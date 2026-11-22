@@ -351,7 +351,8 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     if (rule.startsWith("(1)")) {
       // The check's settle, after the purge's rewrite and its record move: its promote names the pre-purge merge.
       const { recordPromotion } = await import("../dist/learn/promote.js");
-      await recordPromotion(store.settings, "again", v2Record("promote"), () => true);
+      const { recordLearningOf } = await import("../dist/purged-workflow.js");
+      await recordPromotion(store.settings, "again", v2Record("promote"), () => true, recordLearningOf(learningStoreOf(data, "again"), store));
       const records = (await api("GET", "/agents/again/learning/promotions")).body.promotions;
       assert.equal(records.some((one) => one.digest === digestOf(v2[path]) && one.decided === "promote"), false, "no promote is recorded for the purged run's revision");
     }
