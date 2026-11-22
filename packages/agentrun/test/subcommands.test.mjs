@@ -3,7 +3,7 @@
 // shadowed, and a name that is no plain word, or one found only on a relative PATH entry, is today's unknown command.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
@@ -63,6 +63,38 @@ test("agentrun NAME runs agentrun-NAME from PATH with the rest of the arguments,
   const notRunnable = bin(join(dir, "plain"), { "agentrun-hello": "echo plain; exit 0" }, 0o644);
   const over = await cli({ ...env, PATH: [notRunnable, first, env.PATH].join(delimiter) }, ["hello", "x"]);
   assert.deepEqual([over.code, over.out], [7, "x\n"]);
+});
+
+test("agentrun NAME: a SIGTERM or SIGHUP sent to the CLI reaches the command, a terminal's Ctrl-C reaches it once, and the CLI waits for it to exit and passes on its code", async () => {
+  const { dir, env } = scratch();
+  const mark = join(dir, "mark");
+  const tools = bin(join(dir, "tools"), {
+    "agentrun-wait": [
+      'trap \'echo TERM >> "$MARK"; sleep 0.3; exit 42\' TERM',
+      'trap \'echo HUP >> "$MARK"; sleep 0.3; exit 43\' HUP',
+      'trap \'echo INT >> "$MARK"; sleep 0.3; exit 44\' INT',
+      "echo ready",
+      "while :; do sleep 0.1; done",
+    ].join("\n"),
+  });
+  // The CLI in its own process group, as a terminal starts it: `group` sends the signal to the group (Ctrl-C), else to
+  // the CLI alone (kill PID).
+  const signalled = (signal, group) => new Promise((resolve) => {
+    rmSync(mark, { force: true });
+    const child = spawn(process.execPath, [BIN, "wait"], { env: { ...env, PATH: `${tools}${delimiter}${env.PATH}`, MARK: mark }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const timer = setTimeout(() => process.kill(-child.pid, "SIGKILL"), 15_000);
+    let out = "";
+    child.stdout.on("data", (chunk) => {
+      out += chunk;
+      if (out === "ready\n") group ? process.kill(-child.pid, signal) : child.kill(signal);
+    });
+    child.once("close", (code, killed) => (clearTimeout(timer), resolve({ code, killed, mark: existsSync(mark) ? readFileSync(mark, "utf8") : "" })));
+  });
+  assert.deepEqual(await signalled("SIGTERM", false), { code: 42, killed: null, mark: "TERM\n" });
+  assert.deepEqual(await signalled("SIGHUP", false), { code: 43, killed: null, mark: "HUP\n" });
+  // Ctrl-C reaches every process of the group: the command gets it from the terminal, once, and the CLI does not exit
+  // before it.
+  assert.deepEqual(await signalled("SIGINT", true), { code: 44, killed: null, mark: "INT\n" });
 });
 
 test("agentrun NAME: a built-in is never shadowed, and a name that is no plain word, one found only on a relative PATH entry, or none at all is today's unknown command", async () => {
