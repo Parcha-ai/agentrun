@@ -83,8 +83,16 @@ async function ask(url, { form, max = ANSWER_BYTES, ms = REQUEST_MS } = {}) {
   } catch {
     body = undefined;
   }
-  const retry = Number(response.headers.get("retry-after") ?? "");
-  return { status: response.status, body: OBJECT(body) ? body : undefined, retryAfter: Number.isInteger(retry) && retry > 0 ? Math.min(retry, 300) : 0 };
+  return { status: response.status, body: OBJECT(body) ? body : undefined, retryAfter: retryAfterMs(response.headers.get("retry-after")) };
+}
+
+/** A Retry-After header's wait in ms from `now` (RFC 9110 10.2.3: delay seconds, or an HTTP date), 0 for anything else
+ *  or a time already past. It is never cut short: the code's expiry bounds every wait. */
+export function retryAfterMs(value, now = Date.now()) {
+  if (typeof value !== "string" || value.length > 64) return 0;
+  if (/^\d+$/.test(value)) return Number(value) * 1000;
+  const at = /[a-z]/i.test(value) ? Date.parse(value) : NaN;
+  return Number.isFinite(at) && at > now ? at - now : 0;
 }
 
 /** Why a request failed, in a word: the cause's code, or the error's name (TimeoutError). */
@@ -159,7 +167,8 @@ export async function deviceSignIn(base, offer, io) {
   }
   if (granted.redirect) throw bad(`authorization endpoint answered with a redirect (${granted.status}), which this CLI never follows`);
   const g = granted.body;
-  if (granted.status !== 200 || g?.error !== undefined) {
+  if (granted.status === 200 && !g) throw bad("authorization endpoint answered something other than a JSON object, or one too large");
+  if (granted.status !== 200 || g.error !== undefined) {
     const code = errorOf(g);
     if (code === "access_denied") throw refuse(4, `The sign-in was denied; ${NOTHING}.`);
     throw refuse(1, `The server refused the device sign-in request: ${granted.status}${code ? ` ${code}` : ""}; ${NOTHING}.`);
@@ -211,7 +220,7 @@ export async function deviceSignIn(base, offer, io) {
       continue;
     }
     if (answer.status === 429 || answer.status >= 500) {
-      delay = Math.max(every, Math.min(BACKOFF_MS, delay * 2), answer.retryAfter * 1000);
+      delay = Math.max(every, Math.min(BACKOFF_MS, delay * 2), answer.retryAfter);
       continue;
     }
     if (code === "access_denied") throw refuse(4, `The sign-in was denied; ${NOTHING}.`);
