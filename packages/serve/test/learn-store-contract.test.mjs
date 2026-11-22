@@ -293,6 +293,32 @@ for (const [kind, make] of Object.entries(STORES)) {
     assert.deepEqual(await save(store, merged.saved, [{ path: "workflows/z/README.md", text: "z\n" }], { seed: one }), { refused: { absent: [], same: [], seed: one } });
   });
 
+  test(`${kind}: a purge leaves the purged run's line in no tree older than another run's merge of the same words: its own merge, a merge between, and the owner's removal hold none, and no diff shows it`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText, learningCommit, putCorrections, readSnapshot } = await learn();
+    const shared = "the same words later";
+    const merge = async (runId, correction) => assert.equal((await learningCommit(store, { runId, reason: `${runId} reason words`, files: [], correction })).ok, true, runId);
+    await merged(store, "ALPHA");
+    await merge("run_gone", shared);
+    // Another run merges while the purged run's line is on main: its diff shows that line as context.
+    await merge("run_between", "BETWEEN line from the owner");
+    const snap = await readSnapshot(store);
+    const text = (await store.read(snap.main, ["corrections.md"]))[0].body.toString("utf8");
+    assert.equal((await putCorrections(store, { text: text.replace(`- ${shared}\n`, ""), ifMatch: snap.corrections.oid })).ok, true);
+    await merge("run_later", shared);
+    assert.ok("commit" in (await forgetRunText(store, "run_gone")));
+    const log = await store.log(await store.head());
+    const later = log.findIndex(({ message }) => message.includes("Run-Id: run_later"));
+    assert.ok(later >= 0);
+    // Every commit older than the later run's merge, and every diff of one, holds none of the words.
+    for (const { sha } of log.slice(later + 1)) {
+      const held = Buffer.from((await store.read(sha, ["corrections.md"]))?.[0]?.body ?? "").toString("utf8");
+      assert.ok(!held.includes(shared), `${sha}: ${held}`);
+      assert.ok(!JSON.stringify((await store.diff(sha)) ?? []).includes(shared), sha);
+    }
+    assert.equal((await store.read(log[later].sha, ["corrections.md"]))[0].body.toString("utf8"), `- ALPHA line from the owner\n- BETWEEN line from the owner\n- ${shared}\n`);
+  });
+
   test(`${kind}: a purge takes out only the copies of a line the purged run added: one its owner removed and another run added again later stays, in that run's diff and on main`, async (t) => {
     const store = await make(t);
     const { forgetRunText, learningCommit, putCorrections, readSnapshot, runMergeOf } = await learn();
