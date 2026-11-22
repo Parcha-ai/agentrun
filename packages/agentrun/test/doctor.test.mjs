@@ -3,7 +3,7 @@
 // it runs a fake exec: nothing is installed, started or asked of this machine.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -443,6 +443,13 @@ test("Docker: no box warns with the reason and the fix", async () => {
   assert.match(missing.check("docker").summary, /Docker is not installed/);
 });
 
+/** A port probe at `port`: the `GET /` another process on the machine may send to any new loopback listener. Its status. */
+async function portProbe(port) {
+  const res = await fetch(`http://127.0.0.1:${port}/`);
+  await res.arrayBuffer();
+  return res.status;
+}
+
 /** `agentrun doctor` through the CLI, as the bin runs it, against a small server on loopback. */
 async function cli(argv, env) {
   const out = [];
@@ -497,10 +504,13 @@ test("through the CLI: --json's shape and exit codes, the token sent only to cap
   }
 
   // A record another user could have written (group- and world-readable here) is refused: nothing goes to its address.
+  // Its mode is set after the write, which a umask such as 077 would otherwise take the read bits from.
   const loose = fresh();
-  writeFileSync(join(loose, ".server.json"), `${JSON.stringify({ base_url: `http://127.0.0.1:${server.address().port}/v2`, pid: process.pid, token_file: join(loose, ".token") })}\n`, { mode: 0o644 });
+  writeFileSync(join(loose, ".server.json"), `${JSON.stringify({ base_url: `http://127.0.0.1:${server.address().port}/v2`, pid: process.pid, token_file: join(loose, ".token") })}\n`);
+  chmodSync(join(loose, ".server.json"), 0o644);
   writeFileSync(join(loose, ".token"), `${CANARY}\n`, { mode: 0o600 });
   const asked = seen.length;
+  assert.equal(await portProbe(server.address().port), 404, "a port probe is answered 404");
   const refused = await cli(["doctor", "--data", loose], env);
   assert.equal(refused.code, 1, refused.err);
   assert.match(refused.out, /^fail  Server .*is not a private file of yours.*nothing is sent to the address it names/m);
@@ -512,6 +522,7 @@ test("through the CLI: --json's shape and exit codes, the token sent only to cap
   writeFileSync(join(dead, ".server.json"), `${JSON.stringify({ base_url: `http://127.0.0.1:${server.address().port}/v2`, pid: exited, token_file: join(dead, ".token") })}\n`, { mode: 0o600 });
   writeFileSync(join(dead, ".token"), `${CANARY}\n`, { mode: 0o600 });
   const before = seen.length;
+  assert.equal(await portProbe(server.address().port), 404, "a port probe is answered 404");
   const staleRun = await cli(["doctor", "--data", dead], env);
   assert.equal(staleRun.code, 3, staleRun.err);
   assert.match(staleRun.out, new RegExp(`is not running \\(its process, pid ${exited}, has exited\\)`));
