@@ -1,6 +1,65 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { sourcePolicy } from '../dist/source-sync/destination.js';
+import { bindSourceTool, destinationPreparation } from '../dist/source-sync/destination.js';
+import { resourceTools } from '../dist/mcp-resources.js';
+
+function mcpFixture(tools) {
+  const row = { name: 'destination', url: 'https://tools.example.invalid/mcp', tools, auth: 'none', sealed: null, credentialChangedAt: null, tokenLeftMs: null };
+  const values = new Map();
+  const store = { mcp: { server: async name => name === row.name ? row : undefined, servers: async () => [row] }, settings: { get: async key => values.get(key), put: async (key, value) => { values.set(key, value); } } };
+  const deps = destinationPreparation(store, 'source-agent', { env: () => ({}), boxes: () => [], check: async () => ({ warnings: [], stamp: {} }), projectExecution: async () => ({ storage: 'local', isolation: 'process' }) });
+  const source = { name: 'docs__v2', transport: 'http', url: row.url, credentials: [], selection: { dialect: 'exact', allow: null, deny: [] }, resources: [] };
+  return { row, store, deps, source, bind: () => bindSourceTool(store, 'source-agent', source, row.name) };
+}
+const mcpTool = (name, resource) => resource ? resourceTools().find(tool => tool.name === name && tool.resource === resource)
+  : { name, input_schema: { type: 'object', properties: {} } };
+
+test('MCP selection: destination grants only selected tools and resource operations, never a denied tool', async () => {
+  const f = mcpFixture([mcpTool('read'), mcpTool('delete'), mcpTool('agentrun_list_resources', 'list'), mcpTool('agentrun_read_resource', 'read')]);
+  f.source.selection = { dialect: 'claude', allow: ['mcp__docs__v2__*'], deny: ['mcp__docs__v2__delete'] };
+  f.source.resources = ['read'];
+  await f.bind();
+  assert.deepEqual((await f.deps.tool(f.source)).tools, ['mcp:destination/read', 'mcp:destination/agentrun_read_resource']);
+});
+
+test('MCP selection: empty allowlist cannot widen to every tool and resource-only binding works', async () => {
+  const f = mcpFixture([mcpTool('delete'), mcpTool('agentrun_read_resource', 'read')]);
+  f.source.selection.allow = []; f.source.resources = ['read'];
+  await f.bind(); assert.deepEqual((await f.deps.tool(f.source)).tools, ['mcp:destination/agentrun_read_resource']);
+  f.row.tools = [mcpTool('agentrun_read_resource', 'read')];
+  await f.bind(); assert.deepEqual((await f.deps.tool(f.source)).tools, ['mcp:destination/agentrun_read_resource']);
+});
+
+test('MCP selection: a required normal tool missing from the destination cannot silently disappear', async () => {
+  const f = mcpFixture([mcpTool('other')]); f.source.selection.allow = ['required'];
+  await assert.rejects(f.bind(), /required|catalog|tool/i);
+});
+
+test('MCP selection: source credential requirements cannot bind to an anonymous destination', async () => {
+  const f = mcpFixture([mcpTool('read')]); f.source.credentials = ['DOCS_ACCESS_TOKEN'];
+  await assert.rejects(f.bind(), /sign in|credential|auth/i);
+});
+
+test('MCP selection: refreshed destination credentials or catalog require a new explicit binding', async () => {
+  const f = mcpFixture([mcpTool('read')]); f.source.credentials = ['DOCS_ACCESS_TOKEN'];
+  Object.assign(f.row, { auth: 'header', sealed: Uint8Array.of(1), credentialChangedAt: 1 });
+  await f.bind(); assert.deepEqual((await f.deps.tool(f.source)).tools, ['mcp:destination/read']);
+  f.row.tools.push(mcpTool('delete'));
+  assert.equal((await f.deps.tool(f.source)).blockers[0].code, 'tool_connection');
+  await f.bind(); f.row.credentialChangedAt = 2;
+  assert.equal((await f.deps.tool(f.source)).blockers[0].code, 'tool_connection');
+});
+
+test('MCP selection: allowing resource access does not invent resources on a tools-only server', async () => {
+  const f = mcpFixture([mcpTool('read')]); f.source.resources = ['list', 'templates', 'read'];
+  await f.bind(); assert.deepEqual((await f.deps.tool(f.source)).tools, ['mcp:destination/read']);
+});
+
+test('MCP selection: zero selected tools and an empty upstream resource catalog grant nothing', async () => {
+  const f = mcpFixture([mcpTool('delete')]); f.source.selection.allow = []; f.source.resources = ['list', 'templates', 'read'];
+  await f.bind(); assert.deepEqual((await f.deps.tool(f.source)).tools, []);
+});
 
 const boxes = [{ id: 'docker', available: true, network: 'allowlist' }];
 function snapshot(runtime = 'codex', capabilities = ['file_read', 'file_write']) {

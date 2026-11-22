@@ -24,6 +24,17 @@ export function runProjectCheckpoint(input: {
     uncertain,
     async capture(signal: AbortSignal): Promise<ProjectCheckpoint> {
       signal.throwIfAborted();
+      if (launch.audit || launch.replay) {
+        const settle = async (): Promise<ProjectCheckpoint> => {
+          stage = "settle"; await tools.settleProject(); signal.throwIfAborted();
+          stage = "sync";
+          if (computer.computer && !computer.syncProject) throw new Error("The project's computer has no verified durable synchronization capability.");
+          await computer.syncProject?.(signal); signal.throwIfAborted();
+          return { version: 1, status: "discarded", sourceId: launch.sourceProject!.sourceId, runId: claim.runId,
+            epoch: claim.epoch, reason: "auxiliary_project_changes_not_applied" };
+        };
+        return input.ioHeld ? settle() : withSourceIO(store, agentId, "snapshot", settle);
+      }
       stage = "baseline";
       const baseline = await projectBaseline(store, claim.runId);
       if (!baseline || baseline.epoch >= claim.epoch) return { ...uncertain(), reason: "project_baseline_invalid" };

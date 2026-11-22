@@ -63,23 +63,48 @@ Claude Code 2.1.322 with explicit supported configurations. Account-provided too
 permission behavior without a verified managed equivalent produce named prerequisites. Default native setups can
 therefore sync successfully while Move still needs attention.
 
+For Codex's file-backed sign-in, the source reads bounded local account metadata to distinguish ordinary accounts
+from managed or unresolved policy. Only fixed authentication-mode and policy labels enter the snapshot; login tokens,
+account identifiers and email addresses do not. This check does not refresh credentials or contact a provider. A
+refresh-due, unsupported or managed account remains a prerequisite, and AgentRun still needs its own model access.
+
 Local project storage with a separate Unix user for each run is currently unsupported: its ownership helper changes
 authored file modes. Move reports this as a prerequisite rather than rewriting those modes. The server's preparation
 checks its own destination; a different runner, or a runner whose configuration changed, repeats the check when it
 claims the run, before changing file ownership. Separate Archil project storage does not use that local ownership
 step, but still requires its own verified placement and capture capabilities.
 
-Source OAuth credentials remain at the source. HTTP tool accounts require explicit destination binding; a stdio
-tool needs a verified destination equivalent. Currently, MCP-connected Codex and Claude Code setups cannot complete
-Move even after account binding: native MCP resource and tool-selection behavior still needs a verified equivalent.
-Live acceptance covers explicit no-MCP configurations, including saved project continuity after a harness switch;
-it does not establish general native-tool portability or live Archil compatibility.
+Source OAuth credentials remain at the source. HTTP MCP accounts require explicit destination binding. Move preserves
+Codex's exact tool allow/deny lists and Claude's qualified MCP selectors, including empty selections and deny precedence.
+Disabled connections do not create sign-in requirements. A stdio tool, custom authentication helper or unsupported policy
+still needs a verified destination equivalent.
+
+MCP resources use the same destination account, revision pin and permission checks as tools. Servers that advertise
+resources expose **List resources**, **List resource templates** and **Read resource** operations where the source
+allows them. Managed AgentRun supports resource-only servers. The native acceptance checks cover a tools-capable
+endpoint for Codex 0.171.0 and a true resource-only endpoint for Claude Code 2.1.322: that Codex version fails native
+discovery when a server has only resources. Lists are paginated within item, byte and time limits; an incomplete
+list is an error. A resource URI is passed to its pinned MCP server, never fetched directly. The names
+`agentrun_list_resources`, `agentrun_list_resource_templates` and `agentrun_read_resource` are reserved within each
+upstream catalog; a server declaring an ordinary tool with one of these names must rename it before connecting.
+Later catalog additions do not grant new tools to an existing revision. Changed destination credentials or catalogs
+require the source binding to be checked again before a new Move.
+
+The live acceptance scope and its evidence must be checked for the selected source configuration and destination;
+support for local projects does not establish live Archil compatibility or general native-tool portability.
 
 Aliased or unresolved models are not guessed. Authored skills include
 their actual scripts, binary assets and executable modes; automatically learned notes and skills remain retired.
-Owner corrections and checked workflows follow the current learning model. Auxiliary audit/replay runs that need
-their own moved-project placement are refused until that placement is supported. New audit/replay promotion checks
-do not run for moved agents; owner learning settings, corrections and existing checked workflows are retained.
+Owner corrections and checked workflows follow the current server-side learning model and the agent's learning
+settings. Eligible runs can supply examples for workflow compilation; replay checks must pass before a proposed
+workflow can serve later requests. Background replay and audit runs receive isolated project copies from their
+reserved revision, with its disk and learning-reset guards. They do not add turns to the original connected CLI.
+
+Auxiliary runs must settle their project operations before finishing. Their successful project receipt is
+`discarded`: run results and learning evidence are retained, but their file changes never replace the agent's saved
+project. Uncertain operations retain their recovery evidence and source write receipts. Existing audit eligibility
+still applies: agents with write-capable tools do not receive automatic shadow audits. Moving an agent does not
+promise that every run produces a workflow or that every proposed workflow passes its checks.
 
 Snapshot limits, unsupported Git staging/submodules/filters, links, missing instruction layers, unsupported native
 hooks, secret-containing content and a project changing during capture remain explicit blockers. Required agent

@@ -83,6 +83,7 @@ export interface components {
         name: string;
         title?: string;
         description?: string;
+        resource?: "list" | "templates" | "read";
         input_schema: Record<string, unknown>;
         annotations?: Record<string, unknown>;
       }[];
@@ -2848,6 +2849,7 @@ export interface operations {
         name: string;
         title?: string;
         description?: string;
+        resource?: "list" | "templates" | "read";
         input_schema: Record<string, unknown>;
         output_schema?: Record<string, unknown>;
         annotations?: Record<string, unknown>;
@@ -4490,6 +4492,7 @@ export interface operations {
           name: string;
           title?: string;
           description?: string;
+          resource?: "list" | "templates" | "read";
           input_schema: Record<string, unknown>;
           output_schema?: Record<string, unknown>;
           annotations?: Record<string, unknown>;
@@ -4548,6 +4551,7 @@ export interface operations {
             name: string;
             title?: string;
             description?: string;
+            resource?: "list" | "templates" | "read";
             input_schema: Record<string, unknown>;
             annotations?: Record<string, unknown>;
           }[];
@@ -5037,6 +5041,7 @@ export interface operations {
         name: string;
         title?: string;
         description?: string;
+        resource?: "list" | "templates" | "read";
         input_schema: Record<string, unknown>;
         output_schema?: Record<string, unknown>;
         annotations?: Record<string, unknown>;
@@ -5442,6 +5447,7 @@ export interface operations {
           name: string;
           title?: string;
           description?: string;
+          resource?: "list" | "templates" | "read";
           input_schema: Record<string, unknown>;
           output_schema?: Record<string, unknown>;
           annotations?: Record<string, unknown>;
@@ -5719,6 +5725,7 @@ export interface operations {
           name: string;
           title?: string;
           description?: string;
+          resource?: "list" | "templates" | "read";
           input_schema: Record<string, unknown>;
           output_schema?: Record<string, unknown>;
           annotations?: Record<string, unknown>;
@@ -5855,6 +5862,7 @@ export interface operations {
         name: string;
         title?: string;
         description?: string;
+        resource?: "list" | "templates" | "read";
         input_schema: Record<string, unknown>;
         output_schema?: Record<string, unknown>;
         annotations?: Record<string, unknown>;

@@ -9,6 +9,11 @@ import { exportSourceSnapshot, sourceSnapshotDigest } from '../dist/native/sourc
 
 const trusted = project => `[projects.${JSON.stringify(project)}]\ntrust_level = \"trusted\"\n`;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+const authJwt = payload => [Buffer.from('{}').toString('base64url'), Buffer.from(JSON.stringify(payload)).toString('base64url'), Buffer.from('not-a-secret').toString('base64url')].join('.');
+const authFixture = (plan = 'pro', access = {}) => ({ auth_mode: 'chatgpt', last_refresh: new Date().toISOString(), tokens: {
+  id_token: authJwt({ 'https://api.openai.com/auth': { chatgpt_plan_type: plan, chatgpt_account_id: 'fixture-account', chatgpt_user_id: 'fixture-user' } }),
+  access_token: authJwt({ exp: Math.floor(Date.now() / 1000) + 3600, ...access }), refresh_token: 'not-a-secret', account_id: 'fixture-account',
+} });
 async function fixture(t, runtime = 'codex') {
   const root = await mkdtemp(join(tmpdir(), 'source-snapshot-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -33,6 +38,57 @@ async function fixture(t, runtime = 'codex') {
   return { root, project, home, target, put,
     snapshot: extra => exportSourceSnapshot({ target, home, authorizedRoots: [project, home], ...extra }) };
 }
+
+test('MCP selection: Codex keeps exact allow/deny and independent resource access', async t => {
+  const f = await fixture(t);
+  await f.put(join(f.home, '.codex', 'config.toml'), trusted(f.project) + '\n[mcp_servers.docs]\nurl="https://tools.example.invalid/mcp"\nenabled_tools=["read","delete"]\ndisabled_tools=["delete"]\n', true);
+  const value = await f.snapshot();
+  assert.equal(value.complete, true, JSON.stringify(value.blockers));
+  assert.deepEqual(value.configuration.tools[0].selection, { dialect: 'exact', allow: ['delete', 'read'], deny: ['delete'] });
+  assert.deepEqual(value.configuration.tools[0].resources, ['list', 'templates', 'read']);
+});
+
+test('MCP selection: an empty Codex allowlist remains empty and a disabled server needs no credential', async t => {
+  const f = await fixture(t);
+  await f.put(join(f.home, '.codex', 'config.toml'), trusted(f.project) + '\n[mcp_servers.resources]\nurl="https://tools.example.invalid/mcp"\nenabled_tools=[]\n[mcp_servers.disabled]\nenabled=false\nurl="https://disabled.example.invalid/mcp"\nbearer_token_env_var="UNAVAILABLE_TOKEN"\n', true);
+  f.target.mcp_servers = ['resources', 'disabled'];
+  const value = await f.snapshot();
+  assert.equal(value.complete, true, JSON.stringify(value.blockers));
+  assert.deepEqual(value.configuration.tools.map(tool => tool.name), ['resources']);
+  assert.deepEqual(value.configuration.tools[0].selection.allow, []);
+  assert.equal(value.configuration.credentials.includes('UNAVAILABLE_TOKEN'), false);
+});
+
+test('MCP selection: Claude keeps qualified selectors, deny wins and resource operations stay separate', async t => {
+  const f = await fixture(t, 'claude-code');
+  await f.put(join(f.project, '.mcp.json'), JSON.stringify({ mcpServers: { 'docs__v2': { type: 'http', url: 'https://tools.example.invalid/mcp' } } }), true);
+  await f.put(join(f.home, '.claude', 'agents', 'source.md'), '---\nname: source\ntools: [Read, mcp__docs__v2__*, ListMcpResourcesTool, ReadMcpResourceTool]\ndisallowedTools: [mcp__docs__v2__delete]\n---\n', true);
+  const value = await f.snapshot();
+  assert.equal(value.complete, true, JSON.stringify(value.blockers));
+  assert.deepEqual(value.configuration.tools[0].selection, { dialect: 'claude', allow: ['mcp__docs__v2__*'], deny: ['mcp__docs__v2__delete'] });
+  assert.deepEqual(value.configuration.tools[0].resources, ['list', 'read']);
+});
+
+test('MCP selection: Claude local scope overrides project and user as a whole entry', async t => {
+  const f = await fixture(t, 'claude-code');
+  await f.put(join(f.project, '.mcp.json'), JSON.stringify({ mcpServers: { docs: { type: 'http', url: 'https://project.example.invalid/mcp' } } }), true);
+  await f.put(join(f.home, '.claude.json'), JSON.stringify({ mcpServers: { docs: { type: 'http', url: 'https://user.example.invalid/mcp' } }, projects: { [f.project]: { mcpServers: { docs: { type: 'http', url: 'https://local.example.invalid/mcp' } } } } }), true);
+  await f.put(join(f.home, '.claude', 'agents', 'source.md'), '---\nname: source\ntools: [Read, mcp__docs__*]\n---\n', true);
+  const value = await f.snapshot();
+  assert.equal(value.complete, true, JSON.stringify(value.blockers));
+  assert.equal(value.configuration.tools.length, 1);
+  assert.equal(value.configuration.tools[0].url, 'https://local.example.invalid/mcp');
+});
+
+test('MCP selection: a prototype-shaped server name remains an own configuration entry', async t => {
+  const f = await fixture(t, 'claude-code');
+  await f.put(join(f.project, '.mcp.json'), '{"mcpServers":{"__proto__":{"type":"http","url":"https://tools.example.invalid/mcp"}}}', true);
+  await f.put(join(f.home, '.claude', 'agents', 'source.md'), '---\nname: source\ntools: [Read, mcp____proto____*]\n---\n', true);
+  const value = await f.snapshot();
+  assert.equal(value.complete, true, JSON.stringify(value.blockers));
+  assert.deepEqual(value.configuration.tools.map(tool => tool.name), ['__proto__']);
+  assert.equal(value.configuration.tools[0].url, 'https://tools.example.invalid/mcp');
+});
 const file = (snapshot, path) => snapshot.entries.find(x => x.path === path);
 const content = (snapshot, path) => Buffer.from(snapshot.blobs[file(snapshot, path).sha256], 'base64');
 const command = (cwd, ...args) => execFileSync('git', args, { cwd, env: { PATH: process.env.PATH, HOME: cwd, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -134,6 +190,94 @@ test('credentials are never copied; references remain resolvable destination req
   assert.ok(blocked.blockers.some(x => x.code === 'secret_content'));
   assert.ok(!Object.values(blocked.blobs).some(value => Buffer.from(value, 'base64').includes(Buffer.from(literal))));
   assert.equal(file(blocked, 'project/.mcp.json'), undefined);
+});
+
+test('Codex account metadata: ordinary saved sign-in exports only policy classification', async t => {
+  const f = await fixture(t), auth = authFixture();
+  await f.put(join(f.home, '.codex', 'auth.json'), JSON.stringify(auth));
+  const snapshot = await f.snapshot();
+  assert.equal(snapshot.complete, true, JSON.stringify(snapshot.blockers));
+  assert.deepEqual(snapshot.configuration.native_account, { source: 'codex-auth-file', mode: 'chatgpt', plan: 'ordinary' });
+  assert.deepEqual(snapshot.configuration.credentials, ['model-provider']);
+  for (const secret of [auth.tokens.id_token, auth.tokens.access_token, auth.tokens.refresh_token, 'fixture-account', 'fixture-user']) assert.equal(JSON.stringify(snapshot).includes(secret), false);
+  assert.equal((await f.snapshot()).digest, snapshot.digest, 'unchanged nonsecret metadata is deterministic');
+  await f.put(join(f.home, '.codex', 'auth.json'), JSON.stringify(authFixture('enterprise')));
+  const managed = await f.snapshot();
+  assert.equal(managed.complete, false); assert.notEqual(managed.digest, snapshot.digest);
+  assert.ok(managed.blockers.some(item => item.code === 'native_account_policy'));
+});
+
+test('Codex account metadata: saved API-key mode never copies the key or changes destination authentication', async t => {
+  const f = await fixture(t);
+  await f.put(join(f.home, '.codex', 'auth.json'), JSON.stringify({ OPENAI_API_KEY: 'fake-test-key' }));
+  const snapshot = await f.snapshot();
+  assert.equal(snapshot.complete, true, JSON.stringify(snapshot.blockers));
+  assert.deepEqual(snapshot.configuration.native_account, { source: 'codex-auth-file', mode: 'apikey', plan: null });
+  assert.equal(JSON.stringify(snapshot).includes('fake-test-key'), false);
+  assert.deepEqual(snapshot.configuration.credentials, ['model-provider']);
+});
+
+for (const encoding of ['plain', 'escaped', 'base64']) test(`native credential copy: ${encoding} asset content refuses the entire snapshot`, async t => {
+  const f = await fixture(t), secret = 'not-a-secret:"native-local"\\value';
+  await f.put(join(f.home, '.codex', 'auth.json'), JSON.stringify({ OPENAI_API_KEY: secret }));
+  const copy = encoding === 'plain' ? secret : encoding === 'escaped' ? JSON.stringify(secret).slice(1, -1) : Buffer.from(secret).toString('base64');
+  await f.put(join(f.project, 'asset.txt'), 'Fixture text: ' + copy);
+  await assert.rejects(f.snapshot(), error => error.code === 'source_unavailable' && !error.message.includes(secret) && !error.message.includes(copy));
+});
+
+test('native credential copy: compressed Git history is checked before its bundle can leave', async t => {
+  const f = await fixture(t), secret = 'not-a-secret:native-history-fixture';
+  await f.put(join(f.home, '.codex', 'auth.json'), JSON.stringify({ OPENAI_API_KEY: secret }));
+  command(f.project, 'init'); command(f.project, 'config', 'user.email', 'fixture@example.invalid'); command(f.project, 'config', 'user.name', 'Fixture');
+  await f.put(join(f.project, 'history.txt'), secret);
+  command(f.project, 'add', '.'); command(f.project, 'commit', '-m', 'fixture');
+  await f.put(join(f.project, 'history.txt'), 'Current safe content.');
+  command(f.project, 'add', '.'); command(f.project, 'commit', '-m', 'updated fixture');
+  await assert.rejects(f.snapshot(), error => error.code === 'source_unavailable' && !error.message.includes(secret));
+});
+
+test('native credential copy: deleted Unicode historical aliases remain private', async t => {
+  const f = await fixture(t), secret = 'not-a-secret:☃';
+  await f.put(join(f.home, '.codex', 'auth.json'), JSON.stringify({ OPENAI_API_KEY: secret }));
+  command(f.project, 'init'); command(f.project, 'config', 'user.email', 'fixture@example.invalid'); command(f.project, 'config', 'user.name', 'Fixture');
+  await f.put(join(f.project, secret), 'Identical harmless bytes.');
+  await f.put(join(f.project, 'normal.txt'), 'Identical harmless bytes.');
+  command(f.project, 'add', '.'); command(f.project, 'commit', '-m', 'fixture');
+  await rm(join(f.project, secret)); command(f.project, 'add', '.'); command(f.project, 'commit', '-m', 'remove alias');
+  await assert.rejects(f.snapshot(), error => error.code === 'source_unavailable' && !error.message.includes(secret));
+});
+
+test('Codex account metadata: unknown, malformed and refresh-due saved claims remain blocked', async t => {
+  const f = await fixture(t);
+  for (const auth of [authFixture('new-plan'), authFixture('pro', { exp: 1 }), authFixture('pro', { exp: Math.floor(Date.now() / 1000) + 299 }),
+    { auth_mode: 'chatgpt', tokens: {} }, { auth_mode: 'headers' }, { OPENAI_API_KEY: '' }]) {
+    await f.put(join(f.home, '.codex', 'auth.json'), JSON.stringify(auth));
+    const snapshot = await f.snapshot(); assert.equal(snapshot.complete, false);
+    assert.ok(snapshot.blockers.some(item => item.code === 'native_account_policy'));
+  }
+});
+
+test('Codex account metadata: native selected-workspace claims cannot retain an old ordinary plan', async t => {
+  const f = await fixture(t), auth = authFixture('pro', { 'https://api.openai.com/auth': { chatgpt_plan_type: 'enterprise', chatgpt_account_id: 'next-account', chatgpt_user_id: 'fixture-user' } });
+  auth.tokens.account_id = 'next-account';
+  await f.put(join(f.home, '.codex', 'auth.json'), JSON.stringify(auth));
+  const snapshot = await f.snapshot(); assert.equal(snapshot.complete, false);
+  assert.deepEqual(snapshot.configuration.native_account, { source: 'codex-auth-file', mode: 'chatgpt', plan: 'managed' });
+});
+
+test('Codex account metadata: a changed auth file invalidates the in-progress snapshot', async t => {
+  const f = await fixture(t), path = join(f.home, '.codex', 'auth.json');
+  await f.put(path, JSON.stringify(authFixture()));
+  const fs = (await import('node:fs/promises')).default, { syncBuiltinESMExports } = await import('node:module');
+  const original = fs.open; let sawAuth = false, changed = false;
+  fs.open = async function (name, ...args) {
+    if (String(name).endsWith('/auth.json')) sawAuth = true;
+    if (sawAuth && !changed && String(name).endsWith('/config.toml')) { changed = true; await writeFile(path, JSON.stringify(authFixture('enterprise'))); }
+    return original.call(this, name, ...args);
+  };
+  syncBuiltinESMExports();
+  try { await assert.rejects(f.snapshot(), error => error.code === 'source_changed'); assert.equal(changed, true); }
+  finally { fs.open = original; syncBuiltinESMExports(); }
 });
 
 test('historical credential files block the Git bundle even after deletion', async t => {
@@ -248,7 +392,7 @@ for (const runtime of ['codex', 'claude-code']) test(`${runtime}: unsupported MC
   const f = await fixture(t, runtime);
   const path = runtime === 'codex' ? join(f.home, '.codex', 'config.toml') : join(f.project, '.mcp.json');
   const settings = runtime === 'codex'
-    ? '[mcp_servers.docs]\nurl="https://tools.example.invalid/mcp"\nenabled_tools=["read"]\ndisabled_tools=["delete"]\n'
+    ? '[mcp_servers.docs]\nurl="https://tools.example.invalid/mcp"\n[mcp_servers.docs.tools.delete]\napproval_mode="prompt"\n'
     : JSON.stringify({ mcpServers: { docs: { url: 'https://tools.example.invalid/mcp', enabled_tools: ['read'], disabled_tools: ['delete'] } } });
   await f.put(path, settings, true);
   const snapshot = await f.snapshot();
@@ -272,13 +416,14 @@ test('Codex separate hook policy cannot disappear from a complete setup', async 
   assert.ok(snapshot.blockers.some(blocker => blocker.code === 'hooks'));
 });
 
-test('multiple differing source definitions for one MCP server need resolved precedence', async t => {
+test('Claude project scope replaces the whole lower-precedence user MCP entry', async t => {
   const f = await fixture(t, 'claude-code');
   await f.put(join(f.home, '.claude.json'), JSON.stringify({ mcpServers: { docs: { url: 'https://user.example.invalid/mcp' } } }), true);
   await f.put(join(f.project, '.mcp.json'), JSON.stringify({ mcpServers: { docs: { url: 'https://project.example.invalid/mcp' } } }), true);
+  await f.put(join(f.home, '.claude', 'agents', 'source.md'), '---\nname: source\ntools: [Read, mcp__docs__*]\n---\n', true);
   const snapshot = await f.snapshot();
-  assert.equal(snapshot.complete, false);
-  assert.ok(snapshot.blockers.some(blocker => blocker.code === 'tool_precedence'));
+  assert.equal(snapshot.complete, true, JSON.stringify(snapshot.blockers));
+  assert.equal(snapshot.configuration.tools[0].url, 'https://project.example.invalid/mcp');
 });
 
 test('Git never opens source config includes added after validation outside the grant', async t => {
@@ -475,8 +620,8 @@ test('Claude explicit builtin allowlist cannot silently grant every configured M
   const f = await fixture(t, 'claude-code');
   await f.put(join(f.project, '.mcp.json'), JSON.stringify({ mcpServers: { external: { type: 'http', url: 'https://tools.example.invalid/mcp' } } }), true);
   const snapshot = await f.snapshot();
-  assert.equal(snapshot.complete, false);
-  assert.ok(snapshot.blockers.some(x => x.code === 'native_mcp_selection'));
+  assert.equal(snapshot.complete, true, JSON.stringify(snapshot.blockers));
+  assert.deepEqual(snapshot.configuration.tools, [], 'configured but unselected MCP servers grant no capabilities or destination accounts');
 });
 
 test('source environment model overrides are captured without exporting provider secrets', async t => {

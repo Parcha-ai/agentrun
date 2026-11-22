@@ -6,10 +6,17 @@ export type SourceSnapshotEntry = {
   path: string; role: "project" | "instruction" | "skill"; type: "file" | "directory";
   mode: number; bytes: number; sha256?: string;
 };
+export type SourceMcpSelection = { dialect: "exact" | "claude"; allow: string[] | null; deny: string[] };
+export type SourceMcpResource = "list" | "templates" | "read";
+export type SourceNativeAccount = { source: "codex-auth-file"; mode: "none" | "apikey" | "chatgpt" | "unknown"; plan: "ordinary" | "managed" | "unknown" | null };
 export type SourceSnapshotTool = {
   name: string; transport: "http" | "stdio"; url?: string;
   /** Names only. Source credential values are never part of a snapshot. */
   credentials: string[];
+  /** Absent on older snapshots; Move requires a freshly resolved selection. Empty means no tools. */
+  selection?: SourceMcpSelection;
+  /** Resource access is independent of the MCP tool allow/deny list. */
+  resources?: SourceMcpResource[];
 };
 export const SOURCE_NATIVE_CAPABILITIES = ["shell", "file_read", "file_write", "file_edit", "file_search", "web_search", "web_fetch", "subagents", "image_read", "image_generate", "planning", "user_input", "mcp_resources", "skills", "clock", "sleep", "task_tracking", "notebook_edit", "worktree", "notifications", "session_messaging", "context_management", "session_end", "feedback", "artifact_publish", "remote_tasks", "remote_files", "plugins", "apps"] as const;
 export type SourceNativeCapability = typeof SOURCE_NATIVE_CAPABILITIES[number];
@@ -27,7 +34,7 @@ export type SourceSnapshot = {
   blobs: Record<string, string>;
   instructions: { text: string; layers: { path: string; precedence: number; source: string }[] };
   skills: { name: string; path: string; source: string }[];
-  configuration: { model: string | null; tools: SourceSnapshotTool[]; permissions: Record<string, unknown>; credentials: string[]; native_tools?: SourceNativeTools };
+  configuration: { model: string | null; tools: SourceSnapshotTool[]; permissions: Record<string, unknown>; credentials: string[]; native_tools?: SourceNativeTools; native_account?: SourceNativeAccount };
   project: { git: null | { head: string | null; branch: string | null; dirty: boolean;
     deleted: string[]; bundle?: { sha256: string; bytes: number }; history: "complete" | "unavailable" } };
   blockers: SourceSnapshotBlocker[];

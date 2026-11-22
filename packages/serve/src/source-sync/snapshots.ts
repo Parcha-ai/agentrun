@@ -3,6 +3,8 @@
 import { createHash } from "node:crypto";
 import { isNativeRuntime, NATIVE_RUNTIME_FACTS } from "../native/runtimes.js";
 import { removeOwnedCaptureHooks } from "../native/source-capture-hooks.js";
+import { sourceMcpSelection } from "../native/source-mcp-selection.js";
+import { sourceAccountMetadataValid } from "../native/source-account.js";
 import { SOURCE_NATIVE_CAPABILITIES, sourceSnapshotDigest, type SourceSnapshot, type SourceSnapshotEntry } from "../native/source-snapshot-types.js";
 import { relativeSegments } from "../workspace/paths.js";
 import { type Workspace } from "../workspace/workspace.js";
@@ -106,8 +108,12 @@ function validateManifest(value: unknown, cap: SnapshotLimits): Manifest {
   for (const entry of entries.values()) if (entry.role === "skill" && !skillPaths.some(p => entry.path === p || entry.path.startsWith(`${p}/`))) fail("A skill asset is outside the selected skill closure.");
   const config = value.configuration;
   if (!record(config) || !(config.model === null || typeof config.model === "string") || !Array.isArray(config.tools) || !record(config.permissions) || !strings(config.credentials)) fail("Snapshot configuration is invalid.");
-  for (const tool of config.tools) if (!record(tool) || typeof tool.name !== "string" || !["http", "stdio"].includes(tool.transport) || !strings(tool.credentials) || tool.url !== undefined && typeof tool.url !== "string") fail("Snapshot tool requirements are invalid.");
+  for (const tool of config.tools) if (!record(tool) || typeof tool.name !== "string" || !["http", "stdio"].includes(tool.transport) || !strings(tool.credentials) || tool.url !== undefined && typeof tool.url !== "string"
+    || tool.selection !== undefined && !sourceMcpSelection(tool.selection)
+    || tool.resources !== undefined && (!strings(tool.resources) || tool.resources.length > 3 || new Set(tool.resources).size !== tool.resources.length || tool.resources.some((op: string) => !["list", "templates", "read"].includes(op)))) fail("Snapshot tool requirements are invalid.");
   const nativeTools = config.native_tools;
+  if (config.native_account !== undefined && (!sourceAccountMetadataValid(config.native_account)
+    || value.complete && ["managed", "unknown"].includes(config.native_account.plan ?? ""))) fail("Snapshot native account policy evidence is invalid or incomplete.");
   if (nativeTools !== undefined) {
     const known = new Set<string>(SOURCE_NATIVE_CAPABILITIES);
     if (!record(nativeTools) || !(nativeTools.version === null || typeof nativeTools.version === "string") || typeof nativeTools.complete !== "boolean"

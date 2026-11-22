@@ -6,6 +6,8 @@ import { NATIVE_RUNTIME_FACTS } from "../native/runtimes.js";
 import { chooseModel } from "../model.js";
 import { formOf, pickerCandidates } from "../model-form.js";
 import type { SourceSnapshot, SourceSnapshotTool } from "../native/source-snapshot-types.js";
+import { missingMcpTools, selectedMcpTool, sourceMcpSelection } from "../native/source-mcp-selection.js";
+import { resourceToolOperation } from "../mcp-resources.js";
 import { BOX_IDS, type BoxOffer } from "../place-offers.js";
 import { NEW_AGENT_TOOLS, type Place } from "../place.js";
 import { isHostTool } from "../tool-list.js";
@@ -19,6 +21,30 @@ const bindingKey = (agentId: string, name: string): string => `source-sync.tool.
 const stamp = (row: McpServerRow) => ({ url: row.url, auth: row.auth, credential: row.credentialChangedAt, sealedHash: row.sealed ? createHash("sha256").update(row.sealed).digest("hex") : null, tools: digest(row.tools) });
 const refused = (code: string, message: string, path?: string) => ({ blockers: [{ code, message, ...(path ? { path } : {}) }] });
 type ToolBinding = { requirement: string; server: string; stamp: ReturnType<typeof stamp> };
+function selectedTools(source: SourceSnapshotTool, row: McpServerRow): string[] {
+  if (!sourceMcpSelection(source.selection) || !Array.isArray(source.resources)
+    || source.resources.some(op => !["list", "templates", "read"].includes(op)))
+    throw new ApiError("input_invalid", "Sync this source's complete MCP tool and resource selection before choosing its destination.");
+  if (!Array.isArray(row.tools)) throw new ApiError("input_invalid", "Refresh the destination MCP catalog first.");
+  const selected: string[] = [], ordinary: string[] = [];
+  for (const tool of row.tools) {
+    if (!isObject(tool) || typeof tool.name !== "string" || !isObject(tool.input_schema)) throw new ApiError("input_invalid", "The destination MCP catalog is incomplete.");
+    const resource = resourceToolOperation(tool);
+    if (tool.resource !== undefined && !resource) throw new ApiError("input_invalid", "The destination resource capability is invalid; refresh its catalog.");
+    if (resource) {
+      if (source.resources.includes(resource)) selected.push(`mcp:${row.name}/${tool.name}`);
+    } else {
+      ordinary.push(tool.name);
+      if (selectedMcpTool(source.selection, source.name, tool.name)) selected.push(`mcp:${row.name}/${tool.name}`);
+    }
+  }
+  if (missingMcpTools(source.selection, source.name, ordinary).length) throw new ApiError("input_invalid", "A required source tool is missing from the destination MCP catalog.");
+  // Empty is meaningful: an explicit zero-tool source may point at a tools-only server whose
+  // native resource listing is empty. Preserve zero grants; never replace them with all tools.
+  return selected;
+}
+const needsSignIn = (source: SourceSnapshotTool, row: McpServerRow): boolean => source.credentials.length > 0 && row.auth === "none"
+  || row.auth !== "none" && (!row.sealed || row.tokenLeftMs !== null && row.tokenLeftMs <= 0);
 export async function sourceToolConnections(store: Store, agentId: string, snapshot: SourceSnapshot) {
   const rows = await store.mcp.servers();
   return Promise.all(snapshot.configuration.tools.map(async source => {
@@ -34,9 +60,10 @@ export async function sourceToolConnections(store: Store, agentId: string, snaps
  * cross the source boundary. The binding expires when the source requirement or the saved account changes. */
 export async function bindSourceTool(store: Store, agentId: string, source: SourceSnapshotTool, server: string): Promise<void> {
   const row = await store.mcp.server(server);
-  if (!row || !Array.isArray(row.tools) || !row.tools.length) throw new ApiError("input_invalid", "Connect and verify the destination tool server first.");
-  if (row.auth !== "none" && (!row.sealed || row.tokenLeftMs !== null && row.tokenLeftMs <= 0)) throw new ApiError("auth_required", "Sign in to this destination tool server first.");
+  if (!row) throw new ApiError("input_invalid", "Connect and verify the destination tool server first.");
+  if (needsSignIn(source, row)) throw new ApiError("auth_required", "Sign in to this destination tool server first.");
   if (source.transport !== "http" || source.url !== row.url) throw new ApiError("input_invalid", "This source tool needs a verified destination equivalent before it can move.");
+  selectedTools(source, row);
   await store.settings.put(bindingKey(agentId, source.name), { requirement: digest(source), server, stamp: stamp(row) } satisfies ToolBinding);
 }
 
@@ -63,6 +90,9 @@ export function sourcePolicy(snapshot: SourceSnapshot, boxes: readonly BoxOffer[
         if (!capabilities.has("shell")) return missing(capability);
         mapped = ["bash"]; break;
       case "subagents": mapped = ["subagent"]; break;
+      // The selected server-local resource operations come through the ordinary pinned MCP
+      // path below. A tools-only server adds none; native empty resource discovery adds no access.
+      case "mcp_resources": mapped = []; break;
       // Ending the conversation and loading captured authored skills have direct managed equivalents.
       // Planning-mode transitions, context reset APIs and feedback delivery need their own proofs.
       case "session_end": case "skills": mapped = []; break;
@@ -130,10 +160,10 @@ export function destinationPreparation(store: Store, agentId: string, options: {
       const binding = await store.settings.get(key) as ToolBinding | undefined;
       const row = binding && await store.mcp.server(binding.server);
       if (!binding || binding.requirement !== digest(source) || !row || canonical(stamp(row)) !== canonical(binding.stamp)) return refused("tool_connection", `Connect ${JSON.stringify(source.name)} on AgentRun and choose the account this agent should use.`, `configuration.tools.${source.name}`);
-      if (row.auth !== "none" && (!row.sealed || row.tokenLeftMs !== null && row.tokenLeftMs <= 0)) return refused("tool_authentication", `Sign in to the destination connection for ${JSON.stringify(source.name)}.`);
-      if (!Array.isArray(row.tools) || !row.tools.length) return refused("tool_capabilities", `Refresh the destination tools for ${JSON.stringify(source.name)}.`);
-      const names = row.tools.flatMap(tool => isObject(tool) && typeof tool.name === "string" ? [`mcp:${row.name}/${tool.name}`] : []);
-      if (names.length !== row.tools.length) return refused("tool_capabilities", `The destination catalog for ${JSON.stringify(source.name)} is incomplete.`);
+      if (needsSignIn(source, row)) return refused("tool_authentication", `Sign in to the destination connection for ${JSON.stringify(source.name)}.`);
+      let names: string[];
+      try { names = selectedTools(source, row); }
+      catch (error) { if (!(error instanceof ApiError)) throw error; return refused("tool_capabilities", error.message, `configuration.tools.${source.name}`); }
       source.credentials.forEach(name => authenticated.add(name));
       return { source, tools: names, mcpGuards: [{ name: row.name, url: row.url, auth: row.auth, credentialChangedAt: row.credentialChangedAt, tools: row.tools, sealed: row.sealed }], guards: [{ key, fields: { requirement: binding.requirement, server: binding.server, stamp: binding.stamp } }] };
     },

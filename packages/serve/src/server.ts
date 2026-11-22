@@ -5,6 +5,7 @@ import { prepareSource, SourcePreparationError } from "./source-sync/prepare.js"
 import { SnapshotError, validateSourceSnapshot } from "./source-sync/snapshots.js";
 import { cliAdoptionResolver } from "./source-sync/adoption.js";
 import { projectPlacement } from "./source-sync/projects.js";
+import { auxiliaryAdmitter } from "./source-sync/auxiliary.js";
 import { openRunPlacement, sourceSnapshotReader } from "./source-sync/workspace.js";
 import { SOURCE_FAILURES, configurationDigest, type SourceFailureCode } from "./source-sync/registry.js";
 import type { SourceSnapshot } from "./native/source-snapshot-types.js";
@@ -1341,7 +1342,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // with whether each can be granted: a known meta tool can't (mcp-meta.ts).
   const mcpTools = (server: string) => {
     const saved = mcpMeta.get(server);
-    return saved && marked(saved.url, { tools: saved.tools.map((tool) => ({ name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), inputSchema: (tool.input_schema ?? {}) as Record<string, unknown>, ...(tool.annotations ? { annotations: tool.annotations as Record<string, unknown> } : {}) })) }).tools;
+    return saved && marked(saved.url, { tools: saved.tools.map(boundTool) }).tools;
   };
   // The server's tool settings, in the store: capabilities say what they resolve to, again after a PUT. load() reads them
   // once here.
@@ -3107,6 +3108,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  reads it, cut of the host's secrets as the learning reads cut them, and a replay run's launch made as a run's start
    *  makes one now (prepareLaunch: the agent's current revision, model, plane and learning start). */
   const replayAskOf = (entry: AgentEntry): ReplayAsk => ({
+    admitAuxiliary: auxiliaryAdmitter(store, { data, project: startDeps.project }),
     store, agentId: entry.agent.id, context: ctx, log: (line) => void log?.(line),
     folder: () => learningFolderOf(data, entry.agent.id), shown: () => learningShown(entry.agent.id),
     launchOf: async (input) => {

@@ -16,7 +16,12 @@ export interface ProjectUncertain {
   /** Fixed internal diagnostic only; never exception text, source paths or credential values. */
   readonly stage?: "drain" | "settle" | "sync" | "baseline" | "read" | "open" | "capture" | "commit" | "cleanup";
 }
-export type ProjectCheckpoint = ProjectCandidate | ProjectUncertain;
+/** Auxiliary learning retains its result and evidence, but never applies its private project edits to the agent. */
+export interface ProjectDiscarded {
+  readonly version: 1; readonly status: "discarded"; readonly sourceId: string; readonly runId: string; readonly epoch: number;
+  readonly reason: "auxiliary_project_changes_not_applied";
+}
+export type ProjectCheckpoint = ProjectCandidate | ProjectUncertain | ProjectDiscarded;
 export interface ProjectCheckpointStatus {
   readonly runId: string; readonly entryId: number; readonly status: "published" | "pending" | "conflict" | "uncertain";
   readonly revision?: string; readonly digest?: string; readonly reason?: string;
@@ -41,7 +46,7 @@ function candidateOf(value: unknown): ProjectCandidate | undefined {
 export async function projectBaseline(store: Store, runId: string): Promise<{ sourceId: string; revision: string; digest: string; epoch: number } | undefined> {
   const run = await store.runs.get(runId), launch = readLaunchBody((await store.runs.launch(runId))?.body);
   const placed = launch?.sourceProject;
-  if (!run || !placed || placed.baselineRevision !== run.revisionId) return;
+  if (!run || !placed || placed.baselineRevision !== run.revisionId || launch?.audit || launch?.replay) return;
   const initial = await store.agents.revision(run.revisionId), binding = sourceSyncOf(initial?.body);
   if (!initial || initial.agentId !== run.agentId || binding?.id !== placed.sourceId || binding.project !== placed.digest) return;
   let baseline = { sourceId: placed.sourceId, revision: placed.baselineRevision, digest: placed.digest, epoch: 0 };
@@ -70,9 +75,20 @@ async function processCheckpoints(store: Store, agentId: string, options: { runI
     const uncertain = (reason: string): ProjectCheckpointStatus => ({ runId: row.runId, entryId: row.entryId, status: "uncertain", reason });
     const candidate = candidateOf(row.checkpoint), run = await store.runs.get(row.runId);
     if (!run || run.agentId !== agentId || run.revisionId !== row.revisionId) { results.push(uncertain("project_not_settled")); continue; }
+    const launch = readLaunchBody((await store.runs.launch(row.runId))?.body);
+    if (launch?.audit || launch?.replay) {
+      const receipt = row.checkpoint as Partial<ProjectDiscarded> | null, placed = launch.sourceProject;
+      const binding = sourceSyncOf((await store.agents.revision(row.revisionId))?.body);
+      // This is an authorization boundary, not merely a candidate-shape check. Even a forged, otherwise valid
+      // candidate from a learning run must never become the agent's next project revision.
+      if (placed && binding?.id === placed.sourceId && binding.project === placed.digest && placed.baselineRevision === row.revisionId
+        && receipt?.version === 1 && receipt.status === "discarded" && receipt.runId === row.runId && receipt.sourceId === placed.sourceId
+        && Number.isSafeInteger(receipt.epoch) && receipt.epoch! >= 1 && receipt.epoch! <= run.epoch && receipt.reason === "auxiliary_project_changes_not_applied") continue;
+      results.push(uncertain("auxiliary_project_changes_not_applied")); continue;
+    }
     let chain = chains.get(row.runId);
     if (!chain) {
-      const placed = readLaunchBody((await store.runs.launch(row.runId))?.body)?.sourceProject;
+      const placed = launch?.sourceProject;
       const initial = await store.agents.revision(row.revisionId), binding = sourceSyncOf(initial?.body);
       if (!placed || placed.baselineRevision !== row.revisionId || binding?.id !== placed.sourceId || binding.project !== placed.digest) { results.push(uncertain("project_baseline_invalid")); continue; }
       chain = { sourceId: placed.sourceId, revision: placed.baselineRevision, digest: placed.digest, epoch: 0 };

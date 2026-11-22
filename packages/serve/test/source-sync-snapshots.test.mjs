@@ -11,6 +11,27 @@ import { commitSourceSnapshot, readSourceSnapshot, seedSourceSnapshot, validateS
 
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const signed = snapshot => ({ ...snapshot, digest: sourceSnapshotDigest(snapshot) });
+test('MCP selection: malformed selection and resource grants are refused before storage', () => {
+  const source = { name: 'docs', transport: 'http', url: 'https://tools.example.invalid/mcp', credentials: [],
+    selection: { dialect: 'exact', allow: [], deny: [] }, resources: ['read'] };
+  const valid = fixture(); valid.configuration.tools = [source];
+  validateSourceSnapshot(signed(valid));
+  for (const change of [{ selection: { dialect: 'exact', deny: [] } }, { selection: { dialect: 'exact', allow: false, deny: [] } },
+    { resources: ['read', 'read'] }, { resources: ['tools/call'] }]) {
+    const invalid = fixture(); invalid.configuration.tools = [{ ...source, ...change }];
+    assert.throws(() => validateSourceSnapshot(signed(invalid)), error => error.code === 'invalid');
+  }
+});
+test('native account evidence permits fixed labels only and cannot mark unknown policy complete', () => {
+  const good = fixture(); good.configuration.native_account = { source: 'codex-auth-file', mode: 'chatgpt', plan: 'ordinary' };
+  validateSourceSnapshot(signed(good));
+  for (const account of [{ ...good.configuration.native_account, email: 'fixture@example.invalid' },
+    { ...good.configuration.native_account, plan: 'unknown' }, { ...good.configuration.native_account, plan: 'managed' },
+    { source: 'codex-auth-file', mode: 'apikey', plan: 'ordinary' }]) {
+    const invalid = fixture(); invalid.configuration.native_account = account;
+    assert.throws(() => validateSourceSnapshot(signed(invalid)), error => error.code === 'invalid');
+  }
+});
 function fixture({ git = false } = {}) {
   const blobs = {}, entries = [];
   const file = (path, role, data, mode = 0o644) => {

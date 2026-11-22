@@ -1590,6 +1590,7 @@ class _AgentMcpPinValueToolsItemRequired(TypedDict):
 class AgentMcpPinValueToolsItem(_AgentMcpPinValueToolsItemRequired, total=False):
     title: str
     description: str
+    resource: Literal["list", "templates", "read"]
     annotations: dict[str, Any]
 
 
@@ -2221,6 +2222,7 @@ class _GetAgentResponseMcpPinValueToolsItemRequired(TypedDict):
 class GetAgentResponseMcpPinValueToolsItem(_GetAgentResponseMcpPinValueToolsItemRequired, total=False):
     title: str
     description: str
+    resource: Literal["list", "templates", "read"]
     annotations: dict[str, Any]
 
 
@@ -4569,6 +4571,7 @@ class _SaveComposioServerResponseServerToolsItemRequired(TypedDict):
 class SaveComposioServerResponseServerToolsItem(_SaveComposioServerResponseServerToolsItemRequired, total=False):
     title: str
     description: str
+    resource: Literal["list", "templates", "read"]
     output_schema: dict[str, Any]
     annotations: dict[str, Any]
     grantable: Literal[False]
@@ -4966,6 +4969,7 @@ class _GetMcpServerResponseToolsItemRequired(TypedDict):
 class GetMcpServerResponseToolsItem(_GetMcpServerResponseToolsItemRequired, total=False):
     title: str
     description: str
+    resource: Literal["list", "templates", "read"]
     output_schema: dict[str, Any]
     annotations: dict[str, Any]
     grantable: Literal[False]
@@ -5031,6 +5035,7 @@ class _ListMcpServersResponseServersItemToolsItemRequired(TypedDict):
 class ListMcpServersResponseServersItemToolsItem(_ListMcpServersResponseServersItemToolsItemRequired, total=False):
     title: str
     description: str
+    resource: Literal["list", "templates", "read"]
     output_schema: dict[str, Any]
     annotations: dict[str, Any]
     grantable: Literal[False]
@@ -5090,6 +5095,7 @@ class _PreviewMcpServerResponseToolsItemRequired(TypedDict):
 class PreviewMcpServerResponseToolsItem(_PreviewMcpServerResponseToolsItemRequired, total=False):
     title: str
     description: str
+    resource: Literal["list", "templates", "read"]
     output_schema: dict[str, Any]
     annotations: dict[str, Any]
     grantable: Literal[False]
@@ -5162,6 +5168,7 @@ class _RefreshMcpServerResponseServerToolsItemRequired(TypedDict):
 class RefreshMcpServerResponseServerToolsItem(_RefreshMcpServerResponseServerToolsItemRequired, total=False):
     title: str
     description: str
+    resource: Literal["list", "templates", "read"]
     output_schema: dict[str, Any]
     annotations: dict[str, Any]
     grantable: Literal[False]
@@ -5243,6 +5250,7 @@ class _SaveMcpServerResponseToolsItemRequired(TypedDict):
 class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, total=False):
     title: str
     description: str
+    resource: Literal["list", "templates", "read"]
     output_schema: dict[str, Any]
     annotations: dict[str, Any]
     grantable: Literal[False]
@@ -5401,6 +5409,7 @@ class _ListRevisionsResponseRevisionsItemMcpPinValueToolsItemRequired(TypedDict)
 class ListRevisionsResponseRevisionsItemMcpPinValueToolsItem(_ListRevisionsResponseRevisionsItemMcpPinValueToolsItemRequired, total=False):
     title: str
     description: str
+    resource: Literal["list", "templates", "read"]
     annotations: dict[str, Any]
 
 

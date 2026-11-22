@@ -92,3 +92,15 @@ test("destination MCP account guards survive preparation without entering the re
   assert.equal(made.revision.body.mcpGuards, undefined);
   assert.equal(JSON.stringify(made.revision).includes(JSON.stringify([...sealed])), false, "sealed account bytes are not revision content or pins");
 });
+
+test("verified empty MCP selection prepares no external grants while retaining account guards", async () => {
+  const source = snapshot(); source.configuration.tools[0].selection = { dialect: "exact", allow: [], deny: [] };
+  source.configuration.tools[0].resources = ["list", "templates", "read"];
+  const mcpGuard = { name: "tracker", url: "https://tools.example/mcp", auth: "none", credentialChangedAt: null, tools: [], sealed: null };
+  const made = await prepareSource(sign(source), destination({ tool: async requirement => ({ source: requirement, tools: [], guards: [guard], mcpGuards: [mcpGuard] }) }));
+  assert.deepEqual(made.revision.body.tools, ["read", "write", "edit", "bash"]);
+  assert.deepEqual(made.mcpGuards, [mcpGuard]);
+  assert.ok(made.guards.some(item => item.key === guard.key));
+  await refused(prepareSource(sign(source), destination({ tool: async requirement => ({ source: requirement, tools: [] }) })), "tool_identity");
+  await refused(prepareSource(sign(source), destination({ tool: async requirement => ({ source: { ...requirement, name: "other" }, tools: [], guards: [guard] }) })), "tool_identity");
+});

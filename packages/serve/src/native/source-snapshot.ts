@@ -1,4 +1,4 @@
-/** Source-side exporter. No service, native CLI, model, credential lookup or network calls. */
+/** Source-side exporter. No service, native CLI, model or network calls; credentials are never copied/exported. */
 import { constants } from "node:fs";
 import { open, opendir, mkdtemp, mkdir, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -13,7 +13,9 @@ import type { SourceSnapshot, SourceSnapshotOptions, SourceSnapshotEntry } from 
 import { removeOwnedCaptureHooks } from "./source-capture-hooks.js";
 import { NATIVE_RUNTIME_FACTS } from "./runtimes.js";
 import { SOURCE_CODEX_FEATURES, sourceNativeTools } from "./source-runtime-tools.js";
+import { claudeMcpSelector, nativeToolNames, selectedMcpServer, sourceMcpSelection } from "./source-mcp-selection.js";
 import { sourceSnapshotDigest } from "./source-snapshot-types.js";
+import { sourceAccountContainsSecret, sourceAccountMetadata } from "./source-account.js";
 export type * from "./source-snapshot-types.js";
 export { sourceSnapshotDigest } from "./source-snapshot-types.js";
 
@@ -69,6 +71,9 @@ async function noLinks(path: string, expectedRoots: SourceSnapshotOptions["expec
 class Reader {
   readonly records = new Map<string, { stamp: string; bytes?: Buffer; names?: string[] } | null>();
   readonly policyStamps = new Map<string, string | null>();
+  private readonly accountStamps = new Map<string, string>();
+  private readonly checkedContents = new Map<string, string>();
+  private checkedContentBytes = 0;
   readonly objectStamps = new Map<string, string>();
   readonly deadline: number;
   readonly limits: Required<NonNullable<SourceSnapshotOptions["limits"]>>;
@@ -138,9 +143,16 @@ class Reader {
     else if (this.policyStamps.get(path) !== stamp) throw new SourceSnapshotError("source_changed", "Native policy changed during export.");
     return stamp !== null;
   }
-  async verify() {
+  keepSecretCheck(bytes: Buffer) {
+    const id = hash(bytes); if (this.checkedContents.has(id)) return;
+    this.checkedContentBytes += bytes.length;
+    if (this.checkedContentBytes > this.limits.bytes + this.limits.gitBytes) throw new SourceSnapshotError("limit", "Source credential checks exceed the snapshot byte limit.");
+    this.checkedContents.set(id, bytes.toString("utf8"));
+  }
+  async verify(metadata?: string) {
     await this.verifyRoots();
     for (const path of this.policyStamps.keys()) await this.policyPresent(path, true);
+    for (const path of this.accountStamps.keys()) await this.accountMetadata(path, true, metadata);
     for (const [path, stamp] of this.objectStamps) {
       this.check();
       let handle: FileHandle | undefined;
@@ -154,6 +166,35 @@ class Reader {
       if (!old !== !current || (old && current && (old.stamp !== current.stamp || (old.bytes ? !current.bytes?.equals(old.bytes) : canonical(old.names) !== canonical(current.names)))))
         throw new SourceSnapshotError("source_changed", "Source content changed during export; retry from fresh discovery.");
     }
+  }
+  /** A separate private read: never puts credentials in records, blobs, provenance or diagnostics.
+   * The descriptor, bytes fingerprint and classification are checked again before publication. */
+  async accountMetadata(path: string, fresh = false, metadata?: string) {
+    this.check();
+    if (!this.granted(path)) throw new SourceSnapshotError("source_unavailable", "Source account metadata is outside the source grant.");
+    let handle: FileHandle | undefined, bytes: Buffer | undefined, stamp = "missing", projection = sourceAccountMetadata(null);
+    try {
+      handle = await noLinks(path, this.options.expectedRoots);
+      const before = await handle.stat();
+      if (!before.isFile() || before.nlink !== 1 || (before.mode & 0o6000)) throw new SourceSnapshotError("source_unavailable", "Source account metadata cannot be inspected safely.");
+      stamp = signature(before);
+      if (before.size <= 65_536) {
+        bytes = Buffer.alloc(before.size + 1); let offset = 0;
+        while (offset < bytes.length) { const read = await handle.read(bytes, offset, bytes.length - offset, offset); if (!read.bytesRead) break; offset += read.bytesRead; this.check(); }
+        if (offset !== before.size || signature(await handle.stat()) !== stamp) throw new SourceSnapshotError("source_changed", "Source account metadata changed during export.");
+        projection = sourceAccountMetadata(bytes.subarray(0, offset)); stamp += ":" + hash(bytes.subarray(0, offset));
+        if (fresh && this.accountStamps.get(path) !== stamp + ":" + canonical(projection)) throw new SourceSnapshotError("source_changed", "Source account metadata changed during export.");
+        if (fresh && sourceAccountContainsSecret(bytes.subarray(0, offset), function* (contents: Iterable<string>) { if (metadata) yield metadata; yield* contents; }(this.checkedContents.values())))
+          throw new SourceSnapshotError("source_unavailable", "Source content contains a native credential and cannot be exported.");
+      } else projection = sourceAccountMetadata(new Uint8Array(65_537));
+    } catch (error) {
+      if (error instanceof SourceSnapshotError) throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new SourceSnapshotError("source_unavailable", "Source account metadata cannot be inspected safely.");
+    } finally { bytes?.fill(0); await handle?.close(); }
+    const state = stamp + ":" + canonical(projection);
+    if (!fresh) this.accountStamps.set(path, state);
+    else if (this.accountStamps.get(path) !== state) throw new SourceSnapshotError("source_changed", "Source account metadata changed during export.");
+    return projection;
   }
   /** Git never consumes live source configuration or path indirections. Copy only its bounded data database
    * through the same no-link reader, synthesize safe config, and inherit an already-open worktree descriptor. */
@@ -252,6 +293,8 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
   let bytes = 0, expandedBytes = 0;
   const blob = (body: Buffer) => { const sha = hash(body); if (!Object.hasOwn(result.blobs, sha)) { if (bytes + body.length > reader.limits.bytes) throw new SourceSnapshotError("limit", "Snapshot exceeds its total byte limit."); bytes += body.length; result.blobs[sha] = body.toString("base64"); } return sha; };
   const safe = async (body: Buffer, path: string) => {
+    reader.keepSecretCheck(body);
+    reader.keepSecretCheck(Buffer.from(path));
     const content = body.toString("utf8");
     // Refuse structured literal credentials even when they have no provider-specific token shape.
     // References name a destination requirement; they never expose a source environment value.
@@ -344,15 +387,26 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
       return object(JSON.parse(text(transformed.bytes)));
     } catch { return value; } // An unproven installation remains required source policy, never an exemption.
   };
-  const toolDefinitions = new Map<string, string>();
+  const toolDefinitions = new Map<string, Record<string, any>>(), handledTools = new Set<string>();
+  const codexTools = NATIVE_RUNTIME_FACTS[target.runtime].protocol === "codex-json";
+  const mergeTable = (prior: Record<string, any>, next: Record<string, any>): Record<string, any> => {
+    const merged: Record<string, any> = Object.assign(Object.create(null), prior);
+    for (const [key, value] of Object.entries(next)) merged[key] = value && typeof value === "object" && !Array.isArray(value)
+      ? mergeTable(object(Object.hasOwn(prior, key) ? prior[key] : undefined), value) : value;
+    return merged;
+  };
   const tools = async (servers: unknown, label: string) => {
     for (const [name, raw] of Object.entries(object(servers))) {
       if (!await safe(Buffer.alloc(0), `${label}/${name}`)) continue;
-      const value = object(raw), credentials: string[] = [];
-      const definition = canonical(value), previous = toolDefinitions.get(name); toolDefinitions.set(name, definition);
-      if (previous !== undefined && previous !== definition) block("tool_precedence", "Multiple definitions of this source tool need an explicit effective configuration.", `${label}/${name}`);
-      const supported = new Set(["url", "type", "env_vars", "required_env_vars", "bearer_token_env_var", "env", "headers", "http_headers", "command"]);
+      handledTools.add(name);
+      // Codex config tables merge from lower to higher precedence. Claude scope entries are
+      // selected whole before reaching this function, rather than merging credentials across scopes.
+      const value = codexTools ? { ...toolDefinitions.get(name), ...object(raw) } : object(raw), credentials: string[] = [];
+      toolDefinitions.set(name, value);
+      if (codexTools && value.enabled === false) { result.configuration.tools = result.configuration.tools.filter(tool => tool.name !== name); continue; }
+      const supported = new Set(["url", "type", "env_vars", "required_env_vars", "bearer_token_env_var", "env", "headers", "http_headers", "command", ...(codexTools ? ["enabled", "enabled_tools", "disabled_tools"] : [])]);
       if (Object.keys(value).some(key => !supported.has(key)) || value.type !== undefined && value.type !== "http"
+          || codexTools && value.enabled !== undefined && typeof value.enabled !== "boolean"
           || ["env_vars", "required_env_vars"].some(key => value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some((item: unknown) => typeof item !== "string")))
           || value.bearer_token_env_var !== undefined && typeof value.bearer_token_env_var !== "string")
         block("tool_configuration", "A tool has capability, transport or policy settings without a supported destination equivalent.", `${label}/${name}`);
@@ -378,7 +432,10 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
         url = parsed.toString();
       } catch { block("tool_url", "The tool URL cannot be exported without preserving or exposing unsupported authentication.", `${label}/${name}`); }
       if (transport === "http" && !url) block("tool_transport", "A tool endpoint could not be resolved.", `${label}/${name}`);
-      const tool = { name, transport, ...(url ? { url } : {}), credentials: [...new Set(credentials)].sort() } as SourceSnapshot["configuration"]["tools"][number];
+      const selection = { dialect: "exact" as const, allow: value.enabled_tools === undefined ? null : value.enabled_tools, deny: value.disabled_tools ?? [] };
+      if (codexTools && !sourceMcpSelection(selection)) block("tool_selection", "An MCP tool allow/deny list needs valid exact names.", `${label}/${name}`);
+      const tool = { name, transport, ...(url ? { url } : {}), credentials: [...new Set(credentials)].sort(),
+        ...(codexTools && sourceMcpSelection(selection) ? { selection: { ...selection, allow: selection.allow === null ? null : [...selection.allow].sort(), deny: [...selection.deny].sort() }, resources: ["list", "templates", "read"] } : {}) } as SourceSnapshot["configuration"]["tools"][number];
       const existing = result.configuration.tools.findIndex(x => x.name === name); if (existing >= 0) result.configuration.tools[existing] = tool; else result.configuration.tools.push(tool);
     }
   };
@@ -450,6 +507,19 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
           // Tree records name every historical path, even when rev-list chose another path for a shared blob.
           const historicalCredential = body.toString("utf8").split("\n").some(line => { const entry = line.match(/^\d{6} (?:blob|tree|commit) [a-f0-9]+\t(.+)$/); return entry && credentialPath(entry[1]); });
           if (historyBytes > reader.limits.gitBytes || historicalCredential || !await safe(body, match[2] ? `Git history/${match[2]}` : "Git history")) { historySafe = false; break; }
+          if (text(await git(reader, ["cat-file", "-t", match[1]])).trim() === "commit") {
+            // Pretty tree output quotes non-ASCII names, and rev-list names shared blobs once.
+            // Inspect every commit's actual unquoted paths before its compressed bundle can leave.
+            const listing = await git(reader, ["ls-tree", "-r", "-z", match[1]], reader.limits.fileBytes); historyBytes += listing.length;
+            if (historyBytes > reader.limits.gitBytes) { historySafe = false; break; }
+            reader.keepSecretCheck(listing);
+            for (const entry of text(listing).split("\0").filter(Boolean)) {
+              const found = /^(100644|100755) blob [a-f0-9]{40,64}\t([\s\S]+)$/.exec(entry);
+              if (!found || !portable(found[2]!) || credentialPath(found[2]!)) { historySafe = false; break; }
+              reader.keepSecretCheck(Buffer.from(found[2]!));
+            }
+            if (!historySafe) break;
+          }
         }
         if (historySafe) {
           // A temporary owned directory is the only exporter write; stdout streaming bounds the bundle itself.
@@ -472,9 +542,13 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
     const home = options.codexHome ?? join(options.home, ".codex");
     for (const path of SYSTEM_POLICY_PATHS) if (await reader.policyPresent(path))
       block("native_managed_policy", "This source has managed system policy that needs a verified destination equivalent before Move.", "configuration/managed_policy");
-    // Enterprise account policy can be fetched independently of project/user config. Never read
-    // native authentication to guess the account or assume an absent cache means no policy.
-    const accountPaths = [join(home, "auth.json"), join(home, "cloud-config-bundle-cache.json")];
+    // Only fixed, nonsecret labels leave the private auth reader. Saved claims establish source
+    // policy eligibility, never destination authentication; managed/unknown accounts still block.
+    const account = await reader.accountMetadata(join(home, "auth.json"));
+    result.configuration.native_account = account;
+    if (account.plan === "managed" || account.plan === "unknown")
+      block("native_account_policy", "The source account policy is managed or unresolved. Resolve it locally before Move; native sign-in is never copied.", "configuration/account_policy");
+    const accountPaths = [join(home, "cloud-config-bundle-cache.json")];
     const homeNames = (await reader.read(home))?.names ?? [];
     accountPaths.push(...homeNames.filter(name => /^managed-config-.*\.json$/.test(name)).map(name => join(home, name)));
     for (const path of accountPaths) if (await reader.policyPresent(path))
@@ -536,16 +610,21 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
           runtimeConfiguration.cloud = cloud;
         } else if (["approval_policy", "sandbox_mode", "sandbox_workspace_write", "web_search"].includes(key)) {
           if (await safe(Buffer.from(canonical(setting)), `configuration/${key}`)) result.configuration.permissions[key] = setting;
-        } else if (key === "mcp_servers") await tools(setting, "tools");
+        } else if (key === "mcp_servers") {
+          for (const [name, value] of Object.entries(object(setting))) toolDefinitions.set(name, mergeTable(toolDefinitions.get(name) ?? {}, object(value)));
+        }
+        else if (key === "cli_auth_credentials_store" && setting === "file") { /* supported private metadata projection; never exported credentials */ }
         else if (key === "developer_instructions" && typeof setting === "string") await instruction(path, setting);
         else block("unsupported_setting", "This Codex setting needs an explicit managed equivalent.", `configuration/${key}`);
       }
     }
+    await tools(Object.fromEntries(toolDefinitions), "tools");
     modelCache = await config(join(home, "models_cache.json"));
     if (target.version === "0.171.0" && result.configuration.permissions.web_search === undefined) result.configuration.permissions.web_search = "cached";
     if (target.selector.kind === "agent") block("selector", "Codex agent selectors are not supported by this exporter.");
   } else {
     const home = options.claudeHome ?? join(options.home, ".claude");
+    const disabledProjectMcp = new Set<string>();
     for (const path of [join(home, "CLAUDE.md"), ...ancestors.flatMap(dir => [join(dir, "CLAUDE.md"), join(dir, ".claude", "CLAUDE.md"), join(dir, "CLAUDE.local.md")])]) if ((await read(path, "instructions"))?.bytes) await instruction(path);
     let selected = target.selector.kind === "agent" ? target.selector.name : undefined;
     for (const path of [join(home, "settings.json"), join(root, ".claude", "settings.json"), join(root, ".claude", "settings.local.json")]) {
@@ -553,6 +632,10 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
       for (const [key, setting] of Object.entries(value)) {
         if (key === "model" && typeof setting === "string") result.configuration.model = setting;
         else if (key === "agent" && typeof setting === "string") { if (target.selector.kind === "project") selected = setting; }
+        else if (["enabledMcpjsonServers", "disabledMcpjsonServers"].includes(key) && Array.isArray(setting) && setting.every(name => typeof name === "string")) {
+          if (key === "disabledMcpjsonServers") for (const name of setting) disabledProjectMcp.add(name);
+        }
+        else if (key === "enableAllProjectMcpServers" && typeof setting === "boolean") { /* destination account choice is still explicit */ }
         else if (key === "permissions" && await safe(Buffer.from(canonical(setting)), "configuration/permissions")) {
           for (const [name, policy] of Object.entries(object(setting))) {
             // Modern Claude ignores these privileged modes in project/local settings. Until the
@@ -570,11 +653,19 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
         else block("unsupported_setting", "This Claude setting needs an explicit managed equivalent.", `configuration/${key}`);
       }
     }
-    for (const dir of ancestors) await tools((await config(join(dir, ".mcp.json"))).mcpServers, "tools");
     const user = await config(join(options.home, ".claude.json")), local = object(user.projects?.[root]);
-    for (const settings of [user, local]) if (Object.keys(settings).some(key => /(?:enabled|disabled).*mcp|mcp.*(?:enabled|disabled)/i.test(key)))
-      block("tool_configuration", "Source MCP enable/disable policy needs an explicit destination equivalent.", "configuration/tools");
-    await tools(user.mcpServers, "tools"); await tools(local.mcpServers, "tools");
+    // Claude uses a whole server entry from local > project > user; fields never merge across scopes.
+    const effective: Record<string, any> = Object.assign(Object.create(null), object(user.mcpServers));
+    for (const dir of ancestors) for (const [name, value] of Object.entries(object((await config(join(dir, ".mcp.json"))).mcpServers))) {
+      handledTools.add(name); if (!disabledProjectMcp.has(name)) effective[name] = value;
+    }
+    Object.assign(effective, object(local.mcpServers));
+    if (local.disabledMcpServers !== undefined && (!Array.isArray(local.disabledMcpServers) || local.disabledMcpServers.some((name: unknown) => typeof name !== "string")))
+      block("tool_configuration", "Source MCP enable/disable policy needs a valid server list.", "configuration/tools");
+    for (const name of Array.isArray(local.disabledMcpServers) ? local.disabledMcpServers : []) { handledTools.add(name); delete effective[name]; }
+    if (local.enabledMcpServers !== undefined && (!Array.isArray(local.enabledMcpServers) || local.enabledMcpServers.some((name: unknown) => typeof name !== "string" || !Object.hasOwn(effective, name))))
+      block("tool_configuration", "An enabled builtin MCP integration needs an explicit destination equivalent.", "configuration/tools");
+    await tools(effective, "tools");
     if (selected) {
       let chosen: { path: string; body: string; front: Record<string, any> } | undefined;
       for (const file of target.configuration.filter(x => basename(dirname(x.path)) === "agents" && x.path.endsWith(".md"))) {
@@ -596,6 +687,16 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
         }
       }
     }
+    const allowed = nativeToolNames(result.configuration.permissions.tools), denied = nativeToolNames(result.configuration.permissions.disallowedTools) ?? [];
+    const selection = { dialect: "claude" as const, allow: allowed === undefined ? null : [...new Set(allowed.filter(claudeMcpSelector))].sort(), deny: [...new Set(denied.filter(claudeMcpSelector))].sort() };
+    if (!sourceMcpSelection(selection)) block("tool_selection", "The native MCP tool selection exceeds its supported bounds.", "configuration/tools");
+    const resources: ("list" | "read")[] = [];
+    for (const [name, operation] of [["ListMcpResourcesTool", "list"], ["ReadMcpResourceTool", "read"]] as const)
+      if (allowed?.includes(name) && !denied.includes(name)) resources.push(operation);
+    for (const tool of result.configuration.tools) { tool.selection = structuredClone(selection); tool.resources = [...resources]; }
+    // An explicit builtin-only agent has no use for these MCP connections. Its captured config
+    // remains intact, but no destination account or credential is granted merely because it exists.
+    result.configuration.tools = result.configuration.tools.filter(tool => resources.length > 0 || selectedMcpServer(selection, tool.name));
     if (target.selector.kind === "profile") block("selector", "Claude profile selectors are not supported by this exporter.");
   }
 
@@ -628,13 +729,13 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
     skillNames.add(name); result.skills.push({ name, path, source }); await tree(source, path, "skill");
   }
   for (const name of target.skills) if (!skillNames.has(name)) block("skill_missing", "A discovered authored skill is missing from the complete source closure.", `skills/${name}`);
-  for (const name of target.mcp_servers) if (!result.configuration.tools.some(tool => tool.name === name)) block("tool_missing", "A discovered tool was not captured by the supported configuration resolver.", `tools/${name}`);
+  for (const name of target.mcp_servers) if (!handledTools.has(name)) block("tool_missing", "A discovered tool was not captured by the supported configuration resolver.", `tools/${name}`);
   // Discovery already reports managed/plugin/rules sources it cannot resolve. Never turn that uncertainty into ready.
   if (!target.capabilities.learning) block("policy_unresolved", "Discovery could not establish complete source policy; resolve its policy prerequisites before moving.");
   result.instructions.text = instructionTexts.join("\n\n");
   if (result.configuration.model !== null && !await safe(Buffer.from(result.configuration.model), "configuration/model")) result.configuration.model = null;
   if (gitStart && canonical(await gitState()) !== canonical(gitStart)) throw new SourceSnapshotError("source_changed", "Git HEAD, index or working-tree inventory changed during export.");
-  reader.check(); await reader.verify();
+  reader.check(); await reader.verify(JSON.stringify({ ...result, blobs: {} }));
   result.entries.sort((a, b) => a.path.localeCompare(b.path)); result.skills.sort((a, b) => a.path.localeCompare(b.path)); result.configuration.tools.sort((a, b) => a.name.localeCompare(b.name));
   result.transforms!.sort((a, b) => a.path.localeCompare(b.path));
   result.blockers.sort((a, b) => `${a.code}:${a.path ?? ""}`.localeCompare(`${b.code}:${b.path ?? ""}`));

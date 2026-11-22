@@ -548,9 +548,9 @@ export function revisionView(agent: AgentRow, row: RevisionRow & { version: numb
 export function pinView(pin: unknown): Record<string, { tools: Record<string, unknown>[]; prices?: Record<string, number> }> | null {
   if (!isObject(pin)) return null;
   const out: Record<string, { tools: Record<string, unknown>[]; prices?: Record<string, number> }> = {};
-  for (const [server, pinned] of Object.entries(pin as Record<string, { tools?: { name: string; title?: string; description?: string; inputSchema?: unknown; annotations?: unknown }[]; prices?: Record<string, number> }>)) {
+  for (const [server, pinned] of Object.entries(pin as Record<string, { tools?: { name: string; title?: string; description?: string; inputSchema?: unknown; annotations?: unknown; resource?: unknown }[]; prices?: Record<string, number> }>)) {
     out[server] = {
-      tools: (pinned.tools ?? []).map((tool) => ({ name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), input_schema: tool.inputSchema ?? {}, ...(tool.annotations ? { annotations: tool.annotations } : {}) })),
+      tools: (pinned.tools ?? []).map((tool) => ({ name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), input_schema: tool.inputSchema ?? {}, ...(tool.annotations ? { annotations: tool.annotations } : {}), ...(tool.resource !== undefined ? { resource: tool.resource } : {}) })),
       ...(pinned.prices && Object.keys(pinned.prices).length ? { prices: { ...pinned.prices } } : {}),
     };
   }

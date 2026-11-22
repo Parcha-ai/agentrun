@@ -79,6 +79,7 @@ export type Agent = {
       name: string;
       title?: string;
       description?: string;
+      resource?: "list" | "templates" | "read";
       input_schema: Record<string, unknown>;
       annotations?: Record<string, unknown>;
     }>;
@@ -3053,6 +3054,7 @@ export type SaveComposioServerResponse = {
       name: string;
       title?: string;
       description?: string;
+      resource?: "list" | "templates" | "read";
       input_schema: Record<string, unknown>;
       output_schema?: Record<string, unknown>;
       annotations?: Record<string, unknown>;
@@ -3358,6 +3360,7 @@ export type GetMcpServerResponse = {
     name: string;
     title?: string;
     description?: string;
+    resource?: "list" | "templates" | "read";
     input_schema: Record<string, unknown>;
     output_schema?: Record<string, unknown>;
     annotations?: Record<string, unknown>;
@@ -3403,6 +3406,7 @@ export type ListMcpServersResponse = {
       name: string;
       title?: string;
       description?: string;
+      resource?: "list" | "templates" | "read";
       input_schema: Record<string, unknown>;
       output_schema?: Record<string, unknown>;
       annotations?: Record<string, unknown>;
@@ -3447,6 +3451,7 @@ export type PreviewMcpServerResponse = {
     name: string;
     title?: string;
     description?: string;
+    resource?: "list" | "templates" | "read";
     input_schema: Record<string, unknown>;
     output_schema?: Record<string, unknown>;
     annotations?: Record<string, unknown>;
@@ -3495,6 +3500,7 @@ export type RefreshMcpServerResponse = {
       name: string;
       title?: string;
       description?: string;
+      resource?: "list" | "templates" | "read";
       input_schema: Record<string, unknown>;
       output_schema?: Record<string, unknown>;
       annotations?: Record<string, unknown>;
@@ -3550,6 +3556,7 @@ export type SaveMcpServerResponse = {
     name: string;
     title?: string;
     description?: string;
+    resource?: "list" | "templates" | "read";
     input_schema: Record<string, unknown>;
     output_schema?: Record<string, unknown>;
     annotations?: Record<string, unknown>;
@@ -3681,6 +3688,7 @@ export type ListRevisionsResponse = {
         name: string;
         title?: string;
         description?: string;
+        resource?: "list" | "templates" | "read";
         input_schema: Record<string, unknown>;
         annotations?: Record<string, unknown>;
       }>;

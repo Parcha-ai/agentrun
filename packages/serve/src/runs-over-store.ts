@@ -605,7 +605,7 @@ function keyedOrRefused(deps: StartDeps, launch: RunLaunch, kind: Revision["kind
  *  hold that fails part way, a write that fails, or one that answers another run (an origin key's run started before),
  *  lets go of the hold. In Mode 2 they are placed in the run's folder instead (StartDeps.files.place), and the run is
  *  written with the launch that says so; the same failures undo the placing. */
-async function withHeldFiles(store: Pick<Store, "runs">, deps: StartDeps, runId: string, agentId: string, revision: Pick<NewRevision, "id" | "kind" | "body">, launch: RunLaunch, write: (launch: RunLaunch) => Promise<RunRow>): Promise<RunRow> {
+export async function withHeldFiles(store: Pick<Store, "runs">, deps: Pick<StartDeps, "files" | "project">, runId: string, agentId: string, revision: Pick<NewRevision, "id" | "kind" | "body">, launch: RunLaunch, write: (launch: RunLaunch) => Promise<RunRow>): Promise<RunRow> {
   const source = sourceSyncOf(revision.body);
   if (!source) return withUploads(deps, runId, agentId, launch, write);
   if (!deps.project) throw new ApiError("agent_not_runnable", "This project must be prepared before its run can start.");
@@ -657,7 +657,7 @@ async function withHeldFiles(store: Pick<Store, "runs">, deps: StartDeps, runId:
   }
 }
 
-async function withUploads(deps: StartDeps, runId: string, agentId: string, launch: RunLaunch, write: (launch: RunLaunch) => Promise<RunRow>): Promise<RunRow> {
+async function withUploads(deps: Pick<StartDeps, "files">, runId: string, agentId: string, launch: RunLaunch, write: (launch: RunLaunch) => Promise<RunRow>): Promise<RunRow> {
   const ids = launch.files ?? [];
   if (!ids.length || !deps.files) return await write(launch);
   const placed = await deps.files.place?.(runId, agentId, launch);

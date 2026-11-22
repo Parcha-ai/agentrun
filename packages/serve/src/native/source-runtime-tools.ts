@@ -5,6 +5,7 @@
  * Default/account catalogs remain prerequisites unless their enabled closure is established. */
 import { NATIVE_RUNTIME_FACTS } from "./runtimes.js";
 import type { NativeRuntime } from "./types.js";
+import { claudeMcpSelector, nativeToolNames } from "./source-mcp-selection.js";
 import { SOURCE_NATIVE_CAPABILITIES, type SourceNativeCapability as Capability, type SourceNativeTools, type SourceSnapshotBlocker } from "./source-snapshot-types.js";
 /** Only these non-credential environment selectors affect the supported snapshot resolver. Consent hashes
  * their exact source values; neither the consent wire nor a saved grant contains the values themselves. */
@@ -69,13 +70,11 @@ export function sourceNativeTools(input: { runtime: NativeRuntime; version: stri
     if (model?.extra.length && enabled.has("web_search")) block("native_model_tools", "This model enables additional native tools without a verified destination equivalent.");
   } else {
     if (input.version !== "2.1.322") block("native_version", "This Claude Code version needs a verified native capability resolver before Move.");
-    if (input.mcp) block("native_mcp_selection", "This agent's explicit tool list needs a verified MCP tool selection before Move.");
     const selected = input.permissions.tools, denied = input.permissions.disallowedTools;
-    const list = Array.isArray(selected) ? selected : typeof selected === "string" ? selected.split(/[,\s]+/).filter(Boolean) : undefined;
-    const exclusions = Array.isArray(denied) ? denied : typeof denied === "string" ? denied.split(/[,\s]+/).filter(Boolean) : [];
-    if (!list || list.some(name => typeof name !== "string" || !Object.hasOwn(CLAUDE_TOOLS, name)))
+    const list = nativeToolNames(selected), exclusions = nativeToolNames(denied) ?? [];
+    if (!list || list.some(name => !Object.hasOwn(CLAUDE_TOOLS, name) && !claudeMcpSelector(name)))
       block("native_tool_list", "Select an explicit supported Claude agent tool list; default and account tools are not yet fully resolved.");
-    if (exclusions.some(name => typeof name !== "string" || !Object.hasOwn(CLAUDE_TOOLS, name)))
+    if (denied !== undefined && !nativeToolNames(denied) || exclusions.some(name => !Object.hasOwn(CLAUDE_TOOLS, name) && !claudeMcpSelector(name)))
       block("native_tool_restriction", "A source tool restriction needs exact native tool resolution before Move.");
     for (const name of list ?? []) if (typeof name === "string" && !exclusions.includes(name)) for (const capability of CLAUDE_TOOLS[name] ?? []) enabled.add(capability);
     // Claude 2.1.322 keeps EndConversation even when an explicit nonempty tool list omits it.

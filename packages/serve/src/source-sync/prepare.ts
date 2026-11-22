@@ -68,7 +68,7 @@ export async function prepareSource(snapshot: SourceSnapshot, deps: SourcePrepar
   const external: string[] = [];
   for (const requirement of snapshot.configuration.tools) {
     const tool = resolved(await deps.tool(requirement, snapshot));
-    if (!same(tool.source, requirement) || !names(tool.tools) || !tool.tools.length || !tool.guards?.length) {
+    if (!same(tool.source, requirement) || !names(tool.tools) || !tool.guards?.length) {
       refuse("tool_identity", `Verify the destination capabilities and account for source tool ${JSON.stringify(requirement.name)}.`, "configuration.tools");
     }
     external.push(...tool.tools); keep(tool);

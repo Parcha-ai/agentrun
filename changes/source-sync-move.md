@@ -10,8 +10,17 @@ credentials stay at the source, and unsupported capabilities remain named prereq
 [source sync](../docs/source-sync.md) for compatibility and recovery behavior. Automatic notes and learned skills
 remain retired; authored source skills retain their files and modes.
 
-MCP-connected setups remain blocked from Move even after account binding. Live acceptance covers supported
-no-MCP configurations and project continuity across a harness switch, not general native-tool portability.
+Moved agents can learn checked workflows on the server using their existing learning settings. Replay and eligible
+shadow-audit runs receive isolated copies of the reserved project; their results remain learning evidence, while
+their settled file changes are explicitly discarded rather than published to the saved project. Uncertain writes
+retain recovery receipts, and the existing restrictions on auditing write-capable agents still apply.
+
+Supported HTTP MCP connections retain source tool selections and denials, with explicit destination account binding.
+Resource lists, templates and reads use the same pinned grants, credentials and permission gate; resource-only servers
+are supported on managed AgentRun; native Codex 0.171.0 has a resource-only discovery limitation. Incomplete resource listings fail visibly, and resource bodies that echo connection credentials are
+scrubbed or withheld before filing. Three upstream tool names are now reserved for these generated resource operations:
+`agentrun_list_resources`, `agentrun_list_resource_templates` and `agentrun_read_resource`. A conflicting upstream tool
+must be renamed before its server can connect. Stdio connections and unsupported native capabilities remain prerequisites.
 
 Unknown source storage-write outcomes retain receipts and block deletion until independently resolved; restarting
 or acknowledging a run checkpoint does not clear a source write receipt.

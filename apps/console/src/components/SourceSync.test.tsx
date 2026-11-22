@@ -63,7 +63,7 @@ it('an old status read cannot overwrite a successful move', async () => {
     if (method === 'GET' && ++reads === 2) return new Promise(resolve => { resolveOld = resolve; });
     return moved ? current : ready;
   });
-  const learningNotice = 'Moved agents keep existing corrections and workflows. Learning new workflows and automatic workflow checks are currently unavailable.';
+  const learningNotice = 'After Move, AgentRun can learn checked workflows using your learning settings. Background checks use isolated project copies; their file changes do not replace your saved project.';
   expect(x.host.textContent).toContain(learningNotice);
   await act(async () => window.dispatchEvent(new Event('focus')));
   await act(async () => [...x.host.querySelectorAll('button')].find(button => button.textContent === 'Move to AgentRun')!.click());

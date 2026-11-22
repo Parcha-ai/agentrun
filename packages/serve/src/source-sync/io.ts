@@ -22,8 +22,10 @@ export interface SourceIOReceipt {
    * admission (the live run now protects the files) or confirmed rollback. Never call after an uncertain failure. */
   settled(): Promise<void>;
 }
-export async function beginSourceIO(store: IOStore, agentId: string, kind: "snapshot" | "placement"): Promise<SourceIOReceipt> {
-  const prefix = sourceIOPrefix(agentId), token = randomUUID(), key = prefix + token;
+export async function beginSourceIO(store: IOStore, agentId: string, kind: "snapshot" | "placement", operation?: string): Promise<SourceIOReceipt> {
+  // A reserved auxiliary run can be offered by several runners. Its deterministic operation key makes the existing
+  // durable receipt an exclusive preparation fence too. An unknown owner is never displaced on age or retry.
+  const prefix = sourceIOPrefix(agentId), token = randomUUID(), key = prefix + (operation === undefined ? token : createHash("sha256").update(operation).digest("hex"));
   const value = { version: 1, token, instance, kind, startedAt: Date.now() };
   const saved = await store.settings.putIfAbsent(key, value, { prefix, limit: SOURCE_IO_LIMIT });
   if (canonical(saved ?? null) !== canonical(value)) throw busy();

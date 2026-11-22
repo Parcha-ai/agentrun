@@ -10,6 +10,22 @@ async function pair(t) {
   await agentWithRevision(first.store); return { store: first.store, other: second.store, clock: first.clock };
 }
 
+test('a reserved auxiliary operation has one durable writer across handles, with no timed takeover', async t => {
+  const { store, other } = await pair(t), { beginSourceIO, sourceIOPrefix } = await api();
+  const first = await beginSourceIO(store, 'agent-1', 'placement', 'auxiliary:reserved-run');
+  await assert.rejects(beginSourceIO(other, 'agent-1', 'placement', 'auxiliary:reserved-run'), /source operation is still writing/);
+  const later = Date.now() + 86_400_000;
+  t.mock.method(Date, 'now', () => later);
+  await assert.rejects(beginSourceIO(other, 'agent-1', 'placement', 'auxiliary:reserved-run'), /source operation is still writing/);
+  t.mock.restoreAll();
+  assert.equal((await store.settings.all({ prefix: sourceIOPrefix('agent-1') })).length, 1);
+  await first.settled();
+  const second = await beginSourceIO(other, 'agent-1', 'placement', 'auxiliary:reserved-run');
+  await assert.rejects(first.settled(), /new owner must resolve/);
+  assert.equal((await store.settings.all({ prefix: sourceIOPrefix('agent-1') })).length, 1);
+  await second.settled();
+});
+
 test('a source writer admitted first prevents deletion until its actual I/O settles', async t => {
   const { store, other } = await pair(t), { beginSourceIO, requireSourceIOIdle } = await api();
   const hold = await beginSourceIO(store, 'agent-1', 'snapshot');

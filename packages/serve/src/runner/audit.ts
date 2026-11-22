@@ -27,6 +27,7 @@
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { overCapMessage } from "@parcha/agentrun-kernel/kernel/cap";
 import { sourceSyncOf } from "../source-sync/types.js";
+import type { AuxiliaryAdmitter } from "../source-sync/auxiliary.js";
 import { agreeOnOf, auditLoopOf, type AuditLoop } from "../learning-setting.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { runEntries } from "../store-reads/journal.js";
@@ -63,6 +64,7 @@ export type AuditDeps = {
   readonly shown: () => Promise<Pick<Shown, "text">>;
   readonly log: (line: string) => void;
   readonly sealKey?: Buffer;
+  readonly admitAuxiliary?: AuxiliaryAdmitter;
   readonly now?: () => number;
   /** Why model spend beside the claimed run is skipped (claim-secrets.ts claimSpendOff): a shadow is a run the runner
    *  starts with no caller's key. Absent: it runs. */
@@ -182,7 +184,7 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
     // Read after the claim pinned the revision's MCP tools (mcp-claim.ts pinFirst): the pin a revision saved without one
     // takes at its first run is what its tools are classed by.
     const revision = await store.agents.revision(deps.revisionId);
-    if (launch.sourceProject || sourceSyncOf(revision?.body)) {
+    if ((launch.sourceProject || sourceSyncOf(revision?.body)) && !deps.admitAuxiliary) {
       log("workflow-first: an auxiliary audit requires its own project placement for this moved agent; no audit was started. Start a normal run to use the saved project.");
       return;
     }
@@ -234,7 +236,8 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
     await addLines(deps, [started]);
     const sealed = await handedTo(deps, runId, id);
     try {
-      await store.runs.create({ id, agentId, revisionId: deps.revisionId }, { body: launchBody(shadow) as Json, ...(sealed ? { sealed } : {}) });
+      if (sourceSyncOf(revision?.body)) await deps.admitAuxiliary!({ runId: id, agentId, revisionId: deps.revisionId, launch: shadow, ...(sealed ? { sealed } : {}) });
+      else await store.runs.create({ id, agentId, revisionId: deps.revisionId }, { body: launchBody(shadow) as Json, ...(sealed ? { sealed } : {}) });
     } catch (error) {
       if (error instanceof StoreConstraint && (await store.runs.get(id))) return;
       throw error;

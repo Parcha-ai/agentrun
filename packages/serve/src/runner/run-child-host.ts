@@ -81,6 +81,7 @@ import { SUBAGENT_TOOL } from "./subagent.js";
 import type { AlsoRow, JournalReads, Store } from "../store/store.js";
 import type { Tier } from "../model.js";
 import { sourceSyncOf } from "../source-sync/types.js";
+import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
 import { beginSourceIO, type SourceIOReceipt } from "../source-sync/io.js";
 import type { ProjectCheckpoint, ProjectUncertain } from "../source-sync/checkpoints.js";
 import type { ClaimComputer } from "../workspace/computer-for-claim.js";
@@ -610,6 +611,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   const sealKey = deps.sealKey;
   const store = deps.store;
   const granted = ((revision.body as { tools?: unknown }).tools as readonly string[] | undefined) ?? [];
+  const admitAuxiliary = sourceAuxiliaryAdmitter(store, { data: deps.data, sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
   const keys = { store, sealKey, env: deps.env };
   const releases: (() => Promise<void> | void)[] = [() => bigs.close()];
   const source = sourceSyncOf(revision.body), placed = launch.sourceProject;
@@ -707,7 +709,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           });
           result = await checkpoint.capture(signal);
           signal.throwIfAborted(); await projectOwns();
-          if (result.status !== "candidate") projectFailed = true;
+          if (result.status !== "candidate" && result.status !== "discarded") projectFailed = true;
         } catch {
           projectFailed = true;
           result = checkpoint?.uncertain() ?? uncertain();
@@ -887,7 +889,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         log,
         decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys(keys, DECISION_PROVIDER_KEYS)) }),
         learningFolder: made === undefined ? (agentId: string) => learningFolderOf(deps.data, agentId) : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil: made }),
-      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, folder: await folderNow(), shown, log, sealKey, spendOff, launch, redact: cut });
+      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, folder: await folderNow(), shown, log, sealKey, spendOff, launch, redact: cut, admitAuxiliary });
       if (!step) return undefined;
       // keptOf is the run's process's, asked over the channel: read once, for the round learningEndOfRun reads (the
       // round after the newest the run kept), before the step reads it at once.
@@ -917,7 +919,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ?await workflowsAt({ folder, shown }, start.seed).catch(() => []) : [];
       const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
       const outputSchema = (revision.body as { outputSchema?: unknown }).outputSchema;
-      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, folder, shown, spendOff }, laid);
+      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, folder, shown, spendOff, admitAuxiliary }, laid);
       learnedFlows = got.workflows;
       return cutDeep(dataOnly(got) as LearnedFirst, cut);
     })()),
