@@ -1,0 +1,12 @@
+{
+  "header": "LIVE The agent drives · desktop RECORDING TAKE OVER",
+  "runReadRecordings": [
+    {
+      "path": "recordings/faux-desktop-1.mp4",
+      "computer": "faux-desktop-1",
+      "seconds": 5,
+      "bytes": 4137,
+      "finished": false
+    }
+  ]
+}

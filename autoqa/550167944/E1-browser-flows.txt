@@ -1,0 +1,5 @@
+PASS    watch-live (6.0 s)
+PASS    screen-unopened (4.9 s)
+PASS    take-over (5.9 s)
+PASS    ask-done (4.7 s)
+4 passed, 0 failed, 0 pending

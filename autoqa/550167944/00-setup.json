@@ -1,0 +1,10 @@
+{
+  "agent": 201,
+  "run": 202,
+  "run_id": "01a201d2-f7bc-74d9-81a5-5d38b04c1872",
+  "computer": {
+    "kind": "desktop",
+    "provider": "faux-desktop",
+    "record": true
+  }
+}

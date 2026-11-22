@@ -1,0 +1,402 @@
+[
+  {
+    "seq": 0,
+    "kind": "phase",
+    "tool": null,
+    "summary": "Recording the desktop's screen into recordings/faux-desktop-1.mp4.",
+    "sinceStart": {
+      "timestamp": 0,
+      "created_at": 0
+    }
+  },
+  {
+    "seq": 1,
+    "kind": "user_message",
+    "tool": null,
+    "summary": "You: Look at the desktop.",
+    "sinceStart": {
+      "timestamp": 0.038,
+      "created_at": 0.038
+    }
+  },
+  {
+    "seq": 2,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 0.1,
+      "created_at": 0.1
+    }
+  },
+  {
+    "seq": 3,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 0.142,
+      "created_at": 0.142
+    }
+  },
+  {
+    "seq": 4,
+    "kind": "phase",
+    "tool": null,
+    "summary": "You took over the desktop",
+    "sinceStart": {
+      "timestamp": 0.368,
+      "created_at": 0.368
+    }
+  },
+  {
+    "seq": 6,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 0.152,
+      "created_at": 0.152
+    }
+  },
+  {
+    "seq": 8,
+    "kind": "phase",
+    "tool": null,
+    "summary": "You handed the desktop back",
+    "sinceStart": {
+      "timestamp": 3.75,
+      "created_at": 3.75
+    }
+  },
+  {
+    "seq": 9,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 3.753,
+      "created_at": 3.753
+    }
+  },
+  {
+    "seq": 11,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 3.763,
+      "created_at": 3.763
+    }
+  },
+  {
+    "seq": 12,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 4.081,
+      "created_at": 4.081
+    }
+  },
+  {
+    "seq": 13,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 4.088,
+      "created_at": 4.088
+    }
+  },
+  {
+    "seq": 14,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 4.402,
+      "created_at": 4.402
+    }
+  },
+  {
+    "seq": 16,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 4.411,
+      "created_at": 4.411
+    }
+  },
+  {
+    "seq": 17,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 4.725,
+      "created_at": 4.725
+    }
+  },
+  {
+    "seq": 19,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 4.732,
+      "created_at": 4.732
+    }
+  },
+  {
+    "seq": 20,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 5.047,
+      "created_at": 5.047
+    }
+  },
+  {
+    "seq": 22,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 5.053,
+      "created_at": 5.053
+    }
+  },
+  {
+    "seq": 23,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 5.37,
+      "created_at": 5.37
+    }
+  },
+  {
+    "seq": 25,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 5.38,
+      "created_at": 5.38
+    }
+  },
+  {
+    "seq": 26,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 5.698,
+      "created_at": 5.698
+    }
+  },
+  {
+    "seq": 28,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 5.704,
+      "created_at": 5.704
+    }
+  },
+  {
+    "seq": 29,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 6.02,
+      "created_at": 6.02
+    }
+  },
+  {
+    "seq": 31,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 6.026,
+      "created_at": 6.026
+    }
+  },
+  {
+    "seq": 32,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 6.343,
+      "created_at": 6.343
+    }
+  },
+  {
+    "seq": 34,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 6.359,
+      "created_at": 6.359
+    }
+  },
+  {
+    "seq": 35,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 6.673,
+      "created_at": 6.673
+    }
+  },
+  {
+    "seq": 37,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 6.679,
+      "created_at": 6.679
+    }
+  },
+  {
+    "seq": 38,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 6.994,
+      "created_at": 6.994
+    }
+  },
+  {
+    "seq": 40,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 7.003,
+      "created_at": 7.003
+    }
+  },
+  {
+    "seq": 41,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 7.32,
+      "created_at": 7.32
+    }
+  },
+  {
+    "seq": 43,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 7.327,
+      "created_at": 7.327
+    }
+  },
+  {
+    "seq": 44,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 7.494,
+      "created_at": 7.494
+    }
+  },
+  {
+    "seq": 46,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 7.501,
+      "created_at": 7.501
+    }
+  },
+  {
+    "seq": 47,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 9.519,
+      "created_at": 9.519
+    }
+  },
+  {
+    "seq": 49,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 9.526,
+      "created_at": 9.526
+    }
+  },
+  {
+    "seq": 50,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 11.543,
+      "created_at": 11.543
+    }
+  },
+  {
+    "seq": 52,
+    "kind": "tool_use",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot",
+    "sinceStart": {
+      "timestamp": 11.556,
+      "created_at": 11.556
+    }
+  },
+  {
+    "seq": 53,
+    "kind": "tool_result",
+    "tool": "computer_screenshot",
+    "summary": "Took a screenshot: ok",
+    "sinceStart": {
+      "timestamp": 13.575,
+      "created_at": 13.575
+    }
+  },
+  {
+    "seq": 54,
+    "kind": "final_answer",
+    "tool": null,
+    "summary": "Looked at the desktop seventeen times. Done.",
+    "sinceStart": {
+      "timestamp": 13.581,
+      "created_at": 13.581
+    }
+  },
+  {
+    "seq": 55,
+    "kind": "usage",
+    "tool": null,
+    "summary": "Cost: $0 · free model over 18 model requests",
+    "sinceStart": {
+      "timestamp": 13.581,
+      "created_at": 13.581
+    }
+  }
+]

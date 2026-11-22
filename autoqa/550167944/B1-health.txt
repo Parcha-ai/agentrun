@@ -1,0 +1,2 @@
+GET /v2/health -> 200
+{"status":"ok","checks":{"store":"ok","disk":"ok"}}

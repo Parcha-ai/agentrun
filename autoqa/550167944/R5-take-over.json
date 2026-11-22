@@ -1,0 +1,16 @@
+{
+  "headerWhileHeld": "LIVE You drive · desktop HAND BACK",
+  "computerWhileHeld": {
+    "state": "live",
+    "kind": "desktop",
+    "hold": "person"
+  },
+  "finishedLooksWhileHeld": 1,
+  "computerAfter": {
+    "state": "live",
+    "hold": "agent"
+  },
+  "sameFrame": true,
+  "liveListHasTakeOverRow": "n/a",
+  "screenshot": "R5-taken-over.png"
+}
