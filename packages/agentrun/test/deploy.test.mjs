@@ -613,6 +613,11 @@ test("agentrun deploy DIR to an API-only install with its token: the upload, pla
   // And stdout's answer says the same: each skipped trigger is a warning with its reason.
   const skipped = done.warnings.filter((one) => one.field.startsWith("triggers.")).map((one) => [one.field, one.reason, one.message.match(/trigger (\w+) \((\w+)\) was not made/)?.slice(1)]);
   assert.deepEqual(skipped, [["triggers.0", "not_set_up_here", ["daily", "schedule"]], ["triggers.1", "not_an_option", ["inbound", "webhook"]]]);
+  // The plan names each skip's code: not_set_up_here for one this install makes once it is set up (a launch hook),
+  // not_an_option for one it never makes.
+  const planned = await hosted.api("POST", "/templates/upload%3Apr-alert/apply", { dry_run: true });
+  assert.equal(planned.status, 200, JSON.stringify(planned.body));
+  assert.deepEqual(planned.body.plan.triggers.map((one) => [one.name, one.action, one.code]), [["daily", "skip", "not_set_up_here"], ["inbound", "skip", "not_an_option"]]);
 
   // A changed skill is the agent's next revision there, and rollback makes the first current again.
   writeFileSync(join(pkg, "skills", "check", "SKILL.md"), SKILL("Say what changed, and who changed it."));
@@ -629,6 +634,34 @@ test("agentrun deploy DIR to an API-only install with its token: the upload, pla
   assert.equal(gone.code, 0, gone.err);
   assert.equal((await hosted.api("GET", `/agents/${done.agent_id}`)).status, 410);
   assert.equal(existsSync(lockFile), false);
+});
+
+/** pr-alert whose one trigger is a webhook, which an API-only install never makes. */
+const WEBHOOK_ONLY = HOOKED.replace(`  - name: daily
+    source: { kind: schedule, cron: "0 8 * * *" }
+    target: { kind: start_run, input: { content: "Run the daily check." } }
+`, "");
+
+test("agentrun deploy DIR to an API-only install of a package whose one trigger is a webhook: the trigger is said skipped, never \"not made yet\", and the next deploy of the same package is up to date and sends nothing that writes", { timeout: 180_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const hosted = await apiOnly(t);
+  const proxy = await recorder(t, hosted.baseUrl);
+  const pkg = folder(dir);
+  writeFileSync(join(pkg, "agent.md"), WEBHOOK_ONLY);
+  const key = { AGENTRUN_API_KEY: hosted.token };
+
+  const first = await cli(env, ["deploy", pkg, "--to", proxy.base, "--yes"], key);
+  assert.equal(first.code, 0, first.err);
+  assert.match(first.err, /! trigger\s+inbound\s+webhook skipped: .*serves no route or setting a webhook trigger needs/);
+  assert.doesNotMatch(first.err, /Not made on/, "a trigger this install never makes is not one it makes later");
+  assert.match(first.json().package_sha256 ?? "", /^[0-9a-f]{64}$/, "the lock names the package");
+
+  const sent = proxy.seen.length;
+  const again = await cli(env, ["deploy", pkg, "--yes"], key);
+  assert.equal(again.code, 0, again.err);
+  assert.equal(again.json().status, "up_to_date", again.err);
+  assert.deepEqual(proxy.seen.slice(sent).filter((one) => WRITES.test(one)), [], "no upload, no apply");
+  assert.doesNotMatch(again.err, /Not made on/);
 });
 
 /** The CLI signed in to `base` with `token` (its config file, 0600): how it reaches an install it does not run. */
