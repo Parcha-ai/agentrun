@@ -204,7 +204,9 @@ export async function importTemplate(deps: TemplateImportDeps, raw: unknown, sig
 /** A package made into an agent here as an imported template, from files this server wrote itself (a suggested agent's,
  *  suggestions.ts): checked, kept, then applied. Once `apply` has made the agent nothing after it can fail (the registry
  *  is in memory), so a thrown error always means no agent was made, which is what Suggestions.create reads it as. An
- *  apply refused (a missing model key, say) takes the kept package back as it was before: removed, or the earlier one. */
+ *  apply refused (a missing model key, say) takes the kept package back as it was before (removed, or the earlier one),
+ *  but only while the row is still the one this call kept: an import of the same id meanwhile (POST /v2/templates/import)
+ *  stands. */
 export async function applyImported<T>(
   deps: { registry: Pick<TemplateRegistry, "put">; store: { importedTemplates: Pick<Store["importedTemplates"], "list" | "put" | "remove"> }; apply: (pkg: Package) => Promise<T> },
   id: string,
@@ -213,16 +215,23 @@ export async function applyImported<T>(
 ): Promise<T> {
   const pkg = importedPackage(id, origin, files);
   const templates = deps.store.importedTemplates;
-  const before = (await templates.list()).find((row) => row.id === pkg.id);
+  const row = async () => (await templates.list()).find((one) => one.id === pkg.id);
+  const before = await row();
   await templates.put({ id: pkg.id, source: origin.source, sha: origin.sha, publisher: origin.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
+  // The row as this call kept it, stamped by the store: the undo below touches it only while it is still this one.
+  const kept = await row();
   let made: T;
   try {
     made = await deps.apply(pkg);
   } catch (error) {
-    const undo = before
-      ? templates.put({ id: before.id, source: before.source, sha: before.sha, publisher: before.publisher, files: before.files })
-      : templates.remove(pkg.id).then(() => undefined);
-    await undo.catch(() => {});
+    const now = await row().catch(() => undefined);
+    const ours = kept !== undefined && now !== undefined && now.importedAt === kept.importedAt && now.sha === kept.sha && now.source === kept.source;
+    if (ours) {
+      const undo = before
+        ? templates.put({ id: before.id, source: before.source, sha: before.sha, publisher: before.publisher, files: before.files })
+        : templates.remove(pkg.id).then(() => undefined);
+      await undo.catch(() => {});
+    }
     throw error;
   }
   deps.registry.put(pkg);

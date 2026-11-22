@@ -179,16 +179,18 @@ test("two scans of one repository sent at once start one run, the other told it 
   assert.equal((await a.scan({ repo: third })).status, 202);
 });
 
-test("a suggested agent's package is kept before its apply, registered after it, and taken back as it was when the apply refuses", async () => {
+test("a suggested agent's package is kept before its apply, registered after it, and taken back as it was when the apply refuses, never over an import made meanwhile", async () => {
   const s = checkSuggestion(suggestionsFor()[0]);
   const files = packageFiles(s);
   const id = `github:${REPO}/.agentrun/agents/ticket-triage`;
   const origin = (sha) => ({ source: `${id}@agentrun/ticket-triage`, sha, publisher: "faux-org" });
   const rows = new Map();
   const order = [];
+  // The store stamps each put (importedAt), as it does.
+  let stamp = 0;
   const importedTemplates = {
     list: async () => [...rows.values()],
-    put: async (row) => { order.push(`put ${row.sha}`); rows.set(row.id, { ...row, importedAt: 1 }); },
+    put: async (row) => { order.push(`put ${row.sha}`); rows.set(row.id, { ...row, importedAt: ++stamp }); },
     remove: async (gone) => { order.push("remove"); return rows.delete(gone); },
   };
   const registered = [];
@@ -205,4 +207,16 @@ test("a suggested agent's package is kept before its apply, registered after it,
   order.length = 0;
   await assert.rejects(applyImported(deps(refuse), id, origin("c".repeat(40)), files));
   assert.deepEqual([order, rows.get(id).sha], [[`put ${"c".repeat(40)}`, "apply", `put ${"b".repeat(40)}`], "b".repeat(40)], "refused over an earlier package: that one is put back");
+
+  // Someone imports the same template (POST /v2/templates/import) while this apply runs, which then refuses: their
+  // import stands, neither removed nor replaced by the package before.
+  order.length = 0;
+  const meanwhile = async () => { await importedTemplates.put({ id, source: `${id}@main`, sha: "d".repeat(40), publisher: "faux-org", files: {} }); refuse(); };
+  await assert.rejects(applyImported(deps(meanwhile), id, origin("e".repeat(40)), files));
+  assert.deepEqual([order, rows.get(id).sha], [[`put ${"e".repeat(40)}`, "apply", `put ${"d".repeat(40)}`], "d".repeat(40)], "the import made meanwhile is left as it is");
+  rows.delete(id);
+  order.length = 0;
+  const removedMeanwhile = async () => { rows.delete(id); refuse(); };
+  await assert.rejects(applyImported(deps(removedMeanwhile), id, origin("f".repeat(40)), files));
+  assert.deepEqual([order, rows.has(id)], [[`put ${"f".repeat(40)}`, "apply"], false], "a row deleted meanwhile is not put back");
 });
