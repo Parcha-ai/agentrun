@@ -22,6 +22,11 @@ export const HARNESS_SIGN_IN_FAILED = "HARNESS_SIGN_IN_FAILED";
 /** How long the person has to sign in. */
 export const SIGN_IN_MS = 10 * 60_000;
 
+/** The one line each sign-in says first: a person's own sign-in used through AgentRun may be outside what its vendor's
+ *  terms (the recipe's signIn.terms) cover, and the choice is theirs. A warning, never a refusal. */
+export const signInWarning = (label: string, terms: string | undefined): string =>
+  `${label}'s own sign-in: its vendor's terms may not cover use through AgentRun${terms ? ` (${terms})` : ""}. Your choice, on your own machine, at your own account's risk.`;
+
 export interface SignInHarnessOptions {
   recipe: string;
   data: string;
@@ -71,6 +76,9 @@ export async function signInHarness(options: SignInHarnessOptions): Promise<{ ok
   for (const name of AGENT_VARS.inherited) if (options.env[name] !== undefined) env[name] = options.env[name]!;
   Object.assign(env, recipe.env, { HOME: scratch, TMPDIR: scratch });
   const args = [...(release.args ?? recipe.args), ...recipe.signIn.args, recipe.signIn.homeArg, home];
+  // The one warning, never a refusal (HARNESS.md#vendor-terms): the vendor's terms are the recipe's to name, the choice
+  // the person's.
+  say(signInWarning(recipe.label, recipe.signIn.terms));
   say(`${recipe.label} signs you in with its own sign-in, here: it prints the address to open and asks you for the code. AgentRun reads none of it.`);
   const timeoutMs = options.timeoutMs ?? SIGN_IN_MS;
   let timedOut = false;
