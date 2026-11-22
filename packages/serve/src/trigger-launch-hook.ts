@@ -27,9 +27,9 @@ export const LAUNCH_HOOK_LATE_START_MS = 10 * 60_000;
  *  IPv6 in brackets and shortest form). */
 const loopback = (hostname: string): boolean => hostname === "localhost" || hostname === "[::1]" || /^127(\.\d{1,3}){3}$/.test(hostname);
 
-/** The hook a server hands its firings to: where, and the secret it signs with. `timeoutMs`: a test's bound, else
- *  LAUNCH_HOOK_TIMEOUT_MS. */
-export type LaunchHook = { readonly url: string; readonly secret: string; readonly timeoutMs?: number };
+/** The hook a server hands its firings to: where, and the secret it signs with. `bound`: a test's own signal for a POST's
+ *  LAUNCH_HOOK_TIMEOUT_MS, else AbortSignal.timeout. */
+export type LaunchHook = { readonly url: string; readonly secret: string; readonly bound?: (ms: number) => AbortSignal };
 
 /** What the host is sent for a firing: its id (the message's webhook-id too), its trigger, the agent and the revision a
  *  run would start on now, the run's input as the trigger gives it, and the firing's time. */
@@ -67,11 +67,12 @@ export function launchHookFrom(given: { url?: string | undefined; secret?: strin
 /** Where `hook` sends, for the start's banner: its origin alone, never a path or query that may hold a token. */
 export const hookOrigin = (hook: LaunchHook): string => new URL(hook.url).origin;
 
-/** `firing` handed to `hook`: one signed POST of it, within the hook's bound and cut by `stop`. A redirect is not followed. */
-export async function handToHost(hook: LaunchHook, firing: HookFiring, stop: AbortSignal): Promise<Handed> {
-  const timeoutMs = hook.timeoutMs ?? LAUNCH_HOOK_TIMEOUT_MS;
+/** `firing` handed to `hook`: one signed POST of it, stamped at `now` (the triggers' clock), within the hook's bound and
+ *  cut by `stop`. A redirect is not followed. */
+export async function handToHost(hook: LaunchHook, firing: HookFiring, stop: AbortSignal, now: () => number = Date.now): Promise<Handed> {
+  const timeoutMs = LAUNCH_HOOK_TIMEOUT_MS;
   const body = JSON.stringify(firing);
-  const timestamp = String(Math.floor(Date.now() / 1000));
+  const timestamp = String(Math.floor(now() / 1000));
   const headers = {
     "content-type": "application/json",
     "user-agent": "agentrun-serve-launch-hook/1",
@@ -79,7 +80,7 @@ export async function handToHost(hook: LaunchHook, firing: HookFiring, stop: Abo
     "webhook-timestamp": timestamp,
     "webhook-signature": signatureOf(hook.secret, firing.firing_id, timestamp, body),
   };
-  const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), stop]);
+  const signal = AbortSignal.any([hook.bound ? hook.bound(timeoutMs) : AbortSignal.timeout(timeoutMs), stop]);
   try {
     const res = await undiciFetch(hook.url, { method: "POST", redirect: "manual", signal, headers, body });
     // The answer's body is not read: the run the host started is found by the firing's key, never by what it says.
