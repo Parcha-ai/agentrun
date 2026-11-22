@@ -11,7 +11,7 @@ const ATTEMPTS = 4;
 
 /**
  * Run `runId`'s text taken out of `store`: each commit of main's history, oldest first, rebuilt with corrections.md
- * without the lines the run's merges added (as the store diffs each merge; from its first merge on), the run's merge
+ * without every line whose words the run's merges added (as the store diffs each merge) and no other run's merge did, the run's merge
  * commits kept with their reason cut (`learning: <run>: merged`, its Run-Id trailer) and so empty of its text, and
  * each commit's snapshot rebuilt (learn/folder.ts rewrittenSnapshot: the new commit ids, the run's reasons cut). A
  * commit left with nothing of its own is dropped. One host commit on top marks `.agentrun/purged/<run>`: no merge of the
@@ -45,21 +45,27 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
     await store.tidy();
     return { nothing: "purged" };
   }
-  const trailer = `Run-Id: ${runId}`;
-  const merges = new Set(newestFirst.filter(({ message }) => message.split("\n").includes(trailer)).map(({ sha }) => sha));
+  const runOf = (message: string): string | undefined => message.split("\n").find((line) => line.startsWith("Run-Id: "))?.slice("Run-Id: ".length);
+  const merges = new Set(newestFirst.filter(({ message }) => runOf(message) === runId).map(({ sha }) => sha));
   if (!merges.size) return { nothing: "unmerged" };
   const history = [...newestFirst].reverse();
-  const added = new Map<string, string[]>();
-  for (const sha of merges) added.set(sha, ((await store.diff(sha)) ?? []).flatMap((file) => (file.path === CORRECTIONS_FILE && "patch" in file ? addedLines(file.patch) : [])));
+  // Who wrote a correction line is known only from the merges, the one place a run writes: the lines each merge's diff
+  // adds. The run's lines go from every tree, unless another run's merge added the same words. A hand commit owns nothing.
+  const purged = new Set<string>();
+  const kept = new Set<string>();
+  for (const one of newestFirst) {
+    const run = runOf(one.message);
+    if (!run) continue;
+    const diff = await store.diff(one.sha);
+    if (!diff) return "stale";
+    for (const file of diff) if (file.path === CORRECTIONS_FILE && "patch" in file) for (const line of addedLines(file.patch)) (run === runId ? purged : kept).add(line);
+  }
+  const drop = new Set([...purged].filter((line) => !kept.has(line)));
 
   const rewritten = new Map<string, string | null>();
   const changed = new Map<string, string[]>();
   const moved = new Map<string, string>();
   const oldBodies = new Set<string>();
-  // corrections.md's lines as the old history held them at the commit before, each marked when it is a copy the run's
-  // merges added (carried line by line through every later edit, so a copy removed by hand and added again by another
-  // run is that run's).
-  let lines: Carried = [];
   let tree: readonly StoreFile[] = [];
   let tip: string | null = null;
   let landed: Snapshot | undefined;
@@ -73,8 +79,7 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
         if (tip) moved.set(one.sha, tip);
         continue;
       }
-      lines = carried(lines, files.find(({ path }) => path === CORRECTIONS_FILE)?.body.toString("utf8"), merges.has(one.sha) ? (added.get(one.sha) ?? []) : []);
-      const built = rebuilt(one, files, lines, runId, { rewritten, changed, tree }, tip, oldBodies);
+      const built = rebuilt(one, files, drop, runId, { rewritten, changed, tree }, tip, oldBodies);
       // A commit with nothing of its own left (its tree the one before's) is no commit: a store refuses one that
       // changes nothing.
       if (!merges.has(one.sha) && sameTree(built.files, tree)) {
@@ -102,15 +107,16 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
 class Moved extends Error {}
 
 /** Commit `one` (its files `files`) rebuilt on the chain so far (`rewritten`, `changed` and the tree of its tip, `tree`):
- *  corrections.md without the lines `lines` marks the run's, its message scrubbed when it is a merge of `runId`, the paths it changes now set in
+ *  corrections.md without the lines whose words are in `drop`, its message scrubbed when it is a merge of `runId`, the paths it changes now set in
  *  `changed`, its snapshot as rewrittenSnapshot rebuilds it on `parent`. `oldBodies` gains the blobs it no longer holds. */
-function rebuilt(one: StoreCommit, files: readonly StoreFile[], lines: Carried, runId: string, chain: { rewritten: ReadonlyMap<string, string | null>; changed: Map<string, string[]>; tree: readonly StoreFile[] }, parent: string | null, oldBodies: Set<string>) {
+function rebuilt(one: StoreCommit, files: readonly StoreFile[], drop: ReadonlySet<string>, runId: string, chain: { rewritten: ReadonlyMap<string, string | null>; changed: Map<string, string[]>; tree: readonly StoreFile[] }, parent: string | null, oldBodies: Set<string>) {
   const out: StoreFile[] = [];
   let corrections: { path: string; oid: string; bytes: number } | undefined;
   for (const file of files) {
     if (file.path === SNAPSHOT_FILE) continue;
-    if (file.path === CORRECTIONS_FILE && lines.some(({ run }) => run)) {
-      const text = lines.filter(({ run }) => !run).map(({ line }) => line).join("\n");
+    const lines = file.path === CORRECTIONS_FILE ? file.body.toString("utf8").split("\n") : [];
+    if (lines.some((line) => drop.has(line))) {
+      const text = lines.filter((line) => !drop.has(line)).join("\n");
       const body = Buffer.from(text, "utf8");
       if (!body.equals(file.body)) oldBodies.add(blobOid(file.body));
       if (!text) continue;
@@ -151,35 +157,4 @@ export function addedLines(patch: string): string[] {
     if (left) taken.set(line, left - 1);
     return !left && line.trim() !== "";
   });
-}
-
-/** corrections.md's lines at a commit, each marked `run` when it is a copy the purged run's merges added. */
-type Carried = readonly { line: string; run: boolean }[];
-
-/** `text` (a commit's corrections.md; undefined: none) as lines, each carried from `before` (the commit before's) where
- *  it is the same line kept (git's way: the longest common run of lines), its mark with it; a line new here is the
- *  purged run's when this commit is its merge and adds those words (`added`, each once). */
-function carried(before: Carried, text: string | undefined, added: readonly string[]): Carried {
-  const now = text === undefined ? [] : text.split("\n");
-  const old = before.map(({ line }) => line);
-  // The longest common subsequence of the two line lists (corrections.md is capped at CORRECTIONS_CAP bytes).
-  const n = old.length, m = now.length;
-  const longest = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
-  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) longest[i]![j] = old[i] === now[j] ? longest[i + 1]![j + 1]! + 1 : Math.max(longest[i + 1]![j]!, longest[i]![j + 1]!);
-  const left = new Map<string, number>();
-  for (const line of added) left.set(line, (left.get(line) ?? 0) + 1);
-  const out: { line: string; run: boolean }[] = [];
-  let i = 0;
-  for (let j = 0; j < m; j++) {
-    while (i < n && longest[i]![j]! === longest[i + 1]![j]!) i++;
-    if (i < n && old[i] === now[j] && longest[i]![j]! === longest[i + 1]![j + 1]! + 1) {
-      out.push({ line: now[j]!, run: before[i]!.run });
-      i++;
-      continue;
-    }
-    const mine = left.get(now[j]!) ?? 0;
-    if (mine) left.set(now[j]!, mine - 1);
-    out.push({ line: now[j]!, run: mine > 0 });
-  }
-  return out;
 }
