@@ -145,7 +145,8 @@ export type TriggerFailed = { trigger_id: string; name: string; agent_id: string
 export type RunTrigger = { id: string; firing_key: string; name?: string; attrs?: Record<string, string> };
 /** A host's start of a firing the launch hook handed it (Triggers.handedStart): the firing's key, the trigger, input
  *  origin and title a start here would give the run, and the target and previous-result flag it starts on
- *  (TriggerDeps.start's, so a handed run gets its target's cap, effort and previous result as one started here does). */
+ *  (TriggerDeps.start's, so a handed run gets its target's cap, effort and previous result as one started here does; the
+ *  host may lower the cap, and its effort holds when the target sets none). */
 export type HandedStart = { key: string; trigger: RunTrigger; from: MessageOrigin; title: string; target: Extract<Target, { kind: "start_run" }>; previous: boolean };
 /** The engine's clock and its one timer: Date.now and setTimeout, or a test's. */
 export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): { clear(): void } };
