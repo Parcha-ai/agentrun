@@ -4773,7 +4773,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           if (agent.purgedAt !== null) return purgedAgain(agentDeleteHost, id);
           if (ownedElsewhere(agent)) return deleteExternalAgent(agentDeleteHost, id);
           if (agent.archivedAt === null) throw new ApiError("agent_not_archived", `The agent ${id} is not archived: archive it first (POST /v2/agents/${id}/archive), which stops new runs and turns its triggers off, then send the DELETE again. Nothing was purged.`);
-          await purgeAgent(agentDeleteHost, id);
+          // An upload it took with it is no longer served.
+          for (const gone of await purgeAgent(agentDeleteHost, id)) registry.remove(gone);
         });
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();

@@ -2,11 +2,11 @@
 // as its files ({files}, by `agentrun deploy`), checked by the one checker (templates.ts readPackage, over the files held
 // in memory), stored (store `imported_templates`) and loaded beside the bundled packages at each start. The first import
 // stored from a GitHub account needs its owner's "I trust <account>", remembered server-side (settings
-// TRUSTED_PUBLISHERS); an upload needs none, as only this server's owner (its session or its token) sends one. Nothing in
-// a package runs.
+// TRUSTED_PUBLISHERS); an upload needs none, as only this server's owner (its session or its token) sends one, and it
+// goes with the last agent applied from it (store Agents.purge). Nothing in a package runs.
 import { packageSha256 } from "./agent-package.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
-import type { Store } from "./store/index.js";
+import { type Store, UPLOAD_PREFIX } from "./store/index.js";
 import { fetchPackageFiles, type GithubReach, type GithubSource, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
 import { MANIFEST, manifestName, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
 import { isObject, type Json, unknownFields } from "./validate.js";
@@ -15,7 +15,7 @@ import { isObject, type Json, unknownFields } from "./validate.js";
 export const TRUSTED_PUBLISHERS = "templates.trusted_publishers";
 
 /** An uploaded package's id is this and its manifest's name: the next upload of that name replaces it. */
-export const UPLOAD_PREFIX = "upload:";
+export { UPLOAD_PREFIX };
 
 export type TemplateImportDeps = {
   registry: TemplateRegistry;

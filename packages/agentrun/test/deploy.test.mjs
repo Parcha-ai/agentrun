@@ -358,6 +358,13 @@ test("a folder's upload is its package alone: agent.md, skills/, rules/, evals/ 
   await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], key);
   const sent = fake.bodies["POST /templates/import"]?.files?.map((file) => file.path);
   assert.deepEqual(sent, ["agent.md", "answer.schema.json", "evals/today/graders/says.md", "evals/today/prompt.md", "rules/STYLE.md", "skills/check/SKILL.md"], fake.seen.join("\n"));
+  // A schema in a folder of its own: that file alone, nothing else of the folder.
+  const nested = folder(dir, { name: "nested", extra: ["output: { schema: schemas/answer.schema.json }"] });
+  mkdirSync(join(nested, "schemas"));
+  writeFileSync(join(nested, "schemas", "answer.schema.json"), "{}\n");
+  writeFileSync(join(nested, "schemas", "draft.schema.json"), "{}\n");
+  await cli(env, ["deploy", nested, "--to", fake.base, "--yes"], key);
+  assert.deepEqual(fake.bodies["POST /templates/import"]?.files?.map((file) => file.path), ["agent.md", "schemas/answer.schema.json", "skills/check/SKILL.md"]);
 
   // A real target takes it whole (its answer's schema read from the root), and deploy delete leaves no upload there.
   const b = await server(t, dir, env, "b");

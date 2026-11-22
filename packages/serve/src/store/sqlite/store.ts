@@ -14,7 +14,7 @@ import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
-  ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
+  ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -951,10 +951,10 @@ class SqliteStore implements Store {
         });
       },
       purge: async (agentId) => {
-        const purged = await db.transaction(async (tx) => {
+        const removed = await db.transaction(async (tx) => {
           await d.lockRow(tx, "agents", "id", agentId);
           const agent = await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM agents WHERE id = ?", agentId);
-          if (!agent || agent.purged_at !== null) return false;
+          if (!agent || agent.purged_at !== null) return undefined;
           // Each run a tombstone first (Runs.purge): a run started past the delete's listing keeps the agent for the next one.
           const left = await tx.get<{ id: string }>("SELECT id FROM runs WHERE agent_id = ? AND purged_at IS NULL LIMIT 1", agentId);
           if (left) throw new StoreConstraint(`agent ${agentId} still has run ${left.id} not purged: each is purged first (runs.purge)`);
@@ -963,13 +963,26 @@ class SqliteStore implements Store {
           await dropAgentPrivate(tx, agentId);
           // The answer a template apply kept under its key, which holds the agent as it was made.
           await tx.run(`DELETE FROM idempotency WHERE scope = 'templates.apply' AND ${d.jsonText("response", ["agentId"])} = ?`, agentId);
+          // The uploads it was applied from, each gone unless another agent not purged was applied from it too: nothing
+          // else owns one, and a server that serves no template route (API-only) could never remove it.
+          const packageId = (alias: string) => d.jsonText(`${alias}.package`, ["id"]);
+          const applied = await tx.all<{ id: string | null }>(`SELECT DISTINCT ${packageId("r")} AS id FROM revisions r WHERE r.agent_id = ? AND r.package IS NOT NULL`, agentId);
+          const gone: string[] = [];
+          for (const { id } of applied) {
+            if (!id?.startsWith(UPLOAD_PREFIX)) continue;
+            const kept = await tx.get<{ id: string }>(`SELECT r.id FROM revisions r JOIN agents a ON a.id = r.agent_id WHERE r.agent_id <> ? AND a.purged_at IS NULL AND ${packageId("r")} = ? LIMIT 1`, agentId, id);
+            if (kept) continue;
+            await tx.run("DELETE FROM imported_templates WHERE id = ?", id);
+            gone.push(id);
+          }
           // Each revision's content; its id, kind, parent and time stay, which its runs' tombstones name.
           await tx.run("UPDATE revisions SET body = '{}', skills = NULL, package = NULL, note = NULL, mcp_pin = NULL, monid_pin = NULL WHERE agent_id = ?", agentId);
           // Its purge time last, in the same write as its name and description.
           await tx.run("UPDATE agents SET name = '', description = NULL, purged_at = ? WHERE id = ?", now(), agentId);
-          return true;
+          return gone;
         });
-        if (purged) await this.#purged();
+        if (removed) await this.#purged();
+        return removed ?? [];
       },
     };
 

@@ -1,11 +1,11 @@
 // `agentrun deploy [AGENT|DIR] --to URL`: an agent's package sent to another AgentRun and made into its agent there. The
-// package is a folder (DIR, default the current one) or an agent of this install (AGENT, read from its export, GET
-// /agents/{id}/package). It is uploaded (POST /templates/import {files}), its plan read (apply with dry_run) and printed,
-// applied once confirmed (on a terminal, or with --yes), and a lock written: DIR/.agentrun/deploy.json for a folder, the
-// CLI config's deploy.json (by this install's address and the agent's id) for an install's agent. The lock names the
-// target, the agent and its revision, and the package's sha256: the next deploy of the same package is up to date and
-// sends nothing that writes; a changed one writes the agent's next revision; one whose target was edited since the lock
-// is refused unless --force. `deploy rollback` makes the agent's previous revision current; `deploy delete` deletes the
+// package is a folder (DIR, default the current one: its agent.md, skills/, rules/ and evals/ and the answer's schema,
+// nothing else of it) or an agent of this install (AGENT, read from its export, GET /agents/{id}/package). It is
+// uploaded (POST /templates/import {files}), its plan read (apply with dry_run) and printed, applied once confirmed (on
+// a terminal, or with --yes), and a lock written: DIR/.agentrun/deploy.json for a folder, the CLI config's deploy.json
+// (by this install's address and the agent's id) for an install's agent. The lock names the target, the agent and its
+// revision, and the package's sha256: the next deploy of the same package is up to date and sends nothing that writes;
+// a changed one writes the agent's next revision; one whose target was edited since the lock is refused unless --force. `deploy rollback` makes the agent's previous revision current; `deploy delete` deletes the
 // agent there and the lock here. Exit codes: 0 done or up to date, 2 refused (bad input, a link in the folder, edited on
 // the target, not confirmed), 3 not runnable yet (keys or MCP servers the target lacks: nothing is made, the setup page
 // printed when the target gives one), 1 the target refused otherwise or could not be reached, 4 no token for it.
@@ -14,11 +14,16 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { parseDocument } from "yaml";
 import { refusalExit } from "./login.mjs";
 import { toUrl } from "./target.mjs";
 
-/** The folder's own files a package never holds: the lock's folder and git's. */
-const SKIPPED = new Set([".agentrun", ".git"]);
+/** What of a folder its package is, as the target reads it (its readPackage reads nothing else): agent.md, these trees,
+ *  and the answer's schema file the manifest names. */
+const MANIFEST = "agent.md";
+const TREES = ["skills", "rules", "evals"];
+/** agent.md's YAML front matter, found as the target finds it. */
+const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 /** What an upload takes (the server's import limits): refused here before anything is read past them. */
 const MAX_FILES = 256;
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -43,29 +48,66 @@ export function packageSha256(files) {
   return hash.digest("hex");
 }
 
-/** A folder's files by path, each its bytes. A symbolic link, or anything that is neither a file nor a folder, refuses
- *  the deploy with nothing sent, in the import's own words. */
+/** The answer's schema file agent.md names (`output: {schema}`), a path in the package as the target takes one. None
+ *  when the manifest names none or does not parse: the target refuses it then, in its own words. */
+function schemaOf(manifest) {
+  const match = FRONT.exec(manifest.toString("utf8"));
+  if (!match) return undefined;
+  const doc = parseDocument(match[1], { schema: "core", merge: false, uniqueKeys: true, strict: true });
+  if (doc.errors.length) return undefined;
+  let schema;
+  try {
+    schema = doc.toJS({ maxAliasCount: 0 })?.output?.schema;
+  } catch {
+    return undefined;
+  }
+  return typeof schema === "string" && !schema.includes("\\") && !schema.split("/").some((part) => part === "" || part === "." || part === "..") ? schema : undefined;
+}
+
+/** A folder's package by path, each file its bytes: agent.md, the skills/, rules/ and evals/ trees, and the answer's
+ *  schema file the manifest names. Nothing else of the folder is sent (a .env, a key, a README, another folder).
+ *  No agent.md, a symbolic link, or anything that is neither a file nor a folder refuses the deploy with nothing sent. */
 function readFolder(dir, fail) {
   const files = new Map();
   let bytes = 0;
-  const walk = (sub) => {
-    for (const entry of readdirSync(sub ? join(dir, sub) : dir, { withFileTypes: true })) {
-      const rel = sub ? `${sub}/${entry.name}` : entry.name;
-      if (!sub && SKIPPED.has(entry.name)) continue;
-      if (entry.isSymbolicLink()) throw fail(2, `${rel} is a symbolic link: a package holds files and folders alone, so nothing was sent.`);
-      if (entry.isDirectory()) {
-        walk(rel);
-        continue;
-      }
-      if (!entry.isFile()) throw fail(2, `${rel} is neither a file nor a folder: a package holds files and folders alone, so nothing was sent.`);
-      if (files.size >= MAX_FILES) throw fail(2, `The package holds over ${MAX_FILES} files: nothing was sent.`);
-      const data = readFileSync(join(dir, rel));
-      bytes += data.length;
-      if (bytes > MAX_BYTES) throw fail(2, `The package's files are over the ${MAX_BYTES} bytes an import keeps: nothing was sent.`);
-      files.set(rel, data);
+  const entryOf = (rel) => {
+    try {
+      return lstatSync(join(dir, rel));
+    } catch (error) {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") return undefined;
+      throw error;
     }
   };
-  walk("");
+  const take = (rel, entry) => {
+    if (entry.isSymbolicLink()) throw fail(2, `${rel} is a symbolic link: a package holds files and folders alone, so nothing was sent.`);
+    if (entry.isDirectory()) {
+      for (const one of readdirSync(join(dir, rel), { withFileTypes: true })) take(`${rel}/${one.name}`, one);
+      return;
+    }
+    if (!entry.isFile()) throw fail(2, `${rel} is neither a file nor a folder: a package holds files and folders alone, so nothing was sent.`);
+    if (files.has(rel)) return;
+    if (files.size >= MAX_FILES) throw fail(2, `The package holds over ${MAX_FILES} files: nothing was sent.`);
+    const data = readFileSync(join(dir, rel));
+    bytes += data.length;
+    if (bytes > MAX_BYTES) throw fail(2, `The package's files are over the ${MAX_BYTES} bytes an import keeps: nothing was sent.`);
+    files.set(rel, data);
+  };
+  const manifest = entryOf(MANIFEST);
+  if (!manifest || manifest.isDirectory()) throw fail(2, `${dir} has no agent.md: a package is a folder with agent.md (its manifest in the front matter, the agent's instructions in the body), so nothing was sent.`);
+  take(MANIFEST, manifest);
+  for (const tree of TREES) {
+    const entry = entryOf(tree);
+    if (entry && !entry.isFile()) take(tree, entry);
+  }
+  // The schema's file alone, wherever the manifest puts it, reached through no link.
+  const schema = schemaOf(files.get(MANIFEST));
+  const parts = schema?.split("/") ?? [];
+  for (let at = 1; at <= parts.length; at++) {
+    const rel = parts.slice(0, at).join("/");
+    const entry = entryOf(rel);
+    if (entry?.isSymbolicLink() || (at === parts.length && entry?.isFile())) take(rel, entry);
+    if (!entry?.isDirectory()) break;
+  }
   return files;
 }
 
@@ -213,8 +255,9 @@ function folderLock(dir, fail) {
 }
 
 /** The CLI's own deploy record, its config's deploy.json (0600): an install agent's lock per `<install's address> <agent
- *  id>`, and under `targets` each address a deploy was sent to from here (a folder lock's target is trusted by it). */
-function privateRecord(env, cli, fail) {
+ *  id>`, and under `targets` each address a deploy was sent to from here (a folder lock's target is trusted by it). A
+ *  change that waits for another's says so on `io`. */
+function privateRecord(env, cli, fail, io) {
   const file = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentrun", "deploy.json");
   const all = () => {
     const text = cli.privateFile(file);
@@ -235,6 +278,7 @@ function privateRecord(env, cli, fail) {
     let got;
     for (let waited = 0; !(got = tryHold(held)).release; waited += LOCK_POLL_MS) {
       if (waited >= LOCK_WAIT_MS) throw fail(1, `Another deploy holds ${file} (${held}${got.owner ? `, process ${got.owner.pid} on ${got.owner.host}` : ""}): try again once it ends, or remove ${held} if none is running.`);
+      if (waited === 0 && io) say(io, `Waiting for another agentrun deploy${got.owner ? ` (process ${got.owner.pid}${got.owner.host === hostname() ? "" : ` on ${got.owner.host}`})` : ""} to save ${file}.`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_POLL_MS);
     }
     try {
@@ -253,8 +297,8 @@ function privateRecord(env, cli, fail) {
 }
 
 /** An install agent's lock, in the CLI's own record (privateRecord). */
-function installLock(env, cli, source, agentId, fail) {
-  const record = privateRecord(env, cli, fail);
+function installLock(env, cli, source, agentId, fail, io) {
+  const record = privateRecord(env, cli, fail, io);
   const key = `${source} ${agentId}`;
   return {
     file: record.file,
@@ -357,14 +401,14 @@ async function sourceOf({ values, args, env, io, cli, releases }, fail) {
     // A lock this CLI writes teaches it the target (privateRecord), so the next deploy of the folder needs no --to.
     const lock = folderLock(dir, fail);
     releases.push(lock.hold());
-    const write = (written) => (lock.write(written), privateRecord(env, cli, fail).learn(written.target));
+    const write = (written) => (lock.write(written), privateRecord(env, cli, fail, io).learn(written.target));
     return { kind: "folder", dir, lock: { ...lock, write }, files: () => readFolder(dir, fail) };
   }
   if (/[\\/]/.test(given) || given.startsWith(".")) throw fail(2, `${given} is not a folder: deploy takes a package folder or an agent id of this install.`);
   // The install the agent is on: --base-url, else as every command finds it; never with AGENTRUN_API_KEY, which is the
   // target's token here.
   const source = remote(cli, values, { ...env, AGENTRUN_API_KEY: "" }, io, undefined);
-  const lock = installLock(env, cli, source.base, given, fail);
+  const lock = installLock(env, cli, source.base, given, fail, io);
   releases.push(lock.hold());
   return {
     kind: "agent",

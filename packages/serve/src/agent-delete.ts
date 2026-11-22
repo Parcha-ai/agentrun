@@ -124,8 +124,9 @@ export async function deleteExternalAgent(host: AgentDeleteHost, agentId: string
 }
 
 /** Purges archived agent `agentId`, made here (as the route checked), as the header says: 409 run_not_final, nothing
- *  purged, while a run of it is live; learning_busy while its learning refuses. */
-export async function purgeAgent(host: AgentDeleteHost, agentId: string): Promise<void> {
+ *  purged, while a run of it is live; learning_busy while its learning refuses. Answers the uploaded packages its purge
+ *  removed (no other agent was applied from them: Agents.purge), for the caller to stop serving. */
+export async function purgeAgent(host: AgentDeleteHost, agentId: string): Promise<string[]> {
   const live = await liveOf(host, (await host.store.runs.every(agentId)).filter((run) => run.purgedAt === null));
   if (live.length) throw liveRuns(`The agent ${agentId} has ${live.length === 1 ? "a run" : "runs"} that ${live.length === 1 ? "has" : "have"} not ended (${live.join(", ")}): cancel ${live.length === 1 ? "it" : "them"} (POST /v2/runs/{run_id}/cancel), then send the DELETE again. Nothing was purged.`, live);
   // Marked before anything goes, and kept until its tombstone is written: a purge stopped part way leaves the agent
@@ -149,14 +150,16 @@ export async function purgeAgent(host: AgentDeleteHost, agentId: string): Promis
     first = false;
   }
   await host.forgetAgent(agentId);
+  let removed: string[];
   try {
-    await host.store.agents.purge(agentId);
+    removed = await host.store.agents.purge(agentId);
   } catch (error) {
     if (error instanceof StoreConstraint) throw liveRuns(`The agent ${agentId} has a run started while it was being purged (${error.message}): send the DELETE again once it has ended. Its runs purged so far stay purged.`, []);
     throw triggersLeft(error, agentId);
   }
   // Its tombstone refuses every write from here (410 purged).
   await host.store.settings.remove(purgingKey(agentId));
+  return removed;
 }
 
 /** The setting that marks agent `agentId`'s purge begun and not finished (purgeAgent). */
