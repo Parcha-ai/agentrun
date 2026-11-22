@@ -362,11 +362,11 @@ async function rollback(ctx) {
   const current = revisions.find((one) => one.revision === agent.revision);
   const previous = revisions.filter((one) => current && one.version < current.version).sort((a, b) => b.version - a.version)[0];
   if (!previous) throw cli.fail(2, `The agent ${lock.agent_id} on ${to.base} has no revision before its current one: nothing to roll back to.`);
-  const { value: after } = await to.call("POST", `/agents/${enc(lock.agent_id)}/current`, { revision: previous.revision });
-  // The lock follows: the revision now current, and the package that revision was made from, so deploying that package
-  // again is up to date and any other writes the next revision.
-  const sha = typeof after.template?.sha === "string" && /^[0-9a-f]{64}$/.test(after.template.sha) ? after.template.sha : null;
-  const written = { ...lock, target: to.base, revision_id: previous.revision, package_sha256: sha, deployed_at: new Date().toISOString() };
+  await to.call("POST", `/agents/${enc(lock.agent_id)}/current`, { revision: previous.revision });
+  // The lock follows the revision now current. Which package that revision was made from is not read anywhere (the
+  // agent's `template` is the newest package applied, not the restored one), so the lock names none: the next deploy is
+  // never up to date, and its apply keeps this revision when the package and parameters are the ones it holds.
+  const written = { ...lock, target: to.base, revision_id: previous.revision, package_sha256: null, deployed_at: new Date().toISOString() };
   from.lock.write(written);
   say(io, `Rolled back: the agent ${lock.agent_id} on ${to.base} runs revision ${previous.version} again (it was on ${current.version}).`);
   io.stdout.write(`${JSON.stringify({ status: "rolled_back", target: to.base, agent_id: lock.agent_id, revision_id: previous.revision, version: previous.version, from_revision_id: agent.revision })}\n`);

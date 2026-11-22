@@ -203,6 +203,14 @@ test("agentrun deploy DIR --to B: plan, apply and lock; up to date sends nothing
   const run = await b.api("POST", `/agents/${lock.agent_id}/runs`, { input: { content: "What changed?" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   assert.equal(run.body.revision, previous.revision, "the next run reports the revision rolled back to");
+  // The lock can't say which package the restored revision came from, so it names none: deploying the folder (still the
+  // package rollback stepped away from) applies it again, never "up to date" with the old revision running.
+  assert.equal(JSON.parse(readFileSync(lockFile, "utf8")).package_sha256, null);
+  const again = await deploy(pkg, "--yes");
+  assert.equal(again.code, 0, again.err);
+  assert.deepEqual([again.json().status, again.json().agent_change], ["deployed", "updated"]);
+  assert.notEqual(again.json().revision_id, previous.revision);
+  assert.equal((await b.api("GET", `/agents/${lock.agent_id}`)).body.revision, again.json().revision_id);
 
   // Delete: the agent gone from B, the lock gone from the folder.
   const gone = await cli(env, ["deploy", "delete", pkg, "--yes"], { AGENTRUN_API_KEY: b.token });
