@@ -589,7 +589,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const stopped = new AbortController();
     const signal = AbortSignal.any([ctx.signal, stopped.signal]);
     const key = randomBytes(32).toString("base64url");
-    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), kinds: new Map(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log) } as unknown as Runtime;
+    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), kinds: new Map(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log, (words) => (rt.current?.ctx ?? ctx).live({ type: "notice", text: words })) } as unknown as Runtime;
     const mcp = await startMcpServer({ tools: listed.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema as Record<string, unknown> })), key, log, call: (name, args, callSignal) => onMcpCall(rt, name, args, callSignal) });
     let proxy: { env: Record<string, string>; close(): Promise<void> } | undefined;
     let agent: AgentProcess | undefined;

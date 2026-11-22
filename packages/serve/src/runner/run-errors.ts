@@ -9,7 +9,7 @@ import { LaunchUnreadable, UnknownHarness } from "./dispatch.js";
 import { NeverFits } from "./harness-loops.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { McpClaimRefused } from "./mcp-claim.js";
-import { registerErrors } from "./run-channel.js";
+import { FrameTooLarge, registerErrors } from "./run-channel.js";
 import { ClaimLost } from "./runner.js";
 
 /** Registers every error class a run's process and its runner hand each other (run-channel.ts registerErrors). */
@@ -18,6 +18,6 @@ export function registerRunErrors(): void {
     ClaimRefused, NeverFits, McpClaimRefused, ClaimLost, UnknownHarness, LaunchUnreadable,
     Fenced, CommandTaken, RunFinal, SignInHandedTo, SignInMissing, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreLaunchMissing, StoreWorkerLost, Unanswered,
     ConversationBusy, ConversationIdle, ReadAfterWrite, ReadOnlySession, SessionFailed, StorageRequestError,
-    WorkspaceError,
+    WorkspaceError, FrameTooLarge,
   });
 }
