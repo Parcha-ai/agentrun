@@ -94,14 +94,15 @@ async function filmRun(t, has) {
 
 test("a box that lacks a program the agent needs: the run fails with no model request, no fal call and nothing spent", { timeout: 120_000 }, async (t) => {
   const { view, usage, falCalls, box } = await filmRun(t, []);
-  assert.equal(view.status, "failed", JSON.stringify(view.error));
-  assert.equal(view.error.code, "run_failed", JSON.stringify(view.error));
-  assert.match(view.error.message, /lacks hyperframes, which the agent needs \(computer\.needs\), so nothing ran\./);
-  assert.deepEqual(box.execs.map(checked), [["hyperframes"]], "the box was asked, once");
+  // What was spent first, so a run that went on is caught by what it spent, not only by how it ended.
   assert.deepEqual(falCalls, [], "no fal tool was called, not even its price's read");
   assert.equal(view.cost.tokens?.requests ?? 0, 0, "no model request was made");
   assert.equal(view.cost.tools_usd ?? 0, 0, "no tool was charged");
   assert.deepEqual(usage.lines.filter((line) => line.meter === "model" || line.meter === "tools"), [], "/usage: no model or tool line");
+  assert.equal(view.status, "failed", JSON.stringify(view.error));
+  assert.equal(view.error.code, "run_failed", JSON.stringify(view.error));
+  assert.match(view.error.message, /lacks hyperframes, which the agent needs \(computer\.needs\), so nothing ran\./);
+  assert.deepEqual(box.execs.map(checked), [["hyperframes"]], "the box was asked, once");
   assert.deepEqual(box.released, ["c1"], "the box was let go");
 });
 
