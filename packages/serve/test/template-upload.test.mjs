@@ -3,7 +3,8 @@
 // `upload:<name>` with the package's sha256 as its sha, and replaced by the next upload of that name; it asks no publisher
 // trust, as the caller is this server's owner. A plan says what the apply would do (create or revise, the keys and MCP
 // servers this server lacks, each trigger's fate, the computer) and writes nothing. An agent's delete removes the upload
-// it was applied from once no other agent here was. An API-only server takes an upload and refuses a GitHub source.
+// it was applied from once no other agent here was, an API-only server's too. An API-only server takes an upload and
+// refuses a GitHub source.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -313,4 +314,27 @@ test("an API-only server takes an upload ({files}) and refuses a GitHub source",
   assert.equal(github.status, 422, JSON.stringify(github.body));
   assert.deepEqual([github.body.error.fields[0].field, github.body.error.fields[0].reason], ["source", "not_allowed"]);
   assert.match(github.body.error.fields[0].message, /serves the API alone: a package is uploaded here as \{files\}/);
+});
+
+test("on an API-only server, which serves no template list or delete, an upload applied, archived and deleted through the API leaves no upload behind", { timeout: 60_000 }, async (t) => {
+  const server = await serve(t, { apiOnly: true, runner: false });
+  const send = async (method, path, body) => {
+    const res = await fetch(`${server.url}/v2${path}`, { method, headers: { authorization: `Bearer ${server.token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const text = await res.text();
+    return { status: res.status, body: text ? JSON.parse(text) : undefined };
+  };
+  const stored = async () => (await server.store.importedTemplates.list()).map((row) => row.id);
+  assert.equal((await send("GET", "/templates")).status, 404, "no template list here");
+  assert.equal((await send("DELETE", `/templates/${enc("upload:pr-alert")}`)).status, 404, "no template delete here");
+
+  const uploaded = await send("POST", "/templates/import", { files: filesOf(pkg(agentMd())) });
+  assert.equal(uploaded.status, 201, JSON.stringify(uploaded.body));
+  const applied = await send("POST", `/templates/${enc("upload:pr-alert")}/apply`, { parameters: {} });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  assert.deepEqual(await stored(), ["upload:pr-alert"]);
+  assert.equal((await send("POST", `/agents/${applied.body.agent_id}/archive`)).status, 200);
+  const deleted = await send("DELETE", `/agents/${applied.body.agent_id}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.deepEqual(await stored(), [], "the upload went with the only agent applied from it");
+  assert.equal((await send("POST", `/templates/${enc("upload:pr-alert")}/apply`, { parameters: {} })).status, 404);
 });
