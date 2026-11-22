@@ -115,6 +115,20 @@ test("agentrun export writes nothing and exits 2 when the report blocks the expo
   assert.match(blocked.err, /[Nn]othing was written/);
   assert.equal(existsSync(out), false, "nothing written");
 
+  // A feed whose URL carries a token: blocked by its field, the token printed nowhere and written nowhere.
+  const token = `leak-token-${"cli-export"}-4d7e`;
+  const fed = await api("POST", "/agents", { definition: { id: "fed", name: "Fed", instructions: "Say what changed.", tools: ["read"], skills: [], max_cost_usd: 1 } });
+  assert.equal(fed.status, 201, JSON.stringify(fed.body));
+  const feed = await api("POST", "/triggers", { name: "Status", enabled: false, source: { kind: "feed", urls: [`https://status.example.com/feed.xml?token=${token}`], every_s: 3600 }, target: { kind: "start_run", agent_id: "fed", input: { content: "A new status." } } });
+  assert.equal(feed.status, 201, JSON.stringify(feed.body));
+  const fedOut = join(dir, "fed");
+  const leaked = cli(["export", "fed", "--out", fedOut]);
+  assert.equal(leaked.code, 2, leaked.err);
+  assert.deepEqual(JSON.parse(leaked.out).blocked.map((entry) => [entry.kind, entry.name]), [["trigger", "Status: source.urls.0"]], leaked.out);
+  assert.match(leaked.err, /trigger Status: source\.urls\.0: .*credential in the clear/);
+  assert.doesNotMatch(`${leaked.out}${leaked.err}`, new RegExp(token), "the token is printed nowhere");
+  assert.equal(existsSync(fedOut), false, "nothing written");
+
   const sdk = await api("POST", "/agents", { definition: { id: "sdk-agent", name: "SDK", instructions: "Keep the policy.", sdk: { runtime: "claude-agent-sdk" }, learning: false, tools: [] } });
   assert.equal(sdk.status, 201, JSON.stringify(sdk.body));
   const refused = cli(["export", "sdk-agent", "--out", join(dir, "sdk-agent")]);

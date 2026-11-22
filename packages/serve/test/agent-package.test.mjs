@@ -261,7 +261,7 @@ test("nothing of this host is in a package: no box, no computer provider, no pla
 });
 
 test("what cannot travel is named: a local or unsaved MCP server and one with its own auth header are blocked; a webhook trigger, a paired computer and a sign-in are remade", { timeout: 120_000 }, async (t) => {
-  const server = await serve(t);
+  const server = await serve(t, { mcpStandIns: true });
   const { api, baseUrl } = server;
   const local = await startFakeMcp({ name: "local" });
   t.after(() => local.close());
@@ -294,6 +294,37 @@ test("what cannot travel is named: a local or unsaved MCP server and one with it
   assert.deepEqual(pkg.mcp, []);
   assert.deepEqual(pkg.triggers.map((trigger) => [trigger.name, trigger.source, trigger.target.agent_id]), [["Inbound", { kind: "webhook" }, undefined]]);
   assert.doesNotMatch(exported.body.files.map((file) => bytesOf(file).toString("utf8")).join("\n"), /whsec_|not-a-secret/, "no secret");
+
+  // A credential in the clear where an export copies a field as it is: a feed's URL (a query parameter named like one), a
+  // trigger's input and an MCP tool's pin. Each is blocked by its field, and its value is in no file and no answer.
+  const leak = (word) => `leak-${word}-${"export-custody"}-9c1e`;
+  const slack = await startFakeMcp({ name: "slack" });
+  t.after(() => slack.close());
+  for (const name of ["post", "search"]) slack.tools[name] = { description: `slack's ${name}.`, input: { type: "object", properties: {}, additionalProperties: true }, run: () => ({ content: [{ type: "text", text: "{}" }] }) };
+  assert.equal((await api("PUT", "/settings/mcp-servers/slack", { url: slack.url, auth: { type: "none" }, source: "composio", toolkit: "slack" })).status, 200);
+  const toolSettings = { "mcp:slack/post": { pin: { channel: "C0STATUS", api_key: leak("pin") } }, "mcp:slack/search": { pin: { channel: "C0STATUS" } } };
+  await server.store.agents.create({ id: "leaky", name: "Leaky" }, { id: "leaky-rev", kind: "agentic", body: { instructions: "Say what changed.", tools: ["read", "mcp:slack/post", "mcp:slack/search"], toolSettings, maxCostUsd: 1 } });
+  const words = ["token", "key", "secret", "sig", "password"];
+  const triggers = [
+    { name: "Keyed feeds", source: { kind: "feed", urls: words.map((word, i) => `https://status.example.com/${i}.xml?${word}=${leak(word)}`), every_s: 3600 }, input: { content: "A new status." } },
+    { name: "Paged feed", source: { kind: "feed", urls: ["https://status.example.com/feed.xml?page=2"], every_s: 3600 }, input: { content: "A new status." } },
+    { name: "Daily", source: { kind: "schedule", cron: "0 9 * * *" }, input: { content: "Check the status.", api_key: leak("input") } },
+  ];
+  for (const { name, source, input } of triggers) {
+    const made = await api("POST", "/triggers", { name, enabled: false, source, target: { kind: "start_run", agent_id: "leaky", input } });
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+  }
+  const leaky = await api("GET", "/agents/leaky/package");
+  assert.equal(leaky.status, 200, JSON.stringify(leaky.body));
+  (await documented(baseUrl))("/agents/{agent_id}/package", "get", "200", leaky.body);
+  const fields = leaky.body.report.blocked.map((entry) => `${entry.kind} ${entry.name}`).sort();
+  assert.deepEqual(fields, ["pin slack: pin.post.api_key", "trigger Daily: target.input.api_key", ...words.map((_, i) => `trigger Keyed feeds: source.urls.${i}`)], JSON.stringify(leaky.body.report.blocked));
+  for (const entry of leaky.body.report.blocked) assert.match(entry.reason, /credential in the clear/, JSON.stringify(entry));
+  assert.doesNotMatch(JSON.stringify(leaky.body), /leak-/, "no value in any file or in the report");
+  // What holds none still travels: the feed whose query is a page, and the tool whose pin is a channel.
+  const kept = asPackage(leaky.body);
+  assert.deepEqual(kept.triggers.map((trigger) => [trigger.name, trigger.source.urls]), [["Paged feed", ["https://status.example.com/feed.xml?page=2"]]]);
+  assert.deepEqual(kept.mcp.map((need) => [need.toolkit, need.tools, need.pin]), [["slack", ["post", "search"], { search: { channel: "C0STATUS" } }]]);
 });
 
 test("what the agent may not do here, it may not do from the package: a tool its own settings deny, by the tool's key, its server's wildcard or bash's, is not granted; a trigger that messages one of its runs, and the keys a template version no longer held named, are remade", { timeout: 120_000 }, async (t) => {
@@ -338,4 +369,12 @@ test("what the agent may not do here, it may not do from the package: a tool its
   const background = await api("GET", "/agents/backgrounded/package");
   assert.equal(background.status, 200, JSON.stringify(background.body));
   assert.match(background.body.report.blocked.find((entry) => entry.kind === "tool_policy" && entry.name === "bash")?.reason ?? "", /read-only.*bash_background/, JSON.stringify(background.body.report));
+
+  // Every kind a note has is one the document lists, so a kind left out of it fails here: these answers carry the
+  // secrets and tool_policy kinds, and a kind it does not list is refused.
+  const check = await documented(server.baseUrl);
+  for (const id of ["guarded", "older", "backgrounded"]) check("/agents/{agent_id}/package", "get", "200", (await api("GET", `/agents/${id}/package`)).body);
+  const unlisted = structuredClone(background.body);
+  unlisted.report.blocked[0].kind = "not_a_kind";
+  assert.throws(() => check("/agents/{agent_id}/package", "get", "200", unlisted), /not_a_kind|enum|one of/, "a kind the document does not list");
 });
