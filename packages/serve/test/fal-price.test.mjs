@@ -79,12 +79,15 @@ test("seconds and minutes are the length the input names", async () => {
   assert.ok("unknown" in unitsBefore("fal-ai/elevenlabs/music", "minutes", { prompt: "a song" }), "music with no length");
 });
 
-test("a job that names no length but is given audio or video is billed by that media: its URLs are what must be read", async () => {
+test("a job that names no length is billed by its input media only where fal bills that media's length: its URLs are what must be read", async () => {
   const { unitsBefore } = await load();
-  assert.deepEqual(unitsBefore("fal-ai/latentsync", "seconds", { video_url: "https://m.example/v.mp4", audio_url: "https://m.example/a.mp3" }), { media: ["https://m.example/v.mp4", "https://m.example/a.mp3"] });
-  assert.deepEqual(unitsBefore("veed/fabric-1.0", "seconds", { image_url: "https://m.example/i.png", audio_url: "https://m.example/a.mp3", resolution: "480p" }), { media: ["https://m.example/a.mp3"] }, "an image has no length");
+  assert.deepEqual(unitsBefore("fal-ai/sync-lipsync/v2", "minutes", { video_url: "https://m.example/v.mp4", audio_url: "https://m.example/a.mp3" }), { media: ["https://m.example/a.mp3", "https://m.example/v.mp4"] });
   assert.deepEqual(unitsBefore("fal-ai/elevenlabs/speech-to-text", "minutes", { audio_url: "https://m.example/a.wav" }), { media: ["https://m.example/a.wav"] });
-  assert.deepEqual(unitsBefore("fal-ai/some/concat", "seconds", { video_urls: ["https://m.example/1.mp4", "https://m.example/2.mp4"] }), { media: ["https://m.example/1.mp4", "https://m.example/2.mp4"] });
+  assert.deepEqual(unitsBefore("fal-ai/elevenlabs/dubbing", "minutes", { video_url: "https://m.example/v.mp4", target_lang: "es" }), { media: ["https://m.example/v.mp4"] });
+  // fal bills these by their output's length, which no input states.
+  assert.ok("unknown" in unitsBefore("fal-ai/latentsync", "seconds", { video_url: "https://m.example/v.mp4", audio_url: "https://m.example/a.mp3" }), "LatentSync, per second of its output video");
+  assert.ok("unknown" in unitsBefore("veed/fabric-1.0", "seconds", { image_url: "https://m.example/i.png", audio_url: "https://m.example/a.mp3", resolution: "480p" }), "a talking video made from a voice");
+  assert.ok("unknown" in unitsBefore("fal-ai/some/concat", "seconds", { video_urls: ["https://m.example/1.mp4", "https://m.example/2.mp4"] }), "a concat");
   // A named length wins over the media beside it.
   assert.equal(unitsBefore("fal-ai/kling-video/v2.5-turbo/pro/image-to-video", "seconds", { image_url: "https://m.example/i.png", duration: "10" }).units, 10);
 });

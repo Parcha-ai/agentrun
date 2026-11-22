@@ -26,8 +26,11 @@ const PRICES = {
   "fal-ai/elevenlabs/tts/eleven-v3": [0.1, "1000 characters"],
   "fal-ai/kling-video/v2.5-turbo/pro/text-to-video": [0.07, "seconds"],
   "fal-ai/latentsync": [0.005, "seconds"],
+  "fal-ai/sync-lipsync/v2": [3, "minutes"],
   "fal-ai/elevenlabs/speech-to-text": [0.03, "minutes"],
   "fal-ai/whisper": [0.001111111, "compute seconds"],
+  "fal-ai/elevenlabs/dubbing": [0.6, "minutes"],
+  "veed/fabric-1.0": [0.08, "seconds"],
 };
 const KLING = "fal-ai/kling-video/v2.5-turbo/pro/text-to-video";
 const TTS = "fal-ai/elevenlabs/tts/eleven-v3";
@@ -237,20 +240,43 @@ test("a price that can't be read makes the job unpriceable: get_pricing failing,
 test("a job billed by the media it is given is priced from that media's length, read before the call: the longest", async (t) => {
   const media = { "https://media.example/clip.mp4": SAMPLES.mp4.bytes, "https://media.example/voice.mp3": SAMPLES.mp3Info.bytes, "https://media.example/voice.wav": SAMPLES.wav.bytes, "https://media.example/page.html": new TextEncoder().encode("<html></html>") };
   const run = await setup(t, { media, run: (args) => reply(args, { result: { video: { url: "https://v3.fal.media/o.mp4" } } }) });
-  await run.call("run_model", { endpoint_id: "fal-ai/latentsync", input: { video_url: "https://media.example/clip.mp4", audio_url: "https://media.example/voice.mp3" } });
+  await run.call("run_model", { endpoint_id: "fal-ai/sync-lipsync/v2", input: { video_url: "https://media.example/clip.mp4", audio_url: "https://media.example/voice.mp3" } });
   assert.deepEqual(run.asked.media.sort(), ["https://media.example/clip.mp4", "https://media.example/voice.mp3"], "each was read");
-  near(run.spent(), 4 * 0.005, "the 4 s clip, longer than the 3.1 s voice, at $0.005 a second");
-  assert.equal(run.admits[0].basis, "fal's price for fal-ai/latentsync: $0.005 per second × 4 (the longest of its input media, read before the call), from get_pricing at 2026-11-20T12:00:00.000Z");
+  near(run.spent(), (4 / 60) * 3, "the 4 s clip, longer than the 3.1 s voice, at $3 a minute");
+  assert.equal(run.admits[0].basis, "fal's price for fal-ai/sync-lipsync/v2: $3 per minute × 0.066667 (the longest of its input media, read before the call), from get_pricing at 2026-11-20T12:00:00.000Z");
   await run.call("run_model", { endpoint_id: "fal-ai/elevenlabs/speech-to-text", input: { audio_url: "https://media.example/voice.wav" } });
   near(run.admits[1].holdUsd, (2 / 60) * 0.03, "2 s at $0.03 a minute");
 
   // Media whose length can't be read (not media, or not there): the job is unpriceable.
   for (const audio_url of ["https://media.example/page.html", "https://media.example/gone.mp3"]) {
     const before = run.received("run_model");
-    const refused = await run.call("run_model", { endpoint_id: "fal-ai/latentsync", input: { video_url: "https://media.example/clip.mp4", audio_url } });
-    assert.equal(textOf(refused), `mcp:fal/run_model was not sent: fal bills fal-ai/latentsync per second of its input media, and the length of ${audio_url} could not be read, so a run with a spend cap can't send it. Nothing was sent.`);
+    const refused = await run.call("run_model", { endpoint_id: "fal-ai/sync-lipsync/v2", input: { video_url: "https://media.example/clip.mp4", audio_url } });
+    assert.equal(textOf(refused), `mcp:fal/run_model was not sent: fal bills fal-ai/sync-lipsync/v2 per minute of its input media, and the length of ${audio_url} could not be read, so a run with a spend cap can't send it. Nothing was sent.`);
     assert.equal(run.received("run_model"), before, "never sent");
   }
+});
+
+test("only an endpoint fal bills by the length of the media it is given is priced from that length; another billed per second whose input names none is unpriceable", async (t) => {
+  const media = { "https://media.example/clip.mp4": SAMPLES.mp4.bytes, "https://media.example/voice.mp3": SAMPLES.mp3Info.bytes };
+  const dub = await setup(t, { media, run: (args) => reply(args, { status: "processing" }) });
+  await dub.call("submit_job", { endpoint_id: "fal-ai/elevenlabs/dubbing", input: { video_url: "https://media.example/clip.mp4", target_lang: "es" } });
+  near(dub.admits[0].holdUsd, (4 / 60) * 0.6, "dubbing: the 4 s clip at $0.60 a minute");
+  // veed/fabric-1.0 makes a talking video from a picture and a voice: fal bills it per second of its output.
+  const job = { endpoint_id: "veed/fabric-1.0", input: { image_url: "https://media.example/face.png", audio_url: "https://media.example/voice.mp3", resolution: "480p" } };
+  const capped = await setup(t, { media });
+  const refused = await capped.call("run_model", job);
+  assert.match(textOf(refused), /^mcp:fal\/run_model was not sent: fal bills veed\/fabric-1\.0 per second, and this job's input names no length/);
+  assert.equal(capped.received("run_model"), 0, "never sent under a cap");
+  assert.deepEqual(capped.asked.media, [], "its media were never read");
+  // LatentSync bills per second of its output video, with a minimum up to 40 s that get_pricing does not state.
+  const lipsync = await capped.call("run_model", { endpoint_id: "fal-ai/latentsync", input: { video_url: "https://media.example/clip.mp4", audio_url: "https://media.example/voice.mp3" } });
+  assert.match(textOf(lipsync), /^mcp:fal\/run_model was not sent: fal bills fal-ai\/latentsync per second, and this job's input names no length/);
+  assert.equal(capped.received("run_model"), 0, "LatentSync never sent under a cap");
+  assert.deepEqual(capped.asked.media, [], "its media were never read either");
+  const open = await setup(t, { capUsd: null, media, run: (args) => reply(args, { result: { video: { url: "https://v3.fal.media/o.mp4" } } }) });
+  await open.call("run_model", job);
+  assert.equal(open.received("run_model"), 1, "with no cap it runs");
+  assert.deepEqual(await open.turns(), [null], "booked as an unknown charge");
 });
 
 test("submit_jobs is held at the sum of its jobs; one job that can't be priced refuses the whole call under a cap", async (t) => {
