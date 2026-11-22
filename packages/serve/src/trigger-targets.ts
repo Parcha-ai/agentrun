@@ -18,6 +18,11 @@ import type { RunTrigger, Target } from "./triggers.js";
 /** Why a trigger may not message a run with no cap (server.ts NO_CAP). */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
 
+/** Why a trigger may not message a run on a harness recipe billed to its vendor's plan: the turn would run as that run
+ *  does, on its owner's own sign-in, which runs only what a person starts (HARNESS.md#run-it), and a scheduled turn runs
+ *  on keys saved for the harness, which no server saves yet (the claim's RECIPE_SIGN_IN_PERSON_ONLY, for a new run). */
+export const RECIPE_MESSAGE_PERSON_ONLY = "The run is on a harness recipe billed to its vendor's plan, which runs on its owner's own sign-in only for what a person starts: a trigger's turn runs on keys saved for that harness, and this server saves no harness's keys yet. Message the run yourself, or target a run on a harness billed through this server's model proxy.";
+
 /** What the trigger target policy needs that lives elsewhere: the run-start leaves (StartDeps, shared with the create
  *  route), the agent reads, and the run view that gives a run's live moment and its v2 status. */
 export interface TriggerTargetDeps {
@@ -32,6 +37,9 @@ export interface TriggerTargetDeps {
   /** A run's live moment, for a message's acceptance and a target's cap/kind check (the run view → RunMoment); undefined
    *  for an unknown run. */
   momentOf(runId: string): Promise<RunMoment | undefined>;
+  /** Whether `harness` is a harness recipe billed to its vendor's plan in this server's table (harness-table.ts
+   *  recipeHarness): a trigger never messages a run on one. Absent: none is. */
+  planRecipe?(harness: string): boolean;
   /** `work`, a write that may open run `runId` of agent `agentId` again, done in the agent's delete turn (server.ts
    *  runWrite): never under a purge of the run, and 410 purged after one. */
   runWrite<T>(agentId: string, runId: string, work: () => Promise<T>): Promise<T>;
@@ -183,6 +191,7 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
         const run = await deps.momentOf(target.run_id);
         if (!run) return [{ field: "target.run_id", reason: "not_found", message: `no run ${target.run_id}` }];
         if (run.kind === "workflow") return [{ field: "target.run_id", reason: "not_allowed", message: "A workflow run takes no messages here." }];
+        if (run.harness !== undefined && deps.planRecipe?.(run.harness)) return [{ field: "target.run_id", reason: "not_allowed", message: RECIPE_MESSAGE_PERSON_ONLY }];
         return run.maxCostUsd === undefined ? [{ field: "target.run_id", reason: "not_allowed", message: NO_CAP }] : [];
       }
       const entry = await deps.getAgent(target.agent_id);
@@ -231,6 +240,9 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const run = await deps.momentOf(target.run_id);
       if (!run) throw new ApiError("not_found", `There is no run ${target.run_id}.`);
       if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");
+      // Never a turn on a plan-billed recipe (its owner's own sign-in, a person's alone): checked again at each firing, as
+      // the server may since have been started with that recipe; skipped in words, never queued.
+      if (run.harness !== undefined && deps.planRecipe?.(run.harness)) return { skipped: RECIPE_MESSAGE_PERSON_ONLY };
       // Never an uncapped turn, nor an answer to a person's question, an approval or a budget pause: a run that waits on its
       // person is told nothing by a trigger (skipped, never queued behind the person).
       if (run.maxCostUsd === undefined) throw new ApiError("not_continuable", NO_CAP);

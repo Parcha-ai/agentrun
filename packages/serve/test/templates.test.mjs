@@ -300,6 +300,35 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.ok(schemaProblems(schema, schema, { ...FINDINGS, findings: [{ ...FINDINGS.findings[0], severity: "important" }] }).length, "v1's severity is gone: priority replaces it");
 });
 
+test("GET /templates/{template} answers one package whole, a bundled one's too: as the list shows it, its instructions and every skill file in full, and its console page; an unknown one is 404, and it takes the token", async (t) => {
+  const { api, baseUrl } = await serve(t, { runner: false });
+  const meets = await documented(baseUrl);
+  const listed = (await api("GET", "/templates")).body.templates;
+  assert.ok(listed.length > 0);
+  for (const view of listed) {
+    const one = await api("GET", `/templates/${encodeURIComponent(view.id)}`);
+    assert.equal(one.status, 200, `${view.id}: ${JSON.stringify(one.body)}`);
+    meets("/templates/{template}", "get", "200", one.body);
+    assert.deepEqual(one.body.template, view, `${view.id} reads as GET /templates lists it`);
+    assert.equal(new URL(one.body.console_url).hash, `#/templates/${encodeURIComponent(view.id)}`, `${view.id} links to its apply page`);
+  }
+
+  // What a person reads before applying it: the package's own files, as they are on disk.
+  const review = (await api("GET", "/templates/code-review")).body;
+  assert.equal(review.instructions, file("agent.md").replace(/^---[\s\S]*?\n---\n/, "").trim(), "the instructions in full, placeholders unfilled");
+  assert.deepEqual(Object.keys(review.skill_files).sort(), ["review/CODEREVIEW.md", "review/DEEP.md", "review/REVIEWER.md", "review/SKILL.md", "review/findings.schema.json"]);
+  assert.equal(review.skill_files["review/SKILL.md"], file("skills/review/SKILL.md"), "each skill file in full");
+  assert.equal(review.skill_files["review/CODEREVIEW.md"], file("rules/CODEREVIEW.md"), "the rules beside the skill that reads them");
+  assert.equal(review.skill_files["review/findings.schema.json"], file("skills/review/findings.schema.json"));
+
+  const unknown = await api("GET", "/templates/nope");
+  assert.deepEqual([unknown.status, unknown.body.error.code], [404, "not_found"], JSON.stringify(unknown.body));
+  assert.match(unknown.body.error.message, /no template nope: GET \/v2\/templates lists them/);
+  // The import route is a POST: a GET of its path asks for a package named "import", which there is none of.
+  assert.equal((await api("GET", "/templates/import")).status, 404);
+  assert.equal((await fetch(`${baseUrl}/templates/code-review`)).status, 401);
+});
+
 test("apply makes nothing when a secret is missing, its parameters do not check, or the package is unknown; it takes the token as creating an agent does", async (t) => {
   withEnv(t, {}, [KEY]);
   const { api, baseUrl } = await serve(t, { templates: FIXTURES });
@@ -371,6 +400,12 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
   assert.deepEqual(trigger.target, { kind: "start_run", agent_id: applied.body.agent_id, input: { content: "Today's brief on solar." } });
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
   assert.deepEqual([agent.definition.name, agent.definition.instructions, agent.definition.max_cost_usd], ["nightly", "Write a brief of about 200 words on solar.", 0.25]);
+  // The package itself is not filled by an apply: GET /templates/{template} still answers its placeholders, and no
+  // parameter value or secret from the apply or the server's environment comes back in it.
+  const read = (await api("GET", "/templates/nightly")).body;
+  assert.equal(read.instructions, "Write a brief of about ${parameters.words} words on ${parameters.topic}.");
+  assert.ok(JSON.stringify(read.template.triggers).includes("Today's brief on ${parameters.topic}."), JSON.stringify(read.template.triggers));
+  for (const filled of ["solar", "200 words", "fake-test-key"]) assert.ok(!JSON.stringify(read).includes(filled), `${filled} is not in the package read after an apply`);
   const again = await api("POST", "/templates/nightly/apply", body, { "idempotency-key": "nightly-1" });
   assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body], [201, "true", applied.body], "the same key answers the first apply, and makes nothing");
 

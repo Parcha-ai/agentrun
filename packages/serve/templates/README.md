@@ -2,7 +2,8 @@
 
 A template package is one folder that makes a working agent: its manifest, its instructions, its skills, its rules and
 its evals. The server ships the packages in this folder, checks each one whole at its start (a broken one stops the
-start), lists them at `GET /v2/templates` and applies one with `POST /v2/templates/{name}/apply`. Nothing in a package
+start), lists them at `GET /v2/templates`, reads one whole (its instructions and every skill file) at
+`GET /v2/templates/{name}` and applies one with `POST /v2/templates/{name}/apply`. Nothing in a package
 runs at apply: it is read, checked, and made into the same agent and trigger records `POST /v2/agents` and
 `POST /v2/triggers` make. `agentrun template validate DIR` runs the server's own check on a folder.
 
@@ -402,7 +403,8 @@ The ref follows the last `@`, so a path with an `@` in it (`packages/@acme/kyb`)
    file, more than 8 MiB of files, or an archive over 128 MiB is refused (`422`), as is a package that does not check.
 3. A dry run answers the package whole (its instructions and every skill file) and stores nothing. Otherwise it is
    stored under its id, `github:<owner>/<repo>[/<path>]`, listed by `GET /v2/templates` with `bundled: false`, its
-   `source`, `sha` and `publisher`, and applied as below with that id URL-encoded. Importing the id again replaces it;
+   `source`, `sha` and `publisher`, read whole by `GET /v2/templates/{id}` and applied as below, each with that id
+   URL-encoded. Importing the id again replaces it;
    `DELETE /v2/templates/{id}` removes it (a bundled package is `403`). Agents applied from it stay as they are, each with
    `template: {id, version, sha}`.
 

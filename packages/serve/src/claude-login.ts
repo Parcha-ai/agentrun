@@ -27,7 +27,7 @@ for (const operation of ["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLo
 export const CLAUDE_LOGIN_ENV = "AGENTRUN_CLAUDE_CODE_LOGIN";
 export const claudeLoginOff = (env: Readonly<Record<string, string | undefined>>): boolean => /^(off|0|false|no)$/i.test((env[CLAUDE_LOGIN_ENV] ?? "").trim());
 const claudeLoginOn = (env: Readonly<Record<string, string | undefined>>): boolean => /^(on|1|true|yes)$/i.test((env[CLAUDE_LOGIN_ENV] ?? "").trim());
-const loopback = (host: string): boolean => host === "localhost" || host === "::1" || /^127\./.test(host); // key-gate: loopback-rule the default follows a loopback listen address
+export const loopback = (host: string): boolean => host === "localhost" || host === "::1" || /^127\./.test(host); // key-gate: loopback-rule the default follows a loopback listen address
 
 /** Why the mode is off on a server listening on `listen`, or undefined where it is there: the switch's `off`, or, unset,
  *  a listen address past loopback. */
