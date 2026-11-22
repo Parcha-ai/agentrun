@@ -1379,7 +1379,10 @@ curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer 
 **A server that holds no tool keys: `AGENTRUN_RUN_KEYS=1`.** Off, a template's apply refuses a tool key the server does
 not hold (409, as before). With the setting on, the apply makes the agent and says, in a warning, which tool keys
 each run must bring. A run of that agent without one of them is 409 `agent_not_runnable` at `keys.<NAME>`, before
-anything is made, and so is a message that would start a turn without it.
+anything is made, and so is a message that would start a turn without it. `MONID_API_KEY` stays the server's even with
+the setting on: an agent's monid tools are checked with it when the agent is saved, before any run, so a template that
+grants them is still refused at its apply (409 at `secrets.MONID_API_KEY`) where the server has none. A run can still
+bring its own monid key to use in place of the server's.
 
 ### Direct Particle-1
 

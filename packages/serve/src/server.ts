@@ -3258,10 +3258,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (onto && !plan && options.templateApplyRead) await options.templateApplyRead(onto.agent.id);
     // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made. Under
     // the run-keys setting, a tool key is each run's to carry (run-keys.ts): its agent is made, the warning says so, and a
-    // run that does not carry it is refused. A model key is still the server's.
+    // run that does not carry it is refused. A model key is still the server's, and so is monid's: the agent's monid tools
+    // are checked with it when the agent is saved (monidPinOf), before any run.
     const declared = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])].sort();
     const absent = declared.filter((name) => !secret(name, storedKeys));
-    const brought = options.runKeys ? absent.filter((name) => TOOL_FIELDS.includes(name)) : [];
+    const brought = options.runKeys ? absent.filter((name) => TOOL_FIELDS.includes(name) && name !== MONID_KEY_ENV) : [];
     const missing = absent.filter((name) => !brought.includes(name));
     const keyWarnings: InputIssue[] = brought.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server: it takes it from each run (${RUN_KEYS_ENV}=1), so a run that does not carry it in keys is refused.`, fix: `Send keys.${name} with each run, or add it in Settings → API Keys.` }));
     // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
@@ -3278,7 +3279,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const needed = unsaved.filter((need) => need.required);
     if (!plan && (missing.length || needed.length)) {
       const fix = "Add it in Settings → API Keys, or set it where AgentRun starts, then apply the template again.";
-      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `a ${need.source} MCP server of the toolkit ${need.toolkit}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}.`, fix: mcpSetUp(need) }))] });
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `a ${need.source} MCP server of the toolkit ${need.toolkit}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: options.runKeys && name === MONID_KEY_ENV ? `${name} is not set on this server, and a run can't bring it (${RUN_KEYS_ENV}=1): the agent's monid tools are checked with this server's key when it is saved.` : `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}.`, fix: mcpSetUp(need) }))] });
     }
     // The package's computer list: the first entry this server meets now (templates.ts pickComputer), written as the
     // agent's computer; a fallback, or a shell tool that computer does not run, said under `computer`. A list none of

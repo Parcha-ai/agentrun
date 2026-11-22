@@ -3,7 +3,7 @@
 // loop's failed end), the runner's events, and the model route's error text that pi records. Each passes through the one
 // function made here, which puts "[redacted]" in place of every secret value the runner holds, in every form a value
 // can take in text (key-refusal.ts redactedAnswer: as written, JSON-escaped, base64, hex and percent-encoded).
-import { redactedAnswer } from "../key-refusal.js";
+import { heldNumber, redactedAnswer } from "../key-refusal.js";
 import { MIN_SECRET } from "../learn/secrets.js";
 import { hostSecrets, SECRET_NAMES } from "../secrets.js";
 import { planOf } from "../chatgpt-plan.js";
@@ -99,26 +99,41 @@ export const carryTo = (redact: HeldRedact, runId: string) => (values: readonly 
 
 /** Every string inside `value` cut by `cut`: what the run's process writes, as the runner's redactor would cut it in a
  *  loop of its own (rule three: no secret the runner holds is written). `names`: each object's and map's names too (a
- *  model may write a value as a JSON name); two names cut to one are both kept, the later ones numbered. */
-export function cutDeep<T>(value: T, cut: (text: string) => string, names = false): T {
-  if (typeof value === "string") return cut(value) as T;
-  if (value === null || typeof value !== "object") return value;
-  if (ArrayBuffer.isView(value) || value instanceof Date || value instanceof RegExp || value instanceof ArrayBuffer) return value;
-  if (Array.isArray(value)) return value.map((item) => cutDeep(item, cut, names)) as T;
+ *  model may write a value as a JSON name); two names cut to one are both kept, the later ones numbered. A number that
+ *  shows a value `cut` holds (a key of digits alone, quoted as a JSON number: key-refusal.ts heldNumber) is "[redacted]". */
+export function cutDeep<T>(value: T, cut: Redact, names = false): T {
+  // The values `cut` holds, read once for the whole of `value` at its first number.
+  let held: readonly string[] | null | undefined;
+  const shows = (number: number | bigint): boolean => {
+    const text = String(number);
+    if (held === undefined) held = cut.heldValues?.() ?? null;
+    if (!held) return cut(text) !== text;
+    // Digits shorter than any held value can't hold one, in any form; only the same number written otherwise can.
+    if (text.length < MIN_SECRET) return held.some((secret) => secret.trim() !== "" && Number(secret) === Number(number));
+    return heldNumber(number, held);
+  };
   const named = (taken: (name: string) => boolean, key: string): string => {
     const once = names ? cut(key) : key;
     let name = once;
     for (let n = 2; taken(name); n++) name = `${once} (${n})`;
     return name;
   };
-  if (value instanceof Map) {
-    const out = new Map<unknown, unknown>();
-    for (const [k, v] of value) out.set(typeof k === "string" ? named((name) => out.has(name), k) : k, cutDeep(v, cut, names));
-    return out as T;
-  }
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) Object.defineProperty(out, named((name) => Object.hasOwn(out, name), key), { value: cutDeep((value as Record<string, unknown>)[key], cut, names), enumerable: true, writable: true, configurable: true });
-  return out as T;
+  const walk = (one: unknown): unknown => {
+    if (typeof one === "string") return cut(one);
+    if (typeof one === "number" || typeof one === "bigint") return shows(one) ? "[redacted]" : one;
+    if (one === null || typeof one !== "object") return one;
+    if (ArrayBuffer.isView(one) || one instanceof Date || one instanceof RegExp || one instanceof ArrayBuffer) return one;
+    if (Array.isArray(one)) return one.map(walk);
+    if (one instanceof Map) {
+      const out = new Map<unknown, unknown>();
+      for (const [k, v] of one) out.set(typeof k === "string" ? named((name) => out.has(name), k) : k, walk(v));
+      return out;
+    }
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(one)) Object.defineProperty(out, named((name) => Object.hasOwn(out, name), key), { value: walk((one as Record<string, unknown>)[key]), enumerable: true, writable: true, configurable: true });
+    return out;
+  };
+  return walk(value) as T;
 }
 
 /** The secrets a claim opened from the store (`env`, claimSecrets' environment for the run) held by `redact`, the run's
