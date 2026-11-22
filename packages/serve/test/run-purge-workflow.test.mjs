@@ -317,6 +317,47 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     assert.deepEqual(await reads("What is seven times six?"), { holds: false, champion: null, served: null }, "no read, run or compile ask holds v2; the champion read reads no commit for v2's record, so the agent takes the run");
   });
 
+  // #3458 round 2, rules (1) and (2), red before their fix. `first` wrote answer v1, promoted; `gone` revised it to v2.
+  // (2) v2 was promoted, then held by a later check: the purge gate walks the digest promoted last whatever its newest
+  // decision, so v2's records are refused and v1, the earlier champion, serves again. (1) A promote check of v2 still at
+  // work when `gone` is purged records against the commit its runs were seeded from, the pre-purge merge: that promote
+  // is never recorded, and v1 still serves.
+  for (const rule of ["(2) the champion later held", "(1) a promote check in flight"]) test(`${kind}: round 2 ${rule}: a purge of the run that wrote v2 never leaves v2 the champion; v1, promoted before it, serves again`, { timeout: 300_000 }, async (t) => {
+    const mark = `PURGED-ROUND2-${randomBytes(6).toString("hex")}`;
+    const { api, data, store } = await serve(t, { learning: "on" });
+    onStore(t, data, settingsOf());
+    const first = (await startRun(api, "again", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
+    await ended(api, first);
+    const gone = await started(api, "again", "What is three?");
+    await ended(api, gone);
+
+    const path = "workflows/answer/workflow.json";
+    const [v1, v2] = [answerAt("in whole numbers"), answerAt(mark)];
+    const kept = await learned(data, "again", (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: filesOf("in whole numbers") }));
+    const revised = await learned(data, "again", (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: filesOf(mark) }));
+    const at = new Date().toISOString();
+    const check = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, alone: 5, agreed: 5 };
+    const promoteV1 = { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit: kept };
+    const v2Record = (decided) => ({ workflow: "answer", digest: digestOf(v2[path]), at: new Date().toISOString(), decided, reason: `checked: ${decided === "promote" ? "promoted" : "held"}`, commit: revised, check });
+    await store.settings.put("learning.promotions.again", { v: 1, items: rule.startsWith("(2)") ? [promoteV1, v2Record("promote"), v2Record("hold")] : [promoteV1] });
+    const reads = async (question) => {
+      const run = await api("POST", "/agents/again/runs", { input: { content: question, question } });
+      assert.equal(run.status, 202, JSON.stringify(run.body));
+      await ended(api, run.body.run_id);
+      const promotions = (await api("GET", "/agents/again/learning/promotions")).body;
+      return { champion: promotions.serving.find((line) => line.workflow === "answer")?.champion?.commit ?? null, served: (await store.runs.get(run.body.run_id)).metrics?.workflow_digest ?? null };
+    };
+    assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+    if (rule.startsWith("(1)")) {
+      // The check's settle, after the purge's rewrite and its record move: its promote names the pre-purge merge.
+      const { recordPromotion } = await import("../dist/learn/promote.js");
+      await recordPromotion(store.settings, "again", v2Record("promote"), () => true);
+      const records = (await api("GET", "/agents/again/learning/promotions")).body.promotions;
+      assert.equal(records.some((one) => one.digest === digestOf(v2[path]) && one.decided === "promote"), false, "no promote is recorded for the purged run's revision");
+    }
+    assert.deepEqual(await reads("What is six times seven?"), { champion: await mergeAt(data, "again", first), served: digestOf(v1[path]) }, "v1's record, moved by the rewrite, is the champion and serves");
+  });
+
   // The writer rule follows the bytes over runs that end cheaply (no runner): (c) a workflow the purged run wrote new
   // leaves main whole; (d) a later run's revision on top of the purged run's stays as it is; (f) two purged runs in a row
   // on one workflow leave the version before both, in either order of purge, its writer the run that wrote it in both the

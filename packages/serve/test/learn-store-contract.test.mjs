@@ -697,6 +697,31 @@ test("code.storage: the repo is agentrun-<server id>-<agent id>-g0, every call's
   assert.ok(fake.calls.every((call) => !/BEGIN|PRIVATE/.test(call.search)), "no key in a URL");
 });
 
+// #3458 round 2, rule (4), red before its fix: a history read that comes back short is unknown history. A 404 on a
+// page of main's commit listing (a repository read mid-flip, say) ends log()'s listing early; the purge must refuse,
+// retryable, and leave main as it was: never purge a history it read short, never report a run unmerged on one.
+test("code.storage: round 2 (4): a purge whose history listing comes back 404 refuses, retryable, and leaves main and its history whole", async () => {
+  const { forgetRunText } = await learn();
+  let gone = false;
+  const store = await wrappedStore((inner) => async (url, init) => {
+    if (gone && (init?.method ?? "GET") === "GET" && new URL(url).pathname.endsWith("/repos/commits")) return new Response(JSON.stringify({ error: "not found" }), { status: 404, headers: { "content-type": "application/json" } });
+    return inner(url, init);
+  });
+  await merged(store, "ALPHA", "BRAVO");
+  const live = await store.head();
+  const before = await everything(store);
+  const history = (await store.log(live)).map(({ sha }) => sha);
+  gone = true;
+  for (const run of ["run_bravo", "run_alpha"]) {
+    const done = await forgetRunText(store, run).then((one) => one, (error) => ({ refused: error.name }));
+    assert.deepEqual(done, { refused: "FolderUnreadable" }, `${run}: the purge refused on a short history`);
+  }
+  gone = false;
+  assert.equal(await store.head(), live, "main never moved");
+  assert.equal(await everything(store), before, "every tree as it was");
+  assert.deepEqual((await store.log(live)).map(({ sha }) => sha), history, "the whole history is still there");
+});
+
 test("code.storage: a purge killed mid-build leaves the live repository untouched; the retry deletes the half-built next generation by its exact id and finishes", async () => {
   const { forgetRunText } = await learn();
   let packs = 0;
