@@ -3272,6 +3272,11 @@ export type ListComputersResponse = {
   }>;
 };
 
+/** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
+export type ListMcpServerNamesResponse = {
+  names: Array<string>;
+};
+
 /** Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil). */
 export type PutWorkspaceArchilBody = {
   region: string;
@@ -6550,6 +6555,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listComposioTriggers: {"method":"GET","path":"/settings/mcp-servers/{name}/composio/triggers","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listComputerChoices: {"method":"GET","path":"/computers/{provider}/choices","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listComputers: {"method":"GET","path":"/computers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listMcpServerNames: {"method":"GET","path":"/settings/mcp-server-names","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   putWorkspaceArchil: {"method":"PUT","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   receiveHook_composio: {"method":"POST","path":"/hooks/composio/{hook}","pathParams":["hook"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   rotateComposioSecret: {"method":"POST","path":"/settings/mcp-servers/{name}/composio/rotate-secret","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -6841,6 +6847,8 @@ export function resources(call: Call) {
       listComputerChoices: (provider: string, options?: RequestOptions): Promise<ListComputerChoicesResponse> => call("listComputerChoices", [provider], undefined, undefined, options),
       /** Settings → Computers: the kinds of computer this server offers, each provider and whether its keys are saved (GET /computers). */
       listComputers: (options?: RequestOptions): Promise<ListComputersResponse> => call("listComputers", [], undefined, undefined, options),
+      /** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
+      listMcpServerNames: (options?: RequestOptions): Promise<ListMcpServerNamesResponse> => call("listMcpServerNames", [], undefined, undefined, options),
       /** Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil). */
       putWorkspaceArchil: (body: PutWorkspaceArchilBody, options?: RequestOptions): Promise<PutWorkspaceArchilResponse> => call("putWorkspaceArchil", [], body, undefined, options),
       /** Fire a Composio trigger: a request it checks, no token (POST /hooks/composio/{hook}). */

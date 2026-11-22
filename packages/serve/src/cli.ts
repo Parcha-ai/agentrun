@@ -16,8 +16,7 @@ import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
-import { apiOnlyFrom } from "./api-only.js";
-import { runKeysFrom } from "./run-keys-env.js";
+import { API_ONLY_ENV, RUN_KEYS_ENV, switchFrom } from "./env-switch.js";
 import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
@@ -525,8 +524,8 @@ process.on("SIGTERM", signalled);
 let apiOnly: boolean;
 let runKeys: boolean;
 try {
-  apiOnly = apiOnlyFrom(process.env);
-  runKeys = runKeysFrom(process.env);
+  apiOnly = switchFrom(API_ONLY_ENV);
+  runKeys = switchFrom(RUN_KEYS_ENV);
 } catch (error) {
   console.error(`${(error as Error).message}\n\n${USAGE}`);
   process.exit(2);

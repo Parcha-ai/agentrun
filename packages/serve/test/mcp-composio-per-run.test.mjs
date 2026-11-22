@@ -14,7 +14,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, secretWritePath, serve, serverLog, storeBytes, whenFree } from "./support.mjs";
 
 const { UNUSABLE } = await import("../dist/mcp-probe.js");
-const { COMPOSIO_USER } = await import("../dist/composio-preset.js");
+const { COMPOSIO_LISTING_USER, COMPOSIO_USER, COMPOSIO_USER_ID } = await import("../dist/composio-preset.js");
 const { composioMadeKey } = await import("../dist/composio-made.js");
 const { ISSUE_ADDED } = await import("./fixtures/fake-composio.mjs");
 
@@ -30,10 +30,12 @@ const ACCOUNT_A = "ca_alice_gmail_0001";
 const USER_B = "grep-user-bob-0002";
 const ACCOUNT_B = "ca_bob_gmail_0002";
 const OWNER = "owner-0001";
+// A team's connected account, as grep names it: Composio user `team:<tenant>` (agent_connections/registry.py TEAM_SCOPE_PREFIX).
+const TEAM = "team:tenant-0042";
+const ACCOUNT_TEAM = "ca_team_gmail_0042";
 // Each Composio user's connected accounts, as the fake's MCP endpoint checks a call against them.
 // The preset's default user (`agentrun`) has its own account too: the one a single-user preset server calls as.
-const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A], [USER_B]: [ACCOUNT_B], [OWNER]: ["ca_owner_gmail_0001"], [COMPOSIO_USER]: ["ca_shared_gmail_0001"] };
-const COMPOSIO_USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
+const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A], [USER_B]: [ACCOUNT_B], [OWNER]: ["ca_owner_gmail_0001"], [TEAM]: [ACCOUNT_TEAM], [COMPOSIO_USER]: ["ca_shared_gmail_0001"] };
 const CALL = 'Call mcp__mail__add with {"a":2,"b":3}';
 const bind = (user, account) => ({ mail: { composio_user_id: user, ...(account ? { connected_account_id: account } : {}) } });
 
@@ -75,6 +77,18 @@ test("two users, one per-run Gmail server: B's run is called at Composio as B's 
     assert.match(run.answer, /The tool said: 5/, `${who}'s call answered`);
     assert.deepEqual(run.sent.map(asWho), run.sent.map(() => mine), `every request of ${who}'s run is as ${who}'s user and account`);
     assert.deepEqual(run.sent.filter((entry) => theirs.some((value) => entry.path.includes(value))), [], `none of ${who}'s run's requests names the other user or account`);
+  }
+});
+
+test("a team's account binds a run as a person's does: its Composio user team:<tenant> is taken, and the run calls as that user and account; a space, a slash or the listing-only user's ~ is still refused", async (t) => {
+  const s = await setup(t);
+  const team = await runOnce(s, bind(TEAM, ACCOUNT_TEAM));
+  assert.equal(toolCalls(team.sent).length, 1, `the team's one call reached Composio: ${team.answer}`);
+  assert.match(team.answer, /The tool said: 5/, "the team's call answered");
+  assert.deepEqual(team.sent.map(asWho), team.sent.map(() => [TEAM, ACCOUNT_TEAM]), "every request is as the team's user and account");
+  for (const user of ["team:has space", "team:a/b", COMPOSIO_LISTING_USER]) {
+    const refused = await s.api("POST", "/agents/reader/runs", { input: { content: "Hi" }, mcp_auth: bind(user, ACCOUNT_TEAM) });
+    assert.deepEqual([refused.status, refused.body.error?.fields?.[0]?.field, refused.body.error?.fields?.[0]?.reason], [422, "mcp_auth.mail.composio_user_id", "invalid"], `${user}: ${JSON.stringify(refused.body)}`);
   }
 });
 

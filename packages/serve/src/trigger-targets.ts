@@ -10,6 +10,7 @@ import { runOfOrigin } from "./store-reads/runs.js";
 import type { Store } from "./store/index.js";
 import type { AgentEntry } from "./agents-store.js";
 import { NATIVE_CAP_UNSUPPORTED, NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
+import { firingsOwe, keysOwedRefusal } from "./run-keys.js";
 import type { MessageOrigin } from "./timeline/index.js";
 import type { Json } from "./validate.js";
 import type { RunTrigger, Target } from "./triggers.js";
@@ -49,6 +50,11 @@ export interface TriggerTargetDeps {
    *  fields the output schema it was checked against (its pinned revision's, never the agent's current one) names in
    *  `x-carried` (answer-json.ts carriedFields), absent when it names none. */
   completedOutput(runId: string): Promise<CompletedOutput | undefined>;
+  /** Under the run-keys setting, the keys a run of `revision` owes when it carries none (run-keys.ts keysOwed); absent
+   *  when the setting is off. */
+  keysOwed?(revision: object): InputIssue[];
+  /** The server has the launch hook: each start_run firing goes to the backend in front of it (trigger-launch-hook.ts). */
+  readonly hooked?: boolean;
 }
 
 /** The most of a trigger's firings, newest first, read for its last completed run. */
@@ -162,6 +168,7 @@ function carriedEntryBytes(entry: unknown): number {
  *  adapter's sealed settings, the failed-firing webhook) stay server-wired. */
 export type TriggerTargets = {
   targetIssues(target: Target): Promise<InputIssue[]>;
+  targetRefusal(target: Target): Promise<ApiError | undefined>;
   start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string | undefined, previous: boolean): Promise<{ run_id: string }>;
   message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin, bound: { max: number; reason: string }): Promise<void | { skipped: string }>;
   statusOf(runId: string): Promise<string | null>;
@@ -171,6 +178,14 @@ export type TriggerTargets = {
 /** The trigger target policy over `store`, with its reads and the run-start leaves injected. */
 export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps): TriggerTargets {
   return {
+    async targetRefusal(target) {
+      if (!deps.keysOwed) return undefined;
+      // The revision a firing would open a turn of: the run's own for a message_run, the agent's current for a start_run.
+      const row = target.kind === "message_run" ? await store.runs.get(target.run_id) : undefined;
+      const revision = target.kind === "message_run" ? (row ? await store.agents.revision(row.revisionId) : undefined) : (await deps.getAgent(target.agent_id))?.revision;
+      const owed = revision ? deps.keysOwed(revision) : [];
+      return firingsOwe(owed, target.kind, deps.hooked === true) ? keysOwedRefusal(owed) : undefined;
+    },
     async targetIssues(target) {
       if (target.kind === "message_run") {
         const run = await deps.momentOf(target.run_id);

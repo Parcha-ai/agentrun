@@ -21,8 +21,9 @@ export const COMPOSIO_USER = "agentrun";
 /** A Composio toolkit's slug, as a save takes it once trimmed and lower-cased. */
 export const COMPOSIO_TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const TOOLKIT = COMPOSIO_TOOLKIT;
-/** A Composio user id, as a save's `user_id` and a run's binding (mcp_auth's composio_user_id) take it. */
-export const COMPOSIO_USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
+/** A Composio user id, as a save's `user_id` and a run's binding (mcp_auth's composio_user_id) take it. A `:` is taken:
+ *  a host names a team's connected accounts by a user such as `team:<tenant>`. */
+export const COMPOSIO_USER_ID = /^[A-Za-z0-9._@:-]{1,128}$/;
 const USER_ID = COMPOSIO_USER_ID;
 /** The `user_id` a save names for a per-run server, reserved for that and never a Composio user: the server keeps no user
  *  and no connected account, and each run names its own (mcp_auth.<server> = {composio_user_id, connected_account_id?}). */
@@ -198,7 +199,7 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   const ownConfig = rest.auth_config_id === undefined ? undefined : typeof rest.auth_config_id === "string" ? rest.auth_config_id : "";
   const issues: InputIssue[] = [];
   if (!tools.length || tools.length > MAX_TOOLS || !tools.every((t) => typeof t === "string" && t && t.length <= MAX_SLUG)) issues.push(issue("tools", "invalid", `Send the slugs of the actions to grant: 1 to ${MAX_TOOLS} of them, each at most ${MAX_SLUG} characters.`));
-  if (!USER_ID.test(user)) issues.push(issue("user_id", "invalid", `A user_id is letters, digits and . _ @ - (at most 128), or "${COMPOSIO_PER_RUN}" for a server each run names its own account for.`));
+  if (!USER_ID.test(user)) issues.push(issue("user_id", "invalid", `A user_id is letters, digits and . _ @ : - (at most 128), or "${COMPOSIO_PER_RUN}" for a server each run names its own account for.`));
   if (price !== undefined && !priceValid(price)) issues.push(issue("price_usd", "invalid", "price_usd is what each call of the server's actions costs, in USD: a finite number, 0 or more."));
   if (ownConfig !== undefined && !COMPOSIO_AUTH_CONFIG_ID.test(ownConfig)) issues.push(issue("auth_config_id", "invalid", "An auth_config_id is the id Composio shows for an auth config: ac_ then letters, digits, _ and - (at most 64 after ac_)."));
   if (issues.length) throw invalid(issues);
