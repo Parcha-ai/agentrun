@@ -348,7 +348,8 @@ for (const [kind, make] of Object.entries(STORES)) {
       // Another run's commit being made on main (its import ref, its commit's parent main) is never disturbed by a purge
       // sent again: nothing is tidied when no rewrite stopped, and an import on main is kept when one did.
       const git = gitDirOf(store.data);
-      const sh = (args, input) => execFileSync("git", ["--git-dir", git, ...args], { input }).toString("utf8").trim();
+      // An identity of its own: a CI machine has none configured.
+      const sh = (args, input) => execFileSync("git", ["-c", "user.name=contract test", "-c", "user.email=contract@example.invalid", "--git-dir", git, ...args], { input }).toString("utf8").trim();
       const making = sh(["commit-tree", `${done.commit}^{tree}`, "-p", done.commit, "-m", "a run's merge being made"]);
       const importRef = "refs/agentrun/import-0123456789abcdef";
       sh(["update-ref", importRef, making]);
