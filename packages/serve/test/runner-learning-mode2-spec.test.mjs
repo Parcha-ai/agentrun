@@ -119,10 +119,10 @@ test("Mode 2 with exec refused on the Archil disk: the run learns through the ag
 
   // The server's Learning reads see the runner's commits, as the store logs them.
   const logged = (await learningStoreOf(local, "agent-1").log(main)).map((commit) => commit.sha);
-  const view = await agentLearning(local, "agent-1", noShown, { merged: 0, dropped: {} }, {}, () => "pending");
+  const view = await agentLearning(local, "agent-1", noShown, { merged: 0, dropped: {} }, {}, () => "pending", async () => new Set());
   assert.equal(view.main, main, "the server's view reads the runner's main");
   assert.deepEqual(view.workflows.map((item) => item.name), ["answer"], "and the workflow it compiled");
-  const page = await learningLog(local, "agent-1", new URLSearchParams(), noShown);
+  const page = await learningLog(local, "agent-1", new URLSearchParams(), noShown, async () => new Set());
   assert.equal(page.items[0].commit, main, "its log's newest change is the runner's merge");
   for (const { commit } of page.items) assert.ok(logged.includes(commit), `each change the server lists is on the store's main: ${commit}`);
 

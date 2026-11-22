@@ -144,7 +144,7 @@ test("with code.storage set, a runner apart from its server's disk uses the one 
   assert.equal(out.proposal?.state, "merged", JSON.stringify(out.proposal));
   const main = await learning.head();
   assert.equal(out.proposal.merged, main, "the merge is the server's store's main");
-  const view = await agentLearning(serverData, "agent-1", noShown, { merged: 0, dropped: {} }, {}, () => "pending");
+  const view = await agentLearning(serverData, "agent-1", noShown, { merged: 0, dropped: {} }, {}, () => "pending", async () => new Set());
   assert.equal(view.main, main);
   assert.deepEqual(view.workflows.map((item) => item.name), ["answer"]);
   assert.deepEqual([...new Set(fake.calls.map((call) => call.repo))], ["agentrun-srv1-agent-1"], "one repository, the agent's");
