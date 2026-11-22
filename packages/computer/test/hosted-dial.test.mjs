@@ -367,6 +367,14 @@ test("a machine that never dials: the timeout carries the host's dialLog, its la
 	assert.equal(tail.length, 800, "the last 800 characters");
 	assert.ok(tail.endsWith("xy"));
 
+	// A machine token agentrun-dial wrote, every time, is replaced by the adapter: no host has to remember it.
+	const TOKEN = `art_fake-test-key-not-a-secret-${"0".repeat(16)}`;
+	assert.match(TOKEN, new RegExp(`^${MACHINE_TOKEN_SOURCE}$`));
+	const leaky = setup({ dials: false }, QUICK);
+	leaky.fake.host.dialLog = async () => `sent ${TOKEN}\n${TOKEN} was refused\n`;
+	const redacted = await create(leaky.provider);
+	assert.ok(redacted.error.message.endsWith(`${SAID}sent <token> | <token> was refused`), redacted.error.message);
+
 	const never = setup({ dials: false }, QUICK);
 	never.fake.host.dialLog = async () => undefined;
 	const silent = await create(never.provider);

@@ -1686,17 +1686,18 @@ With `connect: "dial"` (a server's `daytonaConnect` setting, `COMPUTER_DAYTONA_C
 default) a Daytona sandbox dials the server instead ([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)). The host has
 no exec and no upload: create sends the boot env as `CreateSandbox.env`, `AGENTRUN_ATTACH_URL` left out, and
 `networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside). Once the sandbox reads
-`started` (within the create's time; `error` or `build_failed` fails create in Daytona's words), create starts
-`agentrun-dial` itself in a toolbox session of its own, `agentrun-dial`: one async session command, as root, that
-first takes others' access off each socket `/tmp/dbus-*` names (the sockets step the exec path runs before init), then
-`&& AGENTRUN_ATTACH_URL='<url>' exec /usr/local/bin/agentrun-dial`, so a step that fails starts nothing. It is the
+`started` (within the create's time; `error` or `build_failed`, or a sandbox being destroyed, fails create in Daytona's
+words), create starts `agentrun-dial` itself in a toolbox session of its own, `agentrun-dial`: one async session
+command, as root, that sets `umask 077` (so init's start log and `/work` are root's alone whatever the toolbox's umask),
+then `&&` takes others' access off each socket `/tmp/dbus-*` names (the sockets step the exec path runs before init),
+then `&& AGENTRUN_ATTACH_URL='<url>' exec /usr/local/bin/agentrun-dial`, so a step that fails starts nothing. It is the
 launch line E2B's dial runs (`dialLaunch`), with no rootOnly paths here. The URL is no secret; the token stays in the sandbox's
 env, which the command inherits, and is on no command line. A session Daytona refuses fails create in its words, and
 the sandbox is deleted. So the snapshot's entrypoint is not relied on: a box snapshot registered without one (name,
 image and resources alone) dials too, and one whose entrypoint is the box CMD sleeps, with no `AGENTRUN_ATTACH_URL` in
-its env, so `agentrun-dial` never runs twice. A machine that does not dial within `createMs` fails with the session
-command's log, its last 10 lines within 800 characters (`dialLog`, the token replaced by `<token>`), or "agentrun-dial
-never started" when the session is none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
+its env, so `agentrun-dial` never runs twice. A machine that does not dial within `createMs` fails with that command's
+log, read once by the id its start returned, its last 10 lines within 800 characters (`dialLog`; the adapter replaces
+every machine token in it by `<token>`), or "agentrun-dial never started" when create started none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
 no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
 (`kind: "desktop"`): the box snapshot's X server, started over the socket it dialed, and xfwm4, which computerd starts
 (init's `--window-manager`), at the snapshot's 2 CPUs and 4 GiB, with no GPU. On exec a Daytona computer is kind
@@ -1717,6 +1718,17 @@ What each part of a dial sandbox rests on:
   [daemon session/create.go:23-24](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/create.go#L23-L24)).
   Live (11-22): a value set in create's `env` was echoed by a session command, which runs as root, and `runAsync` works.
   `AGENTRUN_ATTACH_URL` comes from the command's own line.
+- **The dial's log is plain text, framed.** The provider names no SDK version (no `X-Daytona-SDK-Version`), so the
+  toolbox skips its own demux and answers a command's logs as text
+  ([daemon toolbox/process/session/log.go:55-65](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/toolbox/process/session/log.go#L55-L65),
+  `SkipServerDemux` true for no version,
+  [session/common.go:21-24](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/common.go#L21-L24));
+  with `X-Daytona-Split-Output: true` the output is not combined
+  ([common.go:17-19](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/common.go#L17-L19)),
+  so the text is the log file as written, each write behind its stream's prefix, `\x01\x01\x01` or `\x02\x02\x02`
+  ([session/log.go:121-137](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/log.go#L121-L137)).
+  `dialLog` drops the prefixes, as the daemon does for combined output. Live (11-22): the toolbox's
+  `/process/session/entrypoint/logs` answered plain text, not JSON.
 - **The image's CMD never runs; the snapshot's entrypoint does.** The container's entrypoint is the toolbox daemon, and
   its arguments are the snapshot's entrypoint, else the image's ENTRYPOINT, never its CMD
   ([runner container_configs.go:143-173](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L143-L173));

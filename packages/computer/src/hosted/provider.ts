@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { ATTACH_EGRESS_ENV, ATTACH_PATH, type AttachHub, attachEgressOf, DAEMON_PATH, type MachineTokens } from "../attach.js";
+import { ATTACH_EGRESS_ENV, ATTACH_PATH, type AttachHub, attachEgressOf, DAEMON_PATH, MACHINE_TOKEN_SOURCE, type MachineTokens } from "../attach.js";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { mountsOf, syncs } from "../descriptor.js";
 import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
@@ -204,6 +204,8 @@ const START_POLL_MS = 500;
 /** How much of agentrun-dial's output a dial timeout carries (MachineHost.dialLog): its last lines, cut to these characters. */
 const DIAL_LOG_LINES = 10;
 const DIAL_LOG_CHARS = 800;
+/** A machine token anywhere in what agentrun-dial wrote: a dial timeout's words carry `<token>` in its place. */
+const MACHINE_TOKEN = new RegExp(MACHINE_TOKEN_SOURCE, "g");
 /**
  * The computerd build a hosted machine of arch runs: HostedProvider's default daemonPath, and the file serve's daemon
  * route serves, so the sha256 a dial machine checks (AGENTRUN_DAEMON_SHA256) is this file's.
@@ -1246,9 +1248,10 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/**
-	 * A dial timeout's last words: what the host's dialLog read of agentrun-dial, its last DIAL_LOG_LINES lines within
-	 * DIAL_LOG_CHARS characters, or that it never started. Nothing for a host without dialLog, or a read that fails,
-	 * outlasts requestMs or is cut by the create's signal, so a cancel never waits on it.
+	 * A dial timeout's last words: what the host's dialLog read of agentrun-dial, every machine token replaced by
+	 * `<token>`, its last DIAL_LOG_LINES lines within DIAL_LOG_CHARS characters, or that it never started. Nothing for a
+	 * host without dialLog, or a read that fails, outlasts requestMs or is cut by the create's signal, so a cancel never
+	 * waits on it.
 	 */
 	async #dialWords(ref: ComputerRef, signal?: AbortSignal): Promise<string> {
 		const { dialLog } = this.host;
@@ -1256,7 +1259,7 @@ export class HostedProvider implements ComputerProvider {
 		const read = await this.#call(`the dial log of ${ref.name}`, (ctx) => dialLog.call(this.host, ref.id, ctx), this.#timeouts.requestMs, signal);
 		if (!read.ok) return "";
 		if (read.value === undefined) return "; agentrun-dial never started";
-		const lines = read.value.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+		const lines = read.value.replaceAll(MACHINE_TOKEN, "<token>").split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
 		return lines.length === 0 ? "; agentrun-dial wrote nothing" : `; agentrun-dial said: ${lines.slice(-DIAL_LOG_LINES).join(" | ").slice(-DIAL_LOG_CHARS)}`;
 	}
 
