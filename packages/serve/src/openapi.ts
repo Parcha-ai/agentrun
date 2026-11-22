@@ -564,11 +564,13 @@ const PRIVATE_HOSTS = closed({ hosts: { type: "array", maxItems: MAX_PRIVATE_HOS
 const PRIVATE_HOSTS_RULE = "A listed host may resolve to private-network addresses (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7), and still only over https; every address it resolves to is checked, and the request goes to an address checked. Loopback, link-local (cloud metadata among them), unspecified, multicast and broadcast addresses, this machine's and this server's own are refused whatever the list says. The server's sign-in and a runner's token refresh read the list at each use.";
 /** How a tool's annotations sort it (tool-gate.ts toolEffect). */
 const EFFECT_RULE = "read when its annotations say readOnlyHint true; else destructive only when they say destructiveHint true; else write (destructiveHint false or not given, or no annotations: not the MCP spec's default of destructiveHint true, under which every tool of a server that annotates nothing would read destructive). The server's own claims, as the listing the run pinned gave them, never a later listing.";
+const MCP_RESOURCE = { enum: ["list", "templates", "read"], description: "An AgentRun-generated operation for an MCP server that advertises resources: list resources, list templates, or read a URI. Uses the same grants, revision pin, credentials and permission gate as a tool; dispatches the corresponding MCP resource method. Absent on upstream tools.", "x-agentrun-serve": "mcpresources/1" };
 /** A remote MCP server's tools as it listed them (mcp-probe.ts listServer), and the server as saved: never its credential. */
 const MCP_TOOL = {
   type: "object", additionalProperties: false, required: ["name", "input_schema"],
   properties: {
     name: { type: "string" }, title: { type: "string" }, description: { type: "string" },
+    resource: MCP_RESOURCE,
     input_schema: { type: "object", description: "The JSON Schema of the tool's arguments, as the server gave it." },
     output_schema: { type: "object", description: "The JSON Schema of its structured result, when the server gives one." },
     annotations: { type: "object", description: "The server's own claims about the tool (read-only, destructive, and so on): the server's word, not checked." },
@@ -757,6 +759,7 @@ const MCP_PIN = {
           type: "object", additionalProperties: false, required: ["name", "input_schema"],
           properties: {
             name: { type: "string" }, title: { type: "string" }, description: { type: "string" },
+            resource: MCP_RESOURCE,
             input_schema: { type: "object", description: "The tool's input schema as the server listed it at the save." },
             annotations: { type: "object", description: "The tool's annotations as the server listed them at the save (readOnlyHint, destructiveHint and the rest)." },
           },
@@ -3798,6 +3801,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
   },
   Agent: {
+    source_sync: { ...closed({ moved: { const: true } }), readOnly: true, description: "Present after a connected agent moves to managed execution. Its source sync status is read at /agents/{agent_id}/source.", "x-agentrun-serve": "sourcesync/1" },
     native_status: {...NATIVE_BINDING, description: "Current remote-source readiness, derived from its heartbeat and revocation status. Read-only; the persisted native reference stays in definition.native."},
     external: {
       ...closed({

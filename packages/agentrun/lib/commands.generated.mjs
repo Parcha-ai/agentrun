@@ -25,6 +25,43 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "bind-source-tool"
+    ],
+    "operationId": "bindSourceTool",
+    "method": "POST",
+    "path": "/agents/{agent_id}/source/tools",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "tool",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "server",
+        "type": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Choose the existing destination account for a required source tool"
+  },
+  {
+    "command": [
+      "agents",
       "connect-native"
     ],
     "operationId": "connectNative",
@@ -327,6 +364,28 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "get-source-sync"
+    ],
+    "operationId": "getSourceSync",
+    "method": "GET",
+    "path": "/agents/{agent_id}/source",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read source sync and managed Move readiness"
+  },
+  {
+    "command": [
+      "agents",
       "list"
     ],
     "operationId": "listAgents",
@@ -410,6 +469,30 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "move-source-agent"
+    ],
+    "operationId": "moveSourceAgent",
+    "method": "POST",
+    "path": "/agents/{agent_id}/source/move",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Move the same agent to server-managed execution from its complete synchronized setup"
+  },
+  {
+    "command": [
+      "agents",
       "package"
     ],
     "operationId": "getAgentPackage",
@@ -428,6 +511,67 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "The agent's current revision as a template package"
+  },
+  {
+    "command": [
+      "agents",
+      "resolve-source-sync"
+    ],
+    "operationId": "resolveSourceSync",
+    "method": "POST",
+    "path": "/agents/{agent_id}/source/resolve",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "revision",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "snapshot",
+        "type": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Use an explicitly reviewed source snapshot while retaining the prior managed revision in history"
+  },
+  {
+    "command": [
+      "agents",
+      "review-source-project"
+    ],
+    "operationId": "reviewSourceProject",
+    "method": "POST",
+    "path": "/agents/{agent_id}/source/project-review",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Acknowledge exact unresolved run receipts and allow later runs to use the saved project"
   },
   {
     "command": [
@@ -484,6 +628,37 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "The agent's runs index"
+  },
+  {
+    "command": [
+      "agents",
+      "set-source-sync"
+    ],
+    "operationId": "setSourceSync",
+    "method": "PATCH",
+    "path": "/agents/{agent_id}/source",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "enabled",
+        "type": "boolean",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Enable or pause this agent’s source sync"
   },
   {
     "command": [
@@ -943,6 +1118,12 @@ export const COMMANDS = [
         "type": "string",
         "required": false,
         "description": ""
+      },
+      {
+        "name": "connector_id",
+        "type": "string",
+        "required": false,
+        "description": ""
       }
     ],
     "hasBody": true,
@@ -953,6 +1134,31 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Create a ten-minute one-use connection code"
+  },
+  {
+    "command": [
+      "connectors",
+      "grant-source-sync"
+    ],
+    "operationId": "grantSourceSync",
+    "method": "POST",
+    "path": "/connectors/{connector_id}/targets/{target_id}/sync/grant",
+    "pathParams": [
+      "connector_id",
+      "target_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read or establish this explicitly authorized source sync grant without re-enabling a paused grant"
   },
   {
     "command": [
@@ -1076,6 +1282,44 @@ export const COMMANDS = [
   {
     "command": [
       "connectors",
+      "publish-source-sync"
+    ],
+    "operationId": "publishSourceSync",
+    "method": "POST",
+    "path": "/connectors/{connector_id}/targets/{target_id}/sync",
+    "pathParams": [
+      "connector_id",
+      "target_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "generation",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "sequence",
+        "type": "integer",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Publish a bounded source snapshot under its grant and sequence"
+  },
+  {
+    "command": [
+      "connectors",
       "register-remote-connector"
     ],
     "operationId": "registerRemoteConnector",
@@ -1173,6 +1417,56 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Revoke a source connector and stop its outstanding commands"
+  },
+  {
+    "command": [
+      "connectors",
+      "source-sync-failure"
+    ],
+    "operationId": "sourceSyncFailure",
+    "method": "POST",
+    "path": "/connectors/{connector_id}/targets/{target_id}/sync/status",
+    "pathParams": [
+      "connector_id",
+      "target_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "generation",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "sequence",
+        "type": "integer",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "code",
+        "type": "string",
+        "enum": [
+          "unsupported_platform",
+          "source_changed",
+          "source_unavailable",
+          "snapshot_too_large"
+        ],
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Record a fixed source failure while preserving its last complete snapshot"
   },
   {
     "command": [

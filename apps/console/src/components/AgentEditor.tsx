@@ -229,6 +229,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const pickHarness = (harness: string) => {
     if (creating && !toolsTouched) { set({ harness, tools: defaultTools(harness, caps.tools, f.place) }); setHeld([]); return; }
     const next = toolsOnSwitch(harness, f.tools ?? [], held, caps.tools, toolOpts);
+    if (agent?.source_sync) {
+      // Keep required imported tools selected. The normal capability/save checks explain an incompatible harness.
+      set({ harness });
+      return;
+    }
     set({ harness, tools: next.tools });
     setHeld(next.held);
   };

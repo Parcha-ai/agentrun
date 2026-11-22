@@ -14,7 +14,7 @@ import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
-  AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
+  ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -22,7 +22,7 @@ import {
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type AttemptCause, type ComputerIntervalRow, type ComputerIntervals, type RunAttemptRow, type RunAttempts, type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
-  type ImportedTemplates, type MintedTokenRow, type MintedTokens, type SecureRewrite,
+  type ImportedTemplates, type MintedTokenRow, type MintedTokens, type SecureRewrite, type SettingsGuard, type McpGuard,
   RUNNER_ROWS_KEPT_MS, type RunnerRow, type Runners, tombstoneMetrics,
 } from "../store.js";
 
@@ -46,7 +46,37 @@ import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteVa
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
+import { readProjectCheckpoints } from "./project-checkpoints.js";
 import { aadOf, sealedAt } from "../seal.js";
+
+/** Registry writers UPDATE/DELETE this same row, so a prepared cutover and a credential/catalog edit serialize. */
+async function checkMcpGuards(tx: SqliteExecutor, d: Dialect, guards: readonly McpGuard[] = []): Promise<void> {
+  const names = [...new Set(guards.map(guard => guard.name))].sort();
+  for (const name of names) await d.lockRow(tx, "mcp_servers", "name", name);
+  for (const guard of guards) {
+    const row = await tx.get<{ url: string; auth: string; credential_changed_at: number | null; tools: string; sealed: Uint8Array | null }>(
+      "SELECT url, auth, credential_changed_at, tools, sealed FROM mcp_servers WHERE name = ?", guard.name);
+    const sameSealed = row !== undefined && (row.sealed === null || guard.sealed === null
+      ? row.sealed === guard.sealed : Buffer.from(row.sealed).equals(Buffer.from(guard.sealed)));
+    if (!row || row.url !== guard.url || row.auth !== guard.auth || row.credential_changed_at !== guard.credentialChangedAt
+      || canonical(JSON.parse(row.tools)) !== canonical(guard.tools) || !sameSealed)
+      throw new StoreConstraint("An MCP server changed before the revision was saved. Prepare its tools and credentials again.");
+  }
+}
+
+/** Source authorization and admission share one transaction. Keep the settings locks before any agent/trigger/run
+ * lock, in stable key order, so revocation either commits first and refuses admission or follows its completed write. */
+async function checkSettingsGuards(tx: SqliteExecutor, guards: readonly SettingsGuard[] = [], message = "The source grant changed before the write committed.", alsoLock: readonly string[] = []): Promise<void> {
+  const byKey = new Map<string, SettingsGuard[]>();
+  for (const guard of guards) byKey.set(guard.key, [...(byKey.get(guard.key) ?? []), guard]);
+  for (const key of [...new Set([...byKey.keys(), ...alsoLock])].sort((a, b) => a.localeCompare(b))) {
+    const setting = await tx.get<{ value: string }>("UPDATE settings SET value = value WHERE key = ? RETURNING value", key);
+    const value = setting === undefined ? undefined : JSON.parse(setting.value);
+    if ((byKey.get(key) ?? []).some(guard => !value || Object.entries(guard.fields).some(([field, expected]) => JSON.stringify(value[field]) !== JSON.stringify(expected)))) {
+      throw new StoreConstraint(message);
+    }
+  }
+}
 
 /** A claim's length when the caller names none. */
 export const DEFAULT_LEASE_MS = 30_000;
@@ -729,19 +759,24 @@ class SqliteStore implements Store {
       if (agent && agent.purged_at != null) throw new AgentPurged(agentId, agent.archived_at, agent.purged_at);
       return agent;
     };
-    const insertRevision = async (tx: SqliteExecutor, agentId: string, revision: NewRevision, at: number, ifCurrent?: string | null) => {
+    const insertRevision = async (tx: SqliteExecutor, agentId: string, revision: NewRevision, at: number,
+      { ifCurrent, ifNoActiveRuns, advance }: { ifCurrent?: string | null; ifNoActiveRuns?: true; advance?: false } = {}) => {
       // The parent is the agent's current revision now (null for its first): the agent must exist, which its first revision
       // (create) and a later one (addRevision, upgrade) both guarantee before this. Held (a writer's row lock), so two
-      // revisions added at once, by this server or another on the same store, never both name the same parent, and
+      // revisions advanced at once, by this server or another on the same store, never both name the same parent, and
       // `ifCurrent` is compared with what no other writer can move until this commits. Never one of a purged agent.
       const agent = await heldAgent(tx, agentId);
       if (!agent) throw new StoreConstraint(`no agent ${agentId}`);
       if (ifCurrent !== undefined && agent.current_revision !== ifCurrent) throw new RevisionMoved(agentId, agent.current_revision);
+      if (ifNoActiveRuns) {
+        const active = await tx.all<{ id: string }>("SELECT id FROM runs WHERE agent_id = ? AND state IN ('queued', 'running', 'parked') ORDER BY id", agentId);
+        if (active.length > 0) throw new ActiveRuns(agentId, active.map(({ id }) => id));
+      }
       await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, created_at, mcp_pin, monid_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         revision.id, agentId, agent.current_revision, revision.kind, json(revision.body),
         revision.skills === undefined || revision.skills === null ? null : json(revision.skills),
         revision.note ?? null, revision.package === undefined ? null : json(revision.package), at, pinText(revision.mcpPin), pinText(revision.monidPin));
-      await tx.run("UPDATE agents SET current_revision = ? WHERE id = ?", revision.id, agentId);
+      if (advance !== false) await tx.run("UPDATE agents SET current_revision = ? WHERE id = ?", revision.id, agentId);
     };
     const writeScopes = async (tx: SqliteExecutor, triggerId: string, scopes: readonly TriggerScope[]) => {
       await tx.run("DELETE FROM trigger_scopes WHERE trigger_id = ?", triggerId);
@@ -757,9 +792,13 @@ class SqliteStore implements Store {
      *  takes it), so on Postgres a delete's archive that commits first is read here, and one that commits after waits for
      *  this run to be in the store, where the delete's listing of the agent's runs finds it. A purged agent is refused too
      *  (AgentPurged): it takes no run and no trigger. */
-    const refuseDeleting = async (tx: SqliteExecutor, agentId: string) => {
+    const refuseDeleting = async (tx: SqliteExecutor, agentId: string, expectedCurrent?: string | null) => {
       const agent = await heldAgent(tx, agentId);
       if (agent?.archived_at != null && agent.external_ref != null) throw new AgentDeleting(agentId);
+      if (expectedCurrent !== undefined) {
+        if (!agent) throw new StoreConstraint(`no agent ${agentId}`);
+        if (agent.current_revision !== expectedCurrent) throw new RevisionMoved(agentId, agent.current_revision);
+      }
     };
     /** The runs whose launch is made from run `runId` (madeOf: a replay of its input, an audit's shadow), by id. Every
      *  launch is read (no index names its source): a purge's read, never a hot path. */
@@ -853,9 +892,11 @@ class SqliteStore implements Store {
           for (const t of off) await writeScopes(tx, t.id, []);
           return off.map(({ id: triggerId, name }) => ({ id: triggerId, name })).sort((a, b) => a.name.localeCompare(b.name));
         }),
-      addRevision: async ({ agentId, ifCurrent, description, ...revision }) => {
+      addRevision: async ({ agentId, ifCurrent, description, ifNoActiveRuns, settingsGuards, mcpGuards, advance, ...revision }) => {
         await db.transaction(async (tx) => {
-          await insertRevision(tx, agentId, revision, now(), ifCurrent);
+          await checkSettingsGuards(tx, settingsGuards);
+          await checkMcpGuards(tx, d, mcpGuards);
+          await insertRevision(tx, agentId, revision, now(), { ifCurrent, ifNoActiveRuns, advance });
           // Under the row lock insertRevision took, after its ifCurrent passed: the revision and the description, or neither.
           if (description !== undefined) await tx.run("UPDATE agents SET description = ? WHERE id = ?", description, agentId);
         });
@@ -1190,7 +1231,14 @@ class SqliteStore implements Store {
       fire: async (firing, run, { launch } = {}) =>
         this.#queued(await db.transaction(async (tx) => {
           const at = now();
+          await checkSettingsGuards(tx, run.settingsGuards);
+          // Match archive's agent -> trigger order. Preparation may have raced a trigger move; never start a run for
+          // its former agent merely because that agent's admission guards still pass.
+          await refuseDeleting(tx, run.agentId, run.expectedCurrent);
           await d.lockRow(tx, "triggers", "id", firing.triggerId);
+          const trigger = await tx.get<{ agent_id: string }>("SELECT agent_id FROM triggers WHERE id = ?", firing.triggerId);
+          if (!trigger) throw new StoreConstraint(`no trigger ${firing.triggerId}`);
+          if (trigger.agent_id !== run.agentId) throw new StoreConstraint(`trigger ${firing.triggerId} no longer belongs to agent ${run.agentId}`);
           // Never a run of an archived agent: the archive's commit is read here, in the transaction that would start it.
           await refuseArchived(tx, run.agentId);
           const row = await tx.get<RunRecord>(`INSERT INTO runs (id, agent_id, revision_id, state, epoch, disk, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`, run.id, run.agentId, run.revisionId, launchDiskOf(launch), at);
@@ -1214,7 +1262,7 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId, origin, labels }, launch) => {
+      create: async ({ id, agentId, revisionId, origin, labels, expectedCurrent, settingsGuards }, launch) => {
         // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
         const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, disk, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?) RETURNING ${RUN_COLUMNS}`;
         const labelled = labelsColumn(labels);
@@ -1223,7 +1271,8 @@ class SqliteStore implements Store {
         // deleted: its mark is read here, in the transaction that would start the run.
         return this.#queued(await db.transaction(async (tx) => {
           const at = now();
-          await refuseDeleting(tx, agentId);
+          await checkSettingsGuards(tx, settingsGuards);
+          await refuseDeleting(tx, agentId, expectedCurrent);
           // A run made from another (a replay of its input, an audit's shadow) never of a purged one: its source's row
           // held as its purge holds it, so either this commits first and the purge finds it (RunsMadeFromLeft), or the
           // purge does and this reads its purge time.
@@ -1279,6 +1328,7 @@ class SqliteStore implements Store {
       },
       launch: (runId) => readLaunch(db, runId),
       usageMetadata: (runId, options) => readUsageMetadata(db, runId, options),
+      projectCheckpoints: (filter) => readProjectCheckpoints(db, filter),
       learningStarts: (agentId) => readLearningStarts(db, agentId, NOT_A_LEARNING_RUN),
       seededBefore: (agentId, at) => readSeededBefore(db, agentId, at),
       list: async ({ agentId, revisionId, state, archived, labels, disk, limit, purged = false }) => {
@@ -1886,10 +1936,13 @@ class SqliteStore implements Store {
         return row === undefined ? undefined : JSON.parse(row.value);
       },
       // `was` is compared as the JSON text put wrote: a row read and parsed gives the same text back, its keys in order.
-      replaceIf: async (key, was, value, claim) => {
+      replaceIf: async (key, was, value, claim, guards) => {
         const encoded=json(value);
-        if (claim) return db.transaction(async tx => {
-          const at = await underClaim(tx, claim, now);
+        if (claim || guards !== undefined) return db.transaction(async tx => {
+          // Include the destination in the same sorted lock set. Source revocation and a publication's pointer move
+          // are ordered in one transaction; when also claimed, settings precede the run's claim lock.
+          if (guards !== undefined) await checkSettingsGuards(tx, guards, undefined, [key]);
+          const at = claim ? await underClaim(tx, claim, now) : now();
           return await tx.runCounted("UPDATE settings SET value = ?, connector_id = ?, updated_at = ? WHERE key = ? AND value = ?", encoded, nativeCommandOwner(key,encoded), at, key, json(was)) === 1;
         });
         const [result] = await db.write([{ sql: "UPDATE settings SET value = ?, connector_id = ?, updated_at = ? WHERE key = ? AND value = ?", params: [encoded, nativeCommandOwner(key,encoded), now(), key, json(was)] }]);
@@ -2718,15 +2771,7 @@ class SqliteStore implements Store {
     const at = this.#now();
     const state = run.state ?? "ended";
     return this.#db.transaction(async (tx) => {
-      for (const guard of [...(run.settingsGuards ?? [])].sort((a, b) => a.key.localeCompare(b.key))) {
-        // A no-op update takes the row's write lock on both SQLite and Postgres until the import commits. A source
-        // revoke/disconnect either commits first and refuses this write, or waits for this already-started import.
-        const setting = await tx.get<{ value: string }>("UPDATE settings SET value = value WHERE key = ? RETURNING value", guard.key);
-        const value = setting === undefined ? undefined : JSON.parse(setting.value);
-        if (!value || Object.entries(guard.fields).some(([field, expected]) => JSON.stringify(value[field]) !== JSON.stringify(expected))) {
-          throw new StoreConstraint("The source import grant changed before the history write committed.");
-        }
-      }
+      await checkSettingsGuards(tx, run.settingsGuards, "The source import grant changed before the history write committed.");
       if (run.requireActiveAgent) {
         // Archive updates this same row. It either commits first and refuses this import, or waits for this
         // already-admitted history transaction; a read outside the transaction cannot establish that order.

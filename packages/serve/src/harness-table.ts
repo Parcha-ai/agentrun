@@ -693,3 +693,8 @@ export const onAdapter = (env: NodeJS.ProcessEnv, id: string | undefined): boole
 
 /** The harness a definition stores: none for the default, which is never stored. */
 export const storedHarness = (id: string | undefined): string | undefined => (id === undefined || id === DEFAULT_HARNESS ? undefined : id);
+
+/** The managed adapter for an imported native protocol. Source discovery never chooses execution by a bare runtime string. */
+export const harnessForSourceProtocol = (protocol: "codex-json" | "claude-json"): string => ({
+  "codex-json": "codex", "claude-json": "claude-agent",
+})[protocol];
