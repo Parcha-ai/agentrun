@@ -1394,7 +1394,7 @@ curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer 
 
 - A name that is not a tool key, or one no tool of the run's revision reads (its tools, its workflow's nodes and
   decision providers, and the keys its template declares), is 422 at `keys.<NAME>`, the value never echoed. So is a
-  value that is not text of 8 or more characters with no space or control character (`invalid`): the runner could
+  value that is not 8 or more characters of visible ASCII (`invalid`), as a header carries it: the runner could
   not cut a shorter one from what the run writes.
 - The keys are taken out of the body before anything reads it, as `model_key` is: never in the run's saved body, its
   timeline, its view, a log or an `Idempotency-Key`'s fingerprint. They are sealed with the run's launch, opened at
@@ -3231,11 +3231,12 @@ serves these routes alone:
 - a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
   (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
-  is what its delete (`DELETE /agents/{id}`) needs first. A run here starts through the backend, on its keys and
-  budget, never on this server's own model key. So with the [launch hook](#launch-hook) set, the apply makes the
-  package's schedule and feed triggers, and each firing goes to the backend, which starts its run through the API; the
-  unarchive turns them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set
-  the hook, or start those runs through the API). A webhook, GitHub, Composio or email trigger is never made here, hook
+  is what its delete (`DELETE /agents/{id}`) needs first. With the [launch hook](#launch-hook) set, the apply makes the
+  package's schedule and feed triggers, and every firing that starts a run goes to the backend, which starts it through
+  the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
+  them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set the hook,
+  or start those runs through the API), and a trigger the agent already had stays as it was: an enabled one still fires
+  here, on this server's keys, until the agent is archived. A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
@@ -3282,7 +3283,8 @@ The run starts on the trigger's target, as the run this server would start for t
 - Its cap is the target's `max_cost_usd`, which the host's `max_cost_usd` may lower and never raise. A target capped at
   0.5 runs at 0.5 when the host sends 10, and at 0.2 when the host sends 0.2. A target with no cap takes the host's,
   else the agent's default.
-- Its effort is the target's, else the agent's. The host's `effort` is not taken.
+- Its effort is the target's when the target sets one, else the host's `effort`, else the agent's.
+- The rest of the host's body is taken as on any start: its `model_key`, `keys` and `mcp_auth` are sealed for the run.
 - Its input is the host's, followed by the trigger's last completed result when its source hands one on (a schedule
   does), as a run this server starts for it is.
 

@@ -159,7 +159,7 @@ function carriedEntryBytes(entry: unknown): number {
 /** What a launch hook's host lays over the run it starts for a firing it was handed (RunCreate `trigger_firing`): its
  *  create body (its input, which the trigger's previous result follows, the run's other fields, and its own
  *  max_cost_usd: handedCap), and the launch secrets it carries (`sealed`: its model_key, keys and mcp_auth, sealed for
- *  the run; `keys`: the keys' names). The effort is the target's: a host's is not taken. */
+ *  the run; `keys`: the keys' names). Its effort is taken only when the target sets none. */
 export type HostStart = { readonly body: Json; readonly sealed?: StartOptions["sealed"]; readonly keys?: StartOptions["keys"] };
 
 /** A handed run's cap: the target's, which a host's own may lower and never raise; with none on the target, the host's,
@@ -229,9 +229,9 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const input = handed ? { ...(given as Json), content: `${content}${handed}` } : given;
       // The target's cap (a host's may lower it), else the agent's default as it stands now: a run a trigger starts is
       // never uncapped (capped), but a connected agent's, which its own CLI's limits keep and AgentRun can't cap
-      // (NATIVE_CAP_UNSUPPORTED). The effort is the target's alone.
+      // (NATIVE_CAP_UNSUPPORTED). The effort is the target's when it sets one, else the host's, else the agent's.
       const native = Boolean(nativeOf(entry.revision?.body));
-      const { effort: _hostEffort, max_cost_usd: hostCap, ...overlay } = host?.body ?? {};
+      const { max_cost_usd: hostCap, ...overlay } = host?.body ?? {};
       const cap = handedCap(target.max_cost_usd, hostCap);
       const run = await startRun(
         store,
