@@ -26,3 +26,17 @@ it('a moved agent remains reachable while source telemetry is unavailable or arc
   expect(agentInventory([archived], [session], { archived: true }).agents).toEqual([archived]);
   expect(agentInventory([archived], [session], { archived: true }).sessions).toEqual([]);
 });
+it('matches words across the managed agent and multiple verified source sessions', () => {
+  const followup = { ...session, id: 'followup', display_name: 'Refund followup' };
+  expect(agentInventory([agent], [session, followup], { query: 'PROJECT refund title codex' }))
+    .toEqual({ agents: [agent], sessions: [], count: 1 });
+});
+it('does not use an unrelated source session to match a moved agent', () => {
+  const unrelated = { ...session, id: 'unrelated', display_name: 'Refund followup', learning: { ...session.learning!, agent_id: 'other-agent' } };
+  expect(agentInventory([agent], [session, unrelated], { query: 'Project refund' }))
+    .toEqual({ agents: [], sessions: [], count: 0 });
+  expect(agentInventory([agent], [session, unrelated]).count).toBe(2);
+});
+it('does not make absent source fields searchable as undefined', () => {
+  expect(agentInventory([agent], [session], { query: 'undefined' }).count).toBe(0);
+});

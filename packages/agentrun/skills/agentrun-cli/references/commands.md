@@ -12,6 +12,17 @@ Archive the agent: hidden from the lists, kept with its history.
 
 Route: `POST /agents/{agent_id}/archive`.
 
+### `agentrun agents bind-source-tool AGENT_ID`
+
+Choose the existing destination account for a required source tool.
+
+Route: `POST /agents/{agent_id}/source/tools`.
+
+- `--tool STRING` (string, required)
+- `--server STRING` (string, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun agents connect-native`
 
 Connect a native project using ordinary agent and revision storage.
@@ -93,6 +104,12 @@ Read a native connection.
 
 Route: `GET /agents/{agent_id}/native`.
 
+### `agentrun agents get-source-sync AGENT_ID`
+
+Read source sync and managed Move readiness.
+
+Route: `GET /agents/{agent_id}/source`.
+
 ### `agentrun agents list`
 
 List agents.
@@ -116,11 +133,40 @@ Each learned workflow revision's promotion: its replay's numbers and whether it 
 
 Route: `GET /agents/{agent_id}/learning/promotions`.
 
+### `agentrun agents move-source-agent AGENT_ID`
+
+Move the same agent to server-managed execution from its complete synchronized setup.
+
+Route: `POST /agents/{agent_id}/source/move`.
+
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun agents package AGENT_ID`
 
 The agent's current revision as a template package.
 
 Route: `GET /agents/{agent_id}/package`.
+
+### `agentrun agents resolve-source-sync AGENT_ID`
+
+Use an explicitly reviewed source snapshot while retaining the prior managed revision in history.
+
+Route: `POST /agents/{agent_id}/source/resolve`.
+
+- `--revision STRING` (string, required)
+- `--snapshot STRING` (string, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun agents review-source-project AGENT_ID`
+
+Acknowledge exact unresolved run receipts and allow later runs to use the saved project.
+
+Route: `POST /agents/{agent_id}/source/project-review`.
+
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun agents runs AGENT_ID`
 
@@ -133,6 +179,16 @@ Route: `GET /agents/{agent_id}/runs`.
 - `--status queued|working|paused|input_required|completed|failed|cancelled` (string, one of these): Only runs with this status.
 - `--label STRING` (string): Only runs holding this label: `<key>:<value>`, split at the first `:` (a key holds none). Once per request; a second `label`, or one that does not read as a label, is 400.
 - `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
+
+### `agentrun agents set-source-sync AGENT_ID`
+
+Enable or pause this agent’s source sync.
+
+Route: `PATCH /agents/{agent_id}/source`.
+
+- `--enabled` (boolean, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun agents unarchive AGENT_ID`
 
@@ -263,6 +319,16 @@ Create a ten-minute one-use connection code.
 Route: `POST /connectors/enrollment`.
 
 - `--label STRING` (string)
+- `--connector-id STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors grant-source-sync CONNECTOR_ID TARGET_ID`
+
+Read or establish this explicitly authorized source sync grant without re-enabling a paused grant.
+
+Route: `POST /connectors/{connector_id}/targets/{target_id}/sync/grant`.
+
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -303,6 +369,17 @@ Route: `POST /connectors/{connector_id}/poll`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun connectors publish-source-sync CONNECTOR_ID TARGET_ID`
+
+Publish a bounded source snapshot under its grant and sequence.
+
+Route: `POST /connectors/{connector_id}/targets/{target_id}/sync`.
+
+- `--generation STRING` (string, required)
+- `--sequence INTEGER` (integer, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun connectors register-remote-connector`
 
 Exchange a one-use enrollment code for a connector-scoped credential.
@@ -331,6 +408,18 @@ Route: `POST /connectors/{connector_id}/commands/{command_id}/events`.
 Revoke a source connector and stop its outstanding commands.
 
 Route: `DELETE /connectors/{connector_id}`.
+
+### `agentrun connectors source-sync-failure CONNECTOR_ID TARGET_ID`
+
+Record a fixed source failure while preserving its last complete snapshot.
+
+Route: `POST /connectors/{connector_id}/targets/{target_id}/sync/status`.
+
+- `--generation STRING` (string, required)
+- `--sequence INTEGER` (integer, required)
+- `--code unsupported_platform|source_changed|source_unavailable|snapshot_too_large` (string, one of these, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ## deploy
 

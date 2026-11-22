@@ -11,7 +11,7 @@ export function agentInventory(agents: readonly Agent[], sessions: readonly Obse
   const latest = archived ? [] : latestAgentSessions(sessions);
   const profiles = new Map(listed.filter((agent) => cliLearningOf(agent.definition)).map((agent) => [agent.agent_id, agent]));
   const moved = new Set(listed.filter(agent => agent.source_sync?.moved).map(agent => agent.agent_id));
-  const sources = new Map<string, string[]>();
+  const sources = new Map<string, ReturnType<typeof observedSearchTexts>>();
   for (const session of latest) {
     const id = session.learning?.agent_id;
     if (id && moved.has(id)) sources.set(id, [...(sources.get(id) ?? []), ...observedSearchTexts(session)]);

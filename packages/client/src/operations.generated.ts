@@ -15,6 +15,9 @@ export type Agent = {
   home_etag: string;
   created_at: Timestamp;
   updated_at: Timestamp;
+  source_sync?: {
+    moved: true;
+  };
   native_status?: {
     runtime: "claude-code" | "codex";
     project: string;
@@ -1342,6 +1345,47 @@ export type UsageLine = {
 /** Archive the agent: hidden from the lists, kept with its history (POST /agents/{agent_id}/archive). */
 export type ArchiveAgentResponse = Record<string, unknown>;
 
+/** Choose the existing destination account for a required source tool (POST /agents/{agent_id}/source/tools). */
+export type BindSourceToolBody = {
+  tool: string;
+  server: string;
+};
+export type BindSourceToolResponse = {
+  project_issues?: Array<{
+    run_id: string;
+    entry_id: number;
+    status: "pending" | "conflict" | "uncertain";
+    reason?: string;
+  }>;
+  enabled: boolean;
+  moved: boolean;
+  state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
+  blockers: Array<{
+    code: string;
+    message: string;
+    path?: string;
+  }>;
+  snapshot?: string;
+  current_snapshot?: string;
+  connection?: {
+    connector_id: string;
+    target_id: string;
+  };
+  files?: number;
+  bytes?: number;
+  skills?: number;
+  tools?: number;
+  tool_connections?: Array<{
+    name: string;
+    ready: boolean;
+    selected?: string;
+    candidates: Array<{
+      name: string;
+      auth: string;
+    }>;
+  }>;
+};
+
 /** Connect a native project using ordinary agent and revision storage (POST /native/connect). */
 export type ConnectNativeBody = {
   project: string;
@@ -1349,6 +1393,10 @@ export type ConnectNativeBody = {
   selector?: {
     kind: "project" | "agent" | "profile";
     name?: string;
+  };
+  source_sync?: {
+    version: 1;
+    scope: string;
   };
 };
 export type ConnectNativeResponse = {
@@ -1572,6 +1620,43 @@ export type GetNativeResponse = {
   } | null;
 };
 
+/** Read source sync and managed Move readiness (GET /agents/{agent_id}/source). */
+export type GetSourceSyncResponse = {
+  project_issues?: Array<{
+    run_id: string;
+    entry_id: number;
+    status: "pending" | "conflict" | "uncertain";
+    reason?: string;
+  }>;
+  enabled: boolean;
+  moved: boolean;
+  state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
+  blockers: Array<{
+    code: string;
+    message: string;
+    path?: string;
+  }>;
+  snapshot?: string;
+  current_snapshot?: string;
+  connection?: {
+    connector_id: string;
+    target_id: string;
+  };
+  files?: number;
+  bytes?: number;
+  skills?: number;
+  tools?: number;
+  tool_connections?: Array<{
+    name: string;
+    ready: boolean;
+    selected?: string;
+    candidates: Array<{
+      name: string;
+      auth: string;
+    }>;
+  }>;
+};
+
 /** List agents (GET /agents). */
 export interface ListAgentsParams {
   limit?: number;
@@ -1783,6 +1868,47 @@ export type ListLearningPromotionsResponse = {
   }>;
 };
 
+/** Move the same agent to server-managed execution from its complete synchronized setup (POST /agents/{agent_id}/source/move). */
+export type MoveSourceAgentBody = Record<string, never>;
+export type MoveSourceAgentResponse = {
+  agent: Agent;
+  source: {
+    project_issues?: Array<{
+      run_id: string;
+      entry_id: number;
+      status: "pending" | "conflict" | "uncertain";
+      reason?: string;
+    }>;
+    enabled: boolean;
+    moved: boolean;
+    state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
+    blockers: Array<{
+      code: string;
+      message: string;
+      path?: string;
+    }>;
+    snapshot?: string;
+    current_snapshot?: string;
+    connection?: {
+      connector_id: string;
+      target_id: string;
+    };
+    files?: number;
+    bytes?: number;
+    skills?: number;
+    tools?: number;
+    tool_connections?: Array<{
+      name: string;
+      ready: boolean;
+      selected?: string;
+      candidates: Array<{
+        name: string;
+        auth: string;
+      }>;
+    }>;
+  };
+};
+
 /** The agent's current revision as a template package (GET /agents/{agent_id}/package). */
 export type GetAgentPackageResponse = {
   name: string;
@@ -1806,6 +1932,93 @@ export type GetAgentPackageResponse = {
   };
 };
 
+/** Use an explicitly reviewed source snapshot while retaining the prior managed revision in history (POST /agents/{agent_id}/source/resolve). */
+export type ResolveSourceSyncBody = {
+  revision: string;
+  snapshot: string;
+};
+export type ResolveSourceSyncResponse = {
+  agent: Agent;
+  source: {
+    project_issues?: Array<{
+      run_id: string;
+      entry_id: number;
+      status: "pending" | "conflict" | "uncertain";
+      reason?: string;
+    }>;
+    enabled: boolean;
+    moved: boolean;
+    state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
+    blockers: Array<{
+      code: string;
+      message: string;
+      path?: string;
+    }>;
+    snapshot?: string;
+    current_snapshot?: string;
+    connection?: {
+      connector_id: string;
+      target_id: string;
+    };
+    files?: number;
+    bytes?: number;
+    skills?: number;
+    tools?: number;
+    tool_connections?: Array<{
+      name: string;
+      ready: boolean;
+      selected?: string;
+      candidates: Array<{
+        name: string;
+        auth: string;
+      }>;
+    }>;
+  };
+};
+
+/** Acknowledge exact unresolved run receipts and allow later runs to use the saved project (POST /agents/{agent_id}/source/project-review). */
+export type ReviewSourceProjectBody = {
+  receipts: Array<{
+    run_id: string;
+    entry_id: number;
+  }>;
+};
+export type ReviewSourceProjectResponse = {
+  project_issues?: Array<{
+    run_id: string;
+    entry_id: number;
+    status: "pending" | "conflict" | "uncertain";
+    reason?: string;
+  }>;
+  enabled: boolean;
+  moved: boolean;
+  state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
+  blockers: Array<{
+    code: string;
+    message: string;
+    path?: string;
+  }>;
+  snapshot?: string;
+  current_snapshot?: string;
+  connection?: {
+    connector_id: string;
+    target_id: string;
+  };
+  files?: number;
+  bytes?: number;
+  skills?: number;
+  tools?: number;
+  tool_connections?: Array<{
+    name: string;
+    ready: boolean;
+    selected?: string;
+    candidates: Array<{
+      name: string;
+      auth: string;
+    }>;
+  }>;
+};
+
 /** The agent's runs index (GET /agents/{agent_id}/runs). */
 export interface ListRunsParams {
   limit?: number;
@@ -1814,6 +2027,46 @@ export interface ListRunsParams {
   label?: string;
 }
 export type ListRunsResponse = RunList;
+
+/** Enable or pause this agent’s source sync (PATCH /agents/{agent_id}/source). */
+export type SetSourceSyncBody = {
+  enabled: boolean;
+};
+export type SetSourceSyncResponse = {
+  project_issues?: Array<{
+    run_id: string;
+    entry_id: number;
+    status: "pending" | "conflict" | "uncertain";
+    reason?: string;
+  }>;
+  enabled: boolean;
+  moved: boolean;
+  state: "needs_connection" | "paused" | "syncing" | "needs_attention" | "ready" | "moved" | "conflict";
+  blockers: Array<{
+    code: string;
+    message: string;
+    path?: string;
+  }>;
+  snapshot?: string;
+  current_snapshot?: string;
+  connection?: {
+    connector_id: string;
+    target_id: string;
+  };
+  files?: number;
+  bytes?: number;
+  skills?: number;
+  tools?: number;
+  tool_connections?: Array<{
+    name: string;
+    ready: boolean;
+    selected?: string;
+    candidates: Array<{
+      name: string;
+      auth: string;
+    }>;
+  }>;
+};
 
 /** Show the archived agent in the lists again (POST /agents/{agent_id}/unarchive). */
 export type UnarchiveAgentResponse = Record<string, unknown>;
@@ -1922,6 +2175,10 @@ export type EnrollCliLearningBody = {
   runtime: "codex" | "claude-code";
   project: string;
   name?: string;
+  source_sync?: {
+    version: 1;
+    scope: string;
+  };
 };
 export type EnrollCliLearningResponse = {
   connection_id: string;
@@ -2063,13 +2320,19 @@ export type EnrollRemoteConnectorBody = {
   capabilities?: {
     native_execution?: boolean;
     history_import?: boolean;
+    config_sync?: boolean;
   };
+  connector_id?: string;
 };
 export type EnrollRemoteConnectorResponse = {
   enrollment_token: string;
   expires_at: string;
   workspace_id: "local";
 };
+
+/** Read or establish this explicitly authorized source sync grant without re-enabling a paused grant (POST /connectors/{connector_id}/targets/{target_id}/sync/grant). */
+export type GrantSourceSyncBody = Record<string, never>;
+export type GrantSourceSyncResponse = Record<string, unknown>;
 
 /** Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history). */
 export type ImportRemoteHistoryBody = {
@@ -2124,6 +2387,11 @@ export type ImportRemoteTargetBody = {
     };
   };
   history_only?: boolean;
+  cli_adoption?: {
+    connection_id: string;
+    credential_epoch: string;
+    proof: string;
+  };
 };
 export type ImportRemoteTargetResponse = {
   agent_id: string;
@@ -2175,6 +2443,7 @@ export type ListRemoteConnectorsResponse = {
       observe: true;
       native_execution: boolean;
       history_import: boolean;
+      config_sync: boolean;
     };
     targets: Array<Record<string, unknown>>;
   }>;
@@ -2195,6 +2464,14 @@ export type PollRemoteConnectorResponse = {
   lease_ttl_ms: number;
 };
 
+/** Publish a bounded source snapshot under its grant and sequence (POST /connectors/{connector_id}/targets/{target_id}/sync). */
+export type PublishSourceSyncBody = {
+  generation: string;
+  sequence: number;
+  snapshot: Record<string, unknown>;
+};
+export type PublishSourceSyncResponse = Record<string, unknown>;
+
 /** Exchange a one-use enrollment code for a connector-scoped credential (POST /connectors). */
 export type RegisterRemoteConnectorBody = {
   installation_id: string;
@@ -2203,6 +2480,7 @@ export type RegisterRemoteConnectorBody = {
   capabilities: {
     native_execution: boolean;
     history_import?: boolean;
+    config_sync?: boolean;
   };
 };
 export type RegisterRemoteConnectorResponse = {
@@ -2217,6 +2495,7 @@ export type RegisterRemoteConnectorResponse = {
       observe: true;
       native_execution: boolean;
       history_import: boolean;
+      config_sync: boolean;
     };
     targets: Array<Record<string, unknown>>;
   };
@@ -2247,10 +2526,19 @@ export type RevokeRemoteConnectorResponse = {
       observe: true;
       native_execution: boolean;
       history_import: boolean;
+      config_sync: boolean;
     };
     targets: Array<Record<string, unknown>>;
   };
 };
+
+/** Record a fixed source failure while preserving its last complete snapshot (POST /connectors/{connector_id}/targets/{target_id}/sync/status). */
+export type SourceSyncFailureBody = {
+  generation: string;
+  sequence: number;
+  code: "unsupported_platform" | "source_changed" | "source_unavailable" | "snapshot_too_large";
+};
+export type SourceSyncFailureResponse = Record<string, unknown>;
 
 /** Reserve an upload (POST /files). */
 export type CreateFileBody = FileCreate;
@@ -6119,6 +6407,7 @@ export type ValidateWorkflowResponse = {
 /** Each operation as the runtime sends it, by operationId. */
 export const OPERATIONS: Readonly<Record<string, Operation>> = {
   archiveAgent: {"method":"POST","path":"/agents/{agent_id}/archive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  bindSourceTool: {"method":"POST","path":"/agents/{agent_id}/source/tools","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   connectNative: {"method":"POST","path":"/native/connect","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createAgent: {"method":"POST","path":"/agents","pathParams":[],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteAgent: {"method":"DELETE","path":"/agents/{agent_id}","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -6130,11 +6419,16 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getAgentArchil: {"method":"GET","path":"/agents/{agent_id}/archil","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getLearningLoop: {"method":"GET","path":"/agents/{agent_id}/learning/loop","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getNative: {"method":"GET","path":"/agents/{agent_id}/native","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getSourceSync: {"method":"GET","path":"/agents/{agent_id}/source","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listAgents: {"method":"GET","path":"/agents","pathParams":[],"multiSegment":[],"query":["limit","cursor","archived"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listLearningAudits: {"method":"GET","path":"/agents/{agent_id}/learning/audits","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listLearningPromotions: {"method":"GET","path":"/agents/{agent_id}/learning/promotions","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  moveSourceAgent: {"method":"POST","path":"/agents/{agent_id}/source/move","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getAgentPackage: {"method":"GET","path":"/agents/{agent_id}/package","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  resolveSourceSync: {"method":"POST","path":"/agents/{agent_id}/source/resolve","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  reviewSourceProject: {"method":"POST","path":"/agents/{agent_id}/source/project-review","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRuns: {"method":"GET","path":"/agents/{agent_id}/runs","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor","status","label"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  setSourceSync: {"method":"PATCH","path":"/agents/{agent_id}/source","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   updateDefinition: {"method":"PUT","path":"/agents/{agent_id}/definition","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   verifyNative: {"method":"POST","path":"/agents/{agent_id}/native/verify","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -6148,13 +6442,16 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   startCliLearningRun: {"method":"POST","path":"/cli-learning/connections/{connection_id}/runs","pathParams":["connection_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeRemoteCommand: {"method":"POST","path":"/connectors/{connector_id}/commands/{command_id}/complete","pathParams":["connector_id","command_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   enrollRemoteConnector: {"method":"POST","path":"/connectors/enrollment","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  grantSourceSync: {"method":"POST","path":"/connectors/{connector_id}/targets/{target_id}/sync/grant","pathParams":["connector_id","target_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   importRemoteHistory: {"method":"POST","path":"/connectors/{connector_id}/targets/{target_id}/history","pathParams":["connector_id","target_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   importRemoteTarget: {"method":"POST","path":"/connectors/{connector_id}/import","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRemoteConnectors: {"method":"GET","path":"/connectors","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   pollRemoteConnector: {"method":"POST","path":"/connectors/{connector_id}/poll","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  publishSourceSync: {"method":"POST","path":"/connectors/{connector_id}/targets/{target_id}/sync","pathParams":["connector_id","target_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   registerRemoteConnector: {"method":"POST","path":"/connectors","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   remoteCommandEvents: {"method":"POST","path":"/connectors/{connector_id}/commands/{command_id}/events","pathParams":["connector_id","command_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   revokeRemoteConnector: {"method":"DELETE","path":"/connectors/{connector_id}","pathParams":["connector_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  sourceSyncFailure: {"method":"POST","path":"/connectors/{connector_id}/targets/{target_id}/sync/status","pathParams":["connector_id","target_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createFile: {"method":"POST","path":"/files","pathParams":[],"multiSegment":[],"query":["path","content_type","sha256"],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json","application/octet-stream","*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteFile: {"method":"DELETE","path":"/files/{file_id}","pathParams":["file_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   getFile: {"method":"GET","path":"/files/{file_id}","pathParams":["file_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -6305,6 +6602,8 @@ export function resources(call: Call) {
     agents: {
       /** Archive the agent: hidden from the lists, kept with its history (POST /agents/{agent_id}/archive). */
       archive: (agentId: string, options?: RequestOptions): Promise<ArchiveAgentResponse> => call("archiveAgent", [agentId], undefined, undefined, options),
+      /** Choose the existing destination account for a required source tool (POST /agents/{agent_id}/source/tools). */
+      bindSourceTool: (agentId: string, body: BindSourceToolBody, options?: RequestOptions): Promise<BindSourceToolResponse> => call("bindSourceTool", [agentId], body, undefined, options),
       /** Connect a native project using ordinary agent and revision storage (POST /native/connect). */
       connectNative: (body: ConnectNativeBody, options?: RequestOptions): Promise<ConnectNativeResponse> => call("connectNative", [], body, undefined, options),
       /** Create an agent home (POST /agents). */
@@ -6327,16 +6626,26 @@ export function resources(call: Call) {
       getLearningLoop: (agentId: string, options?: RequestOptions): Promise<GetLearningLoopResponse> => call("getLearningLoop", [agentId], undefined, undefined, options),
       /** Read a native connection (GET /agents/{agent_id}/native). */
       getNative: (agentId: string, options?: RequestOptions): Promise<GetNativeResponse> => call("getNative", [agentId], undefined, undefined, options),
+      /** Read source sync and managed Move readiness (GET /agents/{agent_id}/source). */
+      getSourceSync: (agentId: string, options?: RequestOptions): Promise<GetSourceSyncResponse> => call("getSourceSync", [agentId], undefined, undefined, options),
       /** List agents (GET /agents). */
       list: (params?: ListAgentsParams, options?: RequestOptions): Promise<ListAgentsResponse> => call("listAgents", [], undefined, params, options),
       /** The audit ledger of the agent's serving learned workflows (GET /agents/{agent_id}/learning/audits). */
       listLearningAudits: (agentId: string, options?: RequestOptions): Promise<ListLearningAuditsResponse> => call("listLearningAudits", [agentId], undefined, undefined, options),
       /** Each learned workflow revision's promotion: its replay's numbers and whether it serves (GET /agents/{agent_id}/learning/promotions). */
       listLearningPromotions: (agentId: string, options?: RequestOptions): Promise<ListLearningPromotionsResponse> => call("listLearningPromotions", [agentId], undefined, undefined, options),
+      /** Move the same agent to server-managed execution from its complete synchronized setup (POST /agents/{agent_id}/source/move). */
+      moveSourceAgent: (agentId: string, body: MoveSourceAgentBody, options?: RequestOptions): Promise<MoveSourceAgentResponse> => call("moveSourceAgent", [agentId], body, undefined, options),
       /** The agent's current revision as a template package (GET /agents/{agent_id}/package). */
       package: (agentId: string, options?: RequestOptions): Promise<GetAgentPackageResponse> => call("getAgentPackage", [agentId], undefined, undefined, options),
+      /** Use an explicitly reviewed source snapshot while retaining the prior managed revision in history (POST /agents/{agent_id}/source/resolve). */
+      resolveSourceSync: (agentId: string, body: ResolveSourceSyncBody, options?: RequestOptions): Promise<ResolveSourceSyncResponse> => call("resolveSourceSync", [agentId], body, undefined, options),
+      /** Acknowledge exact unresolved run receipts and allow later runs to use the saved project (POST /agents/{agent_id}/source/project-review). */
+      reviewSourceProject: (agentId: string, body: ReviewSourceProjectBody, options?: RequestOptions): Promise<ReviewSourceProjectResponse> => call("reviewSourceProject", [agentId], body, undefined, options),
       /** The agent's runs index (GET /agents/{agent_id}/runs). */
       runs: (agentId: string, params?: ListRunsParams, options?: RequestOptions): Promise<ListRunsResponse> => call("listRuns", [agentId], undefined, params, options),
+      /** Enable or pause this agent’s source sync (PATCH /agents/{agent_id}/source). */
+      setSourceSync: (agentId: string, body: SetSourceSyncBody, options?: RequestOptions): Promise<SetSourceSyncResponse> => call("setSourceSync", [agentId], body, undefined, options),
       /** Show the archived agent in the lists again (POST /agents/{agent_id}/unarchive). */
       unarchive: (agentId: string, options?: RequestOptions): Promise<UnarchiveAgentResponse> => call("unarchiveAgent", [agentId], undefined, undefined, options),
       /** Replace the agent's definition (PUT /agents/{agent_id}/definition). */
@@ -6369,6 +6678,8 @@ export function resources(call: Call) {
       completeRemoteCommand: (connectorId: string, commandId: string, body: CompleteRemoteCommandBody, options?: RequestOptions): Promise<CompleteRemoteCommandResponse> => call("completeRemoteCommand", [connectorId, commandId], body, undefined, options),
       /** Create a ten-minute one-use connection code (POST /connectors/enrollment). */
       enrollRemoteConnector: (body: EnrollRemoteConnectorBody, options?: RequestOptions): Promise<EnrollRemoteConnectorResponse> => call("enrollRemoteConnector", [], body, undefined, options),
+      /** Read or establish this explicitly authorized source sync grant without re-enabling a paused grant (POST /connectors/{connector_id}/targets/{target_id}/sync/grant). */
+      grantSourceSync: (connectorId: string, targetId: string, body: GrantSourceSyncBody, options?: RequestOptions): Promise<GrantSourceSyncResponse> => call("grantSourceSync", [connectorId, targetId], body, undefined, options),
       /** Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history). */
       importRemoteHistory: (connectorId: string, targetId: string, body: ImportRemoteHistoryBody, options?: RequestOptions): Promise<ImportRemoteHistoryResponse> => call("importRemoteHistory", [connectorId, targetId], body, undefined, options),
       /** Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import). */
@@ -6377,12 +6688,16 @@ export function resources(call: Call) {
       listRemoteConnectors: (options?: RequestOptions): Promise<ListRemoteConnectorsResponse> => call("listRemoteConnectors", [], undefined, undefined, options),
       /** Renew active source leases and claim one command without replay (POST /connectors/{connector_id}/poll). */
       pollRemoteConnector: (connectorId: string, body: PollRemoteConnectorBody, options?: RequestOptions): Promise<PollRemoteConnectorResponse> => call("pollRemoteConnector", [connectorId], body, undefined, options),
+      /** Publish a bounded source snapshot under its grant and sequence (POST /connectors/{connector_id}/targets/{target_id}/sync). */
+      publishSourceSync: (connectorId: string, targetId: string, body: PublishSourceSyncBody, options?: RequestOptions): Promise<PublishSourceSyncResponse> => call("publishSourceSync", [connectorId, targetId], body, undefined, options),
       /** Exchange a one-use enrollment code for a connector-scoped credential (POST /connectors). */
       registerRemoteConnector: (body: RegisterRemoteConnectorBody, options?: RequestOptions): Promise<RegisterRemoteConnectorResponse> => call("registerRemoteConnector", [], body, undefined, options),
       /** Append an ordered idempotent native event batch for a valid command lease (POST /connectors/{connector_id}/commands/{command_id}/events). */
       remoteCommandEvents: (connectorId: string, commandId: string, body: RemoteCommandEventsBody, options?: RequestOptions): Promise<RemoteCommandEventsResponse> => call("remoteCommandEvents", [connectorId, commandId], body, undefined, options),
       /** Revoke a source connector and stop its outstanding commands (DELETE /connectors/{connector_id}). */
       revokeRemoteConnector: (connectorId: string, options?: RequestOptions): Promise<RevokeRemoteConnectorResponse> => call("revokeRemoteConnector", [connectorId], undefined, undefined, options),
+      /** Record a fixed source failure while preserving its last complete snapshot (POST /connectors/{connector_id}/targets/{target_id}/sync/status). */
+      sourceSyncFailure: (connectorId: string, targetId: string, body: SourceSyncFailureBody, options?: RequestOptions): Promise<SourceSyncFailureResponse> => call("sourceSyncFailure", [connectorId, targetId], body, undefined, options),
     },
     files: {
       /** Reserve an upload (POST /files). */
