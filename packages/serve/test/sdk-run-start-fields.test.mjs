@@ -1,8 +1,11 @@
 // A backend SDK run's start takes started_at (the run's created_at), title and labels, and each events batch moves its
 // evidence deadline an hour on, up to a day after its start. A start without them behaves as before.
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { mkdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { test } from "node:test";
-import { serve } from "./support.mjs";
+import { client, scratch, serve } from "./support.mjs";
 import { SdkRuns, closeSdkInbox } from "../dist/sdk/runs.js";
 
 const HOUR = 3_600_000;
@@ -64,6 +67,35 @@ test("started_at is the run's created_at, within a minute ahead and seven days b
   await refused(start({ started_at: new Date(Date.now() - 8 * 86_400_000).toISOString() }), /7 days/);
   for (const bad of ["yesterday", "2026-02-30T00:00:00Z", "2026-01-02 03:04:05Z", "2026-01-02T03:04:05", "2026-01-02T25:00:00Z", 1_700_000_000_000, null])
     await refused(start({ started_at: bad }), /RFC 3339/);
+});
+
+test("a start retried after its answer was lost gets its run's receipt, though its started_at is now over seven days back", { timeout: 120_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const first = await serve(t, { data, runner: false });
+  const definition = { id: "sdk-late", name: "sdk-late", instructions: "Keep the application policy.", sdk: { runtime: "claude-agent-sdk" }, learning: false, tools: [] };
+  assert.equal((await first.api("POST", "/agents", { definition })).status, 201);
+  // A directory where the kept keys' file goes: no save lands, so the restart finds what a kill between the run's insert
+  // and the save leaves, the run and its origin in the store and no answer under the key (idempotency-restart.test.mjs).
+  const partial = join(data, ".idempotency.json.partial");
+  await mkdir(partial);
+  const body = { ...startBody, started_at: new Date(Date.now() - 7 * 86_400_000 + 20_000).toISOString() };
+  const key = { "Idempotency-Key": "late-start" };
+  const made = await first.api("POST", "/agents/sdk-late/sdk-runs", body, key);
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  await first.close();
+  assert.equal(existsSync(join(data, ".idempotency.json")), false, "no answer was kept");
+  await rm(partial, { recursive: true });
+  const next = await serve(t, { data, runner: false });
+  const api = client(next.baseUrl, next.token);
+  // A minute on, the reported start is past seven days: a new start would be refused, the retry of this one is not.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 60_000 });
+  const retried = await api("POST", "/agents/sdk-late/sdk-runs", body, key);
+  assert.deepEqual([retried.status, retried.body.run_id], [201, made.body.run_id], JSON.stringify(retried.body));
+  const fresh = await api("POST", "/agents/sdk-late/sdk-runs", body, { "Idempotency-Key": "late-start-new" });
+  assert.equal(fresh.status, 422, JSON.stringify(fresh.body));
+  assert.match(fresh.body.error.message, /7 days/);
+  const other = await api("POST", "/agents/sdk-late/sdk-runs", { ...body, title: "Another" }, key);
+  assert.equal(other.body.error?.code, "idempotency_mismatch", JSON.stringify(other.body));
 });
 
 test("title names the run, trimmed, up to 200 characters", async (t) => {
@@ -148,6 +180,35 @@ test("a run past its moved deadline takes no more evidence or completion", async
   const claim = await store.claim(id, "deadline", { leaseMs: 60_000 });
   assert.ok(claim);
   assert.equal((await closeSdkInbox(store, claim, "expired")).closed, "expired");
+});
+
+test("an expiry close that loses its replace to a batch that moved the deadline rereads it and leaves the run open", async (t) => {
+  const { start, store } = await fixture(t);
+  const started = await start();
+  const id = started.body.run_id, key = inboxKey(id);
+  const { created_at: created, expires_at: due } = await store.settings.get(key);
+  t.mock.timers.enable({ apis: ["Date"], now: created });
+  t.mock.timers.tick(due - created + 1000);
+  const claim = await store.claim(id, "deadline", { leaseMs: 60_000 });
+  assert.ok(claim);
+  // The close has read the row past its old deadline; before its replace lands, a batch the server took in time wins and
+  // moves the deadline an hour on (what SdkRuns.events writes). The close's first replace then finds another row.
+  const replaceIf = store.settings.replaceIf.bind(store.settings);
+  let raced = 0, closes = 0;
+  store.settings.replaceIf = async (k, expected, next, ...rest) => {
+    if (k === key && next.closed === "expired") {
+      closes++;
+      if (!raced++) await store.settings.put(key, { ...expected, batches: [{ sequence: 1, events: [] }], expires_at: Date.now() + HOUR });
+    }
+    return replaceIf(k, expected, next, ...rest);
+  };
+  const row = await closeSdkInbox(store, claim, "expired");
+  assert.equal(raced, 1, "the batch won the race once");
+  assert.equal(closes, 1, "the close tried one replace, lost it, and did not try again on the moved deadline");
+  assert.equal(row.closed, undefined);
+  const kept = await store.settings.get(key);
+  assert.equal(kept.closed, undefined, "the run stays open");
+  assert.equal(kept.expires_at, Date.now() + HOUR);
 });
 
 test("capabilities advertise the SDK run start fields and the longest open time", async (t) => {
