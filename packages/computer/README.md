@@ -2974,7 +2974,17 @@ What Groundbox refuses or this host works around:
   Groundbox drops some fails the stream (`skipped`), never silently.
 - Stdin does not ride the socket: Groundbox delivers a stream's stdin at most once across a dropped connection, with
   nothing saying what arrived. So each write is a call of up to 256 KiB that writes the command's fifo and answers once
-  it has.
+  it has. The fifo and the record of the command's pid (for its kill) live in a directory of the command's own under
+  `/tmp`, made with mode 0700 under a random name, a path already there refused, and removed when the command ends. A
+  write or a kill first checks the directory is that one (no link, the command user's, 0700) and the fifo or record in
+  it the command user's, and refuses otherwise, so nothing another user leaves in `/tmp` receives stdin (which may hold
+  a disk's token) or picks the pid a kill ends.
+- A start that is not answered `started` within its call's bound closes its socket with 1000, which ends the command
+  should Groundbox start it after all; every other dropped socket closes with 4000, which leaves it running. A new
+  socket counts as reading on only once Groundbox says something on it, so a peer that takes each attach and stays
+  silent fails the stream after 5 minutes instead of holding `wait()` forever.
+- The API URL is https; http is taken only to a loopback host (127.0.0.0/8, `::1`, `localhost`), since the key rides
+  every call and the stream's upgrade.
 - On the box image and any other public image Groundbox runs a command as root. On Groundbox's own image and its
   templates it runs as the image's user, `runner` (uid 1001), with passwordless sudo, which the adapter's scripts use;
   `daemonUser` may not be 1001 there.
