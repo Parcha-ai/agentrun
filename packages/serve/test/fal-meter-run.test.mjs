@@ -98,14 +98,24 @@ test("a fal job booked above its hold that leaves the run within its cap stops n
 });
 
 /** A run whose model sends two ideogram jobs at once (two calls in one message) under a $1 cap, each asking 4 images at
- *  $0.10 (each held at $0.40): the first states 7 images ($0.70) while the second is still running; the second, sent back
- *  1.5 s after the first answered, states `secondImages`. Then, in its next turn, a call that costs nothing. */
+ *  $0.10 (each held at $0.40): the first states 7 images ($0.70) while the second is still running; the second states
+ *  `secondImages`. Then, in its next turn, a call that costs nothing. The order is the fake's, never the machine's: the
+ *  first answers only once the second has been sent (so both were admitted at their holds), and the second only once the
+ *  first's charge is on the run's timeline. */
 async function twoAtOnce(t, secondImages) {
   const { api } = await serve(t, { faux: AT_ONCE });
   const fake = await startFakeMcp({});
   t.after(() => fake.close());
-  let firstAnswered;
-  const answered = new Promise((done) => { firstAnswered = done; });
+  let secondArrived;
+  const secondSent = new Promise((done) => { secondArrived = done; });
+  let runId;
+  const firstBooked = async () => {
+    for (;;) {
+      const page = runId ? (await api("GET", `/runs/${runId}/timeline`)).body : undefined;
+      if (page?.rows?.some((row) => row.kind === "phase" && /^Tool cost:/.test(row.summary ?? ""))) return;
+      await new Promise((done) => setTimeout(done, 100));
+    }
+  };
   const images = (n) => Array.from({ length: n }, (_, i) => ({ url: `https://v3.fal.media/${i}.png`, width: 1024, height: 1024 }));
   const reply = (args, n) => ({ content: [{ type: "text", text: JSON.stringify({ status: "completed", submission_replayed: false, endpoint_id: args.endpoint_id, request_id: `r-${args.input?.prompt}`, result: { images: images(n) }, has_result: true }) }] });
   fake.tools.get_pricing = { description: "fal's price for an endpoint.", input: { type: "object", properties: { endpoint_id: { type: "string" } }, required: ["endpoint_id"], additionalProperties: false }, run: ({ endpoint_id }) => ({ content: [{ type: "text", text: JSON.stringify({ prices: [{ endpoint_id, unit_price: 0.1, unit: "images", currency: "USD" }], next_cursor: null, has_more: false }) }] }) };
@@ -113,9 +123,9 @@ async function twoAtOnce(t, secondImages) {
     description: "Run a fal model.",
     input: { type: "object", properties: {} },
     run: async (args) => {
-      if (args.input?.prompt === "first") return (setTimeout(firstAnswered, 0), reply(args, 7));
-      await answered;
-      await new Promise((done) => setTimeout(done, 1500));
+      if (args.input?.prompt === "first") return (await secondSent, reply(args, 7));
+      secondArrived();
+      await firstBooked();
       return reply(args, secondImages);
     },
   };
@@ -128,6 +138,7 @@ async function twoAtOnce(t, secondImages) {
   const content = `At once: ${JSON.stringify([job("first"), job("second")])}\nAt once: ${JSON.stringify([["mcp__fal__get_model_schema", { endpoint_id: "fal-ai/ideogram/v3" }]])}`;
   const run = await api("POST", "/agents/two/runs", { input: { content }, max_cost_usd: 1 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
+  runId = run.body.run_id;
   const { rows } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
   const called = (tool) => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === tool).length;
