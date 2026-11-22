@@ -3656,11 +3656,14 @@ stays in every total.
   commit it names, moved to the rewritten commit by a purge. A run's purge takes its text out of the learning's whole
   history, not only its current files: every commit of main is rebuilt, oldest first, keeping of each `corrections.md`
   line the run's merges added only as many copies as other runs' merges added of the same words up to that commit
-  (none, for words only the run added), without each file of a learned workflow (`workflows/<name>/...`) whose bytes the run's merge changed
-  last at that commit (a hand commit changes no owner, and once another run's merge writes a file again it is that
-  run's; a kept run's workflow loses any file only the purged run wrote, and reads incomplete if it needed it), and without its merges' reasons (each merge kept, its
-  message `learning: <run>: merged`, empty of its text), each snapshot rebuilt, and one commit by the host on top marks `.agentrun/purged/<run>`,
-  so no round of the run merges again. No byte of the old history is kept: the local folder moves main to the new
+  (none, for words only the run added); each file of a learned workflow (`workflows/<name>/...`) whose bytes the run's
+  merge changed last at that commit given back as it was just before that merge (in the rebuilt history), and absent
+  where it was absent then (a hand commit changes no owner, and once another run's merge writes a file again it is that
+  run's). So a purge takes off only what the run's revisions put there: a workflow the run revised is the earlier
+  writer's again (its champion reads as before), one it wrote alone leaves every tree, and no other run's file goes.
+  Its merges' reasons go too (each merge kept, its message `learning: <run>: merged`, empty of its text), each snapshot
+  is rebuilt, and one commit by the host on top marks `.agentrun/purged/<run>` (holding the old-to-new commit map, commit
+  ids alone), so no round of the run merges again. No byte of the old history is kept: the local folder moves main to the new
   history, removes every other ref, expires its reflog and prunes; code.storage builds the new history in the agent's
   next repository generation, moves the agent to it and deletes the old repository (a purge cut short leaves the live
   repository untouched, and the next one deletes the half-built repository by its exact id first; before moving, it
@@ -3671,11 +3674,12 @@ stays in every total.
   before); on code.storage it takes about 0.3 s a commit (the local folder is fast), and the agent's learning waits
   meanwhile; a run of the agent in flight merges nothing, as after a reset; every other run's history and diffs are
   kept. The log and a workflow's revisions leave out its merges, known by the run the log names for each (its newest 200
-  changes). Its learned workflows leave main with the rebuild, so their files read `404`; a workflow still at a commit
+  changes). The workflows it wrote alone leave main with the rebuild, so their files read `404`; a workflow still at a commit
   whose `workflow.json` a purged run changed last (by the commits' run trailers over the whole history, past those 200)
   is refused by every read too: its file read is `410 purged`, a champion read by its digest reads no commit, a later merge's diff shows its files as added (never the purged text), an SDK start sent again whose receipt
   delivered it is `410 purged`, and no run lays or serves it, so the agent takes the run as when no champion serves. A
-  second `DELETE` finds the purge marked and only finishes removing the old history, if a purge was cut short. It covers
+  second `DELETE` finds the purge marked and only finishes removing the old history, if a purge was cut short, and moves
+  the promotion records with the marker's commit map. It covers
   the agent's one learning store, local or on code.storage.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`. An [API-only](#api-only) server purges a run of
