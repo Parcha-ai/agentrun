@@ -60,13 +60,18 @@ export const STOPPED = {
   notCopied: "what the agent learned could not be handed to the run, so the run started without it",
   noSeed: "the run started without what the agent learned",
   cancelled: "the run was cancelled",
-  cancelledLooking: "the run was cancelled while it wrote what it learned",
+  cancelledLooking: "a stop or cancel cut it while it wrote what it learned",
   crashed: "the run's process ended before it could keep what it learned",
   failed: "writing what it learned ended on an error",
   unanswered: "the turn that writes its workflow ended before it answered",
   notChecked: "what it learned could not be checked",
   refuseUnread: "what the run must never learn (its agent's browser sign-in, the server's secrets) could not be read back, so nothing it learned is kept",
+  otherDisk: "the run is on a disk its start named, and a run there learns nothing yet: it started without what the agent learned, and what it does is not learned",
 } as const;
+
+/** Why a run whose start has no seed started with nothing learned (run-launch.ts SeedFailed), in words. */
+export const seedStopped = (failed: string | undefined): string =>
+  failed === "unreadable" ? STOPPED.unreadable : failed === "not_copied" ? STOPPED.notCopied : failed === "other_disk" ? STOPPED.otherDisk : STOPPED.noSeed;
 
 /** A run's learning, in words, by where it stands. */
 export const said = {
@@ -114,6 +119,8 @@ export const said = {
   noBudget: "Skipped: no budget left in this run to write what it learned.",
   unknownCost: "Skipped: this run's spend is unknown, so its budget can't cover writing what it learned.",
   stopped: (cause: string) => `Not kept: learning stopped (${cause}).`,
+  /** A run whose learning seed predates a reset of its agent's learning (runner/learning-end.ts, reason `reset`). */
+  reset: "Dropped: its learning seed predates a reset of the agent's learning.",
 };
 
 /** A run's learning in words as a read says them, whole: what it learned and what waits for the owner's OK, said again

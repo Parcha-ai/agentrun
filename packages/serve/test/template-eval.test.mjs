@@ -446,8 +446,14 @@ test("a web: case checks: unavailable or a fixture file of the case whose answer
     const manifest = readFileSync(join(bare, "agent.md"), "utf8");
     writeFileSync(join(bare, "agent.md"), manifest.replace("tools: [read, write, ask_person, web_search, web_fetch]\n", tools));
     assert.notEqual(readFileSync(join(bare, "agent.md"), "utf8"), manifest);
-    assert.throws(() => readCases(bare, ["web-bare"]), (e) => e instanceof CaseError && /web-bare\/case\.yaml: web fakes web_search and web_fetch, and the package's tools name neither/.test(e.message), JSON.stringify(tools));
+    assert.throws(() => readCases(bare, ["web-bare"]), (e) => e instanceof CaseError && /web-bare\/case\.yaml: web fakes web_search, web_fetch and web_save, and the package's tools name none of them/.test(e.message), JSON.stringify(tools));
   }
+  // A package that names web_save alone gets the fake too: its files answer from the case.
+  const saver = await webPackage(t, "web-save-only", "unavailable", []);
+  const saverManifest = readFileSync(join(saver, "agent.md"), "utf8");
+  writeFileSync(join(saver, "agent.md"), saverManifest.replace("tools: [read, write, ask_person, web_search, web_fetch]\n", "tools: [read, write, web_save]\n"));
+  assert.notEqual(readFileSync(join(saver, "agent.md"), "utf8"), saverManifest);
+  assert.doesNotThrow(() => readCases(saver, ["web-save-only"]));
   const named = await webPackage(t, "search-failed", "unavailable", [["web_search", { query: "x" }]]);
   await assert.rejects(evalTemplate({ dir: named, cases: ["search-failed"], server: { baseUrl: "http://127.0.0.1:9/v2", token: "unused" } }), (e) => e instanceof CaseError && /evals\/search-failed: web fakes the web tools on the eval's own server alone: run it without --server/.test(e.message));
 });
@@ -870,7 +876,7 @@ test("no case carries a schema grader: a package's output schema is held by the 
   const dir = join(await scratch(t), "evalpkg");
   cpSync(PKG, dir, { recursive: true });
   writeFileSync(join(dir, "evals/all-pass/graders/schema.md"), "---\ntype: schema\nschema: answer.schema.json\n---\n");
-  assert.throws(() => readCases(dir), (e) => e instanceof PackageError && /evals\/all-pass\/graders\/schema\.md: type is one of llm, regex, tool_used, file_exists, mailbox$/m.test(e.message));
+  assert.throws(() => readCases(dir), (e) => e instanceof PackageError && /evals\/all-pass\/graders\/schema\.md: type is one of llm, regex, tool_used, file_exists, mailbox, handed$/m.test(e.message));
 });
 
 test("code-review's cases hold the answer's head_sha to the head the prompt names: an answer naming another sha fails", () => {

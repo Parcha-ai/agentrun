@@ -3,13 +3,17 @@
 // each read from options or from what an injected fetch is handed. The adapter's lifecycle is tested once, against its
 // one fake host (hosted-provider.test.mjs); Daytona's own lifecycle is proven live (test/daytona). The fetch here only
 // records what it is given and answers one canned reply per route: no sandbox exists, and nothing reaches the network.
+// One test, the desktop over dial, routes to a sandbox it keeps, booted from its env (fake-dial-host.mjs bootDial).
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { create, DaytonaProvider } from "../dist/daytona.js";
+import { hostedCommands, shellLine } from "../dist/hosted/scripts.js";
 import { AttachHub, checkLifetime, DAYTONA, kindRefusals, MACHINE_TOKEN_SOURCE, MemoryMachineTokens, mountsOf } from "../dist/index.js";
+import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { fakeHost } from "./fake-host.mjs";
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -187,6 +191,11 @@ test("the constructor refuses what it cannot run with, in words", () => {
 	assert.throws(make({ archilEgress: "192.0.2.40:8100:42050" }), /the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>/);
 	assert.throws(make({ archilEgress: "relay.example:18100:42050" }), /the Archil egress is/);
 	assert.doesNotThrow(make({ archilEgress: EGRESS }), "a well-formed egress is taken");
+	for (const attachEgress of ["relay.example:18443", "192.0.2.40", "192.0.2.40:0", "192.0.2.40:65536", "192.0.2.40:018443", "192.0.2.040:18443", "[2001:db8::1]:18443", "192.0.2.40:18443:1", " 192.0.2.40:18443"]) {
+		assert.throws(make({ attachEgress }), /the attach egress is <IPv4 relay>:<port>, such as 192\.0\.2\.40:18443, a port from 1 to 65535; not "/, attachEgress);
+	}
+	assert.doesNotThrow(make({ attachEgress: "192.0.2.40:18443" }), "a well-formed attach egress is taken");
+	assert.doesNotThrow(make({ attachEgress: "" }), "an empty one is none");
 	assert.throws(make({ timeouts: { retryMs: 0 } }), /retryMs/);
 });
 
@@ -344,7 +353,7 @@ test("the read-back: Daytona's states as the adapter's, its end, its GPUs and it
 	};
 	const autoDestroyAt = "2026-01-02T03:04:05.000Z";
 	const clean = await read({ autoDestroyAt });
-	assert.deepEqual(Object.keys(clean).sort(), ["endsAt", "id", "labels", "state"], "no drift, network, size or image: Daytona's create options are not read back");
+	assert.deepEqual(Object.keys(clean).sort(), ["endsAt", "id", "labels", "resources", "state"], "no drift, network or image: Daytona's create options are not read back; what it gave the sandbox is (resources)");
 	assert.equal(clean.state, "running");
 	assert.equal(clean.endsAt.toISOString(), autoDestroyAt);
 	for (const [state, want] of [
@@ -369,6 +378,19 @@ test("the read-back: Daytona's states as the adapter's, its end, its GPUs and it
 	assert.equal(Object.hasOwn(await read({ snapshot: "daytona-gpu", gpu: 1, gpuType: "H100", autoDeleteInterval: 0 }), "gpu"), false, "a GPU is the adapter's label, not a read-back");
 	const { provider } = setup({ [`GET /api/sandbox/${REF.id}`]: { status: 404, body: { statusCode: 404, message: "not found" } } });
 	assert.equal(await provider.host.get(REF.id, { timeoutMs: 1_000 }), undefined);
+});
+
+test("the read-back's resources are what Daytona's answer says the sandbox was given (memory and disk in GiB), each only where it says it", async () => {
+	const read = async (fields) => {
+		const sb = sandbox(fields);
+		const { provider } = setup({ [`GET /api/sandbox/${sb.id}`]: { body: sb } });
+		return await provider.host.get(sb.id, { timeoutMs: 1_000 });
+	};
+	assert.deepEqual((await read({ cpu: 4, memory: 8, disk: 10, gpu: 1, gpuType: "H100" })).resources, { cpus: 4, memoryMb: 8192, diskGb: 10, gpu: { type: "H100", count: 1 } });
+	assert.deepEqual((await read({ cpu: 2, memory: 4 })).resources, { cpus: 2, memoryMb: 4096 }, "no disk or GPU said: none");
+	assert.deepEqual((await read({ cpu: 2, memory: undefined, gpu: 0, gpuType: "H100" })).resources, { cpus: 2 }, "no GPUs given");
+	assert.deepEqual((await read({ cpu: 2, memory: undefined, gpu: 1 })).resources, { cpus: 2 }, "a GPU count with no type is no GPU figure");
+	assert.equal(Object.hasOwn(await read({ cpu: "four", memory: -1 }), "resources"), false, "a figure that is not a positive number is none");
 });
 
 test("list: the adapter's label alone is asked for, every page followed, destroyed ones left out; the adapter keeps the rest by labels and reads each by get", async () => {
@@ -719,9 +741,10 @@ test("create() under open or a list asks Daytona for the sandbox's network (netw
 
 /** A dial provider's server in tests: http on 127.0.0.1, which a dial provider takes in tests alone, its tokens and hub. */
 const dialOf = () => ({ url: "http://127.0.0.1:8080", tokens: new MemoryMachineTokens(), hub: new AttachHub({ helloMs: 1_000 }) });
-const BOOT_NAMES = ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"];
+/** The boot env's names a dial sandbox's env holds: all but AGENTRUN_ATTACH_URL, which goes to agentrun-dial's start alone. */
+const BOOT_NAMES = ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"];
 
-test("connect dial: create sends the boot env as the sandbox's env and its network on, from the snapshot named, and the host has no exec and no upload", async () => {
+test("connect dial: create sends the boot env as the sandbox's env, AGENTRUN_ATTACH_URL left out, and its network on, from the snapshot named, and the host has no exec and no upload", async () => {
 	const rec = refusedCreate();
 	const dial = dialOf();
 	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial });
@@ -733,7 +756,7 @@ test("connect dial: create sends the boot env as the sandbox's env and its netwo
 	const body = posted(rec);
 	assert.equal(body.snapshot, "agentrun-archil-0123456789ab");
 	assert.deepEqual(Object.keys(body.env).sort(), BOOT_NAMES);
-	assert.equal(body.env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach");
+	assert.equal("AGENTRUN_ATTACH_URL" in body.env, false, "a snapshot whose entrypoint is the box CMD then sleeps, and agentrun-dial never runs twice");
 	assert.equal(body.env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64");
 	assert.match(body.env.AGENTRUN_ATTACH_TOKEN, new RegExp(`^${MACHINE_TOKEN_SOURCE}$`));
 	assert.match(body.env.AGENTRUN_INIT_ARGS, /^--deadline \S+ --user 2510:2510 --own-network --max-deadline \S+$/);
@@ -750,11 +773,199 @@ test("connect dial: create sends the boot env as the sandbox's env and its netwo
 	assert.equal(typeof plain.provider.host.upload, "function");
 });
 
+test("connect dial with DAYTONA_ATTACH_EGRESS's attachEgress: the boot env carries the relay as AGENTRUN_ATTACH_EGRESS, the public addresses unchanged; a desktop's too; exec sends no env still", async () => {
+	assert.deepEqual(DAYTONA.keys.find((key) => key.name === "DAYTONA_ATTACH_EGRESS"), { name: "DAYTONA_ATTACH_EGRESS", option: "attachEgress", required: false });
+	for (const kind of ["linux", "desktop"]) {
+		const rec = refusedCreate();
+		const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial: dialOf(), attachEgress: "192.0.2.40:18443", kind });
+		await provider.create({ ...SPEC, image: "agentrun-box-0123456789ab" }, { requestId: `r-dial-egress-${kind}` });
+		const { env } = posted(rec);
+		assert.deepEqual(Object.keys(env).sort(), [...BOOT_NAMES, "AGENTRUN_ATTACH_EGRESS", ...(kind === "desktop" ? ["DISPLAY"] : [])].sort(), kind);
+		assert.equal(env.AGENTRUN_ATTACH_EGRESS, "192.0.2.40:18443");
+		assert.equal(env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64");
+	}
+	const rec = refusedCreate();
+	await new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, attachEgress: "192.0.2.40:18443" }).create(SPEC, { requestId: "r-exec-egress" });
+	assert.deepEqual(posted(rec).env, {}, "a machine on exec dials nothing, so it is given nothing");
+});
+
+/** A dial machine's token and attach URL in the host tests: a URL with words a shell would split or expand, quoted. */
+const DIAL_TOKEN = "fake-test-key-machine-token";
+const DIAL_URL = "wss://agentrun.example/v2/computers/attach?a=1&b='2' $HOME";
+/** What the adapter asks of a dial host's create: the boot env with every name, the URL among them. */
+const dialRequest = () => ({
+	name: REF.name,
+	image: "agentrun-box-0123456789ab",
+	labels: { [COMPUTER]: "1", [`${COMPUTER}.name`]: REF.name },
+	lifetimeMs: 600_000,
+	backstopAt: new Date(Date.now() + 900_000).toISOString(),
+	egress: true,
+	boot: { env: { AGENTRUN_ATTACH_URL: DIAL_URL, AGENTRUN_ATTACH_TOKEN: DIAL_TOKEN, AGENTRUN_DAEMON_URL: "https://agentrun.example/v2/computers/daemon?arch=amd64", AGENTRUN_DAEMON_SHA256: "0".repeat(64), AGENTRUN_INIT_ARGS: "--deadline x --user 2510:2510 --own-network" } },
+});
+
+/**
+ * A Daytona whose one sandbox reads `states` in turn (the last one from then on) and whose toolbox takes the dial's
+ * session and command, or answers `session` / `exec` instead; `seen` holds each sandbox read, session and command in
+ * order. The host is a dial provider's.
+ */
+function dialDaytona({ states = ["started"], session, exec, routes = {} } = {}) {
+	const left = [...states];
+	const seen = [];
+	const read = () => {
+		const state = left.length > 1 ? left.shift() : left[0];
+		seen.push(`state ${state}`);
+		return sandbox({ state, ...(state === "error" ? { errorReason: "the snapshot's image could not be pulled" } : {}) });
+	};
+	const rec = recorder({
+		"POST /api/sandbox": () => ({ body: read() }),
+		[`GET /api/sandbox/${REF.id}`]: () => ({ body: read() }),
+		[`POST /toolbox/${REF.id}/process/session`]: ({ body }) => {
+			seen.push(`session ${body.sessionId}`);
+			return session ?? { body: {} };
+		},
+		[`POST /toolbox/${REF.id}/process/session/agentrun-dial/exec`]: () => {
+			seen.push("exec");
+			return exec ?? { body: { cmdId: "cmd-dial" } };
+		},
+		...routes,
+	});
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial: dialOf() });
+	return { rec, seen, host: provider.host };
+}
+
+/**
+ * The value a session command's line gives AGENTRUN_ATTACH_URL, as sh reads it: the assignment alone run with printenv
+ * in agentrun-dial's place. The steps before it are cut off, so none of them runs on this host.
+ */
+function attachUrlOf(command) {
+	const dial = " exec /usr/local/bin/agentrun-dial";
+	assert.ok(command.endsWith(dial), command);
+	const assignment = command.slice(command.indexOf("AGENTRUN_ATTACH_URL="), -dial.length);
+	assert.ok(assignment.startsWith("AGENTRUN_ATTACH_URL="), command);
+	return execFileSync("sh", ["-c", `${assignment} exec printenv AGENTRUN_ATTACH_URL`], { encoding: "utf8", env: { PATH: process.env.PATH } }).replace(/\n$/, "");
+}
+
+test("connect dial: agentrun-dial's session command closes the session buses in /tmp first, joined by &&, as E2B's launch and the exec path do; the token is on no command line", async () => {
+	const { rec, host } = dialDaytona();
+	await host.create(dialRequest(), { timeoutMs: 2_000 });
+	const [ran] = rec.requests.filter((r) => r.method === "POST" && r.path.endsWith("/process/session/agentrun-dial/exec"));
+	const { command } = ran.body;
+	assert.ok(command.startsWith(`${shellLine(hostedCommands().sockets)} && AGENTRUN_ATTACH_URL=`), command);
+	assert.match(command, /# agentrun-computer: sockets[\s\S]*' sh '\/tmp\/dbus-\*' && AGENTRUN_ATTACH_URL='[\s\S]*' exec \/usr\/local\/bin\/agentrun-dial$/);
+	assert.doesNotMatch(command, /root-only/, "Daytona names no rootOnly paths");
+	assert.equal(command.includes(DIAL_TOKEN), false, "the token stays in the sandbox's env");
+	assert.equal(attachUrlOf(command), DIAL_URL);
+});
+
+test("connect dial: create sends every boot name but AGENTRUN_ATTACH_URL as the sandbox's env, then starts agentrun-dial in a session of its own, async, the URL a quoted assignment on its line and the token on none", async () => {
+	const { rec, seen, host } = dialDaytona();
+	assert.deepEqual(await host.create(dialRequest(), { timeoutMs: 2_000 }), { id: REF.id });
+	const { env } = posted(rec);
+	assert.deepEqual(Object.keys(env).sort(), BOOT_NAMES);
+	assert.equal(env.AGENTRUN_ATTACH_TOKEN, DIAL_TOKEN, "the token stays in the sandbox's env, which a session command inherits");
+	assert.deepEqual(seen.filter((one) => !one.startsWith("state")), ["session agentrun-dial", "exec"], "one session, one command");
+	const ran = rec.requests.filter((r) => r.method === "POST" && r.path.endsWith("/process/session/agentrun-dial/exec"));
+	assert.equal(ran.length, 1);
+	assert.equal(ran[0].host, "proxy.daytona.test", "through the sandbox's toolbox");
+	assert.equal(ran[0].body.runAsync, true);
+	assert.equal(attachUrlOf(ran[0].body.command), DIAL_URL);
+	for (const r of rec.requests.filter((one) => one.url.startsWith(TOOLBOX))) {
+		assert.equal(`${r.url} ${JSON.stringify(r.body ?? null)}`.includes(DIAL_TOKEN), false, `${r.method} ${r.path} holds no token`);
+	}
+	assert.equal(rec.requests.some((r) => r.method === "DELETE"), false, "the session is kept: its log is the dial's last words");
+});
+
+test("connect dial: a sandbox that reads creating, then pulling_snapshot, gets agentrun-dial's session only once it reads started; one that reads error fails create in Daytona's words, with no session", async () => {
+	const { seen, host } = dialDaytona({ states: ["creating", "pulling_snapshot", "pulling_snapshot", "started"] });
+	await host.create(dialRequest(), { timeoutMs: 2_000 });
+	const session = seen.indexOf("session agentrun-dial");
+	assert.ok(session > 0, JSON.stringify(seen));
+	assert.equal(seen.indexOf("state started") < session, true, JSON.stringify(seen));
+	assert.deepEqual(seen.slice(0, 3), ["state creating", "state pulling_snapshot", "state pulling_snapshot"]);
+
+	const failed = dialDaytona({ states: ["creating", "error"] });
+	await assert.rejects(failed.host.create(dialRequest(), { timeoutMs: 2_000 }), (error) => {
+		assert.equal(error.code, "vendor");
+		assert.match(error.message, /the snapshot's image could not be pulled/);
+		return true;
+	});
+	assert.equal(failed.seen.some((one) => one.startsWith("session")), false, "no session in a failed sandbox");
+
+	const slow = dialDaytona({ states: ["creating"] });
+	await assert.rejects(slow.host.create(dialRequest(), { timeoutMs: 100 }), (error) => {
+		assert.equal(error.code, "timeout");
+		assert.match(error.message, /did not read started within 0\.1 s/);
+		return true;
+	});
+	assert.equal(slow.seen.some((one) => one.startsWith("session")), false);
+});
+
+test("connect dial: a session Daytona refuses fails create in its words, and the adapter deletes the sandbox it made; its token is revoked", async () => {
+	const refused = dialDaytona({ exec: { status: 400, body: { statusCode: 400, message: "session refused: no shell" } } });
+	await assert.rejects(refused.host.create(dialRequest(), { timeoutMs: 2_000 }), (error) => {
+		assert.equal(error.code, "vendor", "a create that made a sandbox: the adapter's sweep deletes it");
+		assert.match(error.message, /starting agentrun-dial in sb-0001 failed: .*session refused: no shell/);
+		return true;
+	});
+	const unmade = dialDaytona({ session: { status: 500, body: { statusCode: 500, message: "toolbox not ready" } } });
+	await assert.rejects(unmade.host.create(dialRequest(), { timeoutMs: 2_000 }), /starting agentrun-dial in sb-0001 failed: .*toolbox not ready/);
+
+	// Through the provider: the sandbox it made is listed by its name and deleted.
+	let made;
+	const ID = REF.id;
+	const rec = recorder({
+		"GET /api/sandbox": () => ({ body: { items: made === undefined || made.state === "destroyed" ? [] : [made] } }),
+		"POST /api/sandbox": ({ body }) => {
+			made = sandbox({ id: ID, name: body.name, labels: body.labels, networkBlockAll: body.networkBlockAll });
+			return { body: made };
+		},
+		[`GET /api/sandbox/${ID}`]: () => (made.state === "destroyed" ? { status: 404, body: { statusCode: 404, message: "Sandbox not found" } } : { body: made }),
+		[`DELETE /api/sandbox/${ID}`]: () => {
+			made.state = "destroyed";
+			return { status: 204 };
+		},
+		[`POST /toolbox/${ID}/process/session`]: { body: {} },
+		[`POST /toolbox/${ID}/process/session/agentrun-dial/exec`]: { status: 400, body: { statusCode: 400, message: "session refused: no shell" } },
+	});
+	const dial = dialOf();
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: { ...TIMEOUTS, listedStableMs: 0 }, connect: "dial", dial });
+	const created = await provider.create({ ...SPEC, image: "agentrun-box-0123456789ab" }, { requestId: "r-dial-session" });
+	assert.equal(created.ok, false);
+	assert.equal(created.error.code, "vendor");
+	assert.match(created.error.message, /session refused: no shell/);
+	assert.equal(made.state, "destroyed", "the sandbox create made was deleted");
+	assert.equal(dial.tokens.check(posted(rec).env.AGENTRUN_ATTACH_TOKEN), undefined, "its token is revoked");
+});
+
+test("connect dial: dialLog is agentrun-dial's session command's log, the machine's token replaced; none when the session never started; a read that fails throws", async () => {
+	const said = `fetching the daemon\n${DIAL_TOKEN} was refused\nconnect: no route to host\n`;
+	const { host, rec } = dialDaytona({
+		routes: {
+			[`GET /toolbox/${REF.id}/process/session/agentrun-dial`]: { body: { sessionId: "agentrun-dial", commands: [{ id: "cmd-dial", command: "...", exitCode: 1 }] } },
+			[`GET /toolbox/${REF.id}/process/session/agentrun-dial/command/cmd-dial/logs`]: { body: { output: said, stdout: "", stderr: said } },
+		},
+	});
+	assert.equal(typeof host.dialLog, "function");
+	await host.create(dialRequest(), { timeoutMs: 2_000 });
+	const log = await host.dialLog(REF.id, { timeoutMs: 2_000 });
+	assert.equal(log, "fetching the daemon\n<token> was refused\nconnect: no route to host\n");
+	assert.ok(rec.requests.every((r) => r.method !== "DELETE"));
+
+	const none = dialDaytona({ routes: { [`GET /toolbox/${REF.id}/process/session/agentrun-dial`]: { status: 404, body: { statusCode: 404, message: "session not found" } } } });
+	assert.equal(await none.host.dialLog(REF.id, { timeoutMs: 2_000 }), undefined, "no session: agentrun-dial never started");
+	const empty = dialDaytona({ routes: { [`GET /toolbox/${REF.id}/process/session/agentrun-dial`]: { body: { sessionId: "agentrun-dial", commands: [] } } } });
+	assert.equal(await empty.host.dialLog(REF.id, { timeoutMs: 2_000 }), undefined, "a session with no command: agentrun-dial never started");
+
+	const down = dialDaytona({ routes: { [`GET /toolbox/${REF.id}/process/session/agentrun-dial`]: { status: 502, body: { statusCode: 502, message: "bad gateway" } } } });
+	await assert.rejects(down.host.dialLog(REF.id, { timeoutMs: 2_000 }));
+	assert.equal(setup().provider.host.dialLog, undefined, "a host on exec has no dialLog");
+});
+
 test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, each refused in words; labels refused as on exec; no value but exec or dial", () => {
 	const { provider, rec } = setup({}, { connect: "dial", dial: dialOf(), archilEgress: EGRESS });
 	const caps = provider.capabilities();
 	assert.equal(caps.kind, "linux");
-	assert.equal(caps.daemon, "child", "init is agentrun-dial's child, and agentrun-dial the toolbox's entrypoint session's");
+	assert.equal(caps.daemon, "child", "init is agentrun-dial's child, and agentrun-dial a session command create starts");
 	assert.deepEqual(caps.mount, ["sync"], "no Archil mount on dial, even with an egress: a synced folder alone, its /workspace made by agentrun-dial");
 	assert.equal(caps.gpu, undefined, "no GPU on dial");
 	assert.deepEqual(caps.vendorAgentPorts, [2280], "the toolbox still runs, and its port is still blocked");
@@ -773,21 +984,73 @@ test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, 
 	assert.equal(rec.requests.length, 0);
 });
 
-// Why Daytona gives no desktop (measured 11-19): PROVIDERS.md, Machines that dial in. The one test that pins the
-// sentence whole; every other one reads DAYTONA.unserved.desktop.
-const NO_DESKTOP = "Daytona gives no desktop computer: its sandboxes run under AppArmor's restrict_unprivileged_userns, so the tool user can't make the user and network namespaces the window manager runs in";
-
-test("kind desktop is refused when the provider is made, on every connect, in its descriptor's unserved words, before any request; kind linux stays", () => {
-	for (const connect of ["dial", undefined, "exec"]) {
-		const options = { ...(connect ? { connect } : {}), ...(connect === "dial" ? { dial: dialOf() } : {}) };
-		assert.throws(() => setup({}, { ...options, kind: "desktop" }), { message: NO_DESKTOP }, `connect ${connect}`);
-		assert.equal(setup({}, { ...options, kind: "linux" }).provider.capabilities().kind, "linux");
+test("kind desktop on connect dial: the desktop's groups, no GPU, the window manager computerd starts (init --window-manager), and DISPLAY beside the boot env, with no resources beside the snapshot; on connect exec it is refused when made, in kindRefusal's words", async () => {
+	const rec = refusedCreate();
+	const dial = dialOf();
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial, kind: "desktop" });
+	const caps = provider.capabilities();
+	assert.equal(caps.kind, "desktop");
+	assert.deepEqual(caps.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"]);
+	assert.equal(caps.gpu, undefined);
+	assert.equal(provider.host.facts.windowManager, true, "a snapshot of box/Dockerfile has xfwm4");
+	const made = await provider.create({ ...SPEC, image: "agentrun-box-0123456789ab" }, { requestId: "r-dial-desktop" });
+	assert.equal(made.error?.code, "invalid", "a create Daytona refused made nothing");
+	const body = posted(rec);
+	assert.deepEqual(Object.keys(body.env).sort(), [...BOOT_NAMES, "DISPLAY"]);
+	assert.equal(body.env.DISPLAY, ":0");
+	assert.match(body.env.AGENTRUN_INIT_ARGS, / --window-manager$/, "computerd starts the window manager, as root makes its network namespace");
+	assert.deepEqual([body.cpu, body.memory, body.disk], [undefined, undefined, undefined], "the snapshot's 2 CPUs and 4 GB: no resources beside a snapshot");
+	for (const connect of [undefined, "exec"]) {
+		assert.throws(() => setup({}, { ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: Daytona gives a desktop computer on connect "dial" alone, not "exec"$/, `connect ${connect}`);
+		assert.equal(setup({}, { ...(connect ? { connect } : {}), kind: "linux" }).provider.capabilities().kind, "linux");
 	}
 });
 
-test("Daytona's descriptor offers no desktop, and gives the reason as its unserved desktop: a sandbox alone", () => {
-	assert.deepEqual(DAYTONA.capabilities.map(({ kind }) => kind), ["linux"]);
-	assert.deepEqual(Object.keys(DAYTONA.unserved ?? {}), ["desktop"]);
+test("Daytona's desktop configuration, as serve builds it over connect exec, makes a desktop over dial from the box snapshot: the sandbox boots from its env, dials, its X server starts over that socket and computerd starts xfwm4", async () => {
+	const dial = dialServer();
+	// The operator's snapshot of box/Dockerfile (AGENTRUN_DAYTONA_SNAPSHOT, box/build-daytona.py's name): it holds Xvfb and xfwm4.
+	const SNAPSHOT = "agentrun-box-0123456789ab";
+	const ID = "sb-desktop-1";
+	let made;
+	let booted;
+	// A Daytona API that keeps the one sandbox it makes: it boots when agentrun-dial's session command runs, from the env
+	// it was posted and the URL that command gives (bootDial).
+	let env;
+	const rec = recorder({
+		"GET /api/sandbox": () => ({ body: { items: made === undefined || made.state === "destroyed" ? [] : [made] } }),
+		"POST /api/sandbox": ({ body }) => {
+			made = sandbox({ id: ID, name: body.name, snapshot: body.snapshot, labels: body.labels, networkBlockAll: body.networkBlockAll });
+			env = body.env;
+			return { body: made };
+		},
+		[`POST /toolbox/${ID}/process/session`]: { body: {} },
+		[`POST /toolbox/${ID}/process/session/agentrun-dial/exec`]: ({ body }) => {
+			const url = attachUrlOf(body.command);
+			assert.equal(url, `${dial.url.replace(/^http/, "ws")}/v2/computers/attach`, "agentrun-dial dials the server's attach address");
+			booted = bootDial({ ...env, AGENTRUN_ATTACH_URL: url }, dial, { daemon: readFileSync(DAEMON) });
+			return { body: { cmdId: "cmd-dial" } };
+		},
+		[`GET /api/sandbox/${ID}`]: () => (made.state === "destroyed" ? { status: 404, body: { statusCode: 404, message: "Sandbox not found" } } : { body: made }),
+		[`DELETE /api/sandbox/${ID}`]: () => {
+			made.state = "destroyed";
+			return { status: 204 };
+		},
+	});
+	const { options } = DAYTONA.capabilities.find(({ kind }) => kind === "desktop");
+	// serve's options for this provider: the keys' and the settings' (daytonaConnect exec), then the configuration's.
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: { ...TIMEOUTS, listedStableMs: 0 }, dial, connect: "exec", ...options });
+	assert.equal(provider.capabilities().kind, "desktop");
+	assert.equal(provider.host.facts.connect, "dial");
+	await desktopOverDial(provider, dial, () => booted, { image: SNAPSHOT, lifetimeMs: 600_000, network: "none" });
+	const body = posted(rec);
+	assert.equal(body.snapshot, SNAPSHOT, "made from the box snapshot");
+	assert.deepEqual([body.cpu, body.memory, body.disk], [undefined, undefined, undefined], "the snapshot's 2 CPUs, 4 GB and 10 GB: no resources beside a snapshot");
+	assert.equal(made.state, "destroyed", "release deleted the sandbox");
+});
+
+test("Daytona's descriptor offers a sandbox and, on connect dial, a desktop, and leaves no kind unserved", () => {
+	assert.deepEqual(DAYTONA.capabilities.map(({ kind, options }) => [kind, options?.connect]), [["linux", undefined], ["desktop", "dial"]]);
+	assert.equal(DAYTONA.unserved, undefined);
 });
 
 test("Daytona's descriptor declares the connect setting, with no default of its own: a server's settings pass it to create() as connect, else the provider's exec holds", () => {

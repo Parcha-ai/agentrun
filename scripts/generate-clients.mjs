@@ -24,7 +24,9 @@ import { DOCTOR } from '../packages/agentrun/lib/doctor.mjs';
 import { OPEN, SERVICE, STOP } from '../packages/agentrun/lib/service.mjs';
 import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
 import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from '../packages/agentrun/lib/template.mjs';
-import { HARNESS_CHECK, HARNESS_INSTALL } from '../packages/agentrun/lib/harness.mjs';
+import { HARNESS_CHECK, HARNESS_INSTALL, HARNESS_SIGN_IN } from '../packages/agentrun/lib/harness.mjs';
+import { DEPLOY, DEPLOY_DELETE, DEPLOY_ROLLBACK } from '../packages/agentrun/lib/deploy.mjs';
+import { EXPORT } from '../packages/agentrun/lib/export.mjs';
 import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
 import { pythonProblems, pythonText } from './clients/python.mjs';
 import { clientProblems, clientText } from './clients/typescript.mjs';
@@ -40,9 +42,9 @@ const PYTHON = 'python/agentrun/_generated.py';
 const TYPES = 'apps/console/src/lib/api.generated.ts';
 // Words the launcher keeps for itself or for the server it starts, and the CLI's own commands of one word: no command
 // may begin with one.
-const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill', 'service', 'stop', 'doctor', 'harness-check'];
+const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill', 'service', 'stop', 'doctor', 'harness-check', 'export', 'deploy'];
 // The CLI's hand-written commands: none may be a generated one too.
-const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, HARNESS_INSTALL, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR] };
+const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, HARNESS_INSTALL, HARNESS_SIGN_IN, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR, DEPLOY_ROLLBACK, DEPLOY_DELETE, DEPLOY] };
 const SCALAR = ['string', 'number', 'integer', 'boolean'];
 const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'body-type', 'help'];
 // Headers the CLI sets itself.
@@ -88,6 +90,53 @@ function flagType(shape) {
 
 // A description's first paragraph, its hard-wrapped lines joined: its first line alone can stop mid-sentence.
 const firstLine = (text) => (text ?? '').trim().split(/\n\s*\n/)[0].replace(/\s*\n\s*/g, ' ');
+
+/** CLI fields of an object body. Closed object alternatives with a shared, required string discriminator can share
+ *  scalar flags when each branch parses that field the same way. The server still validates the selected branch;
+ *  branch-only fields are optional in the CLI. Other unions stay a whole --body instead of guessing their shape. */
+function bodyProperties(doc, schema) {
+  const property = (name, raw, required) => {
+    const value = deref(doc, raw);
+    return { name, ...shapeOf(doc, value), ...(value?.const !== undefined ? { const: value.const } : {}), required, description: firstLine(value?.description) };
+  };
+  if (!schema?.oneOf || schema.properties || schema.allOf || schema.anyOf)
+    return Object.entries(schema?.properties ?? {}).map(([name, value]) => property(name, value, schema.required?.includes(name) ?? false));
+  const variants = schema.oneOf.map(variant => deref(doc, variant));
+  if (!variants.length || variants.some(variant => variant?.type !== 'object' || variant.additionalProperties !== false || !variant.properties || variant.oneOf || variant.anyOf || variant.allOf)) return [];
+  const discriminated = Object.keys(variants[0].properties).some(name => {
+    if (!variants.every(variant => variant.required?.includes(name))) return false;
+    const seen = new Set();
+    return variants.every(variant => {
+      const field = deref(doc, variant.properties[name]);
+      const values = typeof field?.const === 'string' ? [field.const] : field?.enum;
+      if (!Array.isArray(values) || !values.length || values.some(value => typeof value !== 'string')) return false;
+      if (values.some(value => seen.has(value))) return false;
+      for (const value of values) seen.add(value);
+      return true;
+    });
+  });
+  if (!discriminated) return [];
+  return [...new Set(variants.flatMap(variant => Object.keys(variant.properties)))].flatMap(name => {
+    const rows = variants.filter(variant => Object.hasOwn(variant.properties, name) && variant.properties[name] !== false)
+      .map(variant => property(name, variant.properties[name], variant.required?.includes(name) ?? false));
+    if (!rows.length) return [];
+    const shapes = rows.map(row => {
+      const values = row.const !== undefined ? [row.const] : row.enum;
+      return values?.length && values.every(value => typeof value === 'string')
+        ? { type: 'string', enum: values } : { type: row.type, enum: row.enum };
+    });
+    const parsers = shapes.map(flagType);
+    let shape;
+    if (parsers.every(parser => parser && parser.type === parsers[0].type)) {
+      shape = { type: parsers[0].type, enum: shapes.every(row => row.enum) ? [...new Set(shapes.flatMap(row => row.enum))] : null };
+    } else if (shapes.every(row => canonical(row) === canonical(shapes[0]))) shape = shapes[0];
+    else return [];
+    const required = rows.length === variants.length && rows.every(row => row.required);
+    const fixed = rows.length === variants.length && rows[0].const !== undefined && rows.every(row => canonical(row.const) === canonical(rows[0].const));
+    return [{ name, ...shape, ...(fixed ? { const: rows[0].const } : {}), required,
+      description: rows.every(row => row.description === rows[0].description) ? rows[0].description : '' }];
+  });
+}
 const JSON_TYPE = /^application\/(?:[\w.+-]+\+)?json$/;
 const COMPONENT = '#/components/schemas/';
 // The JSON Schema types the client's types are made of, and the keywords that shape a value beyond them.
@@ -110,7 +159,7 @@ function typeOf(doc, schema) {
   const types = (Array.isArray(s.type) ? s.type : s.type === undefined ? [] : [s.type]).filter((type) => !SCHEMA_TYPES.includes(type));
   if (types.length) throw new Error(`generate-clients: the client's types know no type ${types.join(', ')}${name ? ` (in ${name})` : ''}`);
   const out = name ? { name } : {};
-  for (const key of ['type', 'enum', 'const', 'required']) if (s[key] !== undefined) out[key] = s[key];
+  for (const key of ['type', 'enum', 'const', 'required', 'x-agentrun-python-preserve-object']) if (s[key] !== undefined) out[key] = s[key];
   if (s.properties) out.properties = Object.fromEntries(Object.entries(s.properties).map(([key, value]) => [key, typeOf(doc, value)]));
   if (s.additionalProperties !== undefined) out.additionalProperties = typeof s.additionalProperties === 'boolean' ? s.additionalProperties : typeOf(doc, s.additionalProperties);
   if (s.items !== undefined) out.items = typeOf(doc, s.items);
@@ -156,7 +205,7 @@ export function operationsOf(doc) {
         browserOnly: typeof op['x-agentrun-browser-only'] === 'string',
         body: body === undefined ? null : {
           required: body.required === true, types: Object.keys(body.content ?? {}),
-          properties: Object.entries(schema?.properties ?? {}).map(([name, property]) => ({ name, ...shapeOf(doc, property), ...(deref(doc, property)?.const !== undefined ? { const: deref(doc, property).const } : {}), required: schema.required?.includes(name) ?? false, description: firstLine(deref(doc, property)?.description) })),
+          properties: bodyProperties(doc, schema),
           type: schema === undefined ? null : typeOf(doc, body.content['application/json'].schema),
           ...(example !== undefined ? { example } : {}),
         },

@@ -23,6 +23,7 @@ export const TOOL_LIST: Readonly<Record<string, ToolRow>> = Object.freeze({
   ask_person: { table: true, replay: "safe", blurb: "Ask you a question mid-run" },
   web_fetch: { table: true, askable: true, replay: "safe", host: true, blurb: "Read a public web page" },
   web_search: { table: true, askable: true, replay: "safe", host: true, blurb: "Search the web" },
+  web_save: { table: true, askable: true, replay: "never", host: true, blurb: "Save a public file into the run's folder" },
   email_search: { table: true, askable: true, replay: "safe", host: true, blurb: "Search the email account's mail" },
   email_read: { table: true, askable: true, replay: "safe", host: true, blurb: "Read an email or its thread" },
   email_draft: { table: true, askable: true, replay: "never", host: true, blurb: "Save an email draft" },

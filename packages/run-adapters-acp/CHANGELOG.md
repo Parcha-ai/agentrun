@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.52 (2026-11-21)
+
+- An ACP agent's failure words no longer keep a piece of a recipe key when the agent is still writing that key at the end of its stderr tail, or when two keys overlap: every place a key or its start appears is found in the text as written, then all of them are cut at once. <!-- changes/acp-key-cut-tail-end.md -->
+
+## 0.1.0-beta.51 (2026-11-21)
+
+- A person's answer to an ACP agent's own tool call (Cursor's shell) now reaches the run when the agent, started again, asks for another command instead: the adapter asks about each request the turn left waiting before it starts the agent, so the answer is taken and the run's pending approval moves on, and with no answer yet the run parks again with no prompt sent. Before, the answer was never taken, and the run restarted the agent every few seconds, each time with a new approval, until the plan's turn limit. The recovery note tells the agent what the person answered, and an agent that asks for another command three times (`REASK_LIMIT`) instead of the one the person allowed ends its turn with `ACP_REASK_LIMIT`. <!-- changes/acp-parked-permission-settled.md -->
+- An ACP agent (Cursor) that skipped a command the person allowed no longer has its turn cut after three more commands its tool setting allows: only commands that wait for the person count toward `REASK_LIMIT`. An allow-once is now used once: if a later agent process in the same turn asks for the same command again, the person is asked again instead of the old allow running it a second time. <!-- changes/acp-reask-parks-only.md -->
+
+## 0.1.0-beta.48 (2026-11-20)
+
+- A harness module builds its harness the way the built-in harnesses are built: `entries(builtins, kit)` now gets a kit with `kit.adapterEntry(facts, adapter)` and `kit.acpEntry({ facts, recipe, proxy })`, so the harness is offered its wire's vendor's models, named on that vendor's and OpenRouter's key rows, and gated and named by its own facts. [HARNESS.md](../../HARNESS.md) is the guide, and `examples/harness-module` is a whole module (Goose under an id of its own). <!-- changes/harness-modules-kit.md -->
+  - The built-in harnesses read the same facts as before, with or without a module loaded.
+  - An adapter harness that loads skills itself gives `kit.adapterEntry` a `skillCheck`: the run's skills it accepts are taken out of the prompt and handed to its adapter as `launch.skills`.
+  - `kit.acpEntry`'s offer promises resume `"restart"` unless given `resume: "load"`, which its recipe must declare (`declares.load`); otherwise its first launch is refused (`HARNESS_RESUME_UNDECLARED`).
+  - `missing(env)`, on either builder, says what no model key fixes (a binary, say). It is asked before the key, so the harness's offer says it and names no key. An error it or the adapter throws with a `code` refuses the harness with its facts' install fix for that code, as the built-in Goose's are.
+  - `@parcha/agentrun-serve/conformance` adds `suiteHostTools`, and `@parcha/agentrun-harness-acp/testing` exports the fake ACP agent (`FAKE_ACP_AGENT`, `fakeAgentRecipe`), so a module's author runs the conformance suite with no binary, model or key. The run spec a subject hands `createAdapterLoop` names its harness's `facts`.
+- An ACP agent's failure words cut the recipe's keys before they are shortened, so a cut that lands inside a key (the last 300 characters, or the start of the stderr tail the adapter keeps) leaves no piece of it. <!-- changes/acp-cut-keys-before-tail.md -->
+
 ## 0.1.0-beta.47 (2026-11-19)
 
 **Breaking:**

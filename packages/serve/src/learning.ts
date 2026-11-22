@@ -18,6 +18,8 @@ import { folderAt, learningInit, type LearningFolder, learningWorkspace, readLea
 import { agentFolderOf, serialBy } from "./files.js";
 import { withoutLoopbackAddresses } from "./key-refusal.js";
 import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
+import { purgedWorkflows } from "./purged-workflow.js";
+import type { Store } from "./store/index.js";
 import type { Workspace } from "./workspace/index.js";
 
 export { learnsOf } from "./learning-setting.js";
@@ -39,7 +41,7 @@ export function learningOf(env: NodeJS.ProcessEnv, given?: string): LearningMode
  *  is on main, or `dropped` with a reason from the closed list. A learning fault never refuses a run: it starts with
  *  nothing learned, `seed_failed`. */
 export const LEARNING_STATES = ["seeded", "reflecting", "merged", "dropped"] as const;
-export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] as const;
+export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] as const;
 /** A run's own `learning` on its start (POST /agents/{agent_id}/runs): it starts from what its agent learned, as a run that
  *  learns does, and keeps nothing (no compile, no correction, at any end), so runs of one agent read one learned state
  *  however many run at once. Its learning ends `dropped`, reason `use`. */
@@ -145,8 +147,9 @@ export const LEARNING_LABEL = "learning";
 export type Triggered = { source: string; text: string };
 
 /** What a run is seeded from: main's commit (null when the folder has none yet), corrections.md's text ("" when none),
- *  and its active learned workflows, by name. */
-export type Seed = { sha: string | null; corrections: string; workflows: LearnedWorkflow[] };
+ *  and its active learned workflows, by name. `at`: when a run's seed was read (seedOf, epoch ms, in the agent's
+ *  learning queue), which the agent's reset watermark is set in too: a seed read at or before it predates the reset. */
+export type Seed = { sha: string | null; corrections: string; workflows: LearnedWorkflow[]; at?: number };
 /** A workflow the agent learned, as a run may run it: its name, the line its README says what it does with, and its
  *  workflow.json whole. */
 export type LearnedWorkflow = { name: string; description: string; workflow: string };
@@ -244,31 +247,36 @@ async function seedIn(sha: string | null, snapshot: Snapshot | undefined, text: 
 }
 
 /** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent (the
- *  learning script's init), and what main holds for a run (seedIn). In the agent's queue. No git in this process: the
- *  folder's own script and file API. */
+ *  learning script's init), what main holds for a run (seedIn), and when it was read (`at`). In the agent's queue, as a
+ *  reset is (learning-reset.ts). No git in this process: the folder's own script and file API. */
 export function seedOf(data: string, agentId: string): Promise<Seed> {
   return withAgentRepo(data, agentId, async () => {
     const { workspace, end } = learningFolderOf(data, agentId);
     try {
       await learningInit(workspace);
-      return await readLearning(workspace, async ({ snapshot, body }) => seedIn(snapshot?.main ?? null, snapshot, body));
+      const seed = await readLearning(workspace, async ({ snapshot, body }) => seedIn(snapshot?.main ?? null, snapshot, body));
+      return { ...seed, at: Date.now() };
     } finally {
       await end();
     }
   });
 }
 
-/** What commit `commit` of the folder holds for a run, as seedOf reads main (one read-only exec of the script). No commit
- *  (null) is the empty seed; a commit the folder no longer holds throws. */
-export async function seedAt(ws: Workspace, commit: string | null): Promise<Seed> {
+/** What commit `commit` of the folder holds for a run, as seedOf reads main (one read-only exec of the script), but a
+ *  learned workflow a purged run wrote, by `store`'s runs (purged-workflow.ts): no claim lays, checks, replays or serves
+ *  it. `store` null: a run's own process, which reads no other run; its runner reads the seed again with its store
+ *  (runner/learning-seed.ts). No commit (null) is the empty seed; a commit the folder no longer holds throws. */
+export async function seedAt(ws: Workspace, commit: string | null, store: Pick<Store, "runs"> | null): Promise<Seed> {
   if (commit === null) return { sha: null, corrections: "", workflows: [] };
   const at = await folderAt(ws, commit);
   if (!at) throw new Error(`the learning folder's read at ${commit} is gone`);
-  return seedIn(commit, at.snapshot, async (_path, oid) => {
+  const purged = store ? await purgedWorkflows(at.snapshot, store) : new Map();
+  const seed = await seedIn(commit, at.snapshot, async (_path, oid) => {
     const bytes = at.blobs.get(oid);
     if (!bytes) throw new Error(`the learning folder's read at ${commit} holds no blob ${oid}`);
     return bytes.toString("utf8");
   });
+  return { ...seed, workflows: seed.workflows.filter(({ name }) => !purged.has(name)) };
 }
 
 /** Whether `text` holds a host secret (`shown`): as written, or, read as JSON, in any string it decodes to (its escapes

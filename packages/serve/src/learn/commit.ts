@@ -1,15 +1,16 @@
 // learningCommit: the writes on an agent's learning folder. Every call is ONE exec of the learning script on the folder's
 // main (learn/folder.ts commitChange, one hold), computed from the folder's snapshot and the bodies it names. A main
 // that moved under it (the script's exit 3) is computed again on the main that won. A folder with no main yet is made
-// in the same call (the script's init first). Three writes:
+// in the same call (the script's init first). Four writes:
 //   - a run's compiled workflow draft (learningCommit), already checked, its files whole; a file that is not on main as
 //     it was on the run's seed (or its `bases` commit) is a conflict, never written over;
 //   - one line of an owner's feedback appended to corrections.md (appendCorrection), after the refusals;
-//   - corrections.md replaced whole by a person (putCorrections), under the ETag they read.
-import type { Workspace } from "../workspace/index.js";
+//   - corrections.md replaced whole by a person (putCorrections), under the ETag they read;
+//   - a purged run's learned workflows and feedback lines taken off main by the host (forgetRunText).
+import { isWorkspaceError, type Workspace } from "../workspace/index.js";
 import type { Problem } from "./check.js";
 import { CORRECTIONS_CAP, CORRECTIONS_FILE, correctionLine, correctionsProblems } from "./corrections.js";
-import { blobOid, type FolderChange, FolderMerged, FolderRefused, FolderTooLarge, readLearning, readRunDiff, readSnapshot, type RunDiff, runDiffKey, runMergeOf, type Snapshot, writeLearning } from "./folder.js";
+import { blobOid, DIFFS_DIR, type FolderChange, folderFailure, FolderMerged, FolderRefused, FolderTooLarge, FolderUnreadable, forgetBody, learningRepair, readLearning, readRunDiff, readSnapshot, type RunDiff, runDiffKey, runMergeOf, type Snapshot, writeLearning } from "./folder.js";
 import { held, isHeld } from "./workflow-draft.js";
 
 /** A run's merge, one a round: its compiled draft's files, already checked, and its owner's correction. */
@@ -31,6 +32,11 @@ export type LearningChange = {
   /** The commit the run started from: a file that is not on main as it was on it (a person retired or approved it,
    *  another run's merge changed it) is a conflict. The script checks it on main as it commits. */
   seed?: string;
+  /** A commit the folder must still hold for the merge to land, its correction alone included (which no `same` covers):
+   *  the run's seed, when this folder held it as the run's end began (runner/learning-end.ts). A reset of the agent's
+   *  learning since removed it, so the whole merge is a conflict that says so. Absent when the run's seed was read from
+   *  another folder than this one (a Mode 2 run's end writes the folder on its disk). */
+  mustHold?: string;
   /** A file checked against another commit than `seed`, by its path: a workflow the run's compile turn revised from
    *  main's text, against the commit it read that text at. */
   bases?: Readonly<Record<string, string>>;
@@ -60,6 +66,7 @@ type Computed = LearningCommitResult | { pending: true; refusedCorrection?: Prob
 /** A write's failure as a result: the script's precondition (a file changed since the seed: a conflict), a write past
  *  what one exec carries, or the folder unavailable (retry later). */
 function failure(error: unknown): LearningCommitResult {
+  if (error instanceof FolderRefused && error.seed !== undefined) return { ok: false, reason: "conflict", problems: [{ rule: "kept", detail: "the agent's learning was reset after the run started, so what it learned has nothing to land on" }] };
   if (error instanceof FolderRefused) return { ok: false, reason: "conflict", problems: [...error.same, ...error.absent].map((path): Problem => ({ rule: "kept", path, detail: `${path} changed on main after the run started` })) };
   if (error instanceof FolderTooLarge) return { ok: false, reason: "refused", problems: [{ rule: "too_large", detail: error.message }] };
   return { ok: false, reason: "unavailable", error: (error as Error)?.message ?? String(error) };
@@ -111,7 +118,8 @@ export async function learningCommit(ws: Workspace, change: LearningChange, opts
         if (full) refusedCorrection = [full];
         else writes.push({ path: CORRECTIONS_FILE, text });
       }
-      return { result: { pending: true, ...(refusedCorrection ? { refusedCorrection } : {}) }, change: { by: run(change.runId, change.reason, change.round), writes, ...(same.length ? { same } : {}) } };
+      // `mustHold`: the script refuses the whole merge when the folder no longer holds it (a reset removed it).
+      return { result: { pending: true, ...(refusedCorrection ? { refusedCorrection } : {}) }, change: { by: run(change.runId, change.reason, change.round), writes, ...(same.length ? { same } : {}), ...(change.mustHold ? { seed: change.mustHold } : {}) } };
     }, opts.retries ?? 3);
     const { result } = done;
     return "merged" in result ? await already(ws, change, result.merged.merge, result.merged) : landed({ ...done, result });
@@ -186,4 +194,143 @@ export async function putCorrections(ws: Workspace, input: { text: string; ifMat
     return { result: { ok: true, text: input.text, oid: blobOid(input.text) }, change: { by: { person: "edited", file: CORRECTIONS_FILE }, writes: [{ path: CORRECTIONS_FILE, text: input.text }] } };
   });
   return result;
+}
+
+/**
+ * Run `runId`'s text taken off the folder's current files, at its purge (agent-delete.ts purgeRun): first its learned
+ * workflows (forgetRunWorkflows), whether or not it left a diff file; then the lines each of its merges added to
+ * corrections.md, as its diff file keeps them, dropped from main in one host commit per merge (a line a person edited
+ * since is theirs and stays); each other merge's diff that shows such a line as context written without it; then the
+ * run's diff files deleted, last, so a call stopped part way finds what it has left to do. Its merges stay in the
+ * folder's git history until a learning reset or its agent's purge deletes the folder. Idempotent: each merge's scrub
+ * lands once, nothing left to drop makes no commit, and a run with no diff file and no workflow here is no work.
+ * `commit`: the host's last commit, when one was made.
+ */
+export async function forgetRunText(ws: Workspace, runId: string): Promise<{ commit?: string }> {
+  let commit = await forgetRunWorkflows(ws, runId);
+  const names = await diffNames(ws);
+  const own = new RegExp(`^${runId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\.r\\d+)?\\.json(\\..+)?$`);
+  const mine = names.filter((name) => own.test(name));
+  if (!mine.length) return commit ? { commit } : {};
+  const lines: string[] = [];
+  for (const name of mine.filter(isDiffFile)) {
+    const added = ((await diffOrNone(ws, name))?.files ?? []).flatMap((file) => (file.path === CORRECTIONS_FILE && "patch" in file ? addedLines(file.patch) : []));
+    if (!added.length) continue;
+    lines.push(...added);
+    // Lands once, by the merge's diff key (the folder's ref for its scrub): a call that stopped after it finds it landed
+    // and takes no line again, so another run's same line stays; a merge of the run made since (a purge that stopped
+    // before the run's tombstone left it open to a grade) is a key of its own, scrubbed in its turn.
+    const done = await writeLearning<string | undefined>(ws, async ({ snapshot, body }) => {
+      if (!snapshot?.corrections) return { result: undefined };
+      const before = await body(CORRECTIONS_FILE, snapshot.corrections.oid);
+      const after = withoutLines(before, added);
+      if (after === before) return { result: undefined };
+      const write = after ? { writes: [{ path: CORRECTIONS_FILE, text: after }] } : { writes: [], deletes: [CORRECTIONS_FILE] };
+      return { result: snapshot.corrections.oid, change: { by: { host: "a purged run's corrections removed" }, purged: name.slice(0, -".json".length), ...write } };
+    }).catch((error: unknown) => (error instanceof FolderMerged ? { result: undefined, main: undefined } : Promise.reject(error)));
+    if (done.result !== undefined) {
+      forgetBody(done.result);
+      commit = done.main;
+    }
+  }
+  if (lines.length) {
+    const gone = new Set(lines);
+    for (const name of names.filter((one) => isDiffFile(one) && !own.test(one))) {
+      const diff = await diffOrNone(ws, name);
+      if (!diff) continue;
+      let changed = false;
+      const files = diff.files.map((file) => {
+        if (file.path !== CORRECTIONS_FILE || !("patch" in file)) return file;
+        const patch = withoutContext(file.patch, gone);
+        if (patch === file.patch) return file;
+        changed = true;
+        return { ...file, patch };
+      });
+      if (!changed) continue;
+      await ws.write(`${DIFFS_DIR}/${name}`, `${JSON.stringify({ ...diff, files })}\n`).catch((error: unknown) => { throw folderFailure(error); });
+    }
+  }
+  for (const name of mine) await ws.remove(`${DIFFS_DIR}/${name}`, { force: true }).catch((error: unknown) => { throw folderFailure(error); });
+  return commit ? { commit } : {};
+}
+
+/** Every path of the learned workflows on `snapshot`'s main whose workflow.json run `runId` wrote last (SnapLearned.run,
+ *  the rule purged-workflow.ts reads): each one's whole `workflows/<name>/` folder, its files and links. */
+const runWorkflowPaths = (snapshot: Snapshot | undefined, runId: string): string[] =>
+  (snapshot?.workflows ?? []).filter((item) => item.run === runId).flatMap((item) => [...item.files.map(({ path }) => path), ...(item.links ?? [])]);
+
+/** Run `runId`'s learned workflows taken off main in one host commit, so every read of main finds them gone: the commit,
+ *  or undefined when main holds none (a repeat finds none left, and one another run wrote since names that run). The
+ *  snapshot is rebuilt from main first (one more exec): a merge that moved main and stopped before its snapshot leaves
+ *  one that names none of that merge's workflows, and finding no work commits nothing that would show it stale. */
+async function forgetRunWorkflows(ws: Workspace, runId: string): Promise<string | undefined> {
+  if (await readSnapshot(ws)) await learningRepair(ws);
+  const done = await writeLearning<boolean>(ws, async ({ snapshot }) => {
+    const deletes = runWorkflowPaths(snapshot, runId);
+    return deletes.length ? { result: true, change: { by: { host: "a purged run's workflows removed" }, writes: [], deletes } } : { result: false };
+  });
+  return done.result ? done.main : undefined;
+}
+
+/** The names in the folder's diffs directory; none when it is not there. */
+const diffNames = (ws: Workspace): Promise<string[]> =>
+  ws.list(DIFFS_DIR).then((entries) => entries.filter((entry) => entry.kind === "file").map((entry) => entry.name), (error: unknown) => (isWorkspaceError(error, "NOT_FOUND") ? [] : Promise.reject(folderFailure(error))));
+/** A merge's diff file, `<key>.json`; not one a stopped write left half written (`.json.<suffix>`). */
+const isDiffFile = (name: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/.test(name);
+/** Diff file `name` as readRunDiff reads it, or undefined when it does not read as one: a folder that can't be read
+ *  throws. */
+const diffOrNone = (ws: Workspace, name: string): Promise<RunDiff | undefined> =>
+  readRunDiff(ws, name.slice(0, -".json".length)).catch((error: unknown) => (error instanceof FolderUnreadable ? Promise.reject(error) : undefined));
+
+/** The lines a patch (git's hunks) adds and does not take away: what a merge appended. */
+function addedLines(patch: string): string[] {
+  const lines = patch.split("\n");
+  const taken = new Map<string, number>();
+  for (const line of lines) if (line.startsWith("-")) taken.set(line.slice(1), (taken.get(line.slice(1)) ?? 0) + 1);
+  return lines.filter((line) => line.startsWith("+")).map((line) => line.slice(1)).filter((line) => {
+    const left = taken.get(line) ?? 0;
+    if (left) taken.set(line, left - 1);
+    return !left && line.trim() !== "";
+  });
+}
+
+/** `text` with the last line equal to each of `lines` left out. */
+function withoutLines(text: string, lines: readonly string[]): string {
+  const kept = text.split("\n");
+  for (const line of lines) {
+    const at = kept.lastIndexOf(line);
+    if (at >= 0) kept.splice(at, 1);
+  }
+  return kept.join("\n");
+}
+
+/** `patch` (git's hunks) with each context line that is one of `gone` left out, a hunk that lost one given the header
+ *  of what it keeps: the start moved past the lines it lost at its top (git names the line before when it keeps none
+ *  on a side), each count less what it lost. */
+function withoutContext(patch: string, gone: ReadonlySet<string>): string {
+  const lines = patch.split("\n");
+  const out: string[] = [];
+  const dropped = (line: string) => line.startsWith(" ") && gone.has(line.slice(1));
+  for (let i = 0; i < lines.length;) {
+    const head = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/.exec(lines[i]!);
+    if (!head) {
+      out.push(lines[i++]!);
+      continue;
+    }
+    let end = i + 1;
+    while (end < lines.length && !lines[end]!.startsWith("@@")) end++;
+    const body = lines.slice(i + 1, end);
+    const kept = body.filter((line) => !dropped(line));
+    const lost = body.length - kept.length;
+    if (!lost) out.push(lines[i]!, ...body);
+    else {
+      const top = body.findIndex((line) => !dropped(line));
+      const lead = top < 0 ? lost : top;
+      const [olds, news] = [Number(head[2] ?? 1) - lost, Number(head[4] ?? 1) - lost];
+      const at = (start: string, count: number) => Number(start) + lead - (count ? 0 : 1);
+      out.push(`@@ -${at(head[1]!, olds)},${olds} +${at(head[3]!, news)},${news} @@${head[5]}`, ...kept);
+    }
+    i = end;
+  }
+  return out.join("\n");
 }

@@ -26,7 +26,7 @@ const entryOf = (id) => FAUX.kinds.PROVIDERS.find((one) => one.id === id);
 test("under --faux, Settings → Computers lists the four faux providers and nothing else", async (t) => {
   const view = await (await routes(t)).view();
   assert.deepEqual(providersOf(view), [["sandbox", "faux-sandbox"], ["sandbox", "faux-broken"], ["desktop", "faux-desktop"], ["desktop", "faux-dial"]]);
-  assert.deepEqual(providerOf(view, "sandbox", "faux-sandbox"), { id: "faux-sandbox", name: "Faux sandbox", metered: false, secrets: [{ name: "computer:faux-sandbox:FAUX_SANDBOX_KEY", set: false, source: null, changed_at: null }], required: ["computer:faux-sandbox:FAUX_SANDBOX_KEY"], ready: false, why: "Faux sandbox needs FAUX_SANDBOX_KEY saved: save it in Settings → Computers", runs_refused: null, shell: "computer", host_tools: hostToolsOf("computer") });
+  assert.deepEqual(providerOf(view, "sandbox", "faux-sandbox"), { id: "faux-sandbox", name: "Faux sandbox", metered: false, secrets: [{ name: "computer:faux-sandbox:FAUX_SANDBOX_KEY", set: false, source: null, changed_at: null }], required: ["computer:faux-sandbox:FAUX_SANDBOX_KEY"], ready: false, why: "Faux sandbox needs FAUX_SANDBOX_KEY saved: save it in Settings → Computers", runs_refused: null, folder: "bind", shell: "computer", host_tools: hostToolsOf("computer") });
   assert.deepEqual(view.kinds.map((kind) => [kind.kind, kind.offered]), [["none", true], ["sandbox", true], ["desktop", true], ["phone", false], ["browser", false]]);
 });
 

@@ -70,7 +70,7 @@ test("archiveRun sets the run's own archive time; unarchive clears it", async ()
 test("stop writes one stop command and returns true for a live run", async () => {
   const store = await freshStore();
   const id = await queuedRun(store);
-  assert.equal(await stop(store, id), true);
+  assert.equal(await stop(store, moment({ id })), true);
   const rows = await commandsOf(store, id);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].kind, "stop");
@@ -82,16 +82,25 @@ test("stop returns false and writes nothing for an imported run", async () => {
     id: "imp-1", agentId: "a1", revisionId: "r1", importedFrom: { source: "codex", session: "s1" },
     launch: { body: { input: { content: "hi" }, title: "t", place: { mode: "runner" } } }, startedAt: Date.now(), transcript: [],
   });
-  assert.equal(await stop(store, "imp-1"), false);
+  assert.equal(await stop(store, await momentOverStore(store, "imp-1")), false);
   assert.equal((await commandsOf(store, "imp-1")).length, 0);
 });
 
-test("stop returns false and writes nothing for a run already ended (RunFinal)", async () => {
+test("stop returns false and writes nothing for a run that reads ended", async () => {
   const store = await freshStore();
   const id = await queuedRun(store);
   const claim = await store.claim(id, "runner-a");
   await store.runs.update(claim, { state: "ended" });
-  assert.equal(await stop(store, id), false);
+  assert.equal(await stop(store, await momentOverStore(store, id)), false);
+  assert.equal((await commandsOf(store, id)).length, 0);
+});
+
+test("stop returns false and writes nothing for a run its moment read going on that has ended since (RunFinal)", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  const claim = await store.claim(id, "runner-a");
+  await store.runs.update(claim, { state: "ended" });
+  assert.equal(await stop(store, moment({ id })), false);
   assert.equal((await commandsOf(store, id)).length, 0);
 });
 
@@ -716,6 +725,22 @@ test("a learning run whose start can't be made from the seed it read starts with
   assert.deepEqual(learning, { seed: null, section: "", seedFailed: "not_copied" });
 });
 
+test("a learning run on a disk its start names starts from nothing the server's folder learned (other_disk), its row on that disk; its agent's own disk is the default's", async () => {
+  const store = await freshStore();
+  const read = [];
+  const deps = learningDeps({
+    seedFor: async (agentId) => (read.push(agentId), { seed: learningSeed() }),
+    launchDiskOf: async (_agentId, named) => (named === undefined ? { diskId: "agent-disk", kind: "agent" } : { diskId: named, kind: "launch" }),
+  });
+  const named = await startRun(store, deps, entryOf(), { input: { content: "hi" }, archil_disk: { disk_id: "customer-disk" } });
+  assert.deepEqual(readLaunchBody((await store.runs.launch(named.id)).body).learning, { seed: null, section: "", seedFailed: "other_disk" });
+  assert.equal(named.disk, "customer-disk", "the run's row keeps its disk");
+  assert.deepEqual(read, [], "the default disk's folder is never read for it");
+  const own = await startRun(store, deps, entryOf(), { input: { content: "hi" } });
+  assert.equal(readLaunchBody((await store.runs.launch(own.id)).body).learning.seed, "seed-abc", "the agent's own disk starts from the default disk's learning");
+  assert.equal(own.disk, null);
+});
+
 test("a launch's seedFailed outside its list is read as none", () => {
   assert.equal(readLaunchBody({ input: { content: "x" }, title: "t", place: { mode: "runner" }, learning: { seed: null, section: "", seedFailed: "elsewhere" } }).learning.seedFailed, undefined);
 });
@@ -812,7 +837,7 @@ test("launchless run controls preserve message, stop and cancel commands", async
     const id = await queuedRun(store, `legacy-${action}`);
     await assert.rejects(store.runs.launch(id), StoreLaunchMissing);
     if (action === "message") assert.equal((await message(store, moment({ id }), "Keep going.")).mode, "steer");
-    else if (action === "stop") assert.equal(await stop(store, id), true);
+    else if (action === "stop") assert.equal(await stop(store, moment({ id })), true);
     else assert.equal(await cancel(store, moment({ id })), true);
     const rows = await commandsOf(store, id);
     assert.deepEqual(rows.map(({ kind, body }) => [kind, body]), [action === "message" ? ["steer", { text: "Keep going." }] : [action, {}]]);
@@ -828,7 +853,7 @@ test("control launch reads propagate storage errors and write no command", async
   for (const action of ["message", "stop", "cancel"]) {
     const id = await queuedRun(store, `failed-${action}`);
     await assert.rejects(
-      () => action === "message" ? message(failing, moment({ id }), "Keep going.") : action === "stop" ? stop(failing, id) : cancel(failing, moment({ id })),
+      () => action === "message" ? message(failing, moment({ id }), "Keep going.") : action === "stop" ? stop(failing, moment({ id })) : cancel(failing, moment({ id })),
       (error) => error === failure,
     );
     assert.deepEqual(await commandsOf(store, id), []);

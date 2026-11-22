@@ -104,6 +104,43 @@ function cliOf(env, seen) {
   };
 }
 
+test("CLI capture API commands resolve their documented noun and verb through the public bin", async (t) => {
+  const { env } = scratch(t);
+  const server = await listener(t, () => [200, "application/json", '{"received":true}']);
+  const reference = readFileSync(new URL("../skills/agentrun-cli/references/commands.md", import.meta.url), "utf8");
+  const token = "capture-command-test-token";
+  const cases = [
+    { verb: "enroll", method: "POST", path: "/connections", body: { runtime: "codex", project: "/fixture/project" } },
+    { verb: "list", method: "GET", path: "/connections" },
+    { verb: "revoke", method: "DELETE", path: "/connections/connection-1", args: ["connection-1"] },
+    { verb: "start", method: "POST", path: "/connections/connection-1/runs", args: ["connection-1"],
+      body: { session_id: "session-1", turn_id: "turn-1", input: "Review the report.", instructions: "Keep it brief.", policy_complete: true },
+      flags: ["--idempotency-key", "source-turn-1"] },
+    { verb: "get", method: "GET", path: "/runs/run-1", args: ["run-1"] },
+    { verb: "events", method: "POST", path: "/runs/run-1/events", args: ["run-1"],
+      body: { sequence: 1, events: [{ type: "message", role: "user", text: "Review the report." }] } },
+    { verb: "complete", method: "POST", path: "/runs/run-1/complete", args: ["run-1"],
+      body: { status: "completed", answer: "Report ready.", evidence_complete: true } },
+  ];
+  for (const example of cases) await t.test(example.verb, async () => {
+    const args = ["cli-learning", example.verb, ...(example.args ?? []), ...(example.flags ?? []),
+      ...(example.body ? ["--body", JSON.stringify(example.body)] : []), "--base-url", server.base];
+    const before = server.requests.length;
+    const result = await run(env, args, { extra: { AGENTRUN_API_KEY: token }, timeout: 10_000 });
+    assert.equal(result.code, 0, result.err);
+    assert.deepEqual(JSON.parse(result.out), { received: true });
+    assert.equal(server.requests.length, before + 1, "one API request, with no local installer dispatch");
+    const request = server.requests.at(-1);
+    assert.equal(request.method, example.method);
+    assert.equal(request.url, `/v2/cli-learning${example.path}`);
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    assert.equal(request.headers["idempotency-key"], example.verb === "start" ? "source-turn-1" : undefined);
+    assert.deepEqual(request.body.length ? JSON.parse(request.body.toString()) : undefined, example.body);
+    assert.doesNotMatch(result.out + result.err, new RegExp(token));
+    assert.ok(reference.includes(`### \`agentrun cli-learning ${example.verb}${example.args ? " " : "`"}`), "the generated reference advertises the invocation tested");
+  });
+});
+
 test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs and sends it a message, the token never in its output", { timeout: 120_000 }, async (t) => {
   const { dir, env } = scratch(t);
   const server = await serve(t, dir, env);

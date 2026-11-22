@@ -301,6 +301,13 @@ export type FolderChange = {
   deletes?: readonly string[];
   absent?: readonly string[];
   same?: readonly { commit: string; path: string }[];
+  /** A run's merge: the commit the run was seeded from, which the folder must still hold, whatever the merge writes (a
+   *  correction alone included), named only when this folder held it as the run's end began (commit.ts mustHold): one a
+   *  reset of the agent's learning removed refuses the merge. */
+  seed?: string;
+  /** The host's scrub of one merge of a purged run (commit.ts forgetRunText), by its diff key (runDiffKey): lands once,
+   *  as a run's merge does (a second is FolderMerged, naming the first). */
+  purged?: string;
 };
 
 /** A commit's message and trailers, as git keeps them: a person's names their action and the file, with Changed-By (and
@@ -489,6 +496,14 @@ export function forgetBodies(): void {
   bodyBytes = 0;
 }
 
+/** Blob `oid`'s body forgotten, when it was kept: a text a purge took off main is held in this process no longer. */
+export function forgetBody(oid: string): void {
+  const held = bodies.get(oid);
+  if (held === undefined) return;
+  bodies.delete(oid);
+  bodyBytes -= held.length;
+}
+
 /** File `path`'s bytes, which must be blob `oid` (else Mismatch): through the file API, never git. */
 async function bytesOf(ws: Workspace, path: string, oid: string): Promise<Buffer> {
   let bytes: Uint8Array;
@@ -675,7 +690,7 @@ export class FolderTooLarge extends Error {
 export type Committed =
   | { landed: true; main: string; snapshot: Snapshot }
   | { stale: true; main: string | undefined }
-  | { refused: { absent: string[]; same: string[] } }
+  | { refused: { absent: string[]; same: string[]; seed?: string } }
   | { unaligned: true; main: string }
   | { merged: string };
 
@@ -693,7 +708,7 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
   const writes = change?.writes ?? [];
   for (const { path } of writes) checkPath(path);
   for (const path of [...(change?.deletes ?? []), ...(change?.absent ?? []), ...(change?.same ?? []).map(({ path }) => path)]) checkPath(path);
-  for (const { commit } of change?.same ?? []) if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
+  for (const commit of [...(change?.same ?? []).map(({ commit }) => commit), ...(change?.seed !== undefined ? [change.seed] : [])]) if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
   const ref = `refs/agentrun/import-${randomBytes(8).toString("hex")}`;
   const run = change && "run" in change.by ? runDiffKey(change.by.run, change.by.round) : undefined;
   const header = [
@@ -702,6 +717,8 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
     ...(run ? changed.map((path) => `path ${path}`) : []),
     ...(change?.absent ?? []).map((path) => `absent ${path}`),
     ...(change?.same ?? []).map(({ commit, path }) => `same ${commit} ${path}`),
+    ...(change?.seed !== undefined ? [`seed ${change.seed}`] : []),
+    ...(change?.purged !== undefined ? [`purged ${change.purged}`] : []),
   ];
   const stream = importStream(ref, base?.main, writes, change?.deletes ?? [], messageOf(change?.by).message, seconds);
   const args = base ? ["commit", base.main, ...(run ? [run] : [])] : ["init"];
@@ -713,10 +730,11 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
   if (result.code === 3) return { stale: true, main: said || undefined };
   if (result.code === 4) {
     const lines = said.split("\n");
-    return { refused: { absent: lines.filter((line) => line.startsWith("absent ")).map((line) => line.slice(7)), same: lines.filter((line) => line.startsWith("same ")).map((line) => line.slice(5)) } };
+    const seed = lines.find((line) => line.startsWith("seed "))?.slice(5);
+    return { refused: { absent: lines.filter((line) => line.startsWith("absent ")).map((line) => line.slice(7)), same: lines.filter((line) => line.startsWith("same ")).map((line) => line.slice(5)), ...(seed !== undefined ? { seed } : {}) } };
   }
   if (result.code === 5 && /^[0-9a-f]{40,64}$/.test(said)) return { unaligned: true, main: said };
-  if (result.code === 6 && run && /^[0-9a-f]{40,64}$/.test(said)) return { merged: said };
+  if (result.code === 6 && (run || change?.purged !== undefined) && /^[0-9a-f]{40,64}$/.test(said)) return { merged: said };
   throw failed(args[0]!, result);
 }
 
@@ -767,6 +785,16 @@ export async function textsAt(ws: Workspace, commit: string, paths: readonly str
   return out;
 }
 
+/** Whether the folder holds `commit`: one read-only exec of the script's show with no path, which reads nothing but
+ *  that. False once a reset of the agent's learning removed it (or the folder is not a repository). */
+export async function holdsCommit(ws: Workspace, commit: string): Promise<boolean> {
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
+  const result = await runScript(ws, ["show", commit]);
+  if (result.code === 1) return false;
+  if (result.code !== 0) throw failed("show", result);
+  return true;
+}
+
 export async function learningRepair(ws: Workspace): Promise<Snapshot | undefined> {
   for (let tries = 0; tries < WRITE_TRIES; tries++) {
     const read = await runScript(ws, ["read"]);
@@ -803,11 +831,14 @@ export async function learningInit(ws: Workspace): Promise<string> {
 export class FolderRefused extends Error {
   readonly absent: string[];
   readonly same: string[];
-  constructor(refused: { absent: string[]; same: string[] }) {
-    super(`the learning folder's main refused the write: ${[...refused.absent.map((path) => `${path} is there`), ...refused.same.map((path) => `${path} changed`)].join(", ")}`);
+  /** A run's merge whose seed (FolderChange.seed) the folder no longer holds: its agent's learning was reset. */
+  readonly seed: string | undefined;
+  constructor(refused: { absent: string[]; same: string[]; seed?: string }) {
+    super(`the learning folder's main refused the write: ${[...(refused.seed !== undefined ? [`the run's seed ${refused.seed} is not in the folder`] : []), ...refused.absent.map((path) => `${path} is there`), ...refused.same.map((path) => `${path} changed`)].join(", ")}`);
     this.name = "FolderRefused";
     this.absent = refused.absent;
     this.same = refused.same;
+    this.seed = refused.seed;
   }
 }
 

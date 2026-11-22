@@ -14,8 +14,7 @@ import { HostError } from "../dist/host.js";
 import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NETWORK_DESCRIPTOR, NotFound, VERSION } from "./fake-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
-const { hostedCommands } = await import("../dist/hosted/scripts.js");
-const { WINDOW_MANAGER } = await import("../dist/desktop.js");
+const { AGENTRUN_DIAL, dialLaunch, hostedCommands, initFlags, quote } = await import("../dist/hosted/scripts.js");
 const VALUES = await import("../dist/hosted/values.js");
 
 const COMPUTER = "agentrun.computer";
@@ -298,11 +297,104 @@ test("the root-only script, run by sh: group and other write go from each path a
 	}
 });
 
+test("dialLaunch, run by sh: the root-only step when rootOnly names paths, then the sockets step, then agentrun-dial, the URL its quoted assignment when given; a step that fails never reaches agentrun-dial", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-dial-launch-"));
+	try {
+		// Not root here: the steps reach root through sudo -n, which this stand-in runs as it is.
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1" = -n ] && shift\nexec "$@"\n', { mode: 0o755 });
+		const dial = join(root, "agentrun-dial");
+		writeFileSync(dial, '#!/bin/sh\necho "dialed ${AGENTRUN_ATTACH_URL-unset}"\n', { mode: 0o755 });
+		const local = join(root, "local");
+		mkdirSync(local);
+		const bus = join(root, "dbus-Y8OW6E3FDx");
+		execFileSync("python3", ["-I", "-c", "import socket, sys\ns = socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])", bus]);
+		const linked = join(root, "linked");
+		symlinkSync(local, linked);
+		const ATTACH = "wss://agentrun.example/v2/computers/attach?a=1&b='2' $HOME";
+		// The line as dialLaunch gives it, with the box's agentrun-dial and /tmp's buses pointed here: nothing of this host's is touched.
+		const run = (options, { path = bin, env = {} } = {}) => {
+			const line = dialLaunch(options);
+			assert.ok(line.endsWith(` exec ${AGENTRUN_DIAL}`), line);
+			assert.equal(line.split(quote("/tmp/dbus-*")).length, 2, `one sockets step: ${line}`);
+			const here = `${line.replace(quote("/tmp/dbus-*"), quote(`${root}/dbus-*`)).slice(0, -AGENTRUN_DIAL.length)}${dial}`;
+			for (const open of [local, bus]) chmodSync(open, 0o777);
+			return spawnSync("sh", ["-c", here], { env: { PATH: `${path}:${process.env.PATH}`, ...env }, encoding: "utf8" });
+		};
+
+		const all = dialLaunch({ rootOnly: [local], attach: ATTACH });
+		assert.ok(all.indexOf("# agentrun-computer: root-only") < all.indexOf("# agentrun-computer: sockets"), "root-only first, then sockets");
+		const ran = run({ rootOnly: [local], attach: ATTACH });
+		assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+		assert.equal(ran.stdout, `closed ${bus}\ndialed ${ATTACH}\n`, "the buses closed, then agentrun-dial with the URL as given");
+		assert.equal(statSync(local).mode & 0o777, 0o755, "the rootOnly path made root's alone");
+		assert.equal(statSync(bus).mode & 0o777, 0o770, "the bus closed to others");
+
+		assert.equal(dialLaunch({ rootOnly: [] }), dialLaunch({}), "no paths: no root-only step");
+		assert.doesNotMatch(dialLaunch({}), /root-only|AGENTRUN_ATTACH_URL/);
+		const inherited = run({}, { env: { AGENTRUN_ATTACH_URL: "from-the-env" } });
+		assert.equal(inherited.status, 0, inherited.stdout + inherited.stderr);
+		assert.equal(inherited.stdout, `closed ${bus}\ndialed from-the-env\n`, "no attach: agentrun-dial reads the URL from the env it inherits");
+
+		const refused = run({ rootOnly: [linked], attach: ATTACH });
+		assert.equal(refused.status, 6, refused.stdout + refused.stderr);
+		assert.match(refused.stdout, /is a symbolic link/);
+		assert.doesNotMatch(refused.stdout, /closed|dialed/, "a root-only step that fails runs neither the sockets step nor agentrun-dial");
+		assert.equal(statSync(bus).mode & 0o777, 0o777);
+
+		// A chmod that fails: the sockets step fails, and agentrun-dial never starts.
+		const failing = join(root, "failing");
+		mkdirSync(failing);
+		writeFileSync(join(failing, "chmod"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+		const shut = run({ attach: ATTACH },{ path: `${failing}:${bin}` });
+		assert.equal(shut.status, 1, shut.stdout + shut.stderr);
+		assert.equal(shut.stdout, `failed ${bus}\n`, "a sockets step that fails never reaches agentrun-dial");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("a host with no file API gets the daemon through exec's stdin", async () => {
 	const { provider, fake } = setup({}, { fileApi: false });
 	made(await create(provider));
 	assert.deepEqual(fake.uploads.map(({ through }) => through), ["exec"]);
 	assert.deepEqual(only(fake).daemon.bytes, DAEMON_BYTES);
+});
+
+test("create answers with what the vendor's read of the running machine says it was given (resources), and with none where it says none", async () => {
+	const { provider, fake } = setup();
+	const given = { cpus: 2, memoryMb: 4096, diskGb: 10 };
+	const read = fake.host.get.bind(fake.host);
+	fake.host.get = async (id, ctx) => {
+		const machine = await read(id, ctx);
+		return machine && { ...machine, resources: given };
+	};
+	assert.deepEqual(made(await create(provider)).resources, given);
+	fake.host.get = read;
+	assert.equal(Object.hasOwn(made(await create(provider)), "resources"), false, "none said: none answered, never what was asked");
+});
+
+test("a retried create, and another instance's create of the same request, answer the computer's resources too, read from the vendor (#3338 review)", async () => {
+	const { provider, fake } = setup();
+	const given = { cpus: 4, memoryMb: 8192 };
+	const read = fake.host.get.bind(fake.host);
+	fake.host.get = async (id, ctx) => {
+		const machine = await read(id, ctx);
+		return machine && { ...machine, resources: given };
+	};
+	const first = made(await provider.create(SPEC, { requestId: "same-request" }));
+	assert.deepEqual(first.resources, given);
+	// The same request again on this provider: the computer it made is found by its name, not made again.
+	const again = made(await provider.create(SPEC, { requestId: "same-request" }));
+	assert.equal(again.id, first.id);
+	assert.deepEqual(again.resources, given, "a retry answers the vendor's figures");
+	// Another instance over the same vendor adopts it.
+	const other = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const adopted = made(await other.create(SPEC, { requestId: "same-request" }));
+	assert.equal(adopted.id, first.id);
+	assert.deepEqual(adopted.resources, given, "an adopted computer answers the vendor's figures");
+	assert.equal(fake.machines.size, 1, "one machine");
 });
 
 test("create waits while the machine starts, and until the listing shows it twice", async () => {
@@ -1275,6 +1367,19 @@ test("the pid1 entrypoint, run by sh, gives init --network and the form where on
 	}
 });
 
+test("init's flags carry --window-manager last where asked, as the entrypoint and a dial machine's AGENTRUN_INIT_ARGS give them, and the child's start as its ninth word", () => {
+	const deadline = "2030-01-01T00:00:00.000Z";
+	assert.deepEqual(initFlags({ deadline, windowManager: true }), ["--deadline", deadline, "--user", "2510:2510", "--own-network", "--window-manager"]);
+	assert.deepEqual(initFlags({ deadline, network: "open", windowManager: true }).slice(-3), ["--network", "open", "--window-manager"]);
+	assert.ok(!initFlags({ deadline }).includes("--window-manager"));
+	assert.deepEqual(hostedCommands({ deadline, display: ":0", windowManager: true }).entrypoint.slice(-1), ["--window-manager"]);
+	const { start } = hostedCommands({ deadline, display: ":0", windowManager: true });
+	assert.deepEqual(start.slice(start.indexOf(DAEMON) + 5), [":0", "", "", "1"]);
+	const init = start.find((word) => word.startsWith("# agentrun-computer: init"));
+	assert.match(init, /g=\$\{9-\}/);
+	assert.match(init, /\$\{g:\+--window-manager\}/, "init takes it as --window-manager");
+});
+
 test("a child's start gives init the network form as its eighth word, after the display and the maximum, empty where not given", () => {
 	const at = (options) => {
 		const { start } = hostedCommands({ deadline: "2030-01-01T00:00:00.000Z", ...options });
@@ -1604,47 +1709,33 @@ test("pid1: the machine's command is the entrypoint; the daemon goes in beside i
 	assert.equal(provider.capabilities().daemon, "pid1");
 });
 
-test("a desktop's window manager starts once the display answers, with DISPLAY, where the host's facts say so; one that cannot start or ends at once fails create, and nothing is left", async () => {
-	const starts = (fake, id) => fake.requests.filter(({ machine, method }) => machine === id && method === "process.start").map(({ params }) => params);
-	const managed = setup({ kind: "desktop" }, { facts: { windowManager: true } });
-	made(await create(managed.provider));
-	const m = only(managed.fake);
-	const [server, manager, ...more] = starts(managed.fake, m.id);
-	assert.equal(server.argv[0], "Xvfb", "the X server first");
-	assert.deepEqual(manager, { argv: [...WINDOW_MANAGER], env: { DISPLAY: ":0", NO_AT_BRIDGE: "1" } }, "then the window manager, on the display, with no accessibility bus");
-	assert.deepEqual(more, []);
-	const order = managed.fake.requests.filter(({ machine }) => machine === m.id).map(({ method, params }) => (method === "process.start" ? params.argv[0] : method));
-	const between = order.slice(order.indexOf("Xvfb") + 1, order.indexOf(WINDOW_MANAGER[0]));
-	assert.ok(between.filter((method) => method === "hello").length >= 2, `the window manager starts after a hello saw the display, not before: ${order.join(", ")}`);
+const processStarts = (fake, id) => fake.requests.filter(({ machine, method }) => machine === id && method === "process.start").map(({ params }) => params);
+
+test("a desktop whose host's facts say windowManager has computerd start it (init --window-manager): create starts the X server alone and waits until hello says the manager runs; one that ended fails create in computerd's words, and nothing is left", async () => {
+	for (const daemon of ["child", "pid1"]) {
+		const managed = setup({ kind: "desktop" }, { facts: { windowManager: true, daemon } });
+		made(await create(managed.provider));
+		const m = only(managed.fake);
+		assert.equal(m.init.windowManager, true, `${daemon}: init is asked for the window manager`);
+		assert.deepEqual(processStarts(managed.fake, m.id).map(({ argv }) => argv[0]), ["Xvfb"], `${daemon}: the X server alone: computerd starts the manager`);
+		assert.ok(managed.fake.requests.filter(({ machine, method }) => machine === m.id && method === "hello").length >= 3, "hello until the manager runs");
+	}
 
 	const bare = setup({ kind: "desktop" });
 	made(await create(bare.provider));
-	assert.deepEqual(starts(bare.fake, only(bare.fake).id).map(({ argv }) => argv[0]), ["Xvfb"], "no window manager unless the host's facts say so");
+	assert.equal(only(bare.fake).init.windowManager, false, "no --window-manager unless the host's facts say so");
+	assert.deepEqual(processStarts(bare.fake, only(bare.fake).id).map(({ argv }) => argv[0]), ["Xvfb"]);
+	const linux = setup({}, { facts: { windowManager: true } });
+	made(await create(linux.provider));
+	assert.equal(only(linux.fake).init.windowManager, false, "nor on a computer with no desktop");
 
-	const missing = setup({ kind: "desktop" }, { facts: { windowManager: true }, display: "manager missing", lingers: { reads: 1, lists: 1 } });
-	const failed = await create(missing.provider);
-	assert.equal(failed.error?.code, "not_found");
-	assert.match(failed.error.message, /the window manager \(unshare .*dbus-run-session .*xfwm4 [^<]*\) did not start on :0: unshare: executable file not found/);
-	await nothingLeft(missing.fake, "a window manager that cannot start");
-
-	const ends = setup({ kind: "desktop" }, { facts: { windowManager: true }, display: "manager dies", lingers: { reads: 1, lists: 1 } });
-	const ended = await create(ends.provider);
-	assert.equal(ended.error?.code, "vendor");
-	assert.match(ended.error.message, /the window manager \(unshare .*dbus-run-session .*xfwm4 [^<]*\) ended with exit code 1 within 1 s of starting on :0: Xfconf could not be initialized/);
-	await nothingLeft(ends.fake, "a window manager that ends at once");
-	assert.ok(
-		managed.fake.requests.some(({ machine, method, params }) => machine === m.id && method === "process.wait" && params.timeoutMs === 1000),
-		"create watches the window manager for a second",
-	);
-
-	// The watch has its own bound: a display with a short timeoutMs that came up with less than a second of it left still
-	// gets a healthy manager, whose process.wait computerd holds the whole second.
-	let held;
-	held = setup(
-		{ kind: "desktop", desktop: { timeoutMs: 700 } },
-		{ facts: { windowManager: true }, onStep: async (name) => (name === "process.wait" && held.fake.requests.at(-1).params.timeoutMs === 1000 ? new Promise((done) => setTimeout(done, 1000)) : undefined) },
-	);
-	made(await create(held.provider));
+	for (const display of ["manager missing", "manager dies"]) {
+		const broken = setup({ kind: "desktop" }, { facts: { windowManager: true }, display, lingers: { reads: 1, lists: 1 } });
+		const failed = await create(broken.provider);
+		assert.equal(failed.error?.code, "vendor");
+		assert.match(failed.error.message, /the window manager computerd started \(dbus-run-session -- xfwm4 [^)]*\) ended with exit code \d+ within 1 s of starting on :0: \S/);
+		await nothingLeft(broken.fake, `a window manager computerd started that ended (${display})`);
+	}
 });
 
 test("pid1 desktop: the entrypoint carries the display, and init starts with it", async () => {

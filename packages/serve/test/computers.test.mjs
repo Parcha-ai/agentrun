@@ -6,7 +6,7 @@
 // (workspace-resolve-computer.test.mjs).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
@@ -17,7 +17,8 @@ import { getSealedKey } from "../dist/server-keys.js";
 import { fakeFactories, KINDS, tools } from "./fixtures/computer-kinds.mjs";
 import { storeOn, T0 } from "./store-helpers.mjs";
 import { hostToolDefs } from "@parcha/agentrun-kernel/kernel";
-import { hostToolsOf, SHELL_NOTES } from "../dist/workspace/resolve-computer.js";
+import { hostToolsOf, registryHere, resolveComputer, SHELL_NOTES } from "../dist/workspace/resolve-computer.js";
+import { KEY_TABLE, settingOptions } from "../dist/computer-keys.js";
 
 /** A key's changed_at: the store's clock when it was saved. */
 const CHANGED = new Date(T0).toISOString();
@@ -63,11 +64,11 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
     assert.deepEqual(kindOf(view, kind).providers.map((one) => one.id), PROVIDERS.filter((one) => one.kinds.includes(kind)).map((one) => one.id), `${kind}: the providers whose capabilities serve the kind, in the registry's order`);
   }
   assert.ok(kindOf(view, "sandbox").providers.some((one) => one.id === "docker"), "Docker serves the sandbox kind");
-  assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, runs_refused: null, shell: "computer", host_tools: hostToolsOf("computer") });
+  assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, runs_refused: null, folder: "bind", shell: "computer", host_tools: hostToolsOf("computer") });
   assert.equal(providerOf(view, "sandbox", "daytona").metered, true, "metered as the kind registry says");
   assert.equal(providerOf(view, "sandbox", "daytona").ready, false);
   assert.match(providerOf(view, "sandbox", "daytona").why, /Daytona can't mount this server's run folders/);
-  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers", runs_refused: null, network: "the vendor's own network; this server's allow-list doesn't apply", shell: "none", host_tools: ["read", "write", "edit"], shell_note: SHELL_NOTES.none });
+  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers", runs_refused: null, folder: null, network: "the vendor's own network; this server's allow-list doesn't apply", shell: "none", host_tools: ["read", "write", "edit"], shell_note: SHELL_NOTES.none });
   assert.equal(kindOf(view, "sandbox").offered, true);
   // What this server's allow-list means for each provider, from its descriptor's network and the kind: none for a sandbox
   // of Docker's or of a hosted computer that runs init's egress proxy (Daytona, Modal, E2B), which takes the list; for
@@ -162,6 +163,20 @@ test("a kind no provider can serve here is not offered, and says why: in Mode 2 
   assert.deepEqual([kindOf(view, "phone").offered, kindOf(view, "phone").why, kindOf(view, "phone").providers], [false, "no provider serves a phone computer", []]);
 });
 
+test("each kind says whether its runs can record their screen here: a desktop, phone or browser with ffmpeg on the PATH can; without it, each says ffmpeg is missing; a sandbox and none never can, in words", async (t) => {
+  const { store } = await storeOn(t);
+  const viewOn = (path) => createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", path }).view();
+  const records = (view) => Object.fromEntries(view.kinds.map((one) => [one.kind, one.record]));
+  const bin = await mkdtemp(join(tmpdir(), "record-path-"));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const noFfmpeg = "ffmpeg isn't installed on this server (no ffmpeg command on PATH)";
+  const never = { none: { available: false, why: "with no computer, there is no screen to record" }, sandbox: { available: false, why: "a sandbox has no screen to record (a desktop, a phone or a browser does)" } };
+  assert.deepEqual(records(await viewOn(bin)), { ...never, desktop: { available: false, why: noFfmpeg }, phone: { available: false, why: noFfmpeg }, browser: { available: false, why: noFfmpeg } });
+  await writeFile(join(bin, "ffmpeg"), "#!/bin/sh\n");
+  await chmod(join(bin, "ffmpeg"), 0o755);
+  assert.deepEqual(records(await viewOn(`/nowhere${delimiter}${bin}`)), { ...never, desktop: { available: true }, phone: { available: true }, browser: { available: true } });
+});
+
 test("a key save takes only the provider's declared names, seals each in the store, answers names and saved flags only, and null removes", async (t) => {
   const { store, sealKey, routes } = await setup(t);
   await assert.rejects(routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-a", OPENAI_API_KEY: "sk-x" }), (error) => error instanceof KeysRefused && error.fields.map((f) => [f.field, f.reason]).join() === "OPENAI_API_KEY,not_allowed");
@@ -170,7 +185,7 @@ test("a key save takes only the provider's declared names, seals each in the sto
   for (const blank of [" ", "\t\n"]) await assert.rejects(routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: blank }), (error) => error instanceof KeysRefused && error.fields[0].reason === "wrong_type" && /a non-empty string/.test(error.fields[0].message), JSON.stringify(blank));
   assert.deepEqual(await store.sealedKeys.all(), [], "nothing saved when any name is refused");
   const saved = await routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-b1", BROWSERBASE_PROJECT_ID: "good-proj" });
-  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, secrets: [{ name: "computer:browserbase:BROWSERBASE_API_KEY", set: true, source: "console", changed_at: CHANGED }, { name: "computer:browserbase:BROWSERBASE_PROJECT_ID", set: true, source: "console", changed_at: CHANGED }], required: ["computer:browserbase:BROWSERBASE_API_KEY", "computer:browserbase:BROWSERBASE_PROJECT_ID"], ready: true, runs_refused: null, network: "the vendor's own network; this server's allow-list doesn't apply", shell: "none", host_tools: ["read", "write", "edit"], shell_note: SHELL_NOTES.none }, "the shared secret shape: set, where from, when changed; never a value; and the shell a browser gives (none: it mounts no folder)");
+  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, secrets: [{ name: "computer:browserbase:BROWSERBASE_API_KEY", set: true, source: "console", changed_at: CHANGED }, { name: "computer:browserbase:BROWSERBASE_PROJECT_ID", set: true, source: "console", changed_at: CHANGED }], required: ["computer:browserbase:BROWSERBASE_API_KEY", "computer:browserbase:BROWSERBASE_PROJECT_ID"], ready: true, runs_refused: null, folder: null, network: "the vendor's own network; this server's allow-list doesn't apply", shell: "none", host_tools: ["read", "write", "edit"], shell_note: SHELL_NOTES.none }, "the shared secret shape: set, where from, when changed; never a value; and the shell a browser gives (none: it mounts no folder)");
   assert.ok(!JSON.stringify(saved).includes("good-b1"), "never echoed");
   assert.ok(!JSON.stringify(await routes.view()).includes("good-b1"), "nor in the view");
   assert.equal(await getSealedKey(store, sealKey, "BROWSERBASE_API_KEY"), "good-b1", "sealed, and opens with the server's key");
@@ -308,10 +323,47 @@ test("each choice says where its runs have their shell, the host tools that give
   }
 });
 
+test("each provider's folder is the one a run's claim holds for its computer, per kind, in either mode, with DAYTONA_ARCHIL_EGRESS and Daytona's snapshot each set or not; it names a kind, never a value", async (t) => {
+  const EGRESS = "https://egress.not-a-secret.example";
+  const SNAPSHOT = "not-a-secret-archil-snapshot";
+  // The claim's own path (computer-for-claim.ts computerForClaim): the registry as this server has it (registryHere, with
+  // each provider's setting options), then the resolver, with every key saved so no refusal is for a key.
+  const claimed = async (env, mode, kind, provider) => {
+    const registry = await registryHere(KINDS, async (name) => env[name], (id) => settingOptions(id, {}, KEY_TABLE));
+    const keysOf = async (id) => Object.fromEntries(KINDS.PROVIDERS.find((one) => one.id === id).keys.map((key) => [key.name, "fake-test-key"]));
+    const resolved = await resolveComputer({ kind, provider }, mode, registry, { keysOf, answers: async () => true, launch: async () => { throw new Error("nothing starts"); } });
+    return "refused" in resolved ? null : resolved.folder ?? null;
+  };
+  const seen = new Set();
+  for (const mode of ["local", "disk"]) {
+    for (const egress of [false, true]) {
+      for (const snapshot of [false, true]) {
+        const env = { ...(egress ? { DAYTONA_ARCHIL_EGRESS: EGRESS } : {}), ...(snapshot ? { AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT } : {}) };
+        const view = await (await setup(t, { mode, env })).routes.view();
+        const settings = `${mode}, egress ${egress ? "set" : "unset"}, snapshot ${snapshot ? "named" : "not named"}`;
+        for (const kind of view.kinds.filter((one) => one.kind !== "none")) {
+          for (const row of kind.providers) {
+            assert.equal(row.folder, await claimed(env, mode === "disk" ? 2 : 1, kind.kind, row.id), `${settings}: ${kind.kind} on ${row.id}`);
+            seen.add(row.folder);
+          }
+        }
+        const folders = Object.fromEntries([["sandbox", "docker"], ["desktop", "docker"], ["sandbox", "daytona"], ["sandbox", "modal"], ["desktop", "modal"], ["desktop", "e2b"], ["sandbox", "agent37"], ["sandbox", "morph"], ["desktop", "orgo"], ["phone", "phone-harness"], ["browser", "browserbase"]].map(([kind, id]) => [`${kind} ${id}`, providerOf(view, kind, id).folder]));
+        const archil = egress && snapshot ? "archil" : "sync";
+        assert.deepEqual(folders, mode === "local"
+          ? { "sandbox docker": "bind", "desktop docker": "bind", "sandbox daytona": null, "sandbox modal": null, "desktop modal": null, "desktop e2b": null, "sandbox agent37": null, "sandbox morph": null, "desktop orgo": null, "phone phone-harness": null, "browser browserbase": null }
+          : { "sandbox docker": null, "desktop docker": null, "sandbox daytona": archil, "sandbox modal": "archil", "desktop modal": "sync", "desktop e2b": "archil", "sandbox agent37": "archil", "sandbox morph": "sync", "desktop orgo": null, "phone phone-harness": null, "browser browserbase": null }, settings);
+        const text = JSON.stringify(view);
+        assert.ok(!text.includes(EGRESS) && !text.includes(SNAPSHOT), `${settings}: no value in the view`);
+      }
+    }
+  }
+  assert.deepEqual([...seen].sort(), ["archil", "bind", "sync", null].sort(), "every kind is reached");
+});
+
 /** The words a person reads when no Docker daemon answers here, over the fixture registry: a Mode 1 sandbox (its vendors
  *  need Archil first) and a desktop in either mode. */
 const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
-const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo or boxd for a desktop.";
+const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo or boxd for a desktop.";
 
 test("no Docker daemon here: Docker is not ready, in words that name the vendors of each kind", async (t) => {
   const asked = [];
@@ -336,7 +388,7 @@ test("a Docker daemon that answers: Docker is ready", async (t) => {
   const { store } = await storeOn(t);
   const routes = createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", answers: async () => ({ up: true }) });
   const view = await routes.view();
-  assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, runs_refused: null, shell: "computer", host_tools: hostToolsOf("computer") });
+  assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, runs_refused: null, folder: "bind", shell: "computer", host_tools: hostToolsOf("computer") });
   assert.equal(providerOf(view, "desktop", "docker").ready, true);
 });
 

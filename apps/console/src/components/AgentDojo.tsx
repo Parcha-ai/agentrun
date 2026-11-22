@@ -15,6 +15,7 @@ import { when } from "@/lib/format";
 import { problem, type Problem } from "@/lib/problem";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { cn } from "@/lib/utils";
+import { cliLearningLabel, cliLearningOf } from "@/lib/cliLearning";
 
 type Row = { agent: Agent; view?: AgentLearning; stale?: boolean; error?: Problem; unavailable?: boolean };
 type Measure = { value: number; exact: boolean };
@@ -115,7 +116,7 @@ export function AgentDojo({ v2, server, modelAccess }: { v2: Client; server?: "o
   }, [server, read]);
   const eligible = rows?.filter((row) => row.agent.kind === "agentic") ?? [];
   const loaded = eligible.filter((row) => row.view).length;
-  const blocked = eligible.filter((row) => !row.stale && row.view?.learning_model?.location === "server" && !row.view.learning_model.ready);
+  const blocked = eligible.filter((row) => !cliLearningOf(row.agent.definition) && !row.stale && row.view?.learning_model?.location === "server" && !row.view.learning_model.ready);
   const stale = eligible.some((row) => row.stale);
   const changes = eligible.flatMap((row) => (row.view?.log.items ?? []).map((change) => ({ agent: row.agent, change })))
     .sort((a, b) => b.change.at.localeCompare(a.change.at)).slice(0, 8);
@@ -153,10 +154,11 @@ export function AgentDojo({ v2, server, modelAccess }: { v2: Client; server?: "o
 
 function AgentCard({ row, server }: { row: Row; server: "on" | "off" }) {
   const { agent, view, error } = row;
+  const cli = cliLearningOf(agent.definition);
   const supported = agent.kind === "agentic";
   const on = learningOn(agent.definition.learning);
   const access = view?.learning_model;
-  const needsSetup = supported && access?.location === "server" && !access.ready;
+  const needsSetup = supported && !cli && access?.location === "server" && !access.ready;
   const waiting = needsSetup && on && server === "on";
   return <article className="flex min-w-0 flex-col border bg-card p-5">
     <div className="flex flex-wrap items-start justify-between gap-2"><h3 className="min-w-0 break-words text-lead font-semibold">{agent.definition.name || agent.agent_id}</h3><Chip tone={waiting ? "warning" : supported && on && server === "on" ? "success" : "plain"}>{!supported ? "Workflow" : server === "off" && on ? "Paused by server" : waiting ? row.stale ? "Model setup (last read)" : "Needs model access" : on ? "Learning on" : "Learning off"}</Chip></div>
@@ -166,6 +168,7 @@ function AgentCard({ row, server }: { row: Row; server: "on" | "off" }) {
       {access.reason && <p className="text-muted-foreground">{access.reason}</p>}
       <a className={buttonVariants({ variant: "outline", size: "xs" })} href="#/settings/keys">Set up model access</a>
     </div>}
+    {cli && <p className="mt-3 text-small text-muted-foreground">Shared project learning · {cliLearningLabel(cli.runtime)}. Sessions in this project share these settings and owner corrections.</p>}
     {!supported ? <p className="mt-4 text-lead text-muted-foreground">Workflow runs do not learn. Enable learning on an agentic agent.</p>
       : <>{error && <div role="alert" className="mt-4 text-small text-destructive-text"><p>{row.unavailable ? "Learning unavailable for this agent." : error.title}</p><p className="mt-1">{error.why} {error.said}</p></div>}
       {!view ? !error && <p role="status" className="mt-4 text-lead text-muted-foreground">Loading learning…</p>

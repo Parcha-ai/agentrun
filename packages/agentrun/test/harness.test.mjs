@@ -64,6 +64,28 @@ test("agentrun harness install --recipe and agentrun harness-check: a recipe tha
   assert.match(bare.stderr, /--recipe FILE/);
 });
 
+test("agentrun harness sign-in --recipe: the installed server signs the recipe's agent in; a recipe that breaks a rule, or names no signIn, is refused by its code and nothing is made", (t) => {
+  const dir = home(t);
+  const data = join(dir, "data");
+  const bare = agentrun(["harness", "sign-in"], dir);
+  assert.equal(bare.status, 2, bare.stderr);
+  assert.match(bare.stderr, /--recipe FILE/);
+  const broken = join(dir, "broken.json");
+  writeFileSync(broken, JSON.stringify({ id: "my-agent", label: "My Agent", install: "curl -fsSL https://example.invalid/install.sh | sh" }));
+  const refused = agentrun(["harness", "sign-in", "--recipe", broken, "--data", data], dir);
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /^RECIPE_INSTALLS_ITSELF: /m);
+  const keyed = join(dir, "keyed.json");
+  writeFileSync(keyed, JSON.stringify({
+    id: "my-agent", label: "My Agent", release: { registry: "my-agent", version: "1.0.0", archives: { "linux-x86_64": { url: "https://example.invalid/a.zip", format: "zip", sha256: "0".repeat(64), cmd: "./agent" } } },
+    keys: ["MY_AGENT_API_KEY"], model: { billing: "plan", maxTurns: 8, maxToolCalls: 8 }, declares: { load: true, mcp: "http" },
+  }));
+  const none = agentrun(["harness", "sign-in", "--recipe", keyed, "--data", data], dir);
+  assert.equal(none.status, 1, none.stderr);
+  assert.match(none.stderr, /^HARNESS_NO_SIGN_IN: [^\n]*MY_AGENT_API_KEY/m);
+  assert.equal(existsSync(join(data, "harnesses")), false, "nothing made");
+});
+
 test("a rerun with the pinned Goose in place is a no-op: nothing is downloaded, and it says so", { skip: GOOSE ? false : "AGENTRUN_TEST_GOOSE is not set: it names the Goose 1.59.2 binary this test runs" }, (t) => {
   const dir = home(t);
   const data = join(dir, "data");

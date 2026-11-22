@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { mock, test } from "node:test";
+import { COMPUTER_ROUTES } from "../dist/computer-routes.js";
 import * as owner from "../dist/owner.js";
 import { ROUTES } from "../dist/server.js";
 import { writesSecret } from "../dist/secret-writes.js";
@@ -407,8 +408,9 @@ test("reset-password clears the password and ends every session; the next visit 
 
 test("every route, called with no credential, enforces its public, owner, API or dedicated scoped credential boundary", async (t) => {
   const server = await owned(t);
-  // Source enrollment, connector commands and SDK receipts accept only their dedicated scoped credential.
-  const scoped = new Set(["registerRemoteConnector", "importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand", "getSdkRun", "sdkRunEvents", "completeSdkRun"]);
+  // Source enrollment, connector commands and snapshot publication, CLI learning and SDK receipts accept only their
+  // dedicated scoped credential. A browser session or general API token cannot replace source publication authority.
+  const scoped = new Set(["registerRemoteConnector", "importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand", "grantSourceSync", "publishSourceSync", "sourceSyncFailure", "startCliLearningRun", "getCliLearningRun", "cliLearningEvents", "completeCliLearningRun", "getSdkRun", "sdkRunEvents", "completeSdkRun"]);
   for (const name of scoped) assert.ok(ROUTES.some(route => route.name === name), `${name} remains covered`);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
@@ -441,9 +443,9 @@ test("every route, called with no credential, enforces its public, owner, API or
       // Approving or restoring a note, making a learned workflow an agent or replaying its revision, and answering a tool
       // call's approval take the owner's session alone: a token, whoever holds it, is 403 (learn-pending.test.mjs,
       // learn-restore.test.mjs, learn-promote.test.mjs, learn-replay-api.test.mjs, tool-gate.test.mjs). So does a run's live
-      // computer view, a full-control credential for its session, and its hand-back (browser-live.test.mjs,
-      // browser-take-over.test.mjs).
-      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "promoteLearnedWorkflow" || route.name === "startLearnedWorkflowReplay" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
+      // computer view, a full-control credential for its session, its take-over and its hand-back, refused before the run
+      // is looked up (browser-live.test.mjs, browser-take-over.test.mjs, api-only-computer.test.mjs).
+      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "promoteLearnedWorkflow" || route.name === "startLearnedWorkflowReplay" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer" || COMPUTER_ROUTES.has(route.name)) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       // A secret write takes the owner's session alone (secret-writes.ts): the token is 403 on it. Which requests are secret
       // writes is the operation's predicate's to say of this body: an MCP server's PUT with no credential in it is not.
       else if (writesSecret(route.name, body) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);

@@ -73,24 +73,6 @@
       ],
       "default": { "content": [{ "type": "text", "text": "Not Found" }], "isError": true }
     },
-    "get_repository_tree": {
-      "description": "List a repository's tree.",
-      "input": {
-        "type": "object",
-        "properties": {
-          "owner": { "type": "string" },
-          "repo": { "type": "string" }
-        },
-        "required": ["owner", "repo"]
-      },
-      "answers": [
-        {
-          "when": { "repo": "vault" },
-          "result": { "content": [{ "type": "text", "text": "{\"tree\": [{\"path\": \"config/deploy.env\", \"type\": \"blob\"}]}" }] }
-        }
-      ],
-      "default": { "content": [{ "type": "text", "text": "{\"tree\": [{\"path\": \"src/cart/shipping.ts\", \"type\": \"blob\"}]}" }] }
-    },
     "pull_request_review_write": {
       "description": "Create, submit or delete a pull request review: method create, submit_pending or delete_pending.",
       "input": {

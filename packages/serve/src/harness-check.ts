@@ -29,7 +29,7 @@ import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
 import type { AdapterNeeds } from "./adapters.js";
 import { ARCHIVE_CODES, archivePlatform, digestOf } from "./harness-archive.js";
 import { installDirOf } from "./harness-install.js";
-import { AGENT_VARS, loadRecipe, pinnedDigest, type Recipe, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor } from "./harness-recipe.js";
+import { AGENT_VARS, loadRecipe, pinnedDigest, pinnedTree, type Recipe, recipeBinaryOf, recipeInstallLine, RecipeRefused, recipeSignInLine, releaseFor, signedIn, signInHomeOf } from "./harness-recipe.js";
 import { acpEntryOf } from "./harness-table.js";
 import { providerModels } from "./model.js";
 import { capModelOf } from "./runner/cli-run-spec.js";
@@ -44,6 +44,9 @@ const NO_PROXY_VARS = ["NO_PROXY", "no_proxy"];
 const SHELL_OWN = ["PWD", "OLDPWD", "SHLVL", "_"];
 
 export const CHECK_DEFAULT_CAP_USD = 0.25;
+/** A recipe with a sign-in whose keys are not all set here, and whose owner has not signed its agent in on this data
+ *  directory: neither route its agent runs on is there. */
+export const HARNESS_NOT_SIGNED_IN = "HARNESS_NOT_SIGNED_IN";
 const TURN_MS = 240_000;
 
 export interface HarnessCheckOptions {
@@ -111,12 +114,14 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the one address the ref
 
 /** A loopback HTTP proxy that records what the agent reaches for beyond loopback. It tunnels a CONNECT to one of `vendor`
  *  (a plan-billed recipe's model.hosts, `host` for port 443 or `host:port`) and refuses everything else. */
-async function egressProxy(vendor: readonly string[] = []): Promise<{ url: string; asked: { method: string; target: string; tunneled: boolean }[]; close(): Promise<void> }> {
+export async function egressProxy(vendor: readonly string[] = []): Promise<{ url: string; asked: { method: string; target: string; tunneled: boolean }[]; close(): Promise<void> }> {
   const asked: { method: string; target: string; tunneled: boolean }[] = [];
   const sockets = new Set<Socket>();
   const allowed = new Set(vendor.map((host) => (host.includes(":") ? host : `${host}:443`)));
   const server = createServer((req, res) => {
-    asked.push({ method: req.method ?? "GET", target: req.url ?? "", tunneled: false });
+    // A client of a proxy names where it goes (absolute-form); a request for a path alone (origin-form) is one to this
+    // port as a server, such as another process's poll of a port this proxy reused: refused, and not the agent's.
+    if (!(req.url ?? "").startsWith("/")) asked.push({ method: req.method ?? "GET", target: req.url ?? "", tunneled: false });
     res.writeHead(403).end();
   });
   server.on("connect", (req, socket: Socket, head: Buffer) => {
@@ -246,6 +251,18 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   const head = { recipe: { id: recipe.id, label: recipe.label, file: loaded.file, sha256: loaded.sha256 }, checkedAt } as const;
   const refuse = (code: string, message: string): HarnessCheckReport => ({ ok: false, ...head, refused: { code, message: `${code}: ${message}` }, failures: [`${code}: ${message}`] });
   say(`${recipe.label}: the recipe holds the five rules (${loaded.file})`);
+  // What the agent runs on: the recipe's keys where every one is set here, else its owner's own sign-in where the agent's
+  // sign-in ended well on this data directory (as T3 Code runs Antigravity, on its owner's own install). On the sign-in the
+  // agent is handed its folder's path (signIn.homeArg) and nothing else: no key, no ACP authenticate, and none of its words
+  // kept (stderr "none"), since no cut knows its token. AgentRun never reads, refreshes or sends it (HARNESS.md#sign-in).
+  const keysSet = recipe.keys.length > 0 && recipe.keys.every((name) => typeof options.env[name] === "string" && options.env[name] !== "");
+  const onSignIn = !keysSet && recipe.signIn !== undefined && signedIn(options.data, recipe);
+  if (recipe.signIn && !keysSet && !onSignIn) {
+    const keys = recipe.keys.length ? `set ${recipe.keys.join(" and ")} (saved for this harness alone), or ` : "";
+    return refuse(HARNESS_NOT_SIGNED_IN, `${recipe.label} runs on its keys or its owner's own sign-in, and neither is here: ${keys}sign its agent in with: ${recipeSignInLine(loaded.file, options.data, options.env)}`);
+  }
+  const signInHome = onSignIn ? signInHomeOf(options.data, recipe.id) : undefined;
+  if (signInHome) say(`${recipe.label}: runs on its owner's sign-in, its agent handed ${recipe.signIn!.homeArg} ${signInHome}; AgentRun never reads it`);
 
   // Stage 2's pins: the installed binary, the one the owner's install put there. Nothing is downloaded here.
   const platform = options.platform ?? archivePlatform();
@@ -261,6 +278,15 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
 
   const acp = acpPackage();
   if (!acp) return refuse("HARNESS_NOT_INSTALLED", `the ACP adapter (${ACP_PACKAGE}) is not installed beside this server`);
+  // Every file beside the binary (a launcher's code, a server's sidecar): the recipe's treeSha256, else the tree its
+  // install recorded. One installed before trees were recorded is installed again, so nothing in it runs unpinned.
+  const installed = installDirOf(options.data, recipe.id);
+  const treePin = pinnedTree(options.data, recipe, release, platform);
+  if (!treePin) return refuse("HARNESS_NOT_INSTALLED", `${recipe.label} ${recipe.release.version}'s files beside its binary were never recorded by its install, so they cannot be checked. Install it again with: ${line}`);
+  const treeNow = async () => acp.treeDigest(installed).catch(() => undefined);
+  const treeFound = await treeNow();
+  if (treeFound !== treePin.sha256) return refuse(ARCHIVE_CODES.binary, `${installed} has the tree sha256 ${treeFound ?? "(unreadable)"}, and ${treePin.by === "recipe" ? "the recipe pins" : "its first install recorded"} ${treePin.sha256}. Install it again with: ${line}`);
+  say(`${recipe.label}: every file beside the binary is the pinned tree (${treePin.by === "recipe" ? "the recipe's treeSha256" : "the tree its install recorded"})`);
 
   // The run's model, for a recipe billed through the proxy: named here; its key, the login refusal and its price are its
   // entry's (below), as a server's are.
@@ -314,20 +340,32 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   // agent from here alone (the adapter's recipe.keys, as a run's do): a host without one is refused before the start.
   const hostEnv: NodeJS.ProcessEnv = Object.create(env, { HARNESS_CHECK_CANARY: { value: canary, enumerable: true } });
   // The values of every key the host holds, the server's own included: withSecrets keeps those off its enumeration, so
-  // each is read by name.
-  const hostKeys = keyValues(env, recipe.keys);
+  // each is read by name. On the owner's sign-in, the recipe's own keys reach the agent no more than the server's do.
+  const hostKeys = keyValues(env, signInHome ? [] : recipe.keys);
   const childVars: Record<string, string> = { ...recipe.env };
   for (const name of EGRESS_VARS) childVars[name] = egress.url;
   for (const name of NO_PROXY_VARS) childVars[name] = `${LOOPBACK},localhost`; // key-gate: loopback-rule the hosts the agent reaches without the refusing proxy: the model proxy and MCP on this machine
   // The run's model id reaches a proxy-billed agent under the variable its recipe names.
   const modelVar = recipe.model.billing === "proxy" ? recipe.model.env : undefined;
+  // The plan's model, where the recipe names one: chosen among those the agent lists (session/set_model).
+  const planModel = recipe.model.billing === "plan" ? recipe.model.id : undefined;
   const acpRecipeOf = (model?: string): AcpRecipe => ({
     id: recipe.id,
     label: recipe.label,
     command: binary,
-    args: [...recipe.args],
+    // The platform's own arguments, where its release lists them, else the recipe's; on the owner's sign-in, its folder.
+    args: [...(release.args ?? recipe.args), ...(signInHome ? [recipe.signIn!.homeArg, signInHome] : [])],
     env: { ...childVars, ...(modelVar && model !== undefined ? { [modelVar]: model } : {}) },
-    keys: [...recipe.keys],
+    // On its keys: each under the name its agent reads (a key entry's env), and the method it signs in with on them. On the
+    // sign-in: none of them, and nothing the agent prints kept.
+    ...(signInHome
+      ? { keys: [], stderr: "none" as const }
+      : {
+          keys: [...recipe.keys],
+          ...(Object.keys(recipe.keyEnv).length ? { keyEnv: { ...recipe.keyEnv } } : {}),
+          ...(recipe.keyMethod ? { authMethod: recipe.keyMethod } : {}),
+        }),
+    ...(planModel ? { model: planModel } : {}),
     files: { ...recipe.files },
     state: [...recipe.state],
     declares: { ...recipe.declares },
@@ -340,13 +378,15 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     const now = await digestOf(command);
     starts.push(now);
     if (now !== pin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: ${command} changed after the check began (sha256 ${now})`);
+    const tree = await treeNow();
+    if (tree !== treePin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: the files beside ${command} changed after the check began (tree sha256 ${tree ?? "(unreadable)"})`);
   };
-  // A proxy-billed recipe starts as a module's ACP agent does on a server (harness-table.ts acpEntryOf): its model and key
-  // chosen and a login refused there, its price, the adapter over its recipe and the session's model proxy (the one on
-  // Anthropic's Messages there is, Goose's policy, its address under the variable the recipe names), on this check's log
-  // and host environment.
+  // A recipe starts as an ACP agent outside the built-ins does on a server (harness-table.ts acpEntryOf), on this check's
+  // log and host environment. Proxy-billed: as a module's, its model and key chosen and a login refused there, its price,
+  // the adapter over its recipe and the session's model proxy (the one on Anthropic's Messages there is, Goose's policy,
+  // its address under the variable the recipe names). Billed to its plan: as Cursor's, on its vendor's own default model.
   const proxyAt: string = recipe.model.billing === "proxy" ? (recipe.model.hostEnv ?? "ANTHROPIC_HOST") : "ANTHROPIC_HOST";
-  const entry = needs && acpEntryOf({
+  const entry = needs ? acpEntryOf({
     facts: { ...acp.gooseFacts, id: recipe.id, label: recipe.label },
     recipe: (launch) => acpRecipeOf(launch.model),
     proxy: (launch) => {
@@ -359,14 +399,18 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
       };
     },
     beforeStart,
-  }, { log, env: true });
-  // Plan billing starts the adapter directly because the kit has no plan entry (adapterEntry refuses a non-model wire, and acpEntry requires a proxy); this goes when a module needs plan billing.
-  const adapterFor = async (): Promise<AgentAdapter> => entry ? entry.adapter!(hostEnv, needs!) : acp.acpAdapter({ recipe: acpRecipeOf(), env: hostEnv, log, beforeStart });
+  }, { log }) : acpEntryOf({
+    facts: { ...acp.cursorFacts, id: recipe.id, label: recipe.label },
+    recipe: () => acpRecipeOf(),
+    beforeStart,
+  }, { log });
+  const planNeeds: AdapterNeeds = { model: { provider: recipe.id, modelId: planModel ?? "default" }, models: { getModel: () => undefined } };
+  const adapterFor = async (): Promise<AgentAdapter> => entry.adapter!(hostEnv, needs ?? planNeeds);
   // The first runner's adapter is made before any turn, so a model this server can't run is refused before the agent
   // starts; with it, the cap's model, priced here or refused.
   let firstAdapter: AgentAdapter | undefined;
   let capModel: ReturnType<typeof capModelOf> | undefined;
-  if (entry && needs) {
+  if (needs) {
     const refuseHere = async (message: string) => {
       await egress.close();
       await rm(work, { recursive: true, force: true }).catch(() => {});
@@ -441,8 +485,9 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
 
     // Stage 2: the environment is the allowlist.
     if (environ) {
-      // The recipe's keys too: the adapter hands each over by name (recipe.keys), never through childVars.
-      const expected = new Set([...Object.values(AGENT_VARS).flat(), ...Object.keys(childVars), ...(modelVar ? [modelVar] : []), ...recipe.keys, ...SHELL_OWN]);
+      // The recipe's keys too: the adapter hands each over under the name its agent reads (recipe.keyEnv, else its own),
+      // never through childVars.
+      const expected = new Set([...Object.values(AGENT_VARS).flat(), ...Object.keys(childVars), ...(modelVar ? [modelVar] : []), ...recipe.keys.map((name) => recipe.keyEnv[name] ?? name), ...SHELL_OWN]);
       const extra = Object.keys(environ).filter((name) => !expected.has(name)).sort();
       const leaked = Object.entries(environ).filter(([, value]) => hostKeys.includes(value) || value === canary).map(([name]) => name).sort();
       stage2.env_allowlist = { ok: extra.length === 0 && leaked.length === 0, names: Object.keys(environ).sort(), beyondAllowlist: extra, hostSecretsSeen: leaked };

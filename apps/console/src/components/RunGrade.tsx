@@ -30,7 +30,8 @@ export function expectedOf(text: string): { value?: Record<string, unknown>; err
   } catch { return { error: NOT_AN_OBJECT }; }
 }
 
-/** A grade not taken, in words: the server's own for a refusal (a run under way, a replay run), else the console's. */
+/** A grade not taken, in words: the server's own for a refusal (a run under way, a replay run, a run still learning from
+ *  its answer: 409 run_learning), else the console's. */
 function refusal(e: unknown): string {
   const p = problem(e, "the grade");
   return e instanceof ClientError && e.status < 500 && p.said ? p.said : `${p.why} ${p.next}`;
@@ -83,6 +84,9 @@ export function RunGrade({ run, graded, onGrade, onOpenTimeline }: RunGradeProps
   const reviewing = status === "running" || (status === "ended" && underWay(run.learning ?? undefined));
   if (!gradable(run) || (!ended && !graded)) return null;
   const form = open === "auto" ? (graded ? "closed" : "choose") : open;
+  // A run that reads ended takes a grade unless the server says otherwise: one still learning from that end (its
+  // look-back) is refused with 409 run_learning, said in the server's words (refusal). A run reading `reflecting` after
+  // its row ended (what it wrote still being checked) is taken.
   const canGrade = ended && !reviewing;
   const exp = expectedOf(expected);
   const said = graded ? outcome(graded, reviewing) : null;

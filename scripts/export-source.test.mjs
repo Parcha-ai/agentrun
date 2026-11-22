@@ -104,6 +104,18 @@ test('a *.local.* file is excluded and a source file named local.ts is archived'
   assert.ok(receipt.exclusions.includes('*.local.*'));
 });
 
+test('a .parcha/ directory anywhere in the tree is left out, and its extensionless files do not stop the export', async t => {
+  const f = await fixture(t);
+  // A session hook on a developer machine writes .parcha/checkpoint-counter in whatever directory a command runs from.
+  const excluded = ['apps/console/.parcha/checkpoint-counter', 'packages/serve/.parcha/checkpoint-counter', 'docs/.parcha/state.json'];
+  for (const path of excluded) await f.write(path, '7\n');
+  await f.write('packages/dsl/src/parcha.mjs', 'export const name = 1;\n');
+  await f.run();
+  const listing = await f.listing();
+  for (const path of excluded) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
+  assert.ok(listing.includes('agentrun-dsl-source/packages/dsl/src/parcha.mjs'), 'a source file named parcha is archived');
+});
+
 test('a review file (*.review.*) is excluded and source named review is archived', async t => {
   const f = await fixture(t);
   // A review file is a file named `<name>.review.<ext>`, like the author's `<n>.review.json` beside each candidate; it and the
@@ -311,6 +323,29 @@ test('the computer image recipe (the root helper, its Dockerfile and its two bui
   // extension and not one of the recipe's names.
   await f.write('packages/computer/box/agentrun-other', '# fixture\n');
   await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/computer\/box\/agentrun-other/);
+});
+
+test('the media image recipe (packages/computer/media/Dockerfile) is archived and scanned as text; another file there still stops the export', async t => {
+  const f = await fixture(t);
+  await f.write('packages/computer/media/Dockerfile', '# fixture\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes('agentrun-dsl-source/packages/computer/media/Dockerfile\n'));
+  assert.equal(receipt.files.find(file => file.path === 'packages/computer/media/Dockerfile')?.kind, 'text');
+  await f.write('packages/computer/media/Containerfile', '# fixture\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/computer\/media\/Containerfile/);
+});
+
+test('the documents image recipe (packages/computer/documents: its Dockerfile and documents.sh) is archived and scanned as text', async t => {
+  const f = await fixture(t);
+  await f.write('packages/computer/documents/Dockerfile', '# fixture\n');
+  await f.write('packages/computer/documents/documents.sh', '#!/bin/sh\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  for (const path of ['packages/computer/documents/Dockerfile', 'packages/computer/documents/documents.sh']) {
+    assert.ok((await f.listing()).includes(`agentrun-dsl-source/${path}\n`), path);
+    assert.equal(receipt.files.find(file => file.path === path)?.kind, 'text', path);
+  }
 });
 
 test('inventory generation works without build output and does not produce an archive', async t => {

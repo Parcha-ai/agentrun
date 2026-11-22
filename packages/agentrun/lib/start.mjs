@@ -233,7 +233,7 @@ export function npmExecOf(env, from = process.ppid) {
 
 export const USAGE = `Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open] [--public-url URL]   start the server
        (--public-url: the https address people open it at, through a proxy such as tailscale serve)
-       npx @parcha/agentrun import|reset-password|runner|native [--data DIR]   a server command (native: discover/connect an existing project)
+       npx @parcha/agentrun import|reset-password|runner|native|learning [--data DIR]   a server command (native: discover/connect an existing project)
        npx @parcha/agentrun <command> [args]   the server's API: agents, runs, triggers, ..., api (npx @parcha/agentrun help)`;
 
 /** The server's launcher, installed with this package (its dependency), or undefined. */
@@ -265,7 +265,7 @@ const inCi = (env) => Boolean(env.CI) && env.CI !== "false" && env.CI !== "0";
 
 /** The server's own commands (its CLI's first word), which this command runs on its store: every other first word is
  *  the CLI's, which names a command it has or says it has none. */
-export const SERVER_COMMANDS = ["check-harness", "eval-template", "import", "install-harness", "native", "remote-bridge", "reset-password", "runner", "validate-template"];
+export const SERVER_COMMANDS = ["check-harness", "eval-template", "import", "install-harness", "learning", "native", "remote-bridge", "reset-password", "runner", "sign-in-harness", "store-schema", "validate-template"];
 
 /** How many of the server's refusals and ignored deliveries a start says, each route and reason once, before one line
  *  that says the rest are not: under this command the server's log goes nowhere else (its stdout is read here and dropped). */
@@ -317,7 +317,10 @@ export async function main(argv, env = process.env) {
   // The first argument, past --data and its value: a word there names a command (the server's own, or else the CLI's),
   // and a flag starts the server, whose flags with values (--listen ADDR) follow.
   const first = argv.find((arg, i) => arg !== "--data" && !arg.startsWith("--data=") && argv[i - 1] !== "--data");
-  if (NOUNS.has(words(argv)[0]) || (first !== undefined && !first.startsWith("-") && !SERVER_COMMANDS.includes(first))) return cli(argv, env);
+  const commandWords = words(argv);
+  // Learning also names API verbs. Only project-hook lifecycle verbs belong to the local server CLI.
+  const localLearning = commandWords[0] === "learning" && ["connect", "status", "disconnect", "retry", "hook"].includes(commandWords[1]);
+  if ((!localLearning && NOUNS.has(commandWords[0])) || (first !== undefined && !first.startsWith("-") && !SERVER_COMMANDS.includes(first))) return cli(argv, env);
   // --help is this command's usage when it starts the server; a server command's --help is that command's, which the
   // server prints (import --help names --from and --dry-run). remote-bridge, the connector's own process, has no usage of
   // its own to print and never reads --help, so it keeps this one.

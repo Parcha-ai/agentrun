@@ -22,7 +22,7 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { STORE_FILE } from "../dist/store/sqlite/store.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, linkHarnesses, printed, responsesEndpoint, runDir, scratch } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, LAUNCH_HOOK_URL, launchHookCanary, linkHarnesses, printed, responsesEndpoint, runDir, scratch } from "./support.mjs";
 import { client as pgClient, PG_URL, postgresOnly } from "./store-target.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
@@ -153,9 +153,9 @@ function canaries() {
   // Each its own. The tokens' are the API's, 32 characters or more.
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
   // The seal key's must be a key the server takes (43 base64url characters: it never starts on a bad one), and is still a
-  // canary: the canary is base64url, padded to a key's length.
+  // canary: the canary is base64url, padded to a key's length. The launch hook's is a whsec_ one holding its canary.
   const sealKey = (value) => (assert.ok(value.length <= 43, value), value.padEnd(43, "k"));
-  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_TOKENS" ? `rotation:${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : `${canary}-${i}`])) };
+  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_TOKENS" ? `rotation:${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : name === "AGENTRUN_LAUNCH_HOOK_SECRET" ? launchHookCanary(`${canary}-${i}`) : `${canary}-${i}`])) };
 }
 
 /** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment.
@@ -170,8 +170,10 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
   // The launcher's own temporary directory, where its FIFO is made: the test's, so it can see that nothing is left.
   const tmp = join(dir, "tmp");
   mkdirSync(tmp);
-  // The seal key the launcher makes when none is given goes in the test's own config directory, never the user's.
-  const child = spawn(LAUNCHER, typeof args === "function" ? await args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), ...env, TMPDIR: tmp } });
+  // The seal key the launcher makes when none is given goes in the test's own config directory, never the user's. The
+  // launch hook's secret takes its URL beside it.
+  const hook = env.AGENTRUN_LAUNCH_HOOK_SECRET ? LAUNCH_HOOK_URL : {};
+  const child = spawn(LAUNCHER, typeof args === "function" ? await args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), ...hook, ...env, TMPDIR: tmp } });
   // Whether the launcher's pid is still its own: once it exits and Node reaps it, that number, and so its group's id, can
   // be given to another process (on this box the PIDs wrap in minutes under test load, so another lane's), and a kill of
   // it or of the group, or a walk from it, would reach that process. Each is done only while it is alive.
@@ -471,6 +473,42 @@ test("secretsFor: a run is handed exactly the model keys its model needs: a pi r
   const cursor = await secretsFor(agentic({ harness: "cursor", model: "cursor/gpt-5.4-nano" }), undefined, { OPENROUTER_API_KEY: "set" });
   assert.ok(cursor.includes("CURSOR_API_KEY"), "Cursor's run takes its own key");
   assert.deepEqual(cursor.filter((name) => MODEL_KEYS.includes(name)), [], "and no model key: its model is its own plan's");
+});
+
+test("secretsFor: only a built-in harness owns a key: a harness module's entry that claims one (ownKeys) moves no key from another harness's run", async (t) => {
+  const { secretsFor } = await import("../dist/run-secrets.js");
+  const dir = await scratch(t);
+  const module = join(dir, "key-claimer.cjs");
+  writeFileSync(module, `exports.entries = (builtins) => ({ "key-claimer": { ...builtins.pi, label: "Key claimer", ownKeys: ["OPENROUTER_API_KEY"], runner: { record: "loop", adapter: async () => { throw new Error("not run"); } } } });\n`);
+  const pi = { id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind: "agentic", body: { skills: {}, tools: [], instructions: "Answer." } };
+  const env = { OPENROUTER_API_KEY: "set" };
+  assert.ok((await secretsFor(pi, undefined, env)).includes("OPENROUTER_API_KEY"), "a pi run on OpenRouter's key is handed it");
+  assert.ok((await secretsFor(pi, undefined, { ...env, AGENTRUN_HARNESS_MODULES: JSON.stringify([module]) })).includes("OPENROUTER_API_KEY"), "and still is with a module that claims it");
+});
+
+test("secretsFor: a built-in harness's own key goes to that harness's runs alone: an entry of another id that names it in ownKeys is never handed it, and Cursor's run still is", async (t) => {
+  const { secretsFor } = await import("../dist/run-secrets.js");
+  const { BUILTIN_OWN_KEYS } = await import("../dist/harness-table.js");
+  const dir = await scratch(t);
+  // A test's table (AGENTRUN_HARNESS_TABLE) is the path a module's load rule doesn't stand in front of, so keysFor holds it.
+  const table = join(dir, "own-key-claimer.cjs");
+  writeFileSync(table, `exports.entries = (builtins) => ({ "own-key-claimer": { ...builtins.pi, label: "Own key claimer", ownKeys: ${JSON.stringify([...BUILTIN_OWN_KEYS])} } });\n`);
+  const revision = (body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind: "agentic", body: { skills: {}, tools: [], instructions: "Answer.", ...body } });
+  const env = { CURSOR_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "set", AGENTRUN_HARNESS_TABLE: table, NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1" };
+  const claimer = await secretsFor(revision({ harness: "own-key-claimer", model: "openrouter/anthropic/claude-sonnet-5.5" }), undefined, env);
+  assert.deepEqual(claimer.filter((name) => BUILTIN_OWN_KEYS.includes(name)), [], "the claimer's run is handed no key a built-in harness owns");
+  assert.ok(claimer.includes("OPENROUTER_API_KEY"), "and is handed its model's key, so the claim was read");
+  assert.ok((await secretsFor(revision({ harness: "cursor", model: "cursor/gpt-5.4-nano" }), undefined, env)).includes("CURSOR_API_KEY"), "Cursor's run still takes CURSOR_API_KEY");
+});
+
+test("harnessTable: a harness module's entry that names a key a built-in harness owns in ownKeys is refused at load (HARNESS_KEY_OWNED), by the module, the id and the key", async (t) => {
+  const { BUILTIN_OWN_KEYS, harnessTable } = await import("../dist/harness-table.js");
+  const dir = await scratch(t);
+  for (const key of BUILTIN_OWN_KEYS) {
+    const module = join(dir, `own-key-module-${key}.cjs`);
+    writeFileSync(module, `exports.entries = (builtins) => ({ "own-key-module": { ...builtins.pi, label: "Own key module", ownKeys: ["OPENROUTER_API_KEY", ${JSON.stringify(key)}], runner: { record: "loop", adapter: async () => { throw new Error("not run"); } } } });\n`);
+    assert.throws(() => harnessTable({ AGENTRUN_HARNESS_MODULES: JSON.stringify([module]) }), (error) => error.code === "HARNESS_KEY_OWNED" && error.message.includes(module) && error.message.includes("own-key-module") && error.message.includes(key), `a module claiming ${key} is refused by name`);
+  }
 });
 
 /** The names a provider's auth asks for that no run is handed, each with why. Every other name pi-ai reads for a provider

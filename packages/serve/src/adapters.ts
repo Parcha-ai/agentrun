@@ -150,7 +150,7 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
 }
 
 /** What an adapter's own setup error says installing fixes, by the code its facts name for each: none for any other error. */
-function fixOf(facts: AdapterFacts, error: unknown): InstallFix | undefined {
+export function fixOf(facts: AdapterFacts, error: unknown): InstallFix | undefined {
   const code = (error as { code?: unknown } | null)?.code;
   return code === facts.install.codes.install ? "install" : code === facts.install.codes.pins ? "pins" : undefined;
 }
@@ -322,7 +322,7 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     // The CLI runs Anthropic's own id, which it knows the limits and betas of, and sends it as it is, OpenRouter too
     // (providerFor's modelId); the key goes as the endpoint takes it, and the run is priced by the catalog entry of
     // whoever bills it (its priceModel).
-    const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth } : { origin: "", credential: () => "" };
+    const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth, ...(provider.headers ? { headers: provider.headers } : {}) } : { origin: "", credential: () => "" };
     const priced = provider ? { ...needs, model: provider.priceModel } : native;
     // Its CLI checked off the event loop first (hashed and run as a child), so the server goes on answering: a pass is
     // kept, and the adapter's own check answers from it. A CLI that fails its pins is the adapter's to report, in its
@@ -404,67 +404,6 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // line each), so a CRLF file or a folded description is listed by its own words.
   const skills = needs.skills && servedSkills(needs.skills);
   return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
-}
-
-/** Goose's adapter (its package's gooseAdapter, acp-package.ts), on the binary its owner installed into the data's
- *  harnesses directory (`agentrun harness install goose`, harness-goose.ts) and from nowhere else: not there, or not the
- *  pinned binary, it says that command, and nothing here installs it. Its model goes where claude-agent's does (the host's
- *  Anthropic Messages provider, providerFor), through a model proxy of its own, priced and capped as every run is. */
-export async function gooseOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
-  const [{ acpPackage }, { gooseMissing, GOOSE_ID }] = await Promise.all([import("./acp-package.js"), import("./harness-goose.js")]);
-  const acp = acpPackage();
-  // What no key fixes is said first, as claudeOf does: the binary, checked off the event loop.
-  const found = await gooseMissing(env);
-  if ("missing" in found) throw new HarnessUnavailable(found.missing.message, acp && fixOf(acp.gooseFacts, found.missing));
-  if (!acp) throw new HarnessUnavailable("Goose's adapter is not installed beside this server");
-  const facts = acp.gooseFacts;
-  const provider = providerFor(facts.wire, env, needs.model, GOOSE_ID);
-  // A person's Claude Code login is its CLI's alone (claude-login.ts): Goose's requests never go on it.
-  if (provider.login) throw new HarnessUnavailable("Goose runs on a model key: Claude Code's login on this machine is its CLI's alone.", undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
-  try {
-    return acp.gooseAdapter({
-      binary: found.binary, sha256: found.sha256, model: provider.modelId,
-      provider: { origin: provider.origin, credential: provider.credential, ...(provider.auth ? { auth: provider.auth } : {}) },
-      price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(GOOSE_ID, env),
-      ...(needs.confine ? { confine: needs.confine } : {}),
-    });
-  } catch (error) {
-    throw new HarnessUnavailable((error as Error).message, fixOf(facts, error));
-  }
-}
-
-/** Cursor's adapter (its package's cursorAdapter, acp-package.ts), on the release its owner installed into the data's
- *  harnesses directory (`agentrun harness install cursor`, harness-cursor.ts), its launcher and every file beside it the
- *  pinned ones, and on its owner's Cursor API key (CURSOR_API_KEY), which the adapter reads by name from `env` at each
- *  start and hands to Cursor's process alone. Its model is Cursor's, billed to the owner's Cursor plan: no proxy and no
- *  price of ours; the run stops at the owner's turn and tool-call limits (cursorLimitsOf). `cursor/default` runs Cursor's
- *  own default model. */
-export async function cursorOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
-  const [{ acpPackage }, { cursorMissing, cursorLimitsOf, CURSOR_DEFAULT_MODEL, CURSOR_ID, CURSOR_KEY, CURSOR_PROVIDER }] = await Promise.all([import("./acp-package.js"), import("./harness-cursor.js")]);
-  const acp = acpPackage();
-  // What no key fixes is said first, as gooseOf does: the release, checked off the event loop.
-  const found = await cursorMissing(env);
-  if ("missing" in found) throw new HarnessUnavailable(found.missing.message, acp && fixOf(acp.cursorFacts, found.missing));
-  if (!acp) throw new HarnessUnavailable("Cursor's adapter is not installed beside this server");
-  const facts = acp.cursorFacts;
-  if (needs.model.provider !== CURSOR_PROVIDER) throw new HarnessUnavailable(`${facts.label} runs Cursor's models, named ${CURSOR_PROVIDER}/<model-id>; the run's model is ${needs.model.provider}/${needs.model.modelId}.`);
-  if (!env[CURSOR_KEY]) throw new HarnessUnavailable(`${facts.label} runs on your Cursor API key, and ${CURSOR_KEY} is not set where AgentRun starts: set it there (it is handed to Cursor's runs alone), then restart AgentRun.`);
-  let limits: { maxTurns: number; maxToolCalls: number };
-  try {
-    limits = cursorLimitsOf(acp, env);
-  } catch (error) {
-    throw new HarnessUnavailable((error as Error).message);
-  }
-  const model = needs.model.modelId === CURSOR_DEFAULT_MODEL ? undefined : needs.model.modelId;
-  try {
-    return acp.cursorAdapter({
-      binary: found.binary, limits, env, log: harnessLog(CURSOR_ID, env),
-      ...(model ? { model } : {}),
-      ...(needs.confine ? { confine: needs.confine } : {}),
-    });
-  } catch (error) {
-    throw new HarnessUnavailable((error as Error).message, fixOf(facts, error));
-  }
 }
 
 /** Why `harness` cannot run here, or undefined when it can (its entry's refusal): its package and pins, its provider, and

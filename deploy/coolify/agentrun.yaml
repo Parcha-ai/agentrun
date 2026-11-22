@@ -8,7 +8,7 @@
 # AgentRun Server on Coolify. Steps and variables: deploy/README.md#coolify.
 services:
   agentrun:
-    image: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.47
+    image: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.52
     environment:
       - SERVICE_URL_AGENTRUN_7340
       - AGENTRUN_PUBLIC_URL=${SERVICE_URL_AGENTRUN}

@@ -188,14 +188,16 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
  *  value is null (an op that answers none: a computer's files.write) is told by its answer's words ("wrote <path>"), as
  *  it answered, never as null. */
 function lineOf(index: number, name: string, result: NestedResult): string {
-  const quoted = (text: string) => JSON.stringify(text.length > 2_000 ? `${text.slice(0, 2_000)}…` : text);
+  // Whole: the model reads these values nowhere else (the script's own output went with the stop), and the answer is held
+  // to the host's bound as every tool answer is (boundResult). A cut here once hid an approved call's title from it.
+  const quoted = (text: string) => JSON.stringify(text);
   const label = `${index}. ${name}`;
   if (result.refused) return `${label} was refused: ${quoted(result.text)}. It did not run.`;
   if (result.interrupted) return `${label} was started and did not report a result, so it may have taken effect: check before calling it again. It was not run again.`;
   if (result.isError) return `${label} failed: ${quoted(result.text)}. It was not run again.`;
   const value = result.structured === null ? result.text : scriptValue(result);
   const json = typeof value === "string" ? undefined : JSON.stringify(withoutImageData(value));
-  const said = json === undefined ? quoted(value as string) : json.length > 2_000 ? `${json.slice(0, 2_000)}…` : json;
+  const said = json === undefined ? quoted(value as string) : json;
   return `${label} completed: ${said}. Its effect is done; it was not run again.`;
 }
 

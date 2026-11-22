@@ -131,22 +131,26 @@ Two clients call the same API from code, with the same server and token. `@parch
 
 ## Commands
 
-- `agentrun agents`: archive, connect-native, create, delete-agent, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, list, list-learning-audits, list-learning-promotions, runs, unarchive, update, verify-native
-- `agentrun connectors`: complete-remote-command, enroll-remote-connector, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, register-remote-connector, remote-command-events, revoke-remote-connector
+- `agentrun agents`: archive, bind-source-tool, connect-native, create, delete-agent, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, get-source-sync, list, list-learning-audits, list-learning-promotions, move-source-agent, package, resolve-source-sync, review-source-project, runs, set-source-sync, unarchive, update, verify-native
+- `agentrun capabilities`: get-capacity
+- `agentrun cli-learning`: complete, enroll, events, get, list, revoke, start
+- `agentrun connectors`: complete-remote-command, enroll-remote-connector, grant-source-sync, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, publish-source-sync, register-remote-connector, remote-command-events, revoke-remote-connector, source-sync-failure
+- `agentrun deploy SOURCE`: Deploy an agent's package to another AgentRun: upload, plan, apply, lock (deploy rollback, deploy delete)
 - `agentrun doctor`: Check how this AgentRun is set up (Node, the server, its service, address, password, models, switches, Docker) and print what to change; read-only (exit 0 ok or warnings, 1 a check failed, 3 no server answering)
+- `agentrun export AGENT`: Write an agent's current revision as a template package folder, and say what the target sets up again
 - `agentrun files`: create, delete, get, list, upload
-- `agentrun harness`: install
+- `agentrun harness`: install, sign-in
 - `agentrun harness-check`: Run a recipe's installed agent for real and check it (tools off, env allowlist, pins, limits, no side requests, resume, a denied call, an MCP tool): a JSON report and three facts. Real models cost money
 - `agentrun home`: delete, list, read, write
-- `agentrun learning`: corrections, cost, get, log, read, replay, retire, workflow-revisions, write-corrections
-- `agentrun local`: create-pairing, delete-composio-subscription, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-model-gateway, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, receive-hook-composio, rotate-composio-secret, test-computer, test-workspace-archil
-- `agentrun login`: Check a server's token, read from stdin, and keep it with the server's address in the config file
+- `agentrun learning`: corrections, cost, get, log, read, replay, reset, retire, workflow-revisions, write-corrections
+- `agentrun local`: create-pairing, delete-composio-subscription, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-model-gateway, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, list-mcp-server-names, receive-hook-composio, rotate-composio-secret, test-computer, test-workspace-archil
+- `agentrun login`: Sign in to a server, with a device code when it offers one, else a token read from stdin, and keep the token with the server's address in the config file
 - `agentrun logout`: Remove the config file login wrote, its address and token
 - `agentrun mcp-servers`: delete, get, list, oauth-client, private-hosts, refresh
 - `agentrun Observations`: get-observations
 - `agentrun open`: Open AgentRun in this machine's browser: the setup page, its code filled in, until the owner's password is set; the console after (where no browser opens, it prints the link)
 - `agentrun revisions`: list, set-current
-- `agentrun runs`: archive, cancel, computer-call, computer-release, create-inline-run, files, get, grade-run, graph, hand-back-run-computer, learning, learning-diff, list, message, pause, raise-cap, read-file, resume, start, start-held, stop, take-over-run-computer, timeline, trace, unarchive, wait
+- `agentrun runs`: archive, cancel, computer-call, computer-release, create-inline-run, create-run-computer-viewer, delete, files, get, grade-run, graph, hand-back-run-computer, learning, learning-diff, list, message, pause, raise-cap, read-file, resume, start, start-held, stop, take-over-run-computer, timeline, trace, unarchive, usage, wait
 - `agentrun sdk-runs`: complete, events, get, start
 - `agentrun server`: capabilities, health, mcp, openapi
 - `agentrun service`: install, logs, restart, start, status, stop, uninstall, upgrade

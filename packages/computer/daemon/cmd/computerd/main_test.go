@@ -21,12 +21,17 @@ import (
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/nocgo"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/windowmanager"
 )
 
 // argsEnv makes the test binary run computerd's main with these arguments (JSON), as a process of its own.
 const argsEnv = "COMPUTERD_TEST_ARGS"
 
 func TestMain(m *testing.M) {
+	// The window manager's start, which init starts again as itself with a clean environment.
+	if len(os.Args) == 2 && os.Args[1] == windowmanager.ChildArg {
+		os.Exit(windowmanager.Child())
+	}
 	if args := os.Getenv(argsEnv); args != "" {
 		os.Args = []string{"computerd"}
 		if err := json.Unmarshal([]byte(args), &os.Args); err != nil {

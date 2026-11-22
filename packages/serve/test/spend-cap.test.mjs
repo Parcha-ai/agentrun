@@ -43,6 +43,7 @@ test("the worst case is the output the request is sent with at the model's outpu
   const worst = GATEWAY_MAX_OUTPUT / 1e6;
   const above = await ended(api, (await start(api, "above", "What is six times seven?", { max_cost_usd: worst * 1.01 })).run_id);
   assert.deepEqual([above.status, posts()], ["completed", 1], JSON.stringify(above));
+  assert.deepEqual([above.stopped_for, above.budget_refused_calls], [null, 0], "a capped run that answered at once did not wind down");
   assert.equal(endpoint.bodies[0].max_output_tokens, GATEWAY_MAX_OUTPUT, "the request's own max output tokens are the ones priced");
   // Under its worst case the request still goes, with the output what is left buys: 31,680 tokens of $0.03168.
   const below = await ended(api, (await start(api, "below", "What is six times seven?", { max_cost_usd: worst * 0.99 })).run_id);
@@ -54,6 +55,8 @@ test("the worst case prices the request's input: at $0 output, an input that pas
   const { api, posts } = await gateway(t, { price: "1,0" });
   const run = await ended(api, (await start(api, "input", "What is six times seven?", { max_cost_usd: 1e-9 })).run_id);
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind, posts()], ["input_required", "waiting", null, "budget", 0], JSON.stringify(run));
+  // Paused at its cap, it says so in pending alone (stoppedfor/1 is a completed run's).
+  assert.deepEqual([run.stopped_for, run.budget_refused_calls], [null, 0]);
 });
 
 test("a request the cap refuses never reaches the model: the run's second request, its input alone over the cap, is not made, and the run pauses at its cap", async (t) => {
@@ -80,6 +83,8 @@ test("a response that costs more than its worst case is stopped by the server af
   assert.deepEqual([run.status, run.error?.code, posts()], ["failed", "spend_cap_reached", 1], JSON.stringify(run));
   assert.equal(run.cost.usd, 2);
   assert.deepEqual(run.result, { output: null, final_answer: "The answer is 42." }, "the answer the cap stopped is kept");
+  // Ended by its cap, it says so in error alone (stoppedfor/1 is a completed run's).
+  assert.deepEqual([run.stopped_for, run.budget_refused_calls], [null, 0]);
 });
 
 test("a response that stops at its length and costs past the cap is stopped after it, and its text is the answer kept", async (t) => {

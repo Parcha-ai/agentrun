@@ -57,6 +57,7 @@ import { mcpNameOf } from "../tool-names.js";
 import { composioMadeKey, composioPerRun } from "../composio-made.js";
 import { composioRunQuery } from "../composio-preset.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
+import { resourceToolProblem } from "../mcp-resources.js";
 import { credentialInQuery, credentialInQueryWords, shownUrl } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
@@ -506,7 +507,11 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
   const saved = (found ?? {}) as McpPin;
   // Every tool the revision pinned, granted or not, against the meta tools known now (the list grows after a save).
   for (const [server, { url, tools }] of Object.entries(saved)) {
-    for (const tool of tools) if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+    for (const tool of tools) {
+      if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+      const problem = resourceToolProblem(tool);
+      if (problem) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${problem}. Save the agent again. Nothing was sent.`);
+    }
   }
   // The granted tools alone, keyed by server with no prototype (a server named `constructor` is a server like any other).
   const pinned: McpPin = Object.create(null);
@@ -514,7 +519,7 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     const at = Object.hasOwn(saved, server) ? saved[server]! : undefined;
     const listed = at?.tools.find((one) => one.name === tool);
     if (!at || !listed) throw new McpClaimRefused(`The MCP tool ${name} was not pinned when this agent's revision was saved, so this run cannot call it. Save the agent again to pin it. Nothing was sent.`);
-    const kept = (pinned[server] ??= { url: at.url, tools: [] });
+    const kept = (pinned[server] ??= { url: at.url, tools: [], ...(at.meter ? { meter: at.meter } : {}) });
     if (!kept.tools.some((one) => one.name === listed.name)) kept.tools.push(listed);
     const price = at.prices && Object.hasOwn(at.prices, listed.name) ? at.prices[listed.name] : undefined;
     if (price !== undefined) (kept.prices ??= Object.create(null) as Record<string, number>)[listed.name] = price;

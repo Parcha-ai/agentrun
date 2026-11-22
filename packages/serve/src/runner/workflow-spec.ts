@@ -18,7 +18,7 @@ import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailur
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type SessionWriter, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, type ProxyUsage, startModelProxy } from "@parcha/agentrun-kernel/host";
-import { type CapModel, CapRefused, checkRaise, DecisionPriceUnreadable, DECISION_SESSION, type DecisionCapRequest, followUpOf, freeCeilingMessage, freeModelRequestsOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapModel, CapRefused, checkRaise, DecisionPriceUnreadable, DECISION_SESSION, type DecisionCapRequest, followUpOf, freeCeilingMessage, freeRequestLimitOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { completer } from "../llm.js";
 // The decision providers' list prices, the catalog's read and the replay check (decision-cap.ts), with holdOf, which the
 // parity tests hold this cap's figures to.
@@ -52,6 +52,7 @@ import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type PollDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Journal, Store } from "../store/store.js";
+import type { WorkflowBody } from "../store/agent-body.js";
 import { SUBMIT_TOOL } from "../workflow/host-tools.js";
 import { endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
@@ -239,7 +240,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     // models, its decisions, its call nodes' effects and its model nodes' tools all run on these, never on another run's
     // keys or on this process's whole environment.
     // Held by the runner's one redactor before anything can echo one (holding: run.redact), as the decision keys were.
-    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}) }, claimed.revision, { plane: claimed.plane }));
+    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}), redact: run?.redact }, claimed.revision, { plane: claimed.plane }, claim.runId));
     // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its
     // own: each tier's key from the runner's environment, else the one the claim opened (a key saved in
     // Settings → Model keys runs the next run with no restart).
@@ -249,7 +250,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     const runKey = await claimModelKey({ store: deps.store, sealKey: deps.sealKey, env: deps.env ?? process.env }, claim.runId);
     if (keyedAtClaim(runKey)) withoutModelKeys(claimedEnv);
     if (runKey && run?.redact) holdRunKey(heldRedactor(run.redact), runKey);
-    const providerOf = deps.providerOf ?? routeProviderOf(claimModelEnv(deps.env ?? process.env, claimedEnv, runKey));
+    const providerOf = deps.providerOf ?? routeProviderOf(claimModelEnv(deps.env ?? process.env, claimedEnv, runKey, claim));
 
     // Each tier's provider and cap model, resolved once; the proxies start here (before the Harness opens, since the models
     // catalog the Harness takes points at them), their hooks deferred to the booking wired at harnessReady.
@@ -420,7 +421,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
         const writer = await sessions.open(SESSION);
         // Its model nodes' requests on free models count toward the run's limit of them, capped or not. A step waiting for
         // room under it (a map's branch, beside its siblings' holds) leaves at the run's stop or park, unsent.
-        const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, modelOf: capModelOf, freeRequests: freeModelRequestsOf(deps.env ?? process.env), ...(context.abortSignal ? { stopped: context.abortSignal } : {}) });
+        const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, modelOf: capModelOf, freeRequests: freeRequestLimitOf(deps.env ?? process.env, (claimed.revision.body as WorkflowBody).maxRequests), ...(context.abortSignal ? { stopped: context.abortSignal } : {}) });
         booking = await modelPortFor(writer, {
           key: SESSION,
           label: SESSION,
@@ -789,8 +790,9 @@ type CallPolicy = (tool: string) => Promise<{ permission: "allow" | "ask" | "den
 function callPolicyOf(store: Pick<Store, "settings">, runId: string, claimed: Claimed): CallPolicy {
   // Nothing read yet: unread, so a policy asked before the first read fails closed too.
   let current: Awaited<ReturnType<typeof loadToolSettings>> = { settings: {}, problems: [], unreadable: true };
-  // Only the permission is read here: a workflow never parks, so whether anyone can answer an ask plays no part.
-  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current, true);
+  // Only the permission is read here: a workflow never parks, so whether anyone can answer an ask plays no part. A
+  // workflow runs on no harness's adapter, so no facts name its tools.
+  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot, facts: undefined }, runId, claimed.revision as never, () => current, true);
   return async (tool) => {
     current = await storeSettings(store);
     return { permission: gate.policy(tool), denyFrom: gate.denyFrom(tool) };

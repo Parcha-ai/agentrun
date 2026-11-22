@@ -24,7 +24,7 @@ import { syncingClient } from "../../mount-archil.js";
 import { type ComputerClient, type FileEntry, MAX_LIST_DEPTH, MAX_OUTPUT_BYTES } from "../../protocol.js";
 import type { ComputerRef, ComputerSpec } from "../../provider.js";
 import { ok, type Result } from "../../result.js";
-import { type FolderMeta, FolderSync, SYNC_MAX_ENTRIES, type SyncSink } from "../../sync-folder.js";
+import { type FolderMeta, FolderSync, PUSHED_MTIME, SYNC_MAX_ENTRIES, type SyncSink } from "../../sync-folder.js";
 import { type TarEntry, tarStream } from "../../tar.js";
 import type { Case, CaseContext, RunFolder } from "../types.js";
 import { assertIsolated, assertRootRunsClosed } from "./isolation.js";
@@ -312,9 +312,10 @@ class CopySink implements SyncSink {
 }
 
 /**
- * A computer made with a synced folder, its copy `entries` held by the runner and pushed into /workspace as one tar
- * (none: an empty folder), the computer's listing read as the manifest, and its client under syncingClient, as a runner
- * hands it to the tools: each call that may change the folder answers once its delta is on the copy.
+ * A computer made with a synced folder, its copy `entries` held by the runner and pushed into /workspace as one tar, each
+ * file at PUSHED_MTIME (none: an empty folder), the computer's listing read as the manifest, and its client under
+ * syncingClient, as a runner hands it to the tools: each call that may change the folder answers once its delta is on
+ * the copy.
  */
 async function synced(t: CaseContext, name: string, entries: readonly TarEntry[] = []): Promise<{ copy: CopySink; client: ComputerClient; own: ComputerClient; folder: FolderSync }> {
 	const copy = new CopySink();
@@ -330,7 +331,8 @@ async function synced(t: CaseContext, name: string, entries: readonly TarEntry[]
 	};
 	const { ref } = await mounted(t, kept, EPOCH, name);
 	const connected = await t.connect(ref);
-	if (entries.length > 0) t.ok(await pushTar(connected.client, WORKSPACE, tarStream(entries)), `tar.push of the run's folder into ${WORKSPACE}`);
+	const pushed = entries.map((entry) => (entry.type === "file" ? { ...entry, mtime: PUSHED_MTIME } : entry));
+	if (entries.length > 0) t.ok(await pushTar(connected.client, WORKSPACE, tarStream(pushed)), `tar.push of the run's folder into ${WORKSPACE}`);
 	const folder = new FolderSync(connected.client, copy);
 	t.ok(await folder.baseline(), `files.list of ${WORKSPACE} pushed in, as the manifest`);
 	const client = syncingClient(connected.client, async () => {

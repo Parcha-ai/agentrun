@@ -1,4 +1,4 @@
-// Cursor in serve's harness table (harness-table.ts): one entry, on the ACP adapter (cursorAdapter), its release the one
+// Cursor in serve's harness table (harness-table.ts): one entry, acpEntryOf's plan-billed one, its release the one
 // `agentrun harness install cursor` puts in `<data>/harnesses/cursor` (harness-archive.ts: its launcher at
 // ./dist-package/cursor-agent and every file beside it checked against the pin), on its owner's CURSOR_API_KEY, billed to
 // the owner's Cursor plan (wire `plan`): no proxy, key, catalog or cap of ours is its.
@@ -71,6 +71,24 @@ test("cursor is one entry of the table: Cursor, billed to its plan on its own ke
   const mismatched = { [DATA_ENV]: data };
   assert.deepEqual([...harnessIds(mismatched)], BUILTINS);
   assert.ok(refusedHere(data, "ACP_BINARY_MISMATCH")(cursor.hidden(mismatched)), cursor.hidden(mismatched));
+});
+
+test("a plan-billed ACP agent's entry is acpEntryOf's, Cursor's included: its models named <id>/<model-id>, billed to its plan, no route or runner of ours", async () => {
+  const { acpEntryOf } = await import("../dist/harness-table.js");
+  const { cursorFacts } = await import("@parcha/agentrun-harness-acp");
+  const facts = Object.freeze({ ...cursorFacts, id: "planner", label: "Planner" });
+  const planner = acpEntryOf({ facts, recipe: () => { throw new Error("not started here"); }, ownKeys: ["PLANNER_KEY"] });
+  assert.deepEqual([planner.id, planner.label, planner.promises, planner.ownKeys, planner.route, planner.runner, planner.installs], ["planner", "Planner", PROMISES, ["PLANNER_KEY"], undefined, undefined, undefined]);
+  assert.deepEqual([planner.runs({}, "planner/fast-1"), planner.runs({}, "cursor/fast-1"), planner.runs({}, "anthropic/claude-haiku-4-5"), planner.onWire({})], [true, false, false, true]);
+  assert.deepEqual(await planner.model({}, undefined, true), { model: { provider: "planner", modelId: "default" } }, "none named: its own default");
+  assert.deepEqual(await planner.model({}, "planner/fast-1", true), { model: { provider: "planner", modelId: "fast-1" } });
+  assert.equal(await planner.model({}, "planner/fast-1", false), undefined, "not available: no model");
+  assert.match((await planner.model({}, "anthropic/claude-haiku-4-5", true)).why, /named planner\/<model-id>/);
+  const ref = { provider: "planner", modelId: "fast-1" };
+  assert.equal(planner.priceModel({}, ref), ref, "never priced here");
+  // Cursor's entry is the same builder's: the same members, with its card and hidden beside its own key.
+  const cursor = harnessOf({}, "cursor");
+  assert.deepEqual(Object.keys(cursor).sort(), [...Object.keys(planner), "card", "hidden"].sort());
 });
 
 test("its model is one Cursor lists, named cursor/<model-id>; none named is Cursor's own default; another vendor's is refused in words", async (t) => {
@@ -191,13 +209,15 @@ test("installed and keyed, capabilities list Cursor with its label, its promises
 
 test("Cursor's own calls (its shell: acp_execute) are asked first and refused where no one can approve, on a computer or not; never held to bash's allow", async (t) => {
   const { runGate } = await import("../dist/tool-gate.js");
+  const { builtinFacts } = await import("./gate-support.mjs");
+  const facts = builtinFacts("cursor");
   const dir = await scratch(t);
   const revision = { kind: "agentic", body: { harness: "cursor", tools: ["read", "bash"] } };
   const settings = () => ({ settings: { bash: { permission: "allow" } }, problems: [] });
   for (const computer of [false, true]) {
     // Cursor's shell runs where Cursor runs (the runner's host), never on the run's computer: bash's allow is not its.
-    assert.equal(await runGate({ root: dir, work: dir, computer }, "run-1", revision, settings, true).decide("acp_execute", { title: "echo hi", kind: "execute" }), "ask", `computer ${computer}: asked`);
-    const refused = await runGate({ root: dir, work: dir, computer }, "run-2", revision, settings, false).decide("acp_execute", { title: "echo hi", kind: "execute" });
+    assert.equal(await runGate({ root: dir, work: dir, computer, facts }, "run-1", revision, settings, true).decide("acp_execute", { title: "echo hi", kind: "execute" }), "ask", `computer ${computer}: asked`);
+    const refused = await runGate({ root: dir, work: dir, computer, facts }, "run-2", revision, settings, false).decide("acp_execute", { title: "echo hi", kind: "execute" });
     assert.ok(typeof refused === "object" && "deny" in refused, `computer ${computer}: refused where no one can approve`);
   }
 });

@@ -392,6 +392,25 @@ describe("a run's page, the Grade control", () => {
     expect(t.button("Right")).toBeTruthy();
   });
 
+  // One rule for when a grade is refused, the server's: a run whose row has ended can still read `reflecting` while what
+  // it wrote is checked, and the server takes its grade. Only the server knows when it refuses one (409 run_learning).
+  const REFLECTING: Run["learning"] = { detail: null, at: "2026-11-14T10:00:09Z", state: "reflecting", reason: null };
+  const LEARNING_409 = "The run is still learning from its answer: grade it once that ends.";
+
+  it("offers the grade on an ended run that reads reflecting, and sends it", async () => {
+    const t = await open(run({ learning: REFLECTING }));
+    expect(t.section()!.textContent).toContain("Was the answer right?");
+    await t.click("Right");
+    expect(t.sent).toEqual([{ correct: true }]);
+  });
+
+  it("says a 409 run_learning in the server's words and keeps the choice", async () => {
+    const t = await open(run({ poll_after_ms: 1000, learning: REFLECTING }), { grade: async () => { throw new ClientError(409, "run_learning", LEARNING_409); } });
+    await t.click("Right");
+    expect(t.section()!.querySelector('[role="alert"]')?.textContent).toBe(`Your grade wasn't taken: ${LEARNING_409}`);
+    expect(t.button("Right")).toBeTruthy();
+  });
+
   it("is not there for a run that does not learn, one that only uses what was learned, or one under way with no grade", async () => {
     for (const r of [run({ learning: null }), run({ learning: { ...LEARNS!, reason: "use" } }), run({ status: "working", state: "working", ended_at: null, learning: { ...LEARNS!, state: "seeded", reason: null } })]) {
       const t = await open(r);

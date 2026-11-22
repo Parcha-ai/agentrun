@@ -127,6 +127,40 @@ describe("ArtifactViewer, Rendered or Raw", () => {
   });
 });
 
+// An image, a video or a sound the run made (a generated card, a clip, a narration) shows in the viewer from the run's
+// file route, never read as text; Download fetches that same route as an attachment. With no route it is a download.
+describe("ArtifactViewer, media", () => {
+  const at = (path: string, content_type: string) => ({ path, size_bytes: 2048, modified_at: "2026-11-20T13:30:00Z", content_type } as RunFile);
+  const src = "/v2/runs/run_1/files/media/out";
+  function open(f: RunFile, withSrc = true) {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(ArtifactViewer, { file: f, text: "", onClose: () => {}, ...(withSrc ? { src } : {}) })));
+    return host;
+  }
+
+  it.each([
+    ["media/card.png", "image/png", "img"],
+    ["media/clip.mp4", "video/mp4", "video"],
+    ["media/voice.mp3", "audio/mpeg", "audio"],
+  ] as const)("%s shows as <%s> from its file route, with no toggle and no Copy", (path, type, tag) => {
+    const host = open(at(path, type));
+    const el = host.querySelector(`dialog ${tag === "video" ? "video" : tag === "audio" ? "audio" : "img"}`) as HTMLMediaElement | HTMLImageElement | null;
+    expect(el?.getAttribute("src")).toBe(src);
+    if (tag !== "img") expect(el?.hasAttribute("controls")).toBe(true);
+    expect(host.querySelector('[role="radiogroup"]')).toBeNull();
+    expect([...host.querySelectorAll("button")].find((b) => /Copy/.test(b.textContent ?? ""))?.disabled).toBe(true);
+    expect(host.querySelector<HTMLAnchorElement>("dialog a[download]")?.getAttribute("href")).toBe(`${src}?download=1`);
+    expect(host.textContent).toContain("2.0 KB");
+  });
+
+  it("offers a download only when it has no file route to show it from", () => {
+    const host = open(at("media/card.png", "image/png"), false);
+    expect(host.querySelector("dialog img")).toBeNull();
+    expect(host.textContent).toContain("Download it to open it");
+  });
+});
+
 // On a phone (375 px) the header's one row can't hold the file's name, the Rendered / Raw toggle, Copy and Download: the
 // toggle takes a row of its own below them under the sm breakpoint, so Copy and Download stay on screen.
 describe("ArtifactViewer, on a narrow screen", () => {

@@ -20,7 +20,7 @@ import { hostAddressesOnce } from "../dist/docker-host-addresses.js";
 import { fauxEnvOf } from "../dist/server.js";
 import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { resolve } from "node:path";
-import { openSqliteStore } from "../dist/store/index.js";
+import { openSqliteStore, openStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
@@ -110,9 +110,17 @@ export const webhookLookup = async (host) => {
 /** Where a test server posts Slack's messages unless its test runs a fake Slack (ServeOptions.slackTarget): a closed
  *  port on this machine, so no test ever reaches Slack. */
 export const NO_SLACK = "http://127.0.0.1:9";
+/** The window a test reads /usage over (its `from` and `to`): every run a test starts. */
+export const WINDOW = "from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z";
 export const startServe = async (options) => launchFor(await startServeBuilt({ webhookLookup, slackTarget: NO_SLACK, ...options }));
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
+
+/** For a test that sets every launcher secret: the launch hook's secret as a server takes it (`whsec_` and a 32-byte key)
+ *  that still holds `canary` as text (base64url, which the key's decoding reads), and the hook's URL a start needs beside
+ *  it (a port nothing answers; a test that fires no trigger never reaches it). */
+export const launchHookCanary = (canary) => (assert.ok(canary.length <= 43, canary), `whsec_${canary.padEnd(43, "k")}`);
+export const LAUNCH_HOOK_URL = { AGENTRUN_LAUNCH_HOOK_URL: `${NO_SLACK}/firings` };
 
 // No test reaches a box provider: the boxes the environment running the suite lists are not the tests'. A server here,
 // or one a test starts in a process of its own, probes none, Docker included (on by default when AGENTRUN_BOXES is not
@@ -346,9 +354,13 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. `computers`: a test's kind registry and
- *  provider loader for the run's claim-time computer. */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, evalFakes, childRuns, ...switches } = {}) {
-  const opened = await openSqliteStore({ dataDir: data, role: "runner" });
+ *  provider loader for the run's claim-time computer. Its store is the one the server opens (store/open.ts openStore):
+ *  SQLite in `data`, or the Postgres AGENTRUN_STORE_URL names. `archil`: a test's Archil fakes for a Mode 2 claim, the
+ *  disk's file API (`makeDisk`, AdapterSpecDeps.makeArchilDisk) and the control plane (`control`,
+ *  AdapterSpecDeps.mountControl). `ownData`: a data directory of the runner's own, apart from the server's, for its
+ *  scratch and everything a run's claim reads or writes on this machine (the store and the seal key stay the server's). */
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, evalFakes, childRuns, archil, ownData, ...switches } = {}) {
+  const opened = await openStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
   let dead = false;
@@ -410,7 +422,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
   let runner;
   let beats = 0;
   try {
-    const deps = { env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(mcpOwn ? { mcpOwn } : {}), ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(evalFakes ? { evalFakes } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) };
+    const deps = { env, data: ownData ?? data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(mcpOwn ? { mcpOwn } : {}), ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(evalFakes ? { evalFakes } : {}), ...(archil ? { makeArchilDisk: archil.makeDisk, mountControl: archil.control } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) };
     // `childRuns` (a test's): each run a process of its own (run-child-host.ts childLoops), as the CLI's start runs them,
     // its keys and calls the runner's across the channel; the same user unless `childRuns.isolation` says otherwise (a
     // stand-in helper's), its lines on `childRuns.log`.
@@ -482,8 +494,9 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   let closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, runnerOptions);
   // Runners a test crashed (crashRunner), closed with the rest at the stop.
   const crashed = [];
-  // A handle of the test's own on the server's store (as a runner's), for what a test reads of its rows: server.store.
-  const store = await openSqliteStore({ dataDir: data, role: "runner" });
+  // A handle of the test's own on the server's store (as a runner's), for what a test reads of its rows: server.store. The
+  // store the server opened: SQLite in its data, or the Postgres AGENTRUN_STORE_URL names (openStore).
+  const store = await openStore({ dataDir: data, role: "runner" });
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
   if (dir) sharing.set(data, new Set());
   else sharing.get(data)?.add(server);

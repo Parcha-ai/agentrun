@@ -1,3 +1,4 @@
+import type { SourceSyncStatus, SourceProjectReceipt } from "./sourceSync";
 import type { Observations } from "./observations";
 import type { NativeBinding, NativeRuntime, NativeSelector, NativeTarget } from "./native";
 import type { ConnectorEnrollment, ConnectorEnrollmentCapabilities, RemoteConnector } from "./connectors";
@@ -7,7 +8,7 @@ import type { AgentLearning, Corrections, LearningChange, LearningDiff, Learning
 import type { ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Capabilities, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, Capabilities, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -146,6 +147,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     listAgentRuns: (id: string, limit = 50, cursor?: string | null, filter: RunsFilter | boolean = {}) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs${runsQuery(limit, cursor, typeof filter === "boolean" ? { archived: filter } : filter)}`),
     discoverNative: (project: string, runtime?: NativeRuntime) => call<{ machine_id: string; targets: NativeTarget[] }>("POST", "/native/discover", { body: { project, ...(runtime ? { runtime } : {}) } }),
     connectNative: (body: { project: string; runtime: NativeRuntime; selector: NativeSelector }) => call<{ agent: Agent; native: NativeBinding }>("POST", "/native/connect", { body }),
+    sourceSync: (id: string) => call<SourceSyncStatus>("GET", `${agent(id)}/source`),
+    setSourceSync: (id: string, enabled: boolean) => call<SourceSyncStatus>("PATCH", `${agent(id)}/source`, { body: { enabled } }),
+    moveToAgentRun: (id: string) => call<{ agent: Agent; source: SourceSyncStatus }>("POST", `${agent(id)}/source/move`, { body: {} }),
+    resolveSourceSync: (id: string, revision: string, snapshot: string) => call<{ agent: Agent; source: SourceSyncStatus }>("POST", `${agent(id)}/source/resolve`, { body: { revision, snapshot } }),
+    reviewSourceProject: (id: string, receipts: SourceProjectReceipt[]) => call<SourceSyncStatus>("POST", `${agent(id)}/source/project-review`, { body: { receipts } }),
+    bindSourceTool: (id: string, tool: string, server: string) => call<SourceSyncStatus>("POST", `${agent(id)}/source/tools`, { body: { tool, server } }),
     getNative: (id: string) => call<{ native: NativeBinding | null }>("GET", `${agent(id)}/native`),
     verifyNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/verify`, { body: {} }),
     disconnectNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/disconnect`, { body: {} }),
@@ -156,6 +163,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     },
     listConnectors: () => call<{ connectors: RemoteConnector[] }>("GET", "/connectors"),
     enrollConnector: (label?: string, capabilities?: ConnectorEnrollmentCapabilities) => call<ConnectorEnrollment>("POST", "/connectors/enrollment", { body: { ...(label?.trim() ? { label: label.trim() } : {}), ...(capabilities ? { capabilities } : {}) } }),
+    upgradeConnectorSync: (connector_id: string, capabilities: ConnectorEnrollmentCapabilities) => call<ConnectorEnrollment>("POST", "/connectors/enrollment", { body: { connector_id, capabilities } }),
     revokeConnector: (id: string) => call<{ connector: RemoteConnector }>("DELETE", `/connectors/${encodeURIComponent(id)}`),
     listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
       const q = new URLSearchParams();
@@ -267,6 +275,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     getRunGraph: (id: string, signal?: AbortSignal) => call<RunGraph>("GET", `${run(id)}/graph`, { signal }),
     /** A run's trace: each model request and tool call as a span, with its time, tokens and cost. */
     runTrace: (id: string, signal?: AbortSignal) => call<RunTrace>("GET", `${run(id)}/trace`, { signal }),
+    /** A run's cost line by line (GET /v2/runs/{id}/usage): by model, by the vendor that charged for a tool, by browser provider. */
+    runUsage: (id: string, signal?: AbortSignal) => call<RunUsage>("GET", `${run(id)}/usage`, { signal }),
     /** Pauses a workflow run: calls in flight finish, and no new node starts until it resumes. */
     pauseRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/pause`, { body: {} }),
     resumeRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/resume`, { body: {} }),

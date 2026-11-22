@@ -112,8 +112,8 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
 };
 
 /** The harness the launch names, as `env`'s harness table has it (harness-table.ts harnessOf): a built-in one's runner is
- *  the runner's own (RUNNER_HARNESSES), one a harness module adds brings its own (HarnessEntry.runner), and any other entry
- *  with facts and an adapter (Goose's, Cursor's: harness-loops.ts cliRunSpecFromLaunch builds the run from the entry) is
+ *  the runner's own (RUNNER_HARNESSES), one a harness module adds (and Goose) brings its own (HarnessEntry.runner), and any
+ *  other entry with facts and an adapter (Cursor's: harness-loops.ts cliRunSpecFromLaunch builds the run from the entry) is
  *  run from the table (harness-table.ts ON_TABLE, the modules' runner too). Undefined when the table has none by that name. `env`:
  *  the run's environment (this process's when not given). */
 export function resolveHarness(harness: string, env: NodeJS.ProcessEnv = process.env): RunnerHarness | undefined {

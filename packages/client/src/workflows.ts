@@ -222,6 +222,15 @@ function makeWorkflowBridge<
   const { inspectWorkflow, runWorkflow, resolveSchemaForWorkflow } = options.engine;
   const policy = options.policy, runNode = options.runNode, runJudge = options.runJudge, observer = options.onEvent;
   const resolveCheckInput = options.resolveCheckInput;
+  // Where a shadow check differs from the server's own replay (serve learn/replay-calls.ts), and why:
+  // - Reads. The server runs a read live when the recording lacks it; here a missing read is refused (the turn is given
+  //   back, never counted) unless the host opts in. The host's callbacks run under the host's credentials and policy,
+  //   so running one during a check is the host's call, and every fresh read is reported (fresh_reads).
+  // - Writes. Both answer a write only from a recorded call with the same tool and arguments, never sending it. Here a
+  //   trace with writes must also replay in the recorded order: the host's write callbacks are not idempotent by
+  //   contract, and order is the only proof the shadow saw the state the native turn saw.
+  // - Limits. A server replay is a run bounded by its deadline and the agent's cap; this one runs in the host's process
+  //   right after the native turn, so maxToolCalls, maxNodeSteps and maxDurationMs bound it there.
   const readFallback = options.shadowReadFallback === true;
   const validator = new SchemaValidator();
   const registered = new Map<string, { manifest: BackendWorkflowToolManifest; readOnly: boolean; execute: BackendWorkflowTool['execute']; input: ReturnType<SchemaValidator['getValidator']>; output?: ReturnType<SchemaValidator['getValidator']> }>();
@@ -274,12 +283,13 @@ function makeWorkflowBridge<
     // Freeze the exact receipt and native evidence before any caller callback or await. The result reports
     // execution only: agreement and promotion belong to the server's independent comparison.
     const check = freeze(copy(candidate)), events = freeze(copy(turn.events));
-    const receipt = { type: 'workflow_check' as const, id: check.id, digest: check.digest };
     const controller = new AbortController();
     shadows.add(controller);
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(maxDuration), ...(turn.signal ? [turn.signal] : [])]);
     let skipped: { tool: string; unmarked?: true } | undefined;
-    let calls = 0, nodes = 0;
+    let calls = 0, nodes = 0, fresh = 0;
+    // The report names every fresh read it made, so the server's check record says which answers came from live reads.
+    const receipt = () => ({ type: 'workflow_check' as const, id: check.id, digest: check.digest, ...(fresh ? { fresh_reads: fresh } : {}) });
     try {
       signal.throwIfAborted();
       if (closed || turn.outcome.status !== 'completed') refuse('A shadow needs a completed native turn and an open host bridge.');
@@ -336,6 +346,8 @@ function makeWorkflowBridge<
       const schema = workflow.input ? resolveSchemaForWorkflow(workflow, workflow.schemas[workflow.input.schemaId]!) : { type: 'object' };
       const accepts = validator.getValidator(schema);
       let input: Record<string, unknown> | null = null;
+      // The server reserves a JSON object task only when the draft takes it (serve's fits); a prose task's input is
+      // resolved here, and one that cannot be resolved gives the turn back.
       if (resolveCheckInput) input = await cancellable(Promise.resolve(resolveCheckInput(check, { input: turn.input, events, signal })), signal);
       else {
         let parsed: unknown;
@@ -390,7 +402,7 @@ function makeWorkflowBridge<
               if (!readFallback) return refuse('The native recording has no matching read result; fresh shadow reads are not enabled.');
               // Only explicit read-only callbacks may run, and once per arguments. Failed calls are not retried.
               let read = cache.get(key);
-              if (!read) { read = Promise.resolve().then(() => { ctx.signal.throwIfAborted(); return tool.execute(args, ctx); }); cache.set(key, read); }
+              if (!read) { fresh++; read = Promise.resolve().then(() => { ctx.signal.throwIfAborted(); return tool.execute(args, ctx); }); cache.set(key, read); }
               output = await cancellable(read, ctx.signal);
             }
             ctx.signal.throwIfAborted();
@@ -400,15 +412,15 @@ function makeWorkflowBridge<
         },
       }), signal);
       signal.throwIfAborted();
-      if (skipped) return { ...receipt, outcome: 'skipped_write', skipped };
-      if (result.status !== 'complete') return { ...receipt, outcome: 'handed_back', reason: 'The draft did not answer alone.' };
+      if (skipped) return { ...receipt(), outcome: 'skipped_write', skipped };
+      if (result.status !== 'complete') return { ...receipt(), outcome: 'handed_back', reason: 'The draft did not answer alone.' };
       if (ordered && nextEffect !== nativeSequence.length) refuse('The shadow omitted a recorded native call from a trace with writes.');
       const answer = answerOf(result.output);
       if (Buffer.byteLength(answer) > 65_536) refuse('The shadow answer exceeds the result limit.');
-      return { ...receipt, outcome: 'answered', answer };
+      return { ...receipt(), outcome: 'answered', answer };
     } catch (error) {
-      return skipped ? { ...receipt, outcome: 'skipped_write', skipped }
-        : { ...receipt, outcome: 'failed', reason: error instanceof Refused ? error.message : 'The shadow did not complete; native results are unchanged.' };
+      return skipped ? { ...receipt(), outcome: 'skipped_write', skipped }
+        : { ...receipt(), outcome: 'failed', reason: error instanceof Refused ? error.message : 'The shadow did not complete; native results are unchanged.' };
     } finally { controller.abort(); shadows.delete(controller); }
   };
 

@@ -108,6 +108,10 @@ export function savedPaths(tool: string, args: Obj, result: ToolResultView): str
     const file = str(args.path) ?? str(args.file_path);
     return file ? [file] : [];
   }
+  if (tool === "web_save") {
+    const saved = obj(json(result.text));
+    return saved?.ok === true && str(saved.path) ? [str(saved.path)!] : [];
+  }
   if (tool !== "browser_downloads") return [];
   const fetched = json(result.text)?.fetched;
   return Array.isArray(fetched) ? fetched.flatMap((file) => str(obj(file)?.path) ?? []) : [];
@@ -159,6 +163,19 @@ const fetchOutcome: OutcomeFn = (result) => {
 // web_fetch answers a page, `{ok, url, status, title, text, links, refused?, error?}`.
 registerLabel("web_fetch", fetchLabel, fetchFold, { name: "Fetch web pages" });
 registerOutcome("web_fetch", fetchOutcome);
+// web_save answers `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, path?, refused | error}` (web-save.ts):
+// the path it answered, else the one asked (a bare name under media/, as it saves one), and the host it was asked for.
+const savedAt = (a: Obj, result: { text: string } | undefined): string => {
+  const answered = result && str(obj(json(result.text))?.path);
+  const asked = str(a.path);
+  return answered ?? (asked ? (asked.includes("/") ? asked : `media/${asked}`) : "a file");
+};
+const fromHost = (a: Obj) => {
+  const host = URL.parse(str(a.url) ?? "")?.host;
+  return host ? ` from ${host}` : "";
+};
+registerLabel("web_save", (a, result) => `${unfetched(result) ? "Tried to save" : "Saved"} ${savedAt(a, result)}${fromHost(a)}`, { many: (n) => `Saved ${n} files from the web`, subject: (input) => input ?? undefined }, { name: "Save files from the web" });
+registerOutcome("web_save", fetchOutcome);
 registerLabel("web_search", (a) => {
   const query = str(a.query);
   return query ? `Searched the web for "${cut(scrubUrls(query), 60)}"` : "Searched the web";

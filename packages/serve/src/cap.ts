@@ -1,7 +1,7 @@
 // What a run's spend cap leaves behind in serve once the kernel's cap (run-adapters kernel/cap) holds the money: the
 // refusal's code and words as every reader of a refusal reads them, the cap modes a run is created with, and the spend
 // and /usage meters read back from a run's entries (spentFrom, meterFiguresFrom), over marks the kernel's cap also reads.
-import { type EntryLike, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, REQUEST_CONTINUED, timelineOf, TOOL_COST, TOOL_STARTED } from "./timeline/index.js";
+import { compactionAnswers, type EntryLike, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, REQUEST_CONTINUED, timelineOf, TOOL_COST, TOOL_STARTED } from "./timeline/index.js";
 
 /** How a request the cap refused begins its error, which the server ends the run with. */
 export const SPEND_CAP_REACHED = "spend_cap_reached";
@@ -91,18 +91,18 @@ const close = (open: Figure[], figure?: number) => {
  *  never left (REQUEST_REFUSED's error entry) and a harness answer's continuation close nothing. */
 function openFigures(entries: readonly EntryLike[]): { generation: Figure[]; compaction: Figure[] } {
   const open = { generation: [] as Figure[], compaction: [] as Figure[] };
-  let [refused, continued, sideSummaries] = [0, 0, 0];
+  let [refused, continued] = [0, 0];
+  const sideSummaries = { count: 0 };
   for (const entry of entries) {
     const message = entry.model?.[0] as { stopReason?: unknown } | undefined;
     const data = (entry.data ?? {}) as Record<string, unknown>;
     // A side request (a compaction's summary, a tool's own request): marked with a label, as the timeline reads it.
     const kind = typeof data.request === "string" ? "compaction" : "generation";
-    if (entry.kind === REQUEST_STARTED && data.request === "compaction") sideSummaries += 1;
-    // pi's compaction entry answers its summary request when that left marked as a generation (the timeline's meter):
-    // pi stores no answer for it. One marked as a side request is closed by its cost.
+    // pi's compaction entry answers its summary request when that left marked as a generation, by the timeline's own
+    // rule (compactionAnswers). One marked as a side request is closed by its cost.
+    const summaryAnswered = compactionAnswers(entry, sideSummaries);
     if (entry.kind === "pi.compaction") {
-      if (sideSummaries > 0) sideSummaries = 0;
-      else close(open.generation);
+      if (summaryAnswered) close(open.generation);
     } else if (entry.kind === REQUEST_REFUSED) refused += 1;
     else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") refused -= 1;
     else if (entry.kind === REQUEST_CONTINUED) continued += 1;

@@ -290,16 +290,22 @@ for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true]
     await client(server.baseUrl, next.body.token)("POST", `/sdk-runs/${next.body.run_id}/complete`, { status: "cancelled", answer: "" });
     return;
   }
-  assert.deepEqual(next.body.learning.workflows, [], "the compiled draft is withheld pending native comparison");
-  assert.equal(next.body.learning.check.workflow.name, "release-status");
-  const shadowSdk = client(server.baseUrl, next.body.token), shadowPath = `/sdk-runs/${next.body.run_id}`;
-  assert.equal((await shadowSdk("POST", `${shadowPath}/events`, { sequence: 1, events: [
-    { type: "tool", id: "fresh-status", name: tool.name, status: "started", input: { release: "current" } },
-    { type: "tool", id: "fresh-status", name: tool.name, status: "completed", output: { ready: true } },
-    { type: "workflow_check", id: next.body.learning.check.id, digest: next.body.learning.check.digest, outcome: "answered", answer: '{"ready":true}' },
-  ] })).status, 200);
-  assert.equal((await shadowSdk("POST", `${shadowPath}/complete`, { status: "completed", answer: '{"ready":true}' })).status, 200);
-  await follow(api, next.body.run_id, ["completed"]);
+  // Checked as a managed draft is, on compile_after (5) inputs: five native turns, each answered by the agent, the draft
+  // withheld until the fifth decides.
+  for (let turn = 1; turn <= 5; turn++) {
+    const checking = turn === 1 ? next : await start("Check release readiness.", `check-turn-${turn}`);
+    assert.equal(checking.status, 201, JSON.stringify(checking.body));
+    assert.deepEqual(checking.body.learning.workflows, [], `turn ${turn}: the compiled draft is withheld pending native comparison`);
+    assert.equal(checking.body.learning.check?.workflow.name, "release-status", `turn ${turn} checks the draft`);
+    const shadowSdk = client(server.baseUrl, checking.body.token), shadowPath = `/sdk-runs/${checking.body.run_id}`;
+    assert.equal((await shadowSdk("POST", `${shadowPath}/events`, { sequence: 1, events: [
+      { type: "tool", id: "fresh-status", name: tool.name, status: "started", input: { release: "current" } },
+      { type: "tool", id: "fresh-status", name: tool.name, status: "completed", output: { ready: true } },
+      { type: "workflow_check", id: checking.body.learning.check.id, digest: checking.body.learning.check.digest, outcome: "answered", answer: '{"ready":true}' },
+    ] })).status, 200);
+    assert.equal((await shadowSdk("POST", `${shadowPath}/complete`, { status: "completed", answer: '{"ready":true}' })).status, 200);
+    await follow(api, checking.body.run_id, ["completed"]);
+  }
   const promoted = await start("Check release readiness.", "promoted-workflow");
   assert.deepEqual(promoted.body.learning.workflows.map((workflow) => workflow.name), ["release-status"]);
   assert.equal(JSON.parse(promoted.body.learning.workflows[0].workflow).root.tool, tool.name);

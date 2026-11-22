@@ -1,4 +1,3 @@
-import { ObservedSessions } from "@/components/ObservedSessions";
 import type { ObservationRead } from "@/lib/observations";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { Archive, ArrowUpRight, History, Play } from "lucide-react";
@@ -9,6 +8,7 @@ import { ScheduleChip } from "@/components/ScheduleChip";
 import { ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Banner } from "@/components/ui/banner";
 import type { RunsFilter } from "@/lib/client";
 import { cost, runEnded, when, runTitle } from "@/lib/format";
 import type { Problem } from "@/lib/problem";
@@ -27,6 +27,9 @@ const STATUS_LABEL: Record<RunStatus, string> = { queued: "Queued", working: "Wo
  *  A read that failed says so in words, with Try again (`onRetry`); a failed Load more keeps the rows above it. */
 export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, loadingMore, filter = {}, onFilter, agentId, observations }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: Problem | null; onRetry?: () => void; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void; agentId?: string; observations?: ObservationRead }) {
   const archived = !!filter.archived;
+  const connected = !archived && !filter.status && !agentId ? observations : undefined;
+  const sourceAgents = !!connected?.data?.sessions.length;
+  const sourceUnknown = !!connected && !connected.data && (connected.loading || !!connected.error);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
@@ -43,10 +46,15 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
       <div className="min-h-0 flex-1 overflow-auto">
       {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />
         : !runs ? <ListSkeleton label="Loading the runs" />
-        : !runs.length && !observations?.data?.sessions.length && !filter.status && !archived ? <div className="p-5 md:p-8"><FirstRun /></div>
-        : !runs.length && observations?.data?.sessions.length ? null : !runs.length ? <p className="px-4 py-16 text-center text-body text-muted-foreground">{filter.status ? "No run matches." : archived ? "No archived runs." : "No runs yet."}</p>
+        : !runs.length && (filter.status || archived) ? <p className="px-4 py-16 text-center text-body text-muted-foreground">{filter.status ? "No run matches." : "No archived runs."}</p>
+        : !runs.length && (sourceAgents || sourceUnknown) ? <div className="space-y-3 p-5 md:p-8">
+          <h2 className="text-lg font-semibold">No captured runs yet</h2>
+          <p className="text-body text-muted-foreground">Continue working with your agents. Completed prompts appear here when they are recorded.</p>
+          <a href="#/agents" className="inline-block text-body underline underline-offset-2">Connected agents</a>
+        </div>
+        : !runs.length ? <div className="p-5 md:p-8"><FirstRun /></div>
         : <RunsTable runs={runs} agentName={agentName} onOpen={onOpen} />}
-      {observations && <div className="p-5 md:p-8"><ObservedSessions read={observations} /></div>}
+      {connected?.error && <div className="p-5 md:p-8"><Banner tone="error" actions={<Button size="xs" disabled={connected.loading} onClick={connected.refresh}>Try again</Button>}>Could not refresh connected agents: {connected.error}</Banner></div>}
       {runs && error && <ProblemCard problem={error} className="mt-4" />}
       {runs && onMore && <div className="flex justify-center p-4"><Button type="button" size="sm" onClick={onMore} disabled={loadingMore}>{loadingMore ? "Loading" : "Load more"}</Button></div>}
       </div>
