@@ -19,9 +19,10 @@ const ATTEMPTS = 4;
  * new chain by compare and swap and leaves no byte of the old one (learn/store.ts rewrite); a run merging meanwhile
  * finds main moved, as after a reset. Every commit id changes; every other run's history and diffs stay. `commit`: the
  * new main, when the purge rewrote it; `moved`: each old commit's new one, the commit whose tree it now is (one dropped
- * goes to the one before it), so a record naming an old commit (a promotion's) is moved to it.
+ * goes to the one before it), so a record naming an old commit (a promotion's) is moved to it. `nothing`: why no
+ * rewrite was needed (Nothing).
  */
-export async function forgetRunText(store: LearningStore, runId: string): Promise<{ commit?: string; moved?: ReadonlyMap<string, string> }> {
+export async function forgetRunText(store: LearningStore, runId: string): Promise<Forgot> {
   for (let attempt = 1; ; attempt++) {
     const done = await purgeOnce(store, runId);
     if (done !== "stale") return done;
@@ -29,19 +30,24 @@ export async function forgetRunText(store: LearningStore, runId: string): Promis
   }
 }
 
-async function purgeOnce(store: LearningStore, runId: string): Promise<{ commit?: string; moved?: ReadonlyMap<string, string> } | "stale"> {
+/** Why a purge rewrote nothing: `empty`, the agent has learned nothing (no main); `purged`, the run was purged
+ *  already (its marker is at main); `unmerged`, no commit of main's history carries the run's Run-Id trailer. */
+export type Nothing = "empty" | "purged" | "unmerged";
+export type Forgot = { commit: string; moved: ReadonlyMap<string, string> } | { nothing: Nothing };
+
+async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | "stale"> {
   const old = await store.head();
-  if (!old) return {};
+  if (!old) return { nothing: "empty" };
   const [marked, newestFirst] = await Promise.all([store.read(old, [purgedMarker(runId)]), store.log(old)]);
   if (!marked || !newestFirst) return "stale";
   // Purged already: what a rewrite stopped after moving main kept of the old history goes now, or this throws, retryable.
   if (marked.length) {
     await store.tidy();
-    return {};
+    return { nothing: "purged" };
   }
   const trailer = `Run-Id: ${runId}`;
   const merges = new Set(newestFirst.filter(({ message }) => message.split("\n").includes(trailer)).map(({ sha }) => sha));
-  if (!merges.size) return {};
+  if (!merges.size) return { nothing: "unmerged" };
   const history = [...newestFirst].reverse();
   const added = new Map<string, string[]>();
   for (const sha of merges) added.set(sha, ((await store.diff(sha)) ?? []).flatMap((file) => (file.path === CORRECTIONS_FILE && "patch" in file ? addedLines(file.patch) : [])));

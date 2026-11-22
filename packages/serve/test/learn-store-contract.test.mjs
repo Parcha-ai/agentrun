@@ -113,6 +113,8 @@ const STORES = {
       const { CODE_STORAGE_ENV, codeStorageFromEnv } = await import("../dist/learn/store-of.js");
       const settings = codeStorageFromEnv({ [CODE_STORAGE_ENV.name]: LIVE.name, [CODE_STORAGE_ENV.apiUrl]: LIVE.apiUrl }, () => LIVE.key);
       const serverId = randomBytes(6).toString("hex");
+      // On stderr, so whoever ran the suite can check every agentrun-<this id>-* repository is gone after it.
+      process.stderr.write(`code.storage live: ${t.name}: server id ${serverId}\n`);
       // The capture path's own check (the case at the end) runs these cases against a fake keyed with the settings' key.
       const fake = LIVE.fake ? codeStorageFake({ name: settings.name, publicKey: LIVE.fake }) : undefined;
       const store = codeStorageLearningStore({ ...settings, ...(fake ? { fetch: fake.fetch } : {}), serverId: async () => serverId }, "agent-one");
@@ -237,6 +239,9 @@ for (const [kind, make] of Object.entries(STORES)) {
     const log = await store.log(three);
     assert.deepEqual(log.map((commit) => [commit.sha, commit.parent]), [[three, two], [two, one], [one, null]]);
     assert.deepEqual(log.map((commit) => commit.message.trim().split("\n")[0]), ["third", "second", "first"]);
+    // Each commit's whole message, its trailers too (a run's purge finds its merges by Run-Id), at any limit or path.
+    assert.match(log[1].message, /^Run-Id: run_a$/m, JSON.stringify(log[1]));
+    assert.match((await store.log(three, { path: ".agentrun/runs/run_a" }))[0].message, /^Run-Id: run_a$/m);
     assert.ok(log.every((commit) => !Number.isNaN(Date.parse(commit.at))));
     assert.deepEqual((await store.log(two)).map((commit) => commit.sha), [two, one]);
     assert.deepEqual((await store.log(three, { limit: 1 })).map((commit) => commit.sha), [three]);
@@ -307,7 +312,8 @@ for (const [kind, make] of Object.entries(STORES)) {
     assert.equal(await store.read(before), undefined);
     // B's merge is kept, empty of its text; the tip marks the purge.
     const log = await store.log(done.commit);
-    assert.ok(log.some((commit) => commit.message === "learning: run_bravo: merged\n\nmerged\n\nRun-Id: run_bravo\n"), JSON.stringify(log.map((commit) => commit.message)));
+    // (A store may keep a message's trailing newline or not.)
+    assert.ok(log.some((commit) => commit.message.trimEnd() === "learning: run_bravo: merged\n\nmerged\n\nRun-Id: run_bravo"),JSON.stringify(log.map((commit) => commit.message)));
     assert.ok(paths(await store.read(done.commit)).includes(".agentrun/purged/run_bravo"));
     // The snapshot is main's, rebuilt: every commit it names is in the new history, B's reason cut.
     const snapshot = await readSnapshot(store);
@@ -326,8 +332,8 @@ for (const [kind, make] of Object.entries(STORES)) {
     for (const key of ["run_bravo", "run_bravo.r2"]) assert.ok("already" in (await save(store, done.commit, [{ path: "corrections.md", text: "BRAVO again\n" }], { run: key })), key);
     assert.equal(await store.head(), done.commit);
     // A purge sent again, or one of a run that never merged, does nothing.
-    assert.deepEqual(await forgetRunText(store, "run_bravo"), {});
-    assert.deepEqual(await forgetRunText(store, "run_zulu"), {});
+    assert.deepEqual(await forgetRunText(store, "run_bravo"), { nothing: "purged" });
+    assert.deepEqual(await forgetRunText(store, "run_zulu"), { nothing: "unmerged" });
     assert.equal(await store.head(), done.commit);
     // No byte of the old history is left in the store itself.
     if (store.data) {
@@ -346,7 +352,7 @@ for (const [kind, make] of Object.entries(STORES)) {
       const making = sh(["commit-tree", `${done.commit}^{tree}`, "-p", done.commit, "-m", "a run's merge being made"]);
       const importRef = "refs/agentrun/import-0123456789abcdef";
       sh(["update-ref", importRef, making]);
-      assert.deepEqual(await forgetRunText(store, "run_bravo"), {});
+      assert.deepEqual(await forgetRunText(store, "run_bravo"), { nothing: "purged" });
       assert.equal(sh(["rev-parse", importRef]), making);
       // A rewrite stopped after moving main (its tidy mark left, before it pruned) left the run's bytes and a ref: a
       // purge sent again finds its marker and removes them, the import on main kept.
@@ -358,7 +364,7 @@ for (const [kind, make] of Object.entries(STORES)) {
       const lost = await store.rewrite(before, (commit) => commit({ parent: null, message: "a rewrite that loses", at: 1_700_000_000, files: [] }));
       assert.ok("stale" in lost, JSON.stringify(lost));
       assert.equal(existsSync(join(git, "agentrun-tidy")), true, "a lost rewrite keeps the mark another left");
-      assert.deepEqual(await forgetRunText(store, "run_bravo"), {});
+      assert.deepEqual(await forgetRunText(store, "run_bravo"), { nothing: "purged" });
       const objects = execFileSync("git", ["--git-dir", git, "cat-file", "--batch-all-objects", "--batch"], { maxBuffer: 64 << 20 }).toString("utf8");
       assert.doesNotMatch(objects, /BRAVO/);
       assert.deepEqual(sh(["for-each-ref", "--format=%(refname)"]).split("\n").sort(), [importRef, "refs/heads/main"]);
@@ -422,7 +428,7 @@ test("code.storage: a purge whose old repository's delete fails is not done: the
   assert.doesNotMatch(await everything(store), /BRAVO/, "the agent is on the next generation");
   await assert.rejects(forgetRunText(store, "run_bravo"), (error) => error.name === "FolderUnreadable");
   refuse = false;
-  assert.deepEqual(await forgetRunText(store, "run_bravo"), {});
+  assert.deepEqual(await forgetRunText(store, "run_bravo"), { nothing: "purged" });
   assert.deepEqual([...store.fake.repos.keys()], [`agentrun-${SRV}-agent-one-g1`]);
   assert.doesNotMatch(fakeText(store.fake), /BRAVO/);
 });

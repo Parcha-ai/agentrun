@@ -5,9 +5,11 @@
 //   signature, is 401); `calls` records the repo id of every request, so a test can check none left agentrun-;
 // - a commit (POST /repos/commit-pack, ndjson: one metadata line, then base64 blob chunks) moves `target_branch` only
 //   from `expected_target_sha` (40 zeros for a branch not made yet; `expected_head_sha`, its deprecated name, alike): a
-//   stale head is 409 with result.status "conflict" and writes nothing; a metadata field the API does not name is 400
-//   (its schema takes no other); with neither, the branch moves unconditionally, as the API's does; a tree the same as
-//   the head's is refused with result.status "precondition_failed", "no changes to commit";
+//   stale head is 409 (problem details, code ref_guard_failed) and writes nothing; a metadata field the API does not
+//   name is 400 (its schema takes no other); with neither, the branch moves unconditionally, as the API's does; a
+//   commit is 201; a tree the same as the head's is 412 with result.status "precondition_failed", "no changes to commit";
+// - a listing of commits (GET /repos/commits) gives each one's subject line alone (its message's first paragraph as one
+//   line, no body, no trailers); only a commit read by itself (GET /repos/commit) gives its whole message;
 // - a repo deleted is 404 to every read, and the same id made again starts empty (no main: /repos/files 404).
 // Commit ids are sha1 hex of their own fields, not git's: a store reads them back, never recomputes them.
 import { createHash, createPublicKey, KeyObject, verify } from "node:crypto";
@@ -106,6 +108,8 @@ export function codeStorageFake({ name = "example-org", publicKey } = {}) {
     return `diff --git a/${path} b/${path}\n--- ${before ? `a/${path}` : "/dev/null"}\n+++ ${after ? `b/${path}` : "/dev/null"}\n${hunks(lines(before), lines(after))}`;
   }
   const commitView = (commit) => ({ sha: commit.sha, parent_shas: commit.parent ? [commit.parent] : [], message: commit.message, author_name: commit.author.name, author_email: commit.author.email, committer_name: commit.author.name, committer_email: commit.author.email, date: commit.date });
+  /** A message's subject line, as git's %s: its first paragraph, its lines joined by spaces. */
+  const subjectOf = (message) => message.replace(/^\s+/, "").split(/\n[ \t]*\n/)[0].split("\n").map((line) => line.trim()).filter(Boolean).join(" ");
 
   async function commitPack(repo, body) {
     const text = Buffer.from(await body).toString("utf8");
@@ -122,17 +126,17 @@ export function codeStorageFake({ name = "example-org", publicKey } = {}) {
     const unknown = Object.keys(meta).filter((key) => !METADATA.has(key));
     if (unknown.length) return fail(400, `commit-pack's metadata takes no ${unknown.join(", ")}`);
     const expected = meta.expected_target_sha ?? meta.expected_head_sha;
-    if (expected !== undefined && expected !== (old ?? ZERO)) return json(409, { commit: null, result: result("conflict", "expected head does not match") });
+    if (expected !== undefined && expected !== (old ?? ZERO)) return json(409, { type: "about:blank", title: "Conflict", status: 409, code: "ref_guard_failed", detail: "expected target sha does not match the branch tip", guard: expected, current_sha: old ?? ZERO });
     const tree = new Map(treeOf(repo, old));
     for (const file of meta.files) {
       if (file.operation === "delete") tree.delete(file.path);
       else tree.set(file.path, blobs.get(file.content_id) ?? Buffer.alloc(0));
     }
-    if (old && sameTree(tree, treeOf(repo, old))) return json(422, { commit: null, result: result("precondition_failed", "no changes to commit") });
+    if (old && sameTree(tree, treeOf(repo, old))) return json(412, { commit: null, result: result("precondition_failed", "no changes to commit") });
     const sha = createHash("sha1").update(`${++counter}\0${old}\0${meta.commit_message}`).digest("hex");
     repo.commits.set(sha, { sha, parent: old, tree, message: meta.commit_message, author: meta.author, date: new Date().toISOString() });
     repo.main = sha;
-    return json(200, { commit: { commit_sha: sha, tree_sha: sha, target_branch: "main", pack_bytes: text.length, blob_count: blobs.size }, result: result("ok", undefined, true, { new_sha: sha }) });
+    return json(201, { commit: { commit_sha: sha, tree_sha: sha, target_branch: "main", pack_bytes: text.length, blob_count: blobs.size }, result: result("ok", undefined, true, { new_sha: sha }) });
   }
 
   async function fetch(input, init = {}) {
@@ -190,7 +194,7 @@ export function codeStorageFake({ name = "example-org", publicKey } = {}) {
       const limit = Number(q.get("limit") ?? 20);
       const page = all.slice(from, from + limit);
       const more = from + limit < all.length;
-      return json(200, { commits: page.map(commitView), next_cursor: more ? String(from + limit) : null, has_more: more });
+      return json(200, { commits: page.map((commit) => ({ ...commitView(commit), message: subjectOf(commit.message) })), next_cursor: more ? String(from + limit) : null, has_more: more });
     }
     if (path === "repos/commit") {
       const commit = repo.commits.get(q.get("sha") ?? "");

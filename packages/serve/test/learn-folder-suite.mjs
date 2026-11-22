@@ -449,7 +449,7 @@ export function folderSuite(backend, make, { skew = 0 } = {}) {
 
     // Again (a DELETE sent again): the tip marks the purge, so nothing is written.
     const head = await store.head();
-    assert.deepEqual(await forgetRunText(store, "run-gone"), {});
+    assert.deepEqual(await forgetRunText(store, "run-gone"), { nothing: "purged" });
     assert.equal(await store.head(), head);
   });
 
@@ -475,7 +475,7 @@ export function folderSuite(backend, make, { skew = 0 } = {}) {
     const served = JSON.stringify((await runMergeOf(store, "run-kept")).files);
     assert.ok(!served.includes(mark) && served.includes("Answer in words."), served);
     const head = await store.head();
-    assert.deepEqual(await forgetRunText(store, "run-gone"), {});
+    assert.deepEqual(await forgetRunText(store, "run-gone"), { nothing: "purged" });
     assert.equal(await store.head(), head);
   });
 }

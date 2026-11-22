@@ -102,7 +102,7 @@ export async function forgetRunLearning(data: string, agentId: string, runId: st
   await withAgentRepo(data, agentId, async () => {
     try {
       const done = await forgetRunText(learningStoreOf(data, agentId), runId);
-      if (done.moved) await moveRecordCommits(settings, agentId, done.moved);
+      if ("moved" in done) await moveRecordCommits(settings, agentId, done.moved);
       // A page's cursor named a main of the history rewritten: its next page starts again at main now's first item.
       seen.forget(seenKey(agentId, ""));
     } catch (error) {
