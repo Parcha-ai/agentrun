@@ -265,6 +265,10 @@ export function agentPackage(input: ExportInput): AgentPackage {
   // may name others, so the ones the agent was applied with are unknown here.
   if (template && !sameVersion) remade.push({ kind: "secrets", name: template.id, reason: `The keys version ${template.version} of ${template.id} names are not known here: ${origin ? `this server holds version ${origin.version}` : "this server no longer holds it"}. Save the keys the agent uses on the target, and name them under secrets in ${MANIFEST}.` });
   const bash = settings.bash?.policy;
+  // Bash's policy holds every shell tool, and a package writes it only beside bash: a shell tool kept without bash would
+  // run there what the policy refuses here.
+  const shellKept = (plain ?? []).filter((tool) => Object.hasOwn(SHELL_FAMILY, tool));
+  if (typeof bash === "string" && shellKept.length && !shellKept.includes("bash")) blocked.push({ kind: "tool_policy", name: "bash", reason: `Its bash policy (${bash}) holds ${shellKept.join(", ")}, and a package writes that policy only beside bash: grant bash too, or take ${shellKept.length === 1 ? "it" : "them"} out of the agent.` });
   const description = (agent.description?.trim() || agent.name).slice(0, 1024);
   // A package's budget is a spend cap per run first, and one with triggers has one: what fires runs nobody watches.
   const cost = typeof definition.max_cost_usd === "number" ? definition.max_cost_usd : undefined;

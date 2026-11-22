@@ -331,4 +331,11 @@ test("what the agent may not do here, it may not do from the package: a tool its
     assert.match(note.reason, new RegExp(`version ${template.version.replaceAll(".", "\\.")}`));
     asPackage(answer.body);
   }
+
+  // Bash's read-only policy holds a background shell tool granted without bash; a package writes the policy only beside
+  // bash, so the export is blocked rather than let the target run what is refused here.
+  await server.store.agents.create({ id: "backgrounded", name: "Backgrounded" }, { id: "backgrounded-rev", kind: "agentic", body: { instructions: "Watch the build.", tools: ["read", "bash_background"], toolSettings: { bash: { policy: "read-only" } }, computer: { kind: "sandbox" }, maxCostUsd: 1 } });
+  const background = await api("GET", "/agents/backgrounded/package");
+  assert.equal(background.status, 200, JSON.stringify(background.body));
+  assert.match(background.body.report.blocked.find((entry) => entry.kind === "tool_policy" && entry.name === "bash")?.reason ?? "", /read-only.*bash_background/, JSON.stringify(background.body.report));
 });
