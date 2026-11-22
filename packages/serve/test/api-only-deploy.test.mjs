@@ -344,7 +344,7 @@ test("an API-only server with the launch hook makes the template's schedule, and
 
   clock.to("2026-06-01T09:00:00Z");
   const [{ headers, body, sent }] = await until(() => hook.got.length && hook.got, "the schedule's firing never reached the backend");
-  assert.equal(verify(secret, headers, body, Date.now()), undefined, "signed with the hook's secret");
+  assert.equal(verify(secret, headers, body, clock.now()), undefined, "signed with the hook's secret, stamped on the triggers' clock");
   assert.deepEqual([sent.agent_id, sent.trigger_id, sent.fired_at], [agent, made.id, "2026-06-01T09:00:00Z"]);
   assert.match(sent.input.content, /^Today's note on tides\./);
   await until(async () => (await server.store.triggers.firing(made.id, sent.firing_id))?.status === "sent", "the firing was never recorded sent");

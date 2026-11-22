@@ -41,8 +41,8 @@ test("a schedule trigger's firing is handed to the host, signed with the setting
   assert.equal(hook.got.length, 1, "one POST for the one firing");
   const [{ method, headers, body }] = hook.got;
   assert.equal(method, "POST");
-  assert.equal(verify(secret, headers, body, Date.now()), undefined, "signed with the setting's secret");
-  assert.equal(verify(mintSecret(), headers, body, Date.now()), "bad_signature", "and no other");
+  assert.equal(verify(secret, headers, body, clock.now()), undefined, "signed with the setting's secret, stamped on the triggers' clock");
+  assert.equal(verify(mintSecret(), headers, body, clock.now()), "bad_signature", "and no other");
   assert.equal(headers["webhook-id"], firing.key, "the firing's id is the message's id");
   const sent = JSON.parse(body.toString("utf8"));
   assert.deepEqual(Object.keys(sent).sort(), ["agent_id", "fired_at", "firing_id", "input", "revision_id", "trigger_id"]);
@@ -484,7 +484,15 @@ test("a server without the launch hook refuses a run for a trigger firing", { ti
 test("a hook that answers 500 skips the firing with the reason; one that does not answer within its bound skips it too", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const hook = await hookServer(t, (res, _sent, n) => (n === 1 ? answerJson(res, 500, { error: "down" }) : undefined));
-  const { api } = await serve(t, { triggerClock: clock, launchHook: { url: hook.url, secret: mintSecret(), timeoutMs: 300 } });
+  // Each POST's bound is a signal this test holds and cuts by hand once the silent host has the POST: no wait on the wall
+  // clock, and the bound asked for is the hook's own.
+  const bounds = [];
+  const bound = (ms) => {
+    const cut = new AbortController();
+    bounds.push({ ms, cut });
+    return cut.signal;
+  };
+  const { api } = await serve(t, { triggerClock: clock, launchHook: { url: hook.url, secret: mintSecret(), bound } });
   await made(api, "nightly");
   const created = await api("POST", "/triggers", schedule("nightly", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -493,9 +501,12 @@ test("a hook that answers 500 skips the firing with the reason; one that does no
   assert.deepEqual([refused.status, refused.run_id], ["skipped", null]);
   assert.match(refused.reason, /answered 500/);
   clock.to("2026-06-01T00:20:00Z");
+  await until(() => hook.got.length === 2);
+  assert.deepEqual(bounds.map((one) => one.ms), [LAUNCH_HOOK_TIMEOUT_MS, LAUNCH_HOOK_TIMEOUT_MS], "each POST bounded by the hook's 10 s, through the bound the test holds");
+  bounds[1].cut.abort();
   const [silent] = await firings(api, created.body.id, 2);
   assert.deepEqual([silent.status, silent.run_id], ["skipped", null]);
-  assert.match(silent.reason, /did not answer in 0\.3 s/);
+  assert.match(silent.reason, /did not answer in 10 s/);
   assert.deepEqual(await runsOf(api, "nightly"), [], "no run started here for either");
   assert.equal((await api("GET", `/triggers/${created.body.id}`)).body.enabled, true, "a skip is no failure: the trigger stays on");
 });
