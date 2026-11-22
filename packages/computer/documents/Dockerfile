@@ -12,17 +12,16 @@
 #   AGENTRUN_DOCKER_IMAGE=$tag AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 #
 # The tag is the first 12 hex digits of the sha256 of this file and documents.sh, as a recipe's tag is: an edit to
-# either is a new tag. The base is pinned by digest, the Debian packages by a snapshot.debian.org instant, the Python
-# libraries by version and sha256, and the Node libraries by version and npm's --before at that same instant (by date,
-# not by content). Nothing in it holds a key, and nothing in it is fetched when a box runs. An agent that needs them says
-# so in computer.needs (["python-pptx", "pptxgenjs"], say), which each run checks in its box before its first model
-# request.
+# either is a new tag. The base is pinned by digest, the Debian packages by a snapshot.debian.org instant (over https),
+# the Python libraries by version and sha256, and the Node libraries by version and npm's --before at that same instant
+# (by date, not by content). Nothing in it holds a key, and nothing in it is fetched when a box runs. An agent that
+# needs them says so in computer.needs (["python-pptx", "pptxgenjs"], say), which each run checks in its box before its
+# first model request.
 FROM python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
 
-# The default image's programs, from Debian's archive and its security archive as snapshot.debian.org held them at one
-# instant (the step fails if a source still names the live mirror). apt checks each package against that snapshot's
-# signed index; a snapshot's index is past its Valid-Until date, so apt is told not to refuse it for that.
-RUN sed -i -E 's#^URIs: http://deb\.debian\.org/(debian|debian-security)$#URIs: http://snapshot.debian.org/archive/\1/20261121T204200Z#' /etc/apt/sources.list.d/debian.sources \
+# The default image's programs, from the snapshot the header names, over https (the base has apt's https method and the
+# CA certificates); a snapshot's index is past its Valid-Until date, so apt is told not to refuse it for that.
+RUN sed -i -E 's#^URIs: http://deb\.debian\.org/(debian|debian-security)$#URIs: https://snapshot.debian.org/archive/\1/20261121T204200Z#' /etc/apt/sources.list.d/debian.sources \
  && ! grep -q 'deb\.debian\.org' /etc/apt/sources.list.d/debian.sources \
  && apt-get -o Acquire::Check-Valid-Until=false update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git curl ca-certificates nodejs npm ripgrep socat \

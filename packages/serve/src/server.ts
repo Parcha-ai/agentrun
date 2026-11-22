@@ -16,7 +16,7 @@ import { ObservationLearning } from "./observation/learning.js";
 import { cliLearningOf } from "./store/agent-body.js";
 import { maintainObservations, Observations } from './observation/observer.js';
 import { isObservationRoute, observationHttp } from './observation/http.js';
-import { SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
+import { SDK_MAX_OPEN_MS, SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
 import { learningModelOf, type LearningModel } from "./learning-model.js";
 import { answerSkill } from './skill-route.js';
 import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './native/remote.js';
@@ -34,7 +34,8 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_HOOKED_KINDS, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
-import { declaredKeys, keysOwed, packageKeysOf, RUN_KEYS_ENV, type RunKeys, runKeysOf, undeclaredKeys, withCarried } from "./run-keys.js";
+import { RUN_KEYS_ENV } from "./env-switch.js";
+import { declaredKeys, keysOwed, keysOwedRefusal, packageKeysOf, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -62,7 +63,7 @@ import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessTable, tableIds } from "./harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessRecipesEnv, harnessTable, recipeHarness, tableIds } from "./harness-table.js";
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, runsThatFit } from "./host.js";
 import { DEFAULT_HOST, elsewhereOf, listenOn, minFreeMibOf, takeOver, urlOf } from "./listen-first.js";
@@ -146,7 +147,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { recordDataRoot } from "./runner/disk-free.js";
@@ -403,6 +404,12 @@ export type ServeOptions = {
   /** The owner's harness modules (harness-table.ts HARNESS_MODULES_ENV): packages or paths, each exporting a
    *  HarnessTableModule whose entries add harnesses of their own, for this server and its runs. Never a built-in one. */
   harnessModules?: readonly string[];
+  /** The owner's harness recipes (harness-table.ts HARNESS_RECIPES_ENV): recipe files installed into `data`, each adding
+   *  the harness it describes to this server and its runs once a harness-check of it passed there (HARNESS.md#a-recipe). */
+  harnessRecipes?: readonly string[];
+  /** The owner's say-so (--harness-sign-in) that a plan-billed recipe with a sign-in runs a person's runs on the owner's
+   *  own sign-in: a start refuses it unless this server is one owner's own, on their own machine (harnessSignInRefusal). */
+  harnessSignIn?: boolean;
   /** With `faux` only: Docker answers, so docker is available, and nothing asks Docker (place-offers.ts). */
   fauxDocker?: boolean;
   /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
@@ -516,7 +523,7 @@ const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_E
  *  startInProcessRunner). */
 export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
   // The owner's harness modules too (not a test switch): a run's process reads the same table as the server.
-  const env: NodeJS.ProcessEnv = { ...harnessModulesEnv(options.harnessModules ?? [], options.data), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
+  const env: NodeJS.ProcessEnv = { ...harnessModulesEnv(options.harnessModules ?? [], options.data), ...harnessRecipesEnv(options.harnessRecipes ?? [], options.data, { signIn: options.harnessSignIn === true }), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
   for (const [option, name] of FAUX_SWITCHES) if (options[option]) env[name] = resolve(options[option]);
@@ -747,6 +754,8 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/settings\/model-gateway$/, name: "deleteModelGateway" },
   { method: "POST", pattern: /^\/settings\/model-gateway\/test$/, name: "testModelGateway" },
   { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
+  // The saved servers' names alone, for a host that builds runs from them (served API-only too: api-only.ts).
+  { method: "GET", pattern: /^\/settings\/mcp-server-names$/, name: "listMcpServerNames" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/tools$/, name: "listComposioTools" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "getMcpServer" },
@@ -792,6 +801,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
   { method: "POST", pattern: /^\/templates\/import$/, name: "importTemplate" },
+  { method: "GET", pattern: /^\/templates\/([^/]+)$/, name: "getTemplate" },
   { method: "DELETE", pattern: /^\/templates\/([^/]+)$/, name: "deleteTemplate" },
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
@@ -1066,6 +1076,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  URL kept sealed, never shown. */
       slack: { routes: true, events: [...SLACK_EVENTS], at_rest: "sealed" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
+      /** A backend SDK run's start (sdk/runs.ts): the fields it takes, and the most seconds it stays open. */
+      sdk_runs: { started_at: true, title: true, labels: true, max_open_s: SDK_MAX_OPEN_MS / 1000 },
       triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", signatures: [...SCHEME_NAMES], tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: "sealed" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
@@ -1114,6 +1126,31 @@ function integerParam(value: string | null, name: string, max: number): number {
   return Number(value);
 }
 
+/** A start with --harness-sign-in on a server that is not one owner's own, on their own machine. */
+export const HARNESS_SIGN_IN_NOT_LOCAL = "HARNESS_SIGN_IN_NOT_LOCAL";
+
+/** Why `options` on `data` may not run a recipe on its owner's own sign-in (--harness-sign-in), in words; undefined when
+ *  it may. One owner's own server on their own machine: it listens on loopback alone, with no public address; its store
+ *  is the SQLite one in its data directory (no AGENTRUN_STORE_URL, which servers elsewhere share); its runs run beside
+ *  it as its own user (`ownUser`: runIsolationOf's `process`), never under --no-runner or a user of their own; and one
+ *  person starts them, as Claude Code's login on this machine asks (claude-login.ts whyNotOneOwner): an owner, and one
+ *  API token. A check, a schedule and a shared server run on a key (HARNESS.md#sign-in). */
+export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string | undefined {
+  const host = options.host ?? DEFAULT_HOST;
+  // Every token the server takes (acceptedTokens): AGENTRUN_TOKEN's as `default` beside the list's, or else DIR/.token's alone.
+  const tokens = (options.token === undefined ? 0 : 1) + (options.tokens?.length ?? 0);
+  const why = [
+    ...(loopback(host) ? [] : [`listens on ${host}, past loopback`]),
+    ...(options.publicUrl ? [`has a public address (${options.publicUrl})`] : []),
+    ...(options.apiOnly ? ["has no owner (the API-only profile), so anyone with its token starts runs"] : []),
+    ...(tokens > 1 ? [`takes ${tokens} API tokens (AGENTRUN_TOKEN and AGENTRUN_TOKENS together), so more than one person starts runs`] : []),
+    ...(storeTarget(data).kind === "sqlite" ? [] : ["keeps its store in Postgres (AGENTRUN_STORE_URL), which servers elsewhere share"]),
+    ...(options.runnerApart ? ["runs no runner beside it (--no-runner)"] : []),
+    ...(ownUser ? [] : ["runs each run as a user of its own (unset AGENTRUN_RUN_USER=slot, or set AGENTRUN_RUN_USER=same)"]),
+  ];
+  return why.length ? `${HARNESS_SIGN_IN_NOT_LOCAL}: --harness-sign-in runs a recipe on its owner's own sign-in on one owner's own machine alone, and this server ${why.join("; ")}. Start it without --harness-sign-in: its plan-billed recipes run on keys.` : undefined;
+}
+
 // A data directory an earlier version wrote (old agent homes, an old runs/ layout, or an earlier store version) is refused
 // by the store itself when it opens (StoreFromEarlierVersion), in words, to start fresh: no pre-open scan, no migration.
 
@@ -1126,9 +1163,16 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // So is the harness modules list, from `harnessModules` alone (an operator names them with --harness-module or
   // AGENTRUN_SERVE_HARNESS_MODULES, which the CLI reads into the option).
   delete process.env[HARNESS_MODULES_ENV];
+  // And the recipes, from `harnessRecipes` alone (--harness-recipe or AGENTRUN_SERVE_HARNESS_RECIPES).
+  delete process.env[HARNESS_RECIPES_ENV];
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a computer's mount source below it must then be its own canonical path, through no link.
   const data = await realpath(resolve(options.data));
+  if (options.harnessSignIn) {
+    const { runsAsOwnUser } = await import("./runner/run-child-host.js");
+    const refused = harnessSignInRefusal(options, data, runsAsOwnUser(process.env));
+    if (refused) throw new Error(refused);
+  }
   const tokenRefused = options.token === undefined ? undefined : tokenProblem(options.token);
   if (tokenRefused) throw new Error(tokenRefused);
   for (const entry of options.tokens ?? []) {
@@ -1213,7 +1257,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // shown nowhere.
   let secretStores: ServerSecrets | undefined;
   let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
-  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data), ...harnessRecipesEnv(options.harnessRecipes ?? [], data, { signIn: options.harnessSignIn === true }) };
   // The table, loaded once here: a harness module that is missing, names a built-in harness or gives half an entry refuses
   // the start, in words, before anything else opens.
   // The harness ids a definition may name here: the table's, the built-in ones and those the modules add, and one the
@@ -1287,7 +1331,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // runner/runner-check.ts): this data root's id, and the names (never the values) of the run-facing environment this
   // server holds, each said in the store at every start, replacing the last start's.
   await recordDataRoot(store, data);
-  await recordRunEnv(store, runFacingNames((name) => secret(name) ?? (base as NodeJS.ProcessEnv)[name], Object.keys(base)));
+  // Harness modules and recipes this start was given as options (--harness-module, --harness-recipe) are said under the
+  // setting a runner apart reads them from, as an exported setting is: a runner without them would claim their runs and
+  // have no harness to run them on.
+  const startedWith: Record<string, string | undefined> = {
+    [HARNESS_MODULES_SETTING]: options.harnessModules?.length ? options.harnessModules.join(",") : undefined,
+    [HARNESS_RECIPES_SETTING]: options.harnessRecipes?.length ? options.harnessRecipes.join(",") : undefined,
+  };
+  await recordRunEnv(store, runFacingNames((name) => startedWith[name] ?? secret(name) ?? (base as NodeJS.ProcessEnv)[name], Object.keys(base)));
   // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
   // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled. A hosted machine a runner in a
   // process of its own made is relayed to that runner's attach listener the same way (dial-relay.ts).
@@ -2004,6 +2055,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     getAgent: async (agentId: string) => (await getAgent(store, agentId)) ?? undefined,
     needAgent,
     momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    // A trigger never messages a run on a plan-billed recipe: its turn would run on its owner's own sign-in.
+    planRecipe: (harness: string) => recipeHarness(base, harness) === "plan",
     // Read when a firing's message is sent (declared below, with the delete turn).
     runWrite: (agentId, runId, work) => runWrite(agentId, runId, work),
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
@@ -2015,6 +2068,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const carried = typeof view.revision === "string" ? carriedFields(((await store.agents.revision(view.revision))?.body as { outputSchema?: unknown } | undefined)?.outputSchema) : undefined;
       return { output: (view.result as { output?: unknown } | null)?.output ?? null, endedAt: (view.ended_at as string | null | undefined) ?? null, ...(carried ? { carried } : {}) };
     },
+    // Read as the server's environment stands now (a saved key changes it).
+    ...(options.runKeys ? { keysOwed: (revision: object) => keysOwed(revision, env, []) } : {}),
+    hooked: options.launchHook !== undefined,
   };
   const targets = triggerTargets(store, triggerDeps);
   // Every presented token is checked here, against every token the server takes, in constant time (api-token.ts). The id
@@ -2904,7 +2960,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Under the run-keys setting, a template's tool key this host does not hold is each run's to carry: one that does not
     // is refused for it alone, before the checks that read the keys it would bring.
     const owed = options.runKeys ? keysOwed(revision, env, carried) : [];
-    if (owed.length) throw new ApiError("agent_not_runnable", owed.map((one) => one.message).join(" "), { fields: owed, details: { unbound: [], missing: {} } });
+    if (owed.length) throw keysOwedRefusal(owed);
     // Claude Code's login on this machine is a runner place's alone: a sandbox run is checked for a key, as it runs.
     const blockers = await blockersOf(withCarried(envAtPlace(env, shape.place), carried), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
     if (!blockers.length) return;
@@ -3328,13 +3384,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // by the triggers' own clock, the one POST /triggers checks by and they fire by (a template eval case's `now`).
     // A feed trigger whose urls are one array parameter given empty reads no feed: skipped, never the apply (feedLeftEmpty).
     const emptyFeeds = new Set(made.triggers.flatMap((trigger, i) => (feedLeftEmpty(trigger) ? [i] : [])));
-    // On an API-only server a trigger is made only when its firings have somewhere to go: a schedule or a feed with the
-    // launch hook set. Each other is said (api-only.ts), and stays listed, so a trigger the agent has by its name is left
-    // as it is, never removed.
-    const hostless = new Map(options.apiOnly ? made.triggers.flatMap((trigger, i) => {
-      const skip = apiOnlyTriggerSkipped(pkg.name, trigger, options.launchHook !== undefined);
+    // A trigger is made only when its firings have somewhere to go: on an API-only server, a schedule or a feed with the
+    // launch hook set (api-only.ts); under the run-keys setting, for an agent whose runs owe keys, only with the launch
+    // hook, the one way a firing's run carries them (run-keys.ts). Each other is said, and stays listed, so a trigger the
+    // agent has by its name is left as it is, never removed.
+    const hooked = options.launchHook !== undefined;
+    const hostless = new Map(made.triggers.flatMap((trigger, i) => {
+      const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
       return skip ? [[i, skip] as const] : [];
-    }) : []);
+    }));
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
     const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
     if (refusedTriggers.length) throw invalid(refusedTriggers);
@@ -5411,6 +5469,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
       case "listMcpServers":
         return send(res, 200, await mcpServers.list());
+      // Names only: no URL, auth type, header, tool or Composio record, so a token that may not read the list may read this.
+      case "listMcpServerNames":
+        return send(res, 200, { names: (await listMcpServers(store)).map((row) => row.name).sort() });
       case "getMcpServer":
         return send(res, 200, await mcpServers.get(id));
       case "previewMcpServer":
@@ -5810,6 +5871,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const pickView = await computerHere([imported.pkg]);
         const uploaded = imported.pkg.id.startsWith(UPLOAD_PREFIX);
         return send(res, imported.status, { template: { ...packageView(imported.pkg), computer_here: pickView(imported.pkg) }, ...(({ instructions, skill_files }) => ({ instructions, skill_files }))(packageDetail(imported.pkg)), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : uploaded ? templatesLink(linkOrigin(req)) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
+      }
+      case "getTemplate": {
+        // One package whole, a bundled one's too: as the list shows it, with the files an import's answer shows, for a
+        // person (or a coding agent) to read before they apply it.
+        const pkg = registry.get(id);
+        if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+        const pickView = await computerHere([pkg]);
+        const { instructions, skill_files } = packageDetail(pkg);
+        return send(res, 200, { template: { ...packageView(pkg), computer_here: pickView(pkg) }, instructions, skill_files, console_url: templateLink(linkOrigin(req), pkg.id) });
       }
       case "deleteTemplate":
         await deleteTemplate(importDeps, id);

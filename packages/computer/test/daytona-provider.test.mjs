@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { create, DaytonaProvider } from "../dist/daytona.js";
+import { hostedCommands, shellLine } from "../dist/hosted/scripts.js";
 import { AttachHub, checkLifetime, DAYTONA, kindRefusals, MACHINE_TOKEN_SOURCE, MemoryMachineTokens, mountsOf } from "../dist/index.js";
 import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { fakeHost } from "./fake-host.mjs";
@@ -832,12 +833,29 @@ function dialDaytona({ states = ["started"], session, exec, routes = {} } = {}) 
 	return { rec, seen, host: provider.host };
 }
 
-/** The value a session command's line gives AGENTRUN_ATTACH_URL, as sh reads it: the line run with printenv in agentrun-dial's place. */
+/**
+ * The value a session command's line gives AGENTRUN_ATTACH_URL, as sh reads it: the assignment alone run with printenv
+ * in agentrun-dial's place. The steps before it are cut off, so none of them runs on this host.
+ */
 function attachUrlOf(command) {
 	const dial = " exec /usr/local/bin/agentrun-dial";
 	assert.ok(command.endsWith(dial), command);
-	return execFileSync("sh", ["-c", `${command.slice(0, -dial.length)} exec printenv AGENTRUN_ATTACH_URL`], { encoding: "utf8", env: { PATH: process.env.PATH } }).replace(/\n$/, "");
+	const assignment = command.slice(command.indexOf("AGENTRUN_ATTACH_URL="), -dial.length);
+	assert.ok(assignment.startsWith("AGENTRUN_ATTACH_URL="), command);
+	return execFileSync("sh", ["-c", `${assignment} exec printenv AGENTRUN_ATTACH_URL`], { encoding: "utf8", env: { PATH: process.env.PATH } }).replace(/\n$/, "");
 }
+
+test("connect dial: agentrun-dial's session command closes the session buses in /tmp first, joined by &&, as E2B's launch and the exec path do; the token is on no command line", async () => {
+	const { rec, host } = dialDaytona();
+	await host.create(dialRequest(), { timeoutMs: 2_000 });
+	const [ran] = rec.requests.filter((r) => r.method === "POST" && r.path.endsWith("/process/session/agentrun-dial/exec"));
+	const { command } = ran.body;
+	assert.ok(command.startsWith(`${shellLine(hostedCommands().sockets)} && AGENTRUN_ATTACH_URL=`), command);
+	assert.match(command, /# agentrun-computer: sockets[\s\S]*' sh '\/tmp\/dbus-\*' && AGENTRUN_ATTACH_URL='[\s\S]*' exec \/usr\/local\/bin\/agentrun-dial$/);
+	assert.doesNotMatch(command, /root-only/, "Daytona names no rootOnly paths");
+	assert.equal(command.includes(DIAL_TOKEN), false, "the token stays in the sandbox's env");
+	assert.equal(attachUrlOf(command), DIAL_URL);
+});
 
 test("connect dial: create sends every boot name but AGENTRUN_ATTACH_URL as the sandbox's env, then starts agentrun-dial in a session of its own, async, the URL a quoted assignment on its line and the token on none", async () => {
 	const { rec, seen, host } = dialDaytona();

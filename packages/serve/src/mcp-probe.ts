@@ -271,7 +271,7 @@ function composioBindingOf(field: string, entry: Record<string, unknown>, issues
   issues.push(...unknownFields(entry, ["composio_user_id", "connected_account_id", "headers"]).map((issue) => ({ ...issue, field: `${field}.${issue.field}` })));
   const user = entry.composio_user_id;
   const account = entry.connected_account_id;
-  if (typeof user !== "string" || !COMPOSIO_USER_ID.test(user)) issues.push({ field: `${field}.composio_user_id`, reason: "invalid", message: "composio_user_id is the Composio user this run's calls run as: letters, digits and . _ @ - (1 to 128)." });
+  if (typeof user !== "string" || !COMPOSIO_USER_ID.test(user)) issues.push({ field: `${field}.composio_user_id`, reason: "invalid", message: "composio_user_id is the Composio user this run's calls run as: letters, digits and . _ @ : - (1 to 128)." });
   // The preset's default user is the one single-user preset servers call as: a run that forgot to name its own never lands there.
   else if (user === COMPOSIO_USER) issues.push({ field: `${field}.composio_user_id`, reason: "not_allowed", message: "That composio_user_id is the Composio preset's shared default user, the one single-user preset servers call as: bind the run to its own person's Composio user." });
   if (account !== undefined && (typeof account !== "string" || !COMPOSIO_ACCOUNT_ID.test(account))) issues.push({ field: `${field}.connected_account_id`, reason: "invalid", message: "connected_account_id is a Composio connected account's id: ca_ and 5 to 64 letters, digits, _ or -." });

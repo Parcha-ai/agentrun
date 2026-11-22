@@ -649,6 +649,12 @@ export interface components {
       };
       public_url?: boolean;
     };
+    sdk_runs?: {
+      started_at: boolean;
+      title: boolean;
+      labels: boolean;
+      max_open_s: number;
+    };
   };
   File: {
     file_id: components["Id"];
@@ -3532,6 +3538,99 @@ export interface operations {
       };
     };
   };
+  getTemplate: {
+    body: never;
+    answer: {
+      template: {
+        id: string;
+        bundled: boolean;
+        source: string | null;
+        sha: string | null;
+        publisher: string | null;
+        name: string;
+        display_name: string | null;
+        version: string;
+        description: string;
+        license: string | null;
+        author: {
+          name: string;
+          email?: string;
+          url?: string;
+        } | null;
+        repository: string | null;
+        output: {
+          schema: string;
+          json_schema: Record<string, unknown> | null;
+        } | null;
+        harness: string[] | null;
+        model: {
+          tier: "fast" | "balanced" | "strong";
+          prefer?: string;
+          fast?: string;
+          strong?: string;
+          choices?: {
+            id: string;
+            label: string;
+            model: string;
+            harness: string;
+            warning: string | null;
+            note: string | null;
+            secrets: string[];
+          }[];
+        } | null;
+        effort: string | null;
+        tools: string[] | null;
+        checkout: "pull_request" | null;
+        tool_policy: {
+          bash: "read-only";
+        } | null;
+        computer: ("shell" | "none")[] | null;
+        needs: string[] | null;
+        computer_here: {
+          entry: "shell" | "none" | null;
+          computer: {
+            kind: string;
+            provider?: string;
+            needs?: string[];
+          } | null;
+          shell: string | null;
+          dropped: string[];
+          note: string | null;
+        } | null;
+        category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
+        tags: string[];
+        mcp: {
+          source: "composio" | "github" | "url";
+          toolkit: string;
+          required: boolean;
+          reason: string | null;
+          tools: {
+            name: string;
+            tool: string;
+            asks: "allow" | "ask";
+            pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
+              keys: string[];
+            }>;
+          }[];
+        }[];
+        parameters: Record<string, unknown>;
+        input_schema: Record<string, unknown> | null;
+        secrets: string[];
+        budget: {
+          per_run_usd: number;
+          max_requests?: number;
+        } | null;
+        learning: boolean | Record<string, unknown>;
+        approvals_default: "ask" | "never";
+        triggers: Record<string, unknown>[];
+        skills: string[];
+        evals: string[];
+      };
+      instructions: string;
+      skill_files: Record<string, string>;
+      console_url: string;
+    };
+  };
   getTimeline: {
     body: never;
     answer: components["TimelinePage"];
@@ -4486,6 +4585,12 @@ export interface operations {
           } | null;
         } | null;
       }[];
+    };
+  };
+  listMcpServerNames: {
+    body: never;
+    answer: {
+      names: string[];
     };
   };
   listMcpServers: {
@@ -6248,12 +6353,18 @@ export interface operations {
         price_usd?: number;
       }[];
       workflow_adapters?: ("runNode" | "runJudge")[];
+      started_at?: string;
+      title?: string;
+      labels?: Record<string, string>;
     } | {
       runtime: "external";
       platform: string;
       input: string;
       instructions: string;
       model?: string;
+      started_at?: string;
+      title?: string;
+      labels?: Record<string, string>;
     };
     answer: {
       run_id: string;

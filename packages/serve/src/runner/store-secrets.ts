@@ -7,7 +7,7 @@
 // flight (mcp_oauth_pending); each trigger source's settings, a webhook trigger's signing secret and the GitHub App's key
 // and webhook secret among them, the outbound webhook's signing secret and Slack's incoming-webhook URL (whole and its
 // token alone, slack-url.ts), each it held before too (trigger_settings), but a field its source marks public; browser sign-in pointers, live and forgotten; live viewer tokens; a launch's sealed
-// part (a run's handed MCP credentials and its own model key). Beside the store, what the data directory keeps where the runner shares it (server-secrets.ts besideTheStore: the
+// part (a run's handed MCP credentials, its own model key and its own tool keys). Beside the store, what the data directory keeps where the runner shares it (server-secrets.ts besideTheStore: the
 // owner's API token and the sign-in session secret). Each value in every spelling the server's list has
 // (standard-webhooks.ts secretForms), a PEM key whole and line by line. A value that does not open under the runner's key
 // is left out: the store never holds one in the clear, and nothing of this runner can be handed it.

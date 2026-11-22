@@ -1,11 +1,6 @@
 // The documents box image (documents/Dockerfile, which runs documents/documents.sh), read as text: no network, no docker.
-// It is the Docker box's default image and more, for an agent that makes decks, documents and sheets: the same base
-// digest as DOCKER_RECIPE, every program the default recipe installs, its Debian packages from snapshot.debian.org at one
-// instant, and the libraries that write Office files, Python's (python-pptx, python-docx, openpyxl) pinned by version and
-// sha256 and Node's (pptxgenjs, docx, exceljs) pinned by version and by the registry as it stood at that same instant.
-// It names no key and picks nothing: an operator builds it and names its tag in AGENTRUN_DOCKER_IMAGE. Daytona's
-// snapshot of it (build-daytona.py --documents) is the box image (box/Dockerfile) with documents.sh run on top, under a
-// name of its own, so the default box recipe and its snapshot are what they were. The package ships it.
+// Its pins are the Dockerfile header's; these tests hold the recipe to them. Daytona's snapshot of it (build-daytona.py
+// --documents) is the box image with documents.sh run on top, under a name of its own.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -15,6 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DOCKER_BASE, DOCKER_RECIPE } from "../dist/index.js";
+import { snapshotApt } from "./snapshot-apt.mjs";
 
 const here = (name) => fileURLToPath(new URL(`../documents/${name}`, import.meta.url));
 const DOCKERFILE = readFileSync(here("Dockerfile"), "utf8");
@@ -26,26 +22,14 @@ const INSTRUCTIONS = DOCKERFILE.replace(/\\\n/g, " ").split("\n").filter((line) 
 const RUNS = INSTRUCTIONS.filter((line) => line.startsWith("RUN ")).join("\n");
 /** The packages an apt-get install line names. */
 const aptOf = (text) => [...text.replace(/\\\n/g, " ").matchAll(/apt-get install -y --no-install-recommends ([^&]+)/g)].flatMap((match) => match[1].trim().split(/\s+/));
-/** The instant a snapshot.debian.org URI names, as an ISO date. */
-const snapshotInstant = () => {
-  const found = [...RUNS.matchAll(/snapshot\.debian\.org\/archive\/\\1\/(\d{8})T(\d{6})Z/g)];
-  assert.equal(found.length, 1, "one sed rewrites both archives to one snapshot");
-  const [, d, t] = found[0];
-  return new Date(`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}T${t.slice(0, 2)}:${t.slice(2, 4)}:${t.slice(4)}Z`).toISOString();
-};
-
 test("it starts from the default recipe's base, pinned by the same digest, is one stage, and has every program the default recipe installs", () => {
   assert.deepEqual(INSTRUCTIONS.filter((line) => line.startsWith("FROM ")), [`FROM ${DOCKER_BASE}`]);
   const ours = aptOf(RUNS);
   for (const name of aptOf(DOCKER_RECIPE)) assert.ok(ours.includes(name), `${name} is installed`);
 });
 
-test("its Debian packages come from snapshot.debian.org at one instant, never from the live mirror", () => {
-  snapshotInstant();
-  assert.match(RUNS, /s#\^URIs: http:\/\/deb\\\.debian\\\.org\/\(debian\|debian-security\)\$#/, "the archive and the security archive");
-  assert.match(RUNS, /! grep -q 'deb\\\.debian\\\.org' \/etc\/apt\/sources\.list\.d\/debian\.sources/, "the step fails if a source still names the live mirror");
-  assert.ok(RUNS.indexOf("apt-get -o Acquire::Check-Valid-Until=false update") > RUNS.indexOf("snapshot.debian.org"), "rewritten before the first update");
-  assert.equal([...RUNS.matchAll(/apt-get (?:-o \S+ )*update/g)].length, 1, "one update, the snapshot's");
+test("its Debian packages come from snapshot.debian.org over https at one instant, never from the live mirror", () => {
+  snapshotApt(RUNS);
 });
 
 test("the libraries are documents.sh's alone: the Dockerfile copies it, runs it as root and removes it", () => {
@@ -86,7 +70,7 @@ test("its Node libraries are pptxgenjs, docx and exceljs at exact versions, from
   assert.match(install, /--ignore-scripts/);
   const before = install.match(/--before=(\S+)/)?.[1];
   assert.ok(before, "npm's --before");
-  assert.equal(new Date(before).toISOString(), snapshotInstant(), "apt and npm are pinned to one instant");
+  assert.equal(new Date(before).toISOString(), snapshotApt(RUNS), "apt and npm are pinned to one instant");
   const pkgs = [...install.matchAll(/\b(pptxgenjs|docx|exceljs)@(\S+)/g)].map((match) => [match[1], match[2]]);
   assert.deepEqual(pkgs.map(([name]) => name).sort(), ["docx", "exceljs", "pptxgenjs"]);
   for (const [name, version] of pkgs) assert.match(version, /^\d+\.\d+\.\d+$/, `${name} at an exact version`);
