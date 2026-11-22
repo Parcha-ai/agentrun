@@ -10,8 +10,8 @@
 // the target, not confirmed), 3 not runnable yet (keys or MCP servers the target lacks: nothing is made, the setup page
 // printed when the target gives one), 1 the target refused otherwise or could not be reached, 4 no token for it.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { refusalExit } from "./login.mjs";
@@ -92,11 +92,82 @@ const writeAtomic = (file, text, mode) => {
   renameSync(temp, file);
 };
 
-/** A folder's lock: DIR/.agentrun/deploy.json. */
+/** One command at a time per source: `held`, a file made only where none is, naming its process (`host pid`), so two
+ *  deploys of one source never both read no lock and each make an agent. Another process's refuses the command (exit
+ *  2) with nothing sent; one left by a process of this machine that has ended is taken. Answers its letting go. */
+function hold(held, fail) {
+  const me = `${hostname()} ${process.pid}`;
+  for (let tries = 0; tries < 3; tries++) {
+    try {
+      writeFileSync(held, `${me}\n`, { flag: "wx", mode: 0o600 });
+      return () => rmSync(held, { force: true });
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    let owner;
+    try {
+      owner = readFileSync(held, "utf8").trim();
+    } catch {
+      continue; // let go of meanwhile
+    }
+    const [host, pid] = owner.split(" ");
+    if (host !== hostname() || !(Number(pid) > 0) || alive(Number(pid))) throw fail(2, `Another agentrun deploy of this source is running${host === hostname() && pid ? ` (process ${pid})` : ""}: try again once it ends, or remove ${held} if none is. Nothing was sent.`);
+    // Taken by moving it aside first: only the one that moves this very hold takes it, and a hold made meanwhile by
+    // another (moved by mistake) goes back.
+    const aside = `${held}.${process.pid}.ended`;
+    try {
+      renameSync(held, aside);
+    } catch {
+      continue;
+    }
+    if (readFileSync(aside, "utf8").trim() !== owner) {
+      try {
+        linkSync(aside, held);
+      } catch {
+        // another's since: theirs stands
+      }
+    }
+    rmSync(aside, { force: true });
+  }
+  throw fail(2, `Another agentrun deploy of this source is running: try again once it ends, or remove ${held} if none is. Nothing was sent.`);
+}
+
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+};
+
+/** A folder's lock: DIR/.agentrun/deploy.json. Either a symbolic link is refused (nothing sent): the lock would be
+ *  another folder's, which deploy, rollback and delete would then act on. */
 function folderLock(dir, fail) {
+  for (const rel of [".agentrun", ".agentrun/deploy.json"]) {
+    let linked = false;
+    try {
+      linked = lstatSync(join(dir, rel)).isSymbolicLink();
+    } catch {
+      // not there
+    }
+    if (linked) throw fail(2, `${rel} is a symbolic link: a folder's deploy lock is its own file, so nothing was sent.`);
+  }
   const file = join(dir, ".agentrun", "deploy.json");
   return {
     file,
+    hold() {
+      mkdirSync(dirname(file), { recursive: true });
+      const release = hold(`${file}.held`, fail);
+      return () => {
+        release();
+        try {
+          rmdirSync(dirname(file));
+        } catch {
+          // it holds the lock, or something else of its owner's: kept
+        }
+      };
+    },
     read() {
       if (!existsSync(file)) return undefined;
       let value;
@@ -108,14 +179,7 @@ function folderLock(dir, fail) {
       return lockOf(value, file, fail);
     },
     write: (lock) => writeAtomic(file, `${JSON.stringify(lock, null, 2)}\n`),
-    remove() {
-      rmSync(file, { force: true });
-      try {
-        rmdirSync(dirname(file));
-      } catch {
-        // the folder holds something else of its owner's: kept
-      }
-    },
+    remove: () => rmSync(file, { force: true }),
   };
 }
 
@@ -178,6 +242,10 @@ function installLock(env, cli, source, agentId, fail) {
   const key = `${source} ${agentId}`;
   return {
     file: record.file,
+    hold() {
+      mkdirSync(dirname(record.file), { recursive: true, mode: 0o700 });
+      return hold(join(dirname(record.file), `deploy.${createHash("sha256").update(key).digest("hex").slice(0, 16)}.held`), fail);
+    },
     read: () => lockOf(record.all()[key], record.file, fail),
     write: (lock) => record.update((all) => ({ ...all, [key]: lock })),
     remove: () => record.update(({ [key]: _, ...rest }) => rest),
@@ -265,13 +333,14 @@ function planLines(base, template, sha, plan, grants) {
 
 /** What the command deploys: a folder's files, or an install agent's export; its lock; and, for an install agent, the
  *  install it came from. */
-async function sourceOf({ values, args, env, io, cli }, fail) {
+async function sourceOf({ values, args, env, io, cli, releases }, fail) {
   const given = args[0] ?? ".";
   const dir = resolve(given);
   if (existsSync(dir) && statSync(dir).isDirectory()) {
     if (values["pause-source"]) throw fail(2, "--pause-source is for an agent deployed from an install (agentrun deploy AGENT_ID): a folder has no schedules running anywhere.");
     // A lock this CLI writes teaches it the target (privateRecord), so the next deploy of the folder needs no --to.
     const lock = folderLock(dir, fail);
+    releases.push(lock.hold());
     const write = (written) => (lock.write(written), privateRecord(env, cli, fail).learn(written.target));
     return { kind: "folder", dir, lock: { ...lock, write }, files: () => readFolder(dir, fail) };
   }
@@ -279,11 +348,13 @@ async function sourceOf({ values, args, env, io, cli }, fail) {
   // The install the agent is on: --base-url, else as every command finds it; never with AGENTRUN_API_KEY, which is the
   // target's token here.
   const source = remote(cli, values, { ...env, AGENTRUN_API_KEY: "" }, io, undefined);
+  const lock = installLock(env, cli, source.base, given, fail);
+  releases.push(lock.hold());
   return {
     kind: "agent",
     agentId: given,
     source,
-    lock: installLock(env, cli, source.base, given, fail),
+    lock,
     async files() {
       // No such agent here, or one this install does not export (409 not_exportable: a workflow, an agent with no
       // revision, one another system owns): refused as given, as `agentrun export` refuses it.
@@ -377,9 +448,14 @@ async function deploy(ctx) {
     return 2;
   }
   const { value: applied } = await to.call("POST", `/templates/${enc(template.id)}/apply`, body);
-  const written = { target: to.base, workspace: null, agent_id: applied.agent_id, revision_id: applied.revision_id, package_sha256: sha, deployed_at: new Date().toISOString() };
+  // A trigger the apply could not make yet (a connection or a feed the target lacks; a warning says which) is not in its
+  // answer. The lock then names no package, so the next deploy of the same files applies again and makes it once it can.
+  const there = new Set((applied.triggers ?? []).map((one) => one.name));
+  const unmade = plan.triggers.filter((one) => one.action !== "remove" && !there.has(one.name)).map((one) => one.name);
+  const written = { target: to.base, workspace: null, agent_id: applied.agent_id, revision_id: applied.revision_id, package_sha256: unmade.length ? null : sha, deployed_at: new Date().toISOString() };
   from.lock.write(written);
   for (const warning of applied.warnings ?? []) say(io, `Warning (${warning.field}): ${warning.message}`);
+  if (unmade.length) say(io, `Not made on ${to.base} yet: ${unmade.join(", ")}. Until they are, the lock names no package, so the next deploy applies again (keeping the revision when nothing else changed).`);
   say(io, `Deployed ${template.name} to ${to.base}: the agent ${applied.agent_id}, revision ${applied.revision_version} (${applied.agent_change}). Lock: ${from.lock.file}.`);
   if (from.kind === "agent") await sourceSchedules(io, from, values);
   io.stdout.write(`${JSON.stringify({ status: "deployed", ...written, revision_version: applied.revision_version, agent_change: applied.agent_change, template: template.id, warnings: applied.warnings ?? [] })}\n`);
@@ -463,11 +539,15 @@ async function remove(ctx) {
 
 /** Each entry's `run`, its stop (a refusal already said) its exit code. */
 const ending = (work) => async (ctx) => {
+  // What the command holds (its source's hold: sourceOf), let go of however it ends.
+  const releases = [];
   try {
-    return await work(ctx);
+    return await work({ ...ctx, releases });
   } catch (error) {
     if (error instanceof Stopped) return error.code;
     throw error;
+  } finally {
+    for (const release of releases) release();
   }
 };
 
