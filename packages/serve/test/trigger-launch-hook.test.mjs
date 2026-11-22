@@ -585,9 +585,9 @@ test("a failed hook's firing, its trigger and its trigger.failed name the failur
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
   const token = `not-a-secret-query-${randomBytes(8).toString("hex")}`;
   const secret = mintSecret();
-  const hidden = (url) => [url, token, "/agentrun/firings", secret, secret.slice("whsec_".length)];
+  const hidden = (url) => [["the hook URL", url], ["its query token", token], ["its path", "/agentrun/firings"], ["the secret", secret], ["the secret's key", secret.slice("whsec_".length)]];
   const shownNone = (text, url, what) => {
-    for (const part of hidden(url)) assert.ok(!text.includes(part), `${what} holds ${part.slice(0, 24)}…`);
+    for (const [name, part] of hidden(url)) assert.ok(!text.includes(part), `${what} holds ${name}`);
   };
 
   // A hook that answers 400: the firing fails at once, and trigger.failed is sent.
@@ -603,7 +603,7 @@ test("a failed hook's firing, its trigger and its trigger.failed name the failur
   clock.to("2026-06-01T00:10:00Z");
   const [refused] = await firings(api, created.body.id, 1);
   assert.deepEqual([refused.status, refused.error?.code], ["failed", "hook_failed"], JSON.stringify(refused));
-  const failed = await until(() => receiver.got.map((got) => JSON.parse(got.body.toString("utf8"))).find((message) => message.type === "trigger.failed"));
+  const failed = await until(() => receiver.got.filter((got) => got.method === "POST").map((got) => JSON.parse(got.body.toString("utf8"))).find((message) => message.type === "trigger.failed"));
   assert.match(failed?.data?.error?.message ?? "", /^hook_failed \(400\)/, JSON.stringify(failed));
   const firingsShown = JSON.stringify((await api("GET", `/triggers/${created.body.id}/firings`)).body);
   shownNone(firingsShown, url, "the firings");
@@ -742,7 +742,7 @@ test("a hook that fails is a failed try under the trigger's retry policy: a 5xx 
   const off = (await api("GET", `/triggers/${id}`)).body;
   assert.deepEqual([off.enabled, off.failures_in_a_row, off.disabled?.reason], [false, 5, "auto_paused"], "the streak turned the trigger off");
   assert.deepEqual(posts(hook).map((got) => got.headers["webhook-id"]), Array(5).fill(first.key), "each try handed under the firing's webhook-id");
-  const failed = await until(() => receiver.got.map((got) => JSON.parse(got.body.toString("utf8"))).find((message) => message.type === "trigger.failed"));
+  const failed = await until(() => posts(receiver).map((got) => JSON.parse(got.body.toString("utf8"))).find((message) => message.type === "trigger.failed"));
   assert.ok(failed, "trigger.failed sent");
   assert.deepEqual([failed.data.firing_key, failed.data.error.code, failed.data.auto_paused], [first.key, "hook_failed", true]);
   assert.match(failed.data.error.message, /^hook_failed \(503\)/);
