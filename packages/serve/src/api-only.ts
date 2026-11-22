@@ -15,7 +15,9 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *  - a backend reads what its agents learned (loop, promotions, cost per run, a run's learning), cut as the console's,
  *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
  *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
- *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart. */
+ *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart;
+ *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
+ *    words, template-import.ts), which an apply then makes into its agent. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
@@ -27,6 +29,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "listRunFiles", "readRunFile",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getUsage", "getCapacity",
+  "importTemplate",
 ]);
 
 /** Whether `env` turns the profile on: `1` or `true` on; unset, empty, `0` or `false` off. Any other value is refused in

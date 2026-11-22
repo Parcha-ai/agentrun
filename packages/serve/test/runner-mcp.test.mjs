@@ -265,6 +265,15 @@ test("R7: a pinned tool that is a meta tool now refuses the claim in words: the 
   assert.equal(fake.log.length, 0, "nothing sent to the MCP server");
 });
 
+test("a forged saved resource marker refuses the claim before any model or MCP request", async t => {
+  const forged = { ...ADD, resource: "read" };
+  const { row, sent, fake } = await mcpRun(t, { script: [{ say: "must not run" }], grants: ["mcp:fake/add"], tools: [forged] });
+  assert.equal(row.state, "failed");
+  assert.match(row.summary, /invalid resource operation marker/);
+  assert.equal(sent.length, 0);
+  assert.equal(fake.log.length, 0);
+});
+
 test("R8: a server whose URL changed since the run was pinned refuses each call unsent, in words", async (t) => {
   const moved = await startFakeMcp({ token: TOKEN });
   t.after(() => moved.close());

@@ -60,10 +60,11 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
   );
 }
 
-/** An imported package's provenance in one line: its source, the commit it was read at, its publisher. */
+/** An imported package's provenance in one line: its source, the commit it was read at, its publisher; an uploaded one
+ *  (`agentrun deploy`, no publisher) its id and the start of its sha256. */
 export function TemplateProvenance({ t }: { t: Pick<TemplateView, "source" | "sha" | "publisher"> }) {
   if (!t.source) return null;
-  return <p className="mt-1 break-all font-mono text-small text-muted-foreground" data-provenance>{t.source} at {t.sha?.slice(0, 12)}, published by {t.publisher}</p>;
+  return <p className="mt-1 break-all font-mono text-small text-muted-foreground" data-provenance>{t.source} at {t.sha?.slice(0, 12)}{t.publisher ? `, published by ${t.publisher}` : ", uploaded"}</p>;
 }
 
 /** The list, with the "Add from URL" box: a package on GitHub is read and shown whole (the install page) before it is stored. */

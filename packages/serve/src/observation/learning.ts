@@ -1,3 +1,4 @@
+import { cliCaptureOf } from "../source-sync/capture.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { getAgent } from "../agents-store.js";
 import { CliLearningConnections } from "../cli-learning/connections.js";
@@ -46,7 +47,7 @@ export class ObservationLearning {
     const row = await this.connections.get(association.connection_id).catch(() => undefined);
     if (!row?.active || row.generation !== association.generation || row.runtime !== runtime) return { state: "unknown", reason: "connection_unavailable" };
     const entry = await getAgent(this.store, row.agent_id);
-    const binding = cliLearningOf(entry?.revision?.body);
+    const binding = entry ? (await cliCaptureOf(this.store, entry))?.binding : undefined;
     if (!entry || entry.agent.archivedAt != null || !binding || binding.connection_id !== row.connection_id || binding.runtime !== runtime || binding.project !== row.project) return { state: "unknown", reason: "connection_unavailable" };
     // Source hooks deliver owner corrections; they do not expose a workflow execution bridge.
     const mode = learnsOf(learningSettingForBody(entry.revision!.body)) ? "corrections" : "off";

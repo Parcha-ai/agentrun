@@ -7,7 +7,8 @@
  *
  * A Codex thread persists as one append-only JSONL file, the rollout:
  * `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<threadId>.jsonl`, one
- * `{timestamp, type, payload}` object per line. Its `response_item` lines are
+ * `{timestamp, ordinal, type, payload}` object per paginated line (older
+ * unnumbered journals omit `ordinal`). Its `response_item` lines are
  * the model-visible history (messages, `function_call`,
  * `function_call_output`, reasoning); its `event_msg` lines mark turns
  * (`task_started`, `task_complete`, `turn_aborted`) and carry the
@@ -37,6 +38,7 @@ export interface ThreadRecord {
 /** One rollout line, parsed. */
 export interface RolloutLine {
   timestamp?: string;
+  ordinal?: number;
   type: string;
   payload?: Record<string, unknown> & { type?: string };
 }

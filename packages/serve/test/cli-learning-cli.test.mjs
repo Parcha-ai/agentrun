@@ -26,7 +26,7 @@ async function fixture(t) {
       return Response.json({ ...connection, active: false });
     },
   };
-  const args = (operation) => [operation, '--project', project, '--runtime', 'codex', '--data', data, '--url', 'http://127.0.0.1:7340'];
+  const args = (operation) => [operation, '--project', project, '--runtime', 'codex', '--data', data, '--url', 'http://127.0.0.1:7340', '--no-sync'];
   return { project, data, stdout, stderr, requests, io, args, privateFile: connectionFile(data, 'codex', project) };
 }
 
@@ -188,4 +188,24 @@ test('a live connection owner excludes a concurrent command until it releases th
  }finally{release();}
  assert.equal(await first,0);
  assert.equal(await learningMain(f.args('disconnect'),f.io),0);
+});
+
+
+test('new capture setup enables sync with source scope by default and discloses exported content', async t => {
+  const f = await fixture(t), consent = { version: 1, scope: 'a'.repeat(64) };
+  const args = f.args('connect').filter(arg => arg !== '--no-sync');
+  let calls = 0;
+  f.io.sourceConsent = async (runtime, project) => { calls++; assert.equal(runtime, 'codex'); assert.equal(project, f.project); return consent; };
+  assert.equal(await learningMain(args, f.io), 0);
+  assert.deepEqual(JSON.parse(f.requests[0].body), { project: f.project, runtime: 'codex', source_sync: consent });
+  assert.equal(calls, 1);
+  assert.match(f.stderr.join(' '), /project files and bounded Git history/);
+  assert.match(f.stderr.join(' '), /--no-sync/);
+  assert.equal(JSON.stringify(f.stdout).includes('fake-connection-secret'), false);
+});
+
+test('capture-only connection never asks for an export scope', async t => {
+  const f = await fixture(t); f.io.sourceConsent = async () => { throw new Error('export consent was unexpectedly requested'); };
+  assert.equal(await learningMain(f.args('connect'), f.io), 0);
+  assert.equal(JSON.parse(f.requests[0].body).source_sync, undefined);
 });

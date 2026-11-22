@@ -5,6 +5,7 @@
 // racing another writer; the store's own transactions make each write atomic.
 //
 // The run counts an agent view shows (runs.count, runs.live) are E3's run reads, not this module's; agentView takes them.
+import { sourceSyncOf } from "./source-sync/types.js";
 import { purgedAgent } from "./agents.js";
 import { uuidv7 } from "./ids.js";
 import { agentLink } from "./console-links.js";
@@ -15,7 +16,7 @@ import { type LearningSetting, learningSettingIssue } from "./learning-setting.j
 import { learningSettingForBody } from "./store/agent-body.js";
 import { storedHarness } from "./harness-table.js";
 import {
-  AgentBodyInvalid, type AgenticBody, RevisionMoved, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
+  AgentBodyInvalid, type AgenticBody, RevisionMoved, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type SettingsGuard, type RevisionBodyInput,
   type ModelTiers, type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type TemplatePackage, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
@@ -39,8 +40,8 @@ export type AgentEntry = {
   version: number;
   revisions: number;
   sizes: Map<string, number>;
-  /** The template package it was last applied from, as the newest revision an apply wrote keeps it (its first, until an
-   *  apply with agent_id updates it); absent or null for one made otherwise. */
+  /** The template package its current revision came from (packageOf): as the apply that wrote that revision, or the
+   *  nearest one before it in its line, kept it; absent or null for one made otherwise. */
   template?: TemplatePackage | null;
 };
 
@@ -170,6 +171,8 @@ export type SaveStamp = Pick<NewRevision, "mcpPin" | "monidPin">;
  *  to stamp on it. `on`: the revision this save is built on (an edit's: the agent's current one as this try read it, so a
  *  retry on a newer one sees that one; null for a new agent), whose pins carry what the save's grants did not change. */
 export type SaveCheck = (revision: NewRevision, on: RevisionRow | null) => Promise<SaveStamp | void>;
+/** Immutable assets prepared inside the delete turn; keep their I/O ownership until the revision CAS settles. */
+export type SavePrepare = (revision: NewRevision, on: RevisionRow | null) => Promise<{ revision: NewRevision; settled(): Promise<void> }>;
 /** `revision` with what its check stamped. */
 const stamped = <T extends NewRevision>(revision: T, stamp: SaveStamp | void): T => ({ ...revision, ...(stamp?.mcpPin === undefined ? {} : { mcpPin: stamp.mcpPin }), ...(stamp?.monidPin === undefined ? {} : { monidPin: stamp.monidPin }) });
 
@@ -194,7 +197,19 @@ export async function getAgent(store: AgentsStore, id: string): Promise<AgentEnt
   const revisions = await store.agents.revisions(id); // oldest first (created_at, id)
   const at = agent.currentRevision === null ? -1 : revisions.findIndex((r) => r.id === agent.currentRevision);
   const revision = at < 0 ? null : revisions[at]!;
-  return { agent, revision, version: at < 0 ? 0 : at + 1, revisions: revisions.length, sizes: sizesOf(revision), template: revisions.findLast((r) => r.package)?.package ?? null };
+  return { agent, revision, version: at < 0 ? 0 : at + 1, revisions: revisions.length, sizes: sizesOf(revision), template: packageOf(revision, revisions) };
+}
+
+/** The package `revision` came from: its own, else that of the nearest revision before it in its line (each one's parent,
+ *  the revision current when it was committed) that an apply wrote. An edit carries the package it was made on, and a
+ *  restore of an older revision reads that revision's, never a later apply's. Null for a line no apply wrote. */
+function packageOf(revision: RevisionRow | null, revisions: readonly RevisionRow[]): TemplatePackage | null {
+  const byId = new Map(revisions.map((one) => [one.id, one]));
+  // Bounded by the count: a line is never longer than the revisions there are.
+  for (let at = revision, steps = 0; at && steps < revisions.length; at = at.parent === null ? null : byId.get(at.parent) ?? null, steps++) {
+    if (at.package) return at.package;
+  }
+  return null;
 }
 
 /** Every agent here, newest first (its creation, then its id). Archived agents are left out by default. */
@@ -274,7 +289,7 @@ export async function commitAgent(
   store: AgentsStore,
   read: AgentEntry,
   { definition, skills, note }: DefinitionBody,
-  { ifCurrent, check, contract = false, template, fromPackage = false, inTurn }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {},
+  { ifCurrent, settingsGuards, check, prepare, contract = false, template, fromPackage = false, inTurn }: { ifCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; check?: SaveCheck; prepare?: SavePrepare; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {},
 ): Promise<AgentEntry> {
   const stale = () => new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   const held = (entry: AgentEntry): AgentEntry => {
@@ -318,13 +333,14 @@ export async function commitAgent(
       // server's own form names the next revision's number, or none.
       if (contract) checkPast(definition, now.version);
       else checkVersion(definition, now.revisions + 1);
+      const prepared = await prepare?.(revision, now.revision);
       try {
-        await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...revision, ...(described ? { description } : {}) });
+        await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...(settingsGuards ? { settingsGuards } : {}), ...(prepared?.revision ?? revision), ...(described ? { description } : {}) });
         return (await getAgent(store, agent.id))!;
       } catch (error) {
         if (!(error instanceof RevisionMoved)) storeError(error);
         return undefined;
-      }
+      } finally { await prepared?.settled(); }
     });
     if (landed) return landed;
     // Moved while it was checked or written: with If-Match that is stale; without, built and checked again on it.
@@ -369,7 +385,19 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         ...(definition.checkout === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).checkout !== undefined ? { checkout: (currentBody as AgenticBody).checkout } : {}),
       }
     : {};
-  return makeRevision({ ...definition, ...carried, ...owned }, files, note);
+  const made = makeRevision({ ...definition, ...carried, ...owned }, files, note);
+  const sourceSync = sourceSyncOf(currentBody);
+  if (sourceSync) {
+    if (made.kind !== "agentic") throw new ApiError("input_invalid", "A synced agent keeps its agentic execution. Create a workflow separately.");
+    const body = made.body as AgenticBody;
+    if (body.native || body.sdk || body.cli_learning) throw new ApiError("input_invalid", "A moved agent keeps managed execution. Its source connection only syncs setup and captures source runs.");
+    if (body.harness !== (currentBody as AgenticBody).harness) {
+      const missing = ((currentBody as AgenticBody).tools ?? []).filter(tool => !body.tools?.includes(tool));
+      if (missing.length) throw new ApiError("input_invalid", `Changing harness must preserve this agent's required tools: ${missing.join(", ")}. Choose a compatible harness.`);
+    }
+    return { ...made, body: { ...(made.body as AgenticBody), sourceSync } };
+  }
+  return made;
 }
 
 /** Makes `revisionId`, one of the agent's own, its current one (POST /agents/{id}/current). */
@@ -456,6 +484,7 @@ export function agentView(
     revision: revision?.id ?? null,
     revisions: entry.revisions,
     source: null,
+    ...(sourceSyncOf(body) ? { source_sync: { moved: true as const } } : {}),
     // The template package it was applied from (its first revision keeps it): the package's id, version and the commit an
     // imported one was read at (null for a bundled one). Null for an agent made otherwise.
     template: entry.template ? { id: entry.template.id, version: entry.template.version, sha: entry.template.sha ?? null } : null,
@@ -496,9 +525,9 @@ export function revisionView(agent: AgentRow, row: RevisionRow & { version: numb
 export function pinView(pin: unknown): Record<string, { tools: Record<string, unknown>[]; prices?: Record<string, number> }> | null {
   if (!isObject(pin)) return null;
   const out: Record<string, { tools: Record<string, unknown>[]; prices?: Record<string, number> }> = {};
-  for (const [server, pinned] of Object.entries(pin as Record<string, { tools?: { name: string; title?: string; description?: string; inputSchema?: unknown; annotations?: unknown }[]; prices?: Record<string, number> }>)) {
+  for (const [server, pinned] of Object.entries(pin as Record<string, { tools?: { name: string; title?: string; description?: string; inputSchema?: unknown; annotations?: unknown; resource?: unknown }[]; prices?: Record<string, number> }>)) {
     out[server] = {
-      tools: (pinned.tools ?? []).map((tool) => ({ name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), input_schema: tool.inputSchema ?? {}, ...(tool.annotations ? { annotations: tool.annotations } : {}) })),
+      tools: (pinned.tools ?? []).map((tool) => ({ name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), input_schema: tool.inputSchema ?? {}, ...(tool.annotations ? { annotations: tool.annotations } : {}), ...(tool.resource !== undefined ? { resource: tool.resource } : {}) })),
       ...(pinned.prices && Object.keys(pinned.prices).length ? { prices: { ...pinned.prices } } : {}),
     };
   }

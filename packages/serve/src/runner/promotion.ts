@@ -42,6 +42,8 @@
 // Its owner may start one too (askReplay, POST .../revisions/{digest}/replays): a held revision re-checked, or an edited
 // one, on the inputs it was last checked on or the agent's newest, decided by the same settleCheck, at a claim that lays
 // it or at its read (replayView), so its records are a claim-started check's.
+import { sourceSyncOf } from "../source-sync/types.js";
+import type { AuxiliaryAdmitter } from "../source-sync/auxiliary.js";
 import type { Context } from "@earendil-works/chord/context";
 import type { LearnedWorkflow } from "../learning.js";
 import { LEARNING_LABEL } from "../learning.js";
@@ -78,6 +80,7 @@ export const REPLAY_LAUNCH_GRACE_MS = 5 * 60 * 1000;
 
 export interface PromotionDeps {
   readonly store: Store;
+  readonly admitAuxiliary?: AuxiliaryAdmitter;
   /** Why model spend beside the claimed run is skipped (claim-secrets.ts claimSpendOff): a replay check starts runs with
    *  no caller's key. Absent: it runs. */
   readonly spendOff?: (what: string) => string | undefined;
@@ -410,6 +413,10 @@ async function checkInputs(deps: Pick<PromotionDeps, "store" | "agentId" | "runI
  *  it fits), it is decided at once: never promoted, it stops with nothing checked (stopUnchecked). */
 async function startCheck(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string): Promise<void> {
   const { store, agentId, log } = deps;
+  if ((deps.launch.sourceProject || sourceSyncOf((await store.agents.revision(deps.revisionId))?.body)) && !deps.admitAuxiliary) {
+    log(`workflow-first: ${PROJECT_REPLAY_REFUSED}`);
+    return;
+  }
   // Its replay runs are runs the runner starts, on no caller's key: skipped where the claimed run brought its own key or
   // the server holds none (claimSpendOff).
   const off = deps.spendOff?.("A learned workflow's replay check");
@@ -913,9 +920,12 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
   const { store, agentId } = deps;
   const base = readLaunchBody(launch.body);
   if (!base) throw new Error(`the launch of ${workflow.name} at ${digest}'s replay could not be read`);
+  const source = sourceSyncOf((await store.agents.revision(launch.revision))?.body);
+  if (base.sourceProject || source && !deps.admitAuxiliary) throw new ReplayRefused("conflict", PROJECT_REPLAY_REFUSED);
   const replay: RunLaunch = { ...base, input: from.input, title: `Replay of ${workflow.name}: ${from.title}`.slice(0, 200), replay: { of, workflow: workflow.name, digest } };
   const sealed = await handedTo(deps, launch, id);
   try {
+    if (source) return (await deps.admitAuxiliary!({ runId: id, agentId, revisionId: launch.revision, launch: replay, ...(sealed ? { sealed } : {}) })).created;
     await store.runs.create({ id, agentId, revisionId: launch.revision }, { body: launchBody(replay) as Json, ...(sealed ? { sealed } : {}) });
     return true;
   } catch (error) {
@@ -1013,6 +1023,7 @@ function skipWordsOf(tools: readonly SkippedTool[], skipped: number): { hint: st
 
 /** Why a replay a person asked for (askReplay) or read (replayView) was refused: `missing`, no such workflow, revision or
  *  replay of the agent (404); `conflict`, the revision cannot replay now (409), in words that say why. */
+const PROJECT_REPLAY_REFUSED = "An auxiliary replay requires its own project placement for this moved agent; nothing was started. Start a normal run to use the saved project.";
 export class ReplayRefused extends Error {
   constructor(readonly kind: "missing" | "conflict", message: string) {
     super(message);
@@ -1024,6 +1035,7 @@ export class ReplayRefused extends Error {
  *  on: a replay run's is this one with its agent run's input (startReplay), at the revision's learning commit. */
 export interface ReplayAsk {
   readonly store: Store;
+  readonly admitAuxiliary?: AuxiliaryAdmitter;
   readonly agentId: string;
   readonly context: Context;
   readonly log: (line: string) => void;
@@ -1087,8 +1099,9 @@ export async function askReplay(ask: ReplayAsk, name: string, digest: string, in
   const { inputs: picked } = await checkInputs({ store: ask.store, agentId: ask.agentId }, found.workflow, { of: last ?? [], n: typeof inputs === "number" ? inputs : last ? 0 : loop.compile_after });
   if (!picked.length) throw new ReplayRefused("conflict", `${name} at ${digest} has no input to replay on: none of ${typeof inputs === "number" ? `the agent's newest ${plural(inputs, "completed run")}` : last ? "the runs it was last checked on" : "the agent's last completed runs"} has an input it fits. Nothing was started.`);
   const { launch, revisionId } = await ask.launchOf(picked[0]!.launch.input as Json);
+  if (launch.sourceProject || sourceSyncOf((await ask.store.agents.revision(revisionId))?.body) && !ask.admitAuxiliary) throw new ReplayRefused("conflict", PROJECT_REPLAY_REFUSED);
   if (!launch.learning || launch.learning.noWorkflows) throw new ReplayRefused("conflict", `A replay runs ${name} as a run of the agent that learns does, and the agent's runs do not take learned workflows here (its learning is off, it takes no workflows, or this server's is off).`);
-  const deps: PromotionDeps = { store: ask.store, agentId: ask.agentId, revisionId, launch: { ...launch, learning: { ...launch.learning, seed: found.commit } }, context: ask.context, log: ask.log, shown: ask.shown, ...(ask.now ? { now: ask.now } : {}) };
+  const deps: PromotionDeps = { store: ask.store, agentId: ask.agentId, revisionId, launch: { ...launch, learning: { ...launch.learning, seed: found.commit } }, context: ask.context, log: ask.log, shown: ask.shown, ...(ask.admitAuxiliary ? { admitAuxiliary: ask.admitAuxiliary } : {}), ...(ask.now ? { now: ask.now } : {}) };
   const bar: CheckBar = { ...loop, attempt: attemptOf(records, name, digest) };
   const said = `checking it on ${plural(picked.length, "input")} of the agent's own runs, as its owner asked`;
   // Kept only while the revision's newest record is still the one read here: each record write stamps a new `at`.
