@@ -482,11 +482,18 @@ export class Triggers {
     return off;
   }
 
-  /** Agent `agentId` unarchived: none of its triggers turns on again. The triggers its archive turned off that are off
-   *  still, by name: each is turned on by a PATCH. */
-  async agentUnarchived(agentId: string): Promise<{ id: string; name: string }[]> {
+  /** Agent `agentId` unarchived: none of its triggers turns on again, but those its archive turned off whose source
+   *  `turnOn` takes, each turned on as a PATCH with enabled true does (an API-only server's with the launch hook, which
+   *  serves no trigger route: api-only.ts). The triggers its archive turned off that are off still, by name: each is
+   *  turned on by a PATCH. One `turnOn` takes that can't be on (a schedule with no time left), or that its first check
+   *  turns off again, is named: what is off is read from the store after the turn-ons, never taken from whether one
+   *  resolved. */
+  async agentUnarchived(agentId: string, turnOn: (source: Source) => boolean = () => false): Promise<{ id: string; name: string }[]> {
     await this.store.agents.archive(agentId, false);
-    return (await this.store.triggers.list(agentId)).filter((t) => !t.enabled && reasonOf(t.disabled) === "agent_archived").map((t) => ({ id: t.id, name: t.name }));
+    const off = (await this.store.triggers.list(agentId)).map(asTrigger).filter((t) => !t.enabled && reasonOf(t.disabled) === "agent_archived");
+    for (const t of off) if (turnOn(t.source)) await this.update(t.id, { enabled: true }, { onAgent: agentId }).catch(() => undefined);
+    const ids = new Set(off.map((t) => t.id));
+    return (await this.store.triggers.list(agentId)).filter((t) => ids.has(t.id) && !t.enabled).map((t) => ({ id: t.id, name: t.name }));
   }
 
   /** Refused (409 agent_archived) when agent `agentId` is archived: a trigger made on, turned on or aimed at it. */

@@ -3162,11 +3162,13 @@ serves these routes alone:
 - a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
   (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
-  is what its delete (`DELETE /agents/{id}`) needs first. The apply makes no trigger of any source: a run here starts
-  through the backend's API calls alone, on its keys and budget, never on this server's own clock and model key (a
-  schedule or a feed) or from a hook or setting this profile refuses (a webhook, GitHub, Composio or email). The answer
-  says so for each under `warnings` (`triggers.<i>`, `not_an_option`), and the dry run (`dry_run: true`) plans each as
-  `skip` in the same words. The backend starts those runs through the API instead;
+  is what its delete (`DELETE /agents/{id}`) needs first. A run here starts through the backend, on its keys and
+  budget, never on this server's own model key. So with the [launch hook](#launch-hook) set, the apply makes the
+  package's schedule and feed triggers, and each firing goes to the backend, which starts its run through the API; the
+  unarchive turns them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up`: set
+  the hook, or start those runs through the API). A webhook, GitHub, Composio or email trigger is never made here, hook
+  or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
+  under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
