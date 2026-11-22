@@ -1099,6 +1099,10 @@ test("a server its owner starts with --harness-sign-in on their own machine runs
   const heard = origin.messages().slice(before);
   assert.ok(heard.length >= 1, "the run's turn reached the vendor");
   assert.ok(heard.every((r) => r.headers["x-api-key"] === TOKEN), "on the owner's sign-in, read by the agent from its own folder");
+  // A trigger never sends a turn into a person's run on the sign-in: a schedule's or a webhook's message_run to it is refused.
+  const poke = await api("POST", "/triggers", { name: "poke", source: { kind: "webhook" }, target: { kind: "message_run", run_id: started.run_id, input: { content: "A new event came in." } } });
+  assert.equal(poke.status, 422, JSON.stringify(poke.body));
+  assert.match(JSON.stringify(poke.body), /owner's own sign-in only for what a person starts/);
 
   // model.hosts holds on a run as on the check: an agent whose vendor is not among them never reaches it.
   const elsewhere = await installed(t, (o) => {

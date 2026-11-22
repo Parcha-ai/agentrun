@@ -515,7 +515,8 @@ unless the server is one owner's own: it listens on loopback with no public addr
 `AGENTRUN_STORE_URL`), runs its runs beside it as its own user (no `--no-runner`, no user of its own per run), and
 has an owner and one API token. A separate runner never runs a recipe on the sign-in, whatever it is started with. A
 scheduled or triggered run on a plan-billed recipe never runs on the sign-in: it is refused at its claim, on any server,
-until its harness's keys can be saved.
+until its harness's keys can be saved. Nor does a trigger's turn in a person's run on one: a `message_run` trigger to
+that run is refused when it is made, and each firing is skipped in words if the recipe is named only later.
 
 Each start of the agent's process digests the binary and its tree again and refuses a start where either differs from
 its pin. A run's agent reaches beyond loopback through the server's own egress proxy, as on the check: a `CONNECT` to
