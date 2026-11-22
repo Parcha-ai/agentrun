@@ -17,6 +17,7 @@ const { mintSecret, signatureOf, verify } = await import("../dist/standard-webho
 const { LAUNCH_HOOK_LATE_START_MS, LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
 const { uuidv7 } = await import("../dist/ids.js");
 const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
+const { heldRedactor, secretRedactor } = await import("../dist/runner/redact.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 
 /** A host's hook on 127.0.0.1: each request kept (its headers and body), answered by `answer`. One the sender cut short
@@ -401,7 +402,7 @@ async function keyedHook(t, answer, { manifest = [] } = {}) {
 /** The tool keys run `runId`'s claim lays over its tools' environment (claim-secrets.ts), on a host with none of its own. */
 async function claimedKeys(store, sealKey, runId) {
   const row = await store.runs.get(runId);
-  const env = await claimSecrets({ store, sealKey, env: {} }, await store.agents.revision(row.revisionId), readLaunchBody((await store.runs.launch(runId)).body), runId);
+  const env = await claimSecrets({ store, sealKey, env: {}, redact: heldRedactor(secretRedactor([])) }, await store.agents.revision(row.revisionId), readLaunchBody((await store.runs.launch(runId)).body), runId);
   return { PARALLEL_API_KEY: env.PARALLEL_API_KEY };
 }
 
