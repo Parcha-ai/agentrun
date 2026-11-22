@@ -274,8 +274,16 @@ for (const [kind, make] of Object.entries(STORES)) {
     await merged(store, "ALPHA", "BRAVO", "CHARLIE");
     const before = await store.head();
     assert.match(await everything(store), /BRAVO/);
+    // What each commit held but corrections.md and the host's files: the same at the commit the purge moved it to.
+    const learned = async (commit) => JSON.stringify(((await store.read(commit)) ?? []).filter(({ path }) => path !== "corrections.md" && !path.startsWith(".agentrun/")).map(({ path, body }) => [path, Buffer.from(body).toString("base64")]));
+    const old = await Promise.all(((await store.log(before)) ?? []).map(async ({ sha }) => [sha, await learned(sha)]));
     const done = await forgetRunText(store, "run_bravo");
     assert.match(done.commit ?? "", HEX, JSON.stringify(done));
+    // Every old commit moved to one of the new history holding what it held (a promotion record follows it).
+    for (const [sha, held] of old) {
+      assert.match(done.moved?.get(sha) ?? "", HEX, sha);
+      assert.equal(await learned(done.moved.get(sha)), held, sha);
+    }
     assert.equal(await store.head(), done.commit);
     const all = await everything(store);
     assert.doesNotMatch(all, /BRAVO/);
@@ -315,6 +323,18 @@ for (const [kind, make] of Object.entries(STORES)) {
       assert.doesNotMatch(objects, /BRAVO/);
       assert.equal(execFileSync("git", ["--git-dir", git, "for-each-ref", "--format=%(refname)"]).toString("utf8").trim(), "refs/heads/main");
       assert.equal(execFileSync("git", ["--git-dir", git, "reflog", "show", "--all"]).toString("utf8").trim(), "");
+    }
+    if (store.data) {
+      // A rewrite stopped after moving main (before it pruned) left the run's bytes and a ref: a purge sent again finds
+      // its marker and removes them.
+      const git = gitDirOf(store.data);
+      const blob = execFileSync("git", ["--git-dir", git, "hash-object", "-w", "--stdin"], { input: "BRAVO left behind\n" }).toString("utf8").trim();
+      execFileSync("git", ["--git-dir", git, "update-ref", "refs/agentrun/rewrite-0123456789abcdef", blob]);
+      execFileSync("git", ["--git-dir", git, "hash-object", "-w", "--stdin"], { input: "BRAVO loose\n" });
+      assert.deepEqual(await forgetRunText(store, "run_bravo"), {});
+      const objects = execFileSync("git", ["--git-dir", git, "cat-file", "--batch-all-objects", "--batch"], { maxBuffer: 64 << 20 }).toString("utf8");
+      assert.doesNotMatch(objects, /BRAVO/);
+      assert.equal(execFileSync("git", ["--git-dir", git, "for-each-ref", "--format=%(refname)"]).toString("utf8").trim(), "refs/heads/main");
     }
     if (store.fake) {
       assert.deepEqual([...store.fake.repos.keys()], [`agentrun-${SRV}-agent-one-g1`]);
@@ -361,6 +381,52 @@ test("code.storage: a purge killed mid-build leaves the live repository untouche
   assert.doesNotMatch(fakeText(store.fake), /BRAVO/);
   // Each delete named its exact id: the half-built g1 before each build, then g0 once the agent was on g1.
   assert.deepEqual(store.fake.calls.filter((call) => call.method === "DELETE").map((call) => call.repo), [next, next, `agentrun-${SRV}-agent-one-g0`]);
+});
+
+test("code.storage: a purge whose old repository's delete fails is not done: the retry finds its marker, deletes the old repository by its exact id or fails retryable again", async () => {
+  const { forgetRunText } = await learn();
+  let refuse = true;
+  const old = `agentrun-${SRV}-agent-one-g0`;
+  const store = await wrappedStore((inner) => async (url, init) => (refuse && init?.method === "DELETE" && repoOf(init) === old ? new Response(JSON.stringify({ error: "unavailable" }), { status: 503, headers: { "content-type": "application/json" } }) : inner(url, init)));
+  await merged(store, "ALPHA", "BRAVO");
+  await assert.rejects(forgetRunText(store, "run_bravo"), (error) => error.name === "FolderUnreadable");
+  assert.match(fakeText(store.fake), /BRAVO/, "the old repository is left");
+  assert.doesNotMatch(await everything(store), /BRAVO/, "the agent is on the next generation");
+  await assert.rejects(forgetRunText(store, "run_bravo"), (error) => error.name === "FolderUnreadable");
+  refuse = false;
+  assert.deepEqual(await forgetRunText(store, "run_bravo"), {});
+  assert.deepEqual([...store.fake.repos.keys()], [`agentrun-${SRV}-agent-one-g1`]);
+  assert.doesNotMatch(fakeText(store.fake), /BRAVO/);
+});
+
+test("code.storage: a save racing a purge is kept or refused, never saved and then deleted: one landing before the old main is fenced makes the purge start over and keep it; one after the fence is stale", async () => {
+  const { forgetRunText } = await learn();
+  let race;
+  const store = await wrappedStore((inner) => async (url, init) => {
+    // The fence: the one commit on the old main that writes .agentrun/moved.
+    const fence = new URL(url).pathname.endsWith("/repos/commit-pack") && String(init?.body ?? "").includes(".agentrun/moved");
+    const now = fence ? race : undefined;
+    if (now) race = undefined;
+    if (now?.at === "before") await now.run();
+    const response = await inner(url, init);
+    if (now?.at === "after") await now.run();
+    return response;
+  });
+  const line = async (word) => save(store, await store.head(), [{ path: `notes/${word}.md`, text: `${word} kept\n` }]);
+  await merged(store, "ALPHA", "BRAVO");
+  let early;
+  race = { at: "before", run: async () => void (early = await line("EARLY")) };
+  await forgetRunText(store, "run_bravo");
+  assert.match(early?.saved ?? "", HEX, JSON.stringify(early));
+  assert.match(await everything(store), /EARLY kept/, "the save that landed first is in the new history");
+  assert.doesNotMatch(await everything(store), /BRAVO/);
+  await merged(store, "CHARLIE");
+  let late;
+  race = { at: "after", run: async () => void (late = await line("LATE")) };
+  await forgetRunText(store, "run_charlie");
+  assert.ok(late && "stale" in late, JSON.stringify(late));
+  assert.doesNotMatch(await everything(store), /LATE|CHARLIE/);
+  assert.match((await line("AFTER")).saved ?? "", HEX, "the agent's next generation takes saves");
 });
 
 test("code.storage: an agent's erasure deletes every generation it ever had, each by its exact id (no listing): after two purges, a third killed mid-build and a reset whose old generation's delete failed, nothing under its prefix is left", async () => {

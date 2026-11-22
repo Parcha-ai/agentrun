@@ -751,6 +751,11 @@ test("a run's purge takes its text out of its agent's learning: its feedback lin
   assert.equal((await ended(api, kept)).view.learning?.state, "merged");
   const path = "workflows/answer/workflow.json";
   const readmeOf = (name) => ({ path: `workflows/${name}/README.md`, text: `---\nname: ${name}\ndescription: Answers a question; use when asked\n---\n` });
+  // The other run also learned workflow "other" twice: its champion is its first revision, main holding a newer draft.
+  const other1 = JSON.stringify(answerFlow("Answer the question, the other way."));
+  const other2 = JSON.stringify(answerFlow("Answer the question, the other way again."));
+  const otherAt = await learned(data, "keeper", (learning) => learningCommit(learning, { runId: kept, round: 5, reason: "It answers the other way.", files: [{ path: "workflows/other/workflow.json", text: other1 }, readmeOf("other")] }));
+  await learned(data, "keeper", (learning) => learningCommit(learning, { runId: kept, round: 6, reason: "It answers the other way again.", files: [{ path: "workflows/other/workflow.json", text: other2 }] }));
   const v1 = JSON.stringify(answerFlow("Answer the question."));
   const v2 = JSON.stringify(answerFlow("Answer the question, in whole numbers."));
   const solo = JSON.stringify(answerFlow("Answer the question alone."));
@@ -759,7 +764,7 @@ test("a run's purge takes its text out of its agent's learning: its feedback lin
   const digestOf = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
   const [digest, soloDigest] = [digestOf(v1), digestOf(solo)];
   const record = (workflow, at) => ({ workflow, digest: at, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", commit: merge });
-  await store.settings.put("learning.promotions.keeper", { v: 1, items: [record("answer", digest), record("solo", soloDigest)] });
+  await store.settings.put("learning.promotions.keeper", { v: 1, items: [record("answer", digest), record("solo", soloDigest), { ...record("other", digestOf(other1)), commit: otherAt }] });
   const championOf = (read, workflow) => read.promotions.serving.find((line) => line.workflow === workflow)?.champion;
 
   const repo = repoOf(data, "keeper");
@@ -777,7 +782,7 @@ test("a run's purge takes its text out of its agent's learning: its feedback lin
   assert.ok(git(repo, ["show", "main:corrections.md"]).includes(mark), "main holds its feedback line");
   assert.ok(before.log.items.some(({ by }) => by.run === gone) && JSON.stringify(before.log).includes(mark), "the log serves its merges and their reasons");
   assert.deepEqual(before.revisions.revisions.map(({ commit }) => commit).slice(0, 1), [merge], "its revision is the workflow's first");
-  assert.deepEqual([championOf(before, "answer")?.commit, championOf(before, "solo")?.commit], [merge, merge], "each champion is read at its merge");
+  assert.deepEqual([championOf(before, "answer")?.commit, championOf(before, "solo")?.commit, championOf(before, "other")?.commit], [merge, merge, otherAt], "each champion is read at its record's commit");
   assert.ok(JSON.stringify(before.diff).includes(mark), "the other run's diff shows its line as context");
   // A page of the log read before the purge, newest first: the other run's revision, then the purged run's merge.
   const first = (await api("GET", "/agents/keeper/learning/log?limit=2")).body;
@@ -813,7 +818,13 @@ test("a run's purge takes its text out of its agent's learning: its feedback lin
   // A cursor read before the purge named a main of the history rewritten: its page starts again at main's first item
   // (the other run's two merges, all the log serves).
   const next = (await api("GET", `/agents/keeper/learning/log?limit=2&cursor=${first.next_cursor}`)).body;
-  assert.deepEqual([next.items.map(({ by }) => by.run), next.next_cursor], [[kept, kept], null], "the page starts again, skipping no change");
+  assert.deepEqual(next, (await api("GET", "/agents/keeper/learning/log?limit=2")).body, "the page starts again, skipping no change");
+  // Another workflow's champion, older than main's draft of it, is read as before: its record moved to the rewritten
+  // commit.
+  const other = championOf(after, "other");
+  assert.match(other?.commit ?? "", /^[0-9a-f]{40}$/, JSON.stringify(other));
+  assert.notEqual(other.commit, otherAt);
+  assert.equal(git(repo, ["show", `${other.commit}:workflows/other/workflow.json`]), other1);
   // A workflow it was the last to change reads so too, though main (the purge's commit) holds it as it left it.
   assert.equal(git(repo, ["show", "main:workflows/solo/workflow.json"]), solo);
   assert.deepEqual(championOf(after, "solo"), { digest: soloDigest, commit: null, nodes: null, check: null }, "nor at main after it");
