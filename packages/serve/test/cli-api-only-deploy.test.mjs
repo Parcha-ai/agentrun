@@ -1,6 +1,6 @@
 // A deploy to a real API-only server (AGENTRUN_API_ONLY=1, the CLI on the faux model), through its HTTP API alone: a
-// bundled template applied (its webhook trigger skipped and said), the agent read and run, redeployed as a second
-// revision, rolled back, archived and deleted; making a trigger and the settings stay refused.
+// bundled template applied (its trigger skipped and said, as every trigger is there), the agent read and run, redeployed
+// as a second revision, rolled back, archived and deleted; making a trigger and the settings stay refused.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { join } from "node:path";

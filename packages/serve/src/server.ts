@@ -21,7 +21,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { API_ONLY_TRIGGER_KINDS, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
+import { apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -3114,6 +3114,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (const [i, trigger] of p.made.triggers.entries()) {
       const name = String(trigger.name).trim();
       const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
+      // On an API-only server, skipped in the apply's own words (prepareApply).
+      const hostSkip = p.hostless.get(i);
+      if (hostSkip) {
+        planned.push({ name, kind, action: "skip", reason: hostSkip });
+        continue;
+      }
       if (p.emptyFeeds.has(i)) {
         planned.push({ name, kind, action: "skip", reason: feedTriggerEmpty(p.pkg.name, trigger, isObject(p.pkg.triggers[i]?.source) ? p.pkg.triggers[i]!.source.urls : undefined) });
         continue;
@@ -3227,12 +3233,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // by the triggers' own clock, the one POST /triggers checks by and they fire by (a template eval case's `now`).
     // A feed trigger whose urls are one array parameter given empty reads no feed: skipped, never the apply (feedLeftEmpty).
     const emptyFeeds = new Set(made.triggers.flatMap((trigger, i) => (feedLeftEmpty(trigger) ? [i] : [])));
-    // On an API-only server, a trigger whose source needs a hook or a setting the profile refuses is not made, and said
-    // (api-only.ts). It stays listed, so a trigger the agent has by its name is left as it is, never removed.
-    const hostless = new Map(options.apiOnly ? made.triggers.flatMap((trigger, i) => {
-      const said = apiOnlyTriggerSkipped(pkg.name, trigger);
-      return said ? [[i, said] as const] : [];
-    }) : []);
+    // On an API-only server no trigger is made, and each is said (api-only.ts). Each stays listed, so a trigger the agent
+    // has by its name is left as it is, never removed.
+    const hostless = new Map(options.apiOnly ? made.triggers.map((trigger, i) => [i, apiOnlyTriggerSkipped(pkg.name, trigger)] as const) : []);
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
     const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
     if (refusedTriggers.length) throw invalid(refusedTriggers);
@@ -3418,7 +3421,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return refused && isObject(trigger.source) && trigger.source.kind === "composio" ? [{ field: `triggers.${i}`, reason: NOT_SET_UP, message: composioTriggerSkipped(pkg.name, trigger, refused.message), fix: COMPOSIO_TRIGGER_FIX }] : [];
     });
     // Each feed trigger it skipped for want of a feed: which, and the parameter to set.
-    const feedsSkipped: InputIssue[] = [...emptyFeeds].map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: feedTriggerEmpty(pkg.name, made.triggers[i]!, isObject(pkg.triggers[i]?.source) ? pkg.triggers[i]!.source.urls : undefined) }));
+    const feedsSkipped: InputIssue[] = [...emptyFeeds].filter((i) => !hostless.has(i)).map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: feedTriggerEmpty(pkg.name, made.triggers[i]!, isObject(pkg.triggers[i]?.source) ? pkg.triggers[i]!.source.urls : undefined) }));
     // Each trigger an API-only server does not make: nothing set up here makes it, so not_an_option.
     const hostSkipped: InputIssue[] = [...hostless].map(([i, message]) => ({ field: `triggers.${i}`, reason: "not_an_option", message }));
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
@@ -4625,9 +4628,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
         // In the agent's delete turn (agentWrite): an unarchive sent while its purge runs waits for it and is 410, so no
         // run of it starts between the purge's live check and its tombstone.
-        // On an API-only server, which serves no trigger route, the unarchive turns its schedule and feed triggers on again.
-        const turnOn = options.apiOnly ? (source: { kind: string }) => API_ONLY_TRIGGER_KINDS.has(source.kind) : undefined;
-        const triggersOff = await agentWrite(id, () => (found.name === "archiveAgent" ? triggers.agentArchived(id) : triggers.agentUnarchived(id, turnOn)));
+        const triggersOff = await agentWrite(id, () => (found.name === "archiveAgent" ? triggers.agentArchived(id) : triggers.agentUnarchived(id)));
         // An archived agent's own computer is deleted (an unarchived one gets a new one at its next persistent run).
         if (found.name === "archiveAgent") reconcileComputer(id);
         const entry = await needAgent(id);

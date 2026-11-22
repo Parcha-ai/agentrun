@@ -3146,11 +3146,11 @@ serves these routes alone:
 - a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
   (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
-  is what its delete (`DELETE /agents/{id}`) needs first; the unarchive turns its schedule and feed triggers on again,
-  since no trigger route is served here to do it. The apply makes only the triggers that fire on this server's own clock
-  (a schedule, a feed); a webhook, GitHub, Composio or email trigger needs a hook or a setting this profile refuses, so
-  it is not made, and the answer says so under `warnings` (`triggers.<i>`, `not_an_option`). The backend starts those
-  runs through the API instead;
+  is what its delete (`DELETE /agents/{id}`) needs first. The apply makes no trigger of any source: a run here starts
+  through the backend's API calls alone, on its keys and budget, never on this server's own clock and model key (a
+  schedule or a feed) or from a hook or setting this profile refuses (a webhook, GitHub, Composio or email). The answer
+  says so for each under `warnings` (`triggers.<i>`, `not_an_option`), and the dry run (`dry_run: true`) plans each as
+  `skip` in the same words. The backend starts those runs through the API instead;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on

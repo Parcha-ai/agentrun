@@ -20,9 +20,8 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
  *    words, template-import.ts), which an apply then makes into its agent;
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
- *    revision back, and archives it before its delete (or unarchives it, its schedule and feed triggers on again): its
- *    token already makes agents through inline runs, so it gains no new power. A trigger the apply can't make here is
- *    skipped, and said (apiOnlyTriggerSkipped). */
+ *    revision back, and archives it before its delete (or unarchives it): its token already makes agents through inline
+ *    runs, so it gains no new power. The apply makes no trigger, each skipped and said (apiOnlyTriggerSkipped). */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
@@ -37,17 +36,13 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
 ]);
 
-/** The trigger sources a template's apply makes on an API-only server: the ones that fire on the server's own clock and
- *  need nothing a refused route sets up. A webhook, GitHub or Composio trigger is delivered to a hook this profile
- *  refuses, and an email trigger reads the account Settings → Email saves; a source not listed here is skipped too. */
-export const API_ONLY_TRIGGER_KINDS: ReadonlySet<string> = new Set(["schedule", "feed"]);
-
-/** What an apply on an API-only server says of `trigger` of the `packageName` template, which it skips: undefined for a
- *  trigger it makes (API_ONLY_TRIGGER_KINDS). */
-export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unknown; source?: unknown }): string | undefined {
+/** What an apply on an API-only server (and its dry run's plan) says of `trigger` of the `packageName` template, which it
+ *  does not make. It makes none, of any source: a run here starts through the backend in front of it, on that backend's
+ *  keys and budget, never on this server's own clock or model key (a schedule's or a feed's), nor from a hook or a
+ *  setting the profile refuses (a webhook's, GitHub's, Composio's, the email account's). */
+export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unknown; source?: unknown }): string {
   const kind = trigger.source !== null && typeof trigger.source === "object" ? String((trigger.source as { kind?: unknown }).kind) : "";
-  if (API_ONLY_TRIGGER_KINDS.has(kind)) return undefined;
-  return `The ${packageName} template's trigger ${String(trigger.name).trim()} (${kind}) was not made: this server serves the run API only (${API_ONLY_ENV}=1), so neither a hook nor a setting it needs is served here. Start its runs through the API instead.`;
+  return `The ${packageName} template's trigger ${String(trigger.name).trim()} (${kind}) was not made: this server serves the run API only (${API_ONLY_ENV}=1), so a run starts here through the API alone, never on a trigger. Start its runs through the API instead.`;
 }
 
 /** Whether `env` turns the profile on: `1` or `true` on; unset, empty, `0` or `false` off. Any other value is refused in
