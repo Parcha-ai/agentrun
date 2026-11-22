@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { learningRepo, seedOf } from "../dist/learning.js";
 import { workflow } from "./learn-format-support.mjs";
-import { git, resnap } from "./learn-support.mjs";
+import { git } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
 
@@ -21,7 +21,6 @@ async function commit(data, id, files) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "by hand"]);
-  await resnap(data, id);
 }
 /** Workflow draft `name` with README.md `readme`. */
 const draft = (name, readme) => ({ [`workflows/${name}/README.md`]: readme, [`workflows/${name}/workflow.json`]: workflow({ name }) });

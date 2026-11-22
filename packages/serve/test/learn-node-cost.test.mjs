@@ -12,7 +12,7 @@ import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
-import { entriesOf, git, resnap } from "./learn-support.mjs";
+import { entriesOf, git } from "./learn-support.mjs";
 import { agent, answerFlow, follow, serve, storeRun, withEnv } from "./support.mjs";
 
 /** A learned workflow's two files, as the merge keeps them. */
@@ -30,7 +30,6 @@ async function folderWith(data, id, files) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
 }
 
 const ASK = "Use the learned workflow answer on What is six times seven.";

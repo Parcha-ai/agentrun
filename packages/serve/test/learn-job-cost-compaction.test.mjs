@@ -23,7 +23,8 @@ const { runEntries } = await import("../dist/store-reads/journal.js");
 const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { listRuns } = await import("../dist/store-reads/runs.js");
 const { viewOverStore } = await import("../dist/store-view.js");
-const { learningFolderOf, seedOf } = await import("../dist/learning.js");
+const { seedOf } = await import("../dist/learning.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { REQUEST_STARTED } = await import("../dist/timeline/index.js");
 
 const ROOT = 1;
@@ -76,7 +77,7 @@ async function endedRun(t, compactions) {
   for (const [kind, data] of records) writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: HARNESS, kind, data } });
   await commitWrites(journal, writes, ctx);
   // The end-of-run step, as the loop asks it once the job's bookings settled (adapter-loop.ts endOfRunStep).
-  const step = learningEndOfRun(launch, { store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId) });
+  const step = learningEndOfRun(launch, { store, data: dir, env: {}, learningStore: (agentId) => learningStoreOf(dir, agentId) });
   const refused = async () => ({ failed: { code: "refused", message: "no turn is asked here" } });
   const rows = await step({ runId: "run-1", agentId: "agent-1", claim, outcome: "completed", signal: new AbortController().signal, ask: refused });
   // The end's cost, by its own rule (adapter-run-spec.ts endCost): the booking's.

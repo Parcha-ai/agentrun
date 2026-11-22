@@ -1,16 +1,15 @@
-// A claim's read of a run's learning seed: the learned workflows its learning folder held active at the commit the run
+// A claim's read of a run's learning seed: the learned workflows its learning store held active at the commit the run
 // started from, which the run's learned_workflow tool runs and workflow-first serves (learning.ts chooseWorkflows: within
 // the tool's budget, none holding a host secret). Nothing is laid in the run's work: its corrections reach it in its
 // instructions (learning.ts laidLearned, from the launch's learning start).
 import { chooseWorkflows, type LearnedWorkflow, type Seed, seedAt, type Shown } from "../learning.js";
-import type { LearningFolder } from "../learn/folder.js";
+import type { LearningStore } from "../learn/store.js";
 
-/** What a claim reads its seed with: the commit, the agent's learning folder where the run's place keeps it (opened for
- *  the read and ended after it), the server's secrets as cuts (`shown`), its log, and `workflows: false` for a run that
+/** What a claim reads its seed with: the commit, the agent's learning store, the server's secrets as cuts (`shown`), its log, and `workflows: false` for a run that
  *  takes none (an SDK run with no workflow binding). */
 export interface LearningSeedLay {
   readonly seed: string | null;
-  readonly folder: () => LearningFolder;
+  readonly learning: LearningStore;
   readonly shown: () => Promise<Shown>;
   readonly log: (line: string) => void;
   readonly workflows?: false;
@@ -30,14 +29,11 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
  *  throws: a learning fault never stops a run. */
 export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | undefined> {
   let seed: Seed;
-  const folder = lay.folder();
   try {
-    seed = await seedAt(folder.workspace, lay.seed);
+    seed = await seedAt(lay.learning, lay.seed);
   } catch (error) {
     lay.log(`the run starts with no learned workflow: ${message(error)}`);
     return undefined;
-  } finally {
-    await folder.end().catch(() => undefined);
   }
   if (lay.workflows === false) return { seed, workflows: [] };
   try {
@@ -50,17 +46,11 @@ export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | 
   }
 }
 
-/** The learned workflows the folder held active at `commit`, as a claim's read hands them to the learned_workflow tool
+/** The learned workflows the store held active at `commit`, as a claim's read hands them to the learned_workflow tool
  *  (chooseWorkflows): what a champion serves from while a newer revision of it is on main (runner/promotion.ts), and
- *  what a run's process is laid at its claim's seed (run-child-host.ts). Throws when the folder cannot answer or the
+ *  what a run's process is laid at its claim's seed (run-child-host.ts). Throws when the store cannot answer or the
  *  commit is gone. */
-export async function workflowsAt(read: Pick<LearningSeedLay, "folder" | "shown">, commit: string | null): Promise<LearnedWorkflow[]> {
-  const folder = read.folder();
-  let seed: Seed;
-  try {
-    seed = await seedAt(folder.workspace, commit);
-  } finally {
-    await folder.end().catch(() => undefined);
-  }
+export async function workflowsAt(read: Pick<LearningSeedLay, "learning" | "shown">, commit: string | null): Promise<LearnedWorkflow[]> {
+  const seed = await seedAt(read.learning, commit);
   return chooseWorkflows(seed, await read.shown()).flows;
 }

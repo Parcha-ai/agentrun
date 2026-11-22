@@ -85,7 +85,7 @@ export async function runDiskOf(options: RunDiskOptions): Promise<RunDisk> {
     } catch (error) {
       if (error instanceof ArchilDiskError && error.status === 404) {
         const agent = options.agentId;
-        throw new ArchilClaimRefused(`This agent's Archil disk ${diskId} is gone: Archil has no disk ${diskId} in region ${region}. The agent's learning and its runs' folders were on it, so no new disk is made in its place. DELETE /v2/agents/${agent}/archil drops it (an agent made here is archived first, POST /v2/agents/${agent}/archive, and unarchived after), and the agent's next run makes a new one.`, { cause: error });
+        throw new ArchilClaimRefused(`This agent's Archil disk ${diskId} is gone: Archil has no disk ${diskId} in region ${region}. Its runs' folders were on it, so no new disk is made in its place. DELETE /v2/agents/${agent}/archil drops it (an agent made here is archived first, POST /v2/agents/${agent}/archive, and unarchived after), and the agent's next run makes a new one.`, { cause: error });
       }
       throw new ArchilClaimRefused(`This agent's Archil disk ${diskId} is not ready in region ${region}: ${(error as Error).message}`, { cause: error });
     }

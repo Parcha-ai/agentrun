@@ -15,7 +15,7 @@ import { landWorkflows } from "./learned-workflow-seed-support.mjs";
 const { runLearningOverStore } = await import("../dist/store-reads/learning.js");
 const { changeWorkflow, statusesOf } = await import("../dist/learning-routes.js");
 const { secretsShown } = await import("../dist/learning.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { readSnapshot } = await import("../dist/learn/folder.js");
 
 const NAME = "file-ticket";
@@ -24,13 +24,9 @@ const README = `workflows/${NAME}/README.md`;
 
 /** The README's ETag on main now, as GET answers it. */
 async function etagOf(data, agentId) {
-  const folder = learningWorkspace({ mode: "local", data, agentId });
-  try {
-    const item = (await readSnapshot(folder.workspace)).workflows.find((one) => one.name === NAME);
-    return `"${item.files.find((file) => file.path === README).oid}"`;
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(data, agentId);
+  const item = (await readSnapshot(folder)).workflows.find((one) => one.name === NAME);
+  return `"${item.files.find((file) => file.path === README).oid}"`;
 }
 
 test("a run's held draft reads as it stands on main after each act: waiting, then approved and learned, then retired and said no more", async (t) => {

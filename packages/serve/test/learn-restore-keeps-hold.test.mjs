@@ -13,7 +13,7 @@ import { checkDraft } from "../dist/learn/check.js";
 import { draftFiles, readmeOf } from "../dist/learn/workflow-draft.js";
 import { seedOf } from "../dist/learning.js";
 import { added, workflow } from "./learn-format-support.mjs";
-import { ended, git, LEARN, learner, made, repoOf, resnap, started } from "./learn-support.mjs";
+import { ended, git, LEARN, learner, made, repoOf, started } from "./learn-support.mjs";
 import { call, cookieOf, serve } from "./support.mjs";
 
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
@@ -40,7 +40,6 @@ async function keeper(t, files) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "the folder as runs left it"]);
-  await resnap(data, "keeper");
   const etag = async (file) => (await api("GET", `/agents/keeper/learning/files/${encodeURIComponent(file)}`)).headers.get("etag");
   const owner = (action) => async (file) => call(port, { method: "POST", path: `/v2/agents/keeper/learning/files/${encodeURIComponent(file)}/${action}`, headers: { ...json, cookie, origin, "if-match": await etag(file) }, body: {} });
   const retire = async (file) => {
@@ -99,7 +98,7 @@ test("a run never sets a status or retired_from in a draft's README: the host wr
 test("a run's merge never writes over a draft a person held since its seed: a conflict, nothing written", async (t) => {
   const { learningCommit } = await import("../dist/learn/commit.js");
   const { readSnapshot } = await import("../dist/learn/folder.js");
-  const { learningWorkspace } = await import("../dist/workspace/index.js");
+  const { learningStoreOf } = await import("../dist/learn/store-of.js");
   const { agentFolderOf } = await import("../dist/files.js");
   const { scratch } = await import("./support.mjs");
   const data = await scratch(t);
@@ -114,20 +113,14 @@ test("a run's merge never writes over a draft a person held since its seed: a co
     git(repo, ["commit", "-q", "-m", message]);
   };
   put(draft("share-files"), "the folder");
-  await resnap(data, "agent-1");
   const seed = git(repo, ["rev-parse", "main"]).trim();
   // Since the run's seed, its owner held the draft (as a retire and a restore of a held one leaves it).
   put({ [README("share-files")]: readme("share-files", "status: pending\n") }, "held by its owner");
-  await resnap(data, "agent-1");
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
-  try {
-    const over = await learningCommit(folder.workspace, { runId: "run-m2", reason: "x", files: [{ path: README("share-files"), text: readme("share-files") }, { path: "workflows/share-files/workflow.json", text: workflow({ name: "share-files", node: "extract" }) }], seed });
-    assert.deepEqual([over.ok, over.reason], [false, "conflict"], JSON.stringify(over));
-    const snapshot = await readSnapshot(folder.workspace);
-    assert.equal(snapshot.workflows.find((one) => one.name === "share-files")?.status, "pending");
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(data, "agent-1");
+  const over = await learningCommit(folder, { runId: "run-m2", reason: "x", files: [{ path: README("share-files"), text: readme("share-files") }, { path: "workflows/share-files/workflow.json", text: workflow({ name: "share-files", node: "extract" }) }], seed });
+  assert.deepEqual([over.ok, over.reason], [false, "conflict"], JSON.stringify(over));
+  const snapshot = await readSnapshot(folder);
+  assert.equal(snapshot.workflows.find((one) => one.name === "share-files")?.status, "pending");
 });
 
 // A draft's retired_from is read by the one front-matter reader (frontMatter, #2255): its quoting decoded one way, and

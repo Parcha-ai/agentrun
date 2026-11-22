@@ -42,7 +42,8 @@ import { withinCarried } from "../paid-calls.js";
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
-import { LEARNING_SCRIPT, learningWorkspace } from "../learn/folder.js";
+import type { LearningStore } from "../learn/store.js";
+import { learningStoreOf } from "../learn/store-of.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
@@ -53,7 +54,7 @@ import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
 import { githubPullOf } from "../github.js";
 import { isObject } from "../validate.js";
 import { liveForRun, runnerLiveOf } from "../live-reach.js";
-import { type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
+import { type LearnedWorkflow, secretsShown } from "../learning.js";
 import { learningStartOf, seedFailed } from "../run-launch.js";
 import { messageText } from "../run-manifest.js";
 import { filesToCopy, placeRunInputs } from "../uploads.js";
@@ -619,15 +620,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   /** Whether the claim's run holds a model key of its own now (its launch, as this runner opens it): its process is then
    *  handed none of the server's (claim-secrets.ts keyedAtClaim, held here for the runner's answers). */
   const runKeyed = async () => (await openRunModelKey(keys, claim.runId)) !== undefined;
-  const learningFolder = async () => {
-    const made = await archilOf();
-    return made === undefined ? learningFolderOf(deps.data, run.agentId) : learningWorkspace({ mode: "archil", agentId: run.agentId, archil: made });
-  };
-  /** The learning folder's reader, made once the claim's Archil claim is known (learnedFirst's folder is synchronous). */
-  const folderNow = async () => {
-    const made = await archilOf();
-    return () => (made === undefined ? learningFolderOf(deps.data, run.agentId) : learningWorkspace({ mode: "archil", agentId: run.agentId, archil: made }));
-  };
+  /** The claim's agent's learning store, the one its server reads (learn/store-of.ts), in every mode. */
+  const learning = learningStoreOf(deps.data, run.agentId);
   /** What a learned workflow must never hold, as this runner sees it: every secret it holds (learning-seed.ts). */
   const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(store, sealKey, deps.data)), { local: true });
   /** The workflows the claim's learned_workflow tool runs, as this runner chose them (held.learnedFirst): what scopes the
@@ -717,7 +711,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     signInForgotten: (resolution) => forgottenSignIns(store, sealKey, run.agentId, String(resolution)),
     emailAccount: async () => (grantsEmail(granted) ? openAccount(store, sealKey) : undefined),
     calendar: async () => (granted.includes(CALENDAR_EVENTS) ? openCalendar(store, sealKey) : undefined),
-    learning: async (method, args) => learningCall(await learningFolder(), method, args),
+    learning: async (method, args) => learningCall(learning, method, args),
     install: async (name, signal) => {
       const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
       const entry = harness === undefined ? undefined : harnessOf(deps.env, harness);
@@ -773,14 +767,13 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // compares its answer with the other one through its grader, handed in by the run's process (runner/compare-end.ts).
       // This runner reads both answers and the learning ledger, which no run's process may.
       if (launch.replay || launch.audit) {
-        const compare = compareEndOfRun(launch, { store, folder: await folderNow(), log, redact: cut });
+        const compare = compareEndOfRun(launch, { store, learning, log, redact: cut });
         const grade = input.grade;
         const rows = compare && grade && typeof input.grader === "string"
           ? await compare({ runId: claim.runId, agentId: run.agentId, claim, outcome: input.outcome === "failed" ? "failed" : "completed", ...(input.cut === undefined ? {} : { cut: "faulted" as const }), grader: input.grader, grade: (request) => grade(request), ask: input.ask, signal: input.signal })
           : undefined;
         return rows?.compared ? { also: [], compared: dataOnly(rows.compared) as Compared } : undefined;
       }
-      const made = await archilOf();
       // The audit's spend, skipped as the run's spec skips it (claim-secrets.ts claimSpendOff): over the claim's own key.
       const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
       // The audit's start after the step (audit.ts withAudit) is this runner's too: it reads the run's journal and writes
@@ -794,8 +787,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         stored: () => storeSecrets(store, sealKey, deps.data),
         log,
         decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys(keys, DECISION_PROVIDER_KEYS)) }),
-        learningFolder: made === undefined ? (agentId: string) => learningFolderOf(deps.data, agentId) : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil: made }),
-      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, folder: await folderNow(), shown, log, sealKey, spendOff, launch, redact: cut });
+        learningStore: (agentId: string) => learningStoreOf(deps.data, agentId),
+      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, learning, shown, log, sealKey, spendOff, launch, redact: cut });
       if (!step) return undefined;
       // keptOf is the run's process's, asked over the channel: read once, for the round learningEndOfRun reads (the
       // round after the newest the run kept), before the step reads it at once.
@@ -821,11 +814,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // the process's lay chose them: none where its lay laid none (`laid` false: a read that failed, a seed with no
       // workflows).
       const start = learningStartOf(launch);
-      const folder = await folderNow();
-      const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ?await workflowsAt({ folder, shown }, start.seed).catch(() => []) : [];
+      const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ?await workflowsAt({ learning, shown }, start.seed).catch(() => []) : [];
       const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
       const outputSchema = (revision.body as { outputSchema?: unknown }).outputSchema;
-      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, folder, shown, spendOff }, laid);
+      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, learning, shown, spendOff }, laid);
       learnedFlows = got.workflows;
       return cutDeep(dataOnly(got) as LearnedFirst, cut);
     })()),
@@ -860,45 +852,27 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
 /** `env`'s string values. */
 const stringsOf = (env: NodeJS.ProcessEnv): Record<string, string> => Object.fromEntries(Object.getOwnPropertyNames(env).flatMap((name) => (typeof env[name] === "string" ? [[name, env[name]!]] : [])));
 
-/** The learning-script ops a run's process may run (learn/folder.ts): its reads alone. The folder's writers (the
- *  end-of-run step's check, the learning run's merge, a repair) are the runner's. */
-const LEARNING_OPS = new Set(["read", "show", "has", "log", "diff", "status"]);
-
-/** A call of the learning folder a run's process asks (Held.learning), on the runner's own Workspace of the claim's
- *  agent's folder: reads pass, and the learning script runs its reads, with the script's own environment (the script
- *  laid by the runner as the folder's own); nothing the process asks writes there. */
-export async function learningCall(folder: { readonly workspace: Workspace; end(): Promise<void> }, method: string, args: readonly unknown[]): Promise<unknown> {
-  const ws = folder.workspace;
-  try {
-    switch (method) {
-      case "read":
-        return await ws.read(String(args[0]), args[1] as never);
-      case "stat":
-        return dataOnly(await ws.stat(String(args[0])));
-      case "list":
-        return dataOnly(await ws.list(String(args[0])));
-      case "grep":
-        return dataOnly(await ws.grep(String(args[0]), args[1] as never));
-      case "write":
-        // The learning script laid as learn/folder.ts lays it (ensureScript, before a script run): the runner's own text.
-        if (args[0] === LEARNING_SCRIPT.file()) return await LEARNING_SCRIPT.ensure(ws);
-        throw new ClaimRefused(`a run's process may not write ${JSON.stringify(args[0])} in its learning folder`);
-      case "append":
-      case "remove":
-      case "mkdir":
-        throw new ClaimRefused(`a run's process may not ${method} ${JSON.stringify(args[0])} in its learning folder`);
-      case "exec": {
-        const argv = args[0] as unknown[];
-        const options = (args[1] ?? {}) as { stdin?: unknown };
-        if (!Array.isArray(argv) || argv[0] !== "sh" || argv[1] !== LEARNING_SCRIPT.file() || !LEARNING_OPS.has(String(argv[2])) || !argv.every((part) => typeof part === "string")) throw new ClaimRefused("a run's process runs no program in its learning folder but its learning script");
-        await LEARNING_SCRIPT.ensure(ws);
-        return dataOnly(await ws.exec(argv as string[], { env: LEARNING_SCRIPT.env(), timeoutMs: LEARNING_SCRIPT.timeoutMs(), ...(options.stdin instanceof Uint8Array ? { stdin: options.stdin } : {}) }));
-      }
-      default:
-        throw new ClaimRefused(`a run's learning folder has no ${method} in its process`);
+/** A call of the learning store a run's process asks (Held.learning), on its runner's store of the claim's agent: its
+ *  reads alone (head, read, log, diff). A save or a remove is the runner's (the end-of-run step, a reset, a purge). */
+export async function learningCall(learning: LearningStore, method: string, args: readonly unknown[]): Promise<unknown> {
+  const text = (value: unknown) => (typeof value === "string" ? value : Promise.reject(new ClaimRefused(`a run's learning ${method} names its commit as a string`)));
+  switch (method) {
+    case "head":
+      return learning.head();
+    case "read": {
+      const paths = args[1];
+      if (paths !== undefined && !(Array.isArray(paths) && paths.every((one) => typeof one === "string"))) throw new ClaimRefused("a run's learning read names its paths as strings");
+      return dataOnly(await learning.read(await text(args[0]), paths as string[] | undefined));
     }
-  } finally {
-    await folder.end().catch(() => undefined);
+    case "log": {
+      const given = isObject(args[1]) ? (args[1] as { limit?: unknown; path?: unknown }) : {};
+      const options = { ...(typeof given.limit === "number" ? { limit: given.limit } : {}), ...(typeof given.path === "string" ? { path: given.path } : {}) };
+      return dataOnly(await learning.log(await text(args[0]), options));
+    }
+    case "diff":
+      return dataOnly(await learning.diff(await text(args[0])));
+    default:
+      throw new ClaimRefused(`a run's process may not ${method} its agent's learning`);
   }
 }
 

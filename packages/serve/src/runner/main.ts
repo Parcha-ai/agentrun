@@ -21,7 +21,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { type HostedDial, PROVIDERS } from "@parcha/agentrun-computer";
 import { type RunnerRelay, startRunnerRelay } from "../dial-relay.js";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
-import { ArchilSettingsEnvInvalid, archilSettingsFromEnv } from "../archil-settings.js";
+import { ArchilSettingsEnvInvalid, archilSettingsFromEnv, serverIdOf } from "../archil-settings.js";
+import { CodeStorageEnvInvalid, codeStorageFromEnv, learningStoreFromEnv } from "../learn/store-of.js";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
@@ -56,7 +57,7 @@ import { childLoops, isolationLoops, type RunIsolation, RunIsolationRefused, run
 import { sweepEndedScratch } from "./scratch-sweep.js";
 import { RUNNER_LOOPS, RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
 import { keepPresence, type Presence } from "./presence.js";
-import { diskFreeGate } from "./disk-free.js";
+import { diskFreeGate, sharesServerDisk } from "./disk-free.js";
 import { checkLines, checkRunnerEnv, type CheckRow } from "./runner-check.js";
 import { metricLine, startRunnerGauge } from "./runner-metrics.js";
 
@@ -299,6 +300,11 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // (another machine's key on a shared Postgres, a lost key file) is refused in the server's words; a runner never makes
     // or records a key.
     seal = await bootSealKey(store, options.dataDir, { given: handedSecret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV], role: "runner" });
+    // Where its runs' agents' learning is, as its server's (learn/store-of.ts): code.storage where its environment keys
+    // it; refused for a runner apart from its server's disk without it (disk-free.ts), whose local folder its server
+    // never reads; else the local folder under the data directory, the server's.
+    const apart = kind !== "sqlite" && (await sharesServerDisk(store, options.dataDir)) === false;
+    learningStoreFromEnv(options.dataDir, env, () => serverIdOf(store), { apart, key: (key) => handedSecret(key) ?? env[key] });
     const name = options.name ?? runnerName();
     // One incarnation for this process: its word in the store that it is there (presence.ts) and its relay's minted
     // tokens and proofs name the same one, so the server's "restarted since" and the runner's row speak of one process.
@@ -600,10 +606,11 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
     holds = runnerHolds(args, env);
     // The Archil settings an operator sets, read by every run's claim here as the server reads them (archil-settings.ts):
     // one of the region and S3 URL without the other, or a value the server would refuse, stops this start as it stops
-    // the server's.
+    // the server's. The same for code.storage's (learn/store-of.ts).
     archilSettingsFromEnv(env);
+    codeStorageFromEnv(env, (key) => handedSecret(key) ?? env[key]);
   } catch (error) {
-    if (!(error instanceof RunnerRefused) && !(error instanceof ArchilSettingsEnvInvalid)) throw error;
+    if (!(error instanceof RunnerRefused) && !(error instanceof ArchilSettingsEnvInvalid) && !(error instanceof CodeStorageEnvInvalid)) throw error;
     console.error(`agentrun-serve runner: ${error.message}`);
     return 2;
   }
@@ -721,10 +728,11 @@ async function runnerCheck(args: ReturnType<typeof runnerArgs>, env: NodeJS.Proc
       const loops = "loops" in args ? args.loops : undefined;
       const holds = runnerHolds({ ...(loops !== undefined ? { loops } : {}), ...("drainMs" in args && args.drainMs !== undefined ? { drainMs: args.drainMs } : {}) }, env);
       archilSettingsFromEnv(env);
+      codeStorageFromEnv(env, (key) => handedSecret(key) ?? env[key]);
       await runIsolationOf(env, loops !== undefined || Boolean(env.AGENTRUN_MAX_RUNS) ? holds.loops : undefined, () => {});
-      rows.push({ state: "ok", name: "start", why: "the runner's start takes its settings: run slots, drain, free-model requests, Archil, run isolation" });
+      rows.push({ state: "ok", name: "start", why: "the runner's start takes its settings: run slots, drain, free-model requests, Archil, code.storage, run isolation" });
     } catch (error) {
-      if (!(error instanceof RunnerRefused) && !(error instanceof ArchilSettingsEnvInvalid) && !(error instanceof RunIsolationRefused)) throw error;
+      if (!(error instanceof RunnerRefused) && !(error instanceof ArchilSettingsEnvInvalid) && !(error instanceof CodeStorageEnvInvalid) && !(error instanceof RunIsolationRefused)) throw error;
       rows.push({ state: "bad", name: "start", why: `the runner's start refuses its environment: ${error.message}` });
     }
   }

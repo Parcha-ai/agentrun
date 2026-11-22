@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { agentFolderOf, homeKey } from "../dist/files.js";
 import { said } from "../dist/learning-words.js";
-import { CORRECTIONS_INTRO, NOTHING_YET, pinOf, resnapSync } from "./learn-support.mjs";
+import { CORRECTIONS_INTRO, NOTHING_YET, pinOf } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -40,16 +40,15 @@ const learnedIn = (prompt) => {
   return at < 0 ? undefined : /^([\s\S]*?)(?:\n<\/instructions>|$)/.exec(prompt.slice(at + head.length))[1];
 };
 
-/** Commits `files` on main, in the folder's working tree, as a merge into main would leave it, and (`snap`) the folder's
- *  snapshot rebuilt from it. Its commit. */
-function commitToMain(repo, files, message = "learned", snap = true) {
+/** Commits `files` on main by hand, in the folder's working tree, as a merge into main would leave it (its snapshot is
+ *  then the earlier commit's, which the server reads past and rebuilds). Its commit. */
+function commitToMain(repo, files, message = "learned") {
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), text);
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", message]);
-  if (snap) resnapSync(repo);
   return git(repo, ["rev-parse", "main"]);
 }
 
@@ -100,7 +99,7 @@ test("a new agent with learning on: its first run makes its folder, main checked
   assert.equal(git(repo, ["symbolic-ref", "HEAD"]), "refs/heads/main");
   assert.equal(git(repo, ["rev-list", "--count", "main"]), "1");
   assert.equal(git(repo, ["log", "-1", "--format=%an <%ae>", "main"]), "agentrun-serve <serve@agentrun.invalid>");
-  assert.equal(git(repo, ["ls-tree", "-r", "--name-only", "main"]), "", "nothing learned yet");
+  assert.equal(git(repo, ["ls-tree", "-r", "--name-only", "main"]), ".agentrun/snapshot.json", "nothing learned yet");
   assert.equal(git(repo, ["status", "--porcelain"]), "");
   assert.deepEqual(readdirSync(agentFolderOf(data, "fresh")).sort(), ["learning", "runs"], "its learning folder beside its runs");
   assert.deepEqual(await pinOf({ data }, runId), { seed: git(repo, ["rev-parse", "main"]) });
@@ -262,7 +261,7 @@ test("two agents whose ids differ only in case: each has its own learning folder
   // The other's folder is a new one: one host commit holding nothing, and its run learned nothing of Twin's.
   const repo = repoOf(data, "twin");
   assert.equal(git(repo, ["rev-list", "--count", "main"]), "1");
-  assert.equal(git(repo, ["ls-tree", "-r", "--name-only", "main"]), "");
+  assert.equal(git(repo, ["ls-tree", "-r", "--name-only", "main"]), ".agentrun/snapshot.json");
   assert.equal(learnedIn(other.prompt), NOTHING_YET, other.prompt);
   assert.ok(!other.prompt.includes("Answer in tables"), other.prompt);
   assert.notEqual((await pinOf({ data }, other.runId)).seed, sha);
@@ -381,7 +380,7 @@ test("a symbolic link at learning/corrections.md, there before the agent's first
   symlinkSync(join(target, "kept"), join(repoOf(data, "linked"), "corrections.md"));
   const run = await ran(api, "linked");
   assert.equal(learnedIn(run.prompt), NOTHING_YET, run.prompt);
-  assert.equal(git(repoOf(data, "linked"), ["ls-tree", "-r", "--name-only", "main"]), "", "main names no corrections.md");
+  assert.equal(git(repoOf(data, "linked"), ["ls-tree", "-r", "--name-only", "main"]), ".agentrun/snapshot.json", "main names no corrections.md");
   assert.deepEqual(readdirSync(target), ["kept"], "nothing is made where the link points");
   assert.equal(readFileSync(join(target, "kept"), "utf8"), "kept\n", "nothing is written through the link");
 });

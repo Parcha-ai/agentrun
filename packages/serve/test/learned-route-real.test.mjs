@@ -16,7 +16,7 @@ import { agentFolderOf } from "../dist/files.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { entriesOf, git, resnap } from "./learn-support.mjs";
+import { entriesOf, git } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
@@ -38,7 +38,6 @@ async function folderWith(data, id) {
   }
   git(repo, ["add", "--", ...Object.keys(flowFiles)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
 }
 /** The owner's answer to an approval, signed in on `server` (`first`: the setup that makes the owner). */
 async function owner(server, first) {

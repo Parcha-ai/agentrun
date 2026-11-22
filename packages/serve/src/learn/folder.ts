@@ -1,54 +1,38 @@
-// The agent's learning folder through its Workspace: the one way serve reads and writes it. The folder is a git
-// repository in the agent's own workspace (a local folder, or the owner's Archil disk), never touched with git here:
-// - Every write to main is ONE exec of the checked-in script (learning.sh), one hold of the folder: a person's edit,
-//   create, retire, approve or restore and a run's merge alike (commitChange; learn/commit.ts learningCommit is the
-//   API callers use), and the folder's first commit
-//   (learningInit). The script is written into the folder once per version, `.agentrun/learning-<sha8>.sh`, and run
-//   there: an Archil exec takes one command line of bounded length, so its text never travels in argv.
-// - This side computes everything it can: the tree's changes, the commit's message and time, the front matter, each
-//   file's history and order, the log, and so the whole next snapshot (nextSnapshot), from the snapshot the write read
-//   and the change. The script does the git plumbing, the file writes and the atomic swap: the commit by compare and
-//   swap on main (a lost race exits 3 and writes nothing), the working tree brought in line, a merge's diff file, and
-//   `.agentrun/snapshot.json` last, by a temporary name and a move.
-// - Every read is `.agentrun/snapshot.json`, the working-tree bodies and `.agentrun/diffs/<run>.json` through the file
-//   API: no git, no exec. A body is checked against the snapshot's oid (git's blob id of its bytes); a mismatch reads
-//   the snapshot again and tries once more, and a second is FolderBusy (a write is in flight: try again).
-// - A snapshot that is not main's (a write that stopped between its compare and swap and its snapshot, or a hand commit
-//   in a local folder) is rebuilt from main whole (learningRepair: the script's read, then its snapshot op), the next
-//   time a write finds main moved under it.
-// The snapshot's shape is v1: what the learning routes and a run's seed read. The folder holds the owner's
-// corrections (corrections.md, served whole), the compiled workflows (workflows/<name>/) and the host's audit ledger
-// (audits.jsonl, never served to a run), nothing else.
-import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
-import {
-  isWorkspaceError, type LearningPlace as OneLearningPlace, type LearningWorkspace as OneLearningWorkspace,
-  learningWorkspace as oneLearningWorkspace, type Workspace, WorkspaceError,
-} from "../workspace/index.js";
+// The agent's learning through its store (learn/store.ts LearningStore): the one way serve reads and writes it. The
+// store is a git history of files on main (the local folder, or code.storage); this side computes everything on top:
+// - Every write to main is ONE save on the store, by compare and swap on the main it read: a person's edit, create,
+//   retire, approve or restore, a run's merge and the host's own book-keeping alike (commitChange; learn/commit.ts
+//   learningCommit is the API callers use), and the store's first commit (learningInit).
+// - This side computes the tree's changes, the commit's message and time, the front matter, each file's history and
+//   order, the log, and so the whole next snapshot (nextSnapshot), from the snapshot the write read and the change. The
+//   snapshot is committed with the change, `.agentrun/snapshot.json`, its own commit named by a placeholder (a commit
+//   can't hold its own id) and its parent named outright.
+// - Every read is at a commit: main's snapshot (read once a commit, then kept), and the bodies it names (read at that
+//   commit, checked against the snapshot's blob id, then kept by it). A commit's snapshot that does not name its
+//   commit's parent (a commit by a person's own hand in a local folder, which left the snapshot as it was) is rebuilt
+//   from the commit whole and its history (snapshotOfRead).
+// - A run's merge (its round) leaves its marker in its commit (.agentrun/runs/<key>), and its diff is that commit's
+//   (runMergeOf): never written, never out of step.
+// The snapshot's shape is v1: what the learning routes and a run's seed read. The store holds the owner's corrections
+// (corrections.md, served whole), the compiled workflows (workflows/<name>/) and the host's audit ledger (audits.jsonl,
+// never served to a run), nothing else but the host's folder.
+import { createHash } from "node:crypto";
 import { CORRECTIONS_FILE } from "./corrections.js";
+import { COMMIT, HOST_DIR, type LearningStore, MARKER_KEY, runMarker, type StoreCommit, type StoreFile } from "./store.js";
 import { learnedFront, learnedStatus, retiredFrom, WORKFLOW_NAME, WORKFLOWS_DIR } from "./workflow-draft.js";
-import { held, heldLearningFolder } from "../runner/held.js";
 
-/** The host's folder inside the learning folder: the snapshot, the diffs and the script. Never learned, never seeded. */
-export const HOST_DIR = ".agentrun";
 export const SNAPSHOT_FILE = `${HOST_DIR}/snapshot.json`;
-export const DIFFS_DIR = `${HOST_DIR}/diffs`;
-/** The audit ledger at the folder's top (learn/audit.ts): one JSON row per line. */
+/** The audit ledger at the store's top (learn/audit.ts): one JSON row per line. */
 export const AUDITS_FILE = "audits.jsonl";
 /** The most changes the snapshot's log keeps, newest first; `log_more` says older exist. */
 export const LOG_KEEP = 200;
 /** A file main holds over this is no learned file: a workflow's file is at most 16 KB (check.ts CAPS.file). */
 export const FILE_CAP = 1 << 20;
-/** A diff's file whose patch is larger than this is withheld as too large (learning.sh PATCH_CAP). */
-export const PATCH_CAP = 64 * 1024;
-/** How long one script run may take: a hung git would hold the folder. Archil's own cap is 295 s. */
-const SCRIPT_TIMEOUT_MS = 60_000;
-/** How many times a write is computed again on a main that moved under it, or a body that changed as it was read. */
+/** How many times a write is computed again on a main that moved under it. */
 const WRITE_TRIES = 3;
-const IDENTITY = { name: "agentrun-serve", email: "serve@agentrun.invalid" };
-/** The subject of the folder's first commit, the host's: neither a person's change nor a run's. */
+/** The subject of the store's first commit, the host's: neither a person's change nor a run's. */
 const INIT_SUBJECT = "host: the agent's learning folder";
-/** What stands for the new main in the snapshot the script writes: two U+0001, which JSON never writes raw. */
+/** What stands for the commit that holds a snapshot, in it: two U+0001, which JSON never writes raw. */
 const PLACEHOLDER = "\u0001M\u0001";
 const ESCAPED_PLACEHOLDER = JSON.stringify(PLACEHOLDER).slice(1, -1);
 const PERSON_KINDS = ["approved", "edited", "created", "retired", "restored"] as const;
@@ -84,7 +68,7 @@ export type Snapshot = {
   workflows: SnapLearned[];
   log: SnapChange[]; log_more: boolean;
 };
-/** A run's merge as `.agentrun/diffs/<run>.json` keeps it: its commit, its parent, and each file's patch. */
+/** A run's merge (its round), as its commit holds it: its key, its commit, its parent, and each file's patch. */
 export type RunDiff = {
   v: 1; run: string; merge: string; parent: string;
   files: ({ path: string; status: "added" | "modified" | "deleted"; patch: string } | { path: string; status: "added" | "modified" | "deleted"; withheld: "too_large" })[];
@@ -148,7 +132,8 @@ const isChange = (commit: CommitInfo) => `${commit.subject}\n${commit.body}`.spl
 const byName = (a: SnapLearned, b: SnapLearned) => byBytes(a.name, b.name);
 
 // ---------------------------------------------------------------------------------------------------------------------
-// A snapshot from main whole (the script's `read`): a folder whose snapshot is not main's.
+// ---------------------------------------------------------------------------------------------------------------------
+// A snapshot from a commit whole: one whose committed snapshot is not its own.
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 const textOf = (bytes: Uint8Array | undefined): string | undefined => {
@@ -160,65 +145,34 @@ const textOf = (bytes: Uint8Array | undefined): string | undefined => {
   }
 };
 
-/** `git log -z --name-only`'s records, each its header (as the format wrote it) and the files it changed. */
-const recordsOf = (out: string) => out.split("\x1e").slice(1).map((record) => {
-  const end = record.indexOf("\0");
-  return { head: record.slice(0, end < 0 ? undefined : end), files: end < 0 ? [] : record.slice(end + 1).split("\0").map((file) => file.replace(/^\n/, "")).filter(Boolean) };
-});
-
 type TreeEntry = { mode: string; type: string; oid: string; bytes: number; path: string };
+/** A commit read whole: its tree (no host path), its first-parent history with the paths each commit changed (no host
+ *  path), and its blobs by id. */
+type WholeRead = { main: string | undefined; tree: TreeEntry[]; records: { commit: CommitInfo; sha: string; files: string[] }[]; blobs: Map<string, Buffer> };
 
-/** What the script's `read` printed: main, its tree, its log and its blobs. Undefined main for a folder with none. */
-/** A commit's time as git's %cI gives it (its own offset, "+00:00", "+02:00" or "Z", by git's version and the
- *  committer's zone), in the one form a snapshot keeps: UTC in whole seconds, ending "Z", as nextSnapshot writes it, so
- *  a snapshot rebuilt from git and one built incrementally agree. Text that is no time is kept as it is. */
+/** A commit's time as a store gives it (git's %cI, its own offset, "+00:00", "+02:00" or "Z"), in the one form a
+ *  snapshot keeps: UTC in whole seconds, ending "Z", as nextSnapshot writes it, so a snapshot rebuilt from history and
+ *  one built incrementally agree. Text that is no time is kept as it is. */
 export function commitTime(text: string): string {
   const ms = Date.parse(text);
   return Number.isNaN(ms) ? text : new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-export function parseRead(out: Uint8Array): { main: string | undefined; tree: TreeEntry[]; records: { commit: CommitInfo; sha: string; files: string[] }[]; blobs: Map<string, Buffer> } {
-  const buf = Buffer.from(out);
-  const end = buf.indexOf(10);
-  const head = /^agentrun-read 1 (none|[0-9a-f]{40}|[0-9a-f]{64}) (\d+) (\d+) (\d+)$/.exec(buf.subarray(0, end < 0 ? 0 : end).toString("utf8"));
-  if (!head) throw new Error("the learning script's read is not one this server reads");
-  const [treeLen, logLen, blobLen] = [Number(head[2]), Number(head[3]), Number(head[4])];
-  let at = end + 1;
-  const part = (len: number) => {
-    const slice = buf.subarray(at, at + len);
-    if (slice.length !== len) throw new Error("the learning script's read is cut short");
-    at += len;
-    return slice;
-  };
-  const tree = part(treeLen).toString("utf8").split("\0").filter(Boolean).map((entry): TreeEntry => {
-    const tab = entry.indexOf("\t");
-    const [mode = "", type = "", oid = "", size = ""] = entry.slice(0, tab).split(/\s+/);
-    return { mode, type, oid, bytes: Number(size) || 0, path: entry.slice(tab + 1) };
-  });
-  const records = recordsOf(part(logLen).toString("utf8")).map(({ head: line, files }) => {
-    const [sha = "", cI = "", subject = "", body = "", runId = "", changedBy = "", approvedVia = ""] = line.split("\x1f");
-    return { sha, files, commit: { at: commitTime(cI), subject, body, runId, changedBy, approvedVia } };
-  });
-  const blobs = new Map<string, Buffer>();
-  const raw = part(blobLen);
-  for (let i = 0; i < raw.length;) {
-    const nl = raw.indexOf(10, i);
-    if (nl < 0) break;
-    const [oid = "", type = "", size = ""] = raw.subarray(i, nl).toString("utf8").split(" ");
-    if (type === "missing") {
-      i = nl + 1;
-      continue;
-    }
-    const length = Number(size);
-    blobs.set(oid, raw.subarray(nl + 1, nl + 1 + length));
-    i = nl + 1 + length + 1;
-  }
-  return { main: head[1] === "none" ? undefined : head[1], tree, records, blobs };
+/** A commit as the snapshot reads it, from its message: its subject, its body and its last paragraph's trailers. */
+function infoOf(commit: StoreCommit): CommitInfo {
+  const message = commit.message.replace(/\r\n/g, "\n");
+  const nl = message.indexOf("\n");
+  const subject = (nl < 0 ? message : message.slice(0, nl)).trim();
+  const body = nl < 0 ? "" : message.slice(nl + 1).replace(/^\n+/, "");
+  const last = body.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean).at(-1) ?? "";
+  const trailer = (key: string) => last.split("\n").filter((line) => line.startsWith(`${key}: `)).map((line) => line.slice(key.length + 2).trim()).join(",");
+  return { at: commitTime(commit.at), subject, body, runId: trailer("Run-Id"), changedBy: trailer("Changed-By"), approvedVia: trailer("Approved-Via") };
 }
+const isHostPath = (path: string) => path === HOST_DIR || path.startsWith(`${HOST_DIR}/`);
 
-/** The snapshot of main as the script's `read` shows it: every item from the tree and its blobs, each file's history
- *  and order from main's first-parent log, and the newest LOG_KEEP changes. */
-export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | undefined {
+/** The snapshot of a commit read whole: every item from its tree and its blobs, each file's history and order from its
+ *  first-parent log, and the newest LOG_KEEP changes. */
+export function snapshotOfRead(read: WholeRead): Snapshot | undefined {
   const { main, tree, records, blobs } = read;
   if (!main || !records.length) return undefined;
   const order = new Map<string, number>();
@@ -288,14 +242,14 @@ function learnedItem(name: string, files: SnapFile[], links: readonly string[], 
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The next snapshot, from the one a write read and its change: what the script writes once the commit lands.
+// The next snapshot, from the one a write read and its change: what is committed with the change.
 
-/** A change to the folder's main: what a person or a run's merge writes. Each path is the folder's, relative, never
+/** A change to the store's main: what a person or a run's merge writes. Each path is the store's, relative, never
  *  under `.agentrun/`. `absent`: paths that must not be on main, as git holds it (any file, any mode); `same`: paths
- *  that must be on main as they are on another commit (a run's seed). The script checks both on main as it commits. */
+ *  that must be on main as they are on another commit (a run's seed). The store checks both on main as it commits. */
 export type FolderChange = {
-  /** A run's merge names the run and its reason, and its `round` past the first (a follow-up's correction): its diff is
-   *  kept under runDiffKey. The host's own book-keeping (an audit row) names what it kept. */
+  /** A run's merge names the run and its reason, and its `round` past the first (a follow-up's correction): its commit
+   *  is marked with runDiffKey. The host's own book-keeping (an audit row) names what it kept. */
   by: { person: PersonKind; file: string; approved?: boolean } | { run: string; reason: string; round?: number } | { host: string };
   writes: readonly { path: string; text: string }[];
   deletes?: readonly string[];
@@ -305,6 +259,9 @@ export type FolderChange = {
    *  correction alone included), named only when this folder held it as the run's end began (commit.ts mustHold): one a
    *  reset of the agent's learning removed refuses the merge. */
   seed?: string;
+  /** A purge's scrub of a run's text: the key it scrubs (runDiffKey), marked in its commit, so that key never merges
+   *  after, and the scrub itself lands once. */
+  purged?: string;
 };
 
 /** A commit's message and trailers, as git keeps them: a person's names their action and the file, with Changed-By (and
@@ -343,7 +300,7 @@ function oidsOf(snapshot: Snapshot | undefined): Map<string, string> {
 }
 
 /** The snapshot once `change` is committed on `before` (none: the folder's first commit) at `seconds`, its main and its
- *  log entry's commit the placeholder the script puts the new main in. Also which paths changed, as git's diff of the
+ *  log entry's commit the placeholder its commit is read back as. Also which paths changed, as git's diff of the
  *  commit lists them. */
 export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderChange, "absent" | "same"> | undefined, seconds: number): { snapshot: Snapshot; changed: string[] } {
   const message = messageOf(change?.by);
@@ -394,82 +351,33 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
   return { snapshot, changed };
 }
 
-/** The snapshot with its placeholder put for `main`: what the script wrote, for a caller that keeps going. */
+/** The snapshot with its placeholder put for `main`: what the commit holds, as a reader reads it. */
 const withMain = (snapshot: Snapshot, main: string): Snapshot => JSON.parse(JSON.stringify(snapshot).replaceAll(ESCAPED_PLACEHOLDER, main)) as Snapshot;
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The folder's Workspace is the one learningWorkspace (workspace/learning-workspace.ts): the local folder under the
-// data directory, made by the first write (a read makes nothing: a folder not made reads as no main yet, NOT_FOUND),
-// each level on the way checked, a link there refused as ESCAPE naming it (folderFailure reads it as a link); or the
-// claim's Archil disk at learningKey, whose end() sweeps the exec spill. folderTestHooks.workspace stands in for it in
-// tests.
+// Reading: a commit's snapshot, and the bodies it names, at that commit.
 
-/** Where an agent's learning folder is: the local folder under the data directory, or the claim's Archil disk. */
-export type LearningPlace = OneLearningPlace;
-/** The folder's Workspace, and its end: called in a finally after every use (on Archil it sweeps the exec spill). */
-export type LearningFolder = OneLearningWorkspace;
-
-/** Agent `place.agentId`'s learning folder as a Workspace: the one learningWorkspace, or the test's stand-in. */
-export function learningWorkspace(place: LearningPlace): LearningFolder {
-  if (folderTestHooks.workspace) return folderTestHooks.workspace(place);
-  // A run's own process never opens a learning folder itself: its runner does, the claim's agent's (held.ts).
-  if (held()) return heldLearningFolder();
-  return oneLearningWorkspace(place);
-}
-
-/** What a learning folder's script run is, as a runner checks one a run's process asks of it (run-child-host.ts): its
- *  argv, the script's own environment, its deadline. */
-export const LEARNING_SCRIPT = { file: (): string => SCRIPT_FILE, env: (): Record<string, string> => scriptEnv(), timeoutMs: (): number => SCRIPT_TIMEOUT_MS, ensure: (ws: Workspace): Promise<void> => ensureScript(ws) };
-
-/** A learning folder this server cannot read or write: a link in it (`link`, its words naming it), or a backend that
- *  cannot answer. Fails closed: nothing learned is read, nothing is written. */
-export class FolderUnreadable extends Error {
-  readonly link: boolean;
-  constructor(link: boolean, message: string) {
-    super(message);
-    this.name = "FolderUnreadable";
-    this.link = link;
-  }
-}
-
-/** A workspace failure as the folder's: ESCAPE (a link below the root, Local) or a read of a link (Archil's file API:
- *  UNAVAILABLE naming a symbolic link) in words that name the link; any other UNAVAILABLE as the folder unreadable. */
-export function folderFailure(error: unknown): unknown {
-  if (error instanceof FolderUnreadable) return error;
-  if (isWorkspaceError(error, "ESCAPE") || (isWorkspaceError(error, "UNAVAILABLE") && /symbolic link/.test(error.message))) {
-    return new FolderUnreadable(true, `a link in the learning folder at ${(error as WorkspaceError).path || "its root"} can't be followed, so nothing learned is read or written; remove the link`);
-  }
-  if (isWorkspaceError(error, "UNAVAILABLE")) return new FolderUnreadable(false, `the agent's learning folder can't be read right now: ${(error as WorkspaceError).message}`);
-  return error;
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// Reading: the snapshot and the bodies it names, through the file API alone.
-
-/** A body that was not the snapshot's blob as it was read twice: a write is in flight. Routes answer 503. */
+/** A store that kept moving under a write (WRITE_TRIES writes in a row lost their compare and swap): try again. Routes
+ *  answer 503. */
 export class FolderBusy extends Error {
   constructor() {
     super("the agent's learning folder is being written: try again");
     this.name = "FolderBusy";
   }
 }
-/** A body that is not the snapshot's blob: the snapshot is read again once. */
-class Mismatch extends Error {}
 
-const isOidField = (value: unknown) => typeof value === "string" && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(value);
-/** The folder's snapshot, or undefined when there is none (no main yet: the agent never learned). One that does not
- *  read as v1 throws. */
-export async function readSnapshot(ws: Workspace): Promise<Snapshot | undefined> {
-  let bytes: Uint8Array;
-  try {
-    bytes = await ws.read(SNAPSHOT_FILE);
-  } catch (error) {
-    if (isWorkspaceError(error, "NOT_FOUND")) return undefined;
-    throw folderFailure(error);
+const isOidField = (value: unknown) => typeof value === "string" && COMMIT.test(value);
+
+/** Snapshots read, by store and commit: a commit's never changes. */
+const snapshots = new Map<string, Snapshot>();
+const SNAPSHOTS_KEPT = 256;
+function keepSnapshot(key: string, snapshot: Snapshot): void {
+  snapshots.delete(key);
+  snapshots.set(key, snapshot);
+  for (const old of snapshots.keys()) {
+    if (snapshots.size <= SNAPSHOTS_KEPT) break;
+    snapshots.delete(old);
   }
-  const value = JSON.parse(Buffer.from(bytes).toString("utf8")) as Snapshot;
-  if (value?.v !== 1 || !isOidField(value.main) || !Array.isArray(value.workflows) || !Array.isArray(value.log) || (value.corrections !== undefined && !isOidField(value.corrections?.oid)) || (value.audits !== undefined && !isOidField(value.audits?.oid))) throw new Error("the learning folder's snapshot is not one this server reads (v1)");
-  return { v: 1, main: value.main, at: value.at, ...(value.corrections ? { corrections: value.corrections } : {}), ...(value.audits ? { audits: value.audits } : {}), workflows: value.workflows, log: value.log, log_more: value.log_more };
 }
 
 /** Bodies already checked, by blob id: an oid names its bytes, so one read is good for every snapshot naming it. */
@@ -477,7 +385,7 @@ const bodies = new Map<string, string>();
 let bodyBytes = 0;
 const BODY_CACHE = 16 << 20;
 function keep(oid: string, text: string): void {
-  if (text.length > FILE_CAP) return;
+  if (text.length > FILE_CAP || bodies.has(oid)) return;
   bodies.set(oid, text);
   bodyBytes += text.length;
   for (const [old, held] of bodies) {
@@ -487,339 +395,292 @@ function keep(oid: string, text: string): void {
   }
 }
 
-/** Tests only: the bodies already checked, forgotten, so the next read of each goes to the folder. */
+/** Tests only: the snapshots and bodies already read, forgotten, so the next read of each goes to the store. */
 export function forgetBodies(): void {
   bodies.clear();
   bodyBytes = 0;
+  snapshots.clear();
 }
 
-/** File `path`'s bytes, which must be blob `oid` (else Mismatch): through the file API, never git. */
-async function bytesOf(ws: Workspace, path: string, oid: string): Promise<Buffer> {
-  let bytes: Uint8Array;
+/** The snapshot `file` holds (committed with commit `commit`, whose parent is `parent`), or undefined when it is not
+ *  that commit's: none, not v1, or written for another parent (a commit made by hand since). */
+function keptSnapshot(file: StoreFile | undefined, commit: string, parent: string | null): Snapshot | undefined {
+  if (!file) return undefined;
+  let value: (Snapshot & { parent?: unknown }) | undefined;
   try {
-    bytes = await ws.read(path);
-  } catch (error) {
-    if (isWorkspaceError(error, "NOT_FOUND")) throw new Mismatch();
-    throw folderFailure(error);
+    value = JSON.parse(file.body.toString("utf8").replaceAll(ESCAPED_PLACEHOLDER, commit)) as Snapshot & { parent?: unknown };
+  } catch {
+    return undefined;
   }
-  if (blobOid(bytes) !== oid) throw new Mismatch();
-  return Buffer.from(bytes);
+  if (value?.v !== 1 || value.parent !== parent || value.main !== commit || !Array.isArray(value.workflows) || !Array.isArray(value.log) || (value.corrections !== undefined && !isOidField(value.corrections?.oid)) || (value.audits !== undefined && !isOidField(value.audits?.oid))) return undefined;
+  return { v: 1, main: value.main, at: value.at, ...(value.corrections ? { corrections: value.corrections } : {}), ...(value.audits ? { audits: value.audits } : {}), workflows: value.workflows, log: value.log, log_more: value.log_more };
 }
 
-/** File `path`'s text, which must be blob `oid` in UTF-8 (else Mismatch): through the file API, never git. */
-async function bodyOf(ws: Workspace, path: string, oid: string): Promise<string> {
-  const known = bodies.get(oid);
-  if (known !== undefined) return known;
-  const text = textOf(await bytesOf(ws, path, oid));
-  if (text === undefined) throw new Mismatch();
-  keep(oid, text);
-  return text;
+/** Commit `commit` read whole from `store`: its tree and blobs, its history and what each commit changed. */
+async function wholeRead(store: LearningStore, commit: string): Promise<WholeRead | undefined> {
+  const [files, history] = await Promise.all([store.read(commit), store.log(commit)]);
+  if (!files || !history) return undefined;
+  const blobs = new Map<string, Buffer>();
+  const tree: TreeEntry[] = [];
+  for (const file of files) {
+    if (isHostPath(file.path)) continue;
+    const oid = blobOid(file.body);
+    blobs.set(oid, file.body);
+    tree.push({ mode: file.mode, type: "blob", oid, bytes: file.body.length, path: file.path });
+  }
+  const records = [];
+  for (const one of history) {
+    const changed = one.files ?? (await store.diff(one.sha))?.map((file) => file.path) ?? [];
+    records.push({ commit: infoOf(one), sha: one.sha, files: changed.filter((path) => !isHostPath(path)) });
+  }
+  return { main: commit, tree, records, blobs };
 }
 
-/** What a reader is given: the snapshot (undefined: no main yet) and the bodies it names, each checked against it, as
- *  text (`body`) or bytes (`bytes`). */
-export type FolderRead = { snapshot: Snapshot | undefined; body: (path: string, oid: string) => Promise<string>; bytes: (path: string, oid: string) => Promise<Buffer> };
-const folderRead = (ws: Workspace, snapshot: Snapshot | undefined): FolderRead => ({ snapshot, body: (path, oid) => bodyOf(ws, path, oid), bytes: (path, oid) => bytesOf(ws, path, oid) });
-
-/** `read` over the folder's snapshot and its bodies: once, and on a body that is not the snapshot's, once more on the
- *  snapshot read again; a second mismatch is FolderBusy. No git and no exec: the file API alone. */
-export async function readLearning<T>(ws: Workspace, read: (folder: FolderRead) => Promise<T>): Promise<T> {
-  for (let tries = 0; ; tries++) {
-    const snapshot = await readSnapshot(ws);
-    try {
-      return await read(folderRead(ws, snapshot));
-    } catch (error) {
-      if (!(error instanceof Mismatch)) throw error;
-      if (tries > 0) throw new FolderBusy();
+/** Commit `commit`'s snapshot in `store`: the one it holds when it is its own, else rebuilt from it whole. Undefined
+ *  when the store does not hold the commit. Kept by commit. */
+async function snapshotOf(store: LearningStore, commit: string): Promise<Snapshot | undefined> {
+  const key = `${store.id}\0${commit}`;
+  const known = snapshots.get(key);
+  if (known) return known;
+  const [kept, own] = await Promise.all([store.read(commit, [SNAPSHOT_FILE]), store.log(commit, { limit: 1 })]);
+  if (!kept || !own?.[0]) return undefined;
+  let snapshot = keptSnapshot(kept[0], commit, own[0].parent);
+  if (!snapshot) {
+    const whole = await wholeRead(store, commit);
+    if (!whole) return undefined;
+    for (const entry of whole.tree) {
+      const text = entry.bytes <= FILE_CAP ? textOf(whole.blobs.get(entry.oid)) : undefined;
+      if (text !== undefined && entry.path !== AUDITS_FILE) keep(entry.oid, text);
     }
+    snapshot = snapshotOfRead(whole);
   }
+  if (snapshot) keepSnapshot(key, snapshot);
+  return snapshot;
 }
 
-/** Run `run`'s merge as its diff file keeps it, or undefined when the folder has none (it never merged here). */
-/** The key a run's merge keeps its diff under (`.agentrun/diffs/<key>.json`), and that tells a merge already made: the run's
- *  id for its first round, `<run>.r<round>` for each later one (a follow-up's look-back), so each round merges once. */
+/** The store's main snapshot, or undefined when it has none (no main yet: the agent never learned). */
+export async function readSnapshot(store: LearningStore): Promise<Snapshot | undefined> {
+  const main = await store.head();
+  return main ? snapshotOf(store, main) : undefined;
+}
+
+/** What a reader is given: the snapshot (undefined: no main yet) and the bodies it names, at its commit, each checked
+ *  against it, as text (`body`) or bytes (`bytes`). */
+export type FolderRead = { snapshot: Snapshot | undefined; body: (path: string, oid: string) => Promise<string>; bytes: (path: string, oid: string) => Promise<Buffer> };
+
+/** The bodies `snapshot` names (corrections.md and each draft's files, never the audit ledger), each under FILE_CAP. */
+function namedBodies(snapshot: Snapshot): { path: string; oid: string }[] {
+  const out: { path: string; oid: string }[] = [];
+  if (snapshot.corrections && snapshot.corrections.bytes <= FILE_CAP) out.push(snapshot.corrections);
+  for (const item of snapshot.workflows) for (const file of item.files) if (file.bytes <= FILE_CAP) out.push(file);
+  return out;
+}
+
+function folderRead(store: LearningStore, snapshot: Snapshot | undefined): FolderRead {
+  /** Every body the snapshot names that is not kept yet, read at once in one store read: what a reader of one mostly
+   *  reads next. */
+  let fetched: Promise<void> | undefined;
+  const prefetch = () => (fetched ??= (async () => {
+    if (!snapshot) return;
+    const missing = namedBodies(snapshot).filter(({ oid }) => !bodies.has(oid));
+    if (!missing.length) return;
+    for (const file of (await store.read(snapshot.main, missing.map(({ path }) => path))) ?? []) {
+      const text = textOf(file.body);
+      if (text !== undefined) keep(blobOid(file.body), text);
+    }
+  })());
+  const bytesOf = async (path: string, oid: string): Promise<Buffer> => {
+    if (!snapshot) throw new Error(`the agent's learning holds no ${path}: it has no main yet`);
+    const file = (await store.read(snapshot.main, [path]))?.find((one) => one.path === path);
+    if (!file || blobOid(file.body) !== oid) throw new Error(`the agent's learning at ${snapshot.main} holds no ${path} as its snapshot names it`);
+    return file.body;
+  };
+  return {
+    snapshot,
+    body: async (path, oid) => {
+      const known = bodies.get(oid);
+      if (known !== undefined) return known;
+      await prefetch().catch(() => undefined);
+      const fetchedNow = bodies.get(oid);
+      if (fetchedNow !== undefined) return fetchedNow;
+      const text = textOf(await bytesOf(path, oid));
+      if (text === undefined) throw new Error(`the agent's learning holds ${path}, which is not UTF-8 text`);
+      keep(oid, text);
+      return text;
+    },
+    bytes: bytesOf,
+  };
+}
+
+/** `read` over the store's main snapshot and its bodies. */
+export async function readLearning<T>(store: LearningStore, read: (folder: FolderRead) => Promise<T>): Promise<T> {
+  return read(folderRead(store, await readSnapshot(store)));
+}
+
+/** The key a run's merge (its round) marks its commit with (`.agentrun/runs/<key>`), and that tells a merge already
+ *  made: the run's id for its first round, `<run>.r<round>` for each later one (a follow-up's look-back), so each round
+ *  merges once. */
 export const runDiffKey = (runId: string, round = 1): string => (round > 1 ? `${runId}.r${round}` : runId);
 
-export async function readRunDiff(ws: Workspace, run: string): Promise<RunDiff | undefined> {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(run)) return undefined;
-  let bytes: Uint8Array;
-  try {
-    bytes = await ws.read(`${DIFFS_DIR}/${run}.json`);
-  } catch (error) {
-    if (isWorkspaceError(error, "NOT_FOUND")) return undefined;
-    throw folderFailure(error);
-  }
-  const diff = JSON.parse(Buffer.from(bytes).toString("utf8")) as RunDiff;
-  if (diff?.v !== 1 || diff.run !== run || !isOidField(diff.merge) || !isOidField(diff.parent) || !Array.isArray(diff.files)) throw new Error(`the learning folder's diff of ${run} is not one this server reads (v1)`);
-  return diff;
-}
+/** Merges' diffs, by store and commit: a commit's never changes. */
+const diffs = new Map<string, RunDiff["files"]>();
 
-/** Run `runId`'s merge of `round` (readRunDiff), or undefined when it never merged here. A stop between a merge's commit
- *  and its diff file leaves main and the run's ref moved with no diff: when main's log names the run and the round has no
- *  diff, the script's `merged` writes the diff from the run's ref (one exec), and it is read. */
-export async function runMergeOf(ws: Workspace, runId: string, round = 1): Promise<RunDiff | undefined> {
+/** Run `runId`'s merge of `round`: the commit that marked it on main, and that commit's diff (no host path). Undefined
+ *  when it never merged in this store. */
+export async function runMergeOf(store: LearningStore, runId: string, round = 1): Promise<RunDiff | undefined> {
   const key = runDiffKey(runId, round);
-  const kept = await readRunDiff(ws, key);
-  if (kept || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(key)) return kept;
-  const named = (await readSnapshot(ws))?.log.some(({ by }) => "run" in by && by.run === runId);
-  if (!named) return undefined;
-  const done = await runScript(ws, ["merged", key]);
-  if (done.code === 1) return undefined;
-  if (done.code !== 0) throw failed("merged", done);
-  return readRunDiff(ws, key);
+  if (!MARKER_KEY.test(key)) return undefined;
+  const main = await store.head();
+  if (!main) return undefined;
+  const merge = (await store.log(main, { path: runMarker(key), limit: 1 }))?.[0];
+  if (!merge) return undefined;
+  const cached = `${store.id}\0${merge.sha}`;
+  let files = diffs.get(cached);
+  if (!files) {
+    files = ((await store.diff(merge.sha)) ?? []).filter((file) => !isHostPath(file.path));
+    diffs.set(cached, files);
+    for (const old of diffs.keys()) {
+      if (diffs.size <= SNAPSHOTS_KEPT) break;
+      diffs.delete(old);
+    }
+  }
+  return { v: 1, run: key, merge: merge.sha, parent: merge.parent ?? "", files };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Writing: the script, one exec a write.
+// Writing: one save a write.
 
-/** The script, as checked in (learning.sh beside this file), and the name it is written under in the folder. */
-export const LEARNING_SH = readFileSync(new URL("./learning.sh", import.meta.url), "utf8");
-export const SCRIPT_FILE = `${HOST_DIR}/learning-${createHash("sha256").update(LEARNING_SH).digest("hex").slice(0, 8)}.sh`;
-
-/** Test seams, tests only: variables added to the script's environment (AGENTRUN_LEARNING_FAIL), each exec's argv, and
- *  the folder's Workspace in place of learningWorkspace's (a spy, or another backend). */
-export const folderTestHooks: { env?: Record<string, string>; exec?: (argv: readonly string[]) => void; workspace?: (place: LearningPlace) => LearningFolder } = {};
-
-/** The script's environment, whole: exec inherits nothing. */
-const scriptEnv = (): Record<string, string> => ({
-  PATH: "/usr/bin:/bin",
-  LC_ALL: "C",
-  GIT_CONFIG_NOSYSTEM: "1",
-  GIT_CONFIG_GLOBAL: "/dev/null",
-  GIT_OPTIONAL_LOCKS: "0",
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_AUTHOR_NAME: IDENTITY.name,
-  GIT_AUTHOR_EMAIL: IDENTITY.email,
-  GIT_COMMITTER_NAME: IDENTITY.name,
-  GIT_COMMITTER_EMAIL: IDENTITY.email,
-  ...folderTestHooks.env,
-});
-
-/** The script in the folder, written when this version of it is not there yet. */
-async function ensureScript(ws: Workspace): Promise<void> {
-  const there = await ws.read(SCRIPT_FILE).then((bytes) => Buffer.from(bytes).toString("utf8"), (error: unknown) => {
-    if (isWorkspaceError(error, "NOT_FOUND")) return undefined;
-    throw folderFailure(error);
-  });
-  if (there !== LEARNING_SH) await ws.write(SCRIPT_FILE, LEARNING_SH).catch((error: unknown) => { throw folderFailure(error); });
-}
-
-/** One run of the script: `op` and its arguments, `stdin`. Its exit code and output; a run that could not finish (its
- *  deadline, a signal) throws. */
-async function runScript(ws: Workspace, args: readonly string[], stdin?: Uint8Array): Promise<{ code: number; stdout: Buffer; stderr: string }> {
-  await ensureScript(ws);
-  const argv = ["sh", SCRIPT_FILE, ...args];
-  folderTestHooks.exec?.(argv);
-  const raw = await ws.exec(argv, { env: scriptEnv(), timeoutMs: SCRIPT_TIMEOUT_MS, ...(stdin ? { stdin } : {}) }).catch((error: unknown) => { throw folderFailure(error); });
-  // The port's ExecResult, in one line (code is renamed exitCode).
-  const result = { code: raw.code, stdout: raw.stdout, stderr: raw.stderr, timedOut: raw.timedOut, truncated: raw.truncated };
-  if (result.timedOut || result.code === null) throw new Error(`the learning script's ${args[0]} did not finish${result.timedOut ? ` in ${SCRIPT_TIMEOUT_MS / 1000} s` : ""}: ${result.stderr.trim().slice(0, 500)}`);
-  // A cut stdout is never parsed: the folder is unavailable for this call.
-  if (result.truncated) throw new FolderUnreadable(false, `the learning script's ${args[0]} said more than this server reads`);
-  return { code: result.code, stdout: Buffer.from(result.stdout), stderr: result.stderr };
-}
-const failed = (op: string, run: { code: number; stderr: string }) => new Error(`the learning script's ${op} failed (exit ${run.code}): ${run.stderr.trim().slice(0, 500)}`);
-
-/** A path a change may name: the folder's, plain (letters, digits, ".", "_", "-" and "/"), never `.git` or `.agentrun`. */
+/** A path a change may name: the store's, plain (letters, digits, ".", "_", "-" and "/"), never `.git` or `.agentrun`. */
 function checkPath(path: string): string {
   const parts = path.split("/");
   if (!/^[A-Za-z0-9._/-]+$/.test(path) || parts.some((part) => part === "" || part === "." || part === "..") || parts[0] === HOST_DIR || parts[0] === ".git") throw new Error(`${JSON.stringify(path)} is not a path a learning write names`);
   return path;
 }
+const checkCommit = (commit: string): string => {
+  if (!COMMIT.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
+  return commit;
+};
 
-/** The fast-import stream of `change` on `parent` (none: the first commit), committed on `ref` at `seconds`. */
-function importStream(ref: string, parent: string | undefined, writes: readonly { path: string; text: string }[], deletes: readonly string[], message: string, seconds: number): Buffer {
-  const parts: Buffer[] = [];
-  const add = (text: string) => parts.push(Buffer.from(text, "utf8"));
-  writes.forEach(({ text }, i) => {
-    const data = Buffer.from(text, "utf8");
-    add(`blob\nmark :${i + 1}\ndata ${data.length}\n`);
-    parts.push(data);
-    add("\n");
-  });
-  const who = `${IDENTITY.name} <${IDENTITY.email}> ${seconds} +0000`;
-  const body = Buffer.from(message, "utf8");
-  add(`commit ${ref}\nauthor ${who}\ncommitter ${who}\ndata ${body.length}\n`);
-  parts.push(body);
-  add(`\n${parent ? `from ${parent}\n` : ""}`);
-  for (const path of deletes) add(`D ${path}\n`);
-  writes.forEach(({ path }, i) => add(`M 100644 :${i + 1} ${path}\n`));
-  add("\ndone\n");
-  return Buffer.concat(parts);
+/** `snapshot` as committed with the change on `parent`: JSON, its own commit the placeholder. */
+function snapshotText(snapshot: Snapshot, parent: string | null): string {
+  const json = JSON.stringify({ ...snapshot, parent });
+  const expected = (snapshot.main === PLACEHOLDER ? 1 : 0) + (snapshot.log[0]?.commit === PLACEHOLDER ? 1 : 0);
+  if (json.split(ESCAPED_PLACEHOLDER).length - 1 !== expected) throw new Error("a learning text holds U+0001, which the learning snapshot never keeps");
+  return json;
 }
 
-/** The script's stdin: its header lines, a blank line, then what follows. */
-function stdinOf(header: readonly string[], rest: Buffer = Buffer.alloc(0)): Buffer {
-  return Buffer.concat([Buffer.from(`${header.join("\n")}\n\n`, "utf8"), rest]);
-}
-
-/** `snapshot` as one line of JSON for the script, its placeholder as the raw U+0001 pair the script replaces. */
-function snapshotLine(snapshot: Snapshot, placeholders: number): string {
-  const json = JSON.stringify(snapshot);
-  if (json.split("\\u0001").length - 1 !== placeholders * 2) throw new Error("a learning text holds U+0001, which the folder's snapshot never keeps");
-  return json.replaceAll(ESCAPED_PLACEHOLDER, PLACEHOLDER);
-}
-
-/** The most stdin one exec of the script is given: what both backends are verified to carry byte for byte. */
-export const STDIN_MAX = 2 * 1024 * 1024;
-/** A write whose exec would carry more than STDIN_MAX: refused whole, nothing run. */
+/** The most one write carries, its files and its snapshot together. */
+export const WRITE_MAX = 2 * 1024 * 1024;
+/** A write that would carry more than WRITE_MAX: refused whole, nothing saved. */
 export class FolderTooLarge extends Error {
   readonly bytes: number;
   constructor(bytes: number) {
-    super(`the write would hand the learning script ${bytes} bytes; one exec takes at most ${STDIN_MAX}`);
+    super(`the write would carry ${bytes} bytes; one write to the agent's learning takes at most ${WRITE_MAX}`);
     this.name = "FolderTooLarge";
     this.bytes = bytes;
   }
 }
 
-/** What one commit did: landed (its main and the snapshot written), stale (main is `main`, not the one it read:
- *  nothing was written), refused (a precondition failed on main: nothing was written), landed without its files
- *  brought in line (main moved, no snapshot written), or merged (the run, this round, merged already: its merge commit,
- *  nothing written). */
+/** What one commit did: landed (its main and snapshot), stale (main is `main`, not the one it read: nothing was
+ *  written), refused (a precondition failed on main: nothing was written), or merged (the run, this round, merged
+ *  already, or its key was purged: that commit, nothing written). */
 export type Committed =
   | { landed: true; main: string; snapshot: Snapshot }
   | { stale: true; main: string | undefined }
   | { refused: { absent: string[]; same: string[]; seed?: string } }
-  | { unaligned: true; main: string }
   | { merged: string };
 
 /**
- * One write to main, one exec of the script: `change` on the snapshot it was computed from (`base`: none for the
- * folder's first commit, `op` "init"). The commit moves main only from `base.main` (compare and swap); then the
- * working tree, a merge's diff file, and the next snapshot (nextSnapshot), last. Nothing is retried here: writeLearning
- * computes again on a main that moved.
+ * One write to main, one save on the store: `change` on the snapshot it was computed from (`base`: none for the
+ * store's first commit), with the next snapshot (nextSnapshot) in the same commit. The commit moves main only from
+ * `base.main` (compare and swap). Nothing is retried here: writeLearning computes again on a main that moved.
  */
-export async function commitChange(ws: Workspace, base: Snapshot | undefined, change: FolderChange | undefined): Promise<Committed> {
+export async function commitChange(store: LearningStore, base: Snapshot | undefined, change: FolderChange | undefined): Promise<Committed> {
   const seconds = Math.floor(Date.now() / 1000);
   const { snapshot, changed } = nextSnapshot(base, change, seconds);
-  // A change that changes nothing on main is no commit: main stays, and nothing is run.
+  // A change that changes nothing on main is no commit: main stays, and nothing is saved.
   if (base && change && !changed.length) return { landed: true, main: base.main, snapshot: base };
   const writes = change?.writes ?? [];
   for (const { path } of writes) checkPath(path);
   for (const path of [...(change?.deletes ?? []), ...(change?.absent ?? []), ...(change?.same ?? []).map(({ path }) => path)]) checkPath(path);
-  for (const commit of [...(change?.same ?? []).map(({ commit }) => commit), ...(change?.seed !== undefined ? [change.seed] : [])]) if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
-  const ref = `refs/agentrun/import-${randomBytes(8).toString("hex")}`;
+  for (const commit of [...(change?.same ?? []).map(({ commit }) => commit), ...(change?.seed !== undefined ? [change.seed] : [])]) checkCommit(commit);
+  const old = base?.main ?? null;
+  const kept = snapshotText(snapshot, old);
+  const bytes = writes.reduce((sum, { path, text }) => sum + Buffer.byteLength(path) + Buffer.byteLength(text, "utf8"), Buffer.byteLength(kept, "utf8"));
+  if (bytes > WRITE_MAX) throw new FolderTooLarge(bytes);
   const run = change && "run" in change.by ? runDiffKey(change.by.run, change.by.round) : undefined;
-  const header = [
-    `ref ${ref}`,
-    `snapshot ${snapshotLine(snapshot, snapshot.log[0]?.commit === PLACEHOLDER ? 2 : 1)}`,
-    ...(run ? changed.map((path) => `path ${path}`) : []),
-    ...(change?.absent ?? []).map((path) => `absent ${path}`),
-    ...(change?.same ?? []).map(({ commit, path }) => `same ${commit} ${path}`),
-    ...(change?.seed !== undefined ? [`seed ${change.seed}`] : []),
-  ];
-  const stream = importStream(ref, base?.main, writes, change?.deletes ?? [], messageOf(change?.by).message, seconds);
-  const args = base ? ["commit", base.main, ...(run ? [run] : [])] : ["init"];
-  const stdin = stdinOf(header, stream);
-  if (stdin.length > STDIN_MAX) throw new FolderTooLarge(stdin.length);
-  const result = await runScript(ws, args, stdin);
-  const said = result.stdout.toString("utf8").trim();
-  if (result.code === 0 && /^[0-9a-f]{40,64}$/.test(said)) return { landed: true, main: said, snapshot: withMain(snapshot, said) };
-  if (result.code === 3) return { stale: true, main: said || undefined };
-  if (result.code === 4) {
-    const lines = said.split("\n");
-    const seed = lines.find((line) => line.startsWith("seed "))?.slice(5);
-    return { refused: { absent: lines.filter((line) => line.startsWith("absent ")).map((line) => line.slice(7)), same: lines.filter((line) => line.startsWith("same ")).map((line) => line.slice(5)), ...(seed !== undefined ? { seed } : {}) } };
+  const saved = await store.save({
+    old,
+    message: messageOf(change?.by).message,
+    at: seconds,
+    writes: [...writes, { path: SNAPSHOT_FILE, text: kept }],
+    ...(change?.deletes?.length ? { deletes: change.deletes } : {}),
+    ...(change?.absent?.length ? { absent: change.absent } : {}),
+    ...(change?.same?.length ? { same: change.same } : {}),
+    ...(change?.seed !== undefined ? { seed: change.seed } : {}),
+    ...(run ? { run } : {}),
+    ...(change?.purged !== undefined ? { purged: change.purged } : {}),
+  });
+  if ("saved" in saved) {
+    const landed = withMain(snapshot, saved.saved);
+    keepSnapshot(`${store.id}\0${saved.saved}`, landed);
+    for (const { text } of writes) keep(blobOid(text), text);
+    return { landed: true, main: saved.saved, snapshot: landed };
   }
-  if (result.code === 5 && /^[0-9a-f]{40,64}$/.test(said)) return { unaligned: true, main: said };
-  if (result.code === 6 && run && /^[0-9a-f]{40,64}$/.test(said)) return { merged: said };
-  throw failed(args[0]!, result);
+  if ("stale" in saved) return { stale: true, main: saved.stale ?? undefined };
+  if ("refused" in saved) return { refused: saved.refused };
+  if ("already" in saved) return { merged: saved.already };
+  // The tree as main has it already (its snapshot differing only in time is not possible: nextSnapshot found a change).
+  if (base) return { landed: true, main: base.main, snapshot: base };
+  throw new Error("the learning store's first commit changed nothing");
 }
 
-/** The snapshot rebuilt from main whole, and the working tree brought in line: the script's `read`, then its `snapshot`
- *  op at the main it read. For a folder whose snapshot is not main's. Undefined for a folder with no main. */
-/** The snapshot of `commit` as main would have it (the script's read at that commit), or undefined when the folder has
- *  no such commit. One exec, read-only: for a run's seed that is no longer main. */
-export async function snapshotAt(ws: Workspace, commit: string): Promise<Snapshot | undefined> {
-  return (await folderAt(ws, commit))?.snapshot;
+/** The snapshot of `commit` (as main had it then), or undefined when the store does not hold it. */
+export async function snapshotAt(store: LearningStore, commit: string): Promise<Snapshot | undefined> {
+  return snapshotOf(store, checkCommit(commit));
 }
 
-/** `commit` as main would have it (snapshotAt) with the blobs its tree holds, by oid, as git gave them: one read-only
- *  exec. Undefined when the folder has no such commit. */
-export async function folderAt(ws: Workspace, commit: string): Promise<{ snapshot: Snapshot; blobs: ReadonlyMap<string, Buffer> } | undefined> {
-  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
-  const read = await runScript(ws, ["read", commit]);
-  if (read.code === 1) return undefined;
-  if (read.code !== 0) throw failed("read", read);
-  const parsed = parseRead(read.stdout);
-  const snapshot = snapshotOfRead(parsed);
-  return snapshot ? { snapshot, blobs: parsed.blobs } : undefined;
+/** `commit` as main had it (snapshotAt) with the blobs its tree holds (no host path), by oid. Undefined when the store
+ *  does not hold it. */
+export async function folderAt(store: LearningStore, commit: string): Promise<{ snapshot: Snapshot; blobs: ReadonlyMap<string, Buffer> } | undefined> {
+  const snapshot = await snapshotOf(store, checkCommit(commit));
+  if (!snapshot) return undefined;
+  const files = await store.read(commit);
+  if (!files) return undefined;
+  const blobs = new Map<string, Buffer>();
+  for (const file of files) if (!isHostPath(file.path)) blobs.set(blobOid(file.body), file.body);
+  return { snapshot, blobs };
 }
 
-/** The texts `commit` holds at `paths` (each a plain path, checkPath), each read alone with one read-only exec (the
- *  script's show: git cat-file over each `<commit>:<path>`), never the whole tree, its blobs or its log, so the read is
- *  bounded by what is asked, whatever the folder holds. A path the commit holds no file at is not in it. Undefined when
- *  the folder has no such commit. */
-export async function textsAt(ws: Workspace, commit: string, paths: readonly string[]): Promise<Record<string, string> | undefined> {
-  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
-  if (!paths.length) return {};
-  const result = await runScript(ws, ["show", commit, ...paths.map(checkPath)]);
-  if (result.code === 1) return undefined;
-  if (result.code !== 0) throw failed("show", result);
-  // git cat-file --batch: per path, `<oid> <type> <size>\n<content>\n`, or `<name> missing\n`.
-  const out: Record<string, string> = {};
-  const bytes = result.stdout;
-  let at = 0;
-  for (const path of paths) {
-    const end = bytes.indexOf(10, at);
-    if (end < 0) throw failed("show", { code: result.code, stderr: "its answer ended early" });
-    const header = bytes.subarray(at, end).toString("utf8").split(" ");
-    at = end + 1;
-    if (header.at(-1) === "missing" || header.length !== 3) continue;
-    const size = Number(header[2]);
-    if (header[1] === "blob") out[path] = bytes.subarray(at, at + size).toString("utf8");
-    at += size + 1;
-  }
-  return out;
+/** The texts `commit` holds at `paths` (each a plain path, checkPath), and nothing else, so the read is bounded by what
+ *  is asked. A path the commit holds no file at is not in it. Undefined when the store does not hold the commit. */
+export async function textsAt(store: LearningStore, commit: string, paths: readonly string[]): Promise<Record<string, string> | undefined> {
+  checkCommit(commit);
+  const files = await store.read(commit, paths.map(checkPath));
+  if (!files) return undefined;
+  return Object.fromEntries(files.filter((file) => paths.includes(file.path)).map((file) => [file.path, file.body.toString("utf8")]));
 }
 
-/** Whether the folder holds `commit`: one read-only exec of the script's show with no path, which reads nothing but
- *  that. False once a reset of the agent's learning removed it (or the folder is not a repository). */
-export async function holdsCommit(ws: Workspace, commit: string): Promise<boolean> {
-  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
-  const result = await runScript(ws, ["show", commit]);
-  if (result.code === 1) return false;
-  if (result.code !== 0) throw failed("show", result);
-  return true;
+/** Whether the store holds `commit`: false once a reset of the agent's learning removed it. */
+export async function holdsCommit(store: LearningStore, commit: string): Promise<boolean> {
+  return (await store.log(checkCommit(commit), { limit: 1 })) !== undefined;
 }
 
-export async function learningRepair(ws: Workspace): Promise<Snapshot | undefined> {
-  for (let tries = 0; tries < WRITE_TRIES; tries++) {
-    const read = await runScript(ws, ["read"]);
-    if (read.code !== 0) throw failed("read", read);
-    const snapshot = snapshotOfRead(parseRead(read.stdout));
-    if (!snapshot) return undefined;
-    const written = await runScript(ws, ["snapshot", snapshot.main], stdinOf([`snapshot ${snapshotLine(snapshot, 0)}`]));
-    if (written.code === 0) return snapshot;
-    if (written.code !== 3) throw failed("snapshot", written);
-  }
-  throw new Error("the learning folder's main kept moving while its snapshot was rebuilt");
-}
-
-/** The folder's first commit when it has no main yet (an empty tree, the host's), and main's commit: through the
- *  script's init, which makes the repository where there is none. A main with no snapshot (an init that stopped
- *  before it) is repaired. */
-export async function learningInit(ws: Workspace): Promise<string> {
-  const known = await readSnapshot(ws);
-  if (known) return known.main;
-  const result = await commitChange(ws, undefined, undefined);
+/** The store's first commit when it has no main yet (an empty tree, the host's), and main's commit. */
+export async function learningInit(store: LearningStore): Promise<string> {
+  const main = await store.head();
+  if (main) return main;
+  const result = await commitChange(store, undefined, undefined);
   if ("landed" in result) return result.main;
-  if ("stale" in result && result.main) {
-    const repaired = await learningRepair(ws);
-    if (repaired) return repaired.main;
-  }
-  if ("unaligned" in result) {
-    const repaired = await learningRepair(ws);
-    if (repaired) return repaired.main;
-  }
-  throw new Error("the learning folder could not be made");
+  if ("stale" in result && result.main) return result.main;
+  throw new Error("the agent's learning could not be made");
 }
 
-/** A write's preconditions that failed on main as the script found it: nothing was written. */
+/** A write's preconditions that failed on main: nothing was written. */
 export class FolderRefused extends Error {
   readonly absent: string[];
   readonly same: string[];
-  /** A run's merge whose seed (FolderChange.seed) the folder no longer holds: its agent's learning was reset. */
+  /** A run's merge whose seed (FolderChange.seed) the store no longer holds: its agent's learning was reset. */
   readonly seed: string | undefined;
   constructor(refused: { absent: string[]; same: string[]; seed?: string }) {
     super(`the learning folder's main refused the write: ${[...(refused.seed !== undefined ? [`the run's seed ${refused.seed} is not in the folder`] : []), ...refused.absent.map((path) => `${path} is there`), ...refused.same.map((path) => `${path} changed`)].join(", ")}`);
@@ -831,7 +692,7 @@ export class FolderRefused extends Error {
 }
 
 /** A run's merge (its round) that is on main already, made by another call (a reclaimed run racing its first claim, or
- *  a retry after a stop past its commit): `merge`, its commit. Nothing was written. */
+ *  a retry after a stop past its commit), or a key a purge scrubbed: `merge`, that commit. Nothing was written. */
 export class FolderMerged extends Error {
   readonly merge: string;
   constructor(merge: string) {
@@ -842,42 +703,26 @@ export class FolderMerged extends Error {
 }
 
 /**
- * A write to the folder's main: `compute` reads the snapshot and the bodies it needs (as readLearning gives them) and
- * says what to write, or nothing (its result stands alone). Committed by commitChange; a main that moved under it, or
- * a body that changed as it was read, computes it again on the folder as it is then (WRITE_TRIES in all). A folder with
- * no main yet is made first (learningInit). A snapshot that is not main's is rebuilt (learningRepair). Throws
- * FolderRefused when a precondition fails on main, and FolderMerged when a run's merge (its round) is there already.
+ * A write to the store's main: `compute` reads the snapshot and the bodies it needs (as readLearning gives them) and
+ * says what to write, or nothing (its result stands alone). Committed by commitChange; a main that moved under it
+ * computes it again on main as it is then (`maxTries` in all, then FolderBusy). A store with no main yet is made first
+ * (learningInit). Throws FolderRefused when a precondition fails on main, and FolderMerged when a run's merge (its
+ * round) is there already.
  */
-export async function writeLearning<T>(ws: Workspace, compute: (folder: FolderRead) => Promise<{ result: T; change?: FolderChange }>, maxTries = WRITE_TRIES): Promise<{ result: T; main?: string; snapshot?: Snapshot }> {
+export async function writeLearning<T>(store: LearningStore, compute: (folder: FolderRead) => Promise<{ result: T; change?: FolderChange }>, maxTries = WRITE_TRIES): Promise<{ result: T; main?: string; snapshot?: Snapshot }> {
   for (let tries = 0; ; tries++) {
-    // A folder that kept moving, or whose bodies kept changing as they were read: a write in flight elsewhere.
     if (tries >= maxTries) throw new FolderBusy();
-    let snapshot = await readSnapshot(ws);
-    let out: { result: T; change?: FolderChange };
-    try {
-      out = await compute(folderRead(ws, snapshot));
-    } catch (error) {
-      if (error instanceof Mismatch) continue;
-      throw error;
-    }
+    const snapshot = await readSnapshot(store);
+    const out = await compute(folderRead(store, snapshot));
     if (!out.change) return { result: out.result };
     if (!snapshot) {
-      await learningInit(ws);
-      snapshot = await readSnapshot(ws);
-      // Computed again on the folder just made.
+      await learningInit(store);
+      // Computed again on the store just made.
       continue;
     }
-    const done = await commitChange(ws, snapshot, out.change);
+    const done = await commitChange(store, snapshot, out.change);
     if ("landed" in done) return { result: out.result, main: done.main, snapshot: done.snapshot };
     if ("refused" in done) throw new FolderRefused(done.refused);
     if ("merged" in done) throw new FolderMerged(done.merged);
-    if ("unaligned" in done) {
-      const repaired = await learningRepair(ws);
-      return { result: out.result, main: done.main, ...(repaired ? { snapshot: repaired } : {}) };
-    }
-    // Stale: a write landed since the snapshot was read. A snapshot that names another main than the one that won is
-    // not main's: rebuilt from main before the write is computed again.
-    const now = await readSnapshot(ws);
-    if (done.main && now?.main !== done.main) await learningRepair(ws);
   }
 }

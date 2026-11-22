@@ -1,10 +1,9 @@
-// A Mode 2 learning run's end-of-run step (runner/learning-end.ts learningEndOfRun) reads and writes the agent's learning
-// folder where Mode 2 keeps it, through the learningFolder its deps give (on the claim's disk), never the runner's local
-// data directory: its compile turn is asked from that folder's main, its draft checked against the seed in that folder,
-// and its merge lands there, though a decoy folder is at the local path with a learned workflow (which, read, would make
-// the compile not due). The folder stands in for the disk as the real learning Workspace (learningWorkspace) on a
-// directory of its own, every call to it recorded: the draft's check reads the seed from the snapshot when main is the
-// seed (no read exec), else with one read-only exec of the learning script at the seed, at the folder's root.
+// A learning run's end-of-run step (runner/learning-end.ts learningEndOfRun) reads and writes the agent's learning
+// through the learning store its deps give (learningStore), never the runner's local data directory: its compile turn
+// is asked from that store's main, its draft checked against the seed there, and its merge lands there, though a decoy
+// folder is at the local path with a learned workflow (which, read, would make the compile not due). The store stands in
+// for the server's (a local store over a directory of its own), every call to it recorded: the draft's check reads the
+// seed at its commit, a main that moved past it included.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,8 +18,8 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
 const { seedOf } = await import("../dist/learning.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
-const { SCRIPT_FILE, textsAt } = await import("../dist/learn/folder.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
+const { textsAt } = await import("../dist/learn/folder.js");
+const { localLearningStore } = await import("../dist/learn/store-local.js");
 
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const TIMING = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
@@ -39,19 +38,14 @@ const DESCRIPTION = "Answers a question as a number; use when asked";
 const DRAFT = `\`\`\`\`workflow answer\n---\ndescription: ${DESCRIPTION}\nexample: {"content":"What is six times seven?"}\n---\n${JSON.stringify(flow("answer"))}\n\`\`\`\``;
 const CHECK = "Read the whole input once before the first call.";
 
-/** A commit on the folder's main by a person, through its learning Workspace. */
+/** A commit on the store's main by a person. */
 async function land(data, change) {
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
-  try {
-    const made = await learningCommit(folder.workspace, { runId: `person-${Math.random().toString(36).slice(2)}`, reason: "A person's edit", files: [], ...change });
-    assert.equal(made.ok, true, JSON.stringify(made));
-  } finally {
-    await folder.end();
-  }
+  const made = await learningCommit(localLearningStore(data, "agent-1"), { runId: `person-${Math.random().toString(36).slice(2)}`, reason: "A person's edit", files: [], ...change });
+  assert.equal(made.ok, true, JSON.stringify(made));
 }
 
-/** A Mode 2 learning run end to end through a real runner, its agent due to compile at every run: the disk's folder is
- *  the run's seed, and the local path holds a decoy (a learned workflow, another commit). `moveOn`: main moves past the
+/** A learning run end to end through a real runner, its agent due to compile at every run: the given store is the
+ *  run's seed, and the local path holds a decoy (a learned workflow, another commit). `moveOn`: main moves past the
  *  seed before the run ends, with a correction landed. The compile turn answers DRAFT. */
 async function mode2End(t, { moveOn }) {
   const local = scratch("agentrun-learning-local-");
@@ -78,21 +72,16 @@ async function mode2End(t, { moveOn }) {
 
   const store = await openSqliteStore({ dataDir: local, role: "runner" });
   stores.push(store);
-  // The run's learning folder: the real learningWorkspace over the disk's directory (so it is the real Workspace's shape,
-  // whole), its reads and execs recorded and then run.
+  // The run's learning store: a local store over the disk's directory, each call recorded and then made.
   const opened = [];
   const calls = [];
-  let ended = 0;
-  const learningFolder = (agentId) => {
+  const learningStore = (agentId) => {
     opened.push(agentId);
-    const folder = learningWorkspace({ mode: "local", data: disk, agentId });
-    const { read, exec } = folder.workspace;
-    folder.workspace.read = (path, ...rest) => (calls.push({ read: path }), read(path, ...rest));
-    folder.workspace.exec = (argv, options) => (calls.push({ exec: [...argv], cwd: options?.cwd }), exec(argv, options));
-    const end = folder.end;
-    return { workspace: folder.workspace, end: async () => { ended++; await end(); } };
+    const inner = localLearningStore(disk, agentId);
+    const record = (op) => (...args) => (calls.push({ op, ref: typeof args[0] === "string" ? args[0] : undefined }), inner[op](...args));
+    return { id: `recorded:${inner.id}`, head: record("head"), read: record("read"), log: record("log"), diff: record("diff"), save: record("save"), remove: record("remove") };
   };
-  const endOfRun = learningEndOfRun(launch, { store, data: local, env: {}, learningFolder });
+  const endOfRun = learningEndOfRun(launch, { store, data: local, env: {}, learningStore });
   const spec = piAdapterSpec({ script: [{ say: "42" }, { say: DRAFT }], tools: {}, hooks: quiet });
   const createLoop = (deps) => {
     const job = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", input: launch.input.content }))({ ...deps, endOfRun });
@@ -113,43 +102,37 @@ async function mode2End(t, { moveOn }) {
     if (Date.now() > deadline) throw new Error(`run-1 did not end: ${JSON.stringify(row)}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  return { kept: await server.learning.proposal("run-1"), seed, decoy, local, disk, opened, calls, ended };
+  return { kept: await server.learning.proposal("run-1"), seed, decoy, local, disk, opened, calls };
 }
 
-/** What every case asserts: the compile turn was asked from the disk's folder (the decoy's workflow would make it not
- *  due) and merged there, every folder opened was ended, every read is a path from the folder's root, and the local
- *  folder is the decoy still. */
+/** What every case asserts: the compile turn was asked from the given store (the decoy's workflow would make it not
+ *  due) and merged there in one save, and the local folder is the decoy still. */
 async function mergedOnDisk(end) {
   assert.equal(end.kept?.proposal?.state, "merged", JSON.stringify(end.kept?.proposal));
   assert.deepEqual(end.kept.proposal.workflows, [{ file: "workflows/answer/workflow.json", name: "answer" }]);
   const main = await seedOf(end.disk, "agent-1");
   assert.equal(end.kept.proposal.merged, main.sha, "the run's merge is the disk's main");
-  const folder = learningWorkspace({ mode: "local", data: end.disk, agentId: "agent-1" });
-  let texts;
-  try { texts = await textsAt(folder.workspace, main.sha, ["workflows/answer/workflow.json"]); } finally { await folder.end(); }
-  assert.deepEqual(JSON.parse(texts["workflows/answer/workflow.json"]), flow("answer"), "the disk's main holds the compiled workflow");
-  assert.ok(end.opened.length > 0 && end.opened.every((agentId) => agentId === "agent-1"), `the run's learning folder was opened: ${JSON.stringify(end.opened)}`);
-  assert.equal(end.ended, end.opened.length, "and every opening ended");
-  for (const { read } of end.calls.filter((call) => "read" in call)) assert.ok(!read.startsWith("/") && !read.split("/").includes(".."), `a path from the folder's root: ${read}`);
+  const texts = await textsAt(localLearningStore(end.disk, "agent-1"), main.sha, ["workflows/answer/workflow.json"]);
+  assert.deepEqual(JSON.parse(texts["workflows/answer/workflow.json"]), flow("answer"), "the store's main holds the compiled workflow");
+  assert.ok(end.opened.length > 0 && end.opened.every((agentId) => agentId === "agent-1"), `the run's learning store was asked for: ${JSON.stringify(end.opened)}`);
+  assert.deepEqual(end.calls.filter((call) => call.op === "save" || call.op === "remove").map((call) => call.op), ["save"], "one save, the merge");
   assert.equal((await seedOf(end.local, "agent-1")).sha, end.decoy.sha, "the local folder is untouched");
 }
 
-/** The read-only execs of the learning script (`sh SCRIPT_FILE read <commit>`) through the folder. */
-const readExecs = (end) => end.calls.filter((call) => "exec" in call && call.exec[2] === "read");
+/** The commits the store was read at (its reads and logs). */
+const readAt = (end) => new Set(end.calls.filter((call) => (call.op === "read" || call.op === "log") && call.ref).map((call) => call.ref));
 
-test("a Mode 2 learning end checks its proposal against the learning folder on the run's Workspace, never the local data directory", async (t) => {
+test("a learning end checks its proposal against the learning store its deps give, never the local data directory", async (t) => {
   const end = await mode2End(t, { moveOn: false });
   await mergedOnDisk(end);
   assert.equal(end.kept.proposal.merged !== end.seed.sha, true, "a new commit on the seed");
-  assert.deepEqual(readExecs(end), [], "main is the seed: the check reads its snapshot, no read exec");
+  assert.ok(readAt(end).has(end.seed.sha), "main is the seed, read there");
 });
 
-test("a Mode 2 learning end whose folder's main moved past the seed reads the seed with one exec of the learning script at the folder's root", async (t) => {
+test("a learning end whose store's main moved past the seed reads the seed at its commit, and keeps the moved main's correction under its merge", async (t) => {
   const end = await mode2End(t, { moveOn: true });
   await mergedOnDisk(end);
-  assert.deepEqual(readExecs(end), [{ exec: ["sh", SCRIPT_FILE, "read", end.seed.sha], cwd: undefined }], "one read-only exec of the learning script at the seed, at the folder's root");
-  const folder = learningWorkspace({ mode: "local", data: end.disk, agentId: "agent-1" });
-  let texts;
-  try { texts = await textsAt(folder.workspace, end.kept.proposal.merged, ["corrections.md"]); } finally { await folder.end(); }
+  assert.ok(readAt(end).has(end.seed.sha), `the seed read at its commit: ${JSON.stringify([...readAt(end)])}`);
+  const texts = await textsAt(localLearningStore(end.disk, "agent-1"), end.kept.proposal.merged, ["corrections.md"]);
   assert.match(texts["corrections.md"] ?? "", /Read the whole input once/, "the moved main's correction is kept under the merge");
 });

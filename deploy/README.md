@@ -316,6 +316,12 @@ before. A run's uploads (`file_ids`) need no disk of the server's in Mode 2: the
 places them in the run's folder at its start (changes/uploads-on-archil.md). Not on a disk of its own yet: screen
 recordings, which the runner writes on its own disk where the server does not serve them.
 
+An agent's learning is in the server's local folder unless the server and its runners keep it on code.storage
+(`AGENTRUN_CODE_STORAGE_NAME` and `AGENTRUN_CODE_STORAGE_KEY` set on both; [learning](../packages/serve/README.md)).
+A runner on a disk of its own without them runs its runs but learns nothing: each run's start reads no learned workflow
+and its end merges nothing, saying on the run's log that the runner can't reach the server's learning and naming the two
+settings.
+
 ### The runner's environment: `runner --check`
 
 `agentrun-serve runner --check --env [--data D]` checks what a runner needs from its environment and prints one line per
@@ -328,10 +334,10 @@ opens the store with one connection and closes it.
 | `AGENTRUN_STORE_URL` | The store opens, at a schema this runner knows. Unset, a SQLite store in `--data` (the server's) counts. |
 | `AGENTRUN_SEAL_KEY` | It is the key the store's secrets are sealed under. Unset, the key file in `--data` counts. |
 | `AGENTRUN_STORE_POOL_SIZE` | Only when set: a whole number from 1 to the store's most, as the runner's start takes it. The check itself opens one connection. |
-| Every run-facing name the server holds | The server says the names (never the values) of its run-facing environment in the store at each start: model, tool and box keys, each box provider's settings (`DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, ...), the Archil settings, the tiers' models (`AGENT_MODEL`, `AGENT_MODEL_FAST`, `AGENT_MODEL_STRONG`), `AGENTRUN_BOX_ALLOW`, a Docker computer's image and size (`AGENTRUN_DOCKER_IMAGE`, `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS`), the operator's bound on owners' private hosts (`AGENTRUN_PRIVATE_HOSTS`), how a gateway is sent a model id (`AGENT_MODEL_GATEWAY_IDS`), whether runs may reach an MCP server on loopback (`AGENTRUN_MCP_ALLOW_LOOPBACK`), the harness modules it loads (`AGENTRUN_SERVE_HARNESS_MODULES`, which a runner may hold as `--harness-module`, given to its check too; a server given them as `--harness-module` says nothing of them), and every upstream address (`*_BASE_URL`, `*_API_URL`). The runner must hold each one: a run's claim reads it from the runner's environment. A server older than this release says none, and this part is `skipped`. |
+| Every run-facing name the server holds | The server says the names (never the values) of its run-facing environment in the store at each start: model, tool and box keys, each box provider's settings (`DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, ...), the Archil settings, code.storage's (`AGENTRUN_CODE_STORAGE_NAME`, `AGENTRUN_CODE_STORAGE_KEY`, `AGENTRUN_CODE_STORAGE_API_URL`), the tiers' models (`AGENT_MODEL`, `AGENT_MODEL_FAST`, `AGENT_MODEL_STRONG`), `AGENTRUN_BOX_ALLOW`, a Docker computer's image and size (`AGENTRUN_DOCKER_IMAGE`, `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS`), the operator's bound on owners' private hosts (`AGENTRUN_PRIVATE_HOSTS`), how a gateway is sent a model id (`AGENT_MODEL_GATEWAY_IDS`), whether runs may reach an MCP server on loopback (`AGENTRUN_MCP_ALLOW_LOOPBACK`), the harness modules it loads (`AGENTRUN_SERVE_HARNESS_MODULES`, which a runner may hold as `--harness-module`, given to its check too; a server given them as `--harness-module` says nothing of them), and every upstream address (`*_BASE_URL`, `*_API_URL`). The runner must hold each one: a run's claim reads it from the runner's environment. A server older than this release says none, and this part is `skipped`. |
 | Each `*_BASE_URL` / `*_API_URL` on loopback | Something answers a TCP connect there within 2 s: the forwarder beside the runner that the upstream names. |
 | `AGENTRUN_TOKEN`, `AGENTRUN_TOKENS`, `AGENTRUN_API_KEY` | `warn` when set: the server's own secrets, which a runner never needs. Fails nothing. |
-| `start` | What the runner's start refuses before it claims, checked the same way: its run slots (`AGENTRUN_MAX_RUNS`), drain (`AGENTRUN_DRAIN_TIMEOUT`), free-model requests, its Archil settings (the region and an https S3 URL set together), and its runs' isolation (`AGENTRUN_RUN_USER`, and whether the image's helper can switch users here). |
+| `start` | What the runner's start refuses before it claims, checked the same way: its run slots (`AGENTRUN_MAX_RUNS`), drain (`AGENTRUN_DRAIN_TIMEOUT`), free-model requests, its Archil settings (the region and an https S3 URL set together), code.storage's (the org's name and a PEM key set together, an https API URL), and its runs' isolation (`AGENTRUN_RUN_USER`, and whether the image's helper can switch users here). |
 
 ```
 ok      AGENTRUN_STORE_URL  the store opens: postgres, schema v23
@@ -339,7 +345,7 @@ ok      AGENTRUN_SEAL_KEY   the store's seal key
 ok      ANTHROPIC_BASE_URL  the server holds it, and so does this runner
 missing MONID_API_KEY       the server holds it and a run's claim reads it here: hand it to this runner too
 ok      ANTHROPIC_BASE_URL  on this machine's loopback, and a forwarder answers there
-ok      start               the runner's start takes its settings: run slots, drain, free-model requests, Archil, run isolation
+ok      start               the runner's start takes its settings: run slots, drain, free-model requests, Archil, code.storage, run isolation
 Runner environment: 1 gap: MONID_API_KEY
 ```
 

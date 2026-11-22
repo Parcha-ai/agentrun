@@ -15,6 +15,7 @@
 //   such as a model gateway's) answers a TCP connect.
 //
 // A runner that holds the server's own secrets (its API tokens and key) is warned: a runner never needs them.
+import { CODE_STORAGE_ENV } from "../learn/store.js";
 import { connect } from "node:net";
 import { PROVIDERS } from "@parcha/agentrun-computer";
 import { ARCHIL_SETTINGS_ENV } from "../archil-settings.js";
@@ -52,6 +53,9 @@ const FIXED: ReadonlySet<string> = new Set([
   ...TOOL_KEY_ROWS.flatMap((row) => row.fields as readonly string[]),
   ...PROVIDERS.flatMap((provider) => provider.keys.map((key) => key.name)),
   ...Object.values(ARCHIL_SETTINGS_ENV),
+  // Where learning is (learn/store.ts): a runner without code.storage's settings its server has learns into a folder
+  // its server never reads.
+  ...Object.values(CODE_STORAGE_ENV),
   // The model of each tier (model.ts TIER_ENV): the default, and the fast and strong ones a subagent may pick.
   "AGENT_MODEL",
   "AGENT_MODEL_FAST",

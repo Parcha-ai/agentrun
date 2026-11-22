@@ -16,7 +16,7 @@ import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import { learnedApprovedTools, learnedAskShown, LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
 import { ARGS_PREVIEW_BYTES } from "../dist/tool-gate.js";
-import { git, resnap } from "./learn-support.mjs";
+import { git } from "./learn-support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const FAUX_CALLS = new URL("./fixtures/faux-calls.mjs", import.meta.url).pathname;
@@ -65,7 +65,6 @@ async function learnedRun(server, id, tools, flows, content, run = {}) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
   // Execution permissions and recovery are rechecked even for a previously promoted revision.
   await promoteChecked(server.store.settings, id, flows.map((workflow) => ({ name: workflow.name, workflow })));
   const started = await retried(api)("POST", `/agents/${id}/runs`,{ input: { content }, ...run });

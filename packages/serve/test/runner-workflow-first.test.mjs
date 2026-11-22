@@ -51,7 +51,7 @@ const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
 const { recordPromotion } = await import("../dist/learn/promote.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { answerAsServed, answerJson, structuredAnswer } = await import("../dist/answer-json.js");
 const { readSnapshot, textsAt } = await import("../dist/learn/folder.js");
 const { askedForCompile } = await import("../dist/learn/compile.js");
@@ -567,24 +567,16 @@ const REVISED_INSTRUCTIONS = "Answer the question as a whole number, checking th
 const answerWith = (instructions) => ({ ...answerFlow, root: { ...answerFlow.root, steps: [{ ...answerFlow.root.steps[0], instructions }, answerFlow.root.steps[1]] } });
 /** Merges `answer` with `instructions` on agent-1's main under `data`, as another run's revision lands. */
 async function answerOnMain(data, instructions, runId) {
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
-  try {
-    const merged = await learningCommit(folder.workspace, { runId, reason: "revised", files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(answerWith(instructions)) }] });
-    assert.equal(merged.ok, true, JSON.stringify(merged));
-    return merged.main;
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(data, "agent-1");
+  const merged = await learningCommit(folder, { runId, reason: "revised", files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(answerWith(instructions)) }] });
+  assert.equal(merged.ok, true, JSON.stringify(merged));
+  return merged.main;
 }
 /** Agent-1's main under `data` now, and `paths`' texts on it. */
 async function mainOf(data, paths) {
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
-  try {
-    const main = (await readSnapshot(folder.workspace)).main;
-    return { main, texts: await textsAt(folder.workspace, main, paths) };
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(data, "agent-1");
+  const main = (await readSnapshot(folder)).main;
+  return { main, texts: await textsAt(folder, main, paths) };
 }
 const revisedBlock = `\`\`\`\`workflow answer\n---\ndescription: Answers a question as a number\nexample: {"question":"What is six times seven?"}\n---\n${JSON.stringify(answerWith(REVISED_INSTRUCTIONS))}\n\`\`\`\``;
 /** `answer`'s hold at the digest of `flow` (its replay held it): the only thing that asks for its revision. */

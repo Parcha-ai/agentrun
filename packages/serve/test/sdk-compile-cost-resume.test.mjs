@@ -11,7 +11,8 @@ import { reflectRequestId } from "../dist/runner/end-of-run.js";
 import { learningCommit } from "../dist/learn/commit.js";
 import { recordPromotion } from "../dist/learn/promote.js";
 import { workflowDigest } from "../dist/runner/workflow-first.js";
-import { learningFolderOf, seedOf } from "../dist/learning.js";
+import { seedOf } from "../dist/learning.js";
+import { learningStoreOf } from "../dist/learn/store-of.js";
 
 const tool = {
   name: "mcp:backend/status", description: "Read release readiness from the existing backend.",
@@ -56,17 +57,15 @@ test("a reclaim with no compile due keeps the durable compile request's cost as 
   } })).status, 201);
   const land = async label => {
     await seedOf(s.data, id);
-    const folder = learningFolderOf(s.data, id);
-    try {
-      const merged = await learningCommit(folder.workspace, {
-        kind: "merge", runId: `fixture-${label}`, reason: `Keep ${label}`, graded: {},
-        files: [
-          { path: "workflows/release-status/workflow.json", text: JSON.stringify(flow(label)) },
-          { path: "workflows/release-status/README.md", text: readmeOf("release-status", description) },
-        ],
-      });
-      assert.equal(merged.ok, true, JSON.stringify(merged));
-    } finally { await folder.end(); }
+    const folder = learningStoreOf(s.data, id);
+    const merged = await learningCommit(folder, {
+      kind: "merge", runId: `fixture-${label}`, reason: `Keep ${label}`, graded: {},
+      files: [
+        { path: "workflows/release-status/workflow.json", text: JSON.stringify(flow(label)) },
+        { path: "workflows/release-status/README.md", text: readmeOf("release-status", description) },
+      ],
+    });
+    assert.equal(merged.ok, true, JSON.stringify(merged));
   };
   await land("initial-status");
   const start = await s.api("POST", `/agents/${id}/sdk-runs`, { runtime, input: "Report release readiness.", instructions: description, workflow_tools: [tool] }, { "Idempotency-Key": "compile-cost" });

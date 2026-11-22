@@ -2,8 +2,8 @@
 //
 // Layout, under a server's data directory, or from the root of an Archil disk (the same keys, without <data>/disk):
 //   <data>/disk/agents/<agent>/runs/<run>/work   a run's folder (runFolder; runKey on a disk): its Workspace's root
-//   <data>/disk/agents/<agent>/learning          an agent's learning folder (agentLearningFolder; learningKey): its git
-//                                                folder
+//   <data>/disk/agents/<agent>/learning          an agent's local learning folder (agentLearningFolder; learningKey):
+//                                                its git folder, on this machine alone (learn/store-local.ts)
 //   <data>/disk/agents/<agent>/home              an agent's home (agentHomeFolder; homeKey): the files its owner keeps
 //                                                for it
 // and on this machine alone:

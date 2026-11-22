@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import Ajv from "ajv";
 import { serve, client, follow } from "./support.mjs";
-import { learningFolderOf, seedOf } from "../dist/learning.js";
+import { seedOf } from "../dist/learning.js";
+import { learningStoreOf } from "../dist/learn/store-of.js";
 import { learningCommit } from "../dist/learn/commit.js";
 import { SDK_BINDING, SDK_RUN, SDK_PATHS } from "../dist/sdk/schema.js";
 
@@ -197,15 +198,11 @@ test("external sources receive owner corrections while workflows stay unavailabl
   const id = "platform-corrections", platform = "Research service";
   await register(api, id, binding(platform), true);
   await seedOf(data, id);
-  const folder = learningFolderOf(data, id);
-  try {
-    const committed = await learningCommit(folder.workspace, {
-      runId: "owner-correction", reason: "The owner's correction", files: [], correction: "Begin every answer with Verified.",
-    });
-    assert.equal(committed.ok, true, JSON.stringify(committed));
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(data, id);
+  const committed = await learningCommit(folder, {
+    runId: "owner-correction", reason: "The owner's correction", files: [], correction: "Begin every answer with Verified.",
+  });
+  assert.equal(committed.ok, true, JSON.stringify(committed));
   const started = await api("POST", `/agents/${id}/sdk-runs`, startBody(platform), headers("corrections"));
   assert.equal(started.status, 201, JSON.stringify(started.body));
   assert.equal(started.body.learning.enabled, true);

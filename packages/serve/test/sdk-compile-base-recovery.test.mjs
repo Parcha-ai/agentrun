@@ -12,7 +12,8 @@ import { learningCommit } from "../dist/learn/commit.js";
 import { textsAt } from "../dist/learn/folder.js";
 import { recordPromotion } from "../dist/learn/promote.js";
 import { workflowDigest } from "../dist/runner/workflow-first.js";
-import { learningFolderOf, seedOf } from "../dist/learning.js";
+import { seedOf } from "../dist/learning.js";
+import { learningStoreOf } from "../dist/learn/store-of.js";
 
 const tool = {
   name: "mcp:backend/status", description: "Read release readiness from the existing backend.",
@@ -61,17 +62,15 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) for (const moved of [fa
     } })).status, 201);
     const land = async label => {
       await seedOf(s.data, id);
-      const folder = learningFolderOf(s.data, id);
-      try {
-        const merged = await learningCommit(folder.workspace, {
-          runId: `fixture-${label}`, reason: `Keep ${label}`,
-          files: [
-            { path: "workflows/release-status/workflow.json", text: JSON.stringify(flow(label)) },
-            { path: "workflows/release-status/README.md", text: readmeOf("release-status", description) },
-          ],
-        });
-        assert.equal(merged.ok, true, JSON.stringify(merged));
-      } finally { await folder.end(); }
+      const folder = learningStoreOf(s.data, id);
+      const merged = await learningCommit(folder, {
+        runId: `fixture-${label}`, reason: `Keep ${label}`,
+        files: [
+          { path: "workflows/release-status/workflow.json", text: JSON.stringify(flow(label)) },
+          { path: "workflows/release-status/README.md", text: readmeOf("release-status", description) },
+        ],
+      });
+      assert.equal(merged.ok, true, JSON.stringify(merged));
       return (await seedOf(s.data, id)).sha;
     };
     const hold = async label => {
@@ -143,9 +142,8 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) for (const moved of [fa
     } else {
       assert.notEqual(after, current, "a change before the compiler read is accepted as its actual base");
       assert.equal(kept.proposal.merged, after, "the run's own commit is main");
-      const folder = learningFolderOf(s.data, id);
-      let texts;
-      try { texts = await textsAt(folder.workspace, after, ["workflows/release-status/workflow.json"]); } finally { await folder.end(); }
+      const folder = learningStoreOf(s.data, id);
+      const texts = await textsAt(folder, after, ["workflows/release-status/workflow.json"]);
       assert.deepEqual(JSON.parse(texts["workflows/release-status/workflow.json"]), compiled, "main holds the compiled revision");
     }
   });

@@ -4,14 +4,12 @@
 // - corrections.md, read whole and replaced whole by a person (If-Match on the version read; neither header is 428),
 //   refused whole when it would hold what must never be stored or pass the cap (learn/corrections.ts).
 // - A person's approval of a draft that waits for the owner's OK, its retire and its restore: a precondition on its
-//   README.md's version (If-Match), then one commit on main by the learning script (learn/folder.ts writeLearning: one
-//   exec, compare and swap) with a `Changed-By: user` trailer, the checked-out files brought in line and the snapshot
-//   written.
-// - Per run: its learning whole, and once merged its diff: its merge commit against its parent, as its merge's script
-//   wrote it (`.agentrun/diffs/<run>.json`).
-// Every read is the folder's snapshot (`.agentrun/snapshot.json`), the working-tree bodies it names, each checked against
-// its blob id, and the diff files, through the folder's Workspace file API: no git and no exec (learn/folder.ts
-// readLearning). A body that is not the snapshot's, twice, is a write in flight: 503. A page's cursor names the main it
+//   README.md's version (If-Match), then one commit on main by the learning store (learn/folder.ts writeLearning: one
+//   save, compare and swap) with a `Changed-By: user` trailer and the snapshot in the same commit.
+// - Per run: its learning whole, and once merged its diff: its merge commit against its parent, as the store diffs the
+//   commit its merge marked (`.agentrun/runs/<run>`).
+// Every read is main's snapshot (`.agentrun/snapshot.json`) and the bodies it names, read at main's commit, which no
+// write changes (learn/folder.ts readLearning). A store that can't answer is 503. A page's cursor names the main it
 // was read at; a later page is read at that main while this server still holds its snapshot, else as the first page of
 // main now. A text that leaves holding one of the host's secrets as they are now (a value made secret after it was
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
@@ -20,13 +18,14 @@ import { createHash } from "node:crypto";
 import { CORRECTIONS_CAP, draftProblems, frontKeys, isHeld, LEARNED_KEYS, learnedPlace, learnedStatus, type Problem, printable, released, restorable, restoredLearned, retiredLearned, UNCLEAR_FRONT, unclearFront, unstorable, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { readmeProblems, type DraftDecisions } from "./learn/workflow-draft.js";
 import { putCorrections, readCorrections } from "./learn/commit.js";
-import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, runDiffKey, type SnapChange, type SnapHistory, type SnapLearned, type Snapshot, textsAt, writeLearning } from "./learn/folder.js";
+import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, type PersonKind, readLearning, readSnapshot, runMergeOf, type SnapChange, type SnapHistory, type SnapLearned, type Snapshot, textsAt, writeLearning } from "./learn/folder.js";
+import { FolderUnreadable, type LearningStore, PATCH_CAP } from "./learn/store.js";
+import { learningStoreOf } from "./learn/store-of.js";
 import { ApiError, invalid } from "./errors.js";
 import type { ServingState } from "./learn/promote.js";
-import { type ItemStatus, detailShown, filesView, type Learning, learningFolderOf, reasonShown, type Shown, withAgentRepo } from "./learning.js";
+import { type ItemStatus, detailShown, filesView, type Learning, reasonShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import { isObject } from "./validate.js";
-import type { Workspace } from "./workspace/index.js";
 import { launchOf } from "./handed-values.js";
 import { learningStartOf } from "./run-launch.js";
 import { type LearnedUse, runLearningEnd } from "./store-reads/learning.js";
@@ -71,28 +70,26 @@ const seenKey = (agentId: string, main: string) => `${agentId}\0${main}`;
 export const etagOf = (oid: string) => `"${oid}"`;
 const EMPTY: Page<never> = { items: [], total: 0, next_cursor: null };
 
-/** A folder failure as a route answers it, failing closed: a link in the folder is an error whose words name it, a
- *  backend that cannot answer (or a body that changed twice as it was read) is 503. */
+/** A store failure as a route answers it, failing closed: a link in a local folder is an error whose words name it, a
+ *  store that cannot answer (or that kept moving under a write) is 503. */
 function routeFailure(error: unknown): unknown {
   if (error instanceof FolderBusy) return new ApiError("unavailable", error.message);
   if (error instanceof FolderUnreadable) return error.link ? new Error(error.message) : new ApiError("unavailable", error.message);
   return error;
 }
 
-/** A read of agent `agentId`'s folder: `read` over its snapshot and the bodies it names (learn/folder.ts readLearning),
- *  `none` for a folder with no main yet; the folder ended after. */
-async function reading<T>(data: string, agentId: string, read: (folder: { ws: Workspace; snapshot: Snapshot; body: (path: string, oid: string) => Promise<string> }) => Promise<T>, none: () => T): Promise<T> {
-  const { workspace: ws, end } = learningFolderOf(data, agentId);
+/** A read of agent `agentId`'s learning: `read` over its snapshot and the bodies it names (learn/folder.ts
+ *  readLearning), `none` for a store with no main yet. */
+async function reading<T>(data: string, agentId: string, read: (folder: { learning: LearningStore; snapshot: Snapshot; body: (path: string, oid: string) => Promise<string> }) => Promise<T>, none: () => T): Promise<T> {
+  const learning = learningStoreOf(data, agentId);
   try {
-    return await readLearning(ws, async ({ snapshot, body }) => {
+    return await readLearning(learning, async ({ snapshot, body }) => {
       if (!snapshot) return none();
       seen.set(seenKey(agentId, snapshot.main), snapshot);
-      return read({ ws, snapshot, body });
+      return read({ learning, snapshot, body });
     });
   } catch (error) {
     throw routeFailure(error);
-  } finally {
-    await end();
   }
 }
 
@@ -156,9 +153,8 @@ const statusBy = new Map<string, { sha: string; status: ReadonlyMap<string, Item
  *  `active`, `pending` or `retired`. Built once per main (a list asks for many runs). A folder never made, or with no
  *  main, holds none; one whose snapshot cannot be read is undefined. */
 export async function statusesOf(data: string, agentId: string): Promise<ReadonlyMap<string, ItemStatus> | undefined> {
-  const folder = learningFolderOf(data, agentId);
   try {
-    const snapshot = await readSnapshot(folder.workspace);
+    const snapshot = await readSnapshot(learningStoreOf(data, agentId));
     if (!snapshot) return new Map();
     const known = statusBy.get(agentId);
     if (known?.sha === snapshot.main) return known.status;
@@ -169,8 +165,6 @@ export async function statusesOf(data: string, agentId: string): Promise<Readonl
     return status;
   } catch {
     return undefined;
-  } finally {
-    await folder.end();
   }
 }
 
@@ -221,9 +215,8 @@ export async function correctionsWrite(data: string, agentId: string, input: { t
   const match = input.ifMatch?.trim();
   if (!match || match === "*") throw new ApiError("precondition_required", "A write names the version it read: If-Match with corrections.md's ETag, as GET answered it.");
   return withAgentRepo(data, agentId, async () => {
-    const { workspace: ws, end } = learningFolderOf(data, agentId);
     try {
-      const done = await putCorrections(ws, { text: input.text, ifMatch: match, refuseValues: input.refuse });
+      const done = await putCorrections(learningStoreOf(data, agentId), { text: input.text, ifMatch: match, refuseValues: input.refuse });
       if (done.ok) return { text: done.text, etag: etagOf(done.oid), cap_bytes: CORRECTIONS_CAP };
       if (done.reason === "conflict") throw new ApiError("precondition_failed", "corrections.md changed since it was read (a run's correction, or another edit): read it again.");
       const problems = done.problems.map((problem) => printable(problem, input.refuse));
@@ -231,8 +224,6 @@ export async function correctionsWrite(data: string, agentId: string, input: { t
     } catch (error) {
       if (error instanceof FolderTooLarge) throw invalid([{ field: "text", reason: "too_large", message: error.message }]);
       throw routeFailure(error);
-    } finally {
-      await end();
     }
   });
 }
@@ -246,7 +237,7 @@ type WorkflowRevision = { commit: string; at: string; by: Change["by"]; reason: 
 
 /** GET /agents/{id}/learning/workflows/{name}/revisions?limit=: the latest revisions of learned workflow `name` (the
  *  commits on main's log that changed `workflows/<name>/workflow.json`), oldest first, each with the workflow's text at
- *  that commit, so a person can step through how it changed. One read-only exec per revision (textsAt), at most `limit`
+ *  that commit, so a person can step through how it changed. One store read per revision (textsAt), at most `limit`
  *  of them. `total` counts every such commit the log holds, `truncated` says the log itself is cut (it keeps the latest
  *  LOG_KEEP changes). A workflow no commit of the log changed is not_found. */
 export async function workflowRevisions(data: string, agentId: string, name: string, query: URLSearchParams, shown: Shown): Promise<{ name: string; revisions: WorkflowRevision[]; total: number; truncated: boolean }> {
@@ -256,12 +247,12 @@ export async function workflowRevisions(data: string, agentId: string, name: str
   if ((given !== null && !/^\d+$/.test(given)) || limit < 1 || limit > REVISIONS_MAX) throw new ApiError("bad_request", `limit is an integer from 1 to ${REVISIONS_MAX}`);
   const path = `${WORKFLOWS_DIR}/${name}/workflow.json`;
   if (shown.name(path) !== path) throw new ApiError("not_found", "the agent's learning folder has no such workflow");
-  const found = await reading(data, agentId, async ({ ws, snapshot }) => {
+  const found = await reading(data, agentId, async ({ learning, snapshot }) => {
     const touched = snapshot.log.filter((change) => change.files.includes(path));
     const latest = touched.slice(0, limit).reverse();
     const revisions: WorkflowRevision[] = [];
     for (const change of latest) {
-      const texts = await textsAt(ws, change.commit, [path]).catch((error: unknown) => { throw routeFailure(error); });
+      const texts = await textsAt(learning, change.commit, [path]).catch((error: unknown) => { throw routeFailure(error); });
       const raw = texts?.[path];
       // Its digest, read from the text as it is (workflow-first.ts workflowDigest's): the one a run's metrics and the
       // promotion records name, so a revision's runs and promotion are found by it.
@@ -276,13 +267,13 @@ export async function workflowRevisions(data: string, agentId: string, name: str
 /** Learned workflow `name`'s text at `digest` (a champion's, as its promotion records name it), read by that digest and
  *  never by paging the workflow's history: at `commits` (the records' learning commits, newest first), then at main, the
  *  first commit whose workflow.json is that digest's text, with the commit it was read at. Undefined when none is (no
- *  main yet, or no commit read holds it). One read-only exec per commit tried (textsAt). */
+ *  main yet, or no commit read holds it). One store read per commit tried (textsAt). */
 export async function workflowAtDigest(data: string, agentId: string, name: string, digest: string, commits: readonly string[]): Promise<{ text: string; commit: string } | undefined> {
   if (!WORKFLOW_NAME.test(name)) return undefined;
   const path = `${WORKFLOWS_DIR}/${name}/workflow.json`;
-  return reading(data, agentId, async ({ ws, snapshot }) => {
+  return reading(data, agentId, async ({ learning, snapshot }) => {
     for (const commit of new Set([...commits, snapshot.main])) {
-      const raw = (await textsAt(ws, commit, [path]).catch(() => undefined))?.[path];
+      const raw = (await textsAt(learning, commit, [path]).catch(() => undefined))?.[path];
       if (raw !== undefined && createHash("sha256").update(raw).digest("hex").slice(0, 16) === digest) return { text: raw, commit };
     }
     return undefined;
@@ -388,11 +379,10 @@ export async function changeWorkflow(data: string, agentId: string, raw: string,
   if (!match?.length) throw new ApiError("precondition_required", "A change names the version it read: If-Match with the README's ETag.");
   type Written = { status: 200; file: string; text: string; etag: string };
   return withAgentRepo(data, agentId, async () => {
-    // The folder as a run's merge reaches it: a link in it is refused (an error naming it, nothing written), never
-    // followed.
-    const { workspace: ws, end } = learningFolderOf(data, agentId);
+    // The store as a run's merge reaches it: a link in a local folder is refused (an error naming it, nothing written),
+    // never followed.
     try {
-      const { result } = await writeLearning<Written>(ws, async ({ snapshot, body, bytes }) => {
+      const { result } = await writeLearning<Written>(learningStoreOf(data, agentId), async ({ snapshot, body, bytes }) => {
         const oid = blobIn(snapshot, file);
         const current = oid === undefined ? undefined : { oid, text: await body(file, oid) };
         if (!current) throw new ApiError("not_found", "the agent's learning folder has no such workflow on main");
@@ -440,8 +430,6 @@ export async function changeWorkflow(data: string, agentId: string, raw: string,
       if (error instanceof FolderRefused) throw new ApiError("precondition_failed", "The folder's file by this name on main is no regular UTF-8 file, and a person's change never replaces it.");
       if (error instanceof FolderTooLarge) throw refused([{ rule: "too_large", path: file, detail: error.message }]);
       throw routeFailure(error);
-    } finally {
-      await end();
     }
   });
 }
@@ -474,10 +462,10 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
 }
 
 /** GET /runs/{id}/learning/diff over the one store: once merged (its learning end, store-reads/learning.ts
- *  runLearningEnd), its merge commit against its parent, as its merge's script wrote it (`.agentrun/diffs/<run>.json` in
- *  its agent's learning folder); a run that merged nothing, no file, against the seed its launch's learning start names. A
+ *  runLearningEnd), its merge commit against its parent, as its agent's learning store diffs the commit its merge marked
+ *  (learn/folder.ts runMergeOf); a run that merged nothing, no file, against the seed its launch's learning start names. A
  *  run that does not learn (no learning start and no learning end) is not_found. A file's patch is withheld when too large
- *  (as the script wrote it), or when it holds one of the host's secrets now (`shown`); any other is served as every
+ *  (as the store gave it), or when it holds one of the host's secrets now (`shown`); any other is served as every
  *  learning text is (`shown.text`: a loopback address reads "a local address"). */
 export async function runDiffOverStore(data: string, store: Store, runId: string, shown: Shown) {
   const [end, kept, launch, row] = await Promise.all([runLearningEnd(store, runId), store.learning.proposal(runId), launchOf(store, runId), store.runs.get(runId)]);
@@ -491,8 +479,7 @@ export async function runDiffOverStore(data: string, store: Store, runId: string
     return Buffer.byteLength(served) > PATCH_CAP ? { path, status, withheld: "too_large" } : { path, status, patch: served };
   };
   if (end?.merged) {
-    const folder = learningFolderOf(data, row.agentId);
-    const diff = await readRunDiff(folder.workspace, runDiffKey(runId, kept?.round)).catch((error: unknown) => Promise.reject(routeFailure(error))).finally(() => folder.end());
+    const diff = await runMergeOf(learningStoreOf(data, row.agentId), runId, kept?.round).catch((error: unknown) => Promise.reject(routeFailure(error)));
     if (!diff || diff.merge !== end.merged) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
     return { base: diff.parent, head: diff.merge, files: diff.files.map((entry) => ("patch" in entry ? file(entry.path, entry.status, entry.patch) : { path: shown.name(entry.path), status: entry.status, withheld: entry.withheld })) };
   }

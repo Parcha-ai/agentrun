@@ -3,7 +3,7 @@
 // learned workflow, and every learning read of the agent's runs reads only runs on no named disk (compile's traces and
 // its due count, a check's inputs, the money rule's past runs, an audit's served runs, the cost page's ledger). A run
 // with no named disk (none, or its agent's own) is the default disk's, where the agent learns. So a customer's traces
-// never reach the agent's learned workflows. The disks a run named are where the reset and the delete remove a folder.
+// never reach the agent's learned workflows.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -18,12 +18,11 @@ import { storeOn } from "./store-helpers.mjs";
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
 const { seedOf } = await import("../dist/learning.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { launchBody, launchOnItsDisk, readLaunchBody } = await import("../dist/run-launch.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { SCHEMA_VERSION } = await import("../dist/store/index.js");
-const { namedDisksOf } = await import("../dist/learn/learning-of.js");
 const { notAuditableOf } = await import("../dist/runner/audit.js");
 const { lastOwnRuns } = await import("../dist/learn/compile.js");
 const { pastRunsOverStore } = await import("../dist/store-reads/learning.js");
@@ -122,7 +121,7 @@ test("a store as the run purge left it (version 14, no runs.disk) comes to 15 at
   await (await openSqliteStore({ dataDir: dir, role: "runner" })).close();
 });
 
-test("a purged run's tombstone keeps its disk: the disks the reset and the delete remove the agent's folder on still name it", async (t) => {
+test("a purged run's tombstone keeps its disk: a named disk by its id, the agent's own disk and none as the default (null)", async (t) => {
   const dir = scratch("agentrun-per-disk-purged-");
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   t.after(async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -131,7 +130,8 @@ test("a purged run's tombstone keeps its disk: the disks the reset and the delet
   await purgedRun(store, "purged-own", { archilDisk: { diskId: "agent-disk", kind: "agent" } });
   await store.runs.create({ id: "on-none", agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody(BASE) });
   assert.equal((await store.runs.get("purged-b")).disk, "disk-b", "its tombstone keeps its disk");
-  assert.deepEqual(await namedDisksOf(store, "agent-1"), ["disk-b"], "a named disk alone: the agent's own disk and none are the default");
+  assert.equal((await store.runs.get("purged-own")).disk, null, "the agent's own disk is the default");
+  assert.equal((await store.runs.get("on-none")).disk, null);
 });
 
 test("learning reads only runs on no named disk since the reset: compile_after's count and a check's inputs, the money rule's past runs and the audit's served runs", async (t) => {
@@ -207,7 +207,7 @@ async function world(t) {
     await server.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody(launch) });
     const store = await openSqliteStore({ dataDir: local, role: "runner" });
     open.push(() => store.close());
-    const endOfRun = learningEndOfRun(launch, { store, data: local, env: {}, learningFolder: (agentId) => learningWorkspace({ mode: "local", data, agentId }) });
+    const endOfRun = learningEndOfRun(launch, { store, data: local, env: {}, learningStore: (agentId) => learningStoreOf(data, agentId) });
     const requests = [];
     const spec = piAdapterSpec({ script: learns ? [{ say: "42" }, { say: DRAFT }] : [{ say: "42" }], tools: {}, hooks: quiet }, { requests });
     const createLoop = (deps) => {

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { serve, client, follow } from "./support.mjs";
-import { learningFolderOf, seedOf } from "../dist/learning.js";
+import { seedOf } from "../dist/learning.js";
+import { learningStoreOf } from "../dist/learn/store-of.js";
 import { learningCommit } from "../dist/learn/commit.js";
 
 async function register(api, id, learning = false, runtime = "claude-agent-sdk") {
@@ -161,13 +162,9 @@ for (const runtime of ["codex-sdk", "eve"]) test(`${runtime}: a fresh SDK run re
   assert.equal(first.status, 201, JSON.stringify(first.body));
   // The owner's correction on the agent's learning main, as a run's merge lands one.
   await seedOf(data, id);
-  const folder = learningFolderOf(data, id);
-  try {
-    const merged = await learningCommit(folder.workspace, { runId: "owner-correction", reason: "The owner's correction", files: [], correction: "Begin every answer with Verified." });
-    assert.equal(merged.ok, true, JSON.stringify(merged));
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(data, id);
+  const merged = await learningCommit(folder, { runId: "owner-correction", reason: "The owner's correction", files: [], correction: "Begin every answer with Verified." });
+  assert.equal(merged.ok, true, JSON.stringify(merged));
   const second = await api(
     "POST",
     `/agents/${id}/sdk-runs`,

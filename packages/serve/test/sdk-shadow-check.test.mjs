@@ -6,7 +6,8 @@ import { promotionsOf, promotionOf, championOf, recordPromotion } from '../dist/
 import { heldNamesOf } from '../dist/learn/compile.js';
 import { workflowDigest } from '../dist/runner/workflow-first.js';
 import { toolFlowsFor } from '../dist/runner/promotion.js';
-import { learningFolderOf, secretsShown } from '../dist/learning.js';
+import { secretsShown } from '../dist/learning.js';
+import { learningStoreOf } from '../dist/learn/store-of.js';
 import { learningCommit } from '../dist/learn/commit.js';
 
 const tool = { name: 'mcp:backend/status', description: 'Read release status.', input_schema: { type: 'object' }, permission: 'allow', price_usd: 0 };
@@ -50,14 +51,12 @@ async function finish(server, receipt, event, completion = {}, extra = []) {
 const cancel = (server, receipt) => server.send(receipt)('POST', `/sdk-runs/${receipt.run_id}/complete`, { status: 'cancelled', answer: '' });
 /** Lands `next` as the folder's newest revision of the status workflow, as a recompile or an owner's edit would. */
 async function land(server, next = nextFlow) {
-  const folder = learningFolderOf(server.data, server.id);
-  try {
-    const committed = await learningCommit(folder.workspace, { runId: `land-${workflowDigest({ workflow: JSON.stringify(next.workflow) })}`, reason: 'A separately compiled revision.', files: [
-      { path: 'workflows/status/workflow.json', text: JSON.stringify(next.workflow) },
-      { path: 'workflows/status/README.md', text: `---\nname: status\ndescription: ${next.description}\n---\n` },
-    ] });
-    assert.equal(committed.ok, true, JSON.stringify(committed));
-  } finally { await folder.end(); }
+  const folder = learningStoreOf(server.data, server.id);
+  const committed = await learningCommit(folder, { runId: `land-${workflowDigest({ workflow: JSON.stringify(next.workflow) })}`, reason: 'A separately compiled revision.', files: [
+    { path: 'workflows/status/workflow.json', text: JSON.stringify(next.workflow) },
+    { path: 'workflows/status/README.md', text: `---\nname: status\ndescription: ${next.description}\n---\n` },
+  ] });
+  assert.equal(committed.ok, true, JSON.stringify(committed));
 }
 /** Moves the reservation of `receipt`'s check two hours back, past its deadline, as a turn the backend never completed. */
 async function expire(server, receipt) {

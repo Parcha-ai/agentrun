@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { saveSignIn, signInsOverStore } from "../dist/sign-ins-store.js";
 import { WITHHELD_LEARNING } from "../dist/handed-values.js";
-import { learningWorkspace } from "../dist/workspace/index.js";
+import { learningStoreOf } from "../dist/learn/store-of.js";
 import { learningCommit } from "../dist/learn/commit.js";
 import { seedOf } from "../dist/learning.js";
 import { agent, serve, withEnv } from "./support.mjs";
@@ -29,13 +29,9 @@ async function world(t, { other } = {}) {
   await signInsOverStore(server.store, key, { remove: async () => {} }).forget("alpha", (await server.store.signIns.list("alpha"))[0].name);
   await saveSignIn(server.store, key, { agentId: "alpha", provider: "browserbase", pointer: LIVE });
   await seedOf(server.data, "alpha");
-  const folder = learningWorkspace({ mode: "local", data: server.data, agentId: "alpha" });
-  try {
-    const made = await learningCommit(folder.workspace, { runId: "run_signin", reason: "feedback", files: [], correction: `Open ${LIVE}, or the old ${FORGOTTEN}.` });
-    assert.equal(made.ok, true, JSON.stringify(made));
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(server.data, "alpha");
+  const made = await learningCommit(folder, { runId: "run_signin", reason: "feedback", files: [], correction: `Open ${LIVE}, or the old ${FORGOTTEN}.` });
+  assert.equal(made.ok, true, JSON.stringify(made));
   return server;
 }
 

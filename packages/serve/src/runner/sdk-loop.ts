@@ -5,7 +5,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import { freeRequestLimitOf } from "@parcha/agentrun-kernel/kernel/cap";
-import { learningFolderOf, secretsShown } from "../learning.js";
+import { secretsShown } from "../learning.js";
+import { learningStoreOf } from "../learn/store-of.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { RunLaunch } from "../run-launch.js";
 import { cliPolicyOf, closeSdkInbox, type SdkInbox, sdkInbox } from "../sdk/runs.js";
@@ -289,7 +290,7 @@ export function createSdkLoop(
               const end = learningEndOfRun(launch, {
                 store: host.store,
                 data: host.data,
-                learningFolder: (id) => learningFolderOf(host.data, id),
+                learningStore: (id: string) => learningStoreOf(host.data, id),
                 env: host.env ?? process.env,
                 stored: () => storeSecrets(host.store, host.sealKey, host.data),
               });

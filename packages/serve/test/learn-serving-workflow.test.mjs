@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import { workflowNodesOf } from "../dist/learn/workflow-nodes.js";
-import { git, resnap } from "./learn-support.mjs";
+import { git } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve, withEnv } from "./support.mjs";
 
@@ -73,7 +73,6 @@ test("the promotions read has the champion's own revision, by its recorded diges
     land(text, `learning: run-${i}: merged\n\nRun-Id: run-${i}`);
     items.push({ workflow: "answer", digest: digestOf(text), at: new Date(Date.UTC(2026, 10, 17, 7, i)).toISOString(), decided: "hold", reason: "its draft failed its checks", check: { ...bar, attempt: 2, n: 5, agreed: 0, alone: 0, of: [] } });
   }
-  await resnap(data, "source");
   await store.settings.put("learning.promotions.source", { v: 1, items });
   // A page of the workflow's history (20 changes by default) no longer holds the champion.
   const page = (await api("GET", "/agents/source/learning/workflows/answer/revisions")).body;

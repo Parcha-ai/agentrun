@@ -35,7 +35,8 @@ import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isObject, type Json } from "../validate.js";
 import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
 import { lastRunsOf, sinceReset } from "../learn/compile.js";
-import { readLearning, writeLearning, type LearningFolder } from "../learn/folder.js";
+import { readLearning, writeLearning } from "../learn/folder.js";
+import type { LearningStore } from "../learn/store.js";
 import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
 import { excerptShown } from "../learn/secrets.js";
 import type { Shown } from "../learning.js";
@@ -50,7 +51,7 @@ import { held, heldEndOfRun } from "./held.js";
 const RUN_CAP_MIN_USD = 0.01;
 
 /** What the audit reads and writes at a claim (or the server's grade): the agent, the run claimed (none for a grade),
- *  its revision (whose definition holds the numbers) and launch, the agent's learning folder, the host's secrets as a
+ *  its revision (whose definition holds the numbers) and launch, the agent's learning store, the host's secrets as a
  *  hold's texts are cut of them (`shown`, as a check's are), the seal key (a shadow is handed the per_run MCP
  *  credentials its served run was). */
 export type AuditDeps = {
@@ -58,7 +59,7 @@ export type AuditDeps = {
   readonly agentId: string;
   readonly revisionId: string;
   readonly context: Context;
-  readonly folder: () => LearningFolder;
+  readonly learning: LearningStore;
   readonly shown: () => Promise<Pick<Shown, "text">>;
   readonly log: (line: string) => void;
   readonly sealKey?: Buffer;
@@ -101,7 +102,7 @@ export async function agreeOnOfRevision(store: Pick<Store, "agents">, revisionId
 
 /** The served answer shadow run `shadowRun` audits: its open line's `turn`'s answer, read from the served run by that row's
  *  id (what settleAudits compares the shadow's answer with); null when no open line names it, or it names no turn. */
-export async function auditedAnswerOf(deps: Pick<AuditDeps, "store" | "context" | "folder">, shadowRun: string): Promise<string | null> {
+export async function auditedAnswerOf(deps: Pick<AuditDeps, "store" | "context" | "learning">, shadowRun: string): Promise<string | null> {
   const open = openAudits(await readLedger(deps)).find((line) => line.shadow_run === shadowRun);
   return open ? auditedAnswer(deps, open) : null;
 }
@@ -308,44 +309,32 @@ export async function gradeRow(deps: AuditDeps, run: RunRow, correct: boolean): 
   await holdByLedger(deps, rowsOf(all));
 }
 
-/** The ledger's lines on the agent's learning folder's main. */
-async function readLedger(deps: Pick<AuditDeps, "folder">): Promise<LedgerLine[]> {
-  const folder = deps.folder();
-  try {
-    return await readLearning(folder.workspace, ledgerOf);
-  } finally {
-    await folder.end().catch(() => undefined);
-  }
-}
+/** The ledger's lines on the agent's learning store's main. */
+const readLedger = (deps: Pick<AuditDeps, "learning">): Promise<LedgerLine[]> => readLearning(deps.learning, ledgerOf);
 
 /** Appends `lines` (each not in the ledger yet, lineKey; a row's verdict read by `agreed` once it is known to be new) in
  *  their order, and answers the ledger after (`all`) with the lines it appended. A grade's row (`again`) replaces an
  *  earlier grade of the same run. */
 async function addLines(deps: AuditDeps, lines: readonly LedgerLine[], agreed?: (row: AuditRow) => Promise<boolean | null>, again = false): Promise<{ all: LedgerLine[]; added: LedgerLine[] }> {
-  const folder = deps.folder();
-  try {
-    const verdicts = new Map<string, boolean | null>();
-    const done = await writeLearning(folder.workspace, async (read) => {
-      const before = (await ledgerOf(read)).filter((one) => !again || !lines.some((line) => lineKey(line) === lineKey(one)));
-      const known = new Set(before.map(lineKey));
-      const fresh: LedgerLine[] = [];
-      for (const line of lines) {
-        const key = lineKey(line);
-        if (known.has(key)) continue;
-        if (line.source === "started" || !agreed) {
-          fresh.push(line);
-          continue;
-        }
-        if (!verdicts.has(key)) verdicts.set(key, await agreed(line));
-        fresh.push({ ...line, agreed: verdicts.get(key)! });
+  const verdicts = new Map<string, boolean | null>();
+  const done = await writeLearning(deps.learning, async (read) => {
+    const before = (await ledgerOf(read)).filter((one) => !again || !lines.some((line) => lineKey(line) === lineKey(one)));
+    const known = new Set(before.map(lineKey));
+    const fresh: LedgerLine[] = [];
+    for (const line of lines) {
+      const key = lineKey(line);
+      if (known.has(key)) continue;
+      if (line.source === "started" || !agreed) {
+        fresh.push(line);
+        continue;
       }
-      const change = auditChange(before, fresh);
-      return { result: { all: [...before, ...change.added], added: change.added }, ...(change.change ? { change: change.change } : {}) };
-    });
-    return done.result;
-  } finally {
-    await folder.end().catch(() => undefined);
-  }
+      if (!verdicts.has(key)) verdicts.set(key, await agreed(line));
+      fresh.push({ ...line, agreed: verdicts.get(key)! });
+    }
+    const change = auditChange(before, fresh);
+    return { result: { all: [...before, ...change.added], added: change.added }, ...(change.change ? { change: change.change } : {}) };
+  });
+  return done.result;
 }
 
 /** The hold rule over the ledger's rows `all` for each workflow that serves now (its champion's digest), whether or not

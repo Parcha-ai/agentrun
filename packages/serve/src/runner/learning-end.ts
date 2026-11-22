@@ -27,7 +27,8 @@ import { correctionRefused, learningCommit, type LearningChange, type LearningCo
 import { CAPS, type Change, checkDraft, problemWords, type Problem, unstorable } from "../learn/index.js";
 import { repickSiteOf } from "../learn/check.js";
 import { repickLabelOf, repickRewrite } from "../learn/repick.js";
-import { folderAt, type FolderRead, holdsCommit, type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
+import { folderAt, type FolderRead, holdsCommit, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
+import type { LearningStore } from "../learn/store.js";
 import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, sinceReset, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, draftFailedOf, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
 import { reviseAttemptOf } from "./promotion.js";
 import { loopOf, repickOf } from "../learning-setting.js";
@@ -60,15 +61,15 @@ import { mcpNameOf } from "../tool-names.js";
 import { held, heldEndOfRun } from "./held.js";
 
 /** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
- *  the agent's learning folder (where the run's place keeps it), the runner's environment (the host's secrets a draft or
+ *  the agent's learning store (learn/store-of.ts learningStoreOf), the runner's environment (the host's secrets a draft or
  *  a correction is refused for), and what the run was handed (its claim's keys, its sign-in's pointers through
  *  `signIns`), which it never learns. */
 export interface LearningEndDeps {
   readonly store: Store;
   readonly data: string;
-  /** Agent `agentId`'s learning folder, where the run's place keeps it: learningWorkspace({ mode: "local", agentId, data })
-   *  in Mode 1, { mode: "archil", agentId, archil } in Mode 2. Opened for each read or write, and ended after it. */
-  readonly learningFolder: (agentId: string) => LearningFolder;
+  /** Agent `agentId`'s learning store: the same one the server reads (learn/store-of.ts learningStoreOf), in every
+   *  mode. */
+  readonly learningStore: (agentId: string) => LearningStore;
   readonly env?: NodeJS.ProcessEnv;
   /** The agent's sign-ins, opened (sign-ins-store.ts signInReads over the store and the seal key): the pointers the run's
    *  row says it was handed are read back through them and never learned. Absent, a run marked as handed one learns
@@ -132,7 +133,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     },
     // A round whose merge is on main already (a stop after its commit, before its end was saved) is not checked for room
     // again: its merge gives back what it did.
-    correctionRefused: ({ runId, agentId, round: at, text, refuse }) => withFolder(deps, agentId, (folder) => correctionRefused(folder.workspace, text, refuse, { runId, round: at })),
+    correctionRefused: ({ runId, agentId, round: at, text, refuse }) => correctionRefused(deps.learningStore(agentId), text, refuse, { runId, round: at }),
     // A run with no workflow binding (an SDK run's `noWorkflows`) compiles nothing.
     ...(start.noWorkflows ? {} : {
       compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => compileAskOf(deps, { ...input, input: launch.input, seedWorkflows: start.workflows?.length ?? 0, corrections: start.section }),
@@ -158,7 +159,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     checkDraft: ({ runId, agentId, draft, refuse, revised }) => checkDraftOf(deps, { runId, agentId, seed, draft, refuse, ...(revised ? { revised } : {}) }),
     commit: async ({ runId, agentId, round: at, draft, correction, refuse }) => {
       const reason = draft ? `Compiled the job as workflow ${draft.name}${correction !== undefined ? ", with its owner's correction" : ""}.` : "Its owner's correction.";
-      const done = await commitDirect({ folder: () => deps.learningFolder(agentId), log: deps.log ?? (() => undefined) }, {
+      const done = await commitDirect({ store: deps.learningStore(agentId), log: deps.log ?? (() => undefined) }, {
         runId, round: at, reason, seed, ...(mustHold ? { mustHold } : {}), files: draft ? draft.files.map((file) => ({ ...file })) : [],
         ...(draft?.held?.length ? { held: [...draft.held] } : {}), ...(draft?.bases ? { bases: draft.bases } : {}),
         ...(correction !== undefined ? { correction, refuseValues: refuse } : {}),
@@ -178,15 +179,14 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // The one check at the entry of a run's learning end, before any merge, look-back, compile, draft check or record: a
     // run whose seed was read at or before a reset of its agent's learning (its watermark, learn/promote.ts resetAtOf; a
     // start that records no time is read as before it) learns nothing, whole. Its corrections and compile would land on
-    // what the reset left. Read by time alone: a Mode 2 run's end writes the folder on its disk, which never held the
-    // seed the server read from its own folder, so a commit missing here says nothing of a reset.
+    // what the reset left. Read by time alone: a store removed and made again holds none of the commits before it.
     const reset = await resetAtOf(deps.store.settings, input.agentId);
     if (reset !== undefined && !(start.seededAt !== undefined && start.seededAt > reset)) {
       return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "reset", detail: said.reset } } }] };
     }
-    // The second wall, once the agent's learning was reset: a seed this folder holds now is one its merge must still
-    // find (commit.ts mustHold), so a reset after this check refuses the merge whole in the script.
-    const mustHold = reset !== undefined && (await withFolder(deps, input.agentId, (folder) => holdsCommit(folder.workspace, start.seed!))) ? start.seed! : undefined;
+    // The second wall, once the agent's learning was reset: a seed the store holds now is one its merge must still find
+    // (commit.ts mustHold), so a reset after this check refuses the merge whole in the store's save.
+    const mustHold = reset !== undefined && (await holdsCommit(deps.learningStore(input.agentId), start.seed!)) ? start.seed! : undefined;
     // Which end of the run this is: the round after the newest it kept (a follow-up opened the run again after it), else
     // its first. A replayed end reads the same round: its rows are written only with the end that closes it.
     const prior = await deps.store.learning.proposal(input.runId);
@@ -242,33 +242,17 @@ export async function capSpendOf(store: Pick<Store, "runs">, runId: string, entr
   return beside === null ? null : spent + beside;
 }
 
-/** `read` over agent `agentId`'s learning folder, opened for it and always ended after. */
-async function withFolder<T>(deps: Pick<LearningEndDeps, "learningFolder">, agentId: string, read: (folder: LearningFolder) => Promise<T>): Promise<T> {
-  const folder = deps.learningFolder(agentId);
-  try {
-    return await read(folder);
-  } finally {
-    await folder.end().catch(() => undefined);
-  }
-}
-
 /**
- * A run's merge on the agent's learning folder, written by the runner directly (learn/commit.ts learningCommit, one
- * exec): its compiled draft's files and its owner's correction, committed by `change.runId` (its Run-Id trailer). A file
+ * A run's merge on the agent's learning store, written by the runner directly (learn/commit.ts learningCommit, one
+ * save): its compiled draft's files and its owner's correction, committed by `change.runId` (its Run-Id trailer). A file
  * changed on main since the run's seed (or a revision's `bases` commit) is a conflict, never written over; a correction
  * that holds what must never be stored, or would take corrections.md past its cap, is refused (past the cap beside a
- * draft, it is left out alone and the draft merges). Any failure is logged by its reason alone. The folder is always
- * released.
+ * draft, it is left out alone and the draft merges). Any failure is logged by its reason alone.
  */
-export async function commitDirect(deps: { readonly folder: () => LearningFolder; readonly log: (line: string) => void }, change: LearningChange): Promise<LearningCommitResult> {
-  const folder = deps.folder();
-  try {
-    const done = await learningCommit(folder.workspace, change);
-    if (!done.ok) deps.log(`learning: run ${change.runId}: its merge could not be written (${done.reason})`);
-    return done;
-  } finally {
-    await folder.end();
-  }
+export async function commitDirect(deps: { readonly store: LearningStore; readonly log: (line: string) => void }, change: LearningChange): Promise<LearningCommitResult> {
+  const done = await learningCommit(deps.store, change);
+  if (!done.ok) deps.log(`learning: run ${change.runId}: its merge could not be written (${done.reason})`);
+  return done;
 }
 
 /** A merge's result as the hook reads it. */
@@ -380,12 +364,12 @@ export async function checkDraftOf(deps: LearningEndDeps, input: { runId: string
   const readmePath = `${WORKFLOWS_DIR}/${name}/README.md`;
   const revised = input.revised && input.revised.workflow === name && input.revised.base !== input.seed ? input.revised : undefined;
   const base = revised?.base ?? input.seed;
-  const at = await withFolder(deps, input.agentId, async (folder) => {
-    const now = await readSnapshot(folder.workspace);
-    const snapshot = now?.main === base ? now : await snapshotAt(folder.workspace, base);
-    if (!snapshot) throw new Error(`the learning folder has no commit ${base}`);
-    return { snapshot, texts: (await textsAt(folder.workspace, base, [jsonPath, readmePath])) ?? {} };
-  });
+  const at = await (async (learning: LearningStore) => {
+    const now = await readSnapshot(learning);
+    const snapshot = now?.main === base ? now : await snapshotAt(learning, base);
+    if (!snapshot) throw new Error(`the learning store has no commit ${base}`);
+    return { snapshot, texts: (await textsAt(learning, base, [jsonPath, readmePath])) ?? {} };
+  })(deps.learningStore(input.agentId));
   if (at.texts[jsonPath] === json && at.texts[readmePath] === readme) return { errors: [] };
   const refused = (problems: readonly Problem[]) => ({ errors: problems.map((problem) => problemWords([problem])), problems });
   const held = new Set(at.snapshot.workflows.flatMap((item) => item.files.map(({ path }) => path)));
@@ -600,7 +584,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const shown = secretsShown(input.refuse);
   const holds = (value: unknown) => holdsSecret(typeof value === "string" ? value : (JSON.stringify(value) ?? ""), shown);
   const leftOut = { workflows: new Set<string>(), traces: 0, input: false };
-  const folder = deps.learningFolder(input.agentId);
+  const learning = deps.learningStore(input.agentId);
   // `main`: the commit the snapshot read is main's at, which `current` was read from.
   let read: { workflows: number; current?: string; held?: PromotionRecord; main?: string };
   try {
@@ -627,17 +611,15 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     };
     // A round that merged already (a crash between its commit and its end): main holds its own merge, so the turn is
     // decided again on main as that merge read it (its parent), and the replayed answer lands on the merge it made
-    // (learn/commit.ts learningCommit: a round merges once), never a drop that leaves its commit unrecorded. A stop
-    // between the merge and its diff file is read back from the run's ref (runMergeOf).
-    const own = await runMergeOf(folder.workspace, input.runId, input.round);
-    const before = own ? await folderAt(folder.workspace, own.parent) : undefined;
+    // (learn/commit.ts learningCommit: a round merges once), never a drop that leaves its commit unrecorded: its merge
+    // is found by its marker (runMergeOf).
+    const own = await runMergeOf(learning, input.runId, input.round);
+    const before = own ? await folderAt(learning, own.parent) : undefined;
     read = before
       ? await readFrom({ snapshot: before.snapshot, body: async (path, oid) => { const blob = before.blobs.get(oid); if (!blob) throw new Error(`${path} is not in ${own!.parent}`); return blob.toString("utf8"); } })
-      : await readLearning(folder.workspace, readFrom);
+      : await readLearning(learning, readFrom);
   } catch {
     return undefined;
-  } finally {
-    await folder.end().catch(() => undefined);
   }
   // What it left out, by name and count: said once the facts are gathered, or now when it asks nothing.
   const sayLeftOut = () => {

@@ -9,7 +9,8 @@ import type { AgentEntry } from "../agents-store.js";
 import { uuidv7 } from "../agents-store.js";
 import { launchBody, type RunLaunch } from "../run-launch.js";
 import { learningStartFor, type StartDeps } from "../runs-over-store.js";
-import { chooseWorkflows, type LearnedWorkflow, learningFolderOf, seedAt, secretsShown, withAgentRepo } from "../learning.js";
+import { chooseWorkflows, type LearnedWorkflow, seedAt, secretsShown, withAgentRepo } from "../learning.js";
+import { learningStoreOf } from "../learn/store-of.js";
 import { INSTRUCTION_EVIDENCE_BYTES } from "../native/instructions.js";
 import { CLI_POLICY_BYTES } from "../cli-learning/policy.js";
 import { refuseWhileNoRunner } from "../runner/presence.js";
@@ -286,7 +287,7 @@ export class SdkRuns {
       if (learning.seedFailed)
         throw new ApiError(
           "unavailable",
-          "The learning seed could not be read. Retry after restoring the agent learning folder.",
+          "The learning seed could not be read. Retry once the agent's learning store can be reached.",
         );
     }
     const revision = entry.revision;
@@ -402,30 +403,28 @@ export class SdkRuns {
     };
   }
   private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; candidates: LearnedWorkflow[] }> {
-    const folder = learningFolderOf(this.data, agentId);
-    try {
-      const seed = await seedAt(folder.workspace, revision);
-      const { flows } = chooseWorkflows(seed, secretsShown(this.secrets(), { local: true }));
-      const dsl = await import("@parcha/agentrun-dsl");
-      const { tools, gated, deniedBy } = sdkDraftTools(binding.workflow_tools);
-      const records = await promotionsOf(this.store.settings, agentId);
-      let room = 256 * 1024;
-      const compatible = (flow: LearnedWorkflow) => {
-        const bytes = Buffer.byteLength(JSON.stringify(flow));
-        if (bytes > room || draftProblems(dsl, flow.workflow, tools, gated, deniedBy, undefined, binding.workflow_adapters).length) return false;
-        room -= bytes;
-        return true;
-      };
-      const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [];
-      const atCommit = async (name: string, commit: string) =>
-        chooseWorkflows(await seedAt(folder.workspace, commit), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
-      for (const flow of flows) {
-        const { text: serving } = await championTextOf(records, flow, atCommit);
-        if (serving && compatible(serving)) workflows.push(serving);
-        if ((!serving || workflowDigest(serving) !== workflowDigest(flow)) && compatible(flow)) candidates.push(flow);
-      }
-      return { workflows, candidates };
-    } finally { await folder.end(); }
+    const learning = learningStoreOf(this.data, agentId);
+    const seed = await seedAt(learning, revision);
+    const { flows } = chooseWorkflows(seed, secretsShown(this.secrets(), { local: true }));
+    const dsl = await import("@parcha/agentrun-dsl");
+    const { tools, gated, deniedBy } = sdkDraftTools(binding.workflow_tools);
+    const records = await promotionsOf(this.store.settings, agentId);
+    let room = 256 * 1024;
+    const compatible = (flow: LearnedWorkflow) => {
+      const bytes = Buffer.byteLength(JSON.stringify(flow));
+      if (bytes > room || draftProblems(dsl, flow.workflow, tools, gated, deniedBy, undefined, binding.workflow_adapters).length) return false;
+      room -= bytes;
+      return true;
+    };
+    const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [];
+    const atCommit = async (name: string, commit: string) =>
+      chooseWorkflows(await seedAt(learning, commit), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
+    for (const flow of flows) {
+      const { text: serving } = await championTextOf(records, flow, atCommit);
+      if (serving && compatible(serving)) workflows.push(serving);
+      if ((!serving || workflowDigest(serving) !== workflowDigest(flow)) && compatible(flow)) candidates.push(flow);
+    }
+    return { workflows, candidates };
   }
   private async modify(runId: string, change: (row: SdkInbox) => SdkInbox, limit = TOTAL_LIMIT): Promise<void> {
     for (let retry = 0; retry < 20; retry++) {

@@ -16,7 +16,7 @@ import { test } from "node:test";
 import { agentFolderOf } from "../dist/files.js";
 import { shadowRunId } from "../dist/learn/audit.js";
 import { seedOf } from "../dist/learning.js";
-import { git, resnap } from "./learn-support.mjs";
+import { git } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 import { outboxOf, PRIVATE_OK, receiver } from "./webhook-support.mjs";
@@ -64,7 +64,6 @@ async function world(t, learning, tools = [], options = {}) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, "source");
   const main = git(repo, ["rev-parse", "main"]);
   await store.settings.put("learning.promotions.source", { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: main }] });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();

@@ -28,7 +28,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { claimPromotion, promotionGate } = await import("../dist/runner/promotion.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf, promotionsShown } = await import("../dist/learn/promote.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { askedForCompile } = await import("../dist/learn/compile.js");
 const { secretsShown, seedOf } = await import("../dist/learning.js");
@@ -141,12 +141,8 @@ async function world(t, { learning = true, flow, submit, revise = "broken" }) {
     return row;
   };
   const audits = async () => {
-    const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
-    try {
-      return await readAudits(folder.workspace);
-    } finally {
-      await folder.end();
-    }
+    const folder = learningStoreOf(dir, "agent-1");
+    return await readAudits(folder);
   };
   /** The promotions read as GET /agents/{id}/learning/promotions builds it (no audit rows, the default numbers). A
    *  workflow nothing serves has no champion (null); the route reads a serving one's from the learning folder, which this
@@ -193,7 +189,7 @@ test("(a) two claims serving the refused revision at once write one hold between
   const launch = readLaunchBody(await w.launchOf("What is six times seven"));
   const claim = (runId) => promotionGate(claimPromotion({
     store: w.server, agentId: "agent-1", runId, revisionId: "rev-1", launch, context: BACKGROUND_CONTEXT, log: () => {},
-    shown: async () => secretsShown([]), folder: () => learningWorkspace({ mode: "local", data: w.dir, agentId: "agent-1" }),
+    shown: async () => secretsShown([]), learning: learningStoreOf(w.dir, "agent-1"),
   }));
   const laid = { name: "answer", description: "Answers a question as a number", workflow: JSON.stringify(REFUSED) };
   await Promise.all([claim("claim-a")(laid, digest), claim("claim-b")(laid, digest)]);

@@ -23,7 +23,8 @@ const { runLearningEnd, runLearningOverStore } = await import("../dist/store-rea
 const { recordPromotion } = await import("../dist/learn/promote.js");
 const { textsAt } = await import("../dist/learn/folder.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
-const { learningFolderOf, secretsShown, seedOf } = await import("../dist/learning.js");
+const { secretsShown, seedOf } = await import("../dist/learning.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { said } = await import("../dist/learning-words.js");
 const { saveToolSettings } = await import("../dist/tool-plane.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
@@ -73,7 +74,7 @@ async function world(t, body, launchOf, setup = async () => {}) {
     stores.push(store);
     const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
     // Mode 1: the agent's learning folder is the local one under the data directory.
-    const endOfRun = endOfRunOf({ store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId) });
+    const endOfRun = endOfRunOf({ store, data: dir, env: {}, learningStore: (agentId) => learningStoreOf(dir, agentId) });
     const createLoop = (deps) => createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, ...(endOfRun ? { endOfRun } : {}) });
     runners.push(startRunner({ store, createLoop, name: "runner-a", ...TIMING }));
   };
@@ -93,12 +94,8 @@ async function world(t, body, launchOf, setup = async () => {}) {
   };
   /** The texts of `paths` on agent-1's learning folder at `commit`. */
   const textsOn = async (commit, paths) => {
-    const folder = learningFolderOf(dir, "agent-1");
-    try {
-      return await textsAt(folder.workspace, commit, paths);
-    } finally {
-      await folder.end();
-    }
+    const folder = learningStoreOf(dir, "agent-1");
+    return await textsAt(folder, commit, paths);
   };
   return { dir, server, launch, start, ended, turnOf, textsOn };
 }

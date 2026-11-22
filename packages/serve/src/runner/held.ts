@@ -21,6 +21,7 @@ import type { AlsoRow } from "../store/store.js";
 import type { RunModelKey } from "../store/seal.js";
 import type { EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
 import type { LearnedFirst } from "./learned-first.js";
+import type { LearningStore, StoreFile } from "../learn/store.js";
 
 /** One MCP tool of the claim, its call made by the runner (mcp-run.ts mcpForClaim), with what the gate reads of it. */
 export interface HeldMcpTool {
@@ -109,8 +110,8 @@ export interface Held {
   emailAccount(): Promise<OpenedAccount | undefined>;
   /** The server's calendar, opened, for a run whose revision grants calendar_events; else none. */
   calendar(): Promise<SavedCalendar | undefined>;
-  /** A call of the run's agent's learning folder (learn/folder.ts), the runner's own Workspace of it, held to what a
-   *  run's learning does there (run-child-host.ts learningCall). */
+  /** A read of the run's agent's learning store (learn/store.ts), the runner's own, held to reads (run-child-host.ts
+   *  learningCall). */
   learning(method: string, args: readonly unknown[]): Promise<unknown>;
   /** The harness `name`'s install for the claim (harness-install.ts installForClaim), run by the runner. */
   install(name: string, signal?: AbortSignal): Promise<void>;
@@ -165,30 +166,25 @@ export function heldSignInReads(): { peek(agentId: string, resolution: string): 
   };
 }
 
-/** The agent's learning folder in a run's own process (learn/folder.ts learningWorkspace): each call made by its runner on
- *  the folder of the claim's agent (Held.learning), whatever place this process names. No background program, mount or
- *  attach: a learning folder has none. */
-export function heldLearningFolder(): { readonly workspace: Workspace; end(): Promise<void> } {
-  const at = heldOrThrow("a run's learning folder");
+/** The agent's learning store in a run's own process (learn/store-of.ts learningStoreOf): its reads, each made by its
+ *  runner on the store of the claim's agent (Held.learning, run-child-host.ts learningCall), whatever data directory
+ *  this process names. A run's process never writes learning: its runner's end-of-run step does. */
+export function heldLearningStore(agentId: string): LearningStore {
+  const at = heldOrThrow("a run's learning store");
   const call = (method: string) => (...args: unknown[]) => at.learning(method, args) as Promise<never>;
   const none = (what: string) => async (): Promise<never> => {
-    throw new Error(`a learning folder has no ${what} in a run's own process`);
+    throw new Error(`a run's own process does not ${what} its agent's learning: its runner does`);
   };
-  const workspace = {
-    read: call("read"),
-    write: call("write"),
-    append: call("append"),
-    stat: call("stat"),
-    list: call("list"),
-    mkdir: call("mkdir"),
-    grep: call("grep"),
-    remove: call("remove"),
-    exec: call("exec"),
-    process: { start: none("background program"), list: none("background program"), output: none("background program"), signal: none("background program"), wait: none("background program") },
-    mountSpec: none("mount"),
-    attach: none("attach"),
-  } as unknown as Workspace;
-  return { workspace, end: async () => {} };
+  return {
+    id: `held:${agentId}`,
+    head: call("head"),
+    // A body crosses the channel as bytes: read back as a Buffer, as every store gives it.
+    read: async (ref, paths) => ((await at.learning("read", [ref, paths])) as StoreFile[] | undefined)?.map((file) => ({ ...file, body: Buffer.from(file.body) })),
+    log: call("log"),
+    diff: call("diff"),
+    save: none("save"),
+    remove: none("remove"),
+  };
 }
 
 /** A learning run's end-of-run step in a run's own process (learning-end.ts learningEndOfRun): its runner's

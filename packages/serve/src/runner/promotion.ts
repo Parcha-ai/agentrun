@@ -62,7 +62,7 @@ import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
 import { type FirstChoice, fits, laidFor, type Promoted, type ReplayOutcome, servedOf, type Serving, workflowDigest } from "./workflow-first.js";
-import type { LearningFolder } from "../learn/folder.js";
+import type { LearningStore } from "../learn/store.js";
 import { excerptShown } from "../learn/secrets.js";
 import { dslRefusalOf } from "../learn/workflow-draft.js";
 import type { Shown } from "../learning.js";
@@ -114,23 +114,17 @@ export interface PromotionDeps {
  *  run end, whose record names its commit (no claimed launch to read a seed from). */
 type DecideDeps = Pick<PromotionDeps, "store" | "agentId" | "log" | "shown"> & Partial<Pick<PromotionDeps, "launch" | "now">>;
 
-/** The claim's promotion ports: `folder`, the agent's learning folder where the run's place keeps it, a champion read
+/** The claim's promotion ports: `learning`, the agent's learning store, a champion read
  *  from it at its record's commit, cut of the server's secrets (`shown`) as the claim's lay is; and the workflow an earlier
  *  claim of this run served (`kept`, from its journal: none on a first claim). */
-export function claimPromotion(deps: Omit<PromotionDeps, "champion" | "kept"> & { readonly folder: () => LearningFolder }): PromotionDeps {
+export function claimPromotion(deps: Omit<PromotionDeps, "champion" | "kept"> & { readonly learning: LearningStore }): PromotionDeps {
   return {
     ...deps,
     kept: async () => (deps.runId ? servedOf(await runEntries(deps.store, deps.runId, deps.context).catch(() => [])) : undefined),
-    champion: async (name, commit) => (await workflowsAt({ folder: deps.folder, shown: deps.shown }, commit)).find((one) => one.name === name),
+    champion: async (name, commit) => (await workflowsAt({ learning: deps.learning, shown: deps.shown }, commit)).find((one) => one.name === name),
     newest: async (name) => {
-      const folder = deps.folder();
-      let main: string | undefined;
-      try {
-        main = (await readSnapshot(folder.workspace))?.main;
-      } finally {
-        await folder.end().catch(() => undefined);
-      }
-      const text = main ? (await workflowsAt({ folder: deps.folder, shown: deps.shown }, main)).find((one) => one.name === name) : undefined;
+      const main = (await readSnapshot(deps.learning))?.main;
+      const text = main ? (await workflowsAt({ learning: deps.learning, shown: deps.shown }, main)).find((one) => one.name === name) : undefined;
       return text ? workflowDigest(text) : undefined;
     },
   };
@@ -1021,7 +1015,7 @@ export interface ReplayAsk {
   readonly agentId: string;
   readonly context: Context;
   readonly log: (line: string) => void;
-  readonly folder: () => LearningFolder;
+  readonly learning: LearningStore;
   readonly shown: () => Promise<Shown>;
   readonly launchOf: (input: Json) => Promise<{ readonly launch: RunLaunch; readonly revisionId: string }>;
   readonly now?: () => number;
@@ -1030,14 +1024,8 @@ export interface ReplayAsk {
 /** The text of `name` at `digest` and the learning commit it is read from: a commit a record of that digest names (newest
  *  first), else the folder's main. When neither holds it, whether the agent has a workflow by that name at all (`named`:
  *  a record names it, or main holds it). */
-async function revisionOf(ask: Pick<ReplayAsk, "folder" | "shown">, records: readonly PromotionRecord[], name: string, digest: string): Promise<{ workflow: LearnedWorkflow; commit: string } | { named: boolean }> {
-  const folder = ask.folder();
-  let main: string | undefined;
-  try {
-    main = (await readSnapshot(folder.workspace))?.main;
-  } finally {
-    await folder.end().catch(() => undefined);
-  }
+async function revisionOf(ask: Pick<ReplayAsk, "learning" | "shown">, records: readonly PromotionRecord[], name: string, digest: string): Promise<{ workflow: LearnedWorkflow; commit: string } | { named: boolean }> {
+  const main = (await readSnapshot(ask.learning))?.main;
   const named = records.filter((one) => one.workflow === name && one.digest === digest && one.commit).map((one) => one.commit!).reverse();
   let onMain = false;
   for (const commit of new Set([...named, ...(main ? [main] : [])])) {

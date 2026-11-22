@@ -15,9 +15,9 @@ import { seedOf } from "../dist/learning.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { replayOf } from "../dist/tool-list.js";
-import { learningWorkspace } from "../dist/workspace/index.js";
+import { learningStoreOf } from "../dist/learn/store-of.js";
 import { readSnapshot } from "../dist/learn/folder.js";
-import { entriesOf, git, resnap } from "./learn-support.mjs";
+import { entriesOf, git } from "./learn-support.mjs";
 import { agent, answerFlow, follow, paidCallsOf, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -47,7 +47,6 @@ async function folderWith(data, id, files) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
 }
 
 
@@ -314,13 +313,9 @@ test("a learned workflow whose README's front matter does not read one way (not 
     assert.equal(seed.workflows.some((flow) => flow.name === "answer"), false, `${why}: ${JSON.stringify(seed.workflows)}`);
     // The one reader (learn/skills.ts learnedStatus) reads it retired in the folder's snapshot, as the console shows it: the
     // seed's read never gives its files, so the run never meets it.
-    const folder = learningWorkspace({ mode: "local", data, agentId: id });
-    try {
-      const snapshot = await readSnapshot(folder.workspace);
-      assert.deepEqual(snapshot.workflows.map(({ name, status }) => [name, status]), [["answer", "retired"]], why);
-    } finally {
-      await folder.end();
-    }
+    const folder = learningStoreOf(data, id);
+    const snapshot = await readSnapshot(folder);
+    assert.deepEqual(snapshot.workflows.map(({ name, status }) => [name, status]), [["answer", "retired"]], why);
   }
   // Closed at the end of the file, with no line after: its status is read, as the description is.
   const closed = await pinned(t, "front-eof", readme(`---\nname: answer\ndescription: ${DESCRIPTION}\nstatus: pending\n---`));

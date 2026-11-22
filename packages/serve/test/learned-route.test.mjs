@@ -18,7 +18,7 @@ import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { MODEL_KEYS } from "../dist/model.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { entriesOf, git, resnap } from "./learn-support.mjs";
+import { entriesOf, git } from "./learn-support.mjs";
 import { agent, answerFlow, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -47,7 +47,6 @@ async function folderWith(data, id, files) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
 }
 /** Agent `id` on `harness`, learning, with the `answer` workflow learned; one run of `ask`, ended. */
 async function ran(api, data, store, id, harness, { fields = {}, ask = ASK, ends = ["completed", "failed"], model } = {}) {

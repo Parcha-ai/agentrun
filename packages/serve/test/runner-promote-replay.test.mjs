@@ -36,7 +36,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf, recordPromotion, servingOf } = await import("../dist/learn/promote.js");
 const { replayView } = await import("../dist/runner/promotion.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { seedOf } = await import("../dist/learning.js");
@@ -367,14 +367,10 @@ const REVISED = workflowDigest({ workflow: JSON.stringify(revisedFlow) });
 
 /** Lands `flow`, a revision of answer, on the learning folder's main from `seed`, as a compile turn lands one. */
 async function landRevision(w, runId, flow, seed) {
-  const folder = learningWorkspace({ mode: "local", data: w.dir, agentId: "agent-1" });
-  try {
-    const merged = await learningCommit(folder.workspace, { kind: "merge", runId, reason: "revised answer", graded: {}, seed,
-      files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(flow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }] });
-    assert.equal(merged.ok, true, JSON.stringify(merged));
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(w.dir, "agent-1");
+  const merged = await learningCommit(folder, { kind: "merge", runId, reason: "revised answer", graded: {}, seed,
+    files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(flow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }] });
+  assert.equal(merged.ok, true, JSON.stringify(merged));
 }
 
 /** The world with answerFlow promoted at the folder's seed (the champion, as a claim records it) serving one run, then

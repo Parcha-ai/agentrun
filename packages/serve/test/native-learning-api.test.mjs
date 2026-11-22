@@ -4,7 +4,8 @@ import {mkdtemp,mkdir,symlink,chmod,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {serve,follow} from './support.mjs';
-import {learningFolderOf,seedOf} from '../dist/learning.js';
+import { seedOf } from '../dist/learning.js';
+import { learningStoreOf } from '../dist/learn/store-of.js';
 import {learningCommit} from '../dist/learn/commit.js';
 // A native public run starts from its agent's learned corrections (the seed on the learning folder's main), and its end
 // asks no model turn of the source session; Off supplies none and asks none.
@@ -19,8 +20,8 @@ test('native public run gives the learned corrections to a fresh run; Off suppli
  assert.equal((await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:true}})).status,200);
  const start=async content=>{const response=await api('POST',`/agents/${id}/runs`,{input:{content}});assert.equal(response.status,202,JSON.stringify(response.body));return response.body.run_id;};
  // The owner's correction on the agent's learning main, as a run's merge lands one.
- await seedOf(data,id);const folder=learningFolderOf(data,id);
- try{const merged=await learningCommit(folder.workspace,{runId:'owner-correction',reason:"The owner's correction",files:[],correction:'For release status answers, use the label Launch state followed by the status.'});assert.equal(merged.ok,true,JSON.stringify(merged));}finally{await folder.end();}
+ await seedOf(data,id);const folder=learningStoreOf(data,id);
+ const merged=await learningCommit(folder,{runId:'owner-correction',reason:"The owner's correction",files:[],correction:'For release status answers, use the label Launch state followed by the status.'});assert.equal(merged.ok,true,JSON.stringify(merged));
  const main=(await seedOf(data,id)).sha;
  const next=await start('Report the release status. It is ready.');await follow(api,next,['completed']);
  const learned=(await api('GET',`/runs/${next}`)).body;assert.equal(learned.result.final_answer,'Launch state: ready',JSON.stringify((await api('GET',`/runs/${next}/timeline`)).body));assert.equal(learned.native.learning_revision,main);

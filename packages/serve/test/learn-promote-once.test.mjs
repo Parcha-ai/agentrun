@@ -32,7 +32,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { putGrade, promotionsOf, promotionsShown, recordPromotion } = await import("../dist/learn/promote.js");
 const { WORKFLOW_NAME } = await import("../dist/learn/workflow-draft.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { askedForCompile } = await import("../dist/learn/compile.js");
@@ -161,16 +161,12 @@ async function world(t, { learning, prior = 0, flows = [{ name: "answer", descri
 
 /** Lands `workflow` as the next revision of `answer` on the learning folder's main, as a graded recompile merges it. */
 async function landRevision(dir, workflow, runId) {
-  const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
-  try {
-    const merged = await learningCommit(folder.workspace, {
-      kind: "merge", runId, reason: "revised answer", graded: {},
-      files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(workflow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }],
-    });
-    assert.equal(merged.ok, true, JSON.stringify(merged));
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(dir, "agent-1");
+  const merged = await learningCommit(folder, {
+    kind: "merge", runId, reason: "revised answer", graded: {},
+    files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(workflow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }],
+  });
+  assert.equal(merged.ok, true, JSON.stringify(merged));
 }
 
 const decisions = async (server) => (await promotionsOf(server.settings, "agent-1")).map(({ digest, decided }) => [digest, decided]);
@@ -424,7 +420,7 @@ test("(a) compile_after 5, 5 own completed runs then 250 workflow-served runs, t
     agents: { revision: async () => ({ body: { learning: { compile_after: 5 } } }) },
     learning: { proposal: async () => undefined },
   };
-  const deps = { store, learningFolder: () => { opened++; throw new Error("folder opened: the compile is due"); } };
+  const deps = { store, learningStore: () => { opened++; throw new Error("store opened: the compile is due"); } };
   await askOf(deps, { runId: "now", agentId: "agent-1", outcome: "completed", refuse: [], seedWorkflows: 0 }).catch(() => undefined);
   assert.equal(opened > 0, true, "the 5 own runs are found behind the 250 served ones: the compile is due");
 });

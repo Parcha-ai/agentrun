@@ -7,14 +7,14 @@
 //   the head's is refused with result.status "precondition_failed", "no changes to commit";
 // - a repo deleted is 404 to every read, and the same id made again starts empty (no main: /repos/files 404).
 // Commit ids are sha1 hex of their own fields, not git's: a store reads them back, never recomputes them.
-import { createHash, createPublicKey, verify } from "node:crypto";
+import { createHash, createPublicKey, KeyObject, verify } from "node:crypto";
 
 const ZERO = "0".repeat(40);
 
 /** A fake code.storage org `name`, its key's public half `publicKey` (PEM or KeyObject). `fetch` is what the adapter
  *  is handed; `calls` every request it made ({ method, path, repo }); `repos` the store, by id. */
 export function codeStorageFake({ name = "example-org", publicKey } = {}) {
-  const key = publicKey ? createPublicKey(publicKey) : undefined;
+  const key = publicKey === undefined ? undefined : publicKey instanceof KeyObject ? publicKey : createPublicKey(publicKey);
   /** id -> { commits: Map<sha, commit>, main: sha | null } */
   const repos = new Map();
   const calls = [];
@@ -56,11 +56,45 @@ export function codeStorageFake({ name = "example-org", publicKey } = {}) {
     return [...new Set([...before.keys(), ...after.keys()])].filter((path) => !before.has(path) || !after.has(path) || Buffer.compare(before.get(path), after.get(path)) !== 0).sort();
   };
   const lines = (bytes) => (bytes ? bytes.toString("utf8").replace(/\n$/, "").split("\n") : []);
+  /** The hunks of a unified diff of `old` to `now` (lines), three lines of context, as git writes them. */
+  function hunks(old, now) {
+    // The longest common subsequence, then the edit script from it: [" ", line] kept, ["-", line], ["+", line].
+    const n = old.length;
+    const m = now.length;
+    const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) lcs[i][j] = old[i] === now[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    const ops = [];
+    let i = 0;
+    let j = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && old[i] === now[j]) ops.push([" ", old[i++], j++]);
+      else if (j < m && (i === n || lcs[i][j + 1] >= lcs[i + 1][j])) ops.push(["+", now[j++]]);
+      else ops.push(["-", old[i++]]);
+    }
+    const out = [];
+    const changed = ops.map((op, k) => (op[0] !== " " ? k : -1)).filter((k) => k >= 0);
+    let k = 0;
+    while (k < changed.length) {
+      let start = Math.max(0, changed[k] - 3);
+      let end = Math.min(ops.length, changed[k] + 4);
+      while (k + 1 < changed.length && changed[k + 1] - 3 <= end) end = Math.min(ops.length, changed[++k] + 4);
+      k += 1;
+      let oldAt = 0;
+      let nowAt = 0;
+      for (const op of ops.slice(0, start)) {
+        if (op[0] !== "+") oldAt += 1;
+        if (op[0] !== "-") nowAt += 1;
+      }
+      const body = ops.slice(start, end);
+      const oldCount = body.filter((op) => op[0] !== "+").length;
+      const nowCount = body.filter((op) => op[0] !== "-").length;
+      const range = (at, count) => `${count ? at + 1 : at}${count === 1 ? "" : `,${count}`}`;
+      out.push(`@@ -${range(oldAt, oldCount)} +${range(nowAt, nowCount)} @@\n${body.map((op) => `${op[0]}${op[1]}\n`).join("")}`);
+    }
+    return out.join("");
+  }
   function rawDiff(path, before, after) {
-    const old = lines(before);
-    const now = lines(after);
-    const hunk = `@@ -${old.length ? 1 : 0},${old.length} +${now.length ? 1 : 0},${now.length} @@\n${old.map((line) => `-${line}\n`).join("")}${now.map((line) => `+${line}\n`).join("")}`;
-    return `diff --git a/${path} b/${path}\n--- ${before ? `a/${path}` : "/dev/null"}\n+++ ${after ? `b/${path}` : "/dev/null"}\n${hunk}`;
+    return `diff --git a/${path} b/${path}\n--- ${before ? `a/${path}` : "/dev/null"}\n+++ ${after ? `b/${path}` : "/dev/null"}\n${hunks(lines(before), lines(after))}`;
   }
   const commitView = (commit) => ({ sha: commit.sha, parent_shas: commit.parent ? [commit.parent] : [], message: commit.message, author_name: commit.author.name, author_email: commit.author.email, committer_name: commit.author.name, committer_email: commit.author.email, date: commit.date });
 
@@ -90,7 +124,7 @@ export function codeStorageFake({ name = "example-org", publicKey } = {}) {
   }
 
   async function fetch(input, init = {}) {
-    const url = new URL(typeof input === "string" ? input : input.url);
+    const url = new URL(input instanceof Request ? input.url : String(input));
     const method = (init.method ?? "GET").toUpperCase();
     const prefix = "/api/v1/";
     const path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : url.pathname;

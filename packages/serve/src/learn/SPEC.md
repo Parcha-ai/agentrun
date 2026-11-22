@@ -334,33 +334,30 @@ Over a cap is refused, never cut.
 
 ## The commit
 
-One commit on `main` per round by the learning script (`learning.sh`, one exec through the folder's Workspace:
-`folder.ts` `writeLearning`): the passing draft's files added or changed (a held one with `status: pending`) and the
+One commit on `main` per round, one save on the agent's learning store (`store.ts`: the local folder through
+`learning.sh`, or code.storage; `folder.ts` `writeLearning`): the passing draft's files added or changed (a held one with `status: pending`) and the
 owner's correction appended to `corrections.md`. Its message is `learning: <run id>: merged`, the reason, and a
-`Run-Id: <run id>` trailer. A round merges once: the script creates `refs/agentrun/runs/<run>` (`<run>.r<n>` for a
-later round) in the same ref transaction as `main`'s compare and swap, so a second merge of it, however it raced the
-first (a reclaimed run's two claims), writes nothing and reads the first's. A draft file that is not on
+`Run-Id: <run id>` trailer. A round merges once: its commit adds the marker `.agentrun/runs/<run>` (`<run>.r<n>` for a
+later round), and the store refuses a save whose key's marker (or its `.agentrun/purged/<run>`) is on the head it
+read, so a second merge of it, however it raced the first (a reclaimed run's two claims), writes nothing and reads the
+first's. A draft file that is not on
 main as it was on the run's seed (or the commit a revision read it at) is a conflict, never written over. `main` moves
-only from the commit the change was made on (the script's compare and swap; a lost race writes nothing and the change
-is computed again), and the same exec writes the run's diff (`.agentrun/diffs/<run>.json`) and, last, the folder's
-snapshot (`.agentrun/snapshot.json`, what every read reads). A stop between the merge and its diff leaves the run's
-ref with no diff: the next read of the round's merge (the end step's, or a second merge's) writes it from the ref. A person's replace of `corrections.md` is one commit the
-same way, under the ETag they read. A workflow is never deleted by a run: a retired one stays in the folder and
+only from the commit the change was made on (the store's compare and swap; a lost race writes nothing and the change
+is computed again), and the same commit holds main's snapshot (`.agentrun/snapshot.json`, what every read reads). A
+run's diff is the store's diff of the commit its marker names (`folder.ts` runMergeOf). A person's replace of
+`corrections.md` is one commit the same way, under the ETag they read. A workflow is never deleted by a run: a retired one stays in the folder and
 serves no run.
 
 ## The reset
 
-`DELETE /v2/agents/{id}/learning` (`learning-reset.ts`) deletes the folder whole, its git history and audit ledger
-included, on this server and on every Archil disk the agent's runs used (a Mode 2 run's end writes the folder on the
-disk its claim mounted: the agent's own, or one its launch named; `archil-routes.ts` removeLearningFolder, 503 while a
-disk can't be reached; `learning-of.ts` namedDisksOf: each disk a run of the agent named, a purged run's included),
-then the agent's promotions and grades (`delete.ts` deleteLearning); the agent and its runs stay. The agent's delete
-takes the same step on the launch-named disks; its own disk goes whole there. It cancels the runs that exist only for
+`DELETE /v2/agents/{id}/learning` (`learning-reset.ts`) removes the agent's learning store whole, its git history and
+audit ledger included (the local folder deleted, or the code.storage repository), then the agent's promotions and
+grades (`delete.ts` deleteLearning); the agent and its runs stay. The agent's delete takes the same step. It cancels the runs that exist only for
 learning (replays, audit shadows) and waits for them; a run of the agent's own still going refuses it (409
 `learning_busy`), since its learning lives in it, and nothing is deleted. Before the records go, each revision they
 name is kept in the agent's reset ledger (`learning.reset-ledger.<agent>`: workflow, digest and K alone), so a kept
 served run's cost still carries its revision's compile and check; an agent's delete removes the ledger. Each run's
-diff (`.agentrun/diffs/`) goes with the folder. The folder's next write starts a new history.
+diff goes with the store. The store's next write makes it again and starts a new history.
 
 A run on a disk its launch named learns nothing (`learning-of.ts`): its start reads no seed (`other_disk`), the runner
 drops any seed and workflow from its launch, and with no seed it stops before its compile. So the agent's records are
@@ -372,11 +369,9 @@ runs after it (`compile.ts` sinceReset): a run that started at or before it, or 
 (its launch's `seededAt`, read in the same queue as the reset), counts toward no compile_after and is no compile's
 trace, no check's or owner's replay input, no audit's draw and no past run of the money rule, and the loop view lists
 none of its compiles. A run seeded before the reset whose row was made after it learns nothing: its learning end drops it at its entry
-(reason `reset`), before any look-back, merge, compile or record. That check reads time alone: a Mode 2 run's end
-writes the folder on its disk, which never held the seed the server read from its own, so a commit missing there says
-nothing of a reset. The learning script is a second wall: once the agent was reset, a run whose folder holds its seed
-at its end's entry names it on its merge (`seed <commit>`), which the script refuses when the folder no longer holds
-it, a correction alone included. A grade of a run before the reset is kept, but writes no audit row (`runner/audit.ts`
+(reason `reset`), before any look-back, merge, compile or record. That check reads time alone. The store is a second
+wall: once the agent was reset, a run whose store holds its seed at its end's entry names it on its merge (`seed`),
+which the store refuses when it no longer holds it, a correction alone included. A grade of a run before the reset is kept, but writes no audit row (`runner/audit.ts`
 gradeRow), so a promotion of the same digest after the reset is never held by what came before it. An SDK start is
 admitted (its check reserved, its inbox and run row made) in the same queue (`sdk/runs.ts`): a start whose seed was read
 before the reset is refused (`503 unavailable`, start it again), so no check of a draft the reset deleted is reserved.

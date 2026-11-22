@@ -32,9 +32,8 @@
 //      a follow-up that would open one of its runs again are refused (store AgentDeleting / AgentArchived, each read in
 //      the transaction that would start the run). Then each of its runs not yet final, its learning runs included, is
 //      cancelled through the cancel path, and waited for until it is final.
-//   2. Its learning, by the learning module's deleteLearning (learn/delete.ts: its learning folder's files, here and on
-//      each Archil disk a launch of its runs named, a purged run's included, then its promotions and grades; its own
-//      disk goes whole in step 3; idempotent; it refuses with LearningInFlight while learning work is in flight, which
+//   2. Its learning, by the learning module's deleteLearning (learn/delete.ts: its learning store removed whole, then
+//      its promotions and grades; idempotent; it refuses with LearningInFlight while learning work is in flight, which
 //      answers 409 learning_busy with the agent left refusing runs).
 //   3. Its things: its triggers through the trigger engine (each one's registration upstream first, then its adapter
 //      settings, then its row), its saved sign-ins (each vendor object too), its own computer, its Archil disk; then each
@@ -55,13 +54,11 @@ import { LearningInFlight } from "./learn/delete.js";
 import { FINAL_STATES, type PurgeKept, type RunState, RunsMadeFromLeft, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
 import { forgetServed } from "./store-view.js";
 
-/** The delete of an agent's learning: the server's is the learning module's deleteLearning over the agent's learning
- *  folder, and its folder on each Archil disk a launch of its runs named, a purged run's included (learn/delete.ts;
- *  server.ts learningDisksOf), and its records. Idempotent; refuses with LearningInFlight while learning work of the
- *  agent is in flight. A reset of the agent's learning (learning-reset.ts), whose agent and runs stay, keeps its reset
- *  ledger and watermark (`keepResetLedger`) and deletes the folder on the agent's own disk too (`agentDisk`), which the
- *  agent's delete removes whole in its step 3. */
-export type DeleteLearning = (store: Store, agentId: string, options?: { keepResetLedger?: boolean; agentDisk?: boolean }) => Promise<unknown>;
+/** The delete of an agent's learning: the server's is the learning module's deleteLearning, its learning store removed
+ *  whole (learn/delete.ts), and its records. Idempotent; refuses with LearningInFlight while learning work of the agent
+ *  is in flight. A reset of the agent's learning (learning-reset.ts), whose agent and runs stay, keeps its reset ledger
+ *  and watermark (`keepResetLedger`). */
+export type DeleteLearning = (store: Store, agentId: string, options?: { keepResetLedger?: boolean }) => Promise<unknown>;
 
 /** A point of a delete a test may stop it at (AgentDeleteHost.at). An agent's: after step 1, after step 2, in step 3
  *  between a trigger's removal upstream and its settings', between its settings' and its row's, and in step 3 once its

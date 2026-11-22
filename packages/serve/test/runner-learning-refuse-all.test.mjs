@@ -24,7 +24,8 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
-const { learningFolderOf, seedOf } = await import("../dist/learning.js");
+const { seedOf } = await import("../dist/learning.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { sealedSettingsOverStore } = await import("../dist/sealed-settings-store.js");
 const { webhook } = await import("../dist/trigger-webhook.js");
@@ -104,7 +105,7 @@ async function learnedQuoting(t, plant) {
   const provider = { api: "anthropic-messages", origin: "https://route.invalid", credential: () => `not-a-secret-${"x"}` };
   const routeOf = async () => ({ model: MODEL, provider, price: () => 0, fetch: scriptedOrigin([{ say: `Called it with ${quoted}.` }, { say: "Noted." }, { say: leaky }, { say: leaky }, { say: leaky }, { say: leaky }], requests) });
   const deps = { env: {}, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf, computerForClaim: async () => ({ release: async () => {} }) };
-  const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId) });
+  const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, learningStore: (agentId) => learningStoreOf(dir, agentId) });
   const createLoop = (loopDeps) => createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(launch, run, deps, claim))({ ...loopDeps, endOfRun });
   runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING });
 

@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import { workflow } from "./learn-format-support.mjs";
-import { git, learner, made, resnap } from "./learn-support.mjs";
+import { git, learner, made } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { serve } from "./support.mjs";
 
@@ -31,7 +31,6 @@ test("each workflow's status says whether it serves: promoted serving, held twic
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, "viewer");
   await store.settings.put("learning.promotions.viewer", { v: 1, items: [
     { workflow: "promoted", digest: "a".repeat(16), at: at(1), decided: "promote", reason: "checked: promoted", check: { ...CHECK, attempt: 1, agreed: 5, alone: 5 } },
     // The live demo's: its check held, its recompile's check held too, and it stopped.
@@ -72,7 +71,6 @@ test("a promoted workflow the money rule stopped reads stopped, never serving, i
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, "costly");
   const promoted = (workflow, digest, minutes) => ({ workflow, digest, at: at(minutes), decided: "promote", reason: "checked: promoted", check: { ...CHECK, attempt: 1, agreed: 5, alone: 5 } });
   await store.settings.put("learning.promotions.costly", { v: 1, items: [promoted("dear", "f".repeat(16), 1), promoted("cheap", "9".repeat(16), 2)] });
 

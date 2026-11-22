@@ -2,13 +2,13 @@
 // `learning.pending` (drafts whose README.md is held with `status: pending`), for an agent that learns; read once per
 // commit of its folder's main, never per list call.
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { learningRepo, seedOf } from "../dist/learning.js";
 import { pendingTestHooks } from "../dist/learning-routes.js";
 import { workflow } from "./learn-format-support.mjs";
-import { git, resnap } from "./learn-support.mjs";
+import { git } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
 
@@ -22,7 +22,6 @@ async function commit(data, id, files) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
 }
 const readme = (name) => `---\nname: ${name}\ndescription: Answers the ${name} question; use when asked\n---\n`;
 const held = (text) => text.replace(/\n---\n/, "\nstatus: pending\n---\n");
@@ -76,10 +75,10 @@ test("pendingCount: a folder it cannot read counts as unknown (undefined), not 0
   const data = mkdtempSync(join(tmpdir(), "pending-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   assert.equal(await pendingCount(data, "never-made"), 0, "a folder never made: nothing waits");
-  // A folder whose snapshot (what every read reads) is not one the server can read.
-  const broken = join(learningRepo(data, "broken"), ".agentrun");
-  mkdirSync(broken, { recursive: true });
-  writeFileSync(join(broken, "snapshot.json"), "not a snapshot\n");
+  // A folder the server cannot read: a link where it should be.
+  const broken = learningRepo(data, "broken");
+  mkdirSync(dirname(broken), { recursive: true });
+  symlinkSync(data, broken);
   assert.equal(await pendingCount(data, "broken"), undefined, "a folder that can't be read: unknown, so the field is left out");
   // Two calls on a commit not yet counted read it once.
   await seedOf(data, "two");

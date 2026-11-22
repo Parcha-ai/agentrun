@@ -364,7 +364,7 @@ test("archil: a timeout over 295 s is refused (Archil cuts a call at 300 s), and
   await workspace.exec(["true"], { env: ENV, timeoutMs: 295_000 });
 });
 
-test("archil: the run's and the learning folder's keys come from the one layout owner (paths.ts)", () => {
+test("archil: the run's key and the local learning folder's come from the one layout owner (paths.ts)", () => {
   assert.match(runKey("acme", "r1"), /^agents\/acme-[0-9a-f]{16}\/runs\/r1\/work$/);
   assert.match(learningKey("acme"), /^agents\/acme-[0-9a-f]{16}\/learning$/);
   assert.equal(join("/data", "disk", runKey("Acme", "r1")), runFolder("/data", "Acme", "r1"), "the same layout as a run's local folder");

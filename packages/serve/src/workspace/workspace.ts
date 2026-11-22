@@ -1,4 +1,4 @@
-// The Workspace: the one way serve touches a run's files, or an agent's learning folder. One Workspace is scoped to ONE
+// The Workspace: the one way serve touches a run's files. One Workspace is scoped to ONE
 // root folder and takes paths relative to it only (paths.ts). Two backends answer it: Local (a folder on this machine,
 // local.ts) and, next, Archil (the owner's disk through its file API and serverless exec). Nothing on main uses it yet:
 // the writers move onto it in one cutover.

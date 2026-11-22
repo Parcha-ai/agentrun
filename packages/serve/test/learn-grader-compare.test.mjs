@@ -34,7 +34,7 @@ const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf, GRADER_PROMPT, graderVerdictOf, gradeAnswers, compareAnswers, answersPair, COMPARE_UNREAD, COMPARE_CAP_HELD, COMPARE_STALE } = await import("../dist/learn/promote.js");
 const { decideCheck, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
 const { graderAsk } = await import("../dist/runner/compare-end.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { askedForCompile } = await import("../dist/learn/compile.js");
@@ -158,12 +158,8 @@ async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap, 
   }, `the ${count} replay runs ended`, ms);
   const replays = async () => launches((launch) => launch?.replay);
   const audits = async () => {
-    const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
-    try {
-      return await readAudits(folder.workspace);
-    } finally {
-      await folder.end();
-    }
+    const folder = learningStoreOf(dir, "agent-1");
+    return await readAudits(folder);
   };
   const graderRequests = () => gw.requests.filter((request) => isGrader(request.body));
   return { dir, server, gw, start, ended, replays, replaysEnded, shadowOf, audits, graderRequests };
@@ -171,16 +167,12 @@ async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap, 
 
 /** Lands `workflow` as the next revision of `answer` on the learning folder's main. */
 async function landRevision(dir, workflow, runId) {
-  const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
-  try {
-    const merged = await learningCommit(folder.workspace, {
-      kind: "merge", runId, reason: "revised answer", graded: {},
-      files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(workflow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }],
-    });
-    assert.equal(merged.ok, true, JSON.stringify(merged));
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(dir, "agent-1");
+  const merged = await learningCommit(folder, {
+    kind: "merge", runId, reason: "revised answer", graded: {},
+    files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(workflow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }],
+  });
+  assert.equal(merged.ok, true, JSON.stringify(merged));
 }
 
 /** Lands the revision and runs its check to its decision: the claim that starts the check, its 3 replays, and the claim

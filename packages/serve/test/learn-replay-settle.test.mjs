@@ -25,7 +25,8 @@ const { sealRunMcpAuth } = await import("../dist/store/seal.js");
 const { REPLAY_DEADLINE_MS, REPLAY_LAUNCH_GRACE_MS } = await import("../dist/runner/promotion.js");
 const { championOf, promotionOf, promotionsOf, recordPromotion, servingOf, trimPromotions, PROMOTIONS_KEPT } = await import("../dist/learn/promote.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
-const { learningFolderOf, secretsShown } = await import("../dist/learning.js");
+const { secretsShown } = await import("../dist/learning.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 
 const FLOW = {
   v: 2, name: "answer",
@@ -116,7 +117,7 @@ async function world(t, { graded = 5 } = {}) {
   const logs = [];
   const ask = () => ({
     store: storeOf(store), agentId: "agent-1", context: BACKGROUND_CONTEXT, log: (line) => logs.push(line),
-    folder: () => learningFolderOf(dir, "agent-1"), shown: async () => secretsShown([]),
+    learning: learningStoreOf(dir, "agent-1"), shown: async () => secretsShown([]),
     launchOf: async (input) => ({ launch: { ...launchOf("asked"), input }, revisionId: "rev-1" }),
     now: () => clock.at,
   });

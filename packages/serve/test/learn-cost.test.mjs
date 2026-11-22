@@ -14,7 +14,7 @@ import { seedOf } from "../dist/learning.js";
 import { CHEAPER_AFTER_RUNS, costCsv, costSummary, runCostOf } from "../dist/learning-cost.js";
 import { runPathOf } from "../dist/runner/learning-end.js";
 import { costRunOf, servingReplayOf } from "../dist/store-reads/learning.js";
-import { git, resnap, savedOf } from "./learn-support.mjs";
+import { git, savedOf } from "./learn-support.mjs";
 import { agent, answerFlow, follow, serve, storeRun } from "./support.mjs";
 
 const row = (kind, extra = {}) => ({ id: `${kind}-${Math.random()}`, kind, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, ...extra });
@@ -177,7 +177,6 @@ async function landFlow(data, id, name) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
   return git(repo, ["rev-parse", "main"]).trim();
 }
 

@@ -8,7 +8,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { ended, git, LEARN, learnedOnMain, learner, made, repoOf, resnap, started } from "./learn-support.mjs";
+import { ended, git, LEARN, learnedOnMain, learner, made, repoOf, started } from "./learn-support.mjs";
 import { call, cookieOf, serve, withEnv } from "./support.mjs";
 
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
@@ -40,7 +40,6 @@ async function keeper(t, files, extra = {}, before = async () => {}, env = {}) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "the folder as runs left it"]);
-  await resnap(data, "keeper");
   const etag = async (file) => (await api("GET", `/agents/keeper/learning/files/${encodeURIComponent(file)}`)).headers.get("etag");
   const restore = async (file, headers) => call(port, { method: "POST", path: `/v2/agents/keeper/learning/files/${encodeURIComponent(file)}/restore`, headers: { "if-match": await etag(file), ...headers }, body: {} });
   const retire = async (file) => {
@@ -95,7 +94,6 @@ test("a restore checks the draft again as a run's draft is checked: a retired RE
   for (const [file, text] of Object.entries(draft("token", `Calls it with ${server.token}`))) writeFileSync(join(repo, file), text);
   git(repo, ["add", "--", "workflows/token"]);
   git(repo, ["commit", "-q", "-m", "a draft now holding a secret"]);
-  await resnap(data, "keeper");
   const before = git(repo, ["rev-parse", "main"]).trim();
   for (const [name, rule] of [["shaped", "secret_shape"], ["hidden", "invisible_unicode"], ["token", "secret_value"]]) {
     const res = await restore(`workflows/${name}/README.md`, { ...json, cookie, origin });
@@ -136,7 +134,6 @@ test("restoring a workflow draft checks its workflow.json too: one holding the s
   writeFileSync(join(repo, FLOW), draft(server.token));
   git(repo, ["add", "--", FLOW]);
   git(repo, ["commit", "-q", "-m", "a retired draft now holding a secret"]);
-  await resnap(data, "keeper");
   const before = git(repo, ["rev-parse", "main"]).trim();
   const res = await restore(README, { ...json, cookie, origin });
   assert.ok(res.status >= 400 && res.status < 500, `${res.status} ${res.text}`);

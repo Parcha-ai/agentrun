@@ -15,7 +15,7 @@ import { secretsShown } from "../dist/learning.js";
 import { wordsOf } from "../dist/learning-words.js";
 import { runLearningBody } from "../dist/learning-routes.js";
 import { redactSecrets } from "../dist/learn/secrets.js";
-import { learningWorkspace } from "../dist/workspace/index.js";
+import { learningStoreOf } from "../dist/learn/store-of.js";
 import { seedOf } from "../dist/learning.js";
 import { readLaunchBody } from "../dist/run-launch.js";
 import { forgotten, holdsNone, pointerOf, saved, server } from "./custody-support.mjs";
@@ -29,14 +29,10 @@ const cut = (text) => redactSecrets(text, [SECRET]);
 /** Agent `agentId`'s owner's corrections `lines` appended on main, as a run's merge appends them (no check: a pointer
  *  saved after the correction was written). */
 async function corrected(data, agentId, lines) {
-  const folder = learningWorkspace({ mode: "local", data, agentId });
-  try {
-    for (const [i, text] of lines.entries()) {
-      const made = await appendCorrection(folder.workspace, { runId: `run-${i + 1}`, text });
-      assert.equal(made.ok, true, JSON.stringify(made));
-    }
-  } finally {
-    await folder.end();
+  const folder = learningStoreOf(data, agentId);
+  for (const [i, text] of lines.entries()) {
+    const made = await appendCorrection(folder, { runId: `run-${i + 1}`, text });
+    assert.equal(made.ok, true, JSON.stringify(made));
   }
 }
 

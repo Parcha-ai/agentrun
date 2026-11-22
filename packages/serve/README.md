@@ -3493,9 +3493,9 @@ stays in every total.
     blocks go back to the filesystem unwiped. Postgres's own WAL and its archived WAL keep the old values until they are
     recycled or expire, and backups keep them for their retention.
 - Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id. The
-  agent's learning folder keeps what the run taught it: its merge's diff (`.agentrun/diffs/<run>.json`, with its
-  patches) and any feedback line it added to `corrections.md`, in the folder's history too. The run's purge removes
-  neither; the agent's purge (below) removes the whole folder.
+  agent's learning keeps what the run taught it: its merge commit (marked by `.agentrun/runs/<run>`, whose diff the
+  learning store answers) and any feedback line it added to `corrections.md`, in the history too. The run's purge
+  removes neither; the agent's purge (below) removes its learning whole.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`. An [API-only](#api-only) server purges a run of
   an agent another system owns alone; a run of an agent made here is its profile's `404` there.
@@ -3521,7 +3521,8 @@ delete what it sent. `DELETE /v2/agents/{id}` deletes such an agent whole, in th
    while a `DELETE` runs waits for it, then finds the agent gone (`404`), so none lands after its learning went. Each of
    its runs still going, its learning runs included, is cancelled as `POST /runs/{id}/cancel` cancels it, and the
    delete waits until every one has ended.
-2. Its learning is deleted by the learning module: every file of its learning folder, then its promotions and grades.
+2. Its learning is deleted by the learning module: its learning store removed whole (the local folder, or its
+   code.storage repository), then its promotions and grades.
    It refuses while learning work of the agent is in flight: `409 learning_busy`, naming
    that work in `details.runs`.
 3. The rest: its triggers (and what each registered at its source), its saved sign-ins (and each object at its vendor),
@@ -3793,17 +3794,34 @@ corrections and shows captured runs; new captures begin with the next normal pro
 Historical learning files remain stored and are not converted into owner corrections or deleted. Older stored
 CLI `learning: "notes"` settings read publicly as `true`; that compatibility read does not rewrite the revision.
 
-An agent that learns has a learning folder, `learning/` in its folder on the disk (`DATA/disk/agents/<key>/learning/`):
+An agent that learns keeps what it learned as one git history on `main`, in its learning store:
 
 - `corrections.md`, its owner's standing corrections, one `- ` line each, at most 2048 bytes;
 - one folder per learned workflow, `workflows/<name>/`, with its `workflow.json` and its `README.md` (front matter with
   `name` and `description`, and `status: pending` while it waits for its owner's OK).
 
 The server reads and writes it with its own code, in [`src/learn/`](src/learn/SPEC.md), whose `SPEC.md` is the
-folder's contract. The folder is plain git with `main` checked out. The agent's first run that learns makes it, with
-one empty commit on `main`; an agent that does not learn never gets one. The server is its only writer. Every git
-call the server makes there runs with the folder's hooks and fsmonitor off, no replace refs, no lazy fetch and no system
-or global config, one at a time per agent.
+contract. The agent's first run that learns makes it, with one empty commit on `main`; an agent that does not learn
+never gets one. The server and its runners are its only writers. Two stores keep it, and both answer the same:
+
+- **The local folder** (the default, no setting): `learning/` in the agent's folder on the disk
+  (`DATA/disk/agents/<key>/learning/`), plain git with `main` checked out. Every git call runs with the folder's hooks
+  and fsmonitor off, no replace refs, no lazy fetch and no system or global config. A runner on a disk of its own
+  ([deploy](../../deploy/README.md#a-runner-on-a-disk-of-its-own)) can't reach it, so its runs learn nothing and say
+  why.
+- **code.storage**, when the server and each runner are started with `AGENTRUN_CODE_STORAGE_NAME` (the org's name) and
+  `AGENTRUN_CODE_STORAGE_KEY` (its signing key, a PEM, held as every secret is: never logged, never in a command line),
+  and `AGENTRUN_CODE_STORAGE_API_URL` when the API is not `https://api.<org>.code.storage`: one repository an agent,
+  `agentrun-<server id>-<agent id>`, which runners on other hosts reach as the server does. One of the name and key
+  without the other, or a value it can't take, stops the start, naming each variable. A reset or an erasure deletes the
+  repository, and the next run that learns makes it again.
+
+  ```sh
+  AGENTRUN_CODE_STORAGE_NAME=example-org AGENTRUN_CODE_STORAGE_KEY="$(cat key.pem)" node packages/serve/dist/cli.js
+  ```
+
+Moving from one to the other moves nothing: an agent starts again with nothing learned in the store it is started
+with.
 
 Each run of an agent that learns starts from `main` as it is when the run is made, whatever its harness:
 
@@ -4002,9 +4020,8 @@ with the token, an archived agent's too:
 - `GET .../learning/workflows/{name}/revisions` lists a learned workflow's revisions on `main`;
   `GET .../learning/promotions` its promotion records; `GET .../learning/loop` each compile turn; and
   `GET .../learning/cost` the agent's cost per run, run after run.
-- `DELETE /agents/{agent_id}/learning` resets the agent's learning: its learning folder whole (`corrections.md`, its
-  workflows, their history and the audit ledger), here and on every Archil disk its runs used (`503` while one can't be
-  reached), then its promotion records and grades. The agent and its runs stay,
+- `DELETE /agents/{agent_id}/learning` resets the agent's learning: its learning store whole (`corrections.md`, its
+  workflows, their history and the audit ledger), then its promotion records and grades. The agent and its runs stay,
   with their files, costs and each run's own learning, so the run list, `GET /stats` and `GET /usage` read the same (a
   served run keeps its share of its revision's compile and check); a run's learning diff goes with the folder (404);
   the next run takes the agent path, given nothing learned. It cancels the runs that exist only for learning (replays,
@@ -4016,16 +4033,17 @@ with the token, an archived agent's too:
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, each file's patch as git writes it
   from the first `@@`, or `withheld` (`too_large`, `secret`).
 
-Every read is the folder's snapshot (`.agentrun/snapshot.json`, written last by the same exec as each commit to
-`main`), the files it names, each checked against its blob id (a file that is not, read twice, is a write in flight:
-`503`), and a merge's `.agentrun/diffs/<run>.json`, through the folder's file API: no git and no exec. Every text it
+Every read is `main`'s snapshot (`.agentrun/snapshot.json`, in the same commit as each change) and the files it
+names, read at that commit, which no later write changes; a merge's diff is the store's diff of the commit that marked
+it (`.agentrun/runs/<run>`). A store that can't answer is `503`. Every text it
 answers is cut of the server's secrets as they are then; a file name holding one (a workflow named after a value made
 secret since, say) reads `[redacted]` whole, in the workflows, the log's `files` and a diff's `path`, while its route
 still answers the real name to a caller who knows it. A log page reads the snapshot alone (it keeps the newest 200
 changes). A cursor reads at the main it names while this server still holds that snapshot, else as the first page of
-`main` now. Every write to `main` (a run's merge, a person's corrections, retire, approve or restore) is one exec of the learning
-script, a compare and swap on `main`. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
-followed: a read or a write there answers `500`, and nothing is written.
+`main` now. Every write to `main` (a run's merge, a person's corrections, retire, approve or restore) is one commit, a
+compare and swap on `main`; a run's round merges once. In the local folder, a symbolic link at the agent's home, its
+learning folder or the folder's `.git` is never followed: a read or a write there answers `500`, and nothing is
+written.
 
 ### Approving a workflow that waits
 

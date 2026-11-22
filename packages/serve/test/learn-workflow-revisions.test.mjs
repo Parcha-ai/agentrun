@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
-import { git, resnap } from "./learn-support.mjs";
+import { git } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, serve } from "./support.mjs";
 
@@ -21,7 +21,6 @@ async function commit(data, id, files, message) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", message]);
-  await resnap(data, id);
   return git(repo, ["rev-parse", "main"]);
 }
 const README = (name) => `---\nname: ${name}\ndescription: Answers a question as a number; use when the person asks for the answer\n---\n`;

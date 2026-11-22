@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import { GRADES_KEPT, PROMOTIONS_KEPT, promotionsOf, recordPromotion } from "../dist/learn/promote.js";
-import { git, resnap } from "./learn-support.mjs";
+import { git } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, cookieOf, follow, serve, withEnv } from "./support.mjs";
 
@@ -63,7 +63,6 @@ async function world(t, { graded = 5, learning = true } = {}) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, "source");
   const main = git(repo, ["rev-parse", "main"]);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const base = (agentId = "source", name = "answer", digest = DIGEST) => `/v2/agents/${agentId}/learning/workflows/${name}/revisions/${digest}/replays`;

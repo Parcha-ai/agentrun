@@ -23,7 +23,9 @@ const { openSqliteStore } = await import("../dist/store/index.js");
 const { listedItem, listingOverStore, summaryOfView, summaryOverStore } = await import("../dist/store-view.js");
 const { createLister } = await import("../dist/run-listing.js");
 const { saveSignIn, signInsOverStore } = await import("../dist/sign-ins-store.js");
-const { folderTestHooks, learningWorkspace, readSnapshot } = await import("../dist/learn/folder.js");
+const { readSnapshot } = await import("../dist/learn/folder.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
+const { localStoreHooks } = await import("../dist/learn/store-local.js");
 const { changeWorkflow } = await import("../dist/learning-routes.js");
 
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"];
@@ -452,43 +454,20 @@ test("an approval that lands between a list's own build of a run's listing (its 
   t.after(() => (Connection.prototype.all = all));
   await server.listingSettled();
   hidden = false;
-  // The approval lands once the list's build has read the agent's learning folder (its read ends), before that build writes
-  // the listing. The run's row then holds no listing, so the agent's held listings the approval marks behind are none.
-  const real = (place) => {
-    const hook = folderTestHooks.workspace;
-    folderTestHooks.workspace = undefined;
-    try {
-      return learningWorkspace(place);
-    } finally {
-      folderTestHooks.workspace = hook;
-    }
-  };
+  // The approval lands once the list's build has read the agent's learning store (its first read ends), before that build
+  // writes the listing. The run's row then holds no listing, so the agent's held listings the approval marks behind are
+  // none.
   let armed = false;
   let approved = false;
-  folderTestHooks.workspace = (place) => {
-    const folder = real(place);
-    if (!armed) return folder;
-    return {
-      workspace: folder.workspace,
-      end: async () => {
-        await folder.end();
-        if (!armed) return;
-        armed = false;
-        const snapshot = await (async () => {
-          const read = real(place);
-          try {
-            return await readSnapshot(read.workspace);
-          } finally {
-            await read.end();
-          }
-        })();
-        const oid = snapshot.workflows.find((one) => one.name === name).files.find((one) => one.path === readme).oid;
-        assert.equal((await changeWorkflow(data, "agent-1", readme, { action: "approve", ifMatch: `"${oid}"`, refuse: [] })).status, 200);
-        approved = true;
-      },
-    };
+  localStoreHooks.exec = async () => {
+    if (!armed) return;
+    armed = false;
+    const snapshot = await readSnapshot(learningStoreOf(data, "agent-1"));
+    const oid = snapshot.workflows.find((one) => one.name === name).files.find((one) => one.path === readme).oid;
+    assert.equal((await changeWorkflow(data, "agent-1", readme, { action: "approve", ifMatch: `"${oid}"`, refuse: [] })).status, 200);
+    approved = true;
   };
-  t.after(() => void (folderTestHooks.workspace = undefined));
+  t.after(() => void (localStoreHooks.exec = undefined));
   armed = true;
   const built = await everyItem(api, "/runs");
   assert.ok(approved, "the approval landed during the list's build");

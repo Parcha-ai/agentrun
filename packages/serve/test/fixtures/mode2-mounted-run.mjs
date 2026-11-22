@@ -25,8 +25,8 @@ const { fakeComputer } = await import("../workspace-fake-computer.mjs");
 const { KINDS } = await import("../workspace-kinds-fixture.mjs");
 const { archilControlFetch } = await import("../archil-control-fake.mjs");
 const { seedOf } = await import("../../dist/learning.js");
-const { folderTestHooks } = await import("../../dist/learn/folder.js");
-const { learningWorkspace } = await import("../../dist/workspace/index.js");
+const { learningStoreOf } = await import("../../dist/learn/store-of.js");
+const { localStoreHooks } = await import("../../dist/learn/store-local.js");
 const { learningCommit } = await import("../../dist/learn/commit.js");
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
@@ -81,32 +81,20 @@ function sandboxOverArchil(disk, scratch, mounts) {
   }));
 }
 
-/** The agent's learning folder, holding one correction on its main, as a local folder that stands in for the one on the
- *  run's Archil disk (folderTestHooks.workspace): the seed's commit, for the launch's learning start. `read` counts the
- *  claim's reads of it. */
+/** The agent's learning store (the server's: the local folder under the data directory `dir`), holding one correction
+ *  on its main: the seed's commit, for the launch's learning start. `read` counts the claim's reads of it. */
 async function learningSeedIn(t, dir, read) {
-  const folderData = join(dir, "learning-disk");
-  mkdirSync(folderData);
-  await seedOf(folderData, AGENT);
-  const folder = learningWorkspace({ mode: "local", data: folderData, agentId: AGENT });
-  try {
-    const made = await learningCommit(folder.workspace, { runId: "run-0", reason: "feedback", files: [], correction: CORRECTION });
-    assert.equal(made.ok, true, JSON.stringify(made));
-  } finally {
-    await folder.end();
-  }
-  const seed = (await seedOf(folderData, AGENT)).sha;
-  folderTestHooks.workspace = (place) => {
-    assert.equal(place.mode, "archil", "a Mode 2 run reads its learning folder on its Archil disk");
-    read.count += 1;
-    return learningWorkspace({ mode: "local", data: folderData, agentId: place.agentId });
-  };
-  t.after(() => delete folderTestHooks.workspace);
+  await seedOf(dir, AGENT);
+  const made = await learningCommit(learningStoreOf(dir, AGENT), { runId: "run-0", reason: "feedback", files: [], correction: CORRECTION });
+  assert.equal(made.ok, true, JSON.stringify(made));
+  const seed = (await seedOf(dir, AGENT)).sha;
+  localStoreHooks.exec = () => void (read.count += 1);
+  t.after(() => void (localStoreHooks.exec = undefined));
   return seed;
 }
 
 /** A Mode 2 run of a revision with one skill, over the Archil fake `disk`, in a fresh store (`learns`: a learning run whose
- *  seed holds a correction; `read` counts the claim's reads of its learning folder). `claimNext(build)` claims it (a claim taken over a lapsed one when there was
+ *  seed holds a correction; `read` counts the claim's reads of its learning store). `claimNext(build)` claims it (a claim taken over a lapsed one when there was
  *  one) and builds its spec; `t.after` lets every spec go. */
 export async function mode2Run(t, { harness, disk, learns = false }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-skills-"));

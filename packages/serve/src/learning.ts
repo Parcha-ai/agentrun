@@ -1,24 +1,25 @@
-// Learning: an agent whose definition says `learning: true` keeps a folder of what it learned, and each of its runs
-// starts from it. The folder is `learning/` in the agent's folder on the disk (files.ts agentFolderOf): plain git with
-// main checked out, reached through its Workspace (learningWorkspace). It holds two things:
+// Learning: an agent whose definition says `learning: true` keeps what it learned in its learning store
+// (learn/store.ts: the local git folder `learning/` in the agent's folder on the disk, or its code.storage repository),
+// and each of its runs starts from it. It holds two things:
 //   - corrections.md, its owner's standing corrections (learn/corrections.ts): every run of the agent is served it whole
 //     under `# Learned` (laidLearned), cut of the host's secrets;
 //   - workflows/<name>/, the workflows its runs compiled (learn/compile.ts): a run whose input one fits is answered by it
 //     (runner/workflow-first.ts).
-// Every write to main is one exec of the learning script (learn/folder.ts), which also writes `.agentrun/snapshot.json`,
-// what the routes and a run's seed read: no git runs in this process. When a run of such an agent is made, the server
-// makes the folder if it is absent (the script's init: one empty host commit on main) and reads main's snapshot; the
-// run's launch keeps the commit it started from and its # Learned text, so its runner reads no folder.
+// Every write to main is one save on the store (learn/folder.ts), with `.agentrun/snapshot.json` in the same commit,
+// what the routes and a run's seed read. When a run of such an agent is made, the server makes the store if it is
+// absent (one empty host commit on main) and reads main's snapshot; the run's launch keeps the commit it started from
+// and its # Learned text, so its runner reads no store to start it.
 //
-// The host never follows a symbolic link into the folder (learn/folder.ts learningWorkspace, and the script): a link
-// there is refused, and the run starts with nothing learned.
+// The host never follows a symbolic link into a local folder (learn/store-local.ts, and its script): a link there is
+// refused, and the run starts with nothing learned.
 import { join } from "node:path";
 import { CORRECTIONS_FILE, decodedStrings, frontMatter, learnedSecretShapes, type Problem, redactLearned, valueMatcher } from "./learn/index.js";
-import { folderAt, learningInit, type LearningFolder, learningWorkspace, readLearning, type Snapshot } from "./learn/folder.js";
+import { folderAt, learningInit, readLearning, type Snapshot } from "./learn/folder.js";
+import type { LearningStore } from "./learn/store.js";
+import { learningStoreOf } from "./learn/store-of.js";
 import { agentFolderOf, serialBy } from "./files.js";
 import { withoutLoopbackAddresses } from "./key-refusal.js";
 import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
-import type { Workspace } from "./workspace/index.js";
 
 export { learnsOf } from "./learning-setting.js";
 
@@ -213,8 +214,9 @@ function compactSchema(schema: unknown, schemas: Record<string, unknown>, depth 
   return typeof s.type === "string" ? s.type : Array.isArray(s.type) ? s.type.join("|") : "any";
 }
 
-/** The agent's learning folder: `learning/` in its folder on the disk, which only the host writes. The folder is files.ts
- *  agentFolderOf (server-fs.ts agentDiskDir), so two ids that differ only in case never share one. */
+/** The agent's learning queue's key: its local learning folder's path (`learning/` in its folder on the disk, files.ts
+ *  agentFolderOf, server-fs.ts agentDiskDir), so two ids that differ only in case never share one, whichever store
+ *  keeps its learning. */
 export const learningRepo = (data: string, agentId: string): string => join(agentFolderOf(data, agentId), "learning");
 
 const queues = new Map<string, Promise<unknown>>();
@@ -222,10 +224,6 @@ const queues = new Map<string, Promise<unknown>>();
 /** Runs `work` once every call queued before it on the agent's folder has finished: one at a time per agent, in this
  *  process. Everything that touches an agent's folder goes through it, so two runs made at once never both make it. */
 export const withAgentRepo = <T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> => serialBy(queues, learningRepo(data, agentId), work);
-
-/** Agent `agentId`'s learning folder (learn/folder.ts learningWorkspace), in this server's place: Mode 1's local folder
- *  under `data`. The one point that names the place; its `end()` is called in a finally after every use. */
-export const learningFolderOf = (data: string, agentId: string): LearningFolder => learningWorkspace({ mode: "local", agentId, data });
 
 /** The seed of `snapshot` (undefined: no main yet), each body read by `text`: corrections.md, and each active draft's
  *  README.md and workflow.json. A draft whose README's front matter does not read one way is never read as active. */
@@ -244,31 +242,27 @@ async function seedIn(sha: string | null, snapshot: Snapshot | undefined, text: 
   return { sha, corrections, workflows };
 }
 
-/** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent (the
- *  learning script's init), what main holds for a run (seedIn), and when it was read (`at`). In the agent's queue, as a
- *  reset is (learning-reset.ts). No git in this process: the folder's own script and file API. */
+/** The seed of a run of agent `agentId` about to be made: main's commit, the store made first when it is absent (its
+ *  first commit), what main holds for a run (seedIn), and when it was read (`at`). In the agent's queue, as a reset is
+ *  (learning-reset.ts). */
 export function seedOf(data: string, agentId: string): Promise<Seed> {
   return withAgentRepo(data, agentId, async () => {
-    const { workspace, end } = learningFolderOf(data, agentId);
-    try {
-      await learningInit(workspace);
-      const seed = await readLearning(workspace, async ({ snapshot, body }) => seedIn(snapshot?.main ?? null, snapshot, body));
-      return { ...seed, at: Date.now() };
-    } finally {
-      await end();
-    }
+    const learning = learningStoreOf(data, agentId);
+    await learningInit(learning);
+    const seed = await readLearning(learning, async ({ snapshot, body }) => seedIn(snapshot?.main ?? null, snapshot, body));
+    return { ...seed, at: Date.now() };
   });
 }
 
-/** What commit `commit` of the folder holds for a run, as seedOf reads main (one read-only exec of the script). No commit
- *  (null) is the empty seed; a commit the folder no longer holds throws. */
-export async function seedAt(ws: Workspace, commit: string | null): Promise<Seed> {
+/** What commit `commit` of the store holds for a run, as seedOf reads main. No commit (null) is the empty seed; a commit
+ *  the store no longer holds throws. */
+export async function seedAt(learning: LearningStore, commit: string | null): Promise<Seed> {
   if (commit === null) return { sha: null, corrections: "", workflows: [] };
-  const at = await folderAt(ws, commit);
-  if (!at) throw new Error(`the learning folder's read at ${commit} is gone`);
+  const at = await folderAt(learning, commit);
+  if (!at) throw new Error(`the learning store's read at ${commit} is gone`);
   return seedIn(commit, at.snapshot, async (_path, oid) => {
     const bytes = at.blobs.get(oid);
-    if (!bytes) throw new Error(`the learning folder's read at ${commit} holds no blob ${oid}`);
+    if (!bytes) throw new Error(`the learning store's read at ${commit} holds no blob ${oid}`);
     return bytes.toString("utf8");
   });
 }

@@ -22,7 +22,8 @@ import { mergesOf, repoOf } from "./learn-support.mjs";
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
-const { learningFolderOf, seedOf } = await import("../dist/learning.js");
+const { seedOf } = await import("../dist/learning.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { pointerHash, saveSignIn, signInsOverStore } = await import("../dist/sign-ins-store.js");
 const { agentLearningFolder } = await import("../dist/workspace/index.js");
 
@@ -109,7 +110,7 @@ async function world(t, { handed, mark, pointer = POINTER, stored }) {
     return { ...(await script(claim, run)), agentId: "agent-1", input: launch.input.content };
   };
   const signIns = signInsOverStore(store, KEY, { remove: async () => {} });
-  const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId), signIns, ...(stored ? { stored } : {}) });
+  const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, learningStore: (agentId) => learningStoreOf(dir, agentId), signIns, ...(stored ? { stored } : {}) });
   runners.push(startRunner({ store, createLoop: (deps) => createAdapterLoop(spec)({ ...deps, endOfRun }), name: "runner-a", ...TIMING }));
 
   /** Run-1 ended: its kept learning. */

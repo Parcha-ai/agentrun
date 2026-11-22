@@ -1,13 +1,13 @@
 // DELETE /v2/agents/{agent_id}/learning: an agent's learning reset, the agent kept. What it learned goes (the learning
-// module's deleteLearning: its learning folder's files, its git history and audit ledger among them, on this server and
-// on every Archil disk its runs used, learn/learning-of.ts namedDisksOf, then its promotions and grades); the agent, its
+// module's deleteLearning: its learning store removed whole, its files, history and audit ledger with it, then its
+// promotions and grades); the agent, its
 // definition, its runs and everything kept of them (their files, journals, costs, the learning each one kept) stay, so
 // the run list, the stats and the usage read the same before and after. A served run's cost carries its share of its
 // revision's compile and check, read from the promotion records the reset deletes: each revision they name is kept
 // first in the agent's reset ledger (learn/promote.ts keepResetLedger: workflow, digest and K alone), so the share reads
 // the same after.
 //
-// What goes with the folder: each run's learning diff (GET /runs/{id}/learning/diff, the text it merged) is the folder's,
+// What goes with the store: each run's learning diff (GET /runs/{id}/learning/diff, the text it merged) is the store's,
 // so it is 404 after; what the run's own record keeps of its learning end stays with the run.
 //
 // In order, in the agent's delete turn (server.ts agentWrite: one learning write of an agent at a time, and none once
@@ -25,11 +25,11 @@
 //
 // Step 2 sets the agent's reset watermark (learn/promote.ts resetAtKey) before it deletes: from then on learning reads
 // only runs after it (learn/compile.ts sinceReset: compile_after's count, a compile's traces, a check's inputs, an
-// audit's draws, the money rule). A run whose start read the learning folder before step 2
+// audit's draws, the money rule). A run whose start read the learning store before step 2
 // and whose row the store wrote after it keeps what it was started with (its corrections are in its launch), but
 // learns nothing: its seed was read before the watermark, so its learning end drops it whole at its entry
-// (runner/learning-end.ts, reason `reset`), and the learning script refuses a merge on a seed the folder no longer holds
-// (learning.sh `seed`). No workflow is laid for it either: they are read at its seed's commit, which is gone.
+// (runner/learning-end.ts, reason `reset`), and the store refuses a merge on a seed it no longer holds
+// (its save's `seed` precondition). No workflow is laid for it either: they are read at its seed's commit, which is gone.
 import { ApiError } from "./errors.js";
 import type { DeleteLearning } from "./agent-delete.js";
 import { LearningInFlight } from "./learn/delete.js";
@@ -92,15 +92,15 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
     // The watermark, before anything goes: learning reads no run that started, or read its seed, at or before it (each
     // seed is read in this queue, so one read before this moment never holds a later time). A seed read after the reset
     // in the same millisecond counts as before it: its run learns nothing (reason reset) and an SDK start is refused, to
-    // start again, never a run given what the reset deleted. Set first, so no moment has the folder gone and the old runs
+    // start again, never a run given what the reset deleted. Set first, so no moment has the store gone and the old runs
     // still read. A delete refused before it removed anything (LearningInFlight) puts the earlier one back, its learning
     // left as it was; one that failed on the way (a disk, a file, a record) may have removed some of it, so the watermark
-    // stays and the next call finishes the reset: the old runs never feed a compile into a folder emptied part way.
+    // stays and the next call finishes the reset: the old runs never feed a compile into a store emptied part way.
     const earlier = await resetAtOf(host.store.settings, agentId);
     const at = Date.now();
     await keepResetAt(host.store.settings, agentId, at);
     try {
-      await host.deleteLearning(host.store, agentId, { keepResetLedger: true, agentDisk: true });
+      await host.deleteLearning(host.store, agentId, { keepResetLedger: true });
     } catch (error) {
       if (!(error instanceof LearningInFlight)) throw error;
       await (earlier === undefined ? host.store.settings.remove(resetAtKey(agentId)) : keepResetAt(host.store.settings, agentId, earlier));

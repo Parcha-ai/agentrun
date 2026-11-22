@@ -22,7 +22,8 @@ import { git, repoOf } from "./learn-support.mjs";
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
 const { promotionsOf } = await import("../dist/learn/promote.js");
-const { learningFolderOf, seedOf } = await import("../dist/learning.js");
+const { seedOf } = await import("../dist/learning.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { said } = await import("../dist/learning-words.js");
@@ -77,7 +78,7 @@ async function world(t, body) {
     const origin = scriptedOrigin(script, requests);
     const fetch = beforeAnswer ? async (url, init = {}) => (await beforeAnswer(JSON.parse(String(init.body ?? "{}"))), origin(url, init)) : origin;
     const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch });
-    const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, handed: [HANDED], log: (line) => logs.push(line), learningFolder: (agentId) => learningFolderOf(dir, agentId) });
+    const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, handed: [HANDED], log: (line) => logs.push(line), learningStore: (agentId) => learningStoreOf(dir, agentId) });
     const createLoop = (deps) => {
       const job = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, ...(endOfRun ? { endOfRun } : {}) });
       let mine = false;
@@ -175,14 +176,10 @@ async function fillCorrections(dir) {
 
 /** `change` merged on agent-1's learning folder's main, as a run's merge (learningCommit); its result. */
 async function mergeOn(dir, change) {
-  const folder = learningFolderOf(dir, "agent-1");
-  try {
-    const done = await learningCommit(folder.workspace, change);
-    assert.equal(done.ok, true, JSON.stringify(done));
-    return done;
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(dir, "agent-1");
+  const done = await learningCommit(folder, change);
+  assert.equal(done.ok, true, JSON.stringify(done));
+  return done;
 }
 
 test("a run whose correction-only merge landed before a crash (its end never saved) records that merge at its recovered end, even with room left for one copy only, never a refusal", async (t) => {

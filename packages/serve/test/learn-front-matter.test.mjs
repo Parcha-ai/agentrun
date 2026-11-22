@@ -14,10 +14,10 @@ import { checkDraft, unstorable } from "../dist/learn/check.js";
 import { draftFiles, frontKeys, frontMatter, isHeld, learnedFront, learnedStatus, readmeProblems, released, retiredLearned, servedSkill, setsStatus, UNCLEAR_FRONT } from "../dist/learn/workflow-draft.js";
 import { readSnapshot } from "../dist/learn/folder.js";
 import { agentFolderOf } from "../dist/files.js";
-import { learningWorkspace } from "../dist/workspace/index.js";
+import { learningStoreOf } from "../dist/learn/store-of.js";
 import { chooseWorkflows, secretsShown, seedOf } from "../dist/learning.js";
 import { added, workflow } from "./learn-format-support.mjs";
-import { git, resnap } from "./learn-support.mjs";
+import { git } from "./learn-support.mjs";
 import { scratch } from "./support.mjs";
 
 /** A README (or a SKILL.md, with a body) of front matter `front`. */
@@ -120,14 +120,9 @@ async function byHand(t, readmes) {
   }
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "drafts by hand"]);
-  await resnap(data, "agent-1");
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
-  try {
-    const snapshot = await readSnapshot(folder.workspace);
-    return { statuses: Object.fromEntries(snapshot.workflows.map(({ name, status }) => [name, status])), laid: (await seedOf(data, "agent-1")).workflows.map(({ name }) => name) };
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(data, "agent-1");
+  const snapshot = await readSnapshot(folder);
+  return { statuses: Object.fromEntries(snapshot.workflows.map(({ name, status }) => [name, status])), laid: (await seedOf(data, "agent-1")).workflows.map(({ name }) => name) };
 }
 
 test("a draft whose README's name and description are explicit keys is never served: the snapshot reads it retired, and a seed never lays it", async (t) => {

@@ -9,7 +9,7 @@
 // (learn/promote.ts sameAnswer) and what each run cost.
 import { createHash } from "node:crypto";
 import { COMPUTER_TOOLS } from "@parcha/agentrun-kernel/kernel";
-import type { Workspace } from "../workspace/index.js";
+import type { LearningStore } from "./store.js";
 import type { AuditLoop } from "../learning-setting.js";
 import type { McpPin } from "../mcp-gateway.js";
 import type { RunLaunch } from "../run-launch.js";
@@ -170,7 +170,7 @@ export async function ledgerOf(folder: FolderRead): Promise<LedgerLine[]> {
 }
 
 /** The ledger's rows on the folder's main: its finished audits, oldest first. */
-export const readAudits = async (ws: Workspace): Promise<AuditRow[]> => rowsOf(await readLearning(ws, ledgerOf));
+export const readAudits = async (store: LearningStore): Promise<AuditRow[]> => rowsOf(await readLearning(store, ledgerOf));
 
 /** A line's place in the ledger: one per served run and source (a started line's, its shadow's row, a grade's row). */
 export const lineKey = (line: LedgerLine): string => `${line.source}:${line.run}`;

@@ -33,7 +33,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf } = await import("../dist/learn/promote.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
+const { learningStoreOf } = await import("../dist/learn/store-of.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { askedForCompile } = await import("../dist/learn/compile.js");
@@ -175,12 +175,8 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
     return row;
   };
   const audits = async () => {
-    const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
-    try {
-      return await readAudits(folder.workspace);
-    } finally {
-      await folder.end();
-    }
+    const folder = learningStoreOf(dir, "agent-1");
+    return await readAudits(folder);
   };
   const replaysEnded = (count) => until(async () => {
     const all = [];
@@ -192,16 +188,12 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
 
 /** Lands `workflow` as the next revision of `answer` on the learning folder's main, as the recompile's merge lands it. */
 async function landRevision(dir, workflow, runId) {
-  const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
-  try {
-    const merged = await learningCommit(folder.workspace, {
-      kind: "merge", runId, reason: "revised answer", graded: {},
-      files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(workflow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }],
-    });
-    assert.equal(merged.ok, true, JSON.stringify(merged));
-  } finally {
-    await folder.end();
-  }
+  const folder = learningStoreOf(dir, "agent-1");
+  const merged = await learningCommit(folder, {
+    kind: "merge", runId, reason: "revised answer", graded: {},
+    files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(workflow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }],
+  });
+  assert.equal(merged.ok, true, JSON.stringify(merged));
 }
 
 /** The fence of the recompile ask's audit rows alone. */
@@ -427,13 +419,9 @@ test("(r3) a secret straddling char 1,200 of an audited input leaves no 8 charac
   assert.ok(held.audit.disagreements[0].input.includes("Leaky"), "the hold quotes the input");
   const [ask] = w.asks.get("leak-next");
   assert.ok(fenceOf(ask ?? "").includes("Leaky"), `the recompile ask quotes it: ${(ask ?? "").slice(0, 300)}`);
-  const folder = learningWorkspace({ mode: "local", data: w.dir, agentId: "agent-1" });
+  const folder = learningStoreOf(w.dir, "agent-1");
   let ledger;
-  try {
-    ledger = await readLearning(folder.workspace, async (read) => (read.snapshot?.audits ? read.body(AUDITS_FILE, read.snapshot.audits.oid) : ""));
-  } finally {
-    await folder.end();
-  }
+  ledger = await readLearning(folder, async (read) => (read.snapshot?.audits ? read.body(AUDITS_FILE, read.snapshot.audits.oid) : ""));
   assert.ok(ledger.includes("leak-1"), ledger);
   const leaks = (text) => Array.from({ length: secret.length - 7 }, (_, i) => secret.slice(i, i + 8)).filter((part) => text.includes(part));
   assert.deepEqual(leaks(ledger), [], "the ledger");
@@ -522,7 +510,7 @@ test("(r2) the served count reads past the shadows: audit_every 1 over 1,100 ser
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const claimOf = async (served) => {
     const { store, made } = servedStore(served, learning, DIGEST);
-    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch }, serve);
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, learning: learningStoreOf(dir, "agent-1"), shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch }, serve);
     return { store, made };
   };
   // 900 served: under audit_later_after, every served run is drawn (1 in 1).
@@ -547,7 +535,7 @@ test("a run before the agent's learning reset, or on a named disk, starts no aud
     rows.unshift(row);
     store.settings.get = async (key) => (resetAt !== undefined && key === "learning.reset-at.agent-1" ? { at: resetAt } : undefined);
     store.runs.seededBefore = async () => [];
-    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId: row.id, launch }, serve);
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, learning: learningStoreOf(dir, "agent-1"), shown: async () => ({ text: (text) => text }), log: () => {}, runId: row.id, launch }, serve);
     return made;
   };
   // The reset at 10,000 leaves no served run before it counted, so the rate is 1 in 1.
@@ -761,32 +749,21 @@ test("(r4) a drawn run whose cap leaves under a run's smallest cap (or a spend n
   const launch = { input: { content: "Next?" }, title: "Next", place: { mode: "runner" }, maxCostUsd: 1, learning: startAt("0".repeat(40)) };
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-room-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const folder = () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
+  const folder = learningStoreOf(dir, "agent-1");
   const endOf = async (runId, room) => {
     const { store, made, launches } = servedStore(3, learning, DIGEST);
-    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder, shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch, room: async () => room }, serve);
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, learning: folder, shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch, room: async () => room }, serve);
     return { made, launches };
   };
   const fits = await endOf("room-fits", 0.7);
   assert.deepEqual(fits.made, ["audit.room-fits"]);
   assert.equal(fits.launches.get("audit.room-fits").max_cost_usd, 0.7, "the room it was given, never the served launch's $1.00");
   for (const [runId, room] of [["room-short", 0.005], ["room-unknown", null]]) assert.deepEqual((await endOf(runId, room)).made, [], `${runId}: no shadow`);
-  const f = folder();
-  let rows;
-  try {
-    rows = await readAudits(f.workspace);
-  } finally {
-    await f.end();
-  }
+  const rows = await readAudits(folder);
   assert.deepEqual(rows.map((row) => [row.run, row.shadow_run, row.agreed, row.skipped]), [["room-short", null, null, "no allowance"], ["room-unknown", null, null, "no allowance"]], JSON.stringify(rows));
   // Its end again (a follow-up's): the row stands, no second row and no shadow.
   assert.deepEqual((await endOf("room-short", 0.5)).made, [], "once per run");
-  const again = folder();
-  try {
-    assert.equal((await readAudits(again.workspace)).filter((row) => row.run === "room-short").length, 1);
-  } finally {
-    await again.end();
-  }
+  assert.equal((await readAudits(folder)).filter((row) => row.run === "room-short").length, 1);
 });
 
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64QkBr): A8's rule, null while unknown, never $0.
