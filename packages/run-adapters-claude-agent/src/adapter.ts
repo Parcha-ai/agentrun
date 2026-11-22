@@ -22,6 +22,7 @@ import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, 
 import { type ClaudeAgentSdk, claudeCodeHarness, claudeToolSearch, lostPrompts } from "./harness.js";
 import { JournalSessionStore } from "./store.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
+import type { ClaudeAgentLogin } from "./login.js";
 import { serialWriter } from "./serial.js";
 import type { ToolServerModules } from "./host/tool-server.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
@@ -87,7 +88,12 @@ export interface ClaudeAgentAdapterOptions {
   model: string | { default: string; fast?: string; strong?: string };
   /** The model of the CLI's small background calls. Default: the session's model. */
   smallModel?: string;
-  provider: ClaudeAgentProvider;
+  /** Where the model's requests go, through the session's model proxy. Exactly one of `provider` and `login`. */
+  provider?: ClaudeAgentProvider;
+  /** A person's own login on this machine (login.ts), which the CLI runs on in place of a provider: it calls Anthropic
+   *  itself, with no proxy, no model URL and no key of the host's; each response is booked from its stream, billed to the
+   *  person's plan (`price` is not read), and the session has no host port. The host only says where the login is. */
+  login?: ClaudeAgentLogin;
   /** Start the CLI under the host's confinement (its own `confine()`, a `setpriv --no-new-privs` prefix, say). It may
    *  only add in front of the pinned binary and its arguments, and never touches its environment. */
   confine?: ConfineChild;
@@ -341,7 +347,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   const webSearch = options.webSearch === true;
   const skillsWrong = skillProblems(skills);
   if (skillsWrong.length) throw new Error(`agentrun-harness-claude: ${skillsWrong.join("; ")}`);
-  const headersWrong = hostHeaderProblems(options.provider.headers);
+  const { provider, login } = options;
+  if (!provider === !login) throw new Error("agentrun-harness-claude: give the adapter a provider or a login, not both and not neither");
+  const headersWrong = hostHeaderProblems(provider?.headers);
   if (headersWrong.length) throw new Error(`agentrun-harness-claude: provider.headers: ${headersWrong.join("; ")}`);
   // The SDK and its CLI are checked once, here: a mismatch is the host's to report, before any run starts.
   let executable: string;
@@ -390,7 +398,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         // The host's workspace, when it names one: the CLI works where the host's file tools write (io.cwd).
         ...(io.cwd ? { cwd: io.cwd } : {}),
         ...(options.confine ? { confine: options.confine } : {}),
-        proxy: {
+        // On a login, no proxy: the CLI calls Anthropic itself.
+        ...(provider ? { proxy: {
           hooks: io.models,
           tools: tools.map((t) => t.name),
           ...(builtins.length ? { builtins } : {}),
@@ -399,11 +408,11 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(claudeToolSearch(tools.map((t) => t.name), spec.deferCatalog) === "true" ? { toolSearch: true } : {}),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
-          ...(options.provider.auth ? { auth: options.provider.auth } : {}),
-          ...(options.provider.headers ? { headers: options.provider.headers } : {}),
+          ...(provider.auth ? { auth: provider.auth } : {}),
+          ...(provider.headers ? { headers: provider.headers } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
-        },
+        } } : {}),
       });
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
       // the session's level.
@@ -427,8 +436,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
-        credential: async () => options.provider.credential(),
-        gatewayUrl: options.provider.origin,
+        ...(provider ? { credential: async () => provider.credential(), gatewayUrl: provider.origin } : { login: { at: login!, models: io.models } }),
         executable,
         sdk,
         ...(options.mcp ? { toolServerModules: options.mcp } : {}),
@@ -543,21 +551,22 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       // the CLI never holds its key. Its policy object is its own: anything a policy keeps per instance stays apart from the
       // drive's, as a side call's should. Closed with the session, or when the host lets the session go (io.signal).
       // Started once the session's drive is open, the last step that can fail: an open that fails leaves no listener.
-      const hostPort = await startModelProxy({
+      // A session on a person's login has none: no request of the host's ever goes on that login.
+      const hostPort = !provider ? undefined : await startModelProxy({
         policy: anthropicPolicy({
           model: modelFor(spec),
           ...(options.smallModel ? { smallModel: options.smallModel } : {}),
           tools: [],
           ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
-          ...(options.provider.auth ? { auth: options.provider.auth } : {}),
+          ...(provider.auth ? { auth: provider.auth } : {}),
         }),
         hooks: io.models,
         model: modelFor(spec),
-        origin: options.provider.origin,
-        credential: async () => (await options.provider.credential()) ?? "",
+        origin: provider.origin,
+        credential: async () => (await provider.credential()) ?? "",
         ...(options.price ? { price: withWebSearches(options.price) } : {}),
-        ...(options.provider.headers ? { headers: options.provider.headers } : {}),
+        ...(provider.headers ? { headers: provider.headers } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.fetch ? { fetch: options.fetch } : {}),
       }, randomBytes(32).toString("base64url"));
@@ -565,7 +574,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const closeHost = async () => {
         if (hostClosed) return;
         hostClosed = true;
-        await hostPort.close().catch(() => {});
+        await hostPort?.close().catch(() => {});
       };
       io.signal.addEventListener("abort", () => void closeHost(), { once: true });
       if (io.signal.aborted) await closeHost();
@@ -668,7 +677,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         },
         // The session's one model route, for the host's own request beside the CLI's: the session's host port, which
         // never restarts once closed.
-        port: (label: string) => (closed || hostClosed ? undefined : { url: hostPort.url, key: hostPort.sideKey(label), model: modelFor(spec), api: "anthropic-messages" as const }),
+        port: (label: string) => (closed || hostClosed || !hostPort ? undefined : { url: hostPort.url, key: hostPort.sideKey(label), model: modelFor(spec), api: "anthropic-messages" as const }),
       };
     },
   };

@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { type Agent, toolOffers } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { placesOf } from "@/lib/place";
 
 // Where an agent runs, in the editor's Computer step: the server's places, bash following the place in the form (a box
@@ -15,8 +16,8 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const places = placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "runner" }, boxes: [{ id: "modal", available: false, reason: "fixture: no modal" }, { id: "docker", available: true }] } });
 const tools = toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }]);
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places };
-const agent = (place?: unknown, tools: string[] = ["read"]): Agent => ({
-  agent_id: "boxed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+const agent = (place?: Agent["definition"]["place"], tools: string[] = ["read"]): Agent => ({
+  ...SERVED_AGENT, agent_id: "boxed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Boxed", instructions: "Probe.", harness: "pi", skills: [], tools, ...(place ? { place } : {}) },
 });
 
@@ -37,12 +38,16 @@ describe("AgentEditor, where the agent runs", () => {
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: agent(), caps: { ...caps, places: null }, step: "computer" }))).not.toContain("Where it runs");
   });
 
-  it("an agent that names no place, on a server whose default_place is docker, has bash open, as its runs are in the box; with the browser it is on the runner", () => {
+  it("an agent that names no place, on a server whose default_place is docker, is in the box with bash and on the runner without it, with bash open to tick; with the browser it is on the runner", () => {
     const boxed = placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "sandbox", box: "docker" }, boxes: [{ id: "docker", available: true }] } });
-    const shell = mount({ agent: agent(), caps: { ...caps, places: boxed }, step: "computer" });
+    const shell = mount({ agent: agent(undefined, ["read", "bash"]), caps: { ...caps, places: boxed }, step: "computer" });
     expect(shell.input('input[name="place"][value="sandbox"]')!.checked).toBe(true);
-    shell.step(/Tools/);
-    expect(shell.input('input[type="checkbox"][value="bash"]')!.disabled).toBe(false);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    // Its tools need no shell, so its runs are on the runner; ticking bash is what would put it in the box.
+    const plain = mount({ agent: agent(), caps: { ...caps, places: boxed }, step: "computer" });
+    expect(plain.input('input[name="place"][value="runner"]')!.checked).toBe(true);
+    plain.step(/Tools/);
+    expect(plain.input('input[type="checkbox"][value="bash"]')!.disabled).toBe(false);
     act(() => root?.unmount()); document.body.innerHTML = "";
     const browsing = mount({ agent: agent(undefined, ["read", "browser"]), caps: { ...caps, places: boxed, tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "browser", available: true, harnesses: ["pi"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }]) }, step: "computer" });
     expect(browsing.input('input[name="place"][value="runner"]')!.checked).toBe(true);

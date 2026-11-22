@@ -7,17 +7,12 @@ import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type Impor
 import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
-import { writeLaunch } from "./run-launch.js";
+import { readableJson, writeLaunch } from "./run-launch.js";
 
 /** A WHERE condition on `runs`: the run is no built-in learning run (one a kept learning names, queued with it), which no
  *  list of runs names. */
 export const NOT_A_LEARNING_RUN = "id NOT IN (SELECT learning_run_id FROM learning_proposals WHERE learning_run_id IS NOT NULL)";
 
-/** A learning run's launch: harness "learning", its input the run that learned (and the round it grades, past the first),
- *  where it runs (on the runner, no box: its only writes are the learning folder's one script), `model`, the grade model
- *  when one is named (gradeModelOf; none: the agent's own grades it, as main's), and `max_cost_usd`, what the run's cap
- *  left for its grade (`capUsd`: a figure that is not one is no room, $0, never no cap; none for an uncapped run). */
-export const learningLaunchOf = (runId: string, model?: string, round = 1, capUsd?: number) => ({ harness: "learning", input: { runId, ...(round > 1 ? { round } : {}) }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}), ...(capUsd !== undefined ? { max_cost_usd: Number.isFinite(capUsd) && capUsd > 0 ? capUsd : 0 } : {}) });
 
 /** The lock a write of a run's sign_in_handed and a sign-in's forget both take (Dialect.lockKey): the forget's check of
  *  the running runs' hashes and a launch's write of them are serialized, as SQLite's one writer serializes them. */
@@ -26,10 +21,11 @@ export const SIGN_IN_HANDED_LOCK = "sign_in_handed";
 export type RunRecord = {
   id: string; agent_id: string; revision_id: string; state: RunState; epoch: number; runner: string | null; claimed_until: number | null;
   wake_at: number | null; backoff_until: number | null; cost_usd: number | null; cost_upper_bound: number; metrics: string | null; summary: string | null;
-  outcome: string | null; archived_at: number | null; imported_from: string | null; sign_in_handed: string | null; labels: string | null; started_at: number; ended_at: number | null;
+  outcome: string | null; archived_at: number | null; imported_from: string | null; sign_in_handed: string | null; labels: string | null; disk: string | null; started_at: number; ended_at: number | null;
+  purged_at: number | null;
 };
 
-export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, cost_upper_bound, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, labels, started_at, ended_at";
+export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, cost_upper_bound, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, labels, disk, started_at, ended_at, purged_at";
 
 /** A run's exact cost in SQL, for a query that reads runs.cost_usd itself (`alias`: its runs table's): NULL when the
  *  stored figure is only the most the run can have cost, as runOf reads it. Every raw read of the column goes through it. */
@@ -46,7 +42,7 @@ export const runOf = (r: RunRecord): RunRow => ({
   wakeAt: r.wake_at, backoffUntil: r.backoff_until, ...costOf(r.cost_usd, r.cost_upper_bound), metrics: r.metrics === null ? null : JSON.parse(r.metrics), summary: r.summary,
   outcome: (r.outcome as RunOutcome | null) ?? null, archivedAt: r.archived_at, importedFrom: r.imported_from === null ? null : (JSON.parse(r.imported_from) as ImportedFrom),
   signInHanded: r.sign_in_handed === null ? null : (JSON.parse(r.sign_in_handed) as string[]), labels: r.labels === null ? {} : (JSON.parse(r.labels) as RunLabels),
-  startedAt: r.started_at, endedAt: r.ended_at,
+  disk: r.disk, startedAt: r.started_at, endedAt: r.ended_at, purgedAt: r.purged_at ?? null,
 });
 
 /** Applies `patch` to the claim's run, then writes `also`, through `tx` (an open transaction's handle). Fenced, with nothing
@@ -105,38 +101,14 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
       case "channel_told":
         await tx.run("INSERT INTO channel_told (channel, run_id, marker, at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING", each.row.channel, claim.runId, each.row.marker, now);
         break;
-      // The run's kept learning of one round, of the run's own agent, naming the learning run the same end queues (wherever
-      // the end lists it); kept once a round (an end replayed after a crash keeps the first).
-      case "learning_proposals": {
-        const queued = also.find((one): one is Extract<AlsoRow, { table: "learning_run" }> => one.table === "learning_run");
+      // The run's kept learning of one round, of the run's own agent; kept once a round (an end replayed after a crash
+      // keeps the first).
+      case "learning_proposals":
         await tx.run(
-          "INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, learning_run_id, created_at) SELECT id, ?, agent_id, ?, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id, round) DO NOTHING",
-          each.row.round ?? 1, JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), queued?.row.id ?? null, now, claim.runId,
+          "INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, created_at) SELECT id, ?, agent_id, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id, round) DO NOTHING",
+          each.row.round ?? 1, JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), now, claim.runId,
         );
         break;
-      }
-      // The learning run is queued after every row of the end (below): only once its kept learning names it.
-      case "learning_run":
-        break;
-    }
-  }
-  // The learning run: queued, of the run's agent and revision, started once (the same id again adds nothing), and only
-  // when the run's kept learning names it. A kept learning is kept once (above): a follow-up's end that keeps another
-  // beside one already kept that names no learning run (dropped: nothing to grade) queues none, so no learning run is
-  // ever left that no kept learning names. Such a run would be no run's grade: every list of runs would show it as the
-  // agent's own run (NOT_A_LEARNING_RUN reads the kept learning), and its spend would be booked on no run.
-  for (const each of also) {
-    if (each.table !== "learning_run") continue;
-    const named = await tx.get("SELECT 1 AS found FROM learning_proposals WHERE run_id = ? AND learning_run_id = ?", claim.runId, each.row.id);
-    if (!named) continue;
-    await tx.run(
-      "INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) SELECT ?, agent_id, revision_id, 'queued', 0, ? FROM runs WHERE id = ? ON CONFLICT (id) DO NOTHING",
-      each.row.id, now, claim.runId,
-    );
-    // Its launch row, with it: harness "learning" (the runner's loop factory picks the learning loop by it), its input
-    // the run that learned. Written once, as the run is.
-    if (!(await tx.get("SELECT 1 AS found FROM run_launch WHERE run_id = ?", each.row.id))) {
-      await writeLaunch(tx, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model, each.row.round, each.row.capUsd) }, now);
     }
   }
   return runOf(row);
@@ -148,9 +120,9 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
  *  outcome 'stopped': its turn ended, never the run, as main's stop leaves one), not imported and not a learning run. A
  *  cancelled run, a failed one and a workflow run are over for good. */
 export const REOPEN_SET = "state = 'running', runner = NULL, claimed_until = NULL, wake_at = NULL, backoff_until = NULL, ended_at = NULL, summary = NULL, outcome = NULL";
-export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (state = 'stopped' AND outcome = 'stopped')) AND imported_from IS NULL
+export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (state = 'stopped' AND outcome = 'stopped')) AND imported_from IS NULL AND purged_at IS NULL
   AND EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'agentic')
-  AND NOT EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText("run_launch.body", ["harness"])} = 'learning')`;
+  AND NOT EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText(readableJson(d, "run_launch.body"), ["harness"])} = 'learning')`;
 
 /** After a write that made the run final has taken its own rows: every command row of the run still untaken is refused
  *  with the end's reason, in that same transaction. The store takes no new row on a final run (RunFinal), so a row the
@@ -163,8 +135,12 @@ export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (sta
  *  before the end, it opens the run here; after it, the store refuses a new row (RunFinal) and runs.reopen takes it.
  *  A person's stop is the same (reopenableWhere): a message waiting at it is the run's next turn, as main's stop leaves a
  *  message submitted before it to run; a cancel's refuses it. A run left final here has its launch secrets erased (its
- *  launch row's `sealed`); a run opened again keeps the ones its waiting message wrote. */
-export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE): Promise<void> {
+ *  launch row's `sealed`); a run opened again keeps the ones its waiting message wrote.
+ *  An end that keeps its job's end (`keepsEnd`: a look-back's, RunPatch.keepsEnd) is that end, which every reader served
+ *  while the run looked back: a cancel at it cut the look-back alone and is refused with the rest. Only with a person's
+ *  message waiting (the run read as going on from it, as a completed run a message opens again) is a cancel, waiting or
+ *  taken in this commit, that message's run's: it ends cancelled, at this commit's time. */
+export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE, keepsEnd = false): Promise<void> {
   if (state !== "ended" && state !== "stopped" && state !== "failed") return;
   // A cancel the API accepted (202, not refused) promised a cancelled run, and the view reads cancelled from that 202 on.
   // A normal end that commits with it still waiting is the cancel's: the run is stopped with outcome 'cancelled' (stopEnd's
@@ -172,10 +148,14 @@ export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, r
   // A stop's end is the same (state 'stopped', outcome 'stopped': a CLI turn its harness interrupted on its own, or a
   // person's stop): it would leave the run open to a message, so the cancel wins it too, and the run takes no more.
   if (state === "ended" || state === "stopped") {
+    const cancel = keepsEnd
+      ? `EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.refused IS NULL AND commands.kind = 'cancel' AND (commands.taken_at IS NULL OR commands.taken_at = ?))
+        AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind = 'steer')`
+      : "EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.refused IS NULL AND commands.kind = 'cancel')";
     const won = await tx.get<{ id: string }>(
-      `UPDATE runs SET state = 'stopped', outcome = 'cancelled', summary = 'cancelled' WHERE id = ? AND (state = 'ended' OR (state = 'stopped' AND outcome = 'stopped'))
-        AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.refused IS NULL AND commands.kind = 'cancel') RETURNING id`,
-      runId,
+      `UPDATE runs SET state = 'stopped', outcome = 'cancelled', summary = 'cancelled'${keepsEnd ? ", ended_at = ?" : ""} WHERE id = ? AND (state = 'ended' OR (state = 'stopped' AND outcome = 'stopped'))
+        AND ${cancel} RETURNING id`,
+      ...(keepsEnd ? [now, runId, now] : [runId]),
     );
     if (won) {
       await tx.run("UPDATE commands SET taken_at = ? WHERE run_id = ? AND taken_at IS NULL AND refused IS NULL AND kind = 'cancel'", now, runId);

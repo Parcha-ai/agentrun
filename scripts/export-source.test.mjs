@@ -24,6 +24,19 @@ test('connector source and notices ship without local worker state or Python bui
   for (const path of privateFiles) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
 });
 
+test('the eve cookbook exports its source mount without local sessions or compiled credentials', async t => {
+  const f = await fixture(t);
+  const privateFiles = ['examples/eve-learning/.eve/.workflow-data/session.json',
+    'examples/eve-learning/.output/server/index.mjs', 'examples/eve-learning/.vercel/project.json',
+    'examples/eve-learning/agent/extensions/agentrun.ts'];
+  for (const path of privateFiles) await f.write(path, 'PRIVATE_EVE_FIXTURE\n');
+  await f.write('examples/eve-learning/connection/agentrun.ts', 'export const mount = true;\n');
+  await f.run();
+  const listing = await f.listing();
+  assert.ok(listing.includes('agentrun-dsl-source/examples/eve-learning/connection/agentrun.ts'));
+  for (const path of privateFiles) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), path);
+});
+
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'agentrun-source-export-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -35,7 +48,7 @@ async function fixture(t) {
   await write('scripts/machine-path.mjs', machinePathRule);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi-browser': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/client': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/agentrun': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi-browser': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/client': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/run-adapters-acp': {}, 'packages/agentrun': {},
   } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
@@ -91,6 +104,18 @@ test('a *.local.* file is excluded and a source file named local.ts is archived'
   assert.ok(receipt.exclusions.includes('*.local.*'));
 });
 
+test('a .parcha/ directory anywhere in the tree is left out, and its extensionless files do not stop the export', async t => {
+  const f = await fixture(t);
+  // A session hook on a developer machine writes .parcha/checkpoint-counter in whatever directory a command runs from.
+  const excluded = ['apps/console/.parcha/checkpoint-counter', 'packages/serve/.parcha/checkpoint-counter', 'docs/.parcha/state.json'];
+  for (const path of excluded) await f.write(path, '7\n');
+  await f.write('packages/dsl/src/parcha.mjs', 'export const name = 1;\n');
+  await f.run();
+  const listing = await f.listing();
+  for (const path of excluded) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
+  assert.ok(listing.includes('agentrun-dsl-source/packages/dsl/src/parcha.mjs'), 'a source file named parcha is archived');
+});
+
 test('a review file (*.review.*) is excluded and source named review is archived', async t => {
   const f = await fixture(t);
   // A review file is a file named `<name>.review.<ext>`, like the author's `<n>.review.json` beside each candidate; it and the
@@ -138,7 +163,7 @@ test('the removed website output flag is rejected before writing artifacts', asy
 
 test('root and package license notices are scanned and retained byte-for-byte', async t => {
   const f = await fixture(t);
-  const notices = ['LICENSE', 'NOTICE'].flatMap(name => [name, ...['dsl', 'jev', 'serve'].map(pkg => `packages/${pkg}/${name}`)]);
+  const notices = ['LICENSE', 'NOTICE'].flatMap(name => [name, ...['dsl', 'jev', 'serve', 'run-adapters-acp'].map(pkg => `packages/${pkg}/${name}`)]);
   for (const path of notices) await f.write(path, `Notice fixture: ${path}\n`);
   await f.run();
   for (const path of notices) {
@@ -300,6 +325,29 @@ test('the computer image recipe (the root helper, its Dockerfile and its two bui
   await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/computer\/box\/agentrun-other/);
 });
 
+test('the media image recipe (packages/computer/media/Dockerfile) is archived and scanned as text; another file there still stops the export', async t => {
+  const f = await fixture(t);
+  await f.write('packages/computer/media/Dockerfile', '# fixture\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes('agentrun-dsl-source/packages/computer/media/Dockerfile\n'));
+  assert.equal(receipt.files.find(file => file.path === 'packages/computer/media/Dockerfile')?.kind, 'text');
+  await f.write('packages/computer/media/Containerfile', '# fixture\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/computer\/media\/Containerfile/);
+});
+
+test('the documents image recipe (packages/computer/documents: its Dockerfile and documents.sh) is archived and scanned as text', async t => {
+  const f = await fixture(t);
+  await f.write('packages/computer/documents/Dockerfile', '# fixture\n');
+  await f.write('packages/computer/documents/documents.sh', '#!/bin/sh\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  for (const path of ['packages/computer/documents/Dockerfile', 'packages/computer/documents/documents.sh']) {
+    assert.ok((await f.listing()).includes(`agentrun-dsl-source/${path}\n`), path);
+    assert.equal(receipt.files.find(file => file.path === path)?.kind, 'text', path);
+  }
+});
+
 test('inventory generation works without build output and does not produce an archive', async t => {
   const f = await fixture(t);
   await f.run('--inventory-only');
@@ -312,7 +360,7 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
     '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
     ...workspaces,
@@ -332,12 +380,26 @@ test('the dependency inventory follows the runtime graph only: a lock that chang
   assert.match(withRuntime.toString('utf8'), /runtime-lib/);
 });
 
+test('the ACP harness package is an inventory root: its runtime dependency ships in the source archive and is listed for it', async t => {
+  const f = await fixture(t);
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  await f.write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
+    '': {},
+    ...workspaces,
+    'packages/run-adapters-acp': { dependencies: { 'acp-sdk': '2.7.0' } },
+    'node_modules/acp-sdk': { version: '2.7.0', license: 'Apache-2.0' },
+  } }));
+  await f.run('--inventory-only');
+  const inventory = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
+  assert.match(inventory, /\| acp-sdk \| 2\.7\.0 \| Apache-2\.0 \| run-adapters-acp \| no \| 1 \|/);
+});
+
 // OpenCode's per-platform binary packages publish no `license` field; their source, anomalyco/opencode at the pinned
 // release, is MIT, as `opencode-ai` itself declares. The inventory reads them as MIT by name AND version: a bumped
 // version is read as its manifest says again (UNKNOWN until it is checked), never carried over.
 test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for them, and reads a bumped one as its manifest says', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = version => JSON.stringify({ lockfileVersion: 3, packages: {
     '': {},
     ...workspaces,
@@ -364,7 +426,7 @@ test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for
 // package names the host it runs in as an optional peer, which the inventory keeps.
 const optionalPeerLock = ({ requiredBy } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
   '': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
-  ...Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}])),
+  ...Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}])),
   'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
   'packages/pi-browser': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
   'node_modules/host-agent': { version: '1.0.0', license: 'MIT', dev: true },

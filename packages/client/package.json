@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-client",
-  "version": "0.1.0-beta.42",
+  "version": "0.1.0-beta.52",
   "description": "A typed TypeScript client for a self-hosted AgentRun server: a method per operation of its API, typed from its OpenAPI document, with waiting for a run and following its timeline. No dependencies; fetch only.",
   "keywords": [
     "agentrun",
@@ -67,14 +67,22 @@
     "tag": "beta"
   },
   "peerDependencies": {
-    "@modelcontextprotocol/sdk": "1.32.2"
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "ajv": "8.18.0",
+    "ajv-formats": "3.0.1"
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/sdk": {
       "optional": true
+    },
+    "ajv": {
+      "optional": true
+    },
+    "ajv-formats": {
+      "optional": true
     }
   },
   "devDependencies": {
-    "@parcha/agentrun-dsl": "0.1.0-beta.42"
+    "@parcha/agentrun-dsl": "0.1.0-beta.52"
   }
 }

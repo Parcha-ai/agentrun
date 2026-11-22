@@ -6,12 +6,15 @@
 // (sweep.ts, --provider daytona) reads the same names through createHost: it makes nothing. The mount cases run on a
 // self-hosted Daytona target alone: COMPUTER_DAYTONA_ARCHIL_EGRESS names its Archil egress relay, and the
 // COMPUTER_ARCHIL_* settings the disk (mountFor).
+import { boxRecipeHash } from "../box-image.js";
 import { create, type DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
 import { DAYTONA_DEFAULT_SNAPSHOT } from "../descriptors/daytona.js";
 import type { MachineHost } from "../host.js";
 import type { MountKind } from "../mount.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
+import { dialOnlyFromServer } from "./dial-only.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import { kindFrom } from "./kind.js";
 import type { RunFolder } from "./types.js";
 
 /** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
@@ -42,6 +45,12 @@ export const DAYTONA_ENV = {
 	 * provider takes an Archil mount; unset, it refuses one (Archil's client hangs on Daytona's hosted cloud).
 	 */
 	archilEgress: "COMPUTER_DAYTONA_ARCHIL_EGRESS",
+	/** attachEgress: a self-hosted Daytona target's attach relay, <IPv4 relay>:<port>, which its machines that dial go through. */
+	attachEgress: "COMPUTER_DAYTONA_ATTACH_EGRESS",
+	/** connect: exec (default) or dial, which needs the public server's process (dialKit). */
+	connect: "COMPUTER_DAYTONA_CONNECT",
+	/** kind: linux (default) or desktop, which create() takes on dial alone. */
+	kind: "COMPUTER_DAYTONA_KIND",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
@@ -63,6 +72,8 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	const user = named(DAYTONA_ENV.user);
 	const gpuSnapshot = named(DAYTONA_ENV.gpuSnapshot);
 	const archilEgress = named(DAYTONA_ENV.archilEgress);
+	const attachEgress = named(DAYTONA_ENV.attachEgress);
+	const connect = named(DAYTONA_ENV.connect);
 	return {
 		apiKey,
 		...(url ? { apiUrl: url.value } : {}),
@@ -77,6 +88,10 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 		...(gpuSnapshot ? { gpuSnapshot: gpuSnapshot.value } : {}),
 		// create() refuses one of another shape in words.
 		...(archilEgress ? { archilEgress: archilEgress.value } : {}),
+		// create() refuses one of another shape in words.
+		...(attachEgress ? { attachEgress: attachEgress.value } : {}),
+		// create() refuses any other value in words.
+		...(connect ? { connect: connect.value as "exec" | "dial" } : {}),
 	};
 }
 
@@ -87,7 +102,7 @@ export const CONFORMANCE_AUTO_DELETE_MINUTES = 0;
 
 /** For the run's report: what this configuration means for the suite, in words. */
 export const conformanceNotes: string[] = [
-	`daytona: every sandbox runs with autoStopMinutes ${CONFORMANCE_AUTO_STOP_MINUTES} and autoDeleteMinutes ${CONFORMANCE_AUTO_DELETE_MINUTES}, besides its TTL: Daytona deletes a sandbox as soon as it stops, so this configuration keeps no stopped computer. A computer here is deleted, never stopped: release stop is refused. Full provider.janitor, which needs a stopped computer kept, is skipped (the lifetime being vendor).`,
+	`daytona: every sandbox runs with autoStopMinutes ${CONFORMANCE_AUTO_STOP_MINUTES} and autoDeleteMinutes ${CONFORMANCE_AUTO_DELETE_MINUTES}, besides its TTL: Daytona deletes a sandbox as soon as it stops, so this configuration keeps no stopped computer. A computer here is deleted, never stopped: release stop is refused. Full provider.janitor, which needs a stopped computer kept, is skipped (the lifetime being vendor). On dial (${DAYTONA_ENV.connect}=dial) no connection is a toolbox call, so nothing resets Daytona's idle timer: a computer stops, and is deleted, ${CONFORMANCE_AUTO_STOP_MINUTES} minutes after it starts, whatever runs on it.`,
 ];
 
 export interface DaytonaModuleOptions {
@@ -99,25 +114,40 @@ export interface DaytonaModuleOptions {
 	timeouts?: DaytonaProviderOptions["timeouts"];
 	/** What the provider says that is no failure: the CLI gives it and puts it in the report. */
 	onNote?: DaytonaProviderOptions["onNote"];
+	/** The public server a dial machine dials (COMPUTER_DAYTONA_CONNECT=dial): its process alone gives it (dialKit). */
+	dial?: DaytonaProviderOptions["dial"];
+	/** The daemon binary, over COMPUTER_DAYTONA_DAEMON: dial-conformance.mjs gives drift.version's daemon here. */
+	daemonPath?: DaytonaProviderOptions["daemonPath"];
 }
 
 /** The provider's options: what this module reads from the environment (settingsFromEnv), with the run's bounds. */
-function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote }: DaytonaModuleOptions): DaytonaProviderOptions {
+function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote, dial, daemonPath }: DaytonaModuleOptions): DaytonaProviderOptions {
 	return {
 		...settingsFromEnv(env),
+		// create() refuses any other kind, and desktop without dial, in words.
+		...kindFrom(env, DAYTONA_ENV.kind),
+		...(daemonPath === undefined ? {} : { daemonPath }),
 		autoStopMinutes: CONFORMANCE_AUTO_STOP_MINUTES,
 		autoDeleteMinutes: CONFORMANCE_AUTO_DELETE_MINUTES,
 		...(fetch ? { fetch } : {}),
 		...(webSocket ? { webSocket } : {}),
 		...(timeouts ? { timeouts } : {}),
 		...(onNote ? { onNote } : {}),
+		...(dial ? { dial } : {}),
 	};
 }
 
-/** The image every computer of the run starts from: COMPUTER_DAYTONA_SNAPSHOT, or Daytona's default snapshot. */
+/**
+ * The image every computer of the run starts from: COMPUTER_DAYTONA_SNAPSHOT; else on dial the box image's snapshot,
+ * agentrun-box-<recipe hash> (box/build-daytona.py), since only it holds agentrun-dial and runs it; else Daytona's default
+ * snapshot.
+ */
 export function conformanceImage({ env = process.env }: Pick<DaytonaModuleOptions, "env"> = {}): string {
-	return env[DAYTONA_ENV.snapshot] || DAYTONA_DEFAULT_SNAPSHOT;
+	return env[DAYTONA_ENV.snapshot] || (env[DAYTONA_ENV.connect] === "dial" ? `agentrun-box-${boxRecipeHash()}` : DAYTONA_DEFAULT_SNAPSHOT);
 }
+
+/** A dial machine (COMPUTER_DAYTONA_CONNECT=dial) runs its Core inside the public server's process: refused here (dial-only.ts). */
+export const dialKit = dialOnlyFromServer("daytona", "Daytona", `${DAYTONA_ENV.connect}=dial`);
 
 /**
  * A fresh run folder for the mount cases: an Archil one on the disk the COMPUTER_ARCHIL_* settings name (the shared

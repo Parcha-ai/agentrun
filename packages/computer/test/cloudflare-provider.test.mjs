@@ -1,11 +1,15 @@
 // CloudflareProvider's host on a fake relay (the routes of relays/cloudflare/src/index.ts, as a fetch): create's body
 // (the boot env, the labels, the instance its size picks, backstopAt, and nothing to run), get and list, delete, the
 // relay's version and image read from /v1/health, the size refusals, and the error codes in the relay's words. The
-// adapter's dial lifecycle is tested once over the fake dial host (hosted-dial.test.mjs); Cloudflare's is proven live, from
+// adapter's dial lifecycle is tested once over the fake dial host (hosted-dial.test.mjs), and Cloudflare's desktop once
+// through it to its X server, on a relay that keeps what it makes (bootDial); Cloudflare's is proven live, from
 // packages/serve/scripts/dial-conformance.mjs.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { AttachHub, MemoryMachineTokens } from "../dist/index.js";
+import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { codeOfError } from "../dist/hosted/process.js";
 import * as registry from "../dist/providers.js";
 
@@ -120,16 +124,65 @@ test("testConnection and prepareImage read /v1/health: a relay of another versio
 	assert.deepEqual(refused.error, { code: "unauthorized", message: "GET /v1/health answered 401: the bearer token is not this relay's RELAY_TOKEN" });
 });
 
-test("the provider dials: kind linux, a microVM, no exec, upload or mount; a server with no public address calls the relay for nothing", async () => {
+test("the provider dials: kind linux, a microVM, no exec or upload, a synced folder alone (agentrun-dial makes /workspace); a server with no public address calls the relay for nothing", async () => {
 	const relay = fakeRelay(() => undefined);
 	const made = provider(relay, { dial: { tokens: new MemoryMachineTokens(), hub: new AttachHub() } });
 	assert.deepEqual([made.host.facts.connect, made.host.exec, made.host.upload, made.host.extend], ["dial", undefined, undefined, undefined]);
 	const caps = made.capabilities();
-	assert.deepEqual([caps.kind, caps.isolation, caps.mount, caps.network, caps.gpu], ["linux", "microvm", [], ["none", "open", "allow"], undefined]);
+	assert.deepEqual([caps.kind, caps.isolation, caps.mount, caps.network, caps.gpu], ["linux", "microvm", ["sync"], ["none", "open", "allow"], undefined]);
 	const refused = await made.create({ image: BOX, lifetimeMs: 600_000, network: "none" }, { requestId: "cf-no-address" });
 	assert.equal(refused.error?.code, "refused");
 	assert.match(refused.error.message, /^Cloudflare machines dial this server, and it has no public https address/);
 	assert.deepEqual(relay.calls, []);
+});
+
+test("kind desktop: the desktop's groups and the window manager, and DISPLAY beside the boot env the relay is given, for init, on standard-3; kind linux, the default, gets none", async () => {
+	for (const kind of ["desktop", "linux", undefined]) {
+		// The relay refuses the container: what it was asked is all this reads. The daemon is any file (its sha256 goes in the env).
+		const relay = fakeRelay((method, url) => (method === "POST" ? { status: 400, json: { error: "refused in a test" } } : health()(method, url)));
+		const dial = { url: "http://127.0.0.1:8080", tokens: new MemoryMachineTokens(), hub: new AttachHub() };
+		const made = provider(relay, { ...(kind === undefined ? {} : { kind }), dial, daemonPath: fileURLToPath(import.meta.url) });
+		const caps = made.capabilities();
+		assert.equal(caps.kind, kind ?? "linux");
+		assert.deepEqual(caps.groups, kind === "desktop" ? ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"] : ["exec", "files", "processes"]);
+		assert.equal(made.host.facts.windowManager, true, "the relay's image is FROM the box image, which has xfwm4");
+		const result = await made.create({ image: BOX, lifetimeMs: 600_000, network: "none" }, { requestId: `cf-${kind}` });
+		assert.equal(result.error?.code, "invalid", JSON.stringify(result));
+		const { env, instance } = relay.calls.find(({ method }) => method === "POST").body;
+		assert.deepEqual(Object.keys(env).sort(), [...["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"], ...(kind === "desktop" ? ["DISPLAY"] : [])].sort(), String(kind));
+		assert.equal(env.DISPLAY, kind === "desktop" ? ":0" : undefined);
+		assert.equal(instance, "standard-3", "a desktop's size is the sandbox's: 2 vCPUs, 8 GiB");
+	}
+});
+
+test("Cloudflare's desktop configuration, as serve builds it, makes a desktop over dial: the container boots from the env the relay was given, dials, and its X server and xfwm4 start over that socket", async () => {
+	const dial = dialServer();
+	const daemonPath = fileURLToPath(import.meta.url);
+	const rows = new Map();
+	let booted;
+	// A relay that keeps what it makes: the container boots from the env it was posted (bootDial).
+	const relay = fakeRelay((method, url, body) => {
+		const name = url.pathname.split("/")[3];
+		if (url.pathname === "/v1/health") return { json: { version: CLOUDFLARE_RELAY_VERSION, image: BOX } };
+		if (method === "POST" && url.pathname === "/v1/computers") {
+			rows.set(body.name, { ...row("running"), name: body.name, labels: body.labels, image: body.image });
+			booted = bootDial(body.env, dial, { daemon: readFileSync(daemonPath) });
+			return { status: 201, json: rows.get(body.name) };
+		}
+		if (method === "GET" && url.pathname === "/v1/computers") return { json: { computers: [...rows.values()].filter(({ labels }) => [...url.searchParams].every(([key, value]) => labels[key] === value)) } };
+		if (method === "GET" && rows.has(name)) return { json: rows.get(name) };
+		if (method === "DELETE" && rows.has(name)) {
+			rows.delete(name);
+			return { status: 204 };
+		}
+		return undefined;
+	});
+	const { options } = registry.descriptorOf("cloudflare").capabilities.find(({ kind }) => kind === "desktop");
+	const made = provider(relay, { ...options, dial, daemonPath });
+	assert.equal(made.capabilities().kind, "desktop");
+	await desktopOverDial(made, dial, () => booted, { image: BOX, lifetimeMs: 600_000, network: "none" });
+	assert.equal(relay.calls.find(({ method }) => method === "POST").body.instance, "standard-3");
+	assert.equal(rows.size, 0, "release deleted the container");
 });
 
 test("the constructor refuses a relay URL that is not https and a missing token, never echoing the token", () => {
@@ -141,7 +194,7 @@ test("the constructor refuses a relay URL that is not https and a missing token,
 test("cloudflare is in the registry; its conformance module reads COMPUTER_CLOUDFLARE_* alone and refuses a dialKit off the public server", async () => {
 	assert.ok(registry.providerIds.includes("cloudflare"));
 	assert.equal((await registry.providerModule("cloudflare")).create, create);
-	assert.deepEqual(cloudflareModule.ENV, { url: "COMPUTER_CLOUDFLARE_RELAY_URL", token: "COMPUTER_CLOUDFLARE_RELAY_TOKEN" });
+	assert.deepEqual(cloudflareModule.ENV, { url: "COMPUTER_CLOUDFLARE_RELAY_URL", token: "COMPUTER_CLOUDFLARE_RELAY_TOKEN", kind: "COMPUTER_CLOUDFLARE_KIND" });
 	assert.throws(() => cloudflareModule.settingsFromEnv({ COMPUTER_CLOUDFLARE_RELAY_URL: RELAY }), /needs COMPUTER_CLOUDFLARE_RELAY_URL and COMPUTER_CLOUDFLARE_RELAY_TOKEN/);
 	const env = { COMPUTER_CLOUDFLARE_RELAY_URL: RELAY, COMPUTER_CLOUDFLARE_RELAY_TOKEN: TOKEN };
 	assert.equal(cloudflareModule.createProvider({ env }).capabilities().maxLifetimeMs, 30 * 60_000);

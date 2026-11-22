@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/isolate"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/proctree"
 )
 
@@ -35,9 +36,8 @@ import (
 const GuardCommand = "guard"
 
 const (
-	guardSpecFD         = 3
-	guardStatusFD       = 4
-	prSetChildSubreaper = 36
+	guardSpecFD   = 3
+	guardStatusFD = 4
 )
 
 // guardSpec is what the daemon resolved: the program runs as given, with no lookup left to do.
@@ -95,8 +95,8 @@ func Guard() int {
 		data, _ := json.Marshal(s)
 		_, _ = statusFile.Write(append(data, '\n'))
 	}
-	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0); errno != 0 {
-		report(guardStatus{StartError: "the guard cannot become a child subreaper: " + errno.Error()})
+	if err := isolate.BecomeSubreaper(); err != nil {
+		report(guardStatus{StartError: "the guard cannot become a child subreaper: " + err.Error()})
 		return 125
 	}
 	var spec guardSpec

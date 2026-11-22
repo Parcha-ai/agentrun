@@ -2,8 +2,9 @@
 // a drop fails what was in flight with gone and a redial is a fresh connection; a second socket replaces the first; a
 // hello that is not what the computer paired as is closed with its code; one run holds the computer at a time.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
-import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
+import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, MACHINE_TOKEN_SOURCE, newMachineToken, PROTOCOL_VERSION, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
 import { FakeUiDriver, serveUiSocket, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
@@ -202,7 +203,7 @@ test("a hello that is not what the computer paired as is closed: another kind wi
 	const mac = new Mac();
 	const wrongKind = await dial(hub, pairedFor(phone), mac);
 	assert.equal(wrongKind.accepted.ok, false);
-	assert.match(wrongKind.accepted.error.message, /paired as a android android and now says macos desktop: pair it again/);
+	assert.match(wrongKind.accepted.error.message, /paired as a android android on arm64 and now says macos desktop on arm64: pair it again/);
 	assert.equal(wrongKind.serve.closed.code, ATTACH_CLOSE.mismatch);
 	class Old extends Mac {
 		hello() {
@@ -214,6 +215,39 @@ test("a hello that is not what the computer paired as is closed: another kind wi
 	assert.match(old.accepted.error.message, /speaks protocol 0\.1, and this server 0\.2: update the driver on Test Mac \(the download is on the console's Computers page\)$/);
 	assert.equal(redials(old.serve.closed.code), false, "a driver of another protocol stops dialing until it is updated");
 	assert.equal(hub.online("c-1"), false);
+});
+
+test("a paired computer's token on another machine: another arch or os is closed with mismatch and stops dialing; the same os and arch replaces the live socket", async () => {
+	const hub = new AttachHub();
+	const box = new FakeUiDriver({ os: "linux", kind: "desktop", groups: DESKTOP });
+	const paired = { ...pairedFor(box, "cmp-box"), hello: { ...box.hello(), arch: "amd64" } };
+	class OtherArch extends FakeUiDriver {
+		hello() {
+			return { ...super.hello(), arch: "arm64" };
+		}
+	}
+	const otherArch = await dial(hub, paired, new OtherArch({ os: "linux", kind: "desktop", groups: DESKTOP }));
+	assert.equal(otherArch.accepted.ok, false);
+	assert.equal(otherArch.accepted.error.message, "Test Mac paired as a linux desktop on amd64 and now says linux desktop on arm64: pair it again");
+	assert.equal(otherArch.serve.closed.code, ATTACH_CLOSE.mismatch);
+	assert.equal(redials(otherArch.serve.closed.code), false, "a machine the token was not paired on stops dialing");
+	class Amd64 extends FakeUiDriver {
+		hello() {
+			return { ...super.hello(), arch: "amd64" };
+		}
+	}
+	const otherOs = await dial(hub, paired, new Amd64({ groups: DESKTOP }));
+	assert.equal(otherOs.accepted.error.message, "Test Mac paired as a linux desktop on amd64 and now says macos desktop on amd64: pair it again");
+	assert.equal(otherOs.serve.closed.code, ATTACH_CLOSE.mismatch);
+	assert.equal(hub.online(paired.id), false);
+	// A copy on a machine of the same os and arch says the same hello: nothing in it tells the two apart, so the newer
+	// dial takes the computer and the older socket is closed with replaced (and dials again).
+	const first = await dial(hub, paired, new Amd64({ os: "linux", kind: "desktop", groups: DESKTOP }));
+	assert.equal(first.accepted.ok, true);
+	const copy = await dial(hub, paired, new Amd64({ os: "linux", kind: "desktop", groups: DESKTOP }));
+	assert.equal(copy.accepted.ok, true);
+	assert.equal(first.serve.closed.code, ATTACH_CLOSE.replaced);
+	assert.equal(redials(ATTACH_CLOSE.replaced), true);
 });
 
 test("a desktop whose hello lacks the pointer and keys is closed at connect with protocol, naming its os, its kind and the groups, and stops dialing", async () => {
@@ -430,6 +464,243 @@ test("a run's hold on an attached computer ends at its lifetime, released or not
 	driver.close();
 });
 
+/** What computerd init says on a Linux box with no display: a sandbox's machine. */
+const LINUX = { protocol: PROTOCOL_VERSION, version: "0.2.0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+/** A run's create on it, its folder a synced folder, under the run's claim epoch 3. */
+const SYNCED = { image: "attached", lifetimeMs: 60_000, network: "open", mount: { kind: "sync" }, labels: { "agentrun.run": "r1", "agentrun.epoch": "3" } };
+
+/** A Linux box's computerd on `computer`'s end, scripted: it runs as uid 1000, its /workspace is `box.workspace` ({ type,
+ *  uid, mode }, or none), holding the names in `box.entries` (its listing truncated when `box.truncated`, and a remove
+ *  finding none of them when `box.unreachable`, as for a name that is not UTF-8 and reaches the wire changed, and
+ *  answering only once `box.removing` settles, as a RemoveAll still deleting there); each files call is recorded with
+ *  its path. */
+function linuxBox(computer, box) {
+	computer.onText((text) => {
+		const { id, method, params } = JSON.parse(text);
+		if (id === undefined) return;
+		if (method.startsWith("files.")) box.calls.push(`${method} ${params.path}${params.recursive ? " recursive" : ""}`);
+		if (method.startsWith("process.")) box.calls.push(`${method}${params.id ? ` ${params.id}` : ""}${params.signal ? ` ${params.signal}` : ""}`);
+		const reply = (result) => computer.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
+		const refuse = (kind, message) => computer.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message, data: { kind } } }));
+		const program = box.programs.find((one) => one.id === params?.id);
+		if (method === "hello") return reply(LINUX);
+		if (method === "files.read" && params.path === "/proc/self/status") return reply({ data: Buffer.from("Name:\tcomputerd\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n").toString("base64"), eof: true, size: 0 });
+		if (method === "files.stat" && params.path === "/workspace") return void box.stat.then(() => (box.workspace ? reply({ size: 0, mtimeMs: 0, gid: 1000, ...box.workspace }) : refuse("not_found", "stat /workspace: no such file or directory")));
+		if (method === "process.list") return reply({ processes: box.programs.map((one) => ({ pid: 40, argv: ["sleep", "1000"], argvClipped: false, pty: false, startedAt: 0, endedAt: one.running ? null : 1, exitCode: null, signal: null, ...one })), truncated: false, next: box.programs.length });
+		if (method === "process.signal") return program.stubborn ? reply({}) : ((program.running = false), reply({}));
+		if (method === "process.wait") return reply({ running: program.running, exitCode: null, signal: program.running ? null : "KILL" });
+		// A loop of listings never yields to a timer here (each answer is a microtask), so the fake bounds it.
+		if (method === "files.list" && box.calls.filter((call) => call.startsWith("files.list")).length > 50) return refuse("limit", "listed /workspace 50 times: emptying it would go on forever");
+		if (method === "files.list") return reply({ entries: box.entries.map((name) => ({ path: `/workspace/${name}`, type: "file", size: 0, mode: 0o644, mtimeMs: 0, uid: 1000, gid: 1000 })), truncated: box.truncated === true });
+		if (method === "files.remove" && box.unreachable) return refuse("not_found", `lstat ${params.path}: no such file or directory`);
+		const remove = () => {
+			box.entries = box.entries.filter((name) => `/workspace/${name}` !== params.path);
+			reply({});
+		};
+		if (method === "files.remove") return void (box.removing ? box.removing.then(remove) : remove());
+		return reply({});
+	});
+}
+
+test("a paired Linux box is a sandbox that takes the run's folder as a synced folder in its own /workspace: one that is missing, a link, another user's or open to others is refused naming the fix and the hold let go; an earlier run's folder is emptied; the folder reads back under the claim epoch, from inside", async () => {
+	const hub = new AttachHub();
+	const paired = { id: "c-box", name: "lab", hello: LINUX, labels: {} };
+	const provider = attachedProvider(paired, hub);
+	const { kind, daemon, mount, vendorAgentPorts } = provider.capabilities();
+	assert.deepEqual({ kind, daemon, mount, vendorAgentPorts }, { kind: "linux", daemon: "child", mount: ["sync"], vendorAgentPorts: [] }, "computerd init runs there, a child of its service manager, and attach dials out");
+	const fields = (spec) => provider.check(spec).map((refusal) => refusal.field);
+	assert.deepEqual(fields(SYNCED), []);
+	assert.deepEqual(fields({ ...SYNCED, mount: { kind: "bind", path: "/srv/runs/r1" } }), ["mount"], "a synced folder alone");
+	assert.deepEqual(fields({ ...SYNCED, mount: { kind: "archil", disk: "d", region: "r", folder: "f", token: "not-a-secret" } }), ["mount"]);
+	assert.deepEqual(fields({ ...SYNCED, labels: { "agentrun.run": "r1" } }), ["labels"], "read back under the run's claim epoch");
+	const mac = attachedProvider(pairedFor(new Mac(), "c-mac"), hub);
+	assert.equal(mac.capabilities().mount, undefined, "a desktop takes no mount");
+	assert.match(mac.check(SYNCED).find((refusal) => refusal.field === "mount")?.message ?? "", /declares no mount kind/);
+
+	const [serve, computer] = socketPair();
+	const box = { workspace: undefined, entries: ["old.txt"], calls: [], programs: [], stat: Promise.resolve() };
+	linuxBox(computer, box);
+	assert.equal((await hub.accept(paired, serve)).ok, true);
+	const fix = "make /workspace a directory of computerd's user's own, mode 0700, as root: the tmpfiles.d line in spec/computer/attach.md, A Linux box (d /workspace 0700 <user> <user> -), then systemd-tmpfiles --create";
+	for (const [workspace, words] of [
+		[undefined, `lab has no /workspace, where a run's synced folder goes: ${fix}`],
+		[{ type: "symlink", uid: 1000, mode: 0o777, target: "/home/ada" }, `/workspace on lab is a link, and a run's synced folder is never written through one: remove it, then ${fix}`],
+		[{ type: "file", uid: 1000, mode: 0o600 }, `/workspace on lab is a file, where a run's synced folder needs a directory: remove it, then ${fix}`],
+		[{ type: "dir", uid: 0, mode: 0o700 }, `/workspace on lab is uid 0's, not uid 1000's, the user computerd runs as: ${fix}`],
+		[{ type: "dir", uid: 1000, mode: 0o755 }, `/workspace on lab is open to its group or others (mode 0755): ${fix}`],
+	]) {
+		box.workspace = workspace;
+		const refused = await provider.create(SYNCED, req());
+		assert.deepEqual(refused.error, { code: "refused", message: words });
+		assert.equal(hub.claimed(paired.id), undefined, "the hold is let go");
+	}
+	assert.deepEqual(box.calls.filter((call) => !call.startsWith("files.read") && !call.startsWith("files.stat")), [], "nothing is ended, listed or removed on a box whose /workspace is not its own");
+
+	// An earlier run's program that outlives KILL: the box is not handed on, and the hold is let go.
+	box.workspace = { type: "dir", uid: 1000, mode: 0o700 };
+	box.programs = [{ id: "p9", pid: 49, running: true, stubborn: true }];
+	assert.deepEqual((await provider.create(SYNCED, req())).error, { code: "refused", message: "ending an earlier run's programs on lab: sleep 1000 (pid 49) is still running 5 s after KILL" });
+	assert.equal(hub.claimed(paired.id), undefined, "the hold is let go");
+	assert.deepEqual(box.entries, ["old.txt"], "nothing removed while it runs");
+
+	// An earlier run's program still running, and one that ended: the running one is killed and waited for, then the
+	// folder emptied, before the push. A retry of the same request while that goes on shares its answer; another request
+	// finds the box held.
+	box.programs = [{ id: "p0", running: false }, { id: "p1", pid: 41, running: true }];
+	box.calls.length = 0;
+	let stat;
+	box.stat = new Promise((resolve) => (stat = resolve));
+	const first = req();
+	const making = provider.create(SYNCED, first);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	const retried = provider.create(SYNCED, first);
+	assert.deepEqual((await provider.create({ ...SYNCED, labels: { "agentrun.run": "r2", "agentrun.epoch": "4" } }, first)).error?.code, "exists", "a retry with other labels is another request, while the first is pending too");
+	assert.match((await provider.create(SYNCED, req())).error?.message ?? "", /^lab is held by another run/);
+	stat();
+	const held = (await making).value;
+	assert.deepEqual((await retried).value, held, "the retry's answer is the first's");
+	assert.deepEqual(box.calls, ["files.read /proc/self/status", "files.stat /workspace", "process.list", "process.signal p1 KILL", "process.wait p1", "files.list /workspace", "files.remove /workspace/old.txt recursive"], "an earlier run's programs are ended and its folder emptied before the push");
+	assert.deepEqual((await provider.attach({ id: held.id })).value.spec.mount, { kind: "sync", epoch: 3 });
+	assert.deepEqual((await provider.list({ "agentrun.run": "r1" })).value.map((one) => one.mount), [{ kind: "sync", epoch: 3 }]);
+	// Swapped for a link while the run holds it: the read-back says so, and the claim's check refuses it.
+	box.workspace = { type: "symlink", uid: 1000, mode: 0o777, target: "/home/ada" };
+	assert.deepEqual((await provider.attach({ id: held.id })).value.spec.mount, { other: `/workspace on lab is a link, and a run's synced folder is never written through one: remove it, then ${fix}` });
+	assert.equal((await provider.release(held, "delete")).ok, true);
+	assert.equal((await provider.attach({ id: held.id })).error?.code, "gone");
+
+	// A run that takes no folder there: nothing is read on the box, and nothing read back.
+	box.calls.length = 0;
+	const plain = (await provider.create({ ...SYNCED, mount: undefined }, req())).value;
+	assert.equal((await provider.attach({ id: plain.id })).value.spec.mount, undefined);
+	assert.deepEqual(box.calls, []);
+	hub.revoke(paired.id, "the test is over");
+});
+
+test("a paired Linux box whose /workspace holds entries a remove can't reach is refused in words naming what was left, whole listing or truncated, and the hold let go", async () => {
+	const hub = new AttachHub();
+	const paired = { id: "c-box", name: "lab", hello: LINUX, labels: {} };
+	const provider = attachedProvider(paired, hub);
+	const [serve, computer] = socketPair();
+	const box = { workspace: { type: "dir", uid: 1000, mode: 0o700 }, entries: ["a", "b"], unreachable: true, calls: [], programs: [], stat: Promise.resolve() };
+	linuxBox(computer, box);
+	assert.equal((await hub.accept(paired, serve)).ok, true);
+	const words = "emptying /workspace on lab of an earlier run's folder: 2 entries could not be removed (first: /workspace/a: lstat /workspace/a: no such file or directory)";
+	for (const truncated of [false, true]) {
+		box.truncated = truncated;
+		box.calls.length = 0;
+		const answer = await provider.create(SYNCED, req());
+		assert.deepEqual(answer.error, { code: "refused", message: words }, `truncated: ${truncated}`);
+		assert.equal(hub.claimed(paired.id), undefined, "the hold is let go");
+		assert.equal(box.calls.filter((call) => call === "files.list /workspace").length, 1, "a pass that removes nothing ends it");
+	}
+	hub.revoke(paired.id, "the test is over");
+});
+
+test("a create cancelled while its remove still runs on a paired Linux box answers cancelled at once, and the box's hold lasts until the remove answers, or its connection closes", async () => {
+	const hub = new AttachHub();
+	const paired = { id: "c-box", name: "lab", hello: LINUX, labels: {} };
+	const provider = attachedProvider(paired, hub);
+	const [serve, computer] = socketPair();
+	let removed;
+	const box = { workspace: { type: "dir", uid: 1000, mode: 0o700 }, entries: ["old"], calls: [], programs: [], stat: Promise.resolve(), removing: new Promise((resolve) => (removed = resolve)) };
+	linuxBox(computer, box);
+	assert.equal((await hub.accept(paired, serve)).ok, true);
+	const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+	/** A create of `labels` cancelled once its remove of /workspace/old is on the box: its answer. */
+	const cancelledCreate = async (labels, lifetimeMs = SYNCED.lifetimeMs) => {
+		const cancel = new AbortController();
+		const creating = provider.create({ ...SYNCED, labels, lifetimeMs }, { ...req(), signal: cancel.signal });
+		while (!box.calls.includes("files.remove /workspace/old recursive")) await settle();
+		cancel.abort();
+		return creating;
+	};
+	const a = { "agentrun.run": "a", "agentrun.epoch": "1" };
+	const b = { "agentrun.run": "b", "agentrun.epoch": "2" };
+	assert.equal((await cancelledCreate(a)).error?.code, "aborted", "the cancelled create answers at once, the remove still running on the box");
+	assert.deepEqual(hub.claimed(paired.id), a, "the box stays held while the remove runs there");
+	assert.match((await provider.create({ ...SYNCED, labels: b }, req())).error?.message ?? "", /^lab is held by another run/, "a second create can't take the box under the first remove");
+	removed();
+	await settle();
+	assert.equal(hub.claimed(paired.id), undefined, "the hold is let go once the remove answered");
+	const second = await provider.create({ ...SYNCED, labels: b }, req());
+	assert.equal(second.ok, true, JSON.stringify(second));
+	assert.equal((await provider.release(second.value, "delete")).ok, true);
+
+	// A later claim's release of the kept hold (serve's releaseOlder lists it and releases it, from a provider of its
+	// own) answers only once the remove has answered, and the hold's deadline passing doesn't let it go either.
+	box.entries = ["old"];
+	box.calls.length = 0;
+	box.removing = new Promise((resolve) => (removed = resolve));
+	assert.equal((await cancelledCreate(a, 80)).error?.code, "aborted");
+	const later = attachedProvider(paired, hub);
+	const [kept] = (await later.list({ "agentrun.run": "a" })).value;
+	let released;
+	const releasing = later.release(kept.ref, "delete").then((answer) => (released = answer));
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	assert.equal(released, undefined, "the release waits on the remove");
+	assert.deepEqual(hub.claimed(paired.id), a, "the hold outlasts its deadline while the remove runs");
+	assert.match((await later.create({ ...SYNCED, labels: b }, req())).error?.message ?? "", /^lab is held by another run/);
+	removed();
+	assert.equal((await releasing).ok, true);
+	assert.equal(hub.claimed(paired.id), undefined, "released once the remove answered");
+
+	// A remove whose connection closes before it answers lets the hold go: no hang on a box that is gone.
+	box.entries = ["old"];
+	box.calls.length = 0;
+	box.removing = new Promise(() => {});
+	assert.equal((await cancelledCreate(a)).error?.code, "aborted");
+	assert.deepEqual(hub.claimed(paired.id), a);
+	serve.close(ATTACH_CLOSE.going, "the box went away");
+	await settle();
+	assert.equal(hub.claimed(paired.id), undefined, "the hold is let go once the remove's connection closed");
+});
+
+test("of two unclaims of one hold while a change runs on the box, the first ends the hold once it has answered, and the second answers false and ends nothing", async () => {
+	const hub = new AttachHub();
+	const a = { "agentrun.run": "a" };
+	const hold = hub.claim("c-box", a);
+	let answered;
+	hub.changing("c-box", new Promise((resolve) => (answered = resolve)));
+	const first = hub.unclaim("c-box", hold);
+	const second = hub.unclaim("c-box", hold);
+	assert.deepEqual(hub.claimed("c-box"), a, "held while the change runs");
+	answered({ ok: true, value: {} });
+	assert.deepEqual(await Promise.all([first, second]), [true, false]);
+	assert.equal(hub.claimed("c-box"), undefined);
+	const b = { "agentrun.run": "b" };
+	assert.notEqual(hub.claim("c-box", b), undefined, "the next run takes the box");
+	assert.equal(await hub.unclaim("c-box", hold), false, "the first hold's token ends nothing of it");
+	assert.deepEqual(hub.claimed("c-box"), b);
+});
+
+test("a hold whose deadline passes while a create still empties a paired Linux box's /workspace lasts until the create's last remove has answered, not its first", async () => {
+	const hub = new AttachHub();
+	const paired = { id: "c-box", name: "lab", hello: LINUX, labels: {} };
+	const provider = attachedProvider(paired, hub);
+	const [serve, computer] = socketPair();
+	let first;
+	let second;
+	const box = { workspace: { type: "dir", uid: 1000, mode: 0o700 }, entries: ["a", "b"], calls: [], programs: [], stat: Promise.resolve(), removing: new Promise((resolve) => (first = resolve)) };
+	linuxBox(computer, box);
+	assert.equal((await hub.accept(paired, serve)).ok, true);
+	const settle = (ms = 10) => new Promise((resolve) => setTimeout(resolve, ms));
+	const a = { "agentrun.run": "a", "agentrun.epoch": "1" };
+	const creating = provider.create({ ...SYNCED, labels: a, lifetimeMs: 80 }, req());
+	while (!box.calls.includes("files.remove /workspace/a recursive")) await settle();
+	await settle(150);
+	assert.deepEqual(hub.claimed(paired.id), a, "past its deadline, the hold lasts while the first remove runs");
+	box.removing = new Promise((resolve) => (second = resolve));
+	first();
+	while (!box.calls.includes("files.remove /workspace/b recursive")) await settle();
+	await settle();
+	assert.deepEqual(hub.claimed(paired.id), a, "the create's next remove, sent once the first answered, holds it too");
+	second();
+	await creating;
+	await settle();
+	assert.equal(hub.claimed(paired.id), undefined, "the hold ends once the last remove has answered");
+	hub.revoke(paired.id, "the test is over");
+});
+
 test("redial delays double from 1 s to 60 s, less up to a fifth; idle, replaced and going away redial", () => {
 	assert.equal(redialDelay(0, () => 0), 1000);
 	assert.equal(redialDelay(3, () => 1), 6400);
@@ -451,4 +722,10 @@ test("socketStreams reads a frame with raw newlines as one message, and writes e
 	assert.equal(line.trimEnd().includes("\n"), false);
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(frames, ['{"a":1}', '{"b":2}', '{"c":3}']);
+});
+
+test("a machine token's shape is one source: computerd's tokenPattern is MACHINE_TOKEN_SOURCE anchored, and newMachineToken mints it", () => {
+	const go = readFileSync(new URL("../daemon/internal/attach/attach.go", import.meta.url), "utf8");
+	assert.equal(go.match(/^var tokenPattern = regexp\.MustCompile\(`([^`]*)`\)$/m)?.[1], `^${MACHINE_TOKEN_SOURCE}$`);
+	assert.match(newMachineToken(), new RegExp(`^${MACHINE_TOKEN_SOURCE}$`));
 });

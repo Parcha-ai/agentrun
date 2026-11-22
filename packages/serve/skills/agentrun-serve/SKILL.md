@@ -13,6 +13,13 @@ Read this skill from the target server's `/skills/agentrun-serve/SKILL.md` when 
 build. Inspect `/v2/capabilities` and `/v2/openapi.json` before using an optional feature. A handoff naming an
 existing instance is not permission to start a replacement or change its destination.
 
+Secrets are saved by the person in the console, never with the API token: a model or tool key, an MCP server's token
+or headers, the webhook's secret, Slack's incoming-webhook URL, GitHub. Prepare everything else through the API. A secret write answers `403
+forbidden` with `error.details.console_url`, the console's form with the rest filled in (or build it:
+`<console>/#/settings/mcp?add=<name>&auth=bearer`, adding `&url=<url>` only when no key or token is in the URL).
+Open that link in the person's browser for them and tell them to paste the secret there and save. Never ask for a
+secret in the chat.
+
 ## Choose the onboarding path
 
 For general setup, establish whether the user wants to **start a new agent** or **bring an existing agent**.
@@ -23,7 +30,7 @@ Inspect configured models before asking for a key. For an existing setup, follow
 and history import need no destination model key. Live jobs use the source runtime's existing sign-in.
 
 Finish with the first requested run's result and console link, or imported history and counts. Offer optional
-self-improvement separately, and verify accepted notes or skills in a fresh later run when requested.
+self-improvement separately, and verify owner corrections in a fresh later run when requested.
 
 ## Connect agent
 
@@ -101,10 +108,55 @@ reported model/harness and activity/usage. CLI `configured` or `delivery_state: 
 delivery. Observed sessions are read-only: idle is not proof of completion, and missing telemetry is not proof of
 an agent failure. No prompts, transcripts or tool contents are uploaded through this metadata path.
 
-If the user also wants self-improvement for application-owned jobs, follow the supported backend SDK learning
+For independently started **Codex CLI or Claude Code** sessions, use the existing CLI learning path below.
+For SDK application-owned jobs, follow the supported backend SDK learning
 integration and verify accepted-revision delivery in a fresh run. Observation alone cannot enable it. The current
 Claude Agent SDK and Codex SDK wrappers are TypeScript integrations; do not claim a Python SDK backend is wrapped
 by setting OTEL variables. Do not fabricate a runnable native agent or use a copied prompt as proof.
+
+### Learning in existing CLI sessions
+
+For a connected-session card handoff, read its exact `GET /v2/observations?session_id=...` record.
+On the source machine, resolve `external_session_id` through the collector's private identity map to the
+native session, then inspect that session's actual project through its harness. Never print the identity
+map or credentials, and never select a project from a display name or basename. A verified
+`learning.agent_id` links to the existing shared project/runtime learning profile; reuse it. If the
+source is unavailable, ask the user to open the original session. Run and Edit continue or change that
+original setup, not a managed run or a replacement definition. Delegated children cannot enable independent
+hook learning. Only offer enrollment for the selected root session's project, with its shared scope clear.
+
+When requested, use the matching build's `learning connect` on the source machine. This path keeps the
+original CLI in control of task execution and does not require an SDK wrapper. The initial integration
+requires AgentRun on that same machine; identify its loopback port and actual data directory. Do not
+silently replace a remote destination with a new local server. Enrollment uses the local owner credential
+privately and leaves a scoped connection credential for hooks, never an owner key in project files.
+
+```sh
+agentrun-serve learning connect --project /absolute/project --runtime codex \
+  --url http://127.0.0.1:7340 --data /absolute/server-data
+```
+
+Use `claude-code` for Claude Code. Scope enrollment to the selected project/runtime. Installation merges
+source hooks without replacing other hooks or changing tools, permissions, instructions or sign-in.
+Codex linked worktrees append exact project-scoped hooks to the corresponding main-checkout
+`.codex/hooks.json`, following native discovery. They keep separate local receipts and a local `.codex`
+directory; disconnect preserves surviving native hook positions. If `learning status` reports `migration-required`,
+rerun the same connect command to migrate unchanged owned hooks without replacing the connection.
+Verify `/hooks`; Codex must trust the current declaration. Project configuration does not hot reload:
+open a new session or close and resume it after the current task finishes. Reloading user settings alone
+does not reload these project hooks. Do not interrupt the user's running task to activate them.
+Do not claim merely writing a configuration file activated a running session. Begin on the next complete
+prompt after activation, without importing earlier conversations or learning from an in-flight turn.
+
+The prompt hook supplies pinned owner corrections; completion hooks record bounded role-preserving evidence
+and reported usage. Source dialogue never becomes a standing correction automatically. Source hooks do not
+provide a workflow execution bridge or make extra native reflection calls. Missing policy, truncated evidence
+and cancellation stay explicit. This is not metadata-only observation.
+
+Use `learning status` with the same project/runtime/data arguments and open the returned agent's Learning
+tab. Save a correction explicitly, then verify an actual completed source run and its delivery and use
+on a later prompt. Report incomplete evidence accurately. Learning Off controls guidance for future prompts;
+`learning disconnect` revokes enrollment and removes only its installed hooks, retaining prior history.
 
 ### Live connection on this server
 
@@ -203,11 +255,11 @@ target; duplicates are skipped. The worker does not continuously upload historic
 
 ### Optional self-improvement
 
-When requested, verify the imported agent and enable its existing **Self-improving** control. Notes and skills are
-additive, pinned to a learning revision for each run. Reflection resumes the exact task session with tools disabled;
-the existing checker, grader and merge rules decide what becomes active. Risky proposals await owner review in
-Learning Dojo; a connector cannot approve them. Reflection and grading add model usage. Off means later runs
-receive and create no AgentRun learning. Do not start a paid run unless authorized, and do not promise enforcement
+When requested, verify the imported agent and enable its existing **Self-improving** control. Owner corrections
+are additive, pinned to a learning revision for each run. Eligible jobs compile into workflow drafts by resuming
+the exact task session with tools disabled; checks and a dry run decide whether to keep a draft. Compilation
+adds model usage. Learned workflows do not serve native runs in this release. Off means later runs receive
+and create no AgentRun learning. Do not start a paid run unless authorized, and do not promise enforcement
 of native dollar caps, interactive approvals, learned workflows or unsupported desktop tools.
 
 ### Historical import into a local store
@@ -360,9 +412,13 @@ For everything the MCP tools do not cover (tool keys, triggers, webhooks, files,
 ## Troubleshooting
 
 - `401`: the token is not this server's. Read it again from the data directory the server was started with.
+- `403 forbidden` with `error.details.console_url`: a secret write, which only the person's console makes. Open the link for them; they paste the secret there.
 - `403` on `/v2/mcp`: the request carried a browser `Origin` that is not the server's own. Call it from your MCP client, not a web page.
 - `405` on `/v2/mcp`: it takes POST only (no stream, no session).
 - `409 agent_not_runnable`: this server cannot run that agent yet (a harness, tool or key it lacks); `error.details` and `whoami` say which.
 - `422 input_invalid`: `error.fields` names each field to fix.
+- A refusal that says `restart the server with AGENTRUN_...`: a start-time switch is off (an MCP server or a webhook
+  receiver on this machine, the hosts a computer may reach). No API call sets it. `/v2/capabilities` `switches` lists
+  each and its value; set the variable and start the server again, the `=1` ones only on a machine you alone use.
 - `429 rate_limited` from `runs_start`: the server is at its most runs at once. Start it again when one ends.
 - Keep the server on the loopback address. Started with `--listen` on another one, put TLS in front of it.

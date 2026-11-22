@@ -18,6 +18,7 @@ export function postgresDialect(schema: string, { testClock = false }: { testClo
     name: "postgres",
     ...(testClock ? {} : { nowSql: DATABASE_NOW_MS }),
     jsonText: (column, keys) => `(${column}::json #>> ${path(keys)})`,
+    jsonValue: (column, keys) => `(${column}::json #> ${path(keys)})::text`,
     // SQLite's json_extract(...) IS NOT 0: true unless the value is false or the number 0 (absent and null are true).
     jsonNotFalse: (column, keys) => `COALESCE((${column}::json #> ${path(keys)})::text NOT IN ('false', '0'), TRUE)`,
     jsonArrayHas: (column) => `EXISTS (SELECT 1 FROM json_array_elements_text(${column}::json) AS element(value) WHERE element.value = ?)`,

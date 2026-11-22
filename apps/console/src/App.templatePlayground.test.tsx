@@ -15,7 +15,7 @@ const template: TemplateView = {
   id: "review-kit", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   name: "review-kit", display_name: "Review kit", version: "1.2.0", description: "Review changes with the package's checked skills.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,
-  computer: null, computer_here: null, checkout: null, mcp: [], secrets: [], budget: null, learning: true, approvals_default: "ask", triggers: [], skills: ["review"], evals: [],
+  computer: null, needs: null, computer_here: null, checkout: null, mcp: [], secrets: [], budget: null, learning: true, approvals_default: "ask", triggers: [], skills: ["review"], evals: [],
   parameters: { type: "object", additionalProperties: false, required: ["repo"], properties: { repo: { type: "string", description: "Repository to review" } } },
 };
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
@@ -26,7 +26,7 @@ async function open(hash: string, templates: TemplateView[] = [template]) {
     const path = new URL(url, "https://console.example.test").pathname;
     if (init?.method && init.method !== "GET") {
       writes.push({ path, body: JSON.parse(String(init.body)), headers: new Headers(init.headers) });
-      return json({ template: template.name, version: template.version, agent_id: "new-reviewer", trigger_ids: [], warnings: [] }, 201);
+      return json({ template: template.name, version: template.version, agent_id: "new-reviewer", triggers: [], warnings: [] }, 201);
     }
     if (path === "/v2/auth/session") return json({ password_set: true, signed_in: true });
     if (path === "/v2/setup/import") return json({ offer: false });
@@ -102,6 +102,8 @@ describe("template requests in the API playground", () => {
     await act(async () => configure.click()); await settle();
     expect(location.hash).toBe("#/playground?operation=apply-template&template=review-kit");
     expect(host.querySelector('a[href="#/playground?operation=apply-template"]')).not.toBeNull();
+    // The operation picker keeps one width: it holds every operation's words, not the picked one's alone.
+    expect(picker(host, "API operation")!.querySelectorAll("[data-picker-sizer]").length).toBe(5);
     await pick(picker(host, "API operation")!, "create-agent"); await settle();
     expect(location.hash).toBe("#/playground?operation=create-agent");
     await pick(picker(host, "API operation")!, "apply-template"); await settle();

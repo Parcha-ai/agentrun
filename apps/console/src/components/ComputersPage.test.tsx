@@ -28,25 +28,25 @@ const CHANGED = "2026-11-09T01:00:00.000Z";
 const METERED = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
 /** A provider's secret as served: its full name "computer:<provider>:<KEY>". */
 const secret = (provider: string, key: string, set: boolean, source: ComputerSecret["source"] = set ? "console" : null): ComputerSecret => ({ name: `computer:${provider}:${key}`, set, source, changed_at: source === "console" ? CHANGED : null });
-/** Where a choice's runs have their shell, as the server serves it: a computer that mounts the run's folder gives every
- *  host tool; one that doesn't, the file tools only. */
-const MOUNTS = { shell: "computer" as const, host_tools: ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"] };
-const NO_SHELL = { shell: "none" as const, host_tools: ["read", "write", "edit"], shell_note: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands." };
-const docker: ComputerProvider = { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, ...MOUNTS };
-const e2b = (saved = false): ComputerProvider => ({ id: "e2b", name: "E2B", metered: true, secrets: [secret("e2b", "E2B_API_KEY", saved)], required: ["computer:e2b:E2B_API_KEY"], ready: saved, ...(saved ? {} : { why: E2B_WHY }), ...NO_SHELL });
-const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, secrets: [secret("orgo", "ORGO_API_KEY", true)], required: ["computer:orgo:ORGO_API_KEY"], ready: true, ...NO_SHELL };
-const kernel: ComputerProvider = { id: "kernel", name: "Kernel", metered: true, secrets: [secret("kernel", "KERNEL_API_KEY", false), secret("kernel", "KERNEL_REGION", false)], required: ["computer:kernel:KERNEL_API_KEY"], ready: false, why: "Kernel needs KERNEL_API_KEY saved", ...NO_SHELL };
+/** Where a choice's runs have their shell and their folder, as a Mode 1 server serves it: a computer that binds the run's
+ *  folder gives every host tool; one that holds none, the file tools only. */
+const MOUNTS = { folder: "bind" as const, shell: "computer" as const, host_tools: ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"] };
+const NO_SHELL = { folder: null, shell: "none" as const, host_tools: ["read", "write", "edit"], shell_note: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands." };
+const docker: ComputerProvider = { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, runs_refused: null, ...MOUNTS };
+const e2b = (saved = false): ComputerProvider => ({ id: "e2b", name: "E2B", metered: true, secrets: [secret("e2b", "E2B_API_KEY", saved)], required: ["computer:e2b:E2B_API_KEY"], ready: saved, ...(saved ? {} : { why: E2B_WHY }), runs_refused: null, ...NO_SHELL });
+const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, secrets: [secret("orgo", "ORGO_API_KEY", true)], required: ["computer:orgo:ORGO_API_KEY"], ready: true, runs_refused: null, ...NO_SHELL };
+const kernel: ComputerProvider = { id: "kernel", name: "Kernel", metered: true, secrets: [secret("kernel", "KERNEL_API_KEY", false), secret("kernel", "KERNEL_REGION", false)], required: ["computer:kernel:KERNEL_API_KEY"], ready: false, why: "Kernel needs KERNEL_API_KEY saved", runs_refused: null, ...NO_SHELL };
 /** Daytona's key is in the server's environment: it wins, greyed, with nothing to paste over it. */
-const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: true, secrets: [secret("daytona", "DAYTONA_API_KEY", true, "env")], required: ["computer:daytona:DAYTONA_API_KEY"], ready: true, ...NO_SHELL };
+const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: true, secrets: [secret("daytona", "DAYTONA_API_KEY", true, "env")], required: ["computer:daytona:DAYTONA_API_KEY"], ready: true, runs_refused: null, ...NO_SHELL };
 /** A person's own Mac, paired and attached; it is also a provider of the desktop kind. */
 /** A paired computer of no OS the page knows: it is shown by what its hello says. */
 const DESK: PairedComputer = {
-  id: "cmp-abc", name: "desk-1", kind: "desktop", serves: ["desktop"], unserved: null, os: "windows", os_version: "11", device: { maker: "Acme", model: "Book 14" }, arch: "x86_64",
+  id: "cmp-abc", name: "desk-1", kind: "desktop", serves: ["desktop"], unserved: null, runs_refused: null, os: "windows", os_version: "11", device: { maker: "Acme", model: "Book 14" }, arch: "x86_64",
   screen: { width: 1920, height: 1080, scale: 1 }, groups: ["screen", "input.pointer", "input.keys"], features: { "ui.tree": { off: "no accessibility grant" } },
   driver: "0.2.0", online: true, held_by_run: null, held_until: null, pairing: "pairing-mine", created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
 };
-const DESK_PROVIDER: ComputerProvider = { id: "cmp-abc", name: "desk-1 (windows)", metered: false, secrets: [], required: [], ready: true, ...NO_SHELL };
-const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], providers, ...extra });
+const DESK_PROVIDER: ComputerProvider = { id: "cmp-abc", name: "desk-1 (windows)", metered: false, secrets: [], required: [], ready: true, runs_refused: null, ...NO_SHELL };
+const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], settings: [], record: { available: true }, providers, ...extra });
 const view = (saved = false): Computers => ({
   paired: [],
   kinds: [
@@ -313,13 +313,79 @@ describe("Settings → Computers", () => {
   });
 
   it("tests a provider: the server's passed with its detail, or failed with its why, wherever the provider shows", async () => {
-    const { v2, calls } = server([view()], (c) => json(200, c.path.endsWith("/orgo/test") ? { ok: true, detail: "Orgo answered: 3 computers on this account" } : { ok: false, why: E2B_WHY }));
+    const REFUSED = "E2B refused the key: check E2B_API_KEY";
+    const { v2, calls } = server([view(true)], (c) => json(200, c.path.endsWith("/orgo/test") ? { ok: true, detail: "Orgo answered: 3 computers on this account" } : { ok: false, why: REFUSED }));
     const { row, click } = await open(v2);
     await click(row("Desktop", "Orgo"), /^Test connection$/);
     expect(calls.at(-1)).toMatchObject({ method: "POST", path: "/v2/computers/orgo/test" });
     expect(row("Desktop", "Orgo").querySelector("[data-test]")?.textContent).toMatch(/^Passed · .+ · Orgo answered: 3 computers on this account$/);
     await click(row("Sandbox", "E2B"), /^Test connection$/);
-    for (const k of ["Sandbox", "Desktop"]) expect(row(k, "E2B").querySelector("[data-test]")?.textContent, k).toMatch(new RegExp(`^Failed · .+ · ${E2B_WHY.replace(/[()]/g, "\\$&")}$`));
+    for (const k of ["Sandbox", "Desktop"]) expect(row(k, "E2B").querySelector("[data-test]")?.textContent, k).toMatch(new RegExp(`^Failed · .+ · ${REFUSED}$`));
+  });
+
+  it("on a server whose runner runs in a process of its own, says on a dial provider's row that no run here can use it, in the server's words, and its test fails in them", async () => {
+    const APART = "no run on this server can use Fly Machines: its machines dial this server, and its runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
+    const fly: ComputerProvider = { id: "fly", name: "Fly Machines", metered: true, secrets: [secret("fly", "FLY_API_TOKEN", true), secret("fly", "FLY_APP", true)], required: ["computer:fly:FLY_API_TOKEN", "computer:fly:FLY_APP"], ready: true, runs_refused: APART, ...NO_SHELL };
+    const apart = view(true);
+    apart.kinds = apart.kinds.map((one) => (one.kind === "sandbox" ? { ...one, providers: [...one.providers, fly] } : one));
+    const { v2, calls } = server([apart], () => json(200, { ok: false, why: APART }));
+    const { row, click } = await open(v2);
+    const flyRow = row("Sandbox", "Fly Machines");
+    expect(flyRow.textContent).toContain("No run here can use it");
+    expect(flyRow.querySelector("[data-runs-refused]")?.textContent).toBe(APART);
+    expect(row("Sandbox", "E2B").querySelector("[data-runs-refused]"), "a provider its runs can use says nothing").toBeNull();
+    expect(row("Sandbox", "E2B").textContent).not.toContain("No run here can use it");
+    await click(flyRow, /^Test connection$/);
+    expect(calls.at(-1)).toMatchObject({ method: "POST", path: "/v2/computers/fly/test" });
+    const said = row("Sandbox", "Fly Machines").querySelector("[data-test]")?.textContent ?? "";
+    expect(said.startsWith("Failed · ") && said.endsWith(` · ${APART}`), said).toBe(true);
+  });
+
+  it("offers Test connection only to a provider whose keys are saved: none to one with no key, or with a required key missing", async () => {
+    const optional: ComputerProvider = { id: "opt", name: "Opt", metered: false, secrets: [secret("opt", "OPT_TOKEN", false)], required: [], ready: true, runs_refused: null, ...NO_SHELL };
+    const { v2, calls } = server([{ paired: [], kinds: [kind("sandbox", [docker, e2b(false), daytona, optional]), kind("browser", [kernel])] }]);
+    const { row, button } = await open(v2);
+    // Docker has no key: its Ready says whether this machine's daemon answers.
+    expect(button(row("Sandbox", "Docker"), /^Test connection$/)).toBeUndefined();
+    // E2B's and Kernel's required key is missing: their Not ready names it.
+    expect(button(row("Sandbox", "E2B"), /^Test connection$/)).toBeUndefined();
+    expect(button(row("Browser", "Kernel"), /^Test connection$/)).toBeUndefined();
+    // Only optional keys, none saved: there is no account to test.
+    expect(button(row("Sandbox", "Opt"), /^Test connection$/)).toBeUndefined();
+    // A key from the environment counts as saved.
+    expect(button(row("Sandbox", "Daytona"), /^Test connection$/)).toBeTruthy();
+    expect(calls.some((c) => c.path.endsWith("/test"))).toBe(false);
+  });
+
+  it("drops a test's answer that lands after a key was saved: it answered for the key before", async () => {
+    let answer!: (r: Response) => void;
+    const { v2 } = server([view(true)], (c) => (c.path.endsWith("/test") ? new Promise<Response>((r) => { answer = r; }) : json(200, e2b(true))));
+    const p = await open(v2);
+    await p.click(p.row("Sandbox", "E2B"), /^Test connection$/);
+    expect(p.button(p.row("Sandbox", "E2B"), /^Testing…$/)).toBeTruthy();
+    await p.click(p.key(p.row("Sandbox", "E2B"), "E2B_API_KEY"), /^Replace$/);
+    await p.type(p.row("Sandbox", "E2B"), "E2B_API_KEY", FAKE);
+    await p.submit(p.row("Sandbox", "E2B").querySelector("form")!);
+    await act(async () => answer(json(200, { ok: true, detail: "E2B answered for the old key" })));
+    await p.settle();
+    expect(p.row("Sandbox", "E2B").querySelector("[data-test]")).toBeNull();
+    expect(p.button(p.row("Sandbox", "E2B"), /^Test connection$/)).toBeTruthy();
+  });
+
+  it("offers Test connection once a provider's key is saved, and drops a result its keys have since changed", async () => {
+    const { v2, calls } = server([view(), view(true), view(true)], (c) => (c.path.endsWith("/test") ? json(200, { ok: true, detail: "E2B answered" }) : json(200, e2b(true))));
+    const p = await open(v2);
+    expect(p.button(p.row("Sandbox", "E2B"), /^Test connection$/)).toBeUndefined();
+    await p.click(p.key(p.row("Sandbox", "E2B"), "E2B_API_KEY"), /^Paste$/);
+    await p.type(p.row("Sandbox", "E2B"), "E2B_API_KEY", FAKE);
+    await p.submit(p.row("Sandbox", "E2B").querySelector("form")!);
+    await p.click(p.row("Sandbox", "E2B"), /^Test connection$/);
+    expect(calls.at(-1)).toMatchObject({ method: "POST", path: "/v2/computers/e2b/test" });
+    expect(p.row("Sandbox", "E2B").querySelector("[data-test]")?.textContent).toMatch(/^Passed · .+ · E2B answered$/);
+    await p.click(p.key(p.row("Sandbox", "E2B"), "E2B_API_KEY"), /^Replace$/);
+    await p.type(p.row("Sandbox", "E2B"), "E2B_API_KEY", FAKE);
+    await p.submit(p.row("Sandbox", "E2B").querySelector("form")!);
+    expect(p.row("Sandbox", "E2B").querySelector("[data-test]")).toBeNull();
   });
 
   it("off the owner's password session, says once how to change keys and offers no key input, Paste or Remove", async () => {
@@ -374,6 +440,28 @@ describe("Settings → Computers", () => {
     }
   });
 
+  it("on a server whose runner runs in a process of its own, says with the code, and on the computer it paired, that no run here can use a paired computer, in the server's words", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
+    try {
+      const APART = "no run on this server can use a paired computer: its runner runs in a process of its own, and the computer's socket is held by the server's: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
+      const apart: PairedComputer = { ...DESK, runs_refused: APART };
+      const { v2 } = server([view(), view(), { ...view(), paired: [apart] }], () => json(201, { id: "pairing-mine", code: "K7PD-W3QX", expires_at: "2026-11-12T10:10:00.000Z", runs_refused: APART }));
+      const { section, click, settle } = await open(v2);
+      const mine = section("Your computers");
+      await click(mine, /^Pair a computer$/);
+      expect(mine.querySelector("[data-pairing] [data-runs-refused]")?.textContent, "said with the code, before it pairs").toBe(APART);
+      const tick = async (ms: number) => { await act(async () => { vi.advanceTimersByTime(ms); }); await settle(); };
+      await tick(2_000);
+      await tick(2_000);
+      expect(mine.querySelector("[data-code]"), "the code was used").toBeNull();
+      const row = mine.querySelector('[data-paired="cmp-abc"]')!;
+      expect(row.textContent).toContain("No run here can use it");
+      expect(row.querySelector("[data-runs-refused]")?.textContent).toBe(APART);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps its own code up when a second tab's pairing adds a computer, and names only the computer its own code made", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
     try {
@@ -413,6 +501,7 @@ describe("Settings → Computers", () => {
     expect(row("cmp-old")!.querySelector("[data-offers]")?.textContent).toBe("Offers screen, input.pointer, input.keys · ui.tree off: no accessibility grant");
     expect(row("cmp-old")!.textContent).toContain("Open its driver on that computer: it dials this server.");
     expect(row("cmp-abc")!.querySelector("[data-unserved]")).toBeNull();
+    expect(row("cmp-abc")!.querySelector("[data-runs-refused]"), "its runs can use it").toBeNull();
     expect(row("cmp-old")!.textContent).toContain("No agent can use it");
     expect(row("cmp-old")!.querySelector("[data-unserved]")?.textContent).toBe(UNSERVED);
     await click(row("cmp-old")!, /^Remove$/);

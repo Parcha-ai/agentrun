@@ -100,6 +100,43 @@ test("a claim resuming from a park that is refused before any loop starts (the d
   assert.equal(events.filter((event) => event.type === "released" && event.runId === "run-1").length, 1, "exactly one end");
 });
 
+test("a claim resuming from a park whose records no longer cross the channel to its process (FrameTooLarge) ends failed in words naming the size and the limit, once, with no resume retry; the approval that woke it is answered that the run failed", async (t) => {
+  // As the live Cursor run met it: a person's approval brought the run back, and the answer carrying its records was
+  // past the channel's limit. No try can fit them: the run ends in words, never parked again on an answered approval.
+  const { FrameTooLarge } = await import("../dist/runner/run-channel.js");
+  const opened = await stores();
+  await queue(opened.server, "run-1");
+  const earlier = await opened.server.claim("run-1", "runner-earlier", { leaseMs: 60_000 });
+  await opened.server.release(earlier, { state: "parked" });
+  const approve = await opened.server.command("run-1", { kind: "approve", body: { approval: "acp-perm-1" } });
+  const events = [];
+  let released;
+  const first = new Promise((resolve) => (released = resolve));
+  const froms = [];
+  const runner = startRunner({
+    store: opened.runners[0],
+    name: "runner-1",
+    ...TIMING,
+    createLoop: () => ({ start: async (claim) => (froms.push(claim.from), Promise.reject(new FrameTooLarge("an answer", 34_369_258, 33_554_432))), command: async () => ({ later: "no loop" }), stop: async () => {} }),
+    onEvent: (event) => {
+      events.push(event);
+      if (event.type === "released" && event.runId === "run-1") released(event);
+    },
+  });
+  t.after(() => runner.close());
+  const release = await first;
+  const row = await opened.server.runs.get("run-1");
+  assert.deepEqual(froms, ["parked"], "one claim, a resume from the park");
+  assert.equal(release.end, "failed", `ended failed, not parked again for a retry: ${JSON.stringify(release)}`);
+  assert.equal(row.state, "failed", JSON.stringify(row));
+  assert.match(row.summary ?? "", /34369258 bytes/, "the size");
+  assert.match(row.summary ?? "", /33554432/, "the limit");
+  assert.equal(row.backoffUntil ?? null, null, "no resume backoff");
+  assert.equal(events.filter((event) => event.type === "released" && event.runId === "run-1").length, 1, "exactly one end");
+  const answered = (await opened.server.commands("run-1", 0)).find((one) => one.id === approve.id);
+  assert.equal(answered?.refused, endedReason("failed"), "the approval is answered that the run failed, never left untaken");
+});
+
 test("a claim resuming from a park whose MCP pin is refused on resume ends failed in the refusal's words, once, with no resume retry; a stop queued before it is answered that the run already failed", async (t) => {
   const words = `mcp:fake/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${META_REASON}`;
   const r = await resumed(t, async () => {

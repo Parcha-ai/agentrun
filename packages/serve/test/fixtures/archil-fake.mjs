@@ -24,7 +24,12 @@
 //   while it holds, a put, an append or a delete under that folder is refused with 409 OperationAborted, as the live
 //   service refused a run's skills laid after its computer mounted the run's folder. `banner` (a test's) is printed
 //   before the command's own stdout, as a platform's message would be, and `answerLimit` cuts the answer's stdout, as a
-//   platform's limit on an answer would.
+//   platform's limit on an answer would;
+// - a disk Archil no longer has (`gone`, a test's: { region, words }) fails every call, the ranged read included, as the
+//   seam fails it when Archil's lookup of the disk answers 404 (archil-disk.ts ArchilDiskMissing; the seam looks again
+//   after any 404, so a disk removed mid-run fails the same way), naming the disk, the region and Archil's words;
+// - a put or an append under a folder that is not there (`parentless`) is 404 NoSuchKey, as staging's Archil answered,
+//   where the default makes the parents as the SDK's documentation says.
 // Every call is recorded in `calls`: { op, key | prefix | directory | mounts, ... }; every exec's materialized file keys
 // (per mount, relative to its folder) in `materialized`.
 import { spawn } from "node:child_process";
@@ -32,6 +37,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkS
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Worker } from "node:worker_threads";
+import * as seam from "../../dist/workspace/archil-disk.js";
 
 export const APPEND_MAX = 1024 * 1024;
 
@@ -106,6 +112,11 @@ export class FakeArchilDisk {
   pageSize = 2;
   /** While set, a put or an append waits on it before it is committed. */
   hold = undefined;
+  /** When set ({ region, words }), the disk is gone at Archil: every call fails with ArchilDiskMissing. */
+  gone = undefined;
+  /** When set, a put or an append under a folder that is not there is 404 NoSuchKey, as staging's Archil answered (an
+   *  expert run's `.agents/skills/` on a fresh run folder): no parent is made for it. */
+  parentless = false;
   /** Printed before every exec's own stdout, when set. */
   banner = undefined;
   /** The most characters of stdout an exec's answer carries, when set (as a platform's answer limit would cut it). */
@@ -125,7 +136,11 @@ export class FakeArchilDisk {
   /** Each exec's materialized file keys, per mount name, relative to that mount's subdirectory. */
   materialized = [];
 
-  #record(call) { this.calls.push(call); }
+  /** Records `call`, then fails it as a disk gone at Archil fails every call, when `gone` is set. */
+  #record(call) {
+    this.calls.push(call);
+    if (this.gone !== undefined) throw new seam.ArchilDiskMissing(this.id, this.gone.region, this.gone.words);
+  }
 
   #isHeld(key) {
     for (const path of this.#held) if (key === path || key.startsWith(`${path}/`)) return true;
@@ -185,8 +200,16 @@ export class FakeArchilDisk {
     return { status: 206, body: Uint8Array.from(bytes.subarray(start, end + 1)) };
   }
 
+  /** With `parentless`: a put or an append whose folder is not there is 404, as staging's Archil answered. */
+  #refuseParentless(key) {
+    if (!this.parentless) return;
+    const parent = parentsOf(key.replace(/\/$/, "")).at(-1);
+    if (parent !== undefined && !this.dirs.has(parent)) throw new FakeDiskError(404, "NoSuchKey", `${parent} is not there`);
+  }
+
   async putObject(key, body) {
     this.#record({ op: "putObject", key, size: body.length });
+    this.#refuseParentless(key);
     this.#refuseHeld(key.replace(/\/$/, ""));
     const staged = Uint8Array.from(body);
     if (key.endsWith("/")) {
@@ -211,6 +234,7 @@ export class FakeArchilDisk {
   async appendObject(key, body) {
     this.#record({ op: "appendObject", key, size: body.length, head: Buffer.from(body.subarray(0, 8)).toString("latin1") });
     if (body.length > APPEND_MAX) throw new FakeDiskError(400, "EntityTooLarge", `an append takes at most ${APPEND_MAX} bytes`);
+    this.#refuseParentless(key);
     this.#refuseHeld(key);
     if (this.links.has(key)) throw new FakeDiskError(409, "OperationAborted", `Cannot create the object: an existing object at /${key} blocks the path. Delete or rename it first.`);
     this.#checkFile(key);
@@ -245,6 +269,8 @@ export class FakeArchilDisk {
       try {
         await this.deleteObject(key);
       } catch (error) {
+        // A key's refusal is listed; a failure of the whole call (a disk that is gone) fails it, as the SDK's does.
+        if (!(error instanceof FakeDiskError)) throw error;
         errors.push({ key, code: error.code, message: error.message });
       }
     }

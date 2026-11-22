@@ -1,7 +1,8 @@
 // Imports follow the layer direction. Each workspace package has one layer (LAYERS) and may reach only the layers below
 // it (MAY): protocols reach nothing; the kernel reaches protocols; plug-ins reach protocols and the kernel; subsystems
-// reach protocols, the kernel and (for now) each other; the server reaches anything; a surface reaches no workspace
-// package and talks to the server through its API alone. An edge is a manifest dependency, or a quoted string in source
+// reach protocols, the kernel and (for now) each other; the server reaches anything; surfaces and the API client reach
+// no workspace package. A host extension uses the API client and subsystem libraries, never server internals or surfaces.
+// Surfaces, API clients and host extensions do not read the server's own data files. An edge is a manifest dependency, or a quoted string in source
 // that names a workspace package (an import, export-from, import(), require, import.meta.resolve, or a constant passed to
 // one) or a relative path that lands in another package, or, in a surface, the name of one of the server's own data files.
 // Tests, fixtures, vendor and dist are not read, nor devDependencies (build and test time only); source is read by TypeScript's
@@ -21,13 +22,15 @@ export const LAYERS = {
   // move out of the packages below.
   protocol: [],
   kernel: ['packages/run-adapters'],
-  'plug-in': ['packages/run-adapters-claude-agent', 'packages/run-adapters-codex', 'packages/computer', 'packages/decisions', 'packages/jev'],
+  'plug-in': ['packages/run-adapters-claude-agent', 'packages/run-adapters-codex', 'packages/run-adapters-acp', 'packages/computer', 'packages/decisions', 'packages/jev'],
   // Libraries to be folded into the kernel, a plug-in or the server. packages/dsl is the workflow language and its engine.
   subsystem: [
     'packages/dsl', 'packages/pi-browser',
   ],
   server: ['packages/serve'],
-  surface: ['apps/console', 'packages/agentrun', 'packages/client', 'packages/computer-bench'],
+  surface: ['apps/console', 'packages/agentrun', 'packages/computer-bench'],
+  'api-client': ['packages/client'],
+  'host-extension': ['packages/eve'],
 };
 
 /** The layers each layer may reach, besides its own package. */
@@ -38,6 +41,8 @@ export const MAY = {
   subsystem: ['protocol', 'kernel', 'subsystem'],
   server: Object.keys(LAYERS),
   surface: [],
+  'api-client': [],
+  'host-extension': ['api-client', 'subsystem'],
 };
 
 const KERNEL_DSL = ['the kernel takes the workflow types and parameter check from the DSL', 'run workflows as a harness on the kernel, so the kernel names no workflow type'];
@@ -145,7 +150,9 @@ export async function edges(root, layers = LAYERS) {
   const all = await workspaces(root);
   const byName = new Map(all.map((w) => [w.manifest.name, w.dir]));
   const dataFiles = await serverFiles(root, layers);
-  const surfaces = new Set(layers.surface ?? []);
+  const outsideServer = new Set([
+    ...(layers.surface ?? []), ...(layers['api-client'] ?? []), ...(layers['host-extension'] ?? []),
+  ]);
   const owner = (abs) => all.find((w) => abs === resolve(root, w.dir) || abs.startsWith(resolve(root, w.dir) + sep))?.dir;
   const found = [];
   for (const { dir, manifest, manifestText } of all) {
@@ -165,7 +172,7 @@ export async function edges(root, layers = LAYERS) {
         let to;
         if (aliases.has(value)) to = owner(aliases.get(value));
         else if (/^\.\.?\//.test(value)) to = owner(resolve(dirname(file), value));
-        else if (surfaces.has(dir) && dataFiles.has(value)) to = layers.server[0];
+        else if (outsideServer.has(dir) && dataFiles.has(value)) to = layers.server[0];
         else to = byName.get(value) ?? byName.get(value.split('/').slice(0, value.startsWith('@') ? 2 : 1).join('/'));
         if (to && to !== dir) found.push({ file: rel, line, from: dir, to, via: value });
       }

@@ -25,6 +25,43 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "bind-source-tool"
+    ],
+    "operationId": "bindSourceTool",
+    "method": "POST",
+    "path": "/agents/{agent_id}/source/tools",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "tool",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "server",
+        "type": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Choose the existing destination account for a required source tool"
+  },
+  {
+    "command": [
+      "agents",
       "connect-native"
     ],
     "operationId": "connectNative",
@@ -77,7 +114,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [
@@ -107,6 +144,28 @@ export const COMMANDS = [
     },
     "raw": false,
     "summary": "Create an agent home"
+  },
+  {
+    "command": [
+      "agents",
+      "delete-agent"
+    ],
+    "operationId": "deleteAgent",
+    "method": "DELETE",
+    "path": "/agents/{agent_id}",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Delete an agent another system owns, or purge an archived agent made here"
   },
   {
     "command": [
@@ -305,6 +364,28 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "get-source-sync"
+    ],
+    "operationId": "getSourceSync",
+    "method": "GET",
+    "path": "/agents/{agent_id}/source",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read source sync and managed Move readiness"
+  },
+  {
+    "command": [
+      "agents",
       "list"
     ],
     "operationId": "listAgents",
@@ -388,6 +469,113 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "move-source-agent"
+    ],
+    "operationId": "moveSourceAgent",
+    "method": "POST",
+    "path": "/agents/{agent_id}/source/move",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Move the same agent to server-managed execution from its complete synchronized setup"
+  },
+  {
+    "command": [
+      "agents",
+      "package"
+    ],
+    "operationId": "getAgentPackage",
+    "method": "GET",
+    "path": "/agents/{agent_id}/package",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The agent's current revision as a template package"
+  },
+  {
+    "command": [
+      "agents",
+      "resolve-source-sync"
+    ],
+    "operationId": "resolveSourceSync",
+    "method": "POST",
+    "path": "/agents/{agent_id}/source/resolve",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "revision",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "snapshot",
+        "type": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Use an explicitly reviewed source snapshot while retaining the prior managed revision in history"
+  },
+  {
+    "command": [
+      "agents",
+      "review-source-project"
+    ],
+    "operationId": "reviewSourceProject",
+    "method": "POST",
+    "path": "/agents/{agent_id}/source/project-review",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Acknowledge exact unresolved run receipts and allow later runs to use the saved project"
+  },
+  {
+    "command": [
+      "agents",
       "runs"
     ],
     "operationId": "listRuns",
@@ -440,6 +628,37 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "The agent's runs index"
+  },
+  {
+    "command": [
+      "agents",
+      "set-source-sync"
+    ],
+    "operationId": "setSourceSync",
+    "method": "PATCH",
+    "path": "/agents/{agent_id}/source",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "enabled",
+        "type": "boolean",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Enable or pause this agent’s source sync"
   },
   {
     "command": [
@@ -518,6 +737,333 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "capabilities",
+      "get-capacity"
+    ],
+    "operationId": "getCapacity",
+    "method": "GET",
+    "path": "/capacity",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [
+      {
+        "name": "window",
+        "type": "integer",
+        "required": false,
+        "description": "The hand-back window in minutes, from 1 to 1440. Default 15."
+      }
+    ],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The runs waiting and held, the live runners and the recent hand-backs"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "complete"
+    ],
+    "operationId": "completeCliLearningRun",
+    "method": "POST",
+    "path": "/cli-learning/runs/{run_id}/complete",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [
+      {
+        "name": "Idempotency-Key",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "bodyFlags": [
+      {
+        "name": "status",
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "answer",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "error",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "session_id",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "evidence_complete",
+        "type": "boolean",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "seed_observed",
+        "type": "boolean",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "seed_revision",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Close an existing CLI prompt window exactly once"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "enroll"
+    ],
+    "operationId": "enrollCliLearning",
+    "method": "POST",
+    "path": "/cli-learning/connections",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "runtime",
+        "type": "string",
+        "enum": [
+          "codex",
+          "claude-code"
+        ],
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "project",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "name",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Enable learning for an existing local CLI without launching it"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "events"
+    ],
+    "operationId": "cliLearningEvents",
+    "method": "POST",
+    "path": "/cli-learning/runs/{run_id}/events",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [
+      {
+        "name": "Idempotency-Key",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "bodyFlags": [
+      {
+        "name": "sequence",
+        "type": "integer",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Upload bounded role-preserving CLI dialogue and tool evidence"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "get"
+    ],
+    "operationId": "getCliLearningRun",
+    "method": "GET",
+    "path": "/cli-learning/runs/{run_id}",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read CLI prompt-window learning progress"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "list"
+    ],
+    "operationId": "listCliLearning",
+    "method": "GET",
+    "path": "/cli-learning/connections",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read enrolled CLI learning connections"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "revoke"
+    ],
+    "operationId": "revokeCliLearning",
+    "method": "DELETE",
+    "path": "/cli-learning/connections/{connection_id}",
+    "pathParams": [
+      "connection_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Revoke CLI capture and guidance delivery, retaining history and learned files"
+  },
+  {
+    "command": [
+      "cli-learning",
+      "start"
+    ],
+    "operationId": "startCliLearningRun",
+    "method": "POST",
+    "path": "/cli-learning/connections/{connection_id}/runs",
+    "pathParams": [
+      "connection_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [
+      {
+        "name": "Idempotency-Key",
+        "type": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "bodyFlags": [
+      {
+        "name": "session_id",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "turn_id",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "input",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "instructions",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "policy_complete",
+        "type": "boolean",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Register one prompt window from an existing CLI session"
+  },
+  {
+    "command": [
       "connectors",
       "complete-remote-command"
     ],
@@ -572,6 +1118,12 @@ export const COMMANDS = [
         "type": "string",
         "required": false,
         "description": ""
+      },
+      {
+        "name": "connector_id",
+        "type": "string",
+        "required": false,
+        "description": ""
       }
     ],
     "hasBody": true,
@@ -582,6 +1134,31 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Create a ten-minute one-use connection code"
+  },
+  {
+    "command": [
+      "connectors",
+      "grant-source-sync"
+    ],
+    "operationId": "grantSourceSync",
+    "method": "POST",
+    "path": "/connectors/{connector_id}/targets/{target_id}/sync/grant",
+    "pathParams": [
+      "connector_id",
+      "target_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read or establish this explicitly authorized source sync grant without re-enabling a paused grant"
   },
   {
     "command": [
@@ -705,6 +1282,44 @@ export const COMMANDS = [
   {
     "command": [
       "connectors",
+      "publish-source-sync"
+    ],
+    "operationId": "publishSourceSync",
+    "method": "POST",
+    "path": "/connectors/{connector_id}/targets/{target_id}/sync",
+    "pathParams": [
+      "connector_id",
+      "target_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "generation",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "sequence",
+        "type": "integer",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Publish a bounded source snapshot under its grant and sequence"
+  },
+  {
+    "command": [
+      "connectors",
       "register-remote-connector"
     ],
     "operationId": "registerRemoteConnector",
@@ -805,6 +1420,56 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "connectors",
+      "source-sync-failure"
+    ],
+    "operationId": "sourceSyncFailure",
+    "method": "POST",
+    "path": "/connectors/{connector_id}/targets/{target_id}/sync/status",
+    "pathParams": [
+      "connector_id",
+      "target_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "generation",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "sequence",
+        "type": "integer",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "code",
+        "type": "string",
+        "enum": [
+          "unsupported_platform",
+          "source_changed",
+          "source_unavailable",
+          "snapshot_too_large"
+        ],
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Record a fixed source failure while preserving its last complete snapshot"
+  },
+  {
+    "command": [
       "files",
       "create"
     ],
@@ -838,7 +1503,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [
@@ -1071,106 +1736,11 @@ export const COMMANDS = [
   {
     "command": [
       "learning",
-      "batch"
+      "corrections"
     ],
-    "operationId": "getLearningBatch",
+    "operationId": "getLearningCorrections",
     "method": "GET",
-    "path": "/agents/{agent_id}/learning/batches/{batch_id}",
-    "pathParams": [
-      "agent_id",
-      "batch_id"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": false,
-    "bodyRequired": false,
-    "bodyTypes": [],
-    "secretBody": false,
-    "raw": false,
-    "summary": "A learning batch's progress: rows done, right or wrong, lessons, workflow revisions, cost, the path each run took"
-  },
-  {
-    "command": [
-      "learning",
-      "batch-cancel"
-    ],
-    "operationId": "cancelLearningBatch",
-    "method": "POST",
-    "path": "/agents/{agent_id}/learning/batches/{batch_id}/cancel",
-    "pathParams": [
-      "agent_id",
-      "batch_id"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": false,
-    "bodyRequired": false,
-    "bodyTypes": [],
-    "secretBody": false,
-    "raw": false,
-    "summary": "Cancel a running learning batch"
-  },
-  {
-    "command": [
-      "learning",
-      "batch-start"
-    ],
-    "operationId": "createLearningBatch",
-    "method": "POST",
-    "path": "/agents/{agent_id}/learning/batches",
-    "pathParams": [
-      "agent_id"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [
-      {
-        "name": "answer",
-        "type": "string",
-        "required": true,
-        "description": "The column holding the reference answer."
-      },
-      {
-        "name": "max_cost_usd",
-        "type": "number",
-        "required": true,
-        "description": "Caps what the batch's runs spend (job, look-back, review turn); grades are booked and shown, uncapped."
-      },
-      {
-        "name": "answer_field",
-        "type": "string",
-        "required": false,
-        "description": "A dotted path into a JSON answer to compare, such as result.code; absent: the whole answer."
-      },
-      {
-        "name": "effort",
-        "type": "string",
-        "required": false,
-        "description": "The runs' effort, as a run's."
-      }
-    ],
-    "hasBody": true,
-    "bodyRequired": true,
-    "bodyTypes": [
-      "application/json"
-    ],
-    "secretBody": false,
-    "raw": false,
-    "summary": "Learn from rows: run the agent on each in order, with learning on, and tell it the reference answer after each"
-  },
-  {
-    "command": [
-      "learning",
-      "batches"
-    ],
-    "operationId": "listLearningBatches",
-    "method": "GET",
-    "path": "/agents/{agent_id}/learning/batches",
+    "path": "/agents/{agent_id}/learning/corrections",
     "pathParams": [
       "agent_id"
     ],
@@ -1183,7 +1753,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "The agent's learning batches, latest first"
+    "summary": "The agent's corrections.md on main, with its ETag"
   },
   {
     "command": [
@@ -1212,7 +1782,7 @@ export const COMMANDS = [
           "csv"
         ],
         "required": false,
-        "description": "`csv`: the runs as CSV, columns n, run_id, started_at, path, workflow, learned_revision, cost_usd, cost_upper_bound, learning_usd, total_usd."
+        "description": "`csv`: the runs as CSV, columns n, run_id, started_at, path, workflow, digest, audited, cost_usd, cost_upper_bound, learning_usd, total_usd."
       }
     ],
     "headers": [],
@@ -1223,28 +1793,6 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "The agent's cost per run, run after run: its own cost, what learning added and the path it took"
-  },
-  {
-    "command": [
-      "learning",
-      "evals"
-    ],
-    "operationId": "listLearningEvals",
-    "method": "GET",
-    "path": "/agents/{agent_id}/learning/evals",
-    "pathParams": [
-      "agent_id"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": false,
-    "bodyRequired": false,
-    "bodyTypes": [],
-    "secretBody": false,
-    "raw": false,
-    "summary": "The agent's eval records: the latest, and every one kept, newest first"
   },
   {
     "command": [
@@ -1266,7 +1814,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "What the agent has learned: its index, notes, log of changes and counts"
+    "summary": "What the agent has learned: its corrections, workflow drafts, log of changes and counts"
   },
   {
     "command": [
@@ -1306,53 +1854,6 @@ export const COMMANDS = [
   {
     "command": [
       "learning",
-      "notes"
-    ],
-    "operationId": "listLearningNotes",
-    "method": "GET",
-    "path": "/agents/{agent_id}/learning/notes",
-    "pathParams": [
-      "agent_id"
-    ],
-    "multiSegment": [],
-    "query": [
-      {
-        "name": "cursor",
-        "type": "string",
-        "required": false,
-        "description": "`next_cursor` from the previous page: opaque, read at the commit the first page was."
-      },
-      {
-        "name": "limit",
-        "type": "integer",
-        "required": false,
-        "description": "At most 200."
-      },
-      {
-        "name": "status",
-        "type": "string",
-        "enum": [
-          "active",
-          "superseded",
-          "retired",
-          "pending"
-        ],
-        "required": false,
-        "description": "Only notes with this status."
-      }
-    ],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": false,
-    "bodyRequired": false,
-    "bodyTypes": [],
-    "secretBody": false,
-    "raw": false,
-    "summary": "A page of the agent's notes"
-  },
-  {
-    "command": [
-      "learning",
       "read"
     ],
     "operationId": "readLearningFile",
@@ -1371,81 +1872,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "One note (or MEMORY.md, a skill's SKILL.md or a draft's file) on main, as text, with its ETag"
-  },
-  {
-    "command": [
-      "learning",
-      "record-eval"
-    ],
-    "operationId": "recordLearningEval",
-    "method": "POST",
-    "path": "/agents/{agent_id}/learning/evals",
-    "pathParams": [
-      "agent_id"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [
-      {
-        "name": "Idempotency-Key",
-        "type": "string",
-        "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
-      }
-    ],
-    "bodyFlags": [
-      {
-        "name": "name",
-        "type": "string",
-        "required": true,
-        "description": "What ran the test, one line: a bench's name and set, a script's."
-      },
-      {
-        "name": "n",
-        "type": "integer",
-        "required": true,
-        "description": "The held-out jobs the test counted: jobs the agent never learned from."
-      },
-      {
-        "name": "correct",
-        "type": "integer",
-        "required": true,
-        "description": "How many of the `n` jobs the agent with what it learned got right: 0 to `n`."
-      },
-      {
-        "name": "label_source",
-        "type": "string",
-        "required": false,
-        "description": "Where the right answers came from, one line; null (or absent) when not said."
-      },
-      {
-        "name": "cost_per_task_usd",
-        "type": "number",
-        "required": false,
-        "description": "The agent with what it learned: its mean cost a task, in USD; null (or absent) when not counted."
-      },
-      {
-        "name": "baseline_cost_per_task_usd",
-        "type": "number",
-        "required": false,
-        "description": "The agent by hand (learning off): its mean cost a task, in USD; null (or absent) when not counted."
-      },
-      {
-        "name": "learned_revision",
-        "type": "string",
-        "required": false,
-        "description": "The learning folder's commit the test ran from; null (or absent) when not said."
-      }
-    ],
-    "hasBody": true,
-    "bodyRequired": true,
-    "bodyTypes": [
-      "application/json"
-    ],
-    "secretBody": false,
-    "raw": false,
-    "summary": "Record a held-out test of the agent: its counts and the cost a task, with learning and by hand"
+    "summary": "One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag"
   },
   {
     "command": [
@@ -1475,6 +1902,28 @@ export const COMMANDS = [
   {
     "command": [
       "learning",
+      "reset"
+    ],
+    "operationId": "deleteAgentLearning",
+    "method": "DELETE",
+    "path": "/agents/{agent_id}/learning",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Reset the agent's learning: everything it learned deleted, the agent and its runs kept"
+  },
+  {
+    "command": [
+      "learning",
       "retire"
     ],
     "operationId": "retireLearningFile",
@@ -1491,7 +1940,7 @@ export const COMMANDS = [
         "name": "If-Match",
         "type": "string",
         "required": false,
-        "description": "The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412."
+        "description": "The file's ETag, as a GET answered it: the write lands only on that version, else 412."
       }
     ],
     "bodyFlags": [],
@@ -1500,7 +1949,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": true,
-    "summary": "Retire a note, a skill or a workflow draft: out of every later run, kept in history"
+    "summary": "Retire a workflow draft: out of every later run, kept in history"
   },
   {
     "command": [
@@ -1535,14 +1984,13 @@ export const COMMANDS = [
   {
     "command": [
       "learning",
-      "write"
+      "write-corrections"
     ],
-    "operationId": "writeLearningFile",
+    "operationId": "putLearningCorrections",
     "method": "PUT",
-    "path": "/agents/{agent_id}/learning/files/{file}",
+    "path": "/agents/{agent_id}/learning/corrections",
     "pathParams": [
-      "agent_id",
-      "file"
+      "agent_id"
     ],
     "multiSegment": [],
     "query": [],
@@ -1550,14 +1998,8 @@ export const COMMANDS = [
       {
         "name": "If-Match",
         "type": "string",
-        "required": false,
-        "description": "The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412."
-      },
-      {
-        "name": "If-None-Match",
-        "type": "string",
-        "required": false,
-        "description": "`*`: create the note, only if the name is not taken, else 412."
+        "required": true,
+        "description": "The file's ETag, as a GET answered it: the write lands only on that version, else 412."
       }
     ],
     "bodyFlags": [
@@ -1565,7 +2007,7 @@ export const COMMANDS = [
         "name": "text",
         "type": "string",
         "required": true,
-        "description": "The note's whole text, front matter included."
+        "description": "corrections.md's whole text."
       }
     ],
     "hasBody": true,
@@ -1576,8 +2018,8 @@ export const COMMANDS = [
       "application/json"
     ],
     "secretBody": false,
-    "raw": true,
-    "summary": "Edit a note (If-Match) or create one (If-None-Match: *)"
+    "raw": false,
+    "summary": "Replace the agent's corrections.md (If-Match)"
   },
   {
     "command": [
@@ -1706,6 +2148,26 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "get-model-gateway"
+    ],
+    "operationId": "getModelGateway",
+    "method": "GET",
+    "path": "/settings/model-gateway",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The model gateway in force: the environment's, the one saved here, or none"
+  },
+  {
+    "command": [
+      "local",
       "get-workspace-archil"
     ],
     "operationId": "getWorkspaceArchil",
@@ -1808,6 +2270,26 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Settings → Computers: the kinds of computer this server offers, each provider and whether its keys are saved"
+  },
+  {
+    "command": [
+      "local",
+      "list-mcp-server-names"
+    ],
+    "operationId": "listMcpServerNames",
+    "method": "GET",
+    "path": "/settings/mcp-server-names",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The names of the MCP servers saved here, and nothing else of them"
   },
   {
     "command": [
@@ -2274,7 +2756,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [
@@ -2308,6 +2790,12 @@ export const COMMANDS = [
         "description": "Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`."
       },
       {
+        "name": "model_key",
+        "type": "string",
+        "required": false,
+        "description": "The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased from the store by the write that ends the run's turn (the runner's redactor keeps the value in memory to cut it); never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 `invalid` at `model_key` for a key under 8 characters (no cut could hold it) or one with a space or a control character; 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call."
+      },
+      {
         "name": "workflow_first",
         "type": "boolean",
         "required": false,
@@ -2320,7 +2808,7 @@ export const COMMANDS = [
           "use"
         ],
         "required": false,
-        "description": "`use`: the run starts from what its agent learned (its notes, learned skills and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else."
+        "description": "`use`: the run starts from what its agent learned (its corrections and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no compile turn, no correction and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else."
       },
       {
         "name": "repo",
@@ -2369,6 +2857,52 @@ export const COMMANDS = [
     },
     "raw": false,
     "summary": "Start a run of an agent another system owns, given inline"
+  },
+  {
+    "command": [
+      "runs",
+      "create-run-computer-viewer"
+    ],
+    "operationId": "createRunComputerViewer",
+    "method": "POST",
+    "path": "/runs/{run_id}/computer/viewer",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": false,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Mint a link to the run's live view for the backend's user"
+  },
+  {
+    "command": [
+      "runs",
+      "delete"
+    ],
+    "operationId": "deleteRun",
+    "method": "DELETE",
+    "path": "/runs/{run_id}",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Purge a run's content and keep its cost"
   },
   {
     "command": [
@@ -2652,7 +3186,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [
@@ -2661,6 +3195,12 @@ export const COMMANDS = [
         "type": "string",
         "required": true,
         "description": "At most `limits.max_message_chars`. Not only whitespace."
+      },
+      {
+        "name": "model_key",
+        "type": "string",
+        "required": false,
+        "description": "The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased from the store by the write that ends the run's turn (the runner's redactor keeps the value in memory to cut it); never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 `invalid` at `model_key` for a key under 8 characters (no cut could hold it) or one with a space or a control character; 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call. On a message it replaces the run's key from the run's next model request on, a turn still going included, and it is the first key of a run that started on the server's (mint one per turn); a message without one keeps the key the run holds, which is none once its last turn ended: then, where the server holds no key for the run's model, the message is 422 `model_key_required` and nothing is written."
       }
     ],
     "hasBody": true,
@@ -2804,7 +3344,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [
@@ -2832,6 +3372,12 @@ export const COMMANDS = [
         "description": "Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`."
       },
       {
+        "name": "model_key",
+        "type": "string",
+        "required": false,
+        "description": "The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased from the store by the write that ends the run's turn (the runner's redactor keeps the value in memory to cut it); never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 `invalid` at `model_key` for a key under 8 characters (no cut could hold it) or one with a space or a control character; 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call."
+      },
+      {
         "name": "workflow_first",
         "type": "boolean",
         "required": false,
@@ -2844,7 +3390,7 @@ export const COMMANDS = [
           "use"
         ],
         "required": false,
-        "description": "`use`: the run starts from what its agent learned (its notes, learned skills and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else."
+        "description": "`use`: the run starts from what its agent learned (its corrections and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no compile turn, no correction and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else."
       },
       {
         "name": "repo",
@@ -3010,6 +3556,28 @@ export const COMMANDS = [
   {
     "command": [
       "runs",
+      "trace"
+    ],
+    "operationId": "getRunTrace",
+    "method": "GET",
+    "path": "/runs/{run_id}/trace",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "A run's trace: each model request and tool call, with its time, tokens and cost"
+  },
+  {
+    "command": [
+      "runs",
       "unarchive"
     ],
     "operationId": "unarchiveRun",
@@ -3028,6 +3596,28 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Show the archived run in the lists again"
+  },
+  {
+    "command": [
+      "runs",
+      "usage"
+    ],
+    "operationId": "getRunUsage",
+    "method": "GET",
+    "path": "/runs/{run_id}/usage",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "What a run cost, by model, by who charged for its tools, and by browser provider"
   },
   {
     "command": [
@@ -3189,7 +3779,9 @@ export const COMMANDS = [
         "type": "string",
         "enum": [
           "claude-agent-sdk",
-          "codex-sdk"
+          "codex-sdk",
+          "eve",
+          "external"
         ],
         "required": true,
         "description": ""
@@ -3223,6 +3815,12 @@ export const COMMANDS = [
         "type": "string",
         "required": false,
         "description": "The run's title, trimmed and with whitespace collapsed. Absent: the first 80 characters of input."
+      },
+      {
+        "name": "platform",
+        "type": "string",
+        "required": false,
+        "description": "External source's display label, such as openclaw or capy. Preserved exactly; no surrounding whitespace, controls or lone surrogates. Never selects a managed harness or workflow capability."
       }
     ],
     "hasBody": true,
@@ -3329,6 +3927,88 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "slack",
+      "deliveries"
+    ],
+    "operationId": "listSlackDeliveries",
+    "method": "GET",
+    "path": "/settings/slack/deliveries",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Slack's last 50 attempts, newest first"
+  },
+  {
+    "command": [
+      "slack",
+      "get"
+    ],
+    "operationId": "getSlack",
+    "method": "GET",
+    "path": "/settings/slack",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Where this server posts run notices in Slack, if it is set; never the URL"
+  },
+  {
+    "command": [
+      "slack",
+      "redeliver"
+    ],
+    "operationId": "redeliverSlack",
+    "method": "POST",
+    "path": "/settings/slack/deliveries/{webhook_id}/redeliver",
+    "pathParams": [
+      "webhook_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Post a message of Slack's log again, once now, under the same id and body"
+  },
+  {
+    "command": [
+      "slack",
+      "test"
+    ],
+    "operationId": "testSlack",
+    "method": "POST",
+    "path": "/settings/slack/test",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Post a test message to Slack now, once, and say how it went"
+  },
+  {
+    "command": [
       "stats"
     ],
     "operationId": "getStats",
@@ -3353,7 +4033,7 @@ export const COMMANDS = [
         "name": "agent",
         "type": "string",
         "required": false,
-        "description": "One agent's runs."
+        "description": "One agent's runs and associated source usage, or a connected session id to select that session's usage (with no recorded runs)."
       }
     ],
     "headers": [],
@@ -3383,10 +4063,35 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
-    "bodyFlags": [],
+    "bodyFlags": [
+      {
+        "name": "dry_run",
+        "type": "boolean",
+        "required": false,
+        "description": "True: answer the apply's plan (200 `{plan}`) from the same reads and checks, writing nothing and keeping no Idempotency-Key record. Missing keys and MCP servers are listed in the plan where the apply would be 409; any other refusal is the apply's own."
+      },
+      {
+        "name": "agent_id",
+        "type": "string",
+        "required": false,
+        "description": "An agent this package made here (GET /agents `template.id` is the package's id): the apply writes a new revision of it in place of making another, answered 200 with the same id. Its runs and its learning (corrections and workflows) stay. The parameters and grants are checked as a fresh apply checks them. Its triggers are reconciled by name: one of a name it has is changed in place (its id, a feed trigger's seen items, a webhook trigger's secret and whether it is on are kept; a `catchup_window_s` or `max_active_runs` the package leaves out goes back to its default, as a fresh apply makes it; a source the package leaves as it was is not rewritten, so a schedule keeps its next time, and an `every_s` one with no `start_at` the grid its first apply set), a new name is made, and one this package's apply made or kept that the package no longer lists is removed (a feed trigger whose feeds are left empty is not listed). Which triggers are the package's is kept on each trigger, never in an API body: one the owner made, one moved to the agent from another (or away and back), and one made before this was kept are never removed. A Composio trigger it removes (the package dropped it, or makes it again) goes at Composio first: one whose instance Composio does not delete is kept here as it was (on or off, the package's, its config sealed), and the next apply removes it; a dropped one is said in `warnings` under `triggers`, naming it and what is left at Composio. Such an unmarked trigger with a package trigger's name is adopted only when it can be changed in place (the same kind, and for a Composio trigger the same server, event and config), and is the package's from then on; one that would have to be made again, or one another package made, is 409 name_taken under `triggers.<i>.name` before anything is written: rename or delete it, then apply again. A trigger moved to another agent while the update runs is neither changed nor removed; its name is made anew. A Composio trigger it keeps keeps its sealed config when the package sends the same values; one whose server, event or config the package changes (another key too) is made again, as one whose source kind changed is: the old trigger and its Composio instance are removed first, and the new one is off where the owner turned the old one off. When Composio does not delete the old instance, the new one is not made, and the apply is 424 upstream_failed with the new revision standing and the old trigger kept as it was (remove the instance at Composio, or wait, and apply again: the old trigger's off carries to the new one). What the package owns and its new version leaves out (an input or answer schema, a checkout, a default cap, learning) is gone from the agent; what the host set (its harness, computer, sdk and native references) is kept. Updates of one agent run one after the other on a server, and each writes only onto the revision it read: one whose read went stale meanwhile (an edit, or an update elsewhere) is 412 precondition_failed, with nothing changed. An agent made otherwise, or from another package, is 422 under `agent_id`, saying which; an unknown id is 404; an archived agent is 409 agent_archived."
+      },
+      {
+        "name": "revision",
+        "type": "string",
+        "required": false,
+        "description": "With `agent_id`: the agent's revision as you read it (GET /agents/{agent_id} `revision`, or a plan's `current_revision_id`). The apply, or its plan, writes only while it is the agent's current one: another is 412 precondition_failed, nothing changed. Without `agent_id` it is 422."
+      },
+      {
+        "name": "sha",
+        "type": "string",
+        "required": false,
+        "description": "The package's sha as you read it (GET /templates `sha`, or an import's answer): the apply, or its plan, is 412 precondition_failed when the package stored under this id is another (an upload of the same name replaced it), nothing changed."
+      }
+    ],
     "hasBody": true,
     "bodyRequired": true,
     "bodyTypes": [
@@ -3434,8 +4139,8 @@ export const COMMANDS = [
       {
         "name": "source",
         "type": "string",
-        "required": true,
-        "description": "Where the package is: `github:<owner>/<repo>[/<path>][@<ref>]` (the ref, a branch, tag or commit, defaults to the default branch), or the folder's https://github.com/<owner>/<repo>/tree/<ref>/<path> URL. A public repository on github.com alone."
+        "required": false,
+        "description": "Where the package is: `github:<owner>/<repo>[/<path>][@<ref>]` (the ref, a branch, tag or commit, defaults to the default branch), or the folder's https://github.com/<owner>/<repo>/tree/<ref>/<path> URL. A public repository on github.com alone. Not with `files`; refused on a server that serves the API alone."
       },
       {
         "name": "dry_run",
@@ -3457,7 +4162,7 @@ export const COMMANDS = [
     ],
     "secretBody": false,
     "raw": false,
-    "summary": "Import a template package from a public GitHub repository, or preview it (dry_run)"
+    "summary": "Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run)"
   },
   {
     "command": [
@@ -3557,7 +4262,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [
@@ -4002,6 +4707,12 @@ export const SECRET_ROUTES = [
     "publicFields": []
   },
   {
+    "operationId": "rotateWebhookSecret",
+    "method": "POST",
+    "path": "/settings/webhook/secret",
+    "publicFields": []
+  },
+  {
     "operationId": "saveComposioServer",
     "method": "PUT",
     "path": "/settings/mcp-servers/{name}/composio",
@@ -4021,6 +4732,24 @@ export const SECRET_ROUTES = [
     ]
   },
   {
+    "operationId": "saveModelGateway",
+    "method": "PUT",
+    "path": "/settings/model-gateway",
+    "publicFields": [
+      "base_url",
+      "ids",
+      "models.default",
+      "models.fast",
+      "models.strong"
+    ]
+  },
+  {
+    "operationId": "saveSlack",
+    "method": "PUT",
+    "path": "/settings/slack",
+    "publicFields": []
+  },
+  {
     "operationId": "saveToolKey",
     "method": "PUT",
     "path": "/settings/tool-keys/{key_id}",
@@ -4034,6 +4763,14 @@ export const SECRET_ROUTES = [
       "url",
       "scopes.[]",
       "client_id"
+    ]
+  },
+  {
+    "operationId": "testModelGateway",
+    "method": "POST",
+    "path": "/settings/model-gateway/test",
+    "publicFields": [
+      "base_url"
     ]
   }
 ];

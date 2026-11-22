@@ -51,9 +51,20 @@
   .report table { @apply mb-4 w-full border-collapse text-lead leading-5; }
   .report th, .report td { @apply border px-3 py-2 text-left align-top; }
   .report th { @apply caps text-label text-muted-foreground; }
+  /* A short note's Markdown (an app event's description under its picker): the report's marks at small text, tighter. */
+  .report.report-sm p, .report.report-sm li { @apply text-small leading-[1.6]; }
+  .report.report-sm p, .report.report-sm ul, .report.report-sm ol { @apply mb-2; }
+  .report.report-sm code { @apply text-small; }
   .report a, .report button[data-run-file] { @apply text-primary-text underline underline-offset-2; }
   /* A run file the answer links (format.ts markdown): a button that opens it in the viewer, read as a link. */
   .report button[data-run-file] { @apply cursor-pointer text-left; font: inherit; }
+  /* The Dev tools tab's marks (a bar on the time axis, a swatch, a part of a stacked bar) are fills, and forced colours
+     (a contrast theme) remove a fill: an edge that shows only there keeps each mark's shape, thicker on the open one. */
+  .trace-mark { outline: 1px solid transparent; outline-offset: -1px; }
+  .trace-mark[data-open] { outline-width: 3px; outline-offset: -3px; }
+  /* A mark told from its neighbours by more than its hue: stripes cut through its fill (a call that failed, what a
+     request wrote to cache). */
+  .trace-hatch { background-image: repeating-linear-gradient(135deg, transparent 0 3px, hsl(var(--card) / 0.6) 3px 5px); }
 }
 
 /* The workflow graph (src/lib/wfGraph.ts): who works colours a card's swatch, a
@@ -156,3 +167,38 @@ svg.wf { display: block; max-width: 100%; height: auto; margin: 0 auto; font-fam
 .wf .rcell.held .cell { fill: hsl(var(--warning) / 0.08); stroke: hsl(var(--warning)); stroke-dasharray: 4 2; }
 .wf .rcell.held .cell-edge { fill: hsl(var(--warning)); }
 .wf .rcell.held .cell-out { fill: hsl(var(--warning-text)); }
+
+/* A box that scrolls inside a page, beside other things (an agent's details under its name). Its scrollbar is slim, has a
+   gutter of its own that is there whether or not the box overflows (so nothing in the box shifts, and the bar never lies
+   over a card's edge), and is quiet: no track, and a thumb that shows only while the box is being scrolled (`data-scrolling`, lib/useScrollQuiet) or
+   the pointer is on the bar's lane (`data-scroll-lane`, the same hook: Firefox has no selector for a pointer on the bar), then fades away. Where
+   the content goes on past an edge, that edge fades out; an edge the content ends at stays sharp. The fade follows the
+   scroll position itself (a scroll timeline), so it is not motion on a clock and needs no reduced-motion case; a browser
+   without scroll timelines shows no fade. */
+@property --scroll-fade-start { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --scroll-fade-end { syntax: "<length>"; inherits: false; initial-value: 0px; }
+/* The thumb's colour, as a property so it can fade: a scrollbar's own colour takes no transition. */
+@property --scroll-thumb { syntax: "<color>"; inherits: true; initial-value: transparent; }
+.scroll-quiet { scrollbar-gutter: stable; --scroll-thumb: transparent; transition: --scroll-thumb var(--duration-slow); }
+.scroll-quiet[data-scrolling], .scroll-quiet[data-scroll-lane] { --scroll-thumb: hsl(var(--muted-foreground) / 0.45); transition-duration: var(--duration-fast); }
+.scroll-quiet::-webkit-scrollbar { width: 6px; height: 6px; }
+.scroll-quiet::-webkit-scrollbar-track, .scroll-quiet::-webkit-scrollbar-corner { background: transparent; }
+.scroll-quiet::-webkit-scrollbar-thumb { background: var(--scroll-thumb); }
+.scroll-quiet::-webkit-scrollbar-thumb:hover, .scroll-quiet::-webkit-scrollbar-thumb:active { background: hsl(var(--muted-foreground) / 0.8); }
+/* Firefox has no ::-webkit-scrollbar: the standard properties, which Chrome would take in place of the rules above. */
+@supports not selector(::-webkit-scrollbar) {
+  .scroll-quiet { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+}
+@supports (animation-timeline: scroll()) {
+  .scroll-quiet {
+    mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-start), black calc(100% - var(--scroll-fade-end)), transparent);
+    animation: scroll-quiet-fade linear both;
+    animation-timeline: scroll(self block);
+  }
+  @keyframes scroll-quiet-fade {
+    0% { --scroll-fade-start: 0px; --scroll-fade-end: 2rem; }
+    10% { --scroll-fade-start: 2rem; }
+    90% { --scroll-fade-end: 2rem; }
+    100% { --scroll-fade-start: 2rem; --scroll-fade-end: 0px; }
+  }
+}

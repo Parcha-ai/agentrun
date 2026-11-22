@@ -12,8 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { archilDisk, archilWorkspace, learningKey, localWorkspace, READ_MAX, runFolder, runKey } from "../dist/workspace/index.js";
+import { archilDisk, archilWorkspace, layOwnSkills, learningKey, localWorkspace, READ_MAX, runFolder, runKey } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
+import { APPEND_MAX } from "../dist/workspace/archil.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { PATH, suite } from "./workspace-conformance.mjs";
 
@@ -799,4 +800,174 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("archil-disk: a disk Archil does not have fails every SDK call naming the disk, its region and Archil's words, with no HTTP status a caller could read as a missing file", async () => {
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ success: false, error: "Disk not found", code: "not_found" }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const disk = archilDisk({ disk: "dsk-00000000000000aa", region: "aws-us-east-1", key: () => "loopback-dummy", baseUrl: base, s3BaseUrl: `${base}/` });
+    const missing = (error) => error.name === "ArchilDiskMissing" && error.status === undefined && /^the Archil disk dsk-00000000000000aa is not there in region aws-us-east-1: .*Disk not found/.test(error.message);
+    await assert.rejects(disk.listPage("agents/a/", { recursive: false }), missing);
+    await assert.rejects(disk.putObject("agents/a/x", new Uint8Array(1)), missing);
+    await assert.rejects(disk.appendObject("agents/a/x", new Uint8Array(1)), missing);
+    await assert.rejects(disk.deleteObject("agents/a/x"), missing);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("archil-disk: a disk removed at Archil after the seam's first call fails the next SDK call and ranged read as ArchilDiskMissing; a missing key on a disk still there stays its own 404", async () => {
+  const id = "dsk-00000000000000ab";
+  let gone = false;
+  let refused = false;
+  const seen = [];
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      // The seam never asks for "/": a request there is another test's probe of a port this server reused, not the seam's.
+      if (request.url === "/") { response.writeHead(404); return response.end(); }
+      seen.push(`${request.method} ${request.url.split("?")[0]}`);
+      if (request.url === `/api/disks/${id}` && refused) {
+        response.writeHead(403, { "content-type": "application/json" });
+        return response.end(JSON.stringify({ success: false, error: "Forbidden", code: "forbidden" }));
+      }
+      if (request.url === `/api/disks/${id}`) {
+        response.writeHead(gone ? 404 : 200, { "content-type": "application/json" });
+        return response.end(JSON.stringify(gone
+          ? { success: false, error: "Disk not found", code: "not_found" }
+          : { success: true, data: { id, name: "dev", organization: "o", status: "ready", provider: "aws", region: "aws-us-east-1", createdAt: "2026-11-08T00:00:00Z" } }));
+      }
+      if (!gone && request.method === "PUT" && request.url.startsWith(`/${id}/agents/a/`)) { response.writeHead(200); return response.end(); }
+      if (!gone && request.method === "GET" && request.url === `/${id}/agents/a/x.txt`) {
+        response.writeHead(206, { "content-range": "bytes 0-1/2" });
+        return response.end("ok");
+      }
+      // A key that is not there, or (once gone) every object call: the S3 endpoint's plain 404, as for a missing key.
+      response.writeHead(404, { "content-type": "application/xml" });
+      response.end("<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>");
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const disk = archilDisk({ disk: id, region: "aws-us-east-1", key: () => "loopback-dummy", baseUrl: base, s3BaseUrl: `${base}/` });
+    const missing = (error) => error.name === "ArchilDiskMissing" && error.status === undefined && error.message.startsWith(`the Archil disk ${id} is not there in region aws-us-east-1: `) && error.message.includes("Disk not found");
+    const missingKey = (error) => error.name !== "ArchilDiskMissing" && error.status === 404;
+    const lookups = () => seen.filter((call) => call === `GET /api/disks/${id}`).length;
+    await disk.putObject("agents/a/x.txt", new Uint8Array(2));
+    assert.equal(text((await disk.getRange("agents/a/x.txt", "bytes=0-1")).body), "ok");
+    assert.equal(lookups(), 1, "the first call looks the disk up once");
+    // The disk is there: a missing key is its own 404, after one more look at the disk each.
+    await assert.rejects(disk.putObject("agents/b/x.txt", new Uint8Array(1)), missingKey);
+    await assert.rejects(disk.getRange("agents/a/nope.txt", "bytes=0-1"), missingKey);
+    assert.equal(lookups(), 3, "one disks.get after each 404, no more");
+    // A look that fails otherwise can't tell a missing key from a gone disk: its failure is the call's, never the 404.
+    refused = true;
+    await assert.rejects(disk.putObject("agents/b/x.txt", new Uint8Array(1)), (error) => error.status === 403);
+    await assert.rejects(disk.getRange("agents/a/nope.txt", "bytes=0-1"), (error) => error.status === 403);
+    refused = false;
+    await disk.putObject("agents/a/x.txt", new Uint8Array(2));
+    // Removed at Archil mid-run: the call that meets it fails as the disk being gone, never as a missing key.
+    gone = true;
+    await assert.rejects(disk.putObject("agents/a/y.txt", new Uint8Array(1)), missing);
+    assert.deepEqual(seen.slice(-2), [`PUT /${id}/agents/a/y.txt`, `GET /api/disks/${id}`], "the put met the 404, then the disk was looked up");
+    await assert.rejects(disk.listPage("agents/a/", { recursive: false }), missing);
+    await assert.rejects(disk.getRange("agents/a/x.txt", "bytes=0-1"), missing);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("ArchilWorkspace: a disk gone at Archil is UNAVAILABLE in its words on every call, never a folder that is not there, so laying a run's skills fails naming the disk", async () => {
+  const disk = new FakeArchilDisk();
+  disk.gone = { region: "aws-us-east-1", words: "Disk not found" };
+  const workspace = archilWorkspace(disk, ROOT);
+  const gone = (error) => error.code === "UNAVAILABLE" && error.message.includes(`the Archil disk ${disk.id} is not there in region aws-us-east-1: Disk not found`);
+  await assert.rejects(layOwnSkills(workspace, { "triage/SKILL.md": "# triage\n" }), gone);
+  await assert.rejects(workspace.list(".agents/skills"), gone);
+  await assert.rejects(workspace.mkdir("notes"), gone);
+  await assert.rejects(workspace.write("notes/a.md", "a"), gone);
+  // Nothing landed: a refusal, never "may also have landed".
+  await assert.rejects(workspace.append("log.txt", "a"), (error) => gone(error) && !/may also have landed/.test(error.message));
+  await assert.rejects(workspace.stat("notes"), gone);
+  await assert.rejects(workspace.remove("notes", { force: true }), gone);
+  // A ranged read too: the disk, never NOT_FOUND (a learning folder read as empty).
+  await assert.rejects(workspace.read("learning/notes.md"), gone);
+  // An append of more than one call refused at its first: none of it landed, and it says so.
+  const big = "x".repeat(APPEND_MAX + 1);
+  await assert.rejects(workspace.append("log.txt", big), (error) => gone(error) && error.message.startsWith(`0 of ${big.length} bytes were appended (the chunk that failed was refused`) && !/may also have landed/.test(error.message));
+});
+
+test("ArchilWorkspace: on a fresh folder of an Archil that makes no parent for a put (as staging's answered), a run's skills are laid and a nested write and append land, each missing folder made from the top down", async () => {
+  const disk = new FakeArchilDisk();
+  disk.parentless = true;
+  const workspace = archilWorkspace(disk, ROOT);
+  await layOwnSkills(workspace, { "triage/SKILL.md": "# triage\n" });
+  assert.equal(text(await workspace.read(".agents/skills/triage/SKILL.md")), "# triage\n");
+  await workspace.write("notes/2026/11/a.md", "a");
+  assert.equal(text(await workspace.read("notes/2026/11/a.md")), "a");
+  await workspace.append("logs/run/out.txt", "x");
+  assert.equal(text(await workspace.read("logs/run/out.txt")), "x");
+  for (const folder of [ROOT, `${ROOT}/.agents`, `${ROOT}/.agents/skills`, `${ROOT}/.agents/skills/triage`, `${ROOT}/notes/2026/11`, `${ROOT}/logs/run`]) {
+    assert.ok(disk.dirs.has(folder), `${folder} was made`);
+  }
+  // A folder already there is left as it is: the second skill's own folder alone is put.
+  const isPut = (call) => call.op === "putObject";
+  const puts = disk.calls.filter(isPut).length;
+  await workspace.write(".agents/skills/review/SKILL.md", "# review\n");
+  assert.deepEqual(disk.calls.filter(isPut).slice(puts).map((call) => call.key), [`${ROOT}/.agents/skills/review/SKILL.md`, `${ROOT}/.agents/skills/review/`, `${ROOT}/.agents/skills/review/SKILL.md`]);
+});
+
+test("ArchilWorkspace: a folder Archil still will not make names the call that failed, the path and Archil's words", async () => {
+  const disk = new FakeArchilDisk();
+  disk.parentless = true;
+  disk.dirs.add(ROOT);
+  const workspace = archilWorkspace(disk, ROOT);
+  const putObject = disk.putObject.bind(disk);
+  disk.putObject = async (key, body) => {
+    if (key === `${ROOT}/.agents/`) throw Object.assign(new Error("404 NoSuchKey: no such key"), { status: 404 });
+    return putObject(key, body);
+  };
+  await assert.rejects(workspace.mkdir(".agents/skills"), (error) => error.code === "NOT_FOUND" && /^"\.agents" is not there \(mkdir; Archil: 404 NoSuchKey: no such key\)/.test(error.message));
+});
+
+test("ArchilWorkspace: an append refused for a missing folder that then can't be made says none of it landed, never that it may have", async () => {
+  const disk = new FakeArchilDisk();
+  disk.parentless = true;
+  disk.dirs.add(ROOT);
+  const workspace = archilWorkspace(disk, ROOT);
+  const putObject = disk.putObject.bind(disk);
+  disk.putObject = async (key, body) => {
+    if (key.endsWith("/")) throw Object.assign(new Error("404 NoSuchKey: no such key"), { status: 404 });
+    return putObject(key, body);
+  };
+  for (const bytes of [Buffer.from("x"), Buffer.alloc(APPEND_MAX + 1, 120)]) {
+    await assert.rejects(workspace.append("logs/out.txt", bytes), (error) => {
+      assert.equal(error.code, "NOT_FOUND");
+      assert.doesNotMatch(error.message, /may also have landed|unknown/);
+      assert.match(error.message, /"logs" is not there \(mkdir; Archil: 404 NoSuchKey: no such key\)/);
+      if (bytes.length > APPEND_MAX) assert.match(error.message, /0 of \d+ bytes were appended/);
+      return true;
+    });
+  }
+  assert.equal(disk.files.has(`${ROOT}/logs/out.txt`), false);
+});
+
+test("ArchilWorkspace: a file or folder that is not there stays NOT_FOUND with Archil's words kept, and a fresh folder's skills are laid", async () => {
+  const disk = new FakeArchilDisk();
+  const workspace = archilWorkspace(disk, ROOT);
+  await assert.rejects(workspace.read("missing.md"), (error) => error.code === "NOT_FOUND" && error.message.startsWith('"missing.md" is not there') && /NoSuchKey/.test(error.message));
+  await assert.rejects(workspace.list(".agents/skills"), (error) => error.code === "NOT_FOUND");
+  await layOwnSkills(workspace, { "triage/SKILL.md": "# triage\n" });
+  assert.equal(text(await workspace.read(".agents/skills/triage/SKILL.md")), "# triage\n");
 });

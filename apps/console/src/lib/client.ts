@@ -1,13 +1,14 @@
+import type { SourceSyncStatus, SourceProjectReceipt } from "./sourceSync";
 import type { Observations } from "./observations";
 import type { NativeBinding, NativeRuntime, NativeSelector, NativeTarget } from "./native";
 import type { ConnectorEnrollment, ConnectorEnrollmentCapabilities, RemoteConnector } from "./connectors";
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
-import type { AgentLearning, LearningChange, LearningDiff, LearningNote, RunLearningResultData, NoteProblem, NoteText, Page } from "./learning";
-import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
+import type { AgentLearning, Corrections, LearningChange, LearningDiff, LearningFile, LearningProblem, RunLearningResultData, Page } from "./learning";
+import type { ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, Capabilities, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -21,8 +22,8 @@ export class ClientError extends Error {
   retryAfterMs?: number;
   /** What the server says beyond the message (`error.details`): a 409 `agent_not_runnable` names the box it lacks. */
   details?: Record<string, unknown>;
-  /** A note the server's checks refused (400): each check it fails, printable. */
-  problems?: NoteProblem[];
+  /** A learning write the server's checks refused (400): each check it fails, printable. */
+  problems?: LearningProblem[];
   constructor(readonly status: number, readonly code: string, message: string, readonly retryable = false, readonly requestId?: string) {
     super(message);
     this.name = "ClientError";
@@ -37,10 +38,15 @@ export const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}:
  *  workflow ("" for the document itself). */
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
 
+/** A project the server found on its machine, for the owner to choose at setup: the id setup sends back, its folder, how
+ *  many sessions an import would take from it, from which tools, and when the latest of them ended. */
+export type ImportCandidate = { id: string; name: string; path: string; sessions: number; sources: string[]; last_active: string | null };
 /** `GET /v2/setup/import`'s answer. Before the owner is set: the server can import, still counting (202), then its counts
- *  (null for each when the count failed). After: the import's state. `{ offer: false }`: none, either way. */
-export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null };
-export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" };
+ *  (null for each when the count failed) and the projects to choose from (`candidates`, the latest active first; the
+ *  server names at most 500). After: the import's state (`failed`: given up before it finished).
+ *  `{ offer: false }`: none, either way. */
+export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null; candidates?: ImportCandidate[] };
+export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" } | { state: "failed" };
 export type SetupImport = ImportOffer | ImportState;
 type NoOffer = { offer: false };
 
@@ -56,10 +62,7 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
   return `?${q}`;
 };
 
-/** `limits`: this server's own (the largest upload, null for none, and the most files a run names). */
-/** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
- *  provider's key, or another default model. */
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number; public_url?: boolean } }; limits: { max_upload_bytes: number | null; max_files_per_run: number; free_model_requests?: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
+export type { Capabilities, HarnessOfferView };
 export type Client = ReturnType<typeof createClient>;
 
 /** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
@@ -87,7 +90,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     });
     if (!res.ok) {
       if (res.status === 401 && !SIGNING_IN.has(path)) onSignedOut?.();
-      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number; problems?: NoteProblem[] } } | null)?.error;
+      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number; problems?: LearningProblem[] } } | null)?.error;
       const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
       if (e?.fields) err.fields = e.fields;
       if (typeof e?.retry_after_ms === "number") err.retryAfterMs = e.retry_after_ms;
@@ -107,21 +110,21 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   // none): they are kept here and put on a read of that same revision, until the next save or make-current of the agent,
   // after which they may be stale (the host can be set up since), so they go.
   const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
-  const note = (id: string, file: string) => `${agent(id)}/learning/files/${encodeURIComponent(file)}`;
-  // A note is text (text/markdown) both ways round, with its version as the ETag; a refusal is still JSON.
-  const asNote = (r: { body: string; etag: string | null }): NoteText => ({ note: r.body, etag: r.etag });
-  const noteAccept = { accept: "text/markdown, application/json" };
+  const learningFile = (id: string, file: string) => `${agent(id)}/learning/files/${encodeURIComponent(file)}`;
+  // A learning file reads as text (text/markdown), with its version as the ETag; a refusal is still JSON.
+  const asFile = (r: { body: string; etag: string | null }): LearningFile => ({ text: r.body, etag: r.etag });
+  const fileAccept = { accept: "text/markdown, application/json" };
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
     /** The session, on a server with accounts or without (`accounts`), with whether it may write a secret. */
     session: () => callTagged<SessionSecrets>("GET", "/auth/session").then((r) => ({ status: r.status, body: r.body as unknown })),
     signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
-    /** Sets the owner's password. `importSessions`: the owner ticked setup's box, so the server imports this machine's
-     *  sessions once the password is set; never sent otherwise. */
-    setup: (password: string, code?: string, importSessions = false) =>
-      call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importSessions ? { import: true } : {}) } }),
-    /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, how many
-     *  sessions setup's box would import; after, to the signed-in owner, how the import asked for at setup stands. Null
+    /** Sets the owner's password. `importProjects`: the projects the owner ticked in setup's list (their candidates'
+     *  ids), which the server imports once the password is set; with none ticked nothing is sent, and nothing imported. */
+    setup: (password: string, code?: string, importProjects: readonly string[] = []) =>
+      call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importProjects.length ? { import: [...importProjects] } : {}) } }),
+    /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, the
+     *  projects setup's list offers and how many sessions they hold; after, to the signed-in owner, how the import asked for at setup stands. Null
      *  where the server offers none (`{ offer: false }`, or a 404: a server without accounts has no such route, and once
      *  the owner is set it is none to a caller not signed in) or refuses the read. */
     setupImport: () => call<SetupImport | NoOffer>("GET", "/setup/import").then((r) => ((r as Partial<NoOffer> | null)?.offer === false ? null : (r as SetupImport)), (e) => {
@@ -130,6 +133,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     }),
     /** Signs this browser out; every other browser stays signed in. */
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
+    /** `POST /v2/setup/code` (a serve extension, before the owner is set, with no credential): has the server print a new
+     *  setup code to its log when the last one is expired or spent, and keeps one still good. Whether one was printed and
+     *  when the code now good runs out; never the code. */
+    setupCode: () => call<{ printed: boolean; expires_at: string }>("POST", "/setup/code", { body: {} }),
     /** Signs out every browser and phone signed in to this server, this one too. */
     signOutEverywhere: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out-everywhere", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
@@ -140,6 +147,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     listAgentRuns: (id: string, limit = 50, cursor?: string | null, filter: RunsFilter | boolean = {}) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs${runsQuery(limit, cursor, typeof filter === "boolean" ? { archived: filter } : filter)}`),
     discoverNative: (project: string, runtime?: NativeRuntime) => call<{ machine_id: string; targets: NativeTarget[] }>("POST", "/native/discover", { body: { project, ...(runtime ? { runtime } : {}) } }),
     connectNative: (body: { project: string; runtime: NativeRuntime; selector: NativeSelector }) => call<{ agent: Agent; native: NativeBinding }>("POST", "/native/connect", { body }),
+    sourceSync: (id: string) => call<SourceSyncStatus>("GET", `${agent(id)}/source`),
+    setSourceSync: (id: string, enabled: boolean) => call<SourceSyncStatus>("PATCH", `${agent(id)}/source`, { body: { enabled } }),
+    moveToAgentRun: (id: string) => call<{ agent: Agent; source: SourceSyncStatus }>("POST", `${agent(id)}/source/move`, { body: {} }),
+    resolveSourceSync: (id: string, revision: string, snapshot: string) => call<{ agent: Agent; source: SourceSyncStatus }>("POST", `${agent(id)}/source/resolve`, { body: { revision, snapshot } }),
+    reviewSourceProject: (id: string, receipts: SourceProjectReceipt[]) => call<SourceSyncStatus>("POST", `${agent(id)}/source/project-review`, { body: { receipts } }),
+    bindSourceTool: (id: string, tool: string, server: string) => call<SourceSyncStatus>("POST", `${agent(id)}/source/tools`, { body: { tool, server } }),
     getNative: (id: string) => call<{ native: NativeBinding | null }>("GET", `${agent(id)}/native`),
     verifyNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/verify`, { body: {} }),
     disconnectNative: (id: string) => call<{ native: NativeBinding }>("POST", `${agent(id)}/native/disconnect`, { body: {} }),
@@ -150,6 +163,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     },
     listConnectors: () => call<{ connectors: RemoteConnector[] }>("GET", "/connectors"),
     enrollConnector: (label?: string, capabilities?: ConnectorEnrollmentCapabilities) => call<ConnectorEnrollment>("POST", "/connectors/enrollment", { body: { ...(label?.trim() ? { label: label.trim() } : {}), ...(capabilities ? { capabilities } : {}) } }),
+    upgradeConnectorSync: (connector_id: string, capabilities: ConnectorEnrollmentCapabilities) => call<ConnectorEnrollment>("POST", "/connectors/enrollment", { body: { connector_id, capabilities } }),
     revokeConnector: (id: string) => call<{ connector: RemoteConnector }>("DELETE", `/connectors/${encodeURIComponent(id)}`),
     listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
       const q = new URLSearchParams();
@@ -178,60 +192,49 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
-    /** What an agent learned: its notes' first page, the index its next run reads, the changes, and how its runs did. */
+    /** What an agent learned: its corrections.md, its workflow drafts, the changes, and how its runs did. */
     agentLearning: (id: string) => call<AgentLearning>("GET", `${agent(id)}/learning`),
+    /** corrections.md whole, its version (the If-Match of a write) and its cap. */
+    corrections: async (id: string) => (await callTagged<Corrections>("GET", `${agent(id)}/learning/corrections`)).body,
+    /** Replaces corrections.md whole, on the version `etag` (412 when it changed since: a run's correction, or another
+     *  edit). The text goes as JSON, the one write the server takes under the page's session. The answer is the file as it
+     *  now is, and its new version. */
+    writeCorrections: (id: string, text: string, etag: string) => call<Corrections>("PUT", `${agent(id)}/learning/corrections`, { body: { text }, headers: { "if-match": etag } }),
     /** An agent's cost per run, run after run: its latest `limit` runs (the server's default when absent) and what the
      *  whole series shows. */
     learningCost: (id: string, limit?: number) => call<LearningCost>("GET", `${agent(id)}/learning/cost${limit ? `?limit=${limit}` : ""}`),
-    /** Learn from rows: the agent runs on each in order with learning on, the server keeping the progress. The batches, latest
-     *  first (their headers), one batch's progress, a new batch, a cancel. */
-    learningBatches: (id: string) => call<{ batches: LearningBatchHead[] }>("GET", `${agent(id)}/learning/batches`),
-    learningBatch: (id: string, batch: string) => call<LearningBatch>("GET", `${agent(id)}/learning/batches/${encodeURIComponent(batch)}`),
-    startLearningBatch: (id: string, body: LearningBatchStart) => call<LearningBatch>("POST", `${agent(id)}/learning/batches`, { body }),
-    cancelLearningBatch: (id: string, batch: string) => call<LearningBatch>("POST", `${agent(id)}/learning/batches/${encodeURIComponent(batch)}/cancel`, { body: {} }),
-    learningEvals: (id: string) => call<LearningEvals>("GET", `${agent(id)}/learning/evals`),
     learningPromotions: (id: string) => call<Promotions>("GET", `${agent(id)}/learning/promotions`),
     learningLoop: (id: string) => call<LearningLoop>("GET", `${agent(id)}/learning/loop`),
+    /** The audit ledger of the agent's serving learned workflows: one row per finished audit, oldest first. */
+    learningAudits: (id: string) => call<LearningAudits>("GET", `${agent(id)}/learning/audits`),
     learnedWorkflowRevisions: (id: string, name: string, limit?: number) => call<WorkflowRevisions>("GET", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/revisions${limit ? `?limit=${limit}` : ""}`),
     /** Starts a replay of one revision of a learned workflow on the server's default inputs (POST .../revisions/{digest}/replays):
      *  the owner's session only; 409 replay_conflict, agent_not_runnable or too few inputs of the agent's own runs for a check. */
     startLearnedWorkflowReplay: (id: string, name: string, digest: string) => call<ReplayStarted>("POST", `${replays(id, name, digest)}`, { body: {} }),
     /** A replay as it stands, and decided once its runs ended (GET .../replays/{replay_id}). */
     learnedWorkflowReplay: (id: string, name: string, digest: string, replay: string) => call<ReplayRead>("GET", `${replays(id, name, digest)}/${encodeURIComponent(replay)}`),
-    learningNotes: (id: string, cursor: string) => call<Page<LearningNote>>("GET", `${agent(id)}/learning/notes?cursor=${encodeURIComponent(cursor)}`),
     learningLog: (id: string, cursor: string) => call<Page<LearningChange>>("GET", `${agent(id)}/learning/log?cursor=${encodeURIComponent(cursor)}`),
-    /** A note's whole text and its version, for the If-Match of an edit or a retire. */
-    readNote: async (id: string, file: string) => asNote(await callTagged<string>("GET", note(id, file), { headers: noteAccept, text: true })),
-    /** Edits a note (`etag`: the version the edit was made on; 412 when it changed since) or creates one (`create`: 412
-     *  when the name is taken). The text goes as JSON, the one write the server takes under the page's session. The
-     *  answer is the note as it now is, and its new version. */
-    writeNote: async (id: string, file: string, text: string, on: { etag: string } | { create: true }) =>
-      asNote(await callTagged<string>("PUT", note(id, file), { body: { text }, headers: { ...noteAccept, ...("etag" in on ? { "if-match": on.etag } : { "if-none-match": "*" }) }, text: true })),
-    /** Retires a note: out of every later run's instructions, its record kept. 412 when it changed since `etag`. */
-    retireNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/retire`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
-    /** Approves a note that waits for the owner's OK, so later runs read it; 412 when it changed since `etag`. */
-    approveNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/approve`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
-    /** A retired note, skill (its SKILL.md) or draft (its README.md) made active again, on version `etag`: the owner's
-     *  session only, and checked again as a new one is (POST …/learning/files/{file}/restore). */
-    restoreNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/restore`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
+    /** A workflow draft's file (its workflow.json, or its README) whole, and its version. */
+    readLearningFile: async (id: string, file: string) => asFile(await callTagged<string>("GET", learningFile(id, file), { headers: fileAccept, text: true })),
+    /** Retires a workflow draft, by its README: no later run is given it, its record kept. 412 when it changed since `etag`. */
+    retireWorkflow: async (id: string, readme: string, etag: string) => asFile(await callTagged<string>("POST", `${learningFile(id, readme)}/retire`, { body: {}, headers: { ...fileAccept, "if-match": etag }, text: true })),
+    /** Approves a workflow draft that waits for the owner's OK, by its README, so later runs are given it; 412 when it
+     *  changed since `etag`. */
+    approveWorkflow: async (id: string, readme: string, etag: string) => asFile(await callTagged<string>("POST", `${learningFile(id, readme)}/approve`, { body: {}, headers: { ...fileAccept, "if-match": etag }, text: true })),
+    /** A retired workflow draft made active again, by its README, on version `etag`: the owner's session only, and checked
+     *  again as a new one is (POST …/learning/files/{file}/restore). */
+    restoreWorkflow: async (id: string, readme: string, etag: string) => asFile(await callTagged<string>("POST", `${learningFile(id, readme)}/restore`, { body: {}, headers: { ...fileAccept, "if-match": etag }, text: true })),
     /** Forgets one of an agent's saved browser sign-ins (DELETE /agents/{id}/sign-ins/{key}): every vendor's under the key. */
     forgetSignIn: (id: string, key: string) => call<SignInForgotten>("DELETE", `${agent(id)}/sign-ins/${encodeURIComponent(key)}`),
-    /** A learned workflow (`name`, its folder's) made into a workflow agent of its own, which runs with no agent loop: an
-     *  active one alone (409 learned_not_active otherwise), checked again as a restore checks it. The owner's session only.
-     *  The answer is the new agent; the learned workflow stays where it is. Under `idempotencyKey`, so a retry after a lost
-     *  answer gets the agent the first one made, never a second. */
-    promoteWorkflow: async (id: string, name: string, idempotencyKey: string) => {
-      const made = await call<Agent>("POST", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/promote`, { body: {}, headers: { "idempotency-key": idempotencyKey } });
-      if (made.warnings?.length) created.set(made.agent_id, { revision: made.revision, warnings: made.warnings });
-      return made;
-    },
     getRun: (id: string) => call<Run>("GET", run(id)),
-    /** The run's recorded learning outcome, grader decisions and usage; null when it did not learn. */
+    /** The run's recorded learning outcome: what its merge kept, what the checks refused, and its commits; null when it
+     *  did not learn. */
     runLearningResult: (id: string) => call<RunLearningResultData | null>("GET", `${run(id)}/learning`),
-    /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
+    /** What the run's learning changed in its agent's learning folder, file by file (each with its patch, or why it is
+     *  withheld). */
     runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
-    /** The run's learning (GET /v2/runs/{id}/learning): with `used`, the learned skills it was offered and read, and the
-     *  learned workflows it called. Null for a run that does not learn. */
+    /** The run's learning (GET /v2/runs/{id}/learning): with `used`, the learned workflows it called. Null for a run that
+     *  does not learn. */
     runLearning: (id: string) => call<RunLearningRead>("GET", `${run(id)}/learning`),
     /** The run's computer, every kind with a screen: off, none or live with its viewer, and who drives (GET /v2/runs/{id}/computer). */
     runComputer: (id: string) => call<RunComputer>("GET", `${run(id)}/computer`),
@@ -270,6 +273,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       call<{ mode: string; message_id: string }>("POST", `${run(id)}/messages`, { body: { content }, headers: { "idempotency-key": idempotencyKey } }),
     /** A workflow run's graph, live: each node's state, its decisions and tool calls, and the totals. */
     getRunGraph: (id: string, signal?: AbortSignal) => call<RunGraph>("GET", `${run(id)}/graph`, { signal }),
+    /** A run's trace: each model request and tool call as a span, with its time, tokens and cost. */
+    runTrace: (id: string, signal?: AbortSignal) => call<RunTrace>("GET", `${run(id)}/trace`, { signal }),
+    /** A run's cost line by line (GET /v2/runs/{id}/usage): by model, by the vendor that charged for a tool, by browser provider. */
+    runUsage: (id: string, signal?: AbortSignal) => call<RunUsage>("GET", `${run(id)}/usage`, { signal }),
     /** Pauses a workflow run: calls in flight finish, and no new node starts until it resumes. */
     pauseRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/pause`, { body: {} }),
     resumeRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/resume`, { body: {} }),
@@ -300,6 +307,21 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Signs out here and revokes the sign-in at OpenAI: whether OpenAI confirmed it (`revoked`), and when it didn't, what
      *  to do (`message`). A server from before the answer had a body says nothing (204, an empty text). */
     signOutChatGPT: () => call<ChatGPTSignOut | "">("DELETE", "/settings/chatgpt"),
+    /** Claude Code's login on this machine: on or off, and what the CLI says of it (404 where the server has it off). */
+    claudeLogin: () => call<unknown>("GET", "/settings/claude-login"),
+    /** Turns it on at `place`, with the owner's word that they alone run agents here. */
+    turnOnClaudeLogin: (place: ClaudeLoginView["place"]) => call<ClaudeLoginView>("PUT", "/settings/claude-login", { body: { place, only_me: true } }),
+    turnOffClaudeLogin: () => call<ClaudeLoginView>("DELETE", "/settings/claude-login"),
+    /** Starts the CLI's own sign-in on the server's machine, which opens a browser there. */
+    startClaudeLogin: () => call<ClaudeLoginView>("POST", "/settings/claude-login/login"),
+    /** The model gateway in force: the environment's, the one saved here, or none. Never its key. */
+    modelGateway: () => call<ModelGateway>("GET", "/settings/model-gateway"),
+    /** Saves the gateway and puts it in force, with no restart. */
+    saveModelGateway: (body: ModelGatewayBody) => call<ModelGateway>("PUT", "/settings/model-gateway", { body }),
+    /** Removes the saved gateway and its key: the provider keys are back in force. */
+    removeModelGateway: () => call<ModelGateway>("DELETE", "/settings/model-gateway"),
+    /** Asks a gateway which models it lists: the form's address and key when given, else the one in force. */
+    testModelGateway: (body: { base_url?: string; api_key?: string | null }) => call<ModelGatewayTest>("POST", "/settings/model-gateway/test", { body }),
     /** Each kind of computer, whether this server offers it and why not, and its providers with their keys by name, never a
      *  value. */
     computers: () => call<Computers>("GET", "/computers"),
@@ -329,8 +351,21 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Sets the webhook's URL; the first PUT makes its secret and answers it, once (`secret`). */
     saveWebhook: (url: string) => call<WebhookSaved>("PUT", "/settings/webhook", { body: { url } }),
     removeWebhook: () => call<unknown>("DELETE", "/settings/webhook"),
+    /** A new signing secret for the webhook's URL, shown this once; the old one signs nothing from now on. No body. */
+    rotateWebhookSecret: () => call<WebhookRotated>("POST", "/settings/webhook/secret"),
     /** A `webhook.test` message, tried once now: its attempt. */
     testWebhook: () => call<WebhookAttempt>("POST", "/settings/webhook/test", { body: {} }),
+    /** Slack, never its URL (a serve extension). */
+    slack: () => call<Slack>("GET", "/settings/slack"),
+    /** Saves Slack's URL (the owner's session alone), its events, or both: the answer is Slack as saved, never the URL. */
+    saveSlack: (body: SlackBody) => call<Slack>("PUT", "/settings/slack", { body }),
+    removeSlack: () => call<unknown>("DELETE", "/settings/slack"),
+    /** A test message, posted once now: its attempt. */
+    testSlack: () => call<SlackAttempt>("POST", "/settings/slack/test", { body: {} }),
+    /** Slack's last attempts, newest first. */
+    slackDeliveries: () => call<{ attempts: SlackAttempt[] }>("GET", "/settings/slack/deliveries"),
+    /** A message of Slack's log posted again, once now: its attempt. */
+    redeliverSlack: (id: string) => call<SlackAttempt>("POST", `/settings/slack/deliveries/${encodeURIComponent(id)}/redeliver`, { body: {} }),
     /** The server's email account, never its password (a serve extension). */
     emailAccount: () => call<EmailAccount>("GET", "/settings/email"),
     /** Saves the account: the server seals its password and answers the account without it. */

@@ -96,8 +96,11 @@ test("a reclaim with no compile due keeps the durable compile request's cost as 
       };
       return typeof value === "function" ? value.bind(target) : value;
     } });
-    const loop = createSdkLoop(launch, { store: s.store, data: s.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => route)({ journal: () => guarded, flush: () => s.store.flush(), signal: abort.signal });
+    // The route is asked for the claim it serves, so its requests can name the claim's run, turn and attempt.
+    const asked = [];
+    const loop = createSdkLoop(launch, { store: s.store, data: s.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async (of) => (asked.push(of), route))({ journal: () => guarded, flush: () => s.store.flush(), signal: abort.signal });
     assert.equal((await loop.start(claim)).state, crash ? "interrupted" : "ended");
+    assert.ok(asked.every((of) => of === claim), "every route ask names the loop's claim");
     if (crash) { assert.ok(cut); await s.store.release(claim); }
   };
   await settle(true);

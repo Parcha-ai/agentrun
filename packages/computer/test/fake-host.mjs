@@ -105,9 +105,10 @@ const START = Date.now();
  *  - born(n): the creation time of the n-th machine made (1, 2, ...), or undefined for none; default the order made;
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
- *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
- *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager does not start) or
- *    "manager dies" (it ends at once);
+ *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised, and
+ *    workspace, the stat of a synced folder's directory: { path, type, owner "uid:gid", mode }, else install's);
+ *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager computerd starts
+ *    finds no dbus-run-session) or "manager dies" (it ends at once);
  *  - lingers: { reads, lists, state } after a delete, a lingering read in state (running unless given); fileApi: false
  *    for a host with no upload;
  *  - timer: "ok" (extend moves the end and the deadline label: the vendor's timer, or with lifetime janitor the label
@@ -231,7 +232,8 @@ export function fakeHost({
 		if (method === "hello") {
 			const groups = displayUp ? [...DESKTOP_GROUPS] : [...LINUX_GROUPS];
 			if (m.xvfb && (display === "ok" || display.startsWith("manager "))) m.displayUp = true;
-			return result({ ...m.box.hello, groups, kind: displayUp ? "desktop" : "linux", ...(m.box.helloPatch ?? {}) });
+			const windowManager = windowManagerOf(m, displayUp);
+			return result({ ...m.box.hello, groups, kind: displayUp ? "desktop" : "linux", ...(windowManager ? { windowManager } : {}), ...(m.box.helloPatch ?? {}) });
 		}
 		if (method === "ping") return result({});
 		if (method === "files.read" && params.path === "/proc/self/mounts") return result({ data: Buffer.from(mountsOf(m.box)).toString("base64"), size: 0, eof: true });
@@ -259,6 +261,13 @@ export function fakeHost({
 		if (method === "files.stat") {
 			if (params.path === "/proc/self/cwd") return result({ path: params.path, type: "symlink", target: m.box.cwd });
 			if (params.path === "/proc/self/exe") return result({ path: params.path, type: "symlink", target: m.box.exe });
+			const dir = (type, owner, mode) => {
+				const [uid, gid] = owner.split(":").map(Number);
+				return result({ type, size: 4096, mode, mtimeMs: 0, uid, gid });
+			};
+			if (params.path === "/work") return dir("dir", `${m.box.uid}:${m.box.gid}`, 0o755);
+			const workspace = m.box.workspace;
+			if (workspace !== undefined && params.path === workspace.path) return dir(workspace.type, workspace.owner, workspace.mode);
 			return error("not_found", `${params.path}: no such file`);
 		}
 		if (method === "exec.run") {
@@ -285,15 +294,11 @@ export function fakeHost({
 			return result({ exitCode: 0, stdout: Buffer.from(`${argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 		}
 		if (method === "process.start") {
-			const manager = params.argv.some((arg) => arg.includes("xfwm4"));
-			if (manager && display === "manager missing") return error("not_found", `${params.argv[0]}: executable file not found in $PATH`);
 			const entry = { id: `p${m.processes.length + 1}`, pid: 100 + m.processes.length, argv: params.argv, running: true, exitCode: null, signal: null, stderr: "" };
 			if (params.argv[0] === "Xvfb") {
 				m.xvfb = entry;
 				if (display === "dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "(EE) Fatal server error:\n(EE) Cannot establish any listening sockets\n" });
 			}
-			// A window manager that starts and ends at once, as xfwm4 does with no session bus.
-			if (manager && display === "manager dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "Xfconf could not be initialized\n" });
 			m.processes.push(entry);
 			return result({ id: entry.id, pid: entry.pid });
 		}
@@ -363,14 +368,29 @@ export function fakeHost({
 	}
 
 	/** init, once the daemon is in place: what start (child) or the entrypoint (pid1) runs. */
-	function startInit(m, { deadline, user, display: shown = "", max = "", network = "" }) {
+	function startInit(m, { deadline, user, display: shown = "", max = "", network = "", windowManager = false }) {
 		if (initFails !== undefined || m.daemon === undefined) {
 			m.initLog = `${initFails ?? `sh: ${DAEMON}: not found`}\n`;
 			return;
 		}
 		const [uid, gid] = user.split(":").map(Number);
 		Object.assign(m.box, { uid, gid });
-		m.init = { deadline, user, display: shown, max, network };
+		m.init = { deadline, user, display: shown, max, network, windowManager };
+	}
+
+	/**
+	 * hello's windowManager where init was given --window-manager: starting until the display is up and on the first hello
+	 * after, then running, or with display "manager missing" or "manager dies", ended in computerd's words.
+	 */
+	function windowManagerOf(m, displayUp) {
+		if (!m.init?.windowManager) return undefined;
+		const words = "the window manager computerd started (dbus-run-session -- xfwm4 --compositor=off --sm-client-disable)";
+		if (!displayUp) return { state: "starting" };
+		m.managerHellos = (m.managerHellos ?? 0) + 1;
+		if (m.managerHellos === 1) return { state: "starting" };
+		if (display === "manager missing") return { state: "ended", why: `${words} ended with exit code 127 within 1 s of starting on ${m.init.display}: sh: 1: exec: dbus-run-session: not found` };
+		if (display === "manager dies") return { state: "ended", why: `${words} ended with exit code 1 within 1 s of starting on ${m.init.display}: Xfconf could not be initialized` };
+		return { state: "running" };
 	}
 
 	/** Runs one argv as the machine's root shell would. */
@@ -428,7 +448,7 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "install") {
-			const [staging, daemon, , , atomic, sha256, nonce] = script.args;
+			const [staging, daemon, , , atomic, sha256, nonce, workspace, owner] = script.args;
 			queueMicrotask(() => {
 				const bytes = m.files.get(staging);
 				if (install !== 0 || bytes === undefined) {
@@ -436,6 +456,8 @@ export function fakeHost({
 					return proc.exit(install || 5);
 				}
 				m.files.delete(staging);
+				// A synced folder's directory, made the computer user's before init (box.workspace stands for another).
+				if (workspace) m.box.workspace ??= { path: workspace, type: "dir", owner, mode: 0o700 };
 				m.daemon = { path: daemon, bytes, atomic: atomic === "1", sha256, ...(nonce ? { marker: nonce } : {}) };
 				proc.out.push(`installer 0 root\nsha256 ${sha === "lie" ? "0".repeat(64) : createHash("sha256").update(bytes).digest("hex")}\n`);
 				if (m.pid1) maybeEntry(m);
@@ -444,10 +466,10 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "start") {
-			// start: [log, "sh", "-c", INIT, "sh", d, t, w, h, r, v?, m?, n?]
-			const [, , , , , , deadline, user, , , shown = "", max = "", network = ""] = script.args;
+			// start: [log, "sh", "-c", INIT, "sh", d, t, w, h, r, v?, m?, n?, g?]
+			const [, , , , , , deadline, user, , , shown = "", max = "", network = "", manager = ""] = script.args;
 			queueMicrotask(() => {
-				startInit(m, { deadline, user, display: shown, max, network });
+				startInit(m, { deadline, user, display: shown, max, network, windowManager: manager !== "" });
 				proc.exit(0);
 			});
 			return proc;
@@ -530,6 +552,7 @@ export function fakeHost({
 			display: m.pid1.display,
 			max: args.includes("--max-deadline") ? flag("--max-deadline") : "",
 			network: args.includes("--network") ? flag("--network") : "",
+			windowManager: args.includes("--window-manager"),
 		});
 	}
 	const chunks = (proc) => (proc.chunks.length === 0 ? undefined : Buffer.concat(proc.chunks).toString("utf8"));
@@ -565,12 +588,13 @@ export function fakeHost({
 				if (backstop) m.endsAt = new Date(req.backstopAt);
 				if (stale) m.listedAs = { ...view(m), state: "running" };
 				if (req.boot) {
-					// A dial machine's agentrun-dial: init started by AGENTRUN_INIT_ARGS, then the dial itself, the caller's (onBoot).
+					// A dial machine's agentrun-dial: init started by AGENTRUN_INIT_ARGS, with the boot env's DISPLAY, then the dial
+					// itself, the caller's (onBoot).
 					m.boot = { ...req.boot.env };
 					const args = m.boot.AGENTRUN_INIT_ARGS.split(" ");
 					const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : "");
 					m.daemon = { path: DAEMON, sha256: m.boot.AGENTRUN_DAEMON_SHA256 };
-					startInit(m, { deadline: flag("--deadline"), user: flag("--user"), max: flag("--max-deadline"), network: flag("--network") });
+					startInit(m, { deadline: flag("--deadline"), user: flag("--user"), display: m.boot.DISPLAY ?? "", max: flag("--max-deadline"), network: flag("--network"), windowManager: args.includes("--window-manager") });
 					queueMicrotask(() => onBoot(m));
 				}
 				if (req.command) {

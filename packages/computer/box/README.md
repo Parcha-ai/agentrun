@@ -24,4 +24,7 @@ files it copies (`recipe.mjs`). A changed recipe is a new image, and the same re
 Each release publishes it (`.github/workflows/release.yml`, the `box` job) as `ghcr.io/parcha-ai/agentrun-box:<recipe hash>`
 and `:<release tag>`, for linux/amd64, and builds the public E2B template `agentrun-archil-<recipe hash>` from it in the
 same job, which E2B's provider starts in any account as `boxE2bTemplate()` (`src/box-image.ts`). The build-*
-scripts here say how to build it for each provider.
+scripts here say how to build it for each provider. `build-daytona.py --documents` builds it with the documents layer
+on top (`../documents/documents.sh`, the libraries that write Office files, which the Docker box's documents image runs
+too) as a snapshot of its own, `agentrun-documents-<hash>`, the hash covering this recipe and that layer: this recipe's
+hash, and the snapshot named by it, stay as they are.

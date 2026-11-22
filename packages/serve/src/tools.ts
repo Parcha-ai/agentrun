@@ -22,7 +22,7 @@ import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./b
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
-import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
+import { harnessIds, onAdapter } from "./harness-table.js";
 import { META_TOOLS } from "./meta-tool-names.js";
 import { localFolderOf } from "./workspace/local.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
@@ -32,10 +32,13 @@ import { bookedIn, booking, type Ledger, type PaidBooking } from "./paid-calls.j
 import type { Refusal } from "@parcha/agentrun-kernel";
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { browserPrice, browserSpend } from "./browser-cost.js";
+import { sessionEnds } from "./browser-sessions.js";
+import { sessionRecordings } from "./computer-record.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { fakeFetch, fakeSearch, type WebFake } from "./web-fake.js";
+import { fakeFetch, fakeSaveOptions, fakeSearch, type WebFake } from "./web-fake.js";
+import { SAVE_MAX_BYTES, type SaveSlots, WEB_SAVE_TOOL, webSaveTool } from "./web-save.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
@@ -53,6 +56,7 @@ import { provenFor, type RunnerLive } from "./live-reach.js";
 import { clearWaitEnded, markWaitEnded } from "./browser-wait-ended.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
+import { held } from "./runner/held.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ computer, driver }` for the run's
@@ -159,8 +163,8 @@ export type ToolHost = {
   /** The run's own models a native web_search goes through (hosted-search.ts), asked as a search runs: on the runner, the
    *  session's port (its proxy, policy, key, price and cap), this run's alone. Absent: a native search has no model. */
   search?: SearchOn;
-  /** A template eval's web fake for this run (web-fake.ts): its web_search and web_fetch answer from it, never the
-   *  network. Only the eval's own runner sets it (runner/beside.ts evalFakes). Absent: the plane's providers. */
+  /** A template eval's web fake for this run (web-fake.ts): its web_search, web_fetch and web_save answer from it, never
+   *  the network. Only the eval's own runner sets it (runner/beside.ts evalFakes). Absent: the plane's providers. */
   web?: WebFake;
   /** The run's clock where a template eval case sets one (its `now`): a draft's or a send's Date reads it. Absent: the real
    *  clock. */
@@ -174,6 +178,9 @@ export type ToolHost = {
   /** That server's own addresses (Serve.own, AdapterSpecDeps.mcpOwn): calendar_events never reads on loopback at their
    *  ports, a redirect's hop included, as the server's own read (calendar/routes.ts) never does. */
   serverOwn?: readonly string[];
+  /** web_save's download slots: in a run's own process, its runner's gate over the channel (runner/save-slots.ts).
+   *  Absent: this process's (web-save.ts SERVER_SLOTS). */
+  saveSlots?: SaveSlots;
 };
 /** A fake mail account's servers, on loopback (email/email-faux.ts), and the kind of server it plays: what email_file's
  *  description says, which a loopback account saved as `other` would otherwise read as folders. */
@@ -396,18 +403,22 @@ export const savedOnRelease = (row: { session: { resourceId: string | null; rele
 /** On the runner, the per-session hook that verifies the run's saved sign-in: a session that saved to it (savedOnRelease,
  *  in a run handed it to save) verifies it under the run's claim, at the session's own end (its time, else now), as the
  *  saved mark main reads at the lease's end. Answers whether it verified (sign-ins-store.ts verifyRunSignIn). */
-export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: Buffer, claim: Claim, kept: RunSignIn) =>
+export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, kept: RunSignIn) =>
   async (row: { session: { resourceId: string | null; releaseReason: string | null; endedAt?: string | null } }, change: string): Promise<boolean> => {
     if (!kept.save || !savedOnRelease(row, change)) return false;
     const ended = row.session.endedAt ? Date.parse(row.session.endedAt) : Number.NaN;
-    return verifyRunSignIn(store, sealKey, claim, kept, Number.isFinite(ended) ? ended : Date.now());
+    const at = Number.isFinite(ended) ? ended : Date.now();
+    // A run's own process holds no seal key: its runner marks it under the claim (held.ts verifySignIn).
+    if (!sealKey) return (await held()?.verifySignIn(kept, at)) ?? false;
+    return verifyRunSignIn(store, sealKey, claim, kept, at);
   };
 
 /** A browser on pi-browser's durable adapter, its sessions a browser computer provider's of the computer registry
  *  (browser-computer.ts), each driven over its CDP URL by pi-browser's raw-CDP driver: the agent's computer, where it is
  *  a browser (the claim's, computer-for-claim.ts), else the one the run's plane names (tool-plane.ts: picked, else
  *  Browserbase where the server holds its keys, else Kernel), kept for the run's life; a plane that names none (a run kept
- *  from before the pick) is Browserbase. Its sessions' custody lives in the run's own store. No recording; the owner
+ *  from before the pick) is Browserbase. Its sessions' custody lives in the run's own store. No vendor's recording:
+ *  where the agent's computer says computer.record, each session's video is the live view's screencast. The owner
  *  watches it live, takes it over and hands it back, and the agent may ask them to (browser-live.ts, browser-person.ts).
  *  A session the run still holds is released when the run is let go. Where the plane says unavailable (its vendor's key
  *  gone since), each call is refused, saying why. Its session time is the run's spend, held under its cap before it runs
@@ -447,7 +458,9 @@ const browserTool: ToolEntry = {
     // launch makes it: never the process's environment, so one run's keys never make another's.
     const runLog = (line: string) => void process.stderr.write(`agentrun-serve: run ${host.where.ref.id}: ${line}\n`);
     const vendorFetch = async () => (host.env[FAUX_ENV] ? fauxFetch(host.env, FAUX_VENDOR_API_ENV) : fetch);
-    const handed = computer ? undefined : host.claim ? (planeRefused || !host.store || !host.sealKey ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog })) : handedSignIn();
+    // A run's own process holds no seal key: its runner opens the run's sign-in under the claim (held.ts runSignIn).
+    const atRunner = held();
+    const handed = computer ? undefined : host.claim ? (planeRefused || !host.store ? undefined : host.sealKey ? await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog }) : await atRunner?.runSignIn(vendor)) : handedSignIn();
     const kept = !planeRefused && handed?.provider === vendor ? handed : undefined;
     // Tests only (--faux): the faux browser's computer provider and driver stand in for the plane vendor's and the raw-CDP
     // driver. The agent's browser computer is still the claim's, so a test hands the claim a faux provider of its own.
@@ -553,6 +566,9 @@ const browserTool: ToolEntry = {
     // (host.liveViewers); never a file in the run's folder, which is the agent's workspace.
     const viewers = live.sessionHandovers(host.liveViewers, at?.host);
     const onSession = (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => viewers.changed(row, change);
+    // Where the agent's computer records (its claim's `record`, computer.record): each session's video, by its computer,
+    // from its launch (or its reopening after a restart) to its release, through the live view's one screencast of it.
+    const recordSession = sessionRecordings(view, computer?.record);
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
     const price = browserPrice(providerName, host.env);
@@ -570,16 +586,24 @@ const browserTool: ToolEntry = {
     const files = { files: uploadsFrom(work, MAX_UPLOAD_BYTES, uploadMime), ...(folder !== undefined && keepsDownloads ? { workspace: () => folder } : {}) };
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
     // On the runner, the store's verified_at under the run's claim (runSignInSaved), never a mark in the run's directory.
-    const verify = kept?.save && host.claim && host.store && host.sealKey ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
+    const verify = kept?.save && host.claim && host.store && (host.sealKey || held()) ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
     // Awaited by the session's change, so the release that lets a run's sessions go (beforeRelease) returns only once its
     // last save is verified: the run's end commit, which ends the claim, never fences it.
     const saved = verify
       ? async (row: Parameters<typeof savedOnRelease>[0], change: string): Promise<void> => void (await verify(row, change))
       : undefined;
+    // Each session's end on the run's root, with its provider's own record of it where the provider keeps one, read once
+    // here (browser-sessions.ts): the run's usage read gives one record per session.
+    const sessionEnded = sessionEnds({
+      usage: "browser" in made ? made.browser.usage : undefined,
+      commit: (change) => (opened ? opened.commit(change, context) : Promise.reject(new Error("the run's journal is not open"))),
+    });
     // Both hosts of a session's changes: the live view's hand-over, and the sign-in's save (its verified_at, in the store).
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
+      if (change === "released") await sessionEnded((row as unknown as { session: Parameters<typeof sessionEnded>[0] }).session, (row as unknown as { conversationId: number }).conversationId);
+      await recordSession(row.session.tag, change === "released" ? null : row.session.resourceId);
       // A session that opens, whatever let the last one go: the Screen tab's ended state goes (browser-wait-ended.ts).
       if (change === "launched" && host.store && host.claim) await clearWaitEnded(host.store.settings, host.claim.runId, host.claim.epoch).catch(() => undefined);
       await saved?.(row, change);
@@ -637,6 +661,7 @@ const browserTool: ToolEntry = {
         try {
           const opened = await watched?.liveView?.({ id: row.resourceId!, tag: row.tag });
           await viewers.reopened(row.tag, opened?.fullscreen);
+          if (opened) await recordSession(row.tag, row.resourceId);
         } catch {
           // A browser that cannot be reached has no view to give: the owner reads none, as for any session without one.
         }
@@ -714,6 +739,17 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search, host.web && ((args, provider) => fakeSearch(host.web!, args, provider)))) as unknown as ToolRegistration),
     effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
   },
+  // web_save (web-save.ts). It makes no paid request, so nothing books it. No node or call node names it: a workflow's
+  // effect has only a local work path, not the run's Workspace.
+  [WEB_SAVE_TOOL]: {
+    summary: `Download one public file into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, duration_s?, url } (duration_s an mp3, wav, mp4 or m4a's length in seconds) or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, a media type only when its bytes agree.`,
+    needs: [],
+    nodes: false,
+    bind: async (host) => {
+      const web = host.web;
+      return installTool(host, "web-save", webSaveTool(() => host.workspace ?? localWorkspace(host.where.work), async () => (web ? fakeSaveOptions(web) : fetchOptions(host.env, FAUX_ENV)), host.saveSlots) as unknown as ToolRegistration);
+    },
+  },
   // The email tools (email/tools.ts) on the server's one email account (Settings → Email), every harness's as web_fetch is;
   // the mail libraries load at the first bind.
   [EMAIL_SEARCH]: emailTool(EMAIL_SEARCH),
@@ -762,7 +798,7 @@ export const allows = (allowed: readonly string[], name: string): boolean => all
  *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS, and each MCP tool granted by its own name,
  *  tool-names.ts mcpNameOf), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name
  *  does not run either). A
- *  learned model node runs without tools (learn/skills.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
+ *  learned model node runs without tools (learn/workflow-draft.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
  *  exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
 export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane, options: LearnedMcp = {}): string[] =>
   [...new Set(granted.filter((name) => (options.mcp === true && mcpNameOf(name) !== undefined) || (allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable]))))];
@@ -835,7 +871,7 @@ export async function toolingOf(revision: Revision): Promise<Tooling> {
 export const missingEnv = (entry: ToolEntry, env: NodeJS.ProcessEnv): string[] => entry.needs.filter((name) => !env[name]);
 
 /** Every tool as capabilities show it, the server's one tool catalog: available here, or the variables it is missing
- *  (names only), and the harnesses that run it (another harness than pi runs only the host tools, host-tools.ts). A tool
+ *  (names only), and the harnesses that run it (one on an adapter runs only the host tools, host-tools.ts). A tool
  *  a user picks a provider for (tool-plane.ts) gives the providers offered, the server's (`provider`, the default where it
  *  sets none), the default, and what it resolves to on each harness under the server's `settings`: available where any
  *  is not unavailable, and missing PARALLEL_API_KEY where Parallel is picked without it. An unavailable tool says why
@@ -848,6 +884,11 @@ export const missingEnv = (entry: ToolEntry, env: NodeJS.ProcessEnv): string[] =
 export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string, refused: Readonly<Record<string, string>> = {}, runnerShell: ReadonlySet<string> = new Set()) => {
   const views = explainsView(env, settings);
   const picked = withDefaults(settings);
+  // The harnesses by the table `env` runs on (a module's among them): a host tool runs on each; any other tool on those
+  // that run on the general spec with pi's tools (no adapter facts: pi, and a module's harness without them), as the save
+  // check takes them (runnable.ts onAdapter).
+  const everyHarness = harnessIds(env);
+  const generalSpec = everyHarness.filter((id) => !onAdapter(env, id));
   const table = Object.entries(TOOLS).map(([name, entry]) => {
     const view = (PICKABLE as readonly string[]).includes(name) ? views[name as Pickable] : undefined;
     const plane = view?.resolves;
@@ -861,11 +902,11 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
     const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
-    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
+    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...everyHarness] : [...generalSpec], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
   // The host tools over a run's own tools (META_TOOLS): not in the table, never granted or named by a node (`meta`), listed
   // so the owner sees them and their setting (allow or deny; a deny is not offered at all).
-  const meta = [...META_TOOLS].map((name) => ({ name, summary: META_SUMMARY[name]!, blurb: blurbOf(name)!, nodes: false, calls: false, meta: true as const, available: true, harnesses: [...HARNESSES], ...serverGate(name, settings) }));
+  const meta = [...META_TOOLS].map((name) => ({ name, summary: META_SUMMARY[name]!, blurb: blurbOf(name)!, nodes: false, calls: false, meta: true as const, available: true, harnesses: [...everyHarness], ...serverGate(name, settings) }));
   return [...table, ...meta];
 };
 

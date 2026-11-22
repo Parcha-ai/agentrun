@@ -18,6 +18,8 @@ export type WaitEndedSettings = {
 export type WaitEnded = { at: string; why: string };
 
 const keyOf = (runId: string) => `browser_wait_ended:${runId}`;
+/** The settings key a run's ended browser wait is kept under (the run's delete with its agent's: agent-delete.ts). */
+export const waitEndedKey = keyOf;
 
 /** The run's process, as its wait ends with the browser let go: kept for the Screen tab. */
 export async function markWaitEnded(settings: WaitEndedSettings, runId: string, ended: WaitEnded, epoch?: number): Promise<void> {

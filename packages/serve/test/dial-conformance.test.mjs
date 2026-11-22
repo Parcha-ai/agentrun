@@ -6,20 +6,24 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { driftedVersion, patchVersion } from "../scripts/dial-conformance.mjs";
+import { conformanceCases, MACHINE_TOKEN_SOURCE, newMachineToken, readPng, runConformance } from "@parcha/agentrun-computer";
+import { fakeDevices, fakeFetch, testClock } from "../../computer/test/fake-device.mjs";
+import { driftedVersion, fixtureFor, frameLines, listenConformance, patchVersion, reachesThisRun, scrubMachineTokens } from "../scripts/dial-conformance.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/dial-conformance.mjs", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("./fixtures/dial-fake-provider.mjs", import.meta.url));
 const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
 /** The computer package's version: what its computerd says, as the build stamps it. */
 const VERSION = JSON.parse(readFileSync(new URL("../../computer/package.json", import.meta.url), "utf8")).version;
-const MINTED = /art_[0-9a-f]{64}/;
+const MINTED = new RegExp(MACHINE_TOKEN_SOURCE);
 /** Why the runs that serve the daemon skip, or false: the fixture's machines run the served build's `computerd version`. */
 const BUILT = !existsSync(DAEMON) ? "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" : process.arch !== "x64" && "the fixture's machines run the amd64 computerd, and this machine is not x86-64";
 /** What the fake's daemon answers: Core's provider and drift groups whole, and health but for the declaration and the
@@ -37,16 +41,21 @@ async function freePort() {
 
 /**
  * The script run with `args` and `env` (beside PATH alone), with --exit unless `exit` is false: its exit code and what it
- * wrote; `onLine` sees each stderr line and the child.
+ * wrote; `onLine` sees each stderr line whole, once its newline came (a pipe may split a line across chunks), and the
+ * child.
  */
 function run(args, env, onLine = () => {}, { exit = true } = {}) {
-  const child = spawn(process.execPath, [SCRIPT, ...args, ...(exit ? ["--exit"] : [])], { env: { PATH: process.env.PATH, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [SCRIPT, ...args, ...(exit ? ["--exit"] : [])], { env: { PATH: process.env.PATH, AGENTRUN_BIND_HOST: "127.0.0.1", ...env }, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
+  let partial = "";
   child.stdout.on("data", (chunk) => (stdout += chunk));
+  child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
-    for (const line of String(chunk).split("\n")) if (line) onLine(line, child);
+    const lines = (partial + chunk).split("\n");
+    partial = lines.pop();
+    for (const line of lines) if (line) onLine(line, child);
   });
   return new Promise((done) => child.once("exit", (code, signal) => done({ code, signal, stdout, stderr })));
 }
@@ -59,6 +68,22 @@ function reportOf(stdout) {
   assert.ok(begin >= 0 && end > begin, `the markers, in order: ${stdout.slice(0, 500)}`);
   return JSON.parse(lines.slice(begin + 1, end).join("\n"));
 }
+
+test("the conformance listener binds an explicitly local interface while preserving the unset public default", async () => {
+  const local = createHttpServer();
+  try {
+    await listenConformance(local, 0, "127.0.0.1");
+    assert.equal(local.address().address, "127.0.0.1", "the actual socket is not a wildcard listener");
+  } finally {
+    await new Promise((done) => local.close(done));
+  }
+  // Observe Node's listen boundary for the public default without publishing a test listener on the host.
+  const listener = new EventEmitter();
+  let supplied;
+  listener.listen = (options) => { supplied = options; listener.emit("listening"); };
+  await listenConformance(listener, 7340);
+  assert.deepEqual(supplied, { port: 7340 }, "unset host leaves Node's existing wildcard default intact");
+});
 
 test(
   "the script stands up serve's attach routes on $PORT and runs Core with --long over a dial host whose machines dial it: every case it runs passes, provider.deadline, drift.arch and drift.version among them, the report lands between the markers, and no token is written",
@@ -99,6 +124,58 @@ test("a run whose Core does not pass still prints its report between the markers
   assert.deepEqual(report.results.map(({ id, status }) => [id, status]), [["health.declared", "skip"]]);
   assert.equal(report.core, "fail");
   assert.equal(ran.code, 1, ran.stderr);
+});
+
+test("every machine token in what the script writes is redacted by its shape, one this run never minted too (a token a second mint replaced)", () => {
+  const minted = newMachineToken();
+  const replaced = newMachineToken();
+  const said = scrubMachineTokens(`fail provider.dial-token: dialed with ${minted}, then "${replaced}"\n`);
+  assert.equal(said, `fail provider.dial-token: dialed with art_[redacted], then "art_[redacted]"\n`);
+});
+
+test("a desktop run is given computerd-fixture (without it the screen and input cases skip and Core cannot pass); another kind gets none", () => {
+	assert.equal(fixtureFor("desktop", "/fixture"), "/fixture");
+	assert.equal(fixtureFor("linux", "/fixture"), undefined);
+});
+
+test("the screen case hands the run's onScreenshot its last whole shot once, a PNG that decodes, and frameLines prints it between its markers with its sha256; a desktop case that ends before its fixture's shot still hands its first", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "dial-conformance-frame-"));
+	try {
+		// The fake knows the fixture by where the case puts it, not by what it is.
+		const fixture = join(dir, "fixture.bin");
+		writeFileSync(fixture, Buffer.alloc(16, 7));
+		const screen = async (given) => {
+			const shots = [];
+			const report = await runConformance(fakeDevices({ kind: "desktop" }).provider, {
+				image: "fixture:image",
+				cases: conformanceCases.filter(({ id }) => id === "screen.screenshot-size"),
+				...(given ? { fixture: given } : {}),
+				fetch: fakeFetch,
+				clock: testClock,
+				patience: 1000,
+				onScreenshot: (png) => shots.push(png),
+			});
+			return { status: report.results.map(({ id, status }) => [id, status]), shots };
+		};
+		const early = await screen(undefined);
+		assert.notDeepEqual(early.status, [["screen.screenshot-size", "pass"]], "no fixture: the desktop case ends before the painted shot");
+		assert.equal(early.shots.length, 1, "its first whole shot, handed over all the same");
+		assert.deepEqual((({ width, height }) => [width, height])(readPng(Buffer.from(early.shots[0]))), [320, 240]);
+		const { status, shots } = await screen(fixture);
+		assert.deepEqual(status, [["screen.screenshot-size", "pass"]]);
+		assert.equal(shots.length, 1);
+		const png = Buffer.from(shots[0]);
+		const image = readPng(png);
+		assert.deepEqual([image.width, image.height], [320, 240], "the fake desktop's whole screen");
+		const lines = frameLines(shots[0], 8);
+		const sha256 = createHash("sha256").update(png).digest("hex");
+		assert.equal(lines[0], `DIAL-CONFORMANCE-FRAME-BEGIN ${sha256} ${png.length}`);
+		assert.equal(lines.at(-1), "DIAL-CONFORMANCE-FRAME-END");
+		assert.ok(lines.slice(1, -1).every((line) => line.length <= 8));
+		assert.deepEqual(Buffer.from(lines.slice(1, -1).join(""), "base64"), png);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("the drift case's patch writes the version string over where it occurs exactly once, the same length and printable, and refuses anything else", () => {
@@ -177,6 +254,93 @@ test("a request target no URL parses (//[/) is refused, a socket's and a plain r
   assert.deepEqual(await refused, ["HTTP/1.1 404 Not Found", "HTTP/1.1 404 Not Found"]);
   assert.deepEqual(reportOf(ran.stdout).results.map(({ id }) => id), ["health.declared"]);
   assert.equal(ran.code, 1, ran.stderr);
+});
+
+test("nothing runs until AGENTRUN_PUBLIC_URL reaches the script: an address still answered by another process (a host's previous instance) is waited out", { skip: BUILT, timeout: 120_000 }, async () => {
+  const port = await freePort();
+  // The public address, as a host that picks an instance per connection moves it over: its first four connections stay
+  // with the previous instance, which answers every request on them with its own /v2/health (no run id) and keeps them
+  // open, so an ask that kept one alive would never reach the script; every later connection goes to the script as is
+  // (the machine's daemon fetch with its token, and its attach socket).
+  let asked = 0;
+  const front = createServer((socket) => {
+    socket.on("error", () => undefined);
+    if (++asked <= 4) {
+      let said = "";
+      return void socket.on("data", (chunk) => {
+        said += chunk;
+        for (; said.includes("\r\n\r\n"); said = said.slice(said.indexOf("\r\n\r\n") + 4)) socket.write('HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 15\r\nconnection: keep-alive\r\n\r\n{"status":"ok"}');
+      });
+    }
+    const behind = connect(port, "127.0.0.1");
+    behind.on("error", () => socket.destroy());
+    socket.pipe(behind).pipe(socket);
+  });
+  await new Promise((done) => front.listen(0, "127.0.0.1", done));
+  try {
+    const ran = await run(["--provider", FIXTURE, "--only", "health.declared"], { PORT: String(port), AGENTRUN_PUBLIC_URL: `http://127.0.0.1:${front.address().port}/` });
+    const lines = ran.stderr.split("\n");
+    const at = (start) => lines.findIndex((line) => line.startsWith(`dial-conformance: ${start}`));
+    const health = `http://127.0.0.1:${front.address().port}/v2/health`;
+    assert.ok(at(`${health} reaches another process`) >= 0, ran.stderr);
+    assert.ok(at(`${health} reaches this process (3 answers in a row, after`) > at(`${health} reaches another process`), ran.stderr);
+    assert.match(ran.stderr, /and 4 answers from another\)/);
+    assert.ok(at("skip health.declared") > at(`${health} reaches this process`), "the run's first case comes after");
+    assert.deepEqual(reportOf(ran.stdout).results.map(({ id }) => id), ["health.declared"]);
+  } finally {
+    await new Promise((done) => front.close(done));
+  }
+});
+
+test("reachesThisRun: three of this run's answers in a row, a miss or a failed ask starting the count again; past its time it refuses in words; its signal stops an ask in flight and the wait between asks", async () => {
+  const answers = (said) => {
+    const asked = [];
+    const ask = async (url) => {
+      asked.push(url);
+      const one = said[asked.length - 1] ?? "old";
+      if (one === "down") throw new Error("connect ECONNREFUSED");
+      return { status: 200, run: one === "mine" ? "run-1" : undefined };
+    };
+    return { asked, ask };
+  };
+  const ok = answers(["old", "mine", "mine", "down", "mine", "old", "mine", "mine", "mine"]);
+  await reachesThisRun("https://dial.example.test/", "run-1", undefined, { every: 1, ask: ok.ask });
+  assert.deepEqual([ok.asked.length, new Set(ok.asked)], [9, new Set(["https://dial.example.test/v2/health"])]);
+  const never = answers([]);
+  await assert.rejects(reachesThisRun("https://dial.example.test", "run-1", undefined, { within: 50, every: 5, ask: never.ask }), {
+    message: /^https:\/\/dial\.example\.test\/v2\/health did not reach this process within 0 s \(last: 200 from another process\): the machines would dial another, so nothing was created$/,
+  });
+  // Stopped while it waits a minute between asks, and while an ask that never answers is in flight: at once, either way.
+  const stalled = (url, signal) => new Promise((_, fail) => signal.addEventListener("abort", () => fail(signal.reason), { once: true }));
+  for (const ask of [never.ask, stalled]) {
+    const stop = new AbortController();
+    const begun = Date.now();
+    setTimeout(() => stop.abort(new Error("stopped")), 50);
+    await assert.rejects(reachesThisRun("https://dial.example.test", "run-1", stop.signal, { every: 60_000, ask }), { message: /stopped|aborted/ });
+    assert.ok(Date.now() - begun < 5_000, `stopped after ${Date.now() - begun} ms`);
+  }
+});
+
+test("reachesThisRun's ask opens a connection for each ask, even to a server that keeps them alive", async () => {
+  let connections = 0;
+  const server = createHttpServer((req, res) => res.writeHead(200, { "x-dial-conformance-run": "run-1", "content-length": "2", connection: "keep-alive" }).end("{}"));
+  server.keepAliveTimeout = 60_000;
+  server.on("connection", () => connections++);
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    await reachesThisRun(`HTTP://127.0.0.1:${server.address().port}`, "run-1", undefined, { every: 1 });
+    assert.equal(connections, 3);
+    // A scheme in capitals is the URL's own: HTTPS:// goes to the TLS client, whose handshake this plain server fails,
+    // rather than to the plain one, which would refuse the protocol.
+    await assert.rejects(reachesThisRun(`HTTPS://127.0.0.1:${server.address().port}`, "run-1", undefined, { within: 200, every: 50 }), (error) => {
+      assert.match(error.message, /did not reach this process within 0 s \(last: /);
+      assert.doesNotMatch(error.message, /not supported/);
+      return true;
+    });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((done) => server.close(done));
+  }
 });
 
 test("the script refuses in words, and exits 1, without --provider, AGENTRUN_PUBLIC_URL or PORT, or with an --only that names nothing in the suite", async () => {

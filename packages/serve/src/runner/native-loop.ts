@@ -9,12 +9,11 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BACKGROUND_CONTEXT, withAbortSignal } from '@earendil-works/chord/context';
 import { ROOT_CONVERSATION_ID, type StorageWrite } from '@earendil-works/pi-durable';
-import { learningFolderOf, readerOf, seedFrom, secretsShown, chooseSkills } from '../learning.js';
+import { learningFolderOf } from '../learning.js';
 import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED } from '../native/binding.js';
 import { launchNative } from '../native/connection.js';
 import { openNativeSession } from '../native/runtime.js';
 import { discoverNative } from '../native/discovery.js';
-import { nativeSkillContext } from '../native/context.js';
 import { snapshotNativeInstructions, withSavedNativeInstructions } from '../native/instructions.js';
 import type { NativeBinding, NativeEvent, NativeResult, NativeSession, NativeUsage } from '../native/types.js';
 import {isNativeRuntime,NATIVE_RUNTIME_FACTS} from '../native/runtimes.js';
@@ -24,7 +23,6 @@ import { outputContract, outputMiss, outputRetryWords } from '../answer-json.js'
 import { cutStrings, redactedOutput } from '../key-refusal.js';
 import type { Store, RunPatch } from '../store/store.js';
 import { learningEndOfRun } from './learning-end.js';
-import { learningLoopFactory } from './learning-factory.js';
 import { pathMetrics } from './workflow-first.js';
 import { reflectRequestId } from './end-of-run.js';
 import { journalEntries } from './journal-reader.js';
@@ -59,27 +57,6 @@ async function lockProject(data:string,target:NativeBinding,runId:string):Promis
  return async()=>{pendingProjects.delete(key);await rm(path,{recursive:true,force:true});};
 }
 
-async function contextFor(data:string,agentId:string,runId:string,launch:RunLaunch,refuse:readonly string[],nativeSkills:readonly string[]):Promise<{text?:string;skills:string[];remoteSkills?:readonly {name:string;files?:Record<string,string>}[];left?:readonly string[]}>{
- if(!launch.learning)return {skills:[]};
- const folder=learningFolderOf(data,agentId);
- try{
- const seed=await seedFrom(launch.learning.seed,readerOf(folder.workspace));
- // Use the same budgets/checks as the managed seed. Reads only; no files in the source project are laid or replaced.
- const selected=await chooseSkills(folder.workspace,{...seed,skills:seed.skills?.filter(skill=>!nativeSkills.includes(skill.name))},[],secretsShown(refuse,{local:true}));
- if(launch.native?.remote){
-  const taken:typeof selected.taken=[],left:string[]=[];
-  for(const skill of selected.taken){
-   if(Object.keys(skill.files??{}).length>128){left.push(`${skill.name} (more than 128 remote skill files)`);continue;}
-   if(taken.length>=64){left.push(`${skill.name} (64 remote skills already selected)`);continue;}
-   taken.push(skill);
-  }
-  return {text:launch.learning.section,skills:taken.map(skill=>skill.name),remoteSkills:taken,left};
- }
- const skills=selected.taken.map(s=>s.name);
- const offered=await nativeSkillContext(join(data,'native-context',runId,'skills'),selected.taken);
- return {text:[launch.learning.section,offered].filter(Boolean).join('\n\n'),skills};
- }finally{await folder.end();}
-}
 
 export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFactory{
  return deps=>{
@@ -187,9 +164,9 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
     // Preparation can withdraw learning after this launch was queued. The final
     // saved-policy snapshot can also newly exceed the evidence limit. Keep task
     // context/use intact, but refuse the reflection before it reaches the source.
-    if(launch.learning&&!launch.learning.use&&(instructions.incomplete||instructions.truncated||!target.capabilities.notes&&!target.capabilities.skills)){
+    if(launch.learning&&!launch.learning.use&&(instructions.incomplete||instructions.truncated||!target.capabilities.learning)){
      automaticLearningUnavailable=true;
-     const why=instructions.incomplete||(instructions.truncated?'the combined source and saved policy exceeds the grading evidence limit.':'the prepared source does not support notes or skills.');
+     const why=instructions.incomplete||(instructions.truncated?'the combined source and saved policy exceeds the grading evidence limit.':'the prepared source does not support learning.');
      const detail=redact(`Self-improvement skipped: ${why} A new run must capture complete policy evidence before automatic learning.`);
      // An unasked drop settles both learning views atomically with the task end;
      // it queues no learning run and keeps an unavailable run from staying seeded.
@@ -198,15 +175,16 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
     }
     // A reclaimed claim before the durable dispatch marker can safely replace only its own additive files.
     await rm(join(host.data,'native-context',claim.runId),{recursive:true,force:true});
-    const learned=await contextFor(host.data,agentId,claim.runId,launch,refuse,target.skills);
-    if(learned.left?.length)await append(HOST_PHASE,{summary:redact(`Learned skills left out of this remote run: ${learned.left.join('; ')}.`)});
+    // What the agent learned reaches a native run as its # Learned section alone (its corrections): read only, nothing
+    // in the source project is laid or replaced.
+    const learned={text:launch.learning?.section};
     await append(`${MARK}.configuration`,{...target,learning_revision:launch.learning?.seed??null});
-    if(launch.learning)await append(KINDS.learningLaid,{skills:learned.skills,workflows:[]});
+    if(launch.learning)await append(KINDS.learningLaid,{workflows:[]});
     const content=inputMessage(launch.input);
     await append(KINDS.message,{role:'person',text:content,at:Date.now(),...(launch.inputOrigin?{origin:launch.inputOrigin}:{})});
     await append(`${MARK}.sending`,{phase:'task'});await deps.flush();
     const context=[savedInstructions,learned.text,outputContract(outputSchema)].filter(Boolean).join('\n\n');
-    session=broker?await openRemoteSession(broker,target,{context:context||undefined,skills:learned.remoteSkills,runId:claim.runId,signal,onEvent}):await openNativeSession({target,context:context||undefined,signal,onEvent,env:nativeEnvironment()});
+    session=broker?await openRemoteSession(broker,target,{context:context||undefined,runId:claim.runId,signal,onEvent}):await openNativeSession({target,context:context||undefined,signal,onEvent,env:nativeEnvironment()});
     const task=async(prompt:string)=>{
      const result=await send(prompt,'task');
      await append(KINDS.message,{role:'model',text:redact(result.answer),at:Date.now()});
@@ -269,42 +247,3 @@ function nativeMetrics(launch:RunLaunch,entries:readonly {kind:string;data?:unkn
  return {...counted,...pathMetrics(launch,{path:'agent',workflow:null},entries as never),input:usage.some(u=>nativeInput(u,runtime)===null)?null:count('input_tokens','input'),output:count('output_tokens','output'),cacheRead:count('cache_read_tokens','cacheRead'),cacheWrite:count('cache_write_tokens','cacheWrite'),requests:null,unmetered:null,models:{},native_model_requests:null,native_turns:turns};
 }
 
-/** The ordinary checked/graded/atomic learning lane, using a distinct native signed-in session for its policy model.
- * A separate empty directory prevents the source project's answer-format instructions from becoming grader policy. */
-export function nativeLearningLoop(host:AdapterSpecDeps,target:NativeBinding):LoopFactory{
- return learningLoopFactory({store:host.store,data:host.data,sourceInstructions:runId=>nativeSourceInstructions(host.store,runId),ask:async(request,signal)=>{
-  if(target.remote){
-   const result=remoteResult(await new RemoteConnectors(host.store).request(target,'grade',{prompt:request.prompt,timeout_ms:180_000},{signal,timeoutMs:185_000}));
-   const u=result.usage;return {text:result.answer,usd:u.cost_usd,tokens:u.input_tokens===null||u.output_tokens===null||u.cache_read_tokens===null||u.cache_write_tokens===null?null:{input:nativeInput(u,target.runtime)!,output:u.output_tokens,cache_read:u.cache_read_tokens,cache_write:u.cache_write_tokens}};
-  }
-  const dir=join(host.data,'native-grader');await mkdir(dir,{recursive:true});await promisify(execFile)('git',['init','--quiet',dir],{timeout:10_000});
-  const graderTarget=(await discoverNative({project:dir,runtime:target.runtime,env:nativeEnvironment()})).targets.find(value=>value.selector.kind==='project');
-  if(!graderTarget)throw new Error('The native grading runtime is unavailable.');
-  const grader=await openNativeSession({target:graderTarget,signal,env:nativeEnvironment()});
-  try{const result=await grader.send(request.prompt,{signal,reflection:true,timeoutMs:180_000});
-   const u=result.usage;return {text:result.answer,usd:u.cost_usd,tokens:u.input_tokens===null||u.output_tokens===null||u.cache_read_tokens===null||u.cache_write_tokens===null?null:{input:nativeInput(u,target.runtime)!,output:u.output_tokens,cache_read:u.cache_read_tokens,cache_write:u.cache_write_tokens}};
-  }finally{await grader.close();}
- }});
-}
-
-/** Reuse the last policy snapshot before durable task dispatch, never an abandoned attempt or mutable source files. */
-export async function nativeSourceInstructions(store:Store,runId:string):Promise<string>{
- const entries=await journalEntries(store.readJournal(runId),BACKGROUND_CONTEXT);
- const sent=entries.findIndex(entry=>entry.kind===`${MARK}.sending`&&(entry.data as {phase?:unknown})?.phase==='task');
- // A reclaimed pre-dispatch attempt can leave a snapshot behind. Only the last snapshot before the durable task
- // dispatch belongs to the native session whose work is being graded; later unbound evidence cannot replace it.
- const row=sent<0?undefined:entries.slice(0,sent).findLast(entry=>entry.kind===`${MARK}.instructions`);
- const configuration=sent<0?undefined:entries.slice(0,sent).findLast(entry=>entry.kind===`${MARK}.configuration`);
- const runtime=(configuration?.data as {runtime?:unknown})?.runtime;
- const protocol=isNativeRuntime(runtime)?NATIVE_RUNTIME_FACTS[runtime].protocol:undefined;
- if(!row)throw new Error('Native learning lacks its immutable source instruction snapshot; no proposal was promoted.');
- if(!protocol)throw new Error('Native standing instruction evidence is incomplete: the dispatched native runtime was not recorded. No proposal was promoted; a new source run must capture complete policy evidence before automatic learning.');
- if(protocol==='codex-json'&&(row?.data as {codexConfigurationChecked?:unknown})?.codexConfigurationChecked!==true)throw new Error('Native standing instruction evidence is incomplete: this older Codex snapshot did not inspect custom policy configuration. No proposal was promoted; a new source run must capture complete policy evidence before automatic learning.');
- if(protocol==='claude-json'&&(row?.data as {claudeConfigurationChecked?:unknown})?.claudeConfigurationChecked!==true)throw new Error('Native standing instruction evidence is incomplete: this older Claude snapshot did not preserve source settings precedence. No proposal was promoted; a new source run must capture complete policy evidence before automatic learning.');
- if(protocol==='claude-json'&&(row?.data as {claudePolicySourcesChecked?:unknown})?.claudePolicySourcesChecked!==true)throw new Error('Native standing instruction evidence is incomplete: this older Claude snapshot did not check imported or additional policy files. No proposal was promoted; a new source run must capture complete policy evidence before automatic learning.');
- if((row?.data as {incomplete?:string})?.incomplete)throw new Error(`Native standing instruction evidence is incomplete: ${(row!.data as {incomplete:string}).incomplete} No proposal was promoted; automatic learning requires a complete source policy snapshot.`);
- if((row?.data as {truncated?:boolean})?.truncated)throw new Error('Native standing instructions exceed the grading evidence limit; no proposal was promoted. Reduce or explicitly configure the grading context before enabling automatic learning.');
- const text=(row?.data as {text?:unknown})?.text;
- if(typeof text!=='string')throw new Error('Native learning lacks its immutable source instruction snapshot; no proposal was promoted.');
- return text;
-}

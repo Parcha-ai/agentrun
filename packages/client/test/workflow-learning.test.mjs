@@ -8,7 +8,7 @@ test('workflow-enabled SDK registration sends explicit backend capabilities and 
   const workflows={catalog:tools,adapters:[],bind(session){bound++;return {context:'Use the approved workflow bridge.',close(){closed++;}};}};
   const fetch=async(url,options)=>{const path=new URL(url).pathname; const body=options.body?JSON.parse(options.body):null; requests.push({path,body});
     if(path.endsWith('/agents/backend'))return Response.json({definition:{sdk:{runtime:'codex-sdk'}}});
-    if(path.endsWith('/sdk-runs'))return Response.json({run_id:'run',agent_id:'backend',token:'fixture-scoped',console_url:'https://server.example/#/runs/run',learning:{enabled:true,revision:'r1',context:'',skills:[],workflows:[]}});
+    if(path.endsWith('/sdk-runs'))return Response.json({run_id:'run',agent_id:'backend',token:'fixture-scoped',console_url:'https://server.example/#/runs/run',learning:{enabled:true,revision:'r1',context:'',workflows:[]}});
     if(path.endsWith('/sdk-runs/run'))return Response.json({run_id:'run',state:'completed',learning:{state:'dropped'}});
     return Response.json({accepted:true});};
   const native={startThread(){return {id:null,async run(value){input=value;return {finalResponse:'done',items:[]};},async runStreamed(){throw Error('unused');}};}};
@@ -51,7 +51,7 @@ function newSession(bridge,doc=workflow,id='run-1') {
   const events=[],outcomes=[];
   const scoped={sdkRuns:{async events(_,body){events.push(...body.events);},async complete(_,body){outcomes.push(body);},
     async get(){return {run_id:id,state:'completed',learning:{state:'dropped'}};}}};
-  const session=new BackendLearningSession(scoped,{runId:id,consoleUrl:'https://server.example',learningEnabled:true,revision:'r1',context:'',skills:[],workflows:[accepted(doc)]},
+  const session=new BackendLearningSession(scoped,{runId:id,consoleUrl:'https://server.example',learningEnabled:true,revision:'r1',context:'',workflows:[accepted(doc)]},
     {workflows:bridge,pollIntervalMs:1});
   return {session,events,outcomes,capability:capability(session.workflowContext)};
 }
@@ -340,7 +340,7 @@ test('Codex revokes workflow capability on native return before blocked buffered
   const {bridge,run}=await setup(t);let prompt,release;const blocked=new Promise(r=>release=r);let blockedOnce=false;
   const fetch=async(url,options)=>{const path=new URL(url).pathname;
     if(path.endsWith('/agents/backend'))return Response.json({definition:{sdk:{runtime:'codex-sdk'}}});
-    if(path.endsWith('/sdk-runs'))return Response.json({run_id:'run',agent_id:'backend',token:'fixture-scoped',console_url:'https://server.example',learning:{enabled:true,revision:'r1',context:'',skills:[],workflows:[accepted(workflow)]}});
+    if(path.endsWith('/sdk-runs'))return Response.json({run_id:'run',agent_id:'backend',token:'fixture-scoped',console_url:'https://server.example',learning:{enabled:true,revision:'r1',context:'',workflows:[accepted(workflow)]}});
     if(path.endsWith('/events')&&!blockedOnce){blockedOnce=true;await blocked;}
     if(path.endsWith('/sdk-runs/run'))return Response.json({run_id:'run',state:'completed',learning:{state:'dropped'}});
     return Response.json({accepted:true});};
@@ -357,7 +357,7 @@ test('Claude preserves native options and event identity while binding then revo
   const terminal={type:'result',subtype:'success',result:'done',usage:{input_tokens:1,output_tokens:1}};
   const fetch=async(url)=>{const path=new URL(url).pathname;
     if(path.endsWith('/agents/backend'))return Response.json({definition:{sdk:{runtime:'claude-agent-sdk'}}});
-    if(path.endsWith('/sdk-runs'))return Response.json({run_id:'run',agent_id:'backend',token:'fixture-scoped',console_url:'https://server.example',learning:{enabled:true,revision:'r1',context:'',skills:[],workflows:[accepted(workflow)]}});
+    if(path.endsWith('/sdk-runs'))return Response.json({run_id:'run',agent_id:'backend',token:'fixture-scoped',console_url:'https://server.example',learning:{enabled:true,revision:'r1',context:'',workflows:[accepted(workflow)]}});
     if(path.endsWith('/sdk-runs/run'))return Response.json({run_id:'run',state:'completed',learning:{state:'dropped'}});
     return Response.json({accepted:true});};
   const native=params=>{prompt=params.prompt;assert.equal(params.options,options);return (async function*(){yield terminal;})();};
@@ -391,7 +391,7 @@ test('a closed bridge completes the server receipt without dispatching any nativ
   const {bridge}=await setup(t);await bridge.close();const requests=[];let nativeCalled=false;
   const fetch=async(url,options)=>{const path=new URL(url).pathname;const body=options.body?JSON.parse(options.body):undefined;requests.push({path,body});
     if(path.endsWith('/agents/backend'))return Response.json({definition:{sdk:{runtime:'codex-sdk'}}});
-    if(path.endsWith('/sdk-runs'))return Response.json({run_id:'run',agent_id:'backend',token:'fixture-scoped',console_url:'https://server.example',learning:{enabled:true,revision:'r1',context:'',skills:[],workflows:[]}});
+    if(path.endsWith('/sdk-runs'))return Response.json({run_id:'run',agent_id:'backend',token:'fixture-scoped',console_url:'https://server.example',learning:{enabled:true,revision:'r1',context:'',workflows:[]}});
     return Response.json({accepted:true});};
   const native={startThread(){return {id:null,async run(){nativeCalled=true;},async runStreamed(){throw Error('unused');}};}};
   const wrapped=withCodexAgentLearning(native,{agentId:'backend',instructions:'Original policy',baseUrl:'https://server.example/v2',apiKey:'fixture',workflows:bridge,fetch});
@@ -416,4 +416,39 @@ test('MCP read-only annotation requires explicit read-only callbacks and no mode
     assert.equal((await client.listTools()).tools[0].annotations.readOnlyHint,expected,name);
     assert.ok(bridge.catalog.every(tool=>!Object.hasOwn(tool,'readOnly')),'readOnly remains local callback metadata');
   }
+});
+
+// SDK admission now withholds drafts; only a champion compared against a native answer enters this binding.
+test('the binding describes the server-promoted snapshot without claiming owner approval', async t => {
+  const { bridge } = await setup(t);
+  const binding = bridge.bind({ runId: 'context-words', workflows: [accepted(workflow)], protect() {}, async event() {}, markEvidenceIncomplete() {} });
+  assert.match(binding.context, /^Compiled workflows for this task \(passed the agent-answer check\):\n/);
+  assert.doesNotMatch(binding.context, /approved/i);
+  binding.close();
+});
+
+// Durable hosts can keep evidence in their own native result instead of constructing an SDK wrapper session.
+test('a structural durable host binding calls MCP with pinned arguments and expires on close', async t => {
+  const { bridge, client, calls } = await setup(t);
+  const events = [], protectedValues = [];
+  const binding = bridge.bind({ runId: 'durable-turn', workflows: [accepted(workflow)],
+    protect(values) { protectedValues.push(...values); },
+    async event(event) { events.push(event); },
+    markEvidenceIncomplete() { throw new Error('Unexpected incomplete evidence'); },
+  });
+  assert.throws(() => binding.mcpArguments('not-pinned', {}), /pinned workflow/);
+  const input = { service: 'new-service' };
+  const args = binding.mcpArguments('release', input);
+  input.service = 'changed-after-binding';
+  const result = await client.callTool({ name: 'learned_workflow', arguments: args });
+  assert.equal(result.content[0].text, 'new-service current-2');
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call.ctx.runId === 'durable-turn'));
+  assert.ok(events.some(event => event.type === 'tool' && event.status === 'completed'));
+  assert.ok(protectedValues.includes(args.capability));
+  binding.close();
+  assert.throws(() => binding.mcpArguments('release', {}), /closed/);
+  const replay = await client.callTool({ name: 'learned_workflow', arguments: args });
+  assert.equal(replay.isError, true);
+  assert.equal(calls.length, 2);
 });

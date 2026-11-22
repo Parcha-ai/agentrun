@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { McpToolPicker } from "./McpToolPicker";
 import { type Agent, toolOffers } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { McpServer } from "@/lib/mcp";
 
 // The agent editor's Tools & skills grid: every collapsed card is one fixed height, the same component for every source
@@ -31,7 +32,7 @@ const RAW = [
   // An MCP server's tool: a long id with no spaces and no blurb, which tools from the same server share a prefix of.
   { name: MCP_NAME, available: true, summary: "List a repository's collaborators and their permissions.", harnesses: ["pi"] },
 ];
-const agent: Agent = { agent_id: "a1", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "A", instructions: "x", harness: "pi", skills: [], tools: [] } };
+const agent: Agent = { ...SERVED_AGENT, agent_id: "a1", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "A", instructions: "x", harness: "pi", skills: [], tools: [] } };
 
 async function open() {
   const host = document.body.appendChild(document.createElement("div"));
@@ -155,7 +156,7 @@ describe("the tool cards' hover titles", () => {
     root = createRoot(host);
     const LONG = "Save comment: Create or update a comment on a Linear issue, project, initiative, document or milestone. If id is provided, updates the existing comment; otherwise creates a new one.";
     const server = { name: "linear", url: "https://mcp.linear.example/mcp", auth: { type: "none" }, credential: null, tools: [{ name: "get_team", description: "Get a team by id." }, { name: "save_comment", description: LONG }] } as McpServer;
-    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", onChange: () => {} })));
+    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", filter: "", onChange: () => {} })));
     const line = (tool: string) => host.querySelector(`[data-tool-card="mcp:linear/${tool}"] [data-line]`)!;
     expect(line("get_team").hasAttribute("title")).toBe(false);
     expect(line("save_comment").getAttribute("title")).toBe(LONG);
@@ -181,7 +182,7 @@ describe("the tool cards' measured lines", () => {
       tools: [{ name: "find", description: "Find a contact.", input_schema: { anyOf: [{ type: "object" }] }, grant_problems: { "claude-agent": REFUSED } }] } as McpServer;
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "claude-agent", harnesses: ["pi", "claude-agent"], onChange: () => {} })));
+    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "claude-agent", filter: "", harnesses: ["pi", "claude-agent"], onChange: () => {} })));
     await settle();
     const card = host.querySelector<HTMLElement>('[data-tool-card="mcp:crm/find"]')!;
     const alert = card.querySelector('[role="alert"]')!;
@@ -208,7 +209,7 @@ describe("an MCP server's tool cards", () => {
   function picker() {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", onChange: () => {} })));
+    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", filter: "", onChange: () => {} })));
     const card = (tool: string) => host.querySelector<HTMLElement>(`[data-tool-card="mcp:linear/${tool}"]`)!;
     const line = (tool: string) => card(tool).querySelector<HTMLElement>("[data-line]");
     return { host, card, line };

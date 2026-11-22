@@ -1,0 +1,68 @@
+{
+  "name": "@parcha/agentrun-harness-acp",
+  "version": "0.1.0-beta.52",
+  "description": "Any Agent Client Protocol agent as an AgentRun harness: the agent over stdio in a private HOME, the host's tools as one loopback MCP server, its permission asks through the host's gate, durable in AgentRun's own store.",
+  "keywords": [
+    "agentrun",
+    "agent",
+    "harness",
+    "acp",
+    "durable"
+  ],
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=24.22.3"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./facts": {
+      "types": "./dist/facts.d.ts",
+      "default": "./dist/facts.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "recipes",
+    "testing",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.7.0",
+    "@parcha/agentrun-kernel": "0.1.0-beta.52",
+    "zod": "4.6.6"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/run-adapters-acp"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai"
+}

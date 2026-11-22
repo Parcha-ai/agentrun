@@ -7,7 +7,8 @@
 // the rows) by the run's handed sign-ins.
 import type { Context } from "@earendil-works/chord/context";
 import { type ImportedFrom, type RunLabels, type RunRow, type Store, stoppedByPerson } from "../store/store.js";
-import { spentOverStore } from "./cap.js";
+import { spendOverStore } from "./cap.js";
+import { type CostBasis, storedBasisOf } from "../runner/metrics.js";
 
 /** A revision's kind, as the row names it. */
 export type RevisionKind = "agentic" | "workflow";
@@ -30,6 +31,9 @@ export interface RunRowView {
   /** An ended run's stored cost when that is the most it can have cost, not its cost (RunRow.costAtMostUsd): said "at
    *  most", never summed as spend. Absent otherwise. */
   readonly costAtMostUsd?: number;
+  /** How its cost was reached (metrics.ts CostBasis): a run still going, by its booking so far; an ended one, as its end
+   *  stored it (storedBasisOf). */
+  readonly costBasis: CostBasis;
   readonly summary?: string;
   readonly archivedAt?: string;
   readonly importedFrom?: ImportedFrom;
@@ -57,9 +61,19 @@ function stateOf(run: RunRow, kind: RevisionKind): RunReadState {
   }
 }
 
+/** An ended run's cost as every reader shows it (its read, the list, its usage row, the stats, analytics and usage report):
+ *  its stored cost, else the catalog's estimate an import kept beside it (import.ts `metrics.costUsdEst`, basis catalog)
+ *  for a session its source did not price. The stored column stays unknown, since no one recorded that amount; the
+ *  estimate reads as the server's own figures do, an estimate. A recorded cost always wins; with neither, null. */
+export function costOfRun(run: Pick<RunRow, "costUsd" | "metrics">): number | null {
+  if (run.costUsd !== null) return run.costUsd;
+  const est = (run.metrics as { costUsdEst?: unknown } | null)?.costUsdEst;
+  return typeof est === "number" && Number.isFinite(est) && est >= 0 ? est : null;
+}
+
 /** A run row as the server serves it, with its agent's archive time (for the coalesce), its revision's kind, and its cost
- *  (the booked-so-far spend for a run not ended, else its stored cost). */
-function viewOf(run: RunRow, agentArchivedAt: number | null, kind: RevisionKind, cost: number | null): RunRowView {
+ *  (the booked-so-far spend for a run not ended, else costOfRun). */
+function viewOf(run: RunRow, agentArchivedAt: number | null, kind: RevisionKind, cost: number | null, basis: CostBasis | undefined): RunRowView {
   const archivedAt = run.archivedAt ?? agentArchivedAt;
   const state = stateOf(run, kind);
   // A run that reads running has no end to show: a person's stop keeps its time and words in the store, for its reopen
@@ -75,6 +89,7 @@ function viewOf(run: RunRow, agentArchivedAt: number | null, kind: RevisionKind,
     ...(over && run.endedAt !== null ? { endedAt: isoOf(run.endedAt) } : {}),
     ...(cost !== null ? { costUsd: cost } : {}),
     ...(over && run.costAtMostUsd !== null ? { costAtMostUsd: run.costAtMostUsd } : {}),
+    costBasis: basis ?? storedBasisOf(over ? run.metrics : undefined, cost ?? run.costAtMostUsd),
     ...(over && run.summary !== null ? { summary: run.summary } : {}),
     ...(archivedAt !== null ? { archivedAt: isoOf(archivedAt) } : {}),
     ...(run.importedFrom !== null ? { importedFrom: { source: run.importedFrom.source, session: run.importedFrom.session } } : {}),
@@ -90,9 +105,10 @@ function joins(store: Store, context: Context) {
       if (!agentArchived.has(run.agentId)) agentArchived.set(run.agentId, (await store.agents.get(run.agentId))?.archivedAt ?? null);
       if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, ((await store.agents.revision(run.revisionId))?.kind as RevisionKind) ?? "agentic");
       // A run that has not ended shows what it has spent so far over the journal (spentOverStore: never the hold of a step
-      // still running), since cost_usd is written only at the end; an ended run shows its stored cost.
-      const cost = runReadState(run, kinds.get(run.revisionId)!) === "running" ? await spentOverStore(store, run.id, context) : run.costUsd;
-      return viewOf(run, agentArchived.get(run.agentId)!, kinds.get(run.revisionId)!, cost);
+      // still running), since cost_usd is written only at the end; an ended run shows its stored cost (costOfRun), its
+      // basis as its end stored it (an imported run's catalog estimate reads as an estimate: storedBasisOf).
+      const spend = runReadState(run, kinds.get(run.revisionId)!) === "running" ? await spendOverStore(store, run.id, context) : { usd: costOfRun(run), basis: undefined };
+      return viewOf(run, agentArchived.get(run.agentId)!, kinds.get(run.revisionId)!, spend.usd, spend.basis);
     },
   };
 }
@@ -100,7 +116,9 @@ function joins(store: Store, context: Context) {
 /** The runs, newest first; `agent`, `revision` and `labels` (every one held) narrow it. Archived runs are listed too (the
  *  server filters them), with the archive time coalesced onto each row, and a not-ended run's cost its booked-so-far spend. */
 export async function listRuns(store: Store, filter: { agent?: string; revision?: string; labels?: RunLabels }, context: Context): Promise<RunRowView[]> {
+  // Purged runs too: /usage sums their cost from their tombstones, as before their purge.
   const runs = await store.runs.list({
+    purged: true,
     ...(filter.agent !== undefined ? { agentId: filter.agent } : {}),
     ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}),
     ...(filter.labels !== undefined ? { labels: filter.labels } : {}),

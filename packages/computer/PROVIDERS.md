@@ -416,9 +416,47 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   a tunnel (cloudflared, tailscale funnel) works. Run one server process: a machine's socket lands on the process it
   dialed. Without the address, or from a process with no attach hub, create is refused in words before your API is
   called. The daemon your machines fetch is `hostedDaemonPath(arch)`, the file whose SHA-256 they check.
+- **Machines that reach listed addresses alone** dial through a relay the operator runs on that list: give it as
+  `attachEgress` (`<IPv4 relay>:<port>`; Daytona's key `DAYTONA_ATTACH_EGRESS`). Create adds `AGENTRUN_ATTACH_EGRESS`
+  to the boot env, and the daemon fetch and the attach socket open TCP to the relay and speak TLS and HTTP to the public
+  host through it, unchanged.
 - **The token sits in the machine's env**, scoped to that machine (its kind, os and arch) until delete or its
   `backstopAt`, whichever comes first. A machine that never dials within `createMs` is deleted.
-- **No Archil mount yet.** A spec with one is refused in words, and kind `desktop` is refused at construction.
+- **No Archil mount.** A spec with one is refused in words (`mountsOf` drops it on dial).
+- **A desktop over dial** works as on exec: create adds `DISPLAY` (`:0`) to the boot env, `agentrun-dial` gives it
+  to init, and once the machine dials, its X server starts through computerd's `process.start` over that socket, as
+  the tool user. Where the host's facts say `windowManager`, computerd starts xfwm4 itself (init `--window-manager`;
+  see `daemon/internal/windowmanager`); hello's `windowManager` says how it went, and create waits on it. A machine
+  minted a desktop may say `linux` (same os and arch) until its display answers; a `connect` while it says `linux`
+  fails as drift, as on exec. Every dial provider takes one, from the box image, whose
+  `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad and firefox-esr. A desktop gets the
+  sandbox's size, 2 CPUs and 4 GiB by default, which holds Xvfb at 1280x800, xfwm4 and a browser:
+  - **E2B**: its default on either connect, from the box template (the template's own size).
+  - **Fly Machines**: `kind: "desktop"`; 2 shared CPUs and 4 GiB (`guest`), up to 8 shared CPUs and 2 GiB a CPU
+    (fly-go's `MachineGuest`, as `src/fly.ts` holds it).
+  - **Cloudflare**: `kind: "desktop"`; the relay's image is `FROM` the box image (`relays/cloudflare/Dockerfile`), and
+    2 CPUs and 4 GiB pick standard-3, 2 vCPUs, 8 GiB and 16 GB of disk; an image may be as large as the instance's
+    disk ([containers/platform-details/limits](https://developers.cloudflare.com/containers/platform-details/limits/)).
+    The box image is about 400 MB compressed (amd64); its size unpacked is **unverified**, but well under standard-1's
+    8 GB.
+  - **Modal**: `kind: "desktop"` on `connect: "dial"` alone; 2 CPUs and 4 GiB on Modal's VM runtime, with no GPU (a GPU
+    sandbox runs on gVisor). On `connect: "exec"` the constructor refuses a desktop in words; the descriptor's desktop
+    configuration selects dial itself.
+  - **Daytona**: `kind: "desktop"` on `connect: "dial"` alone, from the operator's snapshot of box/Dockerfile
+    (`AGENTRUN_DAYTONA_SNAPSHOT`) at its 2 CPUs and 4 GiB, with no GPU. Its container sandboxes run under Sysbox on a
+    kernel (Ubuntu 6.8) with `kernel.apparmor_restrict_unprivileged_userns=1`: root makes every namespace, but the tool
+    user (uid 2510) can't write a user namespace's `uid_map` and can't make a network namespace (measured 11-19), so
+    the window manager the client used to start under `unshare --user --net` failed there
+    (`unshare: write failed /proc/self/uid_map: Operation not permitted`). computerd starts it now, as root makes its
+    network namespace. On `connect: "exec"` the constructor refuses a desktop in kindRefusal's words, because a
+    desktop's sandbox boots from the snapshot and dials, and none has run through the toolbox's session commands. The
+    descriptor's desktop configuration selects dial itself. A self-hosted target whose runners let sandboxes reach
+    listed addresses alone needs `DAYTONA_ATTACH_EGRESS`, the operator's relay on that list (above).
+
+  Xvfb and the window manager over the dial were verified live (dial desktop runs 11-18/19: E2B, Fly, Cloudflare,
+  Modal), with the client starting the manager. computerd's own start of it ran live on Daytona over dial (11-20):
+  Core passed, the five desktop cases passed, every hello's `windowManager` said `running`, and a frame showed Mousepad
+  framed by xfwm4. The other hosts have not yet run computerd's start live.
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
 - **No REST call that starts a machine?** Ship a relay the operator deploys once, as Cloudflare's
@@ -427,11 +465,18 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
 A provider that can do both takes one option, `connect: "exec" | "dial"`, read once in its constructor, which picks
 its host's facts: on `dial` the host declares `connect: "dial"` and has no `exec` or `upload`, and create boots the
 machine with `req.boot.env`. Its descriptor declares the option as a setting with no default (`e2bConnect`,
-`modalConnect`), so exec holds unless the server's settings say dial. E2B and Modal do this. Modal's create gives
-the sandbox `agentrun-dial` as its command and the env as `env`. E2B can't: a template's start command runs once at
-the template's build and never sees a create's env, so E2B's create starts `agentrun-dial` itself through envd, once,
-with the env as that one process's ([README](README.md#e2b-on-dial)). Their conformance modules' `dialKit()` refuse, since
-a machine dials the server that minted its token: the Core run happens inside the public server's process.
+`modalConnect`, `daytonaConnect`), so exec holds unless the server's settings say dial. E2B, Modal and Daytona do this.
+Modal's create gives the sandbox `agentrun-dial` as its command and the env as `env`. The other two start
+`agentrun-dial` themselves, once. A template's start command runs once at the template's build and never sees a
+create's env, so E2B's create starts it through envd, with the env as that one process's
+([README](README.md#e2b-on-dial)). Daytona runs a snapshot's entrypoint, never the image's CMD, and a snapshot
+registered without the box CMD as its entrypoint has none, so Daytona's create sends the env as `env` with
+`AGENTRUN_ATTACH_URL` left out, waits for the sandbox to read `started`, and starts `agentrun-dial` in a toolbox session
+of its own, the URL on its command's line ([README](README.md#daytona-on-dial)): the snapshot's entrypoint is not
+relied on, and one that runs the box CMD sleeps without the URL. A host that starts `agentrun-dial` itself can give
+`dialLog(id)`, what it wrote, and a machine that never dials then fails with its last lines. Their conformance
+modules' `dialKit()` refuse, since a machine dials the server that minted its token: the Core run happens inside the
+public server's process.
 
 #### Worked example: Fly Machines
 
@@ -441,15 +486,27 @@ a machine dials the server that minted its token: the Core run happens inside th
 it. `list` filters by `metadata.<key>=<value>`, `delete` passes `force=true`, and `extend` writes the deadline label
 alone, for the janitor. Each Fly fact has its doc link in the file, and the ones the docs leave open say **unverified**.
 
+The machines live in one Fly app of yours, the `FLY_APP` setting (`COMPUTER_FLY_APP` for Core). Fly app names are
+global across all of Fly, not per org, so give it a name with your org in it, `agentrun-computers-<org slug>`:
+`POST /v1/apps {"app_name": "agentrun-computers-<org slug>", "org_slug": "<org slug>"}`, or
+`fly apps create agentrun-computers-<org slug> --org <org slug>`. A bare `agentrun-computers` is likely held already.
+For an app that exists in an org your token can't see, Fly answers `403 unauthorized`, not `404`. Our own runs use
+`agentrun-computers-parcha`.
+
 Core for any dial provider runs inside the server its machines dial: `packages/serve/scripts/dial-conformance.mjs`,
 in the server's image at `/opt/agentrun/packages/serve/scripts/`. It runs serve's attach routes on `$PORT`, runs Core
-with `--long`, prints the report between `DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`, then idles until it is stopped
+with `--long`, prints the report between `DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`, then idles until it is stopped.
+Before the report, a desktop's run prints the last whole-screen shot its cases read, as base64 lines between
+`DIAL-CONFORMANCE-FRAME-BEGIN <sha256> <bytes>` and `DIAL-CONFORMANCE-FRAME-END`. The report's `daemons` carry each
+hello's `windowManager`, so a live run shows that computerd started the manager
 (`--exit` exits 0 on a pass, else 1):
 
 ```sh
-COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=… AGENTRUN_PUBLIC_URL=https://… PORT=8080 \
+COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=agentrun-computers-<org slug> AGENTRUN_PUBLIC_URL=https://… PORT=8080 \
   node packages/serve/scripts/dial-conformance.mjs --provider fly
 ```
+
+`COMPUTER_FLY_KIND=desktop` runs the desktop suite (unset, linux); Cloudflare, Modal and Daytona's modules read `COMPUTER_CLOUDFLARE_KIND`, `COMPUTER_MODAL_KIND` and `COMPUTER_DAYTONA_KIND` the same way.
 
 ### Wire it up
 
@@ -729,9 +786,17 @@ refuses it in those words. A kind they take only where the operator sets one of 
 by that key's name (an optional key): a provider made with that key declares the kind, one made without it refuses it in
 the `unmounted` words, and `mountsOf(descriptor, set)` gives the mounts for the keys set, which a server reads without
 loading your module. On a `MachineHost`, give the host that descriptor (`{ ...DESCRIPTOR, ...mountsOf(DESCRIPTOR, set) }`),
-so `capabilities()` and `check()` read it. Daytona declares no mount, `unmounted: { archil: "Archil mounts don't work on
-Daytona's hosted cloud, ..." }`, and `mountsWith: { archil: "DAYTONA_ARCHIL_EGRESS" }`: a self-hosted Daytona target
+so `capabilities()` and `check()` read it. Daytona declares `unmounted: { archil: "Archil mounts don't work on
+Daytona's hosted cloud, ..." }` and `mountsWith: { archil: "DAYTONA_ARCHIL_EGRESS" }`: a self-hosted Daytona target
 whose sandboxes reach Archil through an Archil egress relay takes the mount.
+
+A provider whose computers run computerd with files and exec takes the synced folder (`sync`) with no work of yours:
+the computer holds a plain /workspace, and the server pushes the run's folder in at the claim and syncs each change
+back before the call that made it answers. In Mode 2 a server gives a run the Archil mount where the provider takes
+one and its image is there, and the synced folder elsewhere (hosted Daytona, a GPU with no FUSE, a paired Linux box of
+a person's own, whose `/workspace` its owner makes once: [attach.md, A Linux box](../../spec/computer/attach.md#a-linux-box)). Your create makes
+/workspace empty and owned by the computer's user, and `attach` and `list` read the mount back as `{ kind: "sync",
+epoch }`; the `mount.sync-*` cases check the push, the sync before each answer, a delete and the entry cap.
 
 If your machines can't run Linux as root, the adapter doesn't fit, and you'd implement `ComputerProvider`
 (`src/provider.ts`) directly, as [the last exec shape](#exec-shapes-that-work) does: the whole lifecycle, claims and
@@ -792,6 +857,18 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
   `extend`), `release` (delete, then the same wait; a stop is refused: a computer here is deleted, never stopped and
   kept), `watch` and `testConnection`.
   Every refusal uses the codes above, and `vendor` carries your API's own words.
+- **A proxy for your vendor calls.** Behind a corporate proxy or a gateway that holds one allowlist, set the standard
+  `HTTPS_PROXY` (or `HTTP_PROXY`) and `NO_PROXY` where the server and the runner start. `agentrun-serve` installs them
+  once for the process (Node's `http.setGlobalProxyFromEnv`), which covers `fetch`, Node's global `WebSocket` and
+  `https.request`; gRPC (Modal's and boxd's SDKs) gets the same values as its own `grpc_proxy` and `no_grpc_proxy`; E2B's
+  SDK, whose fetch is its own undici Agent, is handed the proxy as its `proxy` option, one for all its hosts, so only an
+  entry covering the whole domain (`.e2b.app`) sends E2B direct; Morph's SSH gateway goes through
+  the proxy's CONNECT tunnel (the proxy must allow CONNECT to port 22). Loopback and the server's own public address
+  always go direct. Archil's SDK builds its own undici Agent with no proxy option, so the Archil mount can't use one.
+  Unset, nothing changes. A provider of yours that calls out with `fetch` or the global `WebSocket` needs nothing more;
+  one whose client brings its own HTTP stack or a raw socket takes the same proxy through `src/env-proxy.ts`, which
+  reads no environment: it follows the proxy the process installed into Node (`--use-env-proxy`, `NODE_USE_ENV_PROXY`
+  or `http.setGlobalProxyFromEnv`), so a process that installed none has E2B and Morph go direct, as its `fetch` does.
 
 ### The live sweep
 

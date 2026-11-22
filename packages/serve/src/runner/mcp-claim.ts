@@ -25,6 +25,9 @@
 // opens it again, so a message's new credential reaches the run's next model request; a run handed none gets its calls
 // refused unsent (UNUSABLE.perRunMissing).
 //
+// A per-run Composio server (composio-made.ts composioPerRun) is bound by each run's caller ({composio_user_id,
+// connected_account_id?} in mcp_auth, sealed in its launch): its entry carries them as `query` (mcp-gateway.ts).
+//
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again
 // only when it provably never left: a refused or unmade connection, an address check out of time; one request that left
@@ -51,14 +54,17 @@ import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent,
 import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
 import { type PinListing, pinFirst } from "../mcp-pin-first.js";
 import { mcpNameOf } from "../tool-names.js";
+import { composioMadeKey, composioPerRun } from "../composio-made.js";
+import { composioRunQuery } from "../composio-preset.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
+import { resourceToolProblem } from "../mcp-resources.js";
 import { credentialInQuery, credentialInQueryWords, shownUrl } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-probe.js";
-import { type McpCredential, openRunMcpAuth, type RunMcpAuth } from "../store/seal.js";
+import { type McpCredential, openRunMcpAuth, type RunMcpAuth, type RunMcpEntry } from "../store/seal.js";
 import { getMcpServer, keepRefreshedCredential, openMcpRow } from "../mcp-store.js";
 import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store } from "../store/index.js";
 
@@ -255,12 +261,15 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     }
     gone.delete(name);
     stamps.set(name, { url: row.url, auth: row.auth, changedAt: row.credentialChangedAt });
-    const entry = (extra: { headers?: Record<string, string>; unopened?: string }) => {
+    const entry = (extra: { headers?: Record<string, string>; unopened?: string; query?: Record<string, string> }) => {
       // Held by the run's redactor before anything else: a value opened is a value to cut, sent or not.
       if (extra.headers) options.hold?.(credentialValues(extra.headers));
+      if (extra.query) options.hold?.(Object.values(extra.query));
       if (released || gone.has(name)) return;
-      // Headers go only to the URL the run was pinned to: a server moved since is refused per call by the gateway.
-      credentials[name] = { url: row.url, ...(extra.unopened ? { unopened: extra.unopened } : extra.headers && row.url === pinnedUrl ? { headers: extra.headers } : {}) };
+      // Headers and a run's account go only to the URL the run was pinned to: a server moved since is refused per call by
+      // the gateway.
+      const pinned = row.url === pinnedUrl;
+      credentials[name] = { url: row.url, ...(extra.unopened ? { unopened: extra.unopened } : { ...(extra.headers && pinned ? { headers: extra.headers } : {}), ...(extra.query && pinned ? { query: extra.query } : {}) }) };
     };
     // A GitHub App's server keeps no credential: its token is minted for this run (awaited, so the claim is confirmed
     // after it), kept fresh mid-run, and never stored.
@@ -268,12 +277,16 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     // A per_run server keeps none either: its credential is the one the run's caller handed it (mcp_auth), sealed in the
     // run's launch, read again at every fresh() so a message's new one reaches the run's next request.
     if (row.auth === "per_run") return entry(await perRun(name, row.url)), { awaited: false };
-    if (row.sealed === null) return entry({}), { awaited: false };
+    // A per-run Composio server: the run's account, or its calls refused unsent; its key is opened below as any server's.
+    const account = row.auth === "headers" ? await composioAccount(name, row) : undefined;
+    if (account && "unopened" in account) return entry({ unopened: account.unopened }), { awaited: false };
+    const query = account?.query;
+    if (row.sealed === null) return entry({ ...(query ? { query } : {}) }), { awaited: false };
     // A seal problem first: no refresh is ever sent for a credential this runner cannot open.
     const opened = openMcpRow(sealKey, row);
     if (!("credential" in opened)) return entry(opened.unusable === "none" ? {} : { unopened: UNUSABLE.damaged }), { awaited: false };
     const credential = opened.credential;
-    if (credential.type === "headers") return entry({ headers: { ...credential.headers } }), { awaited: false };
+    if (credential.type === "headers") return entry({ headers: { ...credential.headers }, ...(query ? { query } : {}) }), { awaited: false };
     const oauth = credential as OAuthCredential;
     if (oauth.expired) return entry({ unopened: UNUSABLE.signedOut }), { awaited: false };
     const set = oauth.set;
@@ -387,16 +400,30 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
 
   /** The run's handed MCP credentials, opened from its launch: read once per fresh() (perRunRead), not once per server. */
   let perRunRead: Promise<RunMcpAuth | undefined> | undefined;
-  /** A per_run server's headers for this run, from its launch; or why there are none. Only for the origin its url had
-   *  when they were handed: a server moved since gets none. */
-  const perRun = async (name: string, url: string): Promise<{ headers?: Record<string, string>; unopened?: string }> => {
+  /** What the run's caller handed `name` (mcp_auth, opened from its launch) when it is of `shape`; or why there is none.
+   *  Only for the origin its url had when it was handed: a server moved since gets none. */
+  const handed = async <K extends "headers" | "composio">(name: string, url: string, shape: K): Promise<Extract<RunMcpEntry, Record<K, unknown>> | { unopened: string }> => {
     perRunRead ??= store.runs.launch(claim.runId).then((launch) => openRunMcpAuth(sealKey, claim.runId, launch.sealed));
-    const handed = await perRunRead;
-    if (handed === undefined) return { unopened: UNUSABLE.damaged };
-    const given = Object.hasOwn(handed, name) ? handed[name] : undefined;
-    if (!given) return { unopened: UNUSABLE.perRunMissing };
+    const all = await perRunRead;
+    if (all === undefined) return { unopened: UNUSABLE.damaged };
+    const given = Object.hasOwn(all, name) ? all[name] : undefined;
+    if (!given || !(shape in given)) return { unopened: UNUSABLE.perRunMissing };
     if (given.origin !== new URL(url).origin) return { unopened: UNUSABLE.damaged };
-    return { headers: { ...given.headers } };
+    return given as Extract<RunMcpEntry, Record<K, unknown>>;
+  };
+  /** A per_run server's headers for this run; or why there are none. */
+  const perRun = async (name: string, url: string): Promise<{ headers?: Record<string, string>; unopened?: string }> => {
+    const given = await handed(name, url, "headers");
+    return "unopened" in given ? given : { headers: { ...given.headers } };
+  };
+
+  /** A per-run Composio server's account for this run, as the query its requests add (composio-preset.ts
+   *  composioRunQuery); or why there is none. Undefined: `row` is no per-run Composio server (its own record says so:
+   *  composioPerRun). */
+  const composioAccount = async (name: string, row: McpServerRow): Promise<{ query: Record<string, string> } | { unopened: string } | undefined> => {
+    if (!composioPerRun(row, await store.settings.get(composioMadeKey(name)))) return undefined;
+    const given = await handed(name, row.url, "composio");
+    return "unopened" in given ? given : { query: composioRunQuery(given.composio) };
   };
 
   const fresh = async () => {
@@ -480,7 +507,11 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
   const saved = (found ?? {}) as McpPin;
   // Every tool the revision pinned, granted or not, against the meta tools known now (the list grows after a save).
   for (const [server, { url, tools }] of Object.entries(saved)) {
-    for (const tool of tools) if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+    for (const tool of tools) {
+      if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+      const problem = resourceToolProblem(tool);
+      if (problem) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${problem}. Save the agent again. Nothing was sent.`);
+    }
   }
   // The granted tools alone, keyed by server with no prototype (a server named `constructor` is a server like any other).
   const pinned: McpPin = Object.create(null);
@@ -488,7 +519,7 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     const at = Object.hasOwn(saved, server) ? saved[server]! : undefined;
     const listed = at?.tools.find((one) => one.name === tool);
     if (!at || !listed) throw new McpClaimRefused(`The MCP tool ${name} was not pinned when this agent's revision was saved, so this run cannot call it. Save the agent again to pin it. Nothing was sent.`);
-    const kept = (pinned[server] ??= { url: at.url, tools: [] });
+    const kept = (pinned[server] ??= { url: at.url, tools: [], ...(at.meter ? { meter: at.meter } : {}) });
     if (!kept.tools.some((one) => one.name === listed.name)) kept.tools.push(listed);
     const price = at.prices && Object.hasOwn(at.prices, listed.name) ? at.prices[listed.name] : undefined;
     if (price !== undefined) (kept.prices ??= Object.create(null) as Record<string, number>)[listed.name] = price;

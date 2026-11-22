@@ -36,6 +36,7 @@ import type { ComputerDeps } from "./computer-deps.js";
 import { type KeptSweep, sweepKept } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { providerKeys } from "./resolve-computer.js";
+import { intervalWrites } from "./computer-intervals.js";
 
 /** How often the janitor sweeps after its first sweep at the runner's start. */
 export const JANITOR_EVERY_MS = 10 * 60_000;
@@ -48,7 +49,7 @@ export const JANITOR_PROVIDER_MS = 5 * 60_000;
 export interface JanitorDeps {
   /** The store: whose runs a computer's run label names, and the phone provider's ledger; with `settings` and `agents`,
    *  this server's id and its agents, whose own computers it then sweeps by their owner. */
-  readonly store: Pick<Store, "runs" | "computerLedger"> & Partial<Pick<Store, "settings" | "agents">>;
+  readonly store: Pick<Store, "runs" | "computerLedger"> & Partial<Pick<Store, "settings" | "agents" | "computerIntervals">>;
   /** The run's computers as the runner composed them (computer-deps.ts computerDepsFrom): the registry, the provider
    *  makers and the key reader. */
   readonly computers: Pick<ComputerDeps, "kinds" | "providers" | "keyOf"> & { readonly settings?: ProviderSettings; readonly keyTable?: KeyTable };
@@ -104,7 +105,7 @@ async function sweepable(store: JanitorDeps["store"], info: ComputerInfo, byHash
  *  now: a server that stopped before its run's end let go of an earlier claim's computer (run-end-computers.ts) leaves
  *  it for this sweep, never for its day-long deadline. Each call goes to the provider itself, so its own state is used
  *  as it is. */
-function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], byHash: RunsByHash, serverId: string | undefined, at: number): ComputerProvider {
+function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], byHash: RunsByHash, serverId: string | undefined, at: number, ended: (id: string) => Promise<void>): ComputerProvider {
   // The agents' own computers the list kept, by id: their delete goes under the agent's hold (deleteUnderHold), which
   // also clears the agent's record of it, so its view no longer shows it deleting.
   const ownedBy = new Map<string, string>();
@@ -118,9 +119,14 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
     attach: (target, context) => provider.attach(target, context),
     network: (ref, policy, context) => provider.network(ref, policy, context),
     connect: (ref) => provider.connect(ref),
-    release(ref, how, context) {
+    async release(ref, how, context) {
       const agent = ownedBy.get(ref.id);
-      if (how !== "delete" || agent === undefined || settings === undefined) return provider.release(ref, how, context);
+      if (how !== "delete" || agent === undefined || settings === undefined) {
+        const released = await provider.release(ref, how, context);
+        // A run's computer the sweep deleted: its interval ends (computer-intervals.ts), on the provider's ok alone.
+        if (released.ok && how === "delete") await ended(ref.id);
+        return released;
+      }
       // Asked again under the hold: the agent may want it back since ownerGone was read (this server's owners carry no
       // idle TTL, so that is the one reason the sweep deletes one).
       const due = async () => !agents || !(await wantsOn({ agents }, agent, provider.id));
@@ -163,8 +169,9 @@ async function bounded(ms: number, signal: AbortSignal | undefined, work: (cut: 
 /** One sweep of every provider this server can list: each provider whose keys it has and whose computers the janitor
  *  ends, its computers past their deadline that are this server's and unheld ended. A provider that fails is answered
  *  in its words; nothing throws. */
-export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "computers" | "now" | "providerMs">, signal?: AbortSignal): Promise<ProviderSweep[]> {
+export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "computers" | "now" | "providerMs"> & { readonly log?: (line: string) => void }, signal?: AbortSignal): Promise<ProviderSweep[]> {
   const { store, computers } = deps;
+  const writes = intervalWrites(store, deps.log, deps.now);
   const at = (deps.now ?? Date.now)();
   const keysOf = providerKeys(computers.kinds, computers.keyOf ?? (async () => undefined));
   const byHash = runsByHash(store);
@@ -185,7 +192,7 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
       // A vendor that ends its own computers needs no janitor.
       if (provider.capabilities().lifetime !== "janitor") continue;
       const ownerGone = serverId !== undefined && settings && agents ? ownerGoneOf({ agents, settings, runs: store.runs }, serverId, entry.id) : undefined;
-      out.push({ provider: entry.id, swept: await bounded(deps.providerMs ?? JANITOR_PROVIDER_MS, signal, (cut) => sweep(thisServers(provider, store, byHash, serverId, at), { now: new Date(at), signal: cut, ...(ownerGone ? { ownerGone } : {}) })) });
+      out.push({ provider: entry.id, swept: await bounded(deps.providerMs ?? JANITOR_PROVIDER_MS, signal, (cut) => sweep(thisServers(provider, store, byHash, serverId, at, (id) => writes.ended(entry.id, id)), { now: new Date(at), signal: cut, ...(ownerGone ? { ownerGone } : {}) })) });
     } catch (error) {
       out.push({ provider: entry.id, swept: { ok: false, error: { code: "refused", message: error instanceof Error ? error.message : String(error) } } });
     }
@@ -196,8 +203,9 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
 /** The pass over the desktops and phones kept at a run's park (computer-kept.ts sweepKept): one past its time, or whose
  *  run ended, is ended through its provider, made with this server's keys, whatever its lifetime (a vendor's own end is
  *  hours away). Undefined without the store's settings, where none is kept. Never throws. */
-export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "now">): Promise<KeptSweep | undefined> {
+export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "now"> & { readonly log?: (line: string) => void }): Promise<KeptSweep | undefined> {
   const { store, computers } = deps;
+  const writes = intervalWrites(store, deps.log, deps.now);
   if (!store.settings) return undefined;
   const keysOf = providerKeys(computers.kinds, computers.keyOf ?? (async () => undefined));
   const providerOf = async (id: string): Promise<ComputerProvider | undefined> => {
@@ -206,7 +214,7 @@ export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "comp
     const options = providerOptions(id, await keysOf(id), computers.settings ?? {}, computers.keyTable ?? KEY_TABLE);
     return options.ok ? make(options.options, { ledger: storeLedger(store.computerLedger, id) }) : undefined;
   };
-  return sweepKept({ settings: store.settings, runs: store.runs, now: (deps.now ?? Date.now)(), providerOf });
+  return sweepKept({ settings: store.settings, runs: store.runs, now: (deps.now ?? Date.now)(), providerOf, deleted: (provider, id) => writes.ended(provider, id) });
 }
 
 /** The janitor: one sweep now, then one every `everyMs`, never two at once, and a kept pass at the earliest time a kept

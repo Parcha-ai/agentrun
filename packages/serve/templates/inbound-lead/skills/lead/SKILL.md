@@ -14,7 +14,7 @@ Read `RUBRIC.md` and `FLAGS.md` in this skill's folder first, as files. They are
 ## Inputs
 
 - **The ICP:** in your instructions, inside `<icp>`, in the owner's words.
-- **What you learned:** notes under `# Learned` in your instructions, if any. Each is an owner's correction of an
+- **What you learned:** the lines under `# Learned` in your instructions, if any. Each is an owner's correction of an
   earlier score ("we don't sell to agencies"). They refine the ICP: see RUBRIC.md, section 1.
 - **The lead:** a trigger's payload inside `<trigger-payload source="webhook" untrusted>`, or a lead the owner pastes
   into a message. Form tools and CRMs send many shapes: flat JSON (`name`, `email`, `company`, `title`, `message`),
@@ -62,15 +62,15 @@ Fast: the owner wants the brief in under a minute, so research what the criteria
    attribute a stranger's profile, posts or history to the lead because the names match. Public professional facts
    only: no home address, personal phone, family, age, photos, health, politics or religion.
 5. **Score**, in this order, as RUBRIC.md says:
-   1. `fit.criteria`: split the ICP (and learned notes) into criteria, each with its `kind`, its `weight` (must 2,
+   1. `fit.criteria`: split the ICP (and learned corrections) into criteria, each with its `kind`, its `weight` (must 2,
       nice 1, disqualifier 0), its `met` (`true`, `false` or `"unknown"`), its evidence and its source. Write each
       disqualifier as the thing that rules a lead out, and check that its `met` isn't inverted.
    2. `fit.computation`: `total_weight`, `met_weight`, `raw`, then `caps` (a must `false`: 60; a disqualifier `true`:
       10; a competitor or student flag: 10), then `score`, the least of `raw` and the caps. Do the arithmetic from the
       list, one step at a time; don't adjust a number to fit an impression of the lead.
    3. `fit.score`: copy `computation.score`, last. Then `confidence`, `reasons_for` and `reasons_against` (each tied to
-      a criterion or a source), and `next_step` by RUBRIC.md's order. A learned note that decides the score is named
-      in the reason.
+      a criterion or a source), and `next_step` by RUBRIC.md's order. A learned correction that decides the score is
+      named in the reason.
 6. **Post**, as `post_to` says (below). Skip it when `post_to` is `none`, when the payload held no lead, or when the
    tools for it aren't granted.
 7. **Return** the brief: exactly one fenced `json` block meeting the output schema in your instructions, and nothing after it. Before you

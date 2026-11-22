@@ -67,7 +67,7 @@ await backend.provider.release(session);
 EOF
 ```
 
-It prints the page's accessibility tree, the same text `snapshot` gives a model:
+It prints the page's accessibility tree, the same text that `snapshot` gives a model:
 
 ```
 [0] main
@@ -145,7 +145,9 @@ token is 256 random bits in the fragment, so it reaches no server log, proxy or 
 nothing is accepted before it. The upgrade's `Origin` must be the viewer's own origin (behind a proxy, pass the upgrade through with `Origin` intact).
 There is one authenticated viewer per session (a second is refused `viewer_in_use`); the token, the stream and the viewer's socket end at the session's release.
 The page is served with `Referrer-Policy: no-referrer`, `default-src 'self'` and `frame-ancestors` set to `hostOrigin`. The viewer may send a page only to
-http(s) addresses. Frames are held one at a time and acknowledged after they were sent; none is written anywhere.
+http(s) addresses. Frames are held one at a time and acknowledged after they were sent; the live view writes none anywhere. A host may watch a
+session's frames itself, with or without a viewer (`liveView.watch(tag, { frame, ended })`, which AgentRun's run video records): the viewer and the
+watchers share the session's one screencast.
 
 Every browser tool is a model call on its session's gate (`drivingGates`, shared by default between the live view and the toolset, so you pass nothing). To use your own
 registry, pass the same one to both sides: `const gates = createDrivingGates({ idleMs: 5_000 }); createLiveView({ hostOrigin, gates }); createBrowserExtension({ ..., gates });`.
@@ -266,8 +268,11 @@ The pi peers are `@earendil-works/pi-durable` and `chord` `1.5.2` exactly. CI te
 - `@parcha/pi-browser`: the host-neutral core. The model contract (tool names, descriptions, JSON schemas, effect and
   replay classes, the `browser` and `web` prompt sections), the typed failure envelope, the redactor, the screenshot
   budget, the repeat guard, evidence and decision-hook types, usage and prices, `find` (chunking and ranking a long page),
-  `browser_downloads`, the opt-in request observer, and the provider interface. The public-host guard is here too: `publicFetch(url, { lookup?, fetchImpl?, signal?, maxBytes? })` and
-  `readPage(html, url, { deadlineMs?, signal? })`, with `isPrivateAddress` and `pinnedLookup`. `readPage` never holds
+  `browser_downloads`, the opt-in request observer, and the provider interface. The public-host guard is here too: `publicFetch(url, { lookup?, fetchImpl?, signal?, maxBytes? })`, its bytes
+  variant `publicDownload(url, { lookup?, fetchImpl?, signal?, maxBytes? })` (one file of any type, `{ url, status,
+  contentType, bytes }`, `bytes` null for a status that is not 2xx; the same hops, checks and pinned dial as
+  `publicFetch`, a declared length over `maxBytes` refused before the body is read and a body over it refused as it is
+  read), and `readPage(html, url, { deadlineMs?, signal? })`, with `isPrivateAddress` and `pinnedLookup`. `readPage` never holds
   the event loop: it drops a page's script, style, svg, noscript and template blocks, cuts what is left at
   `READ_MAX_CHARS` (`truncated`, with the page's length in `html_chars`), and converts it to markdown in a worker thread
   within `READ_DEADLINE_MS`, falling back to the page's plain text (`converted: "text"`). `browser_read`'s markdown goes

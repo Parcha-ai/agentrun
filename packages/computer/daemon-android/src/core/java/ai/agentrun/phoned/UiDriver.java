@@ -204,14 +204,14 @@ public final class UiDriver {
 		if (target.window != null) {
 			for (Device.AxWindow w : windows) {
 				if (!String.valueOf(w.id()).equals(target.window)) continue;
-				if (target.app != null && !target.app.equals(appOf(w))) throw RpcError.notFound("window " + target.window + " is not " + target.app + "'s: observe again for its windows");
+				if (target.app != null && !target.app.equals(appOf(w))) throw RpcError.notFound("window " + target.window + " is not " + named(target.app) + "'s: observe again for its windows");
 				return w;
 			}
 			throw RpcError.notFound("window " + target.window + " is not on the screen: observe again for the windows there");
 		}
 		if (target.app != null) {
 			for (Device.AxWindow w : windows) if (target.app.equals(appOf(w))) return w;
-			throw RpcError.notFound(target.app + " has no window on the screen (" + shown(windows) + "): open it with apps.launch first");
+			throw RpcError.notFound(named(target.app) + " has no window on the screen (" + shown(windows) + "): open it with apps.launch first");
 		}
 		for (Device.AxWindow w : windows) if ("application".equals(w.type()) && w.active()) return w;
 		for (Device.AxWindow w : windows) if ("application".equals(w.type()) && w.focused()) return w;
@@ -248,7 +248,7 @@ public final class UiDriver {
 			for (;;) {
 				if (app.equals(device.apps().foreground())) return;
 				if (clock.now() - begun >= LAUNCH_WINDOW_MS) {
-					throw RpcError.timeout("apps.launch: " + app + " did not come to the front within " + LAUNCH_WINDOW_MS + " ms");
+					throw RpcError.timeout("apps.launch: " + named(app) + " did not come to the front within " + LAUNCH_WINDOW_MS + " ms");
 				}
 				cancel.check();
 				clock.sleep(LAUNCH_POLL_MS);
@@ -264,15 +264,21 @@ public final class UiDriver {
 				return;
 			}
 			if (clock.now() - begun >= LAUNCH_WINDOW_MS) {
-				throw RpcError.timeout("apps.launch: " + app + " opened no window within " + LAUNCH_WINDOW_MS + " ms (" + shown(windows) + ")");
+				throw RpcError.timeout("apps.launch: " + named(app) + " opened no window within " + LAUNCH_WINDOW_MS + " ms (" + shown(windows) + ")");
 			}
 			cancel.check();
 			clock.sleep(LAUNCH_POLL_MS);
 		}
 	}
 
-	/** The windows the tree shows, for a not_found: the accessibility tree shows window 3 application "Home" of com.x. */
-	private static String shown(List<Device.AxWindow> windows) {
+	/** An app id in an error's words: its label (Wikipedia, System UI), else "the app (id)". */
+	private String named(String id) {
+		String label = device.apps().label(id);
+		return label != null && !label.isEmpty() && !label.equals(id) ? label : "the app (" + id + ")";
+	}
+
+	/** The windows the tree shows, for a not_found: the accessibility tree shows window 3 application "Home" of Launcher. */
+	private String shown(List<Device.AxWindow> windows) {
 		if (windows.isEmpty()) return "the accessibility tree shows no window";
 		StringBuilder s = new StringBuilder("the accessibility tree shows ");
 		for (int i = 0; i < windows.size() && i < WINDOWS_NAMED; i++) {
@@ -282,7 +288,7 @@ public final class UiDriver {
 			s.append("window ").append(w.id()).append(' ').append(w.type());
 			if (title != null && !title.isEmpty()) s.append(" \"").append(title.length() > 40 ? title.substring(0, 40) + "..." : title).append('"');
 			String app = appOf(w);
-			s.append(app == null ? " with no root" : " of " + app);
+			s.append(app == null ? " with no root" : " of " + named(app));
 		}
 		if (windows.size() > WINDOWS_NAMED) s.append("; and ").append(windows.size() - WINDOWS_NAMED).append(" more");
 		return s.toString();
@@ -846,7 +852,8 @@ public final class UiDriver {
 
 	/**
 	 * Whether a step landed, by reading the window back: verified only when what a person would see of the target's
-	 * window (its fingerprint) differs from before the step. An accessibility event or a new frame is only the cue to
+	 * window (its fingerprint), or of the window of another app the step put in front, differs from before the step. An
+	 * accessibility event, a new frame or a new app in front is only the cue to
 	 * read again: a tap's ripple draws frames and changes nothing, so it never verifies a step.
 	 */
 	private final class Sign {
@@ -856,6 +863,8 @@ public final class UiDriver {
 		private final Wire.Cancel cancel;
 		private final String before;
 		private final long events;
+		/** The app in front before the step. */
+		private final String frontBefore;
 
 		Sign(Device.Accessibility a11y, Target target, Device.AxWindow window, Wire.Cancel cancel) {
 			this.a11y = a11y;
@@ -864,10 +873,14 @@ public final class UiDriver {
 			this.cancel = cancel;
 			this.before = new Look(window, false).fingerprint();
 			this.events = a11y.events();
+			this.frontBefore = device.apps().foreground();
 			a11y.framesSince(windowId);
 		}
 
-		/** Reads the window back until it differs, within SIGN_MS; reads again only on an event or a frame. */
+		/**
+		 * Reads the window back until it differs, within SIGN_MS; reads again only on an event or a frame. Past that, a
+		 * step after which another app is in front landed elsewhere (landedInFront).
+		 */
 		boolean seen() throws InterruptedException {
 			Device.Clock clock = device.clock();
 			long start = clock.now();
@@ -875,12 +888,33 @@ public final class UiDriver {
 			boolean read = true;
 			for (;;) {
 				if (read && !before.equals(new Look(after(a11y, target), false).fingerprint())) return true;
-				if (clock.now() - start >= Settle.SIGN_MS) return false;
+				if (clock.now() - start >= Settle.SIGN_MS) return landedInFront(start);
 				cancel.check();
 				clock.sleep(Settle.POLL_MS);
 				long now = a11y.events();
 				read = now != seen || a11y.framesSince(windowId) > 0;
 				seen = now;
+			}
+		}
+
+		/**
+		 * A step that opens another app's page (Settings' search is Settings Intelligence's activity) puts that app in
+		 * front at once, and the act's own window lingers unchanged until the new one reaches the tree, often past
+		 * SIGN_MS. So when the app in front after the step is neither the one before it nor the act's, the step is read
+		 * against that app's window: verified once it shows and differs from before, within MAX_SETTLE_MS of the step.
+		 * The app in front changing is never enough alone: a window must show.
+		 */
+		private boolean landedInFront(long start) throws InterruptedException {
+			String front = device.apps().foreground();
+			if (front == null || front.equals(frontBefore) || front.equals(target.app)) return false;
+			Device.Clock clock = device.clock();
+			for (;;) {
+				for (Device.AxWindow w : a11y.windows()) {
+					if (front.equals(appOf(w)) && !before.equals(new Look(w, false).fingerprint())) return true;
+				}
+				if (clock.now() - start >= MAX_SETTLE_MS) return false;
+				cancel.check();
+				clock.sleep(Settle.POLL_MS);
 			}
 		}
 	}

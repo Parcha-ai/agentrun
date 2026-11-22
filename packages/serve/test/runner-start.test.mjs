@@ -3,7 +3,7 @@
 // (no test runner context in its environment) and drives it by its own lines, never a sleep:
 //   - one ready line once it can claim: `Runner <name> ready: store sqlite schema v<N>, <N> loops`, then its memory
 //     budget on a line of its own: `Runner <name> memory: <N> MiB for runs, each weighed by its harness`;
-//   - exit 2 on bad arguments (runnerArgs' words), 3 on a store the server has not set up (SchemaVersionUnknown), 0 on
+//   - exit 2 on bad arguments (runnerArgs' words), 3 on a store the server has not set up or has yet to upgrade, 0 on
 //     SIGTERM after closing;
 //   - each option also as `--option=value` (the bin hands a data directory that starts with "-" as `--data=<dir>`), an
 //     empty value refused in words;
@@ -28,10 +28,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { dockerHost } from "./docker-host-fake.mjs";
-import { openPostgresStore, openSqliteStore } from "../dist/store/index.js";
+import { migrate, migrationsIn, openPostgresStore, openSqliteStore, PgConnection } from "../dist/store/index.js";
+import { STORE_FILE } from "../dist/store/sqlite/store.js";
 import { until } from "./runner-support.mjs";
 import { dropSchema, freshSchema, onPostgres, PG_URL, postgresOnly } from "./store-target.mjs";
 
@@ -57,9 +59,28 @@ const PLANT = {
  *  value is in `text`. */
 const plantedIn = (text, plant = {}) => [...Object.entries(PLANT), ...Object.entries(plant), ["AGENTRUN_SEAL_KEY", SEAL]].filter(([, value]) => text.includes(value)).map(([name]) => name);
 
+/** The runner processes each test started, by test: every one is ended (SIGKILL, its exit awaited) before any of the
+ *  test's scratch directories goes. A test's after-hooks run in the order they were added, and a directory is made before
+ *  the runners that write in it, so its hook would otherwise remove it under a live runner (ENOTEMPTY). */
+const children = new WeakMap();
+
+/** `child` (its `exited` the promise of its exit) ended with test `t`: before its scratch directories go, and at its end. */
+function endsWithTest(t, child, exited) {
+  const end = async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exited;
+  };
+  if (!children.has(t)) children.set(t, new Set());
+  children.get(t).add(end);
+  t.after(end);
+}
+
 function scratch(t, name) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), name));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.after(async () => {
+    await Promise.all([...(children.get(t) ?? [])].map((end) => end()));
+    rmSync(dir, { recursive: true, force: true });
+  });
   return dir;
 }
 
@@ -118,10 +139,7 @@ function runnerChild(t, args, extra = {}, { cwd } = {}) {
   createInterface({ input: child.stdout }).on("line", (line) => (out.push(line), notify()));
   createInterface({ input: child.stderr }).on("line", (line) => (err.push(line), notify()));
   const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
-  t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    await exited;
-  });
+  endsWithTest(t, child, exited);
   /** The first stdout line matching `pattern`, within `ms`. */
   const line = (pattern, ms = 30_000) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`no line ${pattern} within ${ms} ms: ${JSON.stringify({ out, err })}`)), ms);
@@ -180,6 +198,45 @@ test("a data directory the server has not set up: the runner exits 3, saying so"
   const child = runnerChild(t, ["--data", dir]);
   assert.deepEqual(await child.exited, { code: 3, signal: null });
   assert.match(child.err.join("\n"), /not set up yet: start the server on this data directory first/);
+});
+
+test("a store its server has yet to upgrade: the runner exits 3 on SQLite and on Postgres alike, saying to start the server first", async (t) => {
+  // SQLite: the server's store, set back one schema version (the server upgrades it at its next start).
+  const dir = await serverData(t);
+  const db = new DatabaseSync(join(dir, STORE_FILE));
+  db.prepare("UPDATE store_meta SET schema_version = ?").run(SCHEMA_VERSION - 1);
+  db.close();
+  const starts = [["sqlite", runnerChild(t, ["--data", dir])]];
+  if (onPostgres) {
+    // Postgres: every migration but this build's last, as the earlier release's server left the schema.
+    const schema = await freshSchema();
+    t.after(() => dropSchema(schema));
+    const connection = await PgConnection.open({ url: PG_URL, schema });
+    try {
+      await connection.withClient((c) => migrate(c, schema, 0, migrationsIn().slice(0, -1)));
+    } finally {
+      await connection.close();
+    }
+    starts.push(["postgres", runnerChild(t, ["--data", scratch(t, "agentrun-runner-pg-")], { AGENTRUN_STORE_URL: PG_URL, AGENTRUN_STORE_SCHEMA: schema })]);
+  }
+  for (const [kind, child] of starts) {
+    assert.deepEqual({ kind, exit: await child.exited }, { kind, exit: { code: 3, signal: null } }, child.err.join("\n"));
+    assert.match(child.err.join("\n"), /start the server first, which upgrades the store in place, then the runner/);
+  }
+});
+
+test("a store a later server moved past this runner while it ran: it stops claiming, hands its runs back and exits 3, saying why", { timeout: 60_000 }, async (t) => {
+  const dir = await serverData(t);
+  const child = runnerChild(t, ["--data", dir], { AGENTRUN_RUNNER_NAME: "runner-floor" });
+  await child.line(READY);
+  // A later release's server upgraded the file: on SQLite a runner opens only its own version, so its floor is the version.
+  // The running runner writes the same file (its presence, its claims' polls): this write waits its turn, as a server's would.
+  const db = new DatabaseSync(join(dir, STORE_FILE), { timeout: 10_000 });
+  db.prepare("UPDATE store_meta SET schema_version = ?").run(SCHEMA_VERSION + 1);
+  db.close();
+  // Read again at its next renewal (every 10 s), idle as it is.
+  assert.deepEqual(await child.exited, { code: 3, signal: null }, child.err.join("\n"));
+  assert.match(child.err.join("\n"), new RegExp(`Runner runner-floor stops claiming and hands its runs back: the store is at schema version ${SCHEMA_VERSION + 1}, and its runner floor rose to ${SCHEMA_VERSION + 1}, above the version this runner knows \\(${SCHEMA_VERSION}\\)`));
 });
 
 test("on the server's store the runner says it is ready in one line, then its memory budget in another, claims nothing with nothing queued, and SIGTERM closes it with exit 0", async (t) => {
@@ -254,10 +311,7 @@ test("a SIGTERM during the runner's start (it already claims runs) is its own st
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env, stdio: ["ignore", "pipe", "pipe"] });
   const exiting = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
   // A child a regression keeps alive is ended with the test, its pipes closed.
-  t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    await exiting;
-  });
+  endsWithTest(t, child, exiting);
   const out = [];
   createInterface({ input: child.stdout }).on("line", (line) => out.push(line));
   const exited = await exiting;
@@ -388,10 +442,7 @@ test("started without its launcher (node dist/cli.js runner), a runner reads AGE
   const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
   const child = spawn(process.execPath, [cli, "runner", "--data", dir], { env, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
-  t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    await exited;
-  });
+  endsWithTest(t, child, exited);
   const err = [];
   createInterface({ input: child.stderr }).on("line", (line) => err.push(line));
   const ready = await new Promise((resolve, reject) => {

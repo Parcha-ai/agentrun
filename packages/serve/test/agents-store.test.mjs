@@ -8,8 +8,9 @@ import { ApiError } from "../dist/errors.js";
 import {
   agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, getAgent, listAgents,
   setAgentArchived, setCurrentRevision,
-  uuidv7,
 } from "../dist/agents-store.js";
+import { uuidv7 } from "../dist/ids.js";
+import { RevisionMoved } from "../dist/store/index.js";
 import { storeOn } from "./store-helpers.mjs";
 
 const DEF = (over = {}) => ({ name: "Researcher", instructions: "Research the company.", tools: ["read"], ...over });
@@ -79,6 +80,48 @@ test("an edit keeps the agent's id, name and description, and carries over the s
   await assert.rejects(commitAgent(store, next, { definition: DEF({ id: "a", name: "Renamed", instructions: "x" }) }), (e) => e instanceof ApiError && e.code === "input_invalid");
 });
 
+test("an edit changes the description with its new revision, in one write; one that leaves it out keeps it; a stale or refused edit changes neither; the name stays fixed", async (t) => {
+  const { store } = await storeOn(t);
+  const made = await createAgent(store, { definition: DEF({ id: "a", description: "/opt/code/larkspur-web" }), skills: SKILLS });
+  // A description alone is a real edit: the next revision, and the agent's new description, everywhere it is read.
+  const described = await commitAgent(store, made, { definition: DEF({ id: "a", description: "Researches companies." }) });
+  assert.equal(described.agent.description, "Researches companies.");
+  assert.equal(described.revisions, 2, "a description-only edit makes a revision");
+  assert.notEqual(described.revision.id, made.revision.id);
+  assert.equal((await getAgent(store, "a")).agent.description, "Researches companies.");
+  assert.equal((await listAgents(store)).find((e) => e.agent.id === "a").agent.description, "Researches companies.");
+  assert.equal(definitionOf(described.agent, described.revision, described.version).description, "Researches companies.");
+  // The same description again is the current revision: one revision, as a PUT sent twice makes.
+  const again = await commitAgent(store, described, { definition: DEF({ id: "a", description: "Researches companies." }) });
+  assert.equal(again.revisions, 2);
+  // An edit that leaves it out keeps it.
+  const kept = await commitAgent(store, again, { definition: DEF({ id: "a", instructions: "Research; cite." }) });
+  assert.equal(kept.agent.description, "Researches companies.");
+  assert.equal(kept.revisions, 3);
+  // A stale If-Match, and an edit its check refuses, change neither the revision nor the description.
+  await assert.rejects(
+    commitAgent(store, kept, { definition: DEF({ id: "a", description: "On a stale read." }) }, { ifCurrent: made.revision.id }),
+    (e) => e instanceof ApiError && e.code === "precondition_failed",
+  );
+  await assert.rejects(
+    commitAgent(store, kept, { definition: DEF({ id: "a", description: "Refused." }) }, { check: async () => { throw new ApiError("input_invalid", "refused by its check"); } }),
+    (e) => e instanceof ApiError && e.message === "refused by its check",
+  );
+  // At the store itself: a revision whose ifCurrent moved writes no description either.
+  await assert.rejects(store.agents.addRevision({ agentId: "a", ifCurrent: made.revision.id, id: "rev-late", kind: "agentic", body: kept.revision.body, description: "Late." }), (e) => e instanceof RevisionMoved);
+  let now = await getAgent(store, "a");
+  assert.deepEqual([now.agent.description, now.revisions, now.revision.id], ["Researches companies.", 3, kept.revision.id]);
+  // The name is still the agent's from its creation, refused in the same shape, in words that name only the name.
+  await assert.rejects(commitAgent(store, now, { definition: DEF({ id: "a", name: "Renamed", description: "With a new name." }) }), (e) => {
+    assert.ok(e instanceof ApiError && e.code === "input_invalid");
+    assert.deepEqual(e.extra.fields.map((f) => [f.field, f.reason]), [["definition.name", "not_allowed"]]);
+    assert.doesNotMatch(e.extra.fields[0].message, /description/);
+    return true;
+  });
+  now = await getAgent(store, "a");
+  assert.deepEqual([now.agent.name, now.agent.description, now.revisions], ["Researcher", "Researches companies.", 3]);
+});
+
 test("If-Match: an edit on a stale current revision is precondition_failed and writes nothing", async (t) => {
   const { store } = await storeOn(t);
   const entry = await createAgent(store, { definition: DEF({ id: "a" }), skills: SKILLS });
@@ -139,6 +182,12 @@ test("ids minted in one millisecond, or after the clock steps back, each sort af
   assert.deepEqual([timeOf(ids[0]), countOf(ids[0]), countOf(ids[1])], [base, 0, 1], "the first in a millisecond counts 0, the next 1");
   assert.equal(timeOf(stepped), base + 1, "a clock that stepped back keeps the last millisecond");
   assert.deepEqual([timeOf(later), countOf(later)], [base + 5, 0], "a later millisecond is its own, and its count starts at 0");
+  // One minted as of a past time (eval-previous.ts's seeded runs) carries that time, and leaves the count alone.
+  const past = uuidv7({ at: base - 86_400_000 });
+  const next = uuidv7(base + 5);
+  assert.ok(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(past), "an id as of a past time is a UUIDv7");
+  assert.equal(timeOf(past), base - 86_400_000, "an id as of a past time carries that time");
+  assert.deepEqual([timeOf(next), countOf(next)], [base + 5, 1], "and the next minted counts on from the one before it");
 });
 
 test("tool settings survive a round trip, sorted, and equal settings are one revision; a change is a new revision", async (t) => {

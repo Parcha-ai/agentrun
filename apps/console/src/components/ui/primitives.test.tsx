@@ -2,7 +2,7 @@ import { act, type ReactElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { Banner, Button, Checkbox, Chip, ConfirmDialog, Dialog, Field, fieldBoxClass, Input, Menu, MenuItem, NavItem, Segmented, Spinner, tabPanelProps, Tabs, Textarea, ToastProvider, useToast } from ".";
+import { Banner, Button, Checkbox, Chip, ConfirmDialog, CopyButton, Dialog, Field, fieldBoxClass, Input, Menu, MenuItem, NavItem, Picker, Segmented, Spinner, tabPanelProps, Tabs, Textarea, ToastProvider, useToast } from ".";
 import * as foundations from "@/design/Foundations.stories";
 import * as primitives from "./Primitives.stories";
 
@@ -35,6 +35,33 @@ describe("Button", () => {
   });
   it("has a size for every control height, and xs for a row", () => {
     for (const [size, cls] of [["xs", "h-7"], ["sm", "h-control-sm"], ["md", "h-control-md"], ["lg", "h-control-lg"], ["icon", "size-control-sm"]] as const) expect(html(<Button size={size}>x</Button>)).toContain(cls);
+  });
+});
+
+describe("CopyButton", () => {
+  afterEach(() => { Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined }); });
+  it("is a button named by its label; one press writes the text and says Copied in a status a screen reader reads", async () => {
+    const writes: string[] = [];
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn(async (t: string) => { writes.push(t); }) } });
+    const host = mount(<CopyButton text="whsec_example" label="Copy secret" />);
+    const button = host.querySelector("button")!;
+    expect(button.getAttribute("type")).toBe("button");
+    expect(button.textContent?.trim()).toBe("Copy secret");
+    expect(host.querySelector('[role="status"]')).toBeNull();
+    await click(button);
+    expect(writes).toEqual(["whsec_example"]);
+    expect(host.querySelector('[role="status"]')?.textContent).toBe("Copied");
+  });
+  it("with no clipboard (a page that is not secure), or a write the browser refuses, says to select the text instead", async () => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    let host = mount(<CopyButton text="x" label="Copy URL" />);
+    await click(host.querySelector("button")!);
+    expect(host.querySelector('[role="status"]')?.textContent).toMatch(/Select it and copy it/);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn(async () => { throw new Error("denied"); }) } });
+    host = mount(<CopyButton text="x" label="Copy URL" />);
+    await click(host.querySelector("button")!);
+    expect(host.querySelector('[role="status"]')?.textContent).toMatch(/Select it and copy it/);
   });
 });
 
@@ -102,6 +129,15 @@ describe("Field", () => {
     expect(host.querySelector('[role="group"]')).toBeNull();
     expect(host.querySelector("label")).toBeNull();
     expect(host.querySelector("span")!.textContent).toBe("Range");
+  });
+  it("a picker inside a Field is described by the note and the error, so a screen reader says them with it", () => {
+    const options = [{ value: "a", label: "Opus 5.5" }, { value: "b", label: "Sonnet 5.5" }];
+    const host = mount(<Field label="Model" note="The agent's model." error="This harness can't run it."><Picker label="Model" value="a" onChange={() => {}} options={options} /></Field>);
+    const button = host.querySelector("button")!;
+    expect(host.querySelector("label")!.htmlFor).toBe(button.id);
+    const described = (button.getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)?.textContent);
+    expect(described).toEqual(["The agent's model.", "This harness can't run it."]);
+    expect(button.getAttribute("aria-invalid")).toBe("true");
   });
   it("a control outside a Field takes its own props", () => {
     expect(html(<Input id="q" aria-describedby="hint" />)).toMatch(/id="q"[^>]*aria-describedby="hint"|aria-describedby="hint"[^>]*id="q"/);
@@ -316,5 +352,32 @@ describe("the design-system stories", () => {
         root = undefined;
       }
     }
+  });
+});
+
+// A picker sized by its words changes width with each pick unless it is `steady`. jsdom lays nothing out, so this holds
+// what the width comes from: every option's words in the field, hidden, in the picked words' own grid cell.
+describe("Picker, steady", () => {
+  const options = [{ value: "a", label: "GET · Short" }, { value: "b", label: "POST · The longest of them all" }];
+  const sizers = (host: HTMLElement) => [...host.querySelectorAll("button [data-picker-sizer]")];
+
+  it("holds every option's words in the field, hidden from sight and from a screen reader, whichever is picked", () => {
+    const host = mount(<Picker steady label="Operation" value="a" onChange={() => {}} options={options} />);
+    expect(sizers(host).map((n) => n.textContent)).toEqual(["GET · Short", "POST · The longest of them all"]);
+    for (const n of sizers(host)) { expect(n.getAttribute("aria-hidden")).toBe("true"); expect(n.className).toContain("invisible"); expect(n.className).toContain("row-start-1"); }
+    expect(host.querySelector("button")!.getAttribute("aria-label")).toBe("Operation");
+  });
+
+  it("opens a list no narrower than its longest row", async () => {
+    const host = mount(<Picker steady label="Operation" value="a" onChange={() => {}} options={options} />);
+    await click(host.querySelector("button")!);
+    expect(document.querySelector("[data-picker-list]")!.className).toContain("w-max");
+  });
+
+  it("a picker that is not steady holds only the picked words, and its list is the field's width", async () => {
+    const host = mount(<Picker label="Operation" value="a" onChange={() => {}} options={options} />);
+    expect(sizers(host)).toEqual([]);
+    await click(host.querySelector("button")!);
+    expect(document.querySelector("[data-picker-list]")!.className).not.toContain("w-max");
   });
 });

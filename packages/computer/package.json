@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-computer",
-  "version": "0.1.0-beta.42",
+  "version": "0.1.0-beta.52",
   "description": "The open platform's computer protocol: a daemon in every computer, and one provisioner per vendor, starting with Docker.",
   "keywords": [
     "agentrun",
@@ -8,7 +8,8 @@
     "sandbox",
     "docker",
     "daytona",
-    "boxd"
+    "boxd",
+    "smolcloud"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -63,6 +64,10 @@
       "types": "./dist/morph.d.ts",
       "default": "./dist/morph.js"
     },
+    "./smolcloud": {
+      "types": "./dist/smolcloud.d.ts",
+      "default": "./dist/smolcloud.js"
+    },
     "./boxd": {
       "types": "./dist/boxd.d.ts",
       "default": "./dist/boxd.js"
@@ -100,6 +105,8 @@
   "files": [
     "dist",
     "box",
+    "media",
+    "documents",
     "README.md",
     "LICENSE",
     "NOTICE"

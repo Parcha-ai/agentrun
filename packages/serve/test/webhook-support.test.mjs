@@ -14,7 +14,7 @@ test("settled observes the committed webhook delivery when its only filesystem e
   await on.runs("delivery");
   const webhooks = await on.open();
   await webhooks.save({ url: hook.url });
-  await webhooks.emit("run.ended", { run_id: "delivery", agent_id: "a", status: "completed", title: "delivery" }, new Date().toISOString());
+  await webhooks.emit("run.ended", { run_id: "delivery", agent_id: "a", agent_name: "a", status: "completed", title: "delivery" }, new Date().toISOString());
   await hook.when(1);
   assert.equal(outboxOf(dir).messages[0].status, "pending", "the receiver holds its answer until the watch is installed");
 

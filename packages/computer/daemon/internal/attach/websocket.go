@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -72,11 +73,18 @@ func (r *Refused) Error() string {
 	return fmt.Sprintf("the server refused the upgrade: %d %s", r.Status, r.Words)
 }
 
-// Options are a dial's: the token and subprotocol of the upgrade, the largest message read, and the liveness numbers.
+// Options are a dial's: the token and subprotocol of the upgrade, the largest message read, the liveness numbers, and
+// the relay the TCP connection goes to instead of the URL's host (EgressEnv), if any.
 type Options struct {
 	Token, Subprotocol string
 	MaxMessage         int
 	Heartbeat, Idle    time.Duration
+	// Egress is the relay's <IPv4>:<port>: set, the dial opens TCP to it and speaks TLS and HTTP to the URL's host over
+	// it exactly as it would directly (the SNI, the certificate checked and the Host header are all the URL's host's), so
+	// the relay chooses nothing and sees nothing but the ClientHello. Empty, the dial goes to the URL's host.
+	Egress string
+	// Roots are the certificates a wss:// dial trusts; nil, the system's.
+	Roots *x509.CertPool
 }
 
 // Conn is the client side of one WebSocket (RFC 6455) that carries text messages. As an io.Reader it gives each message
@@ -93,8 +101,9 @@ type Conn struct {
 	line    []byte // what Write holds of a line not yet ended
 }
 
-// Dial opens a WebSocket to rawURL (ws:// or wss://, TLS with the system's roots) with the token as a bearer and asks
-// for the subprotocol; any status but 101 is a *Refused. It pings every Heartbeat until the socket ends.
+// Dial opens a WebSocket to rawURL (ws:// or wss://, TLS with the system's roots unless o.Roots), through o.Egress when
+// set, with the token as a bearer and asks for the subprotocol; any status but 101 is a *Refused. It pings every
+// Heartbeat until the socket ends.
 func Dial(ctx context.Context, rawURL string, o Options) (*Conn, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") {
@@ -105,9 +114,10 @@ func Dial(ctx context.Context, rawURL string, o Options) (*Conn, error) {
 	} = &net.Dialer{Timeout: handshakeFor}
 	port := "80"
 	if u.Scheme == "wss" {
-		dialer, port = &tls.Dialer{NetDialer: &net.Dialer{Timeout: handshakeFor}}, "443"
+		// The URL's host by name, whatever address the TCP connection goes to: a relay is never what the TLS is with.
+		dialer, port = &tls.Dialer{NetDialer: &net.Dialer{Timeout: handshakeFor}, Config: &tls.Config{ServerName: u.Hostname(), RootCAs: o.Roots}}, "443"
 	}
-	nc, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(u.Hostname(), cmp.Or(u.Port(), port)))
+	nc, err := dialer.DialContext(ctx, "tcp", cmp.Or(o.Egress, net.JoinHostPort(u.Hostname(), cmp.Or(u.Port(), port))))
 	if err != nil {
 		return nil, err
 	}

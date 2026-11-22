@@ -1,0 +1,314 @@
+{
+  "passed": {
+    "ok": true,
+    "refused": null,
+    "facts": {
+      "resume": "load",
+      "tool_gate": "permission",
+      "billing": "plan"
+    },
+    "stage2": {
+      "tools_off": {
+        "ok": null,
+        "fields": [
+          "ok",
+          "why"
+        ]
+      },
+      "env_allowlist": {
+        "ok": true,
+        "fields": [
+          "beyondAllowlist",
+          "hostSecretsSeen",
+          "names",
+          "ok"
+        ]
+      },
+      "limits": {
+        "ok": true,
+        "fields": [
+          "billing",
+          "maxToolCalls",
+          "maxTurns",
+          "ok",
+          "why"
+        ]
+      },
+      "pins": {
+        "ok": true,
+        "fields": [
+          "archiveSha256",
+          "binary",
+          "ok",
+          "pinnedBy",
+          "sha256",
+          "starts"
+        ]
+      },
+      "side_requests": {
+        "ok": null,
+        "fields": [
+          "beyondLoopbackRefused",
+          "ok",
+          "toVendor",
+          "why"
+        ]
+      }
+    },
+    "stage3": {
+      "mcp_tool": {
+        "ok": true,
+        "fields": [
+          "calls",
+          "ok",
+          "resultReachedModel",
+          "turn"
+        ]
+      },
+      "resume": {
+        "ok": true,
+        "fields": [
+          "conversationCarried",
+          "killed",
+          "loaded",
+          "newProcess",
+          "ok",
+          "sameSession",
+          "turn"
+        ]
+      },
+      "denied_call": {
+        "ok": true,
+        "fields": [
+          "gateAsked",
+          "ok",
+          "ran",
+          "turn"
+        ]
+      },
+      "other_runner": {
+        "ok": true,
+        "fields": [
+          "conversationCarried",
+          "loaded",
+          "ok",
+          "turn"
+        ]
+      }
+    },
+    "failures": []
+  },
+  "unnamed": {
+    "ok": false,
+    "refused": null,
+    "facts": {
+      "resume": "load",
+      "tool_gate": "config",
+      "billing": "plan"
+    },
+    "stage2": {
+      "tools_off": {
+        "ok": null,
+        "fields": [
+          "ok",
+          "why"
+        ]
+      },
+      "env_allowlist": {
+        "ok": true,
+        "fields": [
+          "beyondAllowlist",
+          "hostSecretsSeen",
+          "names",
+          "ok"
+        ]
+      },
+      "limits": {
+        "ok": true,
+        "fields": [
+          "billing",
+          "maxToolCalls",
+          "maxTurns",
+          "ok",
+          "why"
+        ]
+      },
+      "pins": {
+        "ok": true,
+        "fields": [
+          "archiveSha256",
+          "binary",
+          "ok",
+          "pinnedBy",
+          "sha256",
+          "starts"
+        ]
+      },
+      "side_requests": {
+        "ok": null,
+        "fields": [
+          "beyondLoopbackRefused",
+          "ok",
+          "toVendor",
+          "why"
+        ]
+      }
+    },
+    "stage3": {
+      "mcp_tool": {
+        "ok": false,
+        "fields": [
+          "calls",
+          "error",
+          "ok",
+          "resultReachedModel",
+          "turn"
+        ]
+      },
+      "resume": {
+        "ok": false,
+        "fields": [
+          "conversationCarried",
+          "error",
+          "killed",
+          "loaded",
+          "newProcess",
+          "ok",
+          "sameSession",
+          "turn"
+        ]
+      },
+      "denied_call": {
+        "ok": false,
+        "fields": [
+          "gateAsked",
+          "ok",
+          "ran",
+          "turn"
+        ]
+      },
+      "other_runner": {
+        "ok": false,
+        "fields": [
+          "conversationCarried",
+          "error",
+          "loaded",
+          "ok",
+          "turn"
+        ]
+      }
+    },
+    "failures": [
+      "stage3.mcp_tool failed",
+      "stage3.resume failed",
+      "stage3.denied_call failed",
+      "stage3.other_runner failed"
+    ]
+  },
+  "keyless": {
+    "ok": false,
+    "refused": null,
+    "facts": {
+      "resume": "unknown",
+      "tool_gate": "config",
+      "billing": "plan"
+    },
+    "stage2": {
+      "tools_off": {
+        "ok": null,
+        "fields": [
+          "ok",
+          "why"
+        ]
+      },
+      "env_allowlist": {
+        "ok": null,
+        "fields": [
+          "ok",
+          "why"
+        ]
+      },
+      "limits": {
+        "ok": true,
+        "fields": [
+          "billing",
+          "maxToolCalls",
+          "maxTurns",
+          "ok",
+          "why"
+        ]
+      },
+      "pins": {
+        "ok": false,
+        "fields": [
+          "archiveSha256",
+          "binary",
+          "ok",
+          "pinnedBy",
+          "sha256",
+          "starts"
+        ]
+      },
+      "side_requests": {
+        "ok": null,
+        "fields": [
+          "beyondLoopbackRefused",
+          "ok",
+          "toVendor",
+          "why"
+        ]
+      }
+    },
+    "stage3": {
+      "mcp_tool": {
+        "ok": false,
+        "fields": [
+          "calls",
+          "error",
+          "ok",
+          "resultReachedModel",
+          "turn"
+        ]
+      },
+      "resume": {
+        "ok": false,
+        "fields": [
+          "conversationCarried",
+          "error",
+          "killed",
+          "loaded",
+          "newProcess",
+          "ok",
+          "sameSession",
+          "turn"
+        ]
+      },
+      "denied_call": {
+        "ok": false,
+        "fields": [
+          "gateAsked",
+          "ok",
+          "ran",
+          "turn"
+        ]
+      },
+      "other_runner": {
+        "ok": false,
+        "fields": [
+          "conversationCarried",
+          "error",
+          "loaded",
+          "ok",
+          "turn"
+        ]
+      }
+    },
+    "failures": [
+      "stage2.pins failed",
+      "stage3.mcp_tool failed",
+      "stage3.resume failed",
+      "stage3.denied_call failed",
+      "stage3.other_runner failed"
+    ]
+  }
+}

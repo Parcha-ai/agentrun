@@ -26,7 +26,7 @@ function service(kind, stage, fails = false) {
         const run = `sdk-${++sequence}`;
         return Response.json({ run_id: run, agent_id: 'backend', token: 'fake-scoped-key',
           console_url: `https://server.example/#/runs/${run}`,
-          learning: { enabled: false, revision: null, context: '', skills: [] } });
+          learning: { enabled: false, revision: null, context: '' } });
       }
       if (path.endsWith('/complete') || path.endsWith('/events')) return Response.json({ accepted: true });
       return Response.json({ run_id: path.split('/').at(-1), state: 'completed' });

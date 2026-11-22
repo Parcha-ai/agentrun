@@ -15,6 +15,7 @@
 
 import type { MountSpec } from "@parcha/agentrun-computer";
 import type { AttachableComputer, MountCheck, Processes } from "./attach.js";
+import type { FolderStore } from "./synced-folder.js";
 
 /** Why a workspace call failed. */
 export type WorkspaceErrorCode =
@@ -194,4 +195,7 @@ export interface Workspace {
   /** This Workspace inside `computer`, once the computer's read-back shows it mounts mountSpec() at /workspace: file
    *  calls and exec go to its computerd client, and `process` is the computer's (attach.ts). */
   attach(computer: AttachableComputer, check: MountCheck): Promise<Workspace>;
+  /** Where the runner keeps this Workspace's folder for a computer that holds it as a synced folder (Mode 2's disk:
+   *  synced-folder.ts). Absent: its folder is never synced into a computer. */
+  syncStore?(): FolderStore;
 }

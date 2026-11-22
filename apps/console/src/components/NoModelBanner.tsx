@@ -1,3 +1,5 @@
+import type { Capabilities } from "@/lib/client";
+
 /** The bar every page but the first screen shows while capabilities' `models.ready` is false (the first screen has the key
  *  card, ModelKeyCard): no agent that names no model runs here yet, and what would fix it. `needs` `model`: the server's
  *  AGENT_MODEL names a model it does not run, which no key fixes. `settings`: the server keeps keys (its key routes), so
@@ -10,7 +12,7 @@
  *  the server offers Sign in with ChatGPT and is not signed in, so the bar offers it first (on the first screen, and in
  *  Settings → Model keys), then a key. `source` `chatgpt`: signed in, with no key; what the bar says is then `needs`'s
  *  alone. */
-export function NoModelBanner({ needs, settings, model, source, chatgpt = false }: { needs?: "key" | "model" | null; settings: boolean; model?: string | null; source?: "faux" | "gateway" | "providers" | "chatgpt"; chatgpt?: boolean }) {
+export function NoModelBanner({ needs, settings, model, source, chatgpt = false }: { needs?: "key" | "model" | null; settings: boolean; model?: string | null; source?: Capabilities["models"]["source"]; chatgpt?: boolean }) {
   return (
     <p role="status" aria-label="No model" className="border-b bg-card px-5 py-3 text-body text-warning-text md:px-8">
       {needs === "model" ? (
@@ -34,11 +36,11 @@ export function NoModelBanner({ needs, settings, model, source, chatgpt = false 
           ) : settings ? (
             <>
               <a href="#/settings/keys" className="underline underline-offset-2">Add a key in Settings → Model keys</a> (one OpenRouter key
-              gives every harness its model), and it takes effect at once. Or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or
-              OPENAI_API_KEY where AgentRun starts, and restart.
+              gives every harness its model), and it takes effect at once. Or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY,
+              OPENAI_API_KEY or PARTICLE_API_KEY where AgentRun starts, and restart.
             </>
           ) : (
-            "Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart."
+            "Set OPENROUTER_API_KEY (one key gives every harness its model), ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY, and restart."
           )}
         </>
       )}

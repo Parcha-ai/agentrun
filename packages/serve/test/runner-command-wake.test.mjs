@@ -1,5 +1,5 @@
 // A command written for a held run reaches its loop at once, not at the runner's next command poll: with commandPollMs at
-// ten seconds, the row is in the loop's command() well inside 100 ms, and a row written while a delivery is in flight is
+// ten seconds, the row is in the loop's command() with the poll still unfired, and a row written while a delivery is in flight is
 // handed on by the one more delivery that follows it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -9,7 +9,7 @@ import { client, postgresOnly, schemaOf } from "./store-target.mjs";
 const { startRunner } = await import("../dist/runner/runner.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 10_000 };
 
-test("a row written for a held run reaches its loop's command() in under 100 ms with the command poll at ten seconds", async (t) => {
+test("a row written for a held run reaches its loop's command() before the command poll, set at ten seconds, fires", async (t) => {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
@@ -17,12 +17,10 @@ test("a row written for a held run reaches its loop's command() in under 100 ms 
   t.after(() => runner.close());
   await until(() => faux.loops[0]?.claim !== null && faux.loops[0] !== undefined, "the run is held and its loop started");
   const loop = faux.loops[0];
-  const wrote = Date.now();
   const row = await opened.server.command("run-1", { kind: "steer", body: { content: "now" } });
+  // The ten-second poll cannot fire inside this wait's two seconds, so a row that arrives did so by the write's own wake.
   await until(() => loop.received.some((one) => one.id === row.id), "the row reaches the loop", 2_000);
-  const ms = loop.received.find((one) => one.id === row.id).at - wrote;
-  console.log(`runner wake: a row written for a held run reached its loop's command() in ${ms} ms (commandPollMs 10000)`);
-  assert.ok(ms < 100, `${ms} ms`);
+  assert.equal(loop.received.filter((one) => one.id === row.id).length, 1, "handed on once");
 });
 
 test("rows written one after another while deliveries are in flight all reach the loop before the next poll", async (t) => {

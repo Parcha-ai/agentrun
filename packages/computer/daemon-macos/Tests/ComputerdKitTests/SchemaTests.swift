@@ -22,9 +22,21 @@ final class SchemaTests: XCTestCase {
 
 	/// Fields the schema names that this driver never sends, and why.
 	static let notSent: [String: Set<String>] = [
-		// A desktop under X11 and init's network fence: Linux computers only.
-		"hello.result": ["display", "fence"],
+		// A desktop under X11, init's network fence and the window manager init starts on that X11 display: Linux
+		// computers only.
+		"hello.result": ["display", "fence", "windowManager"],
 	]
+
+	/// Whether `path` is a field notSent names, or a field inside one (hello.result.windowManager.state).
+	static func isNotSent(_ path: String) -> Bool {
+		var path = path
+		while let dot = path.lastIndex(of: ".") {
+			let parent = String(path[..<dot])
+			if notSent[parent]?.contains(String(path[path.index(after: dot)...])) == true { return true }
+			path = parent
+		}
+		return false
+	}
 
 	struct Case {
 		let method: String
@@ -182,9 +194,7 @@ final class SchemaTests: XCTestCase {
 					seen.collect(json, at: "\(c.method).\(side)")
 				}
 				for missing in validator.fields(ref, at: "\(c.method).\(side)") where !seen.paths.contains(missing) {
-					let parent = String(missing[..<missing.lastIndex(of: ".")!])
-					let field = String(missing[missing.index(after: missing.lastIndex(of: ".")!)...])
-					if Self.notSent[parent]?.contains(field) == true { continue }
+					if Self.isNotSent(missing) { continue }
 					XCTFail("the schema has \(missing), which no Swift sample sends: the Swift type lacks it")
 				}
 			}

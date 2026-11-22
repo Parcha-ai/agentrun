@@ -1,0 +1,19 @@
+{
+  "package": "@parcha/agentrun-eve",
+  "install": ["client", "dsl", "eve"],
+  "companions": ["@parcha/agentrun-client", "@parcha/agentrun-dsl"],
+  "command": ["node", "check-agentrun.mjs"],
+  "files": [
+    {
+      "name": "check-agentrun.mjs",
+      "readme": "packages/eve/README.md",
+      "heading": "Check the installation without credentials",
+      "fence": "js"
+    }
+  ],
+  "expect": {
+    "exitCode": 0,
+    "pattern": "^AgentRun extension loaded; learning defaults to Off\\. No agent was connected\\.\\r?\\n?$"
+  },
+  "timeoutMs": 120000
+}

@@ -26,7 +26,7 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.equal(body.features.timeline.live_workflow_rows, false);
   assert.equal(body.features.tool_permissions, true, "a tool setting carries a permission, which the tool gate holds every call to");
   const keyed = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"].filter((name) => !process.env[name]).length === 0 || !!process.env.KERNEL_API_KEY;
-  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["bash", false, false, false], ["bash_background", false, false, false], ["bash_output", false, false, false], ["bash_input", false, false, false], ["bash_signal", false, false, false], ["bash_list", false, false, false], ["ask_person", true, false, false], ["web_fetch", true, true, true], ["web_search", true, true, true], ["email_search", true, false, false], ["email_read", true, false, false], ["email_draft", true, false, false], ["email_send", true, false, false], ["email_file", true, false, false], ["calendar_events", true, false, false], ["browser", keyed, false, false], ["subagent", true, false, false], ["pdf_pages", true, false, true], ["llm", true, false, true], ["tools_search", true, false, false], ["tools_call", true, false, false], ["codemode", true, false, false]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run; bash and the background tools run in no box on a server that has none");
+  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["bash", false, false, false], ["bash_background", false, false, false], ["bash_output", false, false, false], ["bash_input", false, false, false], ["bash_signal", false, false, false], ["bash_list", false, false, false], ["ask_person", true, false, false], ["web_fetch", true, true, true], ["web_search", true, true, true], ["web_save", true, false, false], ["email_search", true, false, false], ["email_read", true, false, false], ["email_draft", true, false, false], ["email_send", true, false, false], ["email_file", true, false, false], ["calendar_events", true, false, false], ["browser", keyed, false, false], ["subagent", true, false, false], ["pdf_pages", true, false, true], ["llm", true, false, true], ["tools_search", true, false, false], ["tools_call", true, false, false], ["codemode", true, false, false]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run; bash and the background tools run in no box on a server that has none");
   assert.ok(body.tools.every((t) => typeof t.summary === "string" && t.summary));
   // The browser runs on either vendor's keys, which no one list of variables says: its reason names both (tool-plane.ts).
   assert.match(body.tools.find((t) => t.name === "browser").reason ?? "", keyed ? /^$/ : /BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID.*KERNEL_API_KEY/, "what browser lacks here, by name");
@@ -54,7 +54,7 @@ test("without a default model a revision that names none is refused before it st
   assert.equal(refused.status, 409);
   assert.equal(refused.body.error.code, "agent_not_runnable");
   // A server that signs in with ChatGPT says so too: pi runs on the plan.
-  assert.match(refused.body.error.message, /No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts; or sign in with ChatGPT \(Settings → Model keys\) to run it on your ChatGPT plan\./);
+  assert.match(refused.body.error.message, /No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY where AgentRun starts; or sign in with ChatGPT \(Settings → Model keys\) to run it on your ChatGPT plan\./);
   assert.doesNotMatch(refused.body.error.message, /--faux|AGENT_MODEL/, "a person's words: no operator flags");
   assert.equal((await api("POST", "/agents", agent("keyless", { model: "openai/gpt-6.1-sol" }))).status, 201);
   const keyless = await api("POST", "/agents/keyless/runs", { input: { content: "hi" } });
@@ -172,6 +172,37 @@ test("an agent is created from a definition and skills, read back with its ETag,
   assert.equal((await api("GET", "/agents/nobody")).status, 404);
 });
 
+test("PUT .../definition changes the description: the answer, GET, the list and the revisions carry it; one that leaves it out keeps it; a stale If-Match changes nothing; the name stays fixed", async (t) => {
+  const { api } = await serve(t);
+  const made = await api("POST", "/agents", agent("larkspur", { description: "/opt/code/larkspur-web" }));
+  assert.equal(made.status, 201);
+  const edited = await api("PUT", "/agents/larkspur/definition", agent("larkspur", { version: 2, description: "Builds the Larkspur site." }), { "if-match": made.headers.get("etag") });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.body.definition.description, "Builds the Larkspur site.");
+  assert.equal(edited.body.revisions, 2, "a description-only edit makes a revision");
+  assert.notEqual(edited.headers.get("etag"), made.headers.get("etag"));
+  const read = await api("GET", "/agents/larkspur");
+  assert.deepEqual([read.body.definition.description, read.body.revisions], ["Builds the Larkspur site.", 2]);
+  assert.equal((await api("GET", "/agents")).body.agents.find((a) => a.agent_id === "larkspur").definition.description, "Builds the Larkspur site.");
+  // A stale If-Match with a new description: 412, and the description is the one before.
+  const stale = await api("PUT", "/agents/larkspur/definition", agent("larkspur", { version: 3, description: "On a stale read." }), { "if-match": made.headers.get("etag") });
+  assert.equal(stale.status, 412);
+  assert.equal((await api("GET", "/agents/larkspur")).body.definition.description, "Builds the Larkspur site.");
+  // An edit that leaves the description out keeps it.
+  const left = await api("PUT", "/agents/larkspur/definition", agent("larkspur", { version: 3, instructions: "Answer briefly." }));
+  assert.deepEqual([left.status, left.body.definition.description, left.body.revisions], [200, "Builds the Larkspur site.", 3]);
+  // The contract's body (the definition itself) changes it too.
+  const contract = await api("PUT", "/agents/larkspur/definition", { ...agent("larkspur", { version: 4, instructions: "Answer briefly.", description: "Builds and ships the Larkspur site." }).definition }, { "if-match": left.headers.get("etag") });
+  assert.deepEqual([contract.status, contract.body.definition.description, contract.body.revisions], [200, "Builds and ships the Larkspur site.", 4]);
+  // A changed name is still input_invalid on definition.name alone, and changes nothing.
+  const renamed = await api("PUT", "/agents/larkspur/definition", agent("larkspur", { version: 5, instructions: "Answer briefly.", name: "Renamed", description: "With a new name." }));
+  assert.equal(renamed.status, 422);
+  assert.equal(renamed.body.error.code, "input_invalid");
+  assert.deepEqual(renamed.body.error.fields.map((f) => [f.field, f.reason]), [["definition.name", "not_allowed"]]);
+  const after = await api("GET", "/agents/larkspur");
+  assert.deepEqual([after.body.definition.name, after.body.definition.description, after.body.revisions], ["larkspur", "Builds and ships the Larkspur site.", 4]);
+});
+
 test("a definition field the store does not keep is refused by name, and an id already here is agent_exists", async (t) => {
   const { api } = await serve(t);
   const kept = await api("POST", "/agents", agent("m", { input_shape: {} }));
@@ -274,7 +305,7 @@ test("a thinking level is one of the levels, exactly; never off", () => {
 test("a tool's missing variables are named, never their values", async () => {
   const { toolsView, TOOLS } = await import("../dist/tools.js");
   assert.ok(Object.isFrozen(TOOLS));
-  assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["bash", undefined], ["bash_background", undefined], ["bash_output", undefined], ["bash_input", undefined], ["bash_signal", undefined], ["bash_list", undefined], ["ask_person", undefined], ["web_fetch", undefined], ["web_search", undefined], ["email_search", undefined], ["email_read", undefined], ["email_draft", undefined], ["email_send", undefined], ["email_file", undefined], ["calendar_events", undefined], ["browser", undefined], ["subagent", undefined], ["pdf_pages", undefined], ["llm", undefined], ["tools_search", undefined], ["tools_call", undefined], ["codemode", undefined]]);
+  assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["bash", undefined], ["bash_background", undefined], ["bash_output", undefined], ["bash_input", undefined], ["bash_signal", undefined], ["bash_list", undefined], ["ask_person", undefined], ["web_fetch", undefined], ["web_search", undefined], ["web_save", undefined], ["email_search", undefined], ["email_read", undefined], ["email_draft", undefined], ["email_send", undefined], ["email_file", undefined], ["calendar_events", undefined], ["browser", undefined], ["subagent", undefined], ["pdf_pages", undefined], ["llm", undefined], ["tools_search", undefined], ["tools_call", undefined], ["codemode", undefined]]);
   // web_search needs no key: Codex's own search; claude-agent on auto and pi with no model named, Exa's keyless search
   // (Claude's own search is an explicit pick); Parallel picked
   // without its key, missing.
@@ -283,6 +314,6 @@ test("a tool's missing variables are named, never their values", async () => {
   // An unavailable tool always says why: a provider pick's own words, or the variables it needs.
   const off = toolsView({}, { web_search: { provider: "off" } }).find((t) => t.name === "web_search");
   assert.deepEqual([off.available, off.reason], [false, "web_search is turned off in settings"], "off: the server's reason, the one a client shows");
-  assert.equal(toolsView({}, { web_search: { provider: "parallel" } }).find((t) => t.name === "web_search").reason, "parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)");
+  assert.equal(toolsView({}, { web_search: { provider: "parallel" } }).find((t) => t.name === "web_search").reason, "parallel is picked, and it needs a Parallel key: save one in Settings → API Keys (or set PARALLEL_API_KEY where the server starts)");
   for (const t of toolsView({}, { web_search: { provider: "off" } })) assert.equal(typeof t.reason === "string" && t.reason.length > 0, !t.available, `${t.name}: a reason exactly when it is unavailable`);
 });

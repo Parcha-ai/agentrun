@@ -73,19 +73,44 @@ dial() {
 # agentrun-dial (written by the box image's install.sh): a machine that dials the server. From the env the provider's
 # create gave it, it fetches the server's computerd with the machine's token, checks its sha256, installs it root's alone
 # where the provider's exec install puts it, starts `computerd init` as that start does, in a clean environment without
-# the token, and becomes `computerd attach` with the attach URL and the token alone in its environment. A daemon whose
-# sha256 is not AGENTRUN_DAEMON_SHA256 is removed, and nothing runs. Exits 2 for env missing, 3 when the fetch failed,
-# 4 for a sha256 mismatch, 5 when init never listened; else it is `computerd attach` and exits as it does.
+# the token (with DISPLAY, for a desktop), and becomes `computerd attach` with the attach URL and the token alone in its environment. Before init, it
+# gives /workspace to init's user (its --user), 0700, where a synced folder's runner pushes the run's folder. A daemon
+# whose sha256 is not AGENTRUN_DAEMON_SHA256 is removed, and nothing runs. With AGENTRUN_ATTACH_EGRESS, the operator's
+# relay (<IPv4>:<port>), the fetch and attach's dial both connect to the relay and speak TLS and HTTP to the URL's host
+# through it, and attach is given it too. Exits 2 for env missing or a malformed relay, 3 when the fetch failed, 4 for
+# a sha256 mismatch, 5 when init never listened, 6 when /workspace was not made init's user's; else it is
+# `computerd attach` and exits as it does.
 set -euf
 DAEMON=/opt/agentrun/computerd
 HOME_DIR=/work
 SOCKET_DIR=/run/agentrun
 INIT_LOG=/run/agentrun-init.log
+WORKSPACE=/workspace
 OWNER=0:0
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 for v in AGENTRUN_ATTACH_URL AGENTRUN_ATTACH_TOKEN AGENTRUN_DAEMON_URL AGENTRUN_DAEMON_SHA256 AGENTRUN_INIT_ARGS; do
 	eval "[ -n \"\${$v-}\" ]" || { echo "agentrun-dial: $v is not set; the provider's create sets it" >&2; exit 2; }
 done
+# The operator's relay, where the machine reaches the server only through it (a provider's attach egress): curl connects
+# there and speaks TLS and HTTP to the URL's host as it would directly (--connect-to keeps the SNI, the certificate check
+# and the Host header the URL's). Digits, dots and colons alone, so it splits into exactly curl's two words; attach
+# checks its shape whole.
+relay=
+case "${AGENTRUN_ATTACH_EGRESS-}" in
+"") ;;
+*[!0-9.:]*) echo "agentrun-dial: AGENTRUN_ATTACH_EGRESS is the relay's <IPv4>:<port>; the provider's create sets it" >&2; exit 2 ;;
+*) relay="--connect-to ::$AGENTRUN_ATTACH_EGRESS" ;;
+esac
+# init's user, uid:gid, from its --user: /workspace is that user's alone, never a link.
+user=
+set -- $AGENTRUN_INIT_ARGS
+while [ $# -gt 1 ]; do
+	[ "$1" != --user ] || user=$2
+	shift
+done
+[ -n "$user" ] || { echo "agentrun-dial: AGENTRUN_INIT_ARGS names no --user; the provider's create sets it" >&2; exit 2; }
+{ [ ! -L "$WORKSPACE" ] && mkdir -p "$WORKSPACE" && chown "$user" "$WORKSPACE" && chmod 0700 "$WORKSPACE"; } ||
+	{ echo "agentrun-dial: $WORKSPACE was not made $user's" >&2; exit 6; }
 mkdir -p "${DAEMON%/*}" "$HOME_DIR" "$SOCKET_DIR"
 chown "$OWNER" "${DAEMON%/*}" "$SOCKET_DIR"
 chmod 0755 "${DAEMON%/*}"
@@ -94,8 +119,8 @@ chmod 0700 "$SOCKET_DIR"
 rm -f "$DAEMON.part"
 # The token goes to curl on its stdin, never on a command line, which every user may read in /proc.
 printf 'Authorization: Bearer %s\n' "$AGENTRUN_ATTACH_TOKEN" |
-	curl -fsS --connect-timeout 10 --retry 10 --retry-connrefused --retry-max-time 300 -H @- -o "$DAEMON.part" "$AGENTRUN_DAEMON_URL" ||
-	{ echo "agentrun-dial: fetching the daemon from $AGENTRUN_DAEMON_URL failed" >&2; rm -f "$DAEMON.part"; exit 3; }
+	curl -fsS --connect-timeout 10 --retry 10 --retry-connrefused --retry-max-time 300 $relay -H @- -o "$DAEMON.part" "$AGENTRUN_DAEMON_URL" ||
+	{ echo "agentrun-dial: fetching the daemon from $AGENTRUN_DAEMON_URL${relay:+ through $AGENTRUN_ATTACH_EGRESS} failed" >&2; rm -f "$DAEMON.part"; exit 3; }
 sum=$(sha256sum "$DAEMON.part" | cut -c1-64)
 if [ "$sum" != "$AGENTRUN_DAEMON_SHA256" ]; then
 	rm -f "$DAEMON.part"
@@ -105,8 +130,9 @@ fi
 chown "$OWNER" "$DAEMON.part"
 chmod 0755 "$DAEMON.part"
 mv -f "$DAEMON.part" "$DAEMON"
-# init's arguments are words with no space and no pattern (set -f): split, never globbed.
-env -i PATH="$PATH" HOME="$HOME_DIR" AGENTRUN_COMPUTERD_SOCKET="$SOCKET_DIR/computerd.sock" \
+# init's arguments are words with no space and no pattern (set -f): split, never globbed. A desktop's create sets
+# DISPLAY, the display init's screen and input methods drive, as the provider's exec start gives it.
+env -i PATH="$PATH" HOME="$HOME_DIR" AGENTRUN_COMPUTERD_SOCKET="$SOCKET_DIR/computerd.sock" ${DISPLAY:+DISPLAY="$DISPLAY"} \
 	setsid sh -c 'cd "$HOME" && exec "$@"' sh "$DAEMON" init $AGENTRUN_INIT_ARGS >"$INIT_LOG" 2>&1 </dev/null &
 i=0
 until [ -S "$SOCKET_DIR/computerd.sock" ]; do
@@ -114,9 +140,10 @@ until [ -S "$SOCKET_DIR/computerd.sock" ]; do
 	[ "$i" -le 300 ] || { echo "agentrun-dial: init did not listen at $SOCKET_DIR/computerd.sock within 30 s; its log:" >&2; cat "$INIT_LOG" >&2; exit 5; }
 	sleep 0.1
 done
-# attach's environment: the URL and token alone (it dials init at its default socket, SOCKET_DIR's).
+# attach's environment: the URL and token alone, and the relay when given (it dials init at its default socket,
+# SOCKET_DIR's).
 for v in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
-	case "$v" in AGENTRUN_ATTACH_URL | AGENTRUN_ATTACH_TOKEN | DAEMON) ;; *) unset "$v" 2>/dev/null || : ;; esac
+	case "$v" in AGENTRUN_ATTACH_URL | AGENTRUN_ATTACH_TOKEN | AGENTRUN_ATTACH_EGRESS | DAEMON) ;; *) unset "$v" 2>/dev/null || : ;; esac
 done
 exec "$DAEMON" attach
 EOF

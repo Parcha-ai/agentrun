@@ -4,7 +4,7 @@ Repeated jobs, run with learning off and on, measured. It runs on demand and nig
 models and spends.
 
 - **Runner:** `scripts/learn-bench.mjs`.
-- **Results:** one JSON file, in `results.schema.json` (`learning-bench/2`).
+- **Results:** one JSON file, in `results.schema.json` (`learning-bench/3`).
 - **Summary:** `node scripts/learn-bench.mjs --render results.json`.
 
 ## A job
@@ -49,13 +49,13 @@ They feed staleness and wrong keeps. Every other grader is named freely.
    - the follow rate on `repeat` steps;
    - the workflow proposal rate on `teach` steps, and the reuse rate (`learned_workflow` calls);
    - reuse, for a series that kept a workflow (`metrics.reuse`): the step it was kept at, how many later steps called
-     `learned_workflow` and how many of those passed, and tokens per passing step on those steps against the skill-only
-     steps (a learned skill active, no workflow called);
-   - staleness after a `change` step: whether the active skill and workflow texts changed, the `change-*` graders' pass
-     rate, and whether `learned_workflow` steps passed them;
+     `learned_workflow` and how many of those passed, and tokens per passing step on those steps against the steps that
+     called no workflow;
+   - staleness after a `change` step: whether `corrections.md` and the active workflow texts changed, the `change-*`
+     graders' pass rate, and whether `learned_workflow` steps passed them;
    - wrong keeps (`plant-*` graders that graded and failed; a check that could not be graded, a grader outage or a run
      that did not finish, is `ungraded`, counted apart and never a wrong keep);
-   - the learning grade's cost.
+   - the end-of-run compile turn's cost.
 
 ```
 node packages/serve/scripts/learn-bench.mjs --dry [--job expense] [--harness pi] [--steps 3]

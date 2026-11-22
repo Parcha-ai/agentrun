@@ -65,6 +65,7 @@ export default {
         "run-error": hsl("run-error-surface"),
         wf: { jev: hsl("wf-jev"), parallel: hsl("wf-parallel"), openrouter: hsl("wf-openrouter"), tool: hsl("wf-tool"), exit: hsl("wf-exit") },
         chart: { agent: hsl("chart-agent"), "handed-back": hsl("chart-handed-back"), workflow: hsl("chart-workflow") },
+        trace: { model: hsl("trace-model"), tool: hsl("trace-tool") },
       },
       spacing: { sidebar: "var(--sidebar-width)", "control-sm": "var(--control-sm)", "control-md": "var(--control-md)", "control-lg": "var(--control-lg)" },
       maxWidth: { page: "var(--page-width)", "page-wide": "var(--page-width-wide)" },
@@ -78,8 +79,14 @@ export default {
   // would turn off the `max-*` variants, which need every screen to be a plain min-width.
   // `roomy:`, a viewport at least `md` wide AND more than 500px tall: where the desktop sidebar fits beside the page. A phone
   // on its side is wide (844) and short (390), so it gets the phone's top bar and menu, as portrait does.
-  plugins: [plugin(({ addVariant }) => {
+  // `@container` on a pane, and `@4xl:` (56rem) or `@5xl:` (64rem) on what is laid out by that pane's width, not the
+  // window's: a table beside a panel that takes part of the page. Tailwind 4's own names and widths for the two. They
+  // are written before the screens in the stylesheet, so one never undoes a screen's class (`xl:hidden @4xl:table-cell`
+  // stays hidden): write the screen's side as a range instead (`hidden max-xl:table-cell @4xl:table-cell`).
+  plugins: [plugin(({ addVariant, matchUtilities, matchVariant }) => {
     addVariant("short", "@media (max-height: 500px)");
     addVariant("roomy", "@media (min-width: 768px) and (min-height: 501px)");
+    matchUtilities({ "@container": (value) => ({ "container-type": value }) }, { values: { DEFAULT: "inline-size" } });
+    matchVariant("@", (value) => `@container (min-width: ${value})`, { values: { "4xl": "56rem", "5xl": "64rem" } });
   })],
 } satisfies Config;

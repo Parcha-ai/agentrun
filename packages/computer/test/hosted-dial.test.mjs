@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { ATTACH_CLOSE, AttachHub, helloMismatch, hostedDaemonPath, MemoryMachineTokens, mintedComputer } from "../dist/index.js";
+import { ATTACH_CLOSE, AttachHub, helloMismatch, hostedDaemonPath, MACHINE_TOKEN_SOURCE, MemoryMachineTokens, mintedComputer, mountsOf } from "../dist/index.js";
 import { HostedProvider } from "../dist/hosted/provider.js";
 import { fakeDialHost, PUBLIC_URL } from "./fake-dial-host.mjs";
 import { fakeHost } from "./fake-host.mjs";
@@ -42,7 +42,7 @@ test("a dial create boots the machine with its env, runs nothing in it, and read
 	assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"]);
 	assert.equal(env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach");
 	assert.equal(env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64");
-	assert.match(env.AGENTRUN_ATTACH_TOKEN, /^art_[0-9a-f]{64}$/);
+	assert.match(env.AGENTRUN_ATTACH_TOKEN, new RegExp(`^${MACHINE_TOKEN_SOURCE}$`));
 	assert.match(env.AGENTRUN_DAEMON_SHA256, /^[0-9a-f]{64}$/);
 	assert.equal(env.AGENTRUN_INIT_ARGS, `--deadline ${request.labels["agentrun.computer.deadline"]} --user 2510:2510 --own-network --max-deadline ${request.labels["agentrun.computer.max-deadline"]}`);
 	assert.equal(request.command, undefined, "no entrypoint: agentrun-dial starts init");
@@ -60,6 +60,17 @@ test("a dial create boots the machine with its env, runs nothing in it, and read
 	assert.equal(tokens.check(env.AGENTRUN_ATTACH_TOKEN), undefined, "delete revoked the token");
 	assert.equal(hub.online(ref.name), false, "and closed its socket");
 	assert.deepEqual(fake.live(), []);
+});
+
+test("a dial create's mint names the run its labels name (agentrun.run), and none for a computer of no run", async () => {
+	const { fake, provider, tokens } = setup();
+	const ofRun = made(await create(provider, { ...SPEC, labels: { "agentrun.run": "run-7", "agentrun.epoch": "1" } }));
+	const runToken = fake.calls.filter(([what]) => what === "create").at(-1)[1].boot.env.AGENTRUN_ATTACH_TOKEN;
+	assert.equal(tokens.check(runToken)?.mint.run, "run-7", "the token's mint names its run");
+	const ofNone = made(await create(provider));
+	const noneToken = fake.calls.filter(([what]) => what === "create").at(-1)[1].boot.env.AGENTRUN_ATTACH_TOKEN;
+	assert.equal(tokens.check(noneToken)?.mint.run, undefined, "a computer of no run names none");
+	for (const ref of [ofRun, ofNone]) made(await provider.release(ref, "delete"));
 });
 
 test("a release of a machine gone already revokes its token and closes its socket", async () => {
@@ -153,7 +164,7 @@ test("delete revokes the machine's token before it closes the socket, and closes
 	let fails = false;
 	const dial = {
 		url: PUBLIC_URL,
-		tokens: { mint: (machine, mint) => tokens.mint(machine, mint), revoke: async (machine) => (order.push("token"), fails ? Promise.reject(new Error("the store is down")) : tokens.revoke(machine)) },
+		tokens: { mint: (machine, mint) => tokens.mint(machine, mint), revoke: async (machine) => (order.push("token"), fails ? Promise.reject(new Error("the store is down")) : tokens.revoke(machine)), refused: (machine) => tokens.refused(machine) },
 		hub: { online: (id) => hub.online(id), connection: (id) => hub.connection(id), revoke: (id, why) => (order.push("socket"), hub.revoke(id, why)) },
 	};
 	const notes = [];
@@ -171,7 +182,7 @@ test("delete revokes the machine's token before it closes the socket, and closes
 
 test("a token store that never answers a revoke holds a delete back no longer than requestMs: the socket closes and the machine is deleted", async () => {
 	const { fake, tokens, hub } = setup();
-	const dial = { url: PUBLIC_URL, tokens: { mint: (machine, mint) => tokens.mint(machine, mint), revoke: () => new Promise(() => {}) }, hub };
+	const dial = { url: PUBLIC_URL, tokens: { mint: (machine, mint) => tokens.mint(machine, mint), revoke: () => new Promise(() => {}), refused: (machine) => tokens.refused(machine) }, hub };
 	const notes = [];
 	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 300 }, dial, onNote: (note) => notes.push(note.note) });
 	const ref = made(await create(provider));
@@ -181,11 +192,105 @@ test("a token store that never answers a revoke holds a delete back no longer th
 	assert.deepEqual(notes, ["its machine token could not be revoked (the token store did not answer within 0.3 s): it is refused past the machine's backstop either way"]);
 });
 
-test("a dial host's provider given no dial refuses create in its own words, of the process, before the vendor is called", async () => {
+// A runner apart from the server (serve's dial-relay.ts): the server keeps its refusal to relay a machine's dial on the
+// token's row, and the runner's create reads it (MachineTokens refused) instead of waiting out createMs.
+test("a machine whose dial the server refused ends create at once in the server's words, which name no token, and is deleted", async () => {
+	const { fake, tokens, hub } = setup({ dials: false });
+	const said = new Map();
+	const dial = {
+		url: PUBLIC_URL,
+		tokens: {
+			async mint(machine, mint) {
+				const token = await tokens.mint(machine, mint);
+				setTimeout(() => said.set(machine, `a dial for run run-7 (machine ${machine}): runner runner-b, which made it, is not running now`), 50);
+				return token;
+			},
+			revoke: (machine) => tokens.revoke(machine),
+			refused: async (machine) => said.get(machine),
+		},
+		hub,
+	};
+	const createMs = 20_000;
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, createMs }, dial });
+	const started = Date.now();
+	const refused = await create(provider, { ...SPEC, labels: { "agentrun.run": "run-7" } });
+	const took = Date.now() - started;
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused", refused.error.message);
+	assert.match(refused.error.message, /the server refused a dial for run run-7 \(machine computer-[0-9a-f]{12}\): runner runner-b, which made it, is not running now$/);
+	assert.doesNotMatch(refused.error.message, /art_/);
+	assert.ok(took < createMs / 4, `create ended at the refusal, not at createMs: ${took} ms`);
+	assert.deepEqual(fake.live(), [], "the machine was deleted");
+});
+
+// The refusal read never holds the hub check back: a token store that stalls on refused() costs no machine that attached
+// meanwhile, no abort waits on it, and it never holds create past createMs.
+const stalling = (tokens, refused = () => new Promise(() => {})) => ({ mint: (machine, mint) => tokens.mint(machine, mint), revoke: (machine) => tokens.revoke(machine), refused });
+
+test("a machine that attaches while the token store stalls on its refusal read is returned as it attaches, and kept", { timeout: 15_000 }, async () => {
+	const { fake, tokens, hub } = setup();
+	let reads = 0;
+	let attached = false;
+	const refused = () => {
+		if (reads++ === 0) setTimeout(() => (attached = true), 200);
+		return new Promise(() => {});
+	};
+	// The hub as the provider sees it: the machine's socket is there 200 ms into the first read, which never answers.
+	const seen = { connection: (name) => (attached ? hub.connection(name) : undefined), revoke: (name, why) => hub.revoke(name, why) };
+	const createMs = 3_000;
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 6_000, createMs }, dial: { url: PUBLIC_URL, tokens: stalling(tokens, refused), hub: seen } });
+	const started = Date.now();
+	const ref = made(await create(provider));
+	const took = Date.now() - started;
+	assert.ok(took < createMs / 2, `create answered at the attach, not at the read's end: ${took} ms`);
+	assert.equal(reads, 1, "one refusal read in flight at a time");
+	assert.equal(fake.live().length, 1, "the machine was kept");
+	made(await provider.release(ref, "delete"));
+});
+
+test("an abort while the token store stalls on a refusal read ends create at once as aborted, and the machine is deleted", { timeout: 15_000 }, async () => {
+	const { fake, tokens, hub } = setup({ dials: false });
+	const abort = new AbortController();
+	const refused = () => {
+		setTimeout(() => abort.abort(), 100);
+		return new Promise(() => {});
+	};
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 3_000, createMs: 4_000 }, dial: { url: PUBLIC_URL, tokens: stalling(tokens, refused), hub } });
+	const started = Date.now();
+	const aborted = await provider.create(SPEC, { requestId: `dial-${++requests}`, signal: abort.signal });
+	const took = Date.now() - started;
+	assert.equal(aborted.ok, false);
+	assert.equal(aborted.error.code, "aborted", aborted.error.message);
+	assert.ok(took < 1_000, `create ended at the abort, not at the read's requestMs: ${took} ms`);
+	assert.deepEqual(fake.live(), [], "the machine was deleted");
+});
+
+test("a refusal read the token store never answers holds create no later than createMs: it fails timeout then, and the machine is deleted", { timeout: 15_000 }, async () => {
+	const { fake, tokens, hub } = setup({ dials: false });
+	const createMs = 100;
+	// pollMs 50: a poll of 500 ms, longer than createMs, so a pause past the time left shows too.
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 5_000, createMs, pollMs: 50 }, dial: { url: PUBLIC_URL, tokens: stalling(tokens), hub } });
+	const started = Date.now();
+	const failed = await create(provider);
+	const took = Date.now() - started;
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "timeout", failed.error.message);
+	assert.match(failed.error.message, /did not dial ws:\/\/127\.0\.0\.1:8080\/v2\/computers\/attach within 0\.1 s/);
+	assert.ok(took < 450, `create ended at createMs, not at the read's requestMs or a poll past createMs: ${took} ms`);
+	assert.deepEqual(fake.live(), [], "the machine was deleted");
+});
+
+// A provider is given no dial in a runner apart from the server (serve's runner subcommand, and the container image's
+// default server-and-runner): the refusal names the one-line fix in the words a paired computer's refusal gives
+// (serve's workspace/attached-computers.ts ONE_PROCESS_FIX).
+test("a dial host's provider given no dial refuses create in its own words, of the process and its fix, before the vendor is called", async () => {
 	const { fake } = fakeDialHost({ daemon: DAEMON_BYTES });
 	const refused = await create(new HostedProvider(fake.host, { daemonPath: DAEMON_PATH }));
 	assert.equal(refused.error?.code, "refused");
-	assert.equal(refused.error.message, "Fakehost machines dial in to this server, and this process has no attach hub: start them from serve's own process");
+	assert.equal(
+		refused.error.message,
+		"Fakehost machines dial in to this server, and this runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)",
+	);
 	assert.equal(fake.creates(), 0);
 });
 
@@ -235,6 +340,83 @@ test("a machine that never dials is deleted, its token revoked, and create fails
 	assert.deepEqual(fake.live(), [], "the machine was deleted");
 });
 
+test("a machine that never dials: the timeout carries the host's dialLog, its last 10 lines within 800 characters, or that agentrun-dial never started; a dialLog that fails, or none, keeps the message", async () => {
+	const DIALED = "did not dial ws://127.0.0.1:8080/v2/computers/attach within 1 s: the machine must reach that address";
+	const SAID = "; agentrun-dial said: ";
+	const lines = Array.from({ length: 15 }, (_, at) => `line ${at + 1}`);
+	const said = setup({ dials: false });
+	const asked = [];
+	said.fake.host.dialLog = async (id) => {
+		asked.push(id);
+		return `${lines.join("\n")}\n\n`;
+	};
+	const failed = await create(said.provider);
+	assert.equal(failed.error?.code, "timeout");
+	assert.ok(failed.error.message.includes(DIALED), failed.error.message);
+	assert.ok(failed.error.message.endsWith(`${SAID}${lines.slice(5).join(" | ")}`), failed.error.message);
+	assert.equal(asked.length, 1, "asked once, at the timeout");
+	assert.equal(typeof asked[0], "string");
+	assert.deepEqual(said.fake.live(), [], "the machine was deleted");
+
+	const long = setup({ dials: false });
+	long.fake.host.dialLog = async () => `start\n${"x".repeat(2_000)}y\n`;
+	const cut = await create(long.provider);
+	const tail = cut.error.message.slice(cut.error.message.indexOf(SAID) + SAID.length);
+	assert.equal(tail.length, 800, "the last 800 characters");
+	assert.ok(tail.endsWith("xy"));
+
+	const never = setup({ dials: false });
+	never.fake.host.dialLog = async () => undefined;
+	const silent = await create(never.provider);
+	assert.equal(silent.error?.code, "timeout");
+	assert.ok(silent.error.message.endsWith("; agentrun-dial never started"), silent.error.message);
+
+	// A cancel while the log read stalls ends the wait at once: the read never holds create's cleanup back.
+	const stalled = setup({ dials: false });
+	const cancel = new AbortController();
+	let askedAt;
+	stalled.fake.host.dialLog = () => {
+		askedAt = Date.now();
+		setTimeout(() => cancel.abort(), 20);
+		return new Promise(() => {});
+	};
+	const cancelled = await stalled.provider.create(SPEC, { requestId: `dial-${++requests}`, signal: cancel.signal });
+	assert.equal(cancelled.ok, false);
+	assert.ok(Date.now() - askedAt < TIMEOUTS.requestMs, `create ended ${Date.now() - askedAt} ms after the read began, within requestMs`);
+	assert.doesNotMatch(cancelled.error.message, /agentrun-dial said|never started/);
+
+	for (const dialLog of [async () => Promise.reject(new Error("the toolbox is down")), undefined]) {
+		const plain = setup({ dials: false });
+		if (dialLog) plain.fake.host.dialLog = dialLog;
+		const kept = await create(plain.provider);
+		assert.equal(kept.error?.code, "timeout", "a log read that fails never changes the code");
+		assert.ok(kept.error.message.includes(DIALED), kept.error.message);
+		assert.doesNotMatch(kept.error.message, /agentrun-dial said|never started|the toolbox is down/);
+		assert.deepEqual(plain.fake.live(), []);
+	}
+});
+
+test("attachEgress: the machine is booted with AGENTRUN_ATTACH_EGRESS beside the five names, one that never dials fails naming the relay too, and a malformed one is refused at construction", async () => {
+	const { fake, provider } = setup({}, { attachEgress: "192.0.2.40:18443" });
+	const ref = made(await create(provider));
+	const { env } = fake.calls.find(([what]) => what === "create")[1].boot;
+	assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_ATTACH_EGRESS", "AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"]);
+	assert.equal(env.AGENTRUN_ATTACH_EGRESS, "192.0.2.40:18443");
+	assert.equal(env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach", "the address dialed by name is the public one still");
+	made(await provider.release(ref, "delete"));
+
+	const silent = setup({ dials: false }, { attachEgress: "192.0.2.40:18443" });
+	const failed = await create(silent.provider);
+	assert.equal(failed.error?.code, "timeout");
+	assert.match(failed.error.message, /did not dial ws:\/\/127\.0\.0\.1:8080\/v2\/computers\/attach through 192\.0\.2\.40:18443 within 1 s/);
+	assert.deepEqual(silent.fake.live(), []);
+
+	const empty = setup({}, { attachEgress: "" });
+	made(await create(empty.provider));
+	assert.equal("AGENTRUN_ATTACH_EGRESS" in empty.fake.calls.find(([what]) => what === "create")[1].boot.env, false, "an empty egress is none");
+	assert.throws(() => setup({}, { attachEgress: "relay.example:18443" }), /the attach egress is <IPv4 relay>:<port>, such as 192\.0\.2\.40:18443, a port from 1 to 65535; not "relay\.example:18443"/);
+});
+
 test("a machine whose daemon's sha256 is not the server's never dials, and create fails", async () => {
 	const { fake, provider } = setup({ daemon: Buffer.from("another build") });
 	const failed = await create(provider);
@@ -243,50 +425,125 @@ test("a machine whose daemon's sha256 is not the server's never dials, and creat
 	assert.deepEqual(fake.live(), []);
 });
 
-test("a dial host takes no Archil mount, in words, and declares none", async () => {
+test("a dial host takes no Archil mount, in words, and declares a synced folder alone", async () => {
 	const { fake, provider } = setup();
-	assert.deepEqual(provider.capabilities().mount, []);
+	assert.deepEqual(provider.capabilities().mount, ["sync"]);
 	const refused = await create(provider, { ...SPEC, mount: { kind: "archil", disk: "dsk-0123456789abcdef", region: "aws-us-east-1", folder: "agents/a/runs/r/work" } });
 	assert.equal(refused.ok, false);
-	assert.match(refused.error.message, /mount: Fakehost's machines dial this server, and a machine that dials takes no Archil mount yet/);
+	assert.ok(refused.error.message.includes(`mount: ${mountsOf(provider.host.descriptor, () => false, true).unmounted.archil}`), refused.error.message);
 	assert.equal(fake.creates(), 0);
 });
 
-test("the constructor refuses a dial host with exec or upload, or for a desktop", () => {
+test("the constructor refuses a dial host with exec or upload", () => {
 	const dialFacts = { connect: "dial", lifetime: "vendor" };
 	const host = fakeHost({ facts: dialFacts }).host;
 	assert.throws(() => new HostedProvider({ ...host, exec: fakeHost().host.exec }, { daemonPath: DAEMON_PATH }), /dial this server \(facts.connect "dial"\), so its host has no exec and no upload/);
 	assert.throws(() => new HostedProvider({ ...host, upload: async () => {} }, { daemonPath: DAEMON_PATH }), /has no exec and no upload/);
-	assert.throws(() => new HostedProvider(host, { daemonPath: DAEMON_PATH, kind: "desktop" }), /agentrun-dial starts init with no display: make it kind linux/);
 });
 
-test("a minted machine's hello of another kind, os or arch is closed 4400 in a machine's words; a paired computer's arch may change", () => {
+test("a dial desktop boots init with DISPLAY and --window-manager, starts the X server over the socket it dialed, waits until computerd's window manager runs, and declares the screen", async () => {
+	const { fake, provider, hub } = setup({ facts: { windowManager: true } }, { kind: "desktop" });
+	const ref = made(await create(provider));
+	const [, request] = fake.calls.find(([what]) => what === "create");
+	assert.equal(request.boot.env.DISPLAY, ":0");
+	assert.equal(fake.machines.get(ref.id).init.display, ":0", "init started with the display");
+	assert.deepEqual(fake.events.filter(({ what }) => what.startsWith("run ")), [], "nothing was run in the machine through the host");
+	assert.deepEqual(fake.uploads, [], "and nothing uploaded");
+	assert.match(request.boot.env.AGENTRUN_INIT_ARGS, / --window-manager$/, "init is asked to start the window manager");
+	assert.equal(fake.machines.get(ref.id).init.windowManager, true);
+	// The X server alone, started by computerd as any program, over the socket the machine dialed: computerd starts the
+	// window manager itself.
+	assert.deepEqual(
+		fake.machines.get(ref.id).processes.map(({ argv }) => argv[0]),
+		["Xvfb"],
+	);
+	const connection = made(await provider.connect(ref));
+	assert.equal(connection.hello.kind, "desktop");
+	assert.ok(connection.hello.groups.includes("screen"));
+	assert.deepEqual(connection.hello.windowManager, { state: "running" });
+	await connection.close();
+	assert.equal(hub.online(ref.name), true);
+	made(await provider.release(ref, "delete"));
+	assert.deepEqual(fake.live(), []);
+});
+
+const LINUX_HELLO = { protocol: mintedComputer("computer-5f3a9c1e7b2d", { kind: "linux", os: "linux", arch: "amd64" }).hello.protocol, version: "0.1.0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+const MINTED_WORDS = (kind) => new RegExp(`^computer-5f3a9c1e7b2d was made a linux ${kind} on amd64 and says .*: its token is that machine's alone$`);
+
+test("a minted machine's hello of another kind, os or arch is closed 4400 in a machine's words; a paired Mac's arch may change", () => {
 	const minted = mintedComputer("computer-5f3a9c1e7b2d", { kind: "linux", os: "linux", arch: "amd64" });
-	const hello = { protocol: minted.hello.protocol, version: "0.1.0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
-	assert.equal(helloMismatch(minted, hello), undefined);
+	assert.equal(helloMismatch(minted, LINUX_HELLO), undefined);
 	for (const other of [{ arch: "arm64" }, { kind: "desktop" }, { os: "windows" }]) {
-		const wrong = helloMismatch(minted, { ...hello, ...other });
+		const wrong = helloMismatch(minted, { ...LINUX_HELLO, ...other });
 		assert.equal(wrong?.code, ATTACH_CLOSE.mismatch, JSON.stringify(other));
-		assert.match(wrong.message, /^computer-5f3a9c1e7b2d was made a linux linux on amd64 and says .*: its token is that machine's alone$/);
+		assert.match(wrong.message, MINTED_WORDS("linux"));
 	}
 	// A paired computer's driver may move from amd64 (under Rosetta) to arm64: the same computer.
-	const paired = { id: "c-1", name: "Test Mac", hello: { ...hello, os: "macos", kind: "desktop", groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] }, labels: {} };
+	const paired = { id: "c-1", name: "Test Mac", hello: { ...LINUX_HELLO, os: "macos", kind: "desktop", groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] }, labels: {} };
 	assert.equal(helloMismatch(paired, { ...paired.hello, arch: "arm64" }), undefined);
 });
 
-test("Core's provider cases pass over a dial host, provider.dial-token among them, and leave nothing behind", { timeout: 60_000 }, async () => {
-	const { conformanceCases, runConformance } = await import("../dist/conformance/index.js");
-	const { fake, provider, kit } = setup();
-	// Not provider.deadline or drift.arch: they run programs, which the fake host's daemon only echoes (as the packed host's run).
-	const cases = conformanceCases.filter((one) => ["provider", "health", "drift"].includes(one.group) && one.level === "core" && !["provider.deadline", "drift.arch"].includes(one.id));
-	const report = await runConformance(provider, { image: "img", cases, dial: kit, caseTimeoutMs: 20_000, cleanupTimeoutMs: 5_000 });
-	assert.equal(report.results.find(({ id }) => id === "provider.dial-token")?.status, "pass", JSON.stringify(report.results.find(({ id }) => id === "provider.dial-token")));
-	assert.deepEqual(
-		report.results.filter(({ status }) => status === "fail").map(({ id, reason }) => `${id}: ${reason}`),
-		[],
-	);
-	assert.deepEqual(fake.live(), [], "every machine made was deleted");
+test("a machine minted a desktop that says linux, as it does until its display answers, is let in", () => {
+	const desktop = mintedComputer("computer-5f3a9c1e7b2d", { kind: "desktop", os: "linux", arch: "amd64" });
+	assert.equal(helloMismatch(desktop, LINUX_HELLO), undefined);
+	assert.equal(helloMismatch(desktop, { ...LINUX_HELLO, kind: "desktop", groups: [...LINUX_HELLO.groups, "screen", "input.pointer", "input.keys", "apps"] }), undefined, "and once it says desktop");
 });
+
+test("the linux exception is a minted desktop's alone, on its own os and arch: a minted linux saying desktop, a minted desktop elsewhere or of another kind, and a paired desktop saying linux are closed 4400", () => {
+	const desktop = mintedComputer("computer-5f3a9c1e7b2d", { kind: "desktop", os: "linux", arch: "amd64" });
+	for (const other of [{ arch: "arm64" }, { os: "windows" }, { os: "android", kind: "linux" }, { kind: "android" }]) {
+		const wrong = helloMismatch(desktop, { ...LINUX_HELLO, ...other });
+		assert.equal(wrong?.code, ATTACH_CLOSE.mismatch, JSON.stringify(other));
+		assert.match(wrong.message, MINTED_WORDS("desktop"));
+	}
+	const linux = mintedComputer("computer-5f3a9c1e7b2d", { kind: "linux", os: "linux", arch: "amd64" });
+	assert.match(helloMismatch(linux, { ...LINUX_HELLO, kind: "desktop" })?.message ?? "", MINTED_WORDS("linux"));
+	// A paired computer (never minted) keeps both kind checks: a paired linux desktop that says linux pairs again.
+	const paired = { id: "c-2", name: "Test Box", hello: { ...LINUX_HELLO, kind: "desktop" }, labels: {} };
+	const again = helloMismatch(paired, LINUX_HELLO);
+	assert.equal(again?.code, ATTACH_CLOSE.mismatch);
+	assert.equal(again.message, "Test Box paired as a linux desktop on amd64 and now says linux linux on amd64: pair it again");
+});
+
+test("a dial desktop whose display is down fails connect and watch as drift, as on exec; once it answers again, connect is a desktop's", async () => {
+	const { fake, provider } = setup({ facts: { windowManager: true } }, { kind: "desktop" });
+	const ref = made(await create(provider));
+	// Its display goes (an X server that died): its hello says linux.
+	const m = fake.machines.get(ref.id);
+	m.xvfb = undefined;
+	m.displayUp = false;
+	const refused = await provider.connect(ref);
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
+	assert.match(refused.error.message, /does not match this provider: hello: the daemon reports kind linux, expected desktop/);
+	const watched = await provider.watch(ref, { frame() {}, ended() {} });
+	assert.equal(watched.ok, false);
+	assert.match(watched.error.message, /does not match this provider: hello: the daemon reports kind linux, expected desktop/);
+	assert.ok(!fake.requests.some(({ method }) => method === "screen.watch"), "no watch was sent");
+	// Once its display answers again, the next connect is a desktop's.
+	m.displayUp = true;
+	const up = made(await provider.connect(ref));
+	assert.equal(up.hello.kind, "desktop");
+	await up.close();
+	made(await provider.release(ref, "delete"));
+	assert.deepEqual(fake.live(), []);
+});
+
+for (const kind of ["linux", "desktop"]) {
+	test(`Core's provider cases pass over a dial host's ${kind}, provider.dial-token among them, and leave nothing behind`, { timeout: 60_000 }, async () => {
+		const { conformanceCases, runConformance } = await import("../dist/conformance/index.js");
+		const { fake, provider, kit } = setup({ facts: { windowManager: true } }, { kind });
+		// Not provider.deadline or drift.arch: they run programs, which the fake host's daemon only echoes (as the packed host's run).
+		const cases = conformanceCases.filter((one) => ["provider", "health", "drift"].includes(one.group) && one.level === "core" && !["provider.deadline", "drift.arch"].includes(one.id));
+		const report = await runConformance(provider, { image: "img", cases, dial: kit, caseTimeoutMs: 20_000, cleanupTimeoutMs: 5_000 });
+		assert.equal(report.results.find(({ id }) => id === "provider.dial-token")?.status, "pass", JSON.stringify(report.results.find(({ id }) => id === "provider.dial-token")));
+		assert.deepEqual(
+			report.results.filter(({ status }) => status === "fail").map(({ id, reason }) => `${id}: ${reason}`),
+			[],
+		);
+		assert.deepEqual(fake.live(), [], "every machine made was deleted");
+	});
+}
 
 test("provider.dial-token is said and passes for a host with exec, and fails a dial host's run given no server", async () => {
 	const { conformanceCases, runConformance } = await import("../dist/conformance/index.js");

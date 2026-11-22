@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { agentFixture, editorCaps } from "@/fixtures";
+import { DECISION, WORKFLOW } from "@/lib/agentForm";
 
 // Each of the editor's own inputs is named by its label: a screen reader reads "Name" on the name input, a click on the
 // label puts the cursor in it, and a test finds it by its label, as a person does.
@@ -30,12 +31,15 @@ describe("the agent editor's labels name their inputs", () => {
     expect(byLabel(/^description/i)[0]?.getAttribute("placeholder")).toBe("Short summary for the agent list");
     expect(byLabel(/^instructions/i)[0]?.tagName).toBe("TEXTAREA");
   });
-  it("an agent's edit: the read-only name keeps its label, and Model names its input on the settings step", async () => {
+  it("an agent's edit: the read-only name keeps its label, the description is editable, and Model names its input on the settings step", async () => {
     const agent = agentFixture("invoice-checker");
     const { byLabel } = await open({ agent, step: "context" });
     const name = byLabel(/^name/i)[0] as HTMLInputElement | undefined;
     expect(name?.value).toBe(agent.definition.name);
     expect(name?.readOnly).toBe(true);
+    const description = byLabel(/^description/i)[0] as HTMLInputElement | undefined;
+    expect(description?.value).toBe(agent.definition.description);
+    expect(description?.readOnly).toBe(false);
     act(() => root!.unmount()); document.body.innerHTML = "";
     const settings = await open({ agent, step: "settings" });
     // The Model picker's button is what the label names.
@@ -69,7 +73,7 @@ const namedGroup = (host: HTMLElement, name: string) => {
 describe("the agent editor's composite field groups", () => {
   it("names Tools and Skills and links their help, refusal and warning without changing the tool edit", async () => {
     const savedAgent = agentFixture("invoice-checker");
-    const agent = { ...savedAgent, definition: { ...savedAgent.definition, tools: ["read", "write"], skills: ["billing.md"] }, warnings: [{ field: "definition.tools[0]", reason: "missing", message: "Need a configured source." }] };
+    const agent = { ...savedAgent, definition: { ...savedAgent.definition, tools: ["read", "write"], skills: ["billing.md"] }, warnings: [{ field: "definition.tools[0]", reason: "missing" as const, message: "Need a configured source." }] };
     let saved: { tools?: string[] } | undefined;
     const { host } = await open({ agent, step: "tools", problem: { kind: "invalid", message: "Refused", fields: { "definition.tools[0]": "Choose another tool." } }, onSave: async (fields) => { saved = fields; return null; } });
     const tools = namedGroup(host, "Tools"), skills = namedGroup(host, "Skills");
@@ -90,7 +94,7 @@ describe("the agent editor's composite field groups", () => {
 
   it("names a saved workflow's action group and links its help and warning", async () => {
     const savedAgent = agentFixture("invoice-checker");
-    const agent = { ...savedAgent, kind: "workflow" as const, definition: { ...savedAgent.definition, workflow: { v: 2, name: "check", root: { node: "chain", steps: [] } } }, warnings: [{ field: "definition.workflow/root", reason: "missing", message: "Workflow needs a source." }] };
+    const agent = { ...savedAgent, kind: "workflow" as const, definition: { ...savedAgent.definition, workflow: { v: 2, name: "check", root: { node: "chain", steps: [] } } }, warnings: [{ field: "definition.workflow/root", reason: "missing" as const, message: "Workflow needs a source." }] };
     const { host } = await open({ agent, step: "context" });
     const group = namedGroup(host, "Workflow");
     expect(textAtIds(group, "aria-describedby")).toContain("Edit its nodes in the Workflow step");
@@ -102,12 +106,12 @@ describe("the agent editor's composite field groups", () => {
     expect([...group.querySelectorAll("label")].filter((label) => label.htmlFor && !document.getElementById(label.htmlFor))).toEqual([]);
   });
 
-  it.each(["workflow", "decision"])("names the new %s starter explanation instead of labelling a nonexistent input", async (harness) => {
+  it.each([WORKFLOW, DECISION])("names the new %s starter explanation instead of labelling a nonexistent input", async (harness) => {
     const { host } = await open({ step: "settings", caps: { ...editorCaps, decisionProvider: "jev" } });
     await act(async () => { host.querySelector<HTMLInputElement>(`input[type="radio"][value="${harness}"]`)!.click(); });
     await act(async () => { [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("Context"))!.click(); });
     const group = namedGroup(host, "Workflow");
-    expect(group.textContent).toContain(harness === "decision" ? "A decision agent is a workflow" : "A workflow agent starts from a one-step workflow");
+    expect(group.textContent).toContain(harness === DECISION ? "A decision agent is a workflow" : "A workflow agent starts from a one-step workflow");
     expect(group.querySelector("label")).toBeNull();
   });
 

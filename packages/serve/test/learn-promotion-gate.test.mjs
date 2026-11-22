@@ -22,7 +22,7 @@ const LEARNING = { given: [], seed: "s", section: "" };
  *  `replaying`: a promotion record already replaying with its runs (rows given). For the challenger and deadline checks.
  *  `path`: the path each graded run took (`agent`, or `workflow`: one a learned workflow answered alone). Its runs list
  *  newest first (a check's inputs, runner/promotion.ts checkInputs), and its revision's definition says `learning`. */
-async function replayStoreOf({ graded = 6, rows: given = [], records = [], newest, champion, raced = [], creating, path = "agent", learning = true } = {}) {
+async function replayStoreOf({ graded = 6, rows: given = [], records = [], newest, champion, raced = [], creating, path = "agent", learning = true, sourceBinding } = {}) {
   const kv = new Map();
   const settings = {
     get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
@@ -60,7 +60,7 @@ async function replayStoreOf({ graded = 6, rows: given = [], records = [], newes
         return { id: row.id };
       },
     },
-    agents: { revision: async (id) => ({ id, body: { instructions: "Answer.", learning } }) },
+    agents: { revision: async (id) => ({ id, body: { instructions: "Answer.", learning, ...(sourceBinding ? { sourceSync: sourceBinding } : {}) } }) },
     runOfOrigin: async () => undefined,
     command: async (runId, command) => (commands.push([runId, command.kind]), { id: `c-${commands.length}`, runId, ...command }),
   };
@@ -402,4 +402,14 @@ test("a saved secret straddling the cut of a disagreement text leaves no part of
   assert.ok(stored.check.disagreements.length >= 2, JSON.stringify(stored.check));
   assert.deepEqual(leaks(everyText(stored.check.disagreements)), [], "the stored disagreements");
   assert.deepEqual(leaks(everyText(promotionsShown([stored], shown))), [], "the promotions read");
+});
+
+
+test("a moved project's replay check refuses before reservation or auxiliary admission without changing learning", async () => {
+  const sourceBinding = { id: "a".repeat(64), snapshot: "b".repeat(64), project: "b".repeat(64), configuration: "c".repeat(64) };
+  const f = await replayStoreOf({ sourceBinding });
+  const text = flowOf(), digest = workflowDigest({ workflow: text });
+  assert.equal(await f.gateOf()({ name: "answer", workflow: text }, digest), undefined);
+  assert.deepEqual(f.created, []); assert.deepEqual(await promotionsOf(f.settings, "a"), []);
+  assert.match(f.logs.join("\n"), /project placement/i);
 });

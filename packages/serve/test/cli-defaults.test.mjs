@@ -157,7 +157,7 @@ test("demo: started on an OpenAI key alone, pi's default model follows an Anthro
   assert.equal(await piDefault(), firstKeyed(["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]), "the saved key moves the default, with no restart");
 });
 
-test("demo: --open opens the console's address in the browser where there is a display, and never in CI; never a link with the token, even the one the banner prints", { timeout: 180_000 }, async (t) => {
+test("demo: --open opens the setup page while there is no owner, and the console's address after, where there is a display, and never in CI; never a link with the token, even the one the banner prints", { timeout: 180_000 }, async (t) => {
   const fake = mkdtempSync(join(tmpdir(), "serve-open-"));
   t.after(() => rmSync(fake, { recursive: true, force: true }));
   const opened = join(fake, "opened");
@@ -174,9 +174,18 @@ test("demo: --open opens the console's address in the browser where there is a d
     }
     return existsSync(opened) ? readFileSync(opened, "utf8") : "";
   };
+  // Accounts on, no owner yet, on loopback: the setup page, which takes no code here.
   const { base } = await serve(t, ["--port", "0", "--open"], { PATH: path, DISPLAY: ":0" });
-  assert.equal(await handedLine(), `${base}/\n`);
+  assert.equal(await handedLine(), `${base}/setup\n`);
   rmSync(opened);
+  // At a public address setup takes a code: the browser opens the very link the log prints, the code filled in, so the
+  // person has nothing to look up.
+  const coded = await serve(t, ["--port", "0", "--open"], { PATH: path, DISPLAY: ":0", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:8123" });
+  const printed = /^Set up this server: (\S+) /m.exec(coded.out)?.[1];
+  assert.match(printed ?? "", /^http:\/\/127\.0\.0\.1:8123\/setup#code=[A-Za-z0-9_-]{22}$/, coded.out);
+  assert.equal(await handedLine(), `${printed}\n`);
+  rmSync(opened);
+  await coded.stop();
   // Accounts off, on a fresh store: the banner prints its sign-in link, but the opener's arguments (any process's to read)
   // and the browser's history get the page alone.
   const store = join(fake, "store");

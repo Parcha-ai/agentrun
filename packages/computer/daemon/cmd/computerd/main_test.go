@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,12 +21,17 @@ import (
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/nocgo"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/windowmanager"
 )
 
 // argsEnv makes the test binary run computerd's main with these arguments (JSON), as a process of its own.
 const argsEnv = "COMPUTERD_TEST_ARGS"
 
 func TestMain(m *testing.M) {
+	// The window manager's start, which init starts again as itself with a clean environment.
+	if len(os.Args) == 2 && os.Args[1] == windowmanager.ChildArg {
+		os.Exit(windowmanager.Child())
+	}
 	if args := os.Getenv(argsEnv); args != "" {
 		os.Args = []string{"computerd"}
 		if err := json.Unmarshal([]byte(args), &os.Args); err != nil {
@@ -642,7 +649,7 @@ func TestProbeDiagnoseTakesNoOtherArgument(t *testing.T) {
 // attach takes its URL and token from the environment alone, refuses a missing or malformed one with 2, and stops with 3
 // when the server refuses the token at the upgrade; no line it writes holds the token. (internal/attach tests the rest.)
 func TestAttachReadsItsEnvironmentAndExitsAsItsWordsSay(t *testing.T) {
-	token := "art_" + strings.Repeat("ab", 32)
+	token := "art_" + strings.Repeat("Ab", 21) + "c"
 	t.Setenv("AGENTRUN_ATTACH_URL", "")
 	t.Setenv("AGENTRUN_ATTACH_TOKEN", token)
 	if code, stderr := computerd(t, 30*time.Second, "attach"); code != 2 || !strings.Contains(stderr, "AGENTRUN_ATTACH_URL") {
@@ -673,5 +680,109 @@ func TestAttachReadsItsEnvironmentAndExitsAsItsWordsSay(t *testing.T) {
 	code, _, stderr := computerdOut(t, 30*time.Second, "attach")
 	if code != 3 || !strings.Contains(stderr, "refused the upgrade: 401 the token is unknown") || strings.Contains(stderr, token) {
 		t.Fatalf("refused: exit %d, %s", code, stderr)
+	}
+}
+
+// computerdIn runs main with args and stdin, and gives its exit code, stdout and stderr.
+func computerdIn(t *testing.T, stdin string, args ...string) (int, string, string) {
+	t.Helper()
+	encoded, _ := json.Marshal(append([]string{"computerd"}, args...))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0])
+	cmd.Env = append(os.Environ(), argsEnv+"="+string(encoded))
+	cmd.Stdin = strings.NewReader(stdin)
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode(), stdout.String(), stderr.String()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return 0, stdout.String(), stderr.String()
+}
+
+// pair against a running init: the code comes from stdin (never argv), init's own hello goes to the server, the token
+// lands in the 0600 file and in no output; attach then reads that file and, refused, says to delete it; unpair deletes
+// it and says how the owner removes the computer.
+func TestPairAttachAndUnpairKeepTheTokenInItsFileAlone(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root: root's token file is /etc/agentrun/computer.token, which a test must not write")
+	}
+	token := "art_" + strings.Repeat("Zz_-", 10) + "Q0w"
+	config := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", config)
+	t.Setenv("AGENTRUN_ATTACH_TOKEN", "")
+	// init stands in as a listener that answers hello (init itself starts here only with an empty bounding set).
+	socket := filepath.Join(t.TempDir(), "computerd.sock")
+	initListener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer initListener.Close()
+	go func() {
+		for {
+			conn, err := initListener.Accept()
+			if err != nil {
+				return
+			}
+			line, _ := bufio.NewReader(conn).ReadString('\n')
+			if strings.Contains(line, `"method":"hello"`) {
+				_, _ = io.WriteString(conn, `{"jsonrpc":"2.0","id":1,"result":{"protocol":"0.2","version":"0.0.0-dev","os":"linux","kind":"linux","arch":"amd64","groups":["exec","files","processes"]}}`+"\n")
+			}
+			_ = conn.Close()
+		}
+	}()
+	t.Setenv(daemon.SocketEnv, socket)
+	var sent struct {
+		Code  string         `json:"code"`
+		Name  string         `json:"name"`
+		Hello map[string]any `json:"hello"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/computers/pair":
+			if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"computer":"cmp-8f2k3jq7m4xw9tnb","token":%q,"runs_refused":null}`, token)
+		case "/v2/computers/attach":
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				t.Errorf("the upgrade with %d bytes of Authorization", len(r.Header.Get("Authorization")))
+			}
+			http.Error(w, "no paired computer or hosted machine has this token", http.StatusUnauthorized)
+		}
+	}))
+	defer server.Close()
+	if code, _, stderr := computerdIn(t, "", "pair", server.URL, "K7PD-W3QX"); code != 2 || !strings.Contains(stderr, "the pairing code is read from stdin, never an argument") || sent.Code != "" {
+		t.Fatalf("a code in argv: exit %d, %s", code, stderr)
+	}
+	code, stdout, stderr := computerdIn(t, "k7pd-w3qx\n", "pair", server.URL, "--name", "build-box")
+	path := filepath.Join(config, "agentrun", "computer.token")
+	attachURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v2/computers/attach"
+	if code != 0 || stdout != "computer: cmp-8f2k3jq7m4xw9tnb\nattach url: "+attachURL+"\ntoken file: "+path+"\n" || strings.Contains(stdout+stderr, token) {
+		t.Fatalf("pair: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if sent.Code != "k7pd-w3qx" || sent.Name != "build-box" || sent.Hello["os"] != "linux" || sent.Hello["arch"] != "amd64" || sent.Hello["kind"] != "linux" || sent.Hello["protocol"] != "0.2" {
+		t.Fatalf("the server was sent %+v", sent)
+	}
+	if info, err := os.Lstat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the token file: %v, %v", info, err)
+	}
+	t.Setenv("AGENTRUN_ATTACH_URL", attachURL)
+	code, stdout, stderr = computerdIn(t, "", "attach")
+	if code != 3 || !strings.Contains(stderr, "this machine's pairing was removed or revoked: delete "+path+" and pair again") || strings.Contains(stdout+stderr, token) {
+		t.Fatalf("attach, refused: exit %d, %s", code, stderr)
+	}
+	code, stdout, stderr = computerdIn(t, "", "unpair")
+	if _, err := os.Lstat(path); code != 0 || !errors.Is(err, os.ErrNotExist) || !strings.Contains(stdout, "the console's Computers page") {
+		t.Fatalf("unpair: exit %d, %s %s (%v)", code, stdout, stderr, err)
+	}
+	if code, _, stderr := computerdIn(t, "", "unpair"); code != 1 || !strings.Contains(stderr, "no token file at "+path) {
+		t.Fatalf("unpair again: exit %d, %s", code, stderr)
 	}
 }

@@ -106,6 +106,7 @@ export function openCodeSpec(setup, options = {}) {
       { run, model: MODEL, provider: { origin: "https://provider.invalid", credential: () => `not-a-secret-${"x"}` }, price: options.price ?? (() => 0), sessionsDir, fetch: options.fetch ?? scriptedResponses(script, options.requests) },
       { standIn: { command: process.execPath, args: [STAND_IN] } },
     )),
+    facts,
     record: harness.record,
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",

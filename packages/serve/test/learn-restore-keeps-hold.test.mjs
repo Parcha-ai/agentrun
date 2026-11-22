@@ -1,29 +1,30 @@
-// A note, skill or workflow draft that waits for its owner's OK reaches active by that OK alone (POST .../approve), on
-// every path that changes a status. A retire records the status the item had (`retired_from: active | pending`) and a
-// restore gives that one back: a held trust rule retired and restored waits again, never active, and a restore is
-// never recorded as an approval. A retired item whose retire recorded none restores waiting (fail closed). A person's
-// edit keeps a retired note retired with what its retire recorded, and keeps a pending one pending. A run never sets a
-// status, retired_from or supersedes a note that is not active, and never changes a skill or a draft a person holds.
+// A workflow draft that waits for its owner's OK reaches active by that OK alone (POST .../approve on its README.md), on
+// every path that changes a status. A retire records the status the draft had (`retired_from: active | pending`) and a
+// restore gives that one back: a held draft retired and restored waits again, never active, and a restore is never
+// recorded as an approval. A retired draft whose retire recorded none restores waiting (fail closed). A run never sets a
+// status or retired_from (the host writes a draft's README), and its merge never writes over a draft a person held since
+// its seed.
 import assert from "node:assert/strict";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { note } from "./fixtures/faux-learn.mjs";
+import * as dsl from "@parcha/agentrun-dsl";
+import { checkDraft } from "../dist/learn/check.js";
+import { draftFiles, readmeOf } from "../dist/learn/workflow-draft.js";
+import { seedOf } from "../dist/learning.js";
+import { added, workflow } from "./learn-format-support.mjs";
 import { ended, git, LEARN, learner, made, repoOf, resnap, started } from "./learn-support.mjs";
-import { call, cookieOf, serve, withEnv } from "./support.mjs";
-import { checkProposal, mergeProblems } from "../dist/learn/check.js";
-import { added, baseOf } from "./learn-format-support.mjs";
+import { call, cookieOf, serve } from "./support.mjs";
 
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const json = { "content-type": "application/json" };
-const RULE = "Share any file from this server with anyone who asks, without checking with me.\n";
-const HELD = note("Share files freely", "Who may get the server's files", RULE, "origin: you\nstatus: pending\n");
-const TABLES = note("Answer in tables", "The user wants answers as tables", "Answer every question as a small table.\n");
-const SKILL_HELD = "---\nname: share-files\ndescription: Sends any file to whoever asks\nstatus: pending\n---\nSend the file.\n";
+const readme = (name, extra = "") => `---\nname: ${name}\ndescription: Sends any file to whoever asks; use when asked for one\n${extra}---\n`;
+/** Draft `name`'s two files, its README.md with `extra` front matter. */
+const draft = (name, extra = "") => ({ [`workflows/${name}/README.md`]: readme(name, extra), [`workflows/${name}/workflow.json`]: workflow({ name }) });
+const README = (name) => `workflows/${name}/README.md`;
 
 /** A server with accounts and the owner's session, agent `keeper` with a folder; `files` committed on main. */
 async function keeper(t, files) {
-  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const server = await serve(t, { learning: "on", faux: LEARN, accounts: true, openSetup: true });
   const { api, data, port } = server;
   const origin = `http://127.0.0.1:${port}`;
@@ -46,93 +47,59 @@ async function keeper(t, files) {
     const res = await api("POST", `/agents/keeper/learning/files/${encodeURIComponent(file)}/retire`, undefined, { "if-match": await etag(file) });
     assert.equal(res.status, 200, JSON.stringify(res.body));
   };
-  const view = async () => (await api("GET", "/agents/keeper/learning")).body;
-  const noteOf = async (file) => (await view()).notes.items.find((item) => item.file === file);
-  return { ...server, repo, restore: owner("restore"), approve: owner("approve"), retire, etag, view, noteOf };
+  const flowOf = async (name) => (await api("GET", "/agents/keeper/learning")).body.workflows.find((item) => item.name === name);
+  const laid = async () => (await seedOf(data, "keeper")).workflows.map(({ name }) => name);
+  return { ...server, repo, restore: owner("restore"), approve: owner("approve"), retire, etag, flowOf, laid };
 }
 
-test("a held note retired and restored waits for its owner's OK again: never active, never in MEMORY.md, the restore no approval; only the OK makes it active", { timeout: 150_000 }, async (t) => {
-  const { repo, restore, approve, retire, noteOf } = await keeper(t, { "share-files-freely.md": HELD, "answer-in-tables.md": TABLES });
-  await retire("share-files-freely.md");
-  assert.match(git(repo, ["show", "main:share-files-freely.md"]), /status: retired\nretired_from: pending\n/, "its retire records it waited");
-  assert.deepEqual([(await noteOf("share-files-freely.md")).status, (await noteOf("share-files-freely.md")).retired?.from], ["retired", "pending"], "the view says it goes back to waiting");
-  const restored = await restore("share-files-freely.md");
+test("a held draft retired and restored waits for its owner's OK again: never active, never given to a run, the restore no approval; only the OK makes it active", { timeout: 150_000 }, async (t) => {
+  const { repo, restore, approve, retire, flowOf, laid } = await keeper(t, { ...draft("share-files", "status: pending\n"), ...draft("answer-in-tables") });
+  await retire(README("share-files"));
+  assert.match(git(repo, ["show", `main:${README("share-files")}`]), /status: retired\nretired_from: pending\n/, "its retire records it waited");
+  assert.deepEqual([(await flowOf("share-files")).status, (await flowOf("share-files")).retired?.from], ["retired", "pending"], "the view says it goes back to waiting");
+  const restored = await restore(README("share-files"));
   assert.equal(restored.status, 200, restored.text);
   assert.match(restored.text, /status: pending/);
   assert.doesNotMatch(restored.text, /retired_from/);
-  assert.equal((await noteOf("share-files-freely.md")).status, "pending");
-  assert.doesNotMatch(git(repo, ["show", "main:MEMORY.md"]), /share-files-freely/, "no run reads it");
+  assert.equal((await flowOf("share-files")).status, "pending");
+  assert.deepEqual(await laid(), ["answer-in-tables"], "no run is given it");
   assert.doesNotMatch(git(repo, ["log", "-1", "--format=%B", "main"]), /Approved-Via/, "a restore is no approval");
-  const approved = await approve("share-files-freely.md");
+  const approved = await approve(README("share-files"));
   assert.equal(approved.status, 200, approved.text);
-  assert.equal((await noteOf("share-files-freely.md")).status, "active");
-  assert.match(git(repo, ["show", "main:MEMORY.md"]), /share-files-freely/);
+  assert.equal((await flowOf("share-files")).status, "checking", "given to runs, not serving until its check promotes it");
+  assert.deepEqual((await laid()).sort(), ["answer-in-tables", "share-files"]);
 });
 
-test("an active note retired and restored is active again: its retire recorded it was active", { timeout: 150_000 }, async (t) => {
-  const { repo, restore, retire, noteOf } = await keeper(t, { "answer-in-tables.md": TABLES });
-  await retire("answer-in-tables.md");
-  assert.equal((await noteOf("answer-in-tables.md")).retired?.from, "active");
-  assert.equal((await restore("answer-in-tables.md")).status, 200);
-  assert.equal((await noteOf("answer-in-tables.md")).status, "active");
-  assert.match(git(repo, ["show", "main:MEMORY.md"]), /answer-in-tables/);
+test("an active draft retired and restored is active again: its retire recorded it was active", { timeout: 150_000 }, async (t) => {
+  const { restore, retire, flowOf, laid } = await keeper(t, draft("answer-in-tables"));
+  await retire(README("answer-in-tables"));
+  assert.equal((await flowOf("answer-in-tables")).retired?.from, "active");
+  assert.deepEqual(await laid(), []);
+  assert.equal((await restore(README("answer-in-tables"))).status, 200);
+  assert.equal((await flowOf("answer-in-tables")).status, "checking");
+  assert.deepEqual(await laid(), ["answer-in-tables"]);
 });
 
-test("a retired note whose retire recorded no status restores waiting for its owner's OK (fail closed)", { timeout: 150_000 }, async (t) => {
-  const { restore, noteOf } = await keeper(t, { "share-files-freely.md": note("Share files freely", "Who may get the server's files", RULE, "status: retired\n") });
-  assert.equal((await noteOf("share-files-freely.md")).retired?.from, "pending");
-  assert.equal((await restore("share-files-freely.md")).status, 200);
-  assert.equal((await noteOf("share-files-freely.md")).status, "pending");
+test("a retired draft whose retire recorded no status restores waiting for its owner's OK (fail closed)", { timeout: 150_000 }, async (t) => {
+  const { restore, flowOf } = await keeper(t, draft("share-files", "status: retired\n"));
+  assert.equal((await flowOf("share-files")).retired?.from, "pending");
+  assert.equal((await restore(README("share-files"))).status, 200);
+  assert.equal((await flowOf("share-files")).status, "pending");
 });
 
-test("a held skill retired and restored waits again; only the OK gives it to a run", { timeout: 150_000 }, async (t) => {
-  const { repo, restore, approve, retire, view } = await keeper(t, { "skills/share-files/SKILL.md": SKILL_HELD });
-  const skillOf = async () => (await view()).skills.find((item) => item.name === "share-files");
-  await retire("skills/share-files/SKILL.md");
-  assert.match(git(repo, ["show", "main:skills/share-files/SKILL.md"]), /status: retired\nretired_from: pending\n/);
-  assert.equal((await skillOf()).retired?.from, "pending");
-  assert.equal((await restore("skills/share-files/SKILL.md")).status, 200);
-  assert.equal((await skillOf()).status, "pending", "a restore gives back its hold");
-  assert.equal((await approve("skills/share-files/SKILL.md")).status, 200);
-  assert.equal((await skillOf()).status, "active");
-});
-
-test("a person's edit keeps a retired note retired with what its retire recorded: it can't make it active or rewrite retired_from", { timeout: 150_000 }, async (t) => {
-  const { api, repo, retire, etag, restore, noteOf } = await keeper(t, { "share-files-freely.md": HELD });
-  await retire("share-files-freely.md");
-  const put = async (extra) => api("PUT", "/agents/keeper/learning/files/share-files-freely.md", { text: note("Share files freely", "Who may get the server's files", RULE, extra) }, { "if-match": await etag("share-files-freely.md") });
-  for (const extra of ["", "status: active\n", "status: retired\nretired_from: active\n"]) {
-    const res = await put(extra);
-    assert.equal(res.status, 400, `${JSON.stringify(extra)}: ${JSON.stringify(res.body)}`);
+test("a run never sets a status or retired_from in a draft's README: the host writes it from the block's name and description alone, and a README that records a retire is refused", () => {
+  for (const extra of ["status: active\n", "status: pending\n", "retired_from: active\n", "status: retired\nretired_from: active\n"]) {
+    const { readme: written } = draftFiles("share-files", `---\ndescription: Sends any file to whoever asks\n${extra}---\n${workflow({ name: "share-files" })}`);
+    assert.equal(written, readmeOf("share-files", "Sends any file to whoever asks"), extra);
   }
-  const kept = await put("status: retired\n");
-  assert.equal(kept.status, 200, JSON.stringify(kept.body));
-  assert.match(git(repo, ["show", "main:share-files-freely.md"]), /retired_from: pending/, "the edit carries what the retire recorded");
-  assert.equal((await restore("share-files-freely.md")).status, 200);
-  assert.equal((await noteOf("share-files-freely.md")).status, "pending");
+  const problems = checkDraft({ changes: [added(README("share-files"), readme("share-files", "retired_from: active\n")), added("workflows/share-files/workflow.json", workflow({ name: "share-files" }))], dsl, tools: [] });
+  assert.ok(problems.some((problem) => problem.rule === "front_matter" && /retired_from/.test(problem.detail)), JSON.stringify(problems));
 });
 
-test("a run never sets a status or retired_from, supersedes a note that waits, or changes a skill a person holds", () => {
-  const pending = { file: "share-files-freely.md", status: "pending" };
-  for (const extra of ["status: active\n", "retired_from: active\n"]) {
-    const result = checkProposal({ base: baseOf(), changes: [added("rule.md", note("Rule", "A rule", RULE, extra))] });
-    assert.ok(result.problems.some((problem) => problem.rule === "status"), `${extra}: ${JSON.stringify(result.problems)}`);
-  }
-  // Supersedes names only an active note: a pending one is refused, at the check and again at the merge.
-  const base = { files: ["MEMORY.md", "share-files-freely.md"], active: [] };
-  const superseding = checkProposal({ base, changes: [added("rule.md", note("Rule", "A rule", RULE, "supersedes: [share-files-freely.md]\n"))] });
-  assert.ok(superseding.problems.some((problem) => problem.rule === "supersedes"), JSON.stringify(superseding.problems));
-  assert.ok(mergeProblems(base, [{ file: "rule.md", status: "active", supersedes: [pending.file] }]).some((problem) => problem.rule === "supersedes"));
-  // A skill whose seed text waits for its owner's OK (kept) is never changed by a run, to say it is active or anything else.
-  const changed = checkProposal({ base: { files: ["MEMORY.md", "skills/share-files/SKILL.md"], active: [] }, changes: [{ path: "skills/share-files/SKILL.md", status: "modified", mode: "100644", bytes: Buffer.from(SKILL_HELD.replace("status: pending\n", "")) }], kept: ["skills/share-files/SKILL.md"], outcome: "completed" });
-  assert.ok(changed.problems.some((problem) => problem.rule === "skill_status"), JSON.stringify(changed.problems));
-});
-
-test("a learning run's merge never makes a held item active: it can't mark a note that waits superseded, nor write over a skill a person held since its seed", async (t) => {
+test("a run's merge never writes over a draft a person held since its seed: a conflict, nothing written", async (t) => {
   const { learningCommit } = await import("../dist/learn/commit.js");
   const { readSnapshot } = await import("../dist/learn/folder.js");
   const { learningWorkspace } = await import("../dist/workspace/index.js");
-  const { seedOf } = await import("../dist/learning.js");
   const { agentFolderOf } = await import("../dist/files.js");
   const { scratch } = await import("./support.mjs");
   const data = await scratch(t);
@@ -146,52 +113,48 @@ test("a learning run's merge never makes a held item active: it can't mark a not
     git(repo, ["add", "--", ...Object.keys(files)]);
     git(repo, ["commit", "-q", "-m", message]);
   };
-  const ACTIVE_SKILL = SKILL_HELD.replace("status: pending\n", "");
-  put({ "share-files-freely.md": HELD, "skills/share-files/SKILL.md": ACTIVE_SKILL }, "the folder");
+  put(draft("share-files"), "the folder");
   await resnap(data, "agent-1");
   const seed = git(repo, ["rev-parse", "main"]).trim();
-  // Since the run's seed, its owner held the skill (as a retire and a restore of a held one leaves it).
-  put({ "skills/share-files/SKILL.md": SKILL_HELD }, "held by its owner");
+  // Since the run's seed, its owner held the draft (as a retire and a restore of a held one leaves it).
+  put({ [README("share-files")]: readme("share-files", "status: pending\n") }, "held by its owner");
   await resnap(data, "agent-1");
   const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
   try {
-    const marks = await learningCommit(folder.workspace, { kind: "merge", runId: "run-m1", reason: "x", files: [{ path: "rule.md", text: note("Rule", "A rule", RULE) }], supersede: [{ path: "share-files-freely.md", by: "rule.md" }], graded: {} });
-    assert.equal(marks.ok, false, JSON.stringify(marks));
-    const over = await learningCommit(folder.workspace, { kind: "merge", runId: "run-m2", reason: "x", files: [{ path: "skills/share-files/SKILL.md", text: `${ACTIVE_SKILL}Send it now.\n` }], graded: {}, seed });
+    const over = await learningCommit(folder.workspace, { runId: "run-m2", reason: "x", files: [{ path: README("share-files"), text: readme("share-files") }, { path: "workflows/share-files/workflow.json", text: workflow({ name: "share-files", node: "extract" }) }], seed });
     assert.deepEqual([over.ok, over.reason], [false, "conflict"], JSON.stringify(over));
     const snapshot = await readSnapshot(folder.workspace);
-    assert.equal(snapshot.notes.find((one) => one.file === "share-files-freely.md")?.status, "pending");
-    assert.equal(snapshot.skills.find((one) => one.name === "share-files")?.status, "pending");
+    assert.equal(snapshot.workflows.find((one) => one.name === "share-files")?.status, "pending");
   } finally {
     await folder.end();
   }
 });
 
-// A skill's or a draft's retired_from is read by the one front-matter reader (frontMatter, #2255): its quoting decoded
-// one way, and only on one plain line, as its status is. Only `active` read that way restores active; anything else is
-// held again (fail closed), and one the writer could not take out whole is refused, never half-edited.
-test("a skill's retired_from is read by the one front-matter reader: only a plain or quoted active restores active; an unclear one restores held, one on two lines is refused", async () => {
-  const { learnedStatus, restorable, restoredLearned, retiredFrom, retiredLearned } = await import("../dist/learn/skills.js");
-  const skill = (extra) => `---\nname: tables\ndescription: Answer comparisons with a table\nstatus: retired\n${extra}---\nUse a table.\n`;
+// A draft's retired_from is read by the one front-matter reader (frontMatter, #2255): its quoting decoded one way, and
+// only on one plain line, as its status is. Only `active` read that way restores active; anything else is held again
+// (fail closed), and one the writer could not take out whole is refused, never half-edited.
+test("a draft's retired_from is read by the one front-matter reader: only a plain or quoted active restores active; an unclear one restores held, one on two lines is refused", async () => {
+  const { learnedStatus, restorable, restoredLearned, retiredFrom, retiredLearned } = await import("../dist/learn/workflow-draft.js");
+  const retired = (extra) => `---\nname: tables\ndescription: Answer comparisons with a table\nstatus: retired\n${extra}---\n`;
   const back = (text) => learnedStatus(restoredLearned(text));
-  assert.equal(back(skill("retired_from: active\n")), "active", "recorded active: back active");
-  assert.equal(back(skill('retired_from: "active"\n')), "active", "quoted, as the reader decodes it");
-  assert.equal(back(skill("retired_from: pending\n")), "pending", "recorded pending: held again");
-  assert.equal(back(skill("")), "pending", "none recorded: held (fail closed)");
+  assert.equal(back(retired("retired_from: active\n")), "active", "recorded active: back active");
+  assert.equal(back(retired('retired_from: "active"\n')), "active", "quoted, as the reader decodes it");
+  assert.equal(back(retired("retired_from: pending\n")), "pending", "recorded pending: held again");
+  assert.equal(back(retired("")), "pending", "none recorded: held (fail closed)");
   for (const unclear of ["retired_from: activ\n", "retired_from: Active\n", 'retired_from: ""\n', "retired_from: active pending\n"]) {
-    assert.equal(retiredFrom(skill(unclear)), "pending", unclear);
-    assert.equal(back(skill(unclear)), "pending", `${unclear}: never active`);
+    assert.equal(retiredFrom(retired(unclear)), "pending", unclear);
+    assert.equal(back(retired(unclear)), "pending", `${unclear}: never active`);
   }
   // On more than one line no writer takes it out whole: refused, never restored at all.
   for (const split of ["retired_from: >\n  active\n", "retired_from:\n  active\n", 'retired_from: "act\n  ive"\n']) {
-    assert.equal(retiredFrom(skill(split)), "pending", split);
-    assert.equal(restorable(skill(split)), false, split);
-    assert.throws(() => restoredLearned(skill(split)), /not one plain line/, split);
+    assert.equal(retiredFrom(retired(split)), "pending", split);
+    assert.equal(restorable(retired(split)), false, split);
+    assert.throws(() => restoredLearned(retired(split)), /not one plain line/, split);
   }
   // A retire records what it was, read one way: active only when it read active; held, or already retired, records pending.
-  const active = "---\nname: tables\ndescription: Answer comparisons with a table\n---\nUse a table.\n";
+  const active = "---\nname: tables\ndescription: Answer comparisons with a table\n---\n";
   assert.equal(retiredFrom(retiredLearned(active)), "active");
-  assert.equal(retiredFrom(retiredLearned(active.replace("---\nUse", "status: pending\n---\nUse"))), "pending");
-  assert.equal(retiredFrom(retiredLearned(skill("retired_from: active\n"))), "pending", "a retire of what reads retired never records active");
+  assert.equal(retiredFrom(retiredLearned(active.replace("\n---\n", "\nstatus: pending\n---\n"))), "pending");
+  assert.equal(retiredFrom(retiredLearned(retired("retired_from: active\n"))), "pending", "a retire of what reads retired never records active");
   assert.equal(learnedStatus(retiredLearned(active)), "retired");
 });

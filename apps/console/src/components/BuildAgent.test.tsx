@@ -15,7 +15,7 @@ const packageTemplate = (name: string): TemplateView => ({
   name, display_name: name, version: "2.1.0", description: `A complete ${name} agent package.`,
   license: "Apache-2.0", author: null, repository: null, output: null, input_schema: null,
   harness: ["claude-agent"], model: null, effort: null, tools: null, tool_policy: null,
-  computer: null, computer_here: null, checkout: null, mcp: [], parameters: { type: "object", additionalProperties: false, properties: {} }, secrets: [],
+  computer: null, needs: null, computer_here: null, checkout: null, mcp: [], parameters: { type: "object", additionalProperties: false, properties: {} }, secrets: [],
   budget: null, learning: false, approvals_default: "ask", triggers: [], skills: ["research"], evals: [],
 });
 const catalog = ["Code review", "Inbound lead", "KYB", "Market monitor", "Release notes", "My custom agent", "Another custom agent"].map(packageTemplate);
@@ -119,6 +119,13 @@ describe("Build agent page", () => {
     });
     searchFor("CUSTOM");
     expect(host.querySelectorAll("article")).toHaveLength(2);
+    // Each word typed, in any order, as the console's other filters match.
+    const titles = () => [...host.querySelectorAll("article")].map((a) => a.textContent);
+    searchFor("custom agent");
+    const phrase = titles();
+    expect(phrase.length).toBeGreaterThan(0);
+    searchFor("agent custom");
+    expect(titles()).toEqual(phrase);
     searchFor("No such template");
     expect(host.textContent).toContain("No templates match");
     searchFor("");

@@ -49,14 +49,21 @@ async function filesUnder(dir) {
   return out;
 }
 
-/** Mentions of a mark that are someone else's words, by package directory: [file, literal, count, why]. The file must hold
- *  the literal exactly `count` times, on lines with no other mark: one more mention, or one fewer, fails. */
+/** Reviewed nominative mentions, by package directory: [file, literal, count, why]. `file` is an exact path or an
+ *  anchored pattern for a generated asset whose hash changes. Matching files must hold the literal exactly `count`
+ *  times in total, on lines with no unlisted mark: one more mention, or one fewer, fails. */
 export const ALLOWED_MARKS = {
   // pi-browser's synced Stagehand facade names the AI SDK its upstream tested with (nominative use); the file is a snapshot
   // this repository does not edit (AGENTS.md).
   'pi-browser': [
     ['dist/vendor/stagehand-facade/contract.js', 'Vercel AI SDK', 2, "upstream Stagehand's comments"],
     ['dist/vendor/stagehand-facade/contract.d.ts', 'Vercel AI SDK', 1, "upstream Stagehand's comment"],
+  ],
+  serve: [
+    // The console names an existing eve runtime, not the origin of AgentRun's forked harness.
+    // Only the content hash varies; this does not exempt the asset, its other strings or its SVGs.
+    [/^dist\/console\/assets\/index-[A-Za-z0-9_-]+\.js$/, '"Vercel eve"', 1, 'the connected-agent runtime display label'],
+    [/^dist\/console\/assets\/index-[A-Za-z0-9_-]+\.js$/, 'using Vercel eve. Read', 2, 'run and edit handoffs to the existing eve application'],
   ],
 };
 
@@ -129,13 +136,18 @@ export async function boundaryProblems(root, { shipped, allow = [] } = {}) {
       const header = index < 4 && HEADER.test(line);
       if (header && !copied.has(name)) problems.push(`${name}:${index + 1} has a copied-file header, and no UPSTREAM.json records the file`);
       if (!MARKS.test(line) || header) return;
-      const allowed = allow.find(([file, literal]) => file === name && line.includes(literal) && !MARKS.test(line.replaceAll(literal, '')));
-      if (allowed) { const k = `${allowed[0]} ${allowed[1]}`; used.set(k, (used.get(k) ?? 0) + line.split(allowed[1]).length - 1); return; }
+      const allowed = allow.filter(([file, literal]) => (typeof file === 'string' ? file === name : file.test(name)) && line.includes(literal));
+      const remaining = allowed.reduce((text, [, literal]) => text.replaceAll(literal, ''), line);
+      if (allowed.length && !MARKS.test(remaining)) {
+        for (const entry of allowed) used.set(entry, (used.get(entry) ?? 0) + line.split(entry[1]).length - 1);
+        return;
+      }
       problems.push(`${name}:${index + 1} names Vercel or one of its marks`);
     });
   }
-  for (const [file, literal, count] of allow) {
-    const seen = used.get(`${file} ${literal}`) ?? 0;
+  for (const entry of allow) {
+    const [file, literal, count] = entry;
+    const seen = used.get(entry) ?? 0;
     if (seen !== count) problems.push(`allowed mark ${file} "${literal}": ${seen} found, ${count} allowed`);
   }
   return problems;

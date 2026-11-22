@@ -175,6 +175,25 @@ for (const [what, told] of [["the store's write of it fails", "queued"], ["the o
   });
 }
 
+test("a trigger.failed names the agent its trigger runs as: a start_run's agent, or the agent of the run a message_run names, each with its name", async (t) => {
+  const told = [];
+  const refused = () => Promise.reject(new ApiError("agent_not_runnable", "archived"));
+  const { store, triggers } = await engine(t, { start: refused, message: refused, notify: (failed) => (told.push(failed), "queued") });
+  // Names that differ from the ids, so a message that sent the id in the name's place fails.
+  await store.agents.create({ id: "digest", name: "Nightly digest" }, { id: "rev-digest", kind: "agentic", body: {} });
+  await store.agents.create({ id: "inbox", name: "Inbox helper" }, { id: "rev-inbox", kind: "agentic", body: {} });
+  await store.runs.create({ id: "run-inbox", agentId: "inbox", revisionId: "rev-inbox" });
+  const started = await triggers.create({ ...body({ every_s: 600 }), target: { kind: "start_run", agent_id: "digest", input: { content: "Hello." }, max_cost_usd: 0.5 } });
+  const messaged = await triggers.create({ name: "to-run", source: { kind: "webhook" }, target: { kind: "message_run", run_id: "run-inbox", input: { content: "Hello." } } });
+  assert.equal((await triggers.fire(started.id, "one")).firing.status, "failed");
+  assert.equal((await triggers.fire(messaged.id, "one")).firing.status, "failed");
+  await until(() => told.length === 2, "both trigger.failed messages");
+  const of = (id) => told.find((failed) => failed.trigger_id === id);
+  assert.deepEqual([of(started.id).agent_id, of(started.id).agent_name], ["digest", "Nightly digest"]);
+  assert.deepEqual([of(messaged.id).agent_id, of(messaged.id).agent_name], ["inbox", "Inbox helper"]);
+  assert.deepEqual(Object.keys(of(started.id)).sort(), ["agent_id", "agent_name", "auto_paused", "error", "firing_key", "name", "nominal_at", "trigger_id"], "no input or output beside them");
+});
+
 test("an every-minute schedule down a year and a day, with a window that long, starts in a bounded number of steps: its latest time fires, and the rest are one missed row of 10000 or more", { timeout: 300_000 }, async (t) => {
   const first = await engine(t, {});
   const made = await first.triggers.create({ ...body({ cron: "* * * * *" }), catchup_window_s: 366 * 86_400 });
@@ -839,4 +858,38 @@ test("an edit of a polled source that lands while an old poll writes its cursor 
   const view = await triggers.get(made.id);
   assert.deepEqual([view.enabled, view.disabled, view.source.url], [true, null, "b"], "on, on the edited source: the old poll's stop was the old source's");
   assert.equal(view.last_check.message, "Watching b.");
+});
+
+test("a trigger's adapter settings go before its row, on a DELETE and on an agent delete's second half: a settings remove that fails leaves the row, so the next remove finds the trigger and removes both", async (t) => {
+  // The adapter's settings by scope (a trigger's id): what the server keeps sealed in trigger_settings.
+  const kept = new Map();
+  const gate = { fails: 0 };
+  const settings = {
+    mint: async (scope, field) => {
+      const value = `minted-${scope}-${field}-0123456789abcdef0123456789abcdef`;
+      kept.set(scope, { ...kept.get(scope), [field]: value });
+      return value;
+    },
+    set: async (scope, field, value) => void kept.set(scope, { ...kept.get(scope), [field]: value }),
+    get: (scope, field) => kept.get(scope)?.[field],
+    remove: async (scope) => {
+      if (gate.fails > 0) {
+        gate.fails -= 1;
+        throw new Error("the store did not answer");
+      }
+      kept.delete(scope);
+    },
+  };
+  const { store, triggers } = await engine(t, { settings: () => settings });
+  await run9(store);
+  for (const [how, remove] of [["DELETE /triggers/{id}", (id) => triggers.remove(id)], ["an agent delete's removeHere", (id) => triggers.removeHere(id)]]) {
+    const hook = await triggers.create({ name: `inbox ${how}`, source: { kind: "webhook" }, target: toRun9 });
+    assert.ok(kept.has(hook.id), `${how}: its signing secret is kept in its settings`);
+    gate.fails = 1;
+    await assert.rejects(remove(hook.id), /did not answer/);
+    assert.ok(await store.triggers.get(hook.id), `${how}: the row is kept while its settings are, so the next remove finds them`);
+    await remove(hook.id);
+    assert.equal(kept.has(hook.id), false, `${how}: its settings are gone`);
+    assert.equal(await store.triggers.get(hook.id), undefined, `${how}: and its row`);
+  }
 });

@@ -36,9 +36,9 @@ First clarify whether the user wants a live connection, historical import, or bo
 
 On the machine with the existing Claude Code or Codex setup, use `npx @parcha/agentrun native discover --project /absolute/project` to inspect supported project defaults, named Claude agents and Codex profiles without a model call. Then run `npx @parcha/agentrun native connect --project /absolute/project --runtime claude-code` (or `codex`), adding `--agent NAME` or `--profile NAME` for a discovered selector. The local server uses `--data DIR`; `--url http://127.0.0.1:PORT` selects its loopback address. For another machine, use the existing Python connector's `remote` command from the same reviewed build, with the matching `agentrun-serve remote-bridge` runtime. The released observation-only connector is not a remote execution worker. Pair using the console's one-use code entered into the secure CLI prompt; never send a broad server token or put the code in a command argument. Source configuration and sign-in stay on that machine. For completed project history, preview with the matching Python connector’s `remote history-preview --project /absolute/project --runtime claude-code` (or `codex`). Select History only or Both when creating the owner’s code; the source must also explicitly pass `--history-only` or `--history` to `remote connect`. History-only starts no worker or learning and needs no native sign-in. History flags reject named-agent/profile selectors because native logs cannot attribute sessions to them reliably. Re-import the approved target with `remote import-history --state-dir /private/connector`; duplicates are skipped. Historical records never become live jobs or automatic learning. Local-store imports still use the separate maintenance-window flow in the server skill.
 
-For an authorized live connection, open the connected agent, verify its native sign-in, and turn Self-improving On only when requested to use the existing checked/graded learning pipeline. Native projects keep their original instructions, tools, hooks, permissions and login. AgentRun adds notes and skills without rewriting those files. Native dollar caps, interactive approvals, learned workflows and attachment to an already-running desktop conversation are unavailable; never bypass native permissions to make a run work. Off supplies and creates no AgentRun learning on subsequent runs. Reflection and grading make additional model calls using native sign-in unless the server has an explicit grading model route.
+For an authorized live connection, open the connected agent, verify its native sign-in, and turn Self-improving On only when requested to use the existing checked learning pipeline. Native projects keep their original instructions, tools, hooks, permissions and login. AgentRun adds the owner's corrections (corrections.md) to the run's context without rewriting those files. Native dollar caps, interactive approvals, learned workflows and attachment to an already-running desktop conversation are unavailable; never bypass native permissions to make a run work. Off supplies and creates no AgentRun learning on subsequent runs. The end-of-run step makes additional model calls using native sign-in.
 
-For the remote development build, install the Python connector from `./connector` in the same reviewed checkout after building its Node runtime (Python 3.12+ and Node 24.22.3+). A checkout build does not put `agentrun-serve` on PATH: pass `--bridge /absolute/path/to/checkout/packages/serve/dist/native/remote-worker-bridge.js` to discovery and connection. The Python connector and Node management CLI share the name `agentrun`; verify the executable, or use `python -m agentrun_cli` inside the installed connector environment. Keep its source worker online for live jobs. Inspect accepted notes and skills in Learning Dojo, then verify a fresh run uses them; imported history never supplies that learning automatically.
+For the remote development build, install the Python connector from `./connector` in the same reviewed checkout after building its Node runtime (Python 3.12+ and Node 24.22.3+). A checkout build does not put `agentrun-serve` on PATH: pass `--bridge /absolute/path/to/checkout/packages/serve/dist/native/remote-worker-bridge.js` to discovery and connection. The Python connector and Node management CLI share the name `agentrun`; verify the executable, or use `python -m agentrun_cli` inside the installed connector environment. Keep its source worker online for live jobs. Inspect the corrections in Learning Dojo, then verify a fresh run uses them; imported history never supplies that learning automatically.
 
 ## Recipes
 
@@ -131,22 +131,33 @@ Two clients call the same API from code, with the same server and token. `@parch
 
 ## Commands
 
-- `agentrun agents`: archive, connect-native, create, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, list, list-learning-audits, list-learning-promotions, runs, unarchive, update, verify-native
-- `agentrun connectors`: complete-remote-command, enroll-remote-connector, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, register-remote-connector, remote-command-events, revoke-remote-connector
+- `agentrun agents`: archive, bind-source-tool, connect-native, create, delete-agent, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, get-source-sync, list, list-learning-audits, list-learning-promotions, move-source-agent, package, resolve-source-sync, review-source-project, runs, set-source-sync, unarchive, update, verify-native
+- `agentrun capabilities`: get-capacity
+- `agentrun cli-learning`: complete, enroll, events, get, list, revoke, start
+- `agentrun connectors`: complete-remote-command, enroll-remote-connector, grant-source-sync, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, publish-source-sync, register-remote-connector, remote-command-events, revoke-remote-connector, source-sync-failure
+- `agentrun deploy SOURCE`: Deploy an agent's package to another AgentRun: upload, plan, apply, lock (deploy rollback, deploy delete)
+- `agentrun doctor`: Check how this AgentRun is set up (Node, the server, its service, address, password, models, switches, Docker) and print what to change; read-only (exit 0 ok or warnings, 1 a check failed, 3 no server answering)
+- `agentrun export AGENT`: Write an agent's current revision as a template package folder, and say what the target sets up again
 - `agentrun files`: create, delete, get, list, upload
+- `agentrun harness`: install, sign-in
+- `agentrun harness-check`: Run a recipe's installed agent for real and check it (tools off, env allowlist, pins, limits, no side requests, resume, a denied call, an MCP tool): a JSON report and three facts. Real models cost money
 - `agentrun home`: delete, list, read, write
-- `agentrun learning`: batch, batch-cancel, batch-start, batches, cost, evals, get, log, notes, read, record-eval, replay, retire, workflow-revisions, write
-- `agentrun local`: create-pairing, delete-composio-subscription, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, receive-hook-composio, rotate-composio-secret, test-computer, test-workspace-archil
-- `agentrun login`: Check a server's token, read from stdin, and keep it with the server's address in the config file
+- `agentrun learning`: corrections, cost, get, log, read, replay, reset, retire, workflow-revisions, write-corrections
+- `agentrun local`: create-pairing, delete-composio-subscription, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-model-gateway, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, list-mcp-server-names, receive-hook-composio, rotate-composio-secret, test-computer, test-workspace-archil
+- `agentrun login`: Sign in to a server, with a device code when it offers one, else a token read from stdin, and keep the token with the server's address in the config file
 - `agentrun logout`: Remove the config file login wrote, its address and token
 - `agentrun mcp-servers`: delete, get, list, oauth-client, private-hosts, refresh
 - `agentrun Observations`: get-observations
+- `agentrun open`: Open AgentRun in this machine's browser: the setup page, its code filled in, until the owner's password is set; the console after (where no browser opens, it prints the link)
 - `agentrun revisions`: list, set-current
-- `agentrun runs`: archive, cancel, computer-call, computer-release, create-inline-run, files, get, grade-run, graph, hand-back-run-computer, learning, learning-diff, list, message, pause, raise-cap, read-file, resume, start, start-held, stop, take-over-run-computer, timeline, unarchive, wait
+- `agentrun runs`: archive, cancel, computer-call, computer-release, create-inline-run, create-run-computer-viewer, delete, files, get, grade-run, graph, hand-back-run-computer, learning, learning-diff, list, message, pause, raise-cap, read-file, resume, start, start-held, stop, take-over-run-computer, timeline, trace, unarchive, usage, wait
 - `agentrun sdk-runs`: complete, events, get, start
 - `agentrun server`: capabilities, health, mcp, openapi
+- `agentrun service`: install, logs, restart, start, status, stop, uninstall, upgrade
 - `agentrun skill`: install
+- `agentrun slack`: deliveries, get, redeliver, test
 - `agentrun stats`: Counts and cost over every agent and run
+- `agentrun stop`: Stop the AgentRun the installer started in the background, where there is no service manager (exit 0 stopped, 3 none running)
 - `agentrun template`: apply, delete, eval, import, install, list, validate
 - `agentrun tool-keys`: list
 - `agentrun tool-settings`: get, save

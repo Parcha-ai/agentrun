@@ -1,0 +1,24 @@
+# Dokploy makes each value once, when the template is deployed.
+[variables]
+main_domain = "${domain}"
+# 64 hex characters (32 random bytes): the setup code at the first visit, and the API's token.
+token = "${hash:64}"
+# base64 of 32 random bytes: saved model and tool keys, MCP credentials and trigger secrets are sealed under it. Keep it:
+# without it they can't be opened.
+seal_key = "${base64:32}"
+
+[config]
+mounts = []
+
+[[config.domains]]
+serviceName = "agentrun"
+port = 7340
+host = "${main_domain}"
+
+[config.env]
+# Dokploy's generated domain is http. Once you give the service your own domain with HTTPS, set this to it.
+AGENTRUN_PUBLIC_URL = "http://${main_domain}"
+AGENTRUN_TOKEN = "${token}"
+AGENTRUN_SEAL_KEY = "${seal_key}"
+# The container's memory limit, which the runner budgets runs by (docker-compose.yml).
+AGENTRUN_MEMORY = "2g"

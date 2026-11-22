@@ -88,17 +88,17 @@ function ffmpegBin() {
   return bin;
 }
 
-test("a desktop's or a phone's record is a boolean, true only where the server has ffmpeg (refused in words without it); no other kind takes it", async () => {
+test("a desktop's, a phone's or a browser's record is a boolean, true only where the server has ffmpeg (refused in words without it); a sandbox doesn't take it", async () => {
   const issues = (value) => computerIssues(value, "definition.computer").map((issue) => [issue.field, issue.reason]);
   const bin = ffmpegBin();
   try {
     await withPath(bin, () => {
-      for (const kind of ["desktop", "phone"]) {
+      for (const kind of ["desktop", "phone", "browser"]) {
         assert.deepEqual(issues({ kind, provider: "x", record: true }), [], kind);
         assert.deepEqual(issues({ kind, provider: "x", record: false }), [], kind);
       }
       for (const record of ["yes", 1, null]) assert.deepEqual(issues({ kind: "desktop", provider: "x", record }), [["definition.computer.record", "wrong_type"]], JSON.stringify(record));
-      for (const kind of ["sandbox", "browser"]) assert.deepEqual(issues({ kind, provider: "x", record: true }), [["definition.computer", "not_allowed"]], kind);
+      assert.deepEqual(issues({ kind: "sandbox", provider: "x", record: true }), [["definition.computer", "not_allowed"]]);
     });
     await withPath("", () => {
       const [refusal, ...rest] = computerIssues({ kind: "phone", provider: "x", record: true }, "definition.computer");

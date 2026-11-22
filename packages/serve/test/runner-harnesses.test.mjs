@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 const { RUNNER_HARNESSES, resolveHarness } = await import("../dist/runner/adapters/index.js");
+// The one table-run runner: a harness module's entry's, and Goose's and Cursor's.
+const { ON_TABLE } = await import("../dist/harness-table.js");
 
 const dir = mkdtempSync(join(tmpdir(), "runner-harnesses-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -20,14 +22,23 @@ const launch = (extra = {}) => ({
   ...extra,
 });
 
-test("runner harnesses: pi keeps its own record; each CLI's (claude-agent, codex, opencode) is the loop's; an unknown harness has none", () => {
+test("runner harnesses: pi keeps its own record; each CLI's (claude-agent, codex, opencode, goose, cursor) is the loop's; an unknown harness has none", () => {
   assert.equal(resolveHarness("pi").record, undefined);
   assert.equal(resolveHarness("claude-agent").record, "loop");
   assert.equal(resolveHarness("codex").record, "loop");
   assert.equal(resolveHarness("opencode").record, "loop");
+  // Goose and Cursor run from their table entries (facts and adapter): one shared runner, whose adapter is never asked.
+  assert.equal(resolveHarness("goose"), ON_TABLE);
+  assert.equal(resolveHarness("cursor"), ON_TABLE);
+  assert.equal(ON_TABLE.record, "loop");
   assert.equal(resolveHarness("no-such-harness"), undefined);
   assert.equal(resolveHarness("__proto__"), undefined, "a name is looked up as data, never through the prototype");
+  // The runner's static table: the built-ins whose runner adapter builds their run.
   assert.deepEqual(Object.keys(RUNNER_HARNESSES).sort(), ["claude-agent", "codex", "opencode", "pi"]);
+});
+
+test("runner harnesses: the shared runner of a table-run entry refuses to build an adapter, in words", async () => {
+  await assert.rejects(ON_TABLE.adapter(launch()), /runs from its table entry/);
 });
 
 test("runner harnesses: each builds its adapter from the launch", async () => {

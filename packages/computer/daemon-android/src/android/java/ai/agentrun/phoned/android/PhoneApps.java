@@ -146,7 +146,7 @@ final class PhoneApps implements Device.Apps {
 		if (url == null) {
 			intent = pm.getLaunchIntentForPackage(id);
 			if (intent == null) intent = pm.getLeanbackLaunchIntentForPackage(id);
-			if (intent == null) throw RpcError.notFound(id + " is installed but has no launcher activity to start");
+			if (intent == null) throw RpcError.notFound(named(id) + " is installed but has no launcher activity to start");
 			// A cleared task starts the app itself, not whatever its task last held (Settings' search, on Android 15).
 			intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
 		} else {
@@ -155,7 +155,7 @@ final class PhoneApps implements Device.Apps {
 			intent.setData(Uri.parse(url));
 			intent.setPackage(id);
 			intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-			if (pm.queryIntentActivities(intent, 0).isEmpty()) throw RpcError.notFound(id + " has no activity that opens that url");
+			if (pm.queryIntentActivities(intent, 0).isEmpty()) throw RpcError.notFound(named(id) + " has no activity that opens that url");
 		}
 		resolve();
 		if (startActivityAsUser != null) {
@@ -164,7 +164,7 @@ final class PhoneApps implements Device.Apps {
 				code = (Integer) Hidden.call(startActivityAsUser, am, null, FakeContext.PACKAGE_NAME, intent, null, null,
 						null, 0, 0, null, null, USER_CURRENT);
 			} catch (SecurityException e) {
-				throw RpcError.denied("the phone refused to start " + id + " (" + e.getMessage() + ")");
+				throw RpcError.denied("the phone refused to start " + named(id) + " (" + e.getMessage() + ")");
 			} catch (Throwable t) {
 				Log.w("startActivityAsUser failed, using `am start`", t);
 				amStart(id, intent);
@@ -183,18 +183,18 @@ final class PhoneApps implements Device.Apps {
 		switch (code) {
 			case -91: // START_INTENT_NOT_RESOLVED
 			case -92: // START_CLASS_NOT_FOUND
-				throw RpcError.notFound(id + " has no activity for that intent");
+				throw RpcError.notFound(named(id) + " has no activity for that intent");
 			case -94: // START_PERMISSION_DENIED
-				throw RpcError.denied(id + "'s activity is not exported to other apps, so it cannot be started from outside");
+				throw RpcError.denied(named(id) + "'s activity is not exported to other apps, so it cannot be started from outside");
 			case -98: // START_NOT_CURRENT_USER_ACTIVITY
-				throw RpcError.denied(id + " belongs to a user who is not in front on the phone");
+				throw RpcError.denied(named(id) + " belongs to a user who is not in front on the phone");
 			case 100: // START_SWITCHES_CANCELED
-				throw RpcError.denied("the phone held back starting " + id + " (app switches pause for a few seconds "
+				throw RpcError.denied("the phone held back starting " + named(id) + " (app switches pause for a few seconds "
 						+ "after Home is pressed); try again shortly");
 			case 101: // START_RETURN_LOCK_TASK_MODE_VIOLATION
-				throw RpcError.denied("the phone is pinned to one app (lock task mode), so " + id + " cannot start");
+				throw RpcError.denied("the phone is pinned to one app (lock task mode), so " + named(id) + " cannot start");
 			default:
-				throw RpcError.denied("the phone refused to start " + id + " (ActivityManager result " + code + ")");
+				throw RpcError.denied("the phone refused to start " + named(id) + " (ActivityManager result " + code + ")");
 		}
 	}
 
@@ -223,15 +223,15 @@ final class PhoneApps implements Device.Apps {
 		try {
 			r = Shell.run(30000, argv.toArray(new String[0]));
 		} catch (Exception e) {
-			throw RpcError.unsupported("could not run `am start` for " + id + " (" + e.getMessage() + ")");
+			throw RpcError.unsupported("could not run `am start` for " + named(id) + " (" + e.getMessage() + ")");
 		}
 		if (r.exit != 0 || r.output.contains("Error:") || r.output.contains("Error type")) {
 			String words = r.output.trim();
 			if (words.length() > 300) words = words.substring(0, 300);
 			if (words.contains("unable to resolve") || words.contains("does not exist")) {
-				throw RpcError.notFound(id + " has no activity for that intent: " + words);
+				throw RpcError.notFound(named(id) + " has no activity for that intent: " + words);
 			}
-			throw RpcError.denied("`am start` could not start " + id + ": " + words);
+			throw RpcError.denied("`am start` could not start " + named(id) + ": " + words);
 		}
 	}
 
@@ -245,7 +245,7 @@ final class PhoneApps implements Device.Apps {
 				Hidden.call(forceStopPackage, am, id, USER_CURRENT);
 				return;
 			} catch (SecurityException e) {
-				throw RpcError.denied("the phone refused to stop " + id + " (" + e.getMessage() + ")");
+				throw RpcError.denied("the phone refused to stop " + named(id) + " (" + e.getMessage() + ")");
 			} catch (Throwable t) {
 				Log.w("forceStopPackage failed, using `am force-stop`", t);
 			}
@@ -254,9 +254,32 @@ final class PhoneApps implements Device.Apps {
 		try {
 			r = Shell.run(15000, "am", "force-stop", id);
 		} catch (Exception e) {
-			throw RpcError.unsupported("could not run `am force-stop " + id + "` (" + e.getMessage() + ")");
+			throw RpcError.unsupported("could not run `am force-stop` for " + named(id) + " (" + e.getMessage() + ")");
 		}
-		if (r.exit != 0) throw RpcError.denied("`am force-stop " + id + "` failed: " + r.output.trim());
+		if (r.exit != 0) throw RpcError.denied("`am force-stop` could not stop " + named(id) + ": " + r.output.trim());
+	}
+
+	/** The label a person knows id by (Wikipedia, System UI), or null where the phone gives none. */
+	@Override
+	public String label(String id) {
+		return labelOf(id);
+	}
+
+	private static String labelOf(String id) {
+		try {
+			PackageManager pm = pm();
+			CharSequence label = pm.getApplicationInfo(id, 0).loadLabel(pm);
+			// loadLabel falls back to the package name for an app with no label: that is no label.
+			return label == null || label.length() == 0 || label.toString().equals(id) ? null : label.toString();
+		} catch (PackageManager.NameNotFoundException | RuntimeException e) {
+			return null;
+		}
+	}
+
+	/** id in an error's words: its label, else "the app (id)". */
+	private static String named(String id) {
+		String label = labelOf(id);
+		return label != null ? label : "the app (" + id + ")";
 	}
 
 	private static void checkId(String id) {
@@ -269,7 +292,7 @@ final class PhoneApps implements Device.Apps {
 		try {
 			pm.getPackageInfo(id, 0);
 		} catch (PackageManager.NameNotFoundException e) {
-			throw RpcError.notFound("no app " + id + " is installed on this phone");
+			throw RpcError.notFound("the app (" + id + ") is not installed on this phone");
 		}
 	}
 }

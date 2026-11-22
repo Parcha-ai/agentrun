@@ -13,6 +13,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { registryPin } from "./store-helpers.mjs";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+import { builtinFacts } from "./gate-support.mjs";
 
 const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -97,10 +98,10 @@ async function realGateRun(t, { harness, agentSettings = {}, serverSettings }) {
   const base = harness === "pi" ? piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) }) : undefined;
   const loop = createAdapterLoop(async (claim, run) => {
     const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:fake/add"], harness: run.harness, work: () => work });
-    const gate = await adapterRunGate(store, claim, revision, work);
+    const gate = await adapterRunGate(store, claim, revision, work, undefined, { facts: builtinFacts(harness) });
     const own = harness === "pi"
       ? await base(claim, run)
-      : { adapter: bridgeCli(seen), session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Add them.", record: "loop", hooks: quiet, runCap: { capUsd: () => undefined, modelOf: () => undefined } };
+      : { adapter: bridgeCli(seen), facts: undefined, session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Add them.", record: "loop", hooks: quiet, runCap: { capUsd: () => undefined, modelOf: () => undefined } };
     return { ...own, workRoot: work, gate, ...(mcp ? { mcp } : {}) };
   });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...STEADY });

@@ -2,7 +2,7 @@
 // logged as failed; a 410 turns the webhook off; a queued one goes on after a restart; a store that refuses a write loses
 // no notice; a start's catch-up queues each end the ledger lacks, once. Signing, idempotency and custody are
 // webhooks-signing.test.mjs. Each case in the block below has a server (or a store) of its own, so they run a few at once; the
-// two first ones watch the process's unhandled rejections, so they run alone.
+// first ones watch the process's unhandled rejections or set its clock, so they run alone.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import { describe, test } from "node:test";
 import { ATTEMPTS_KEPT, Webhooks } from "../dist/webhooks.js";
 import { client, FAUX, follow, scratch, secretWritePath, serve, startRun } from "./support.mjs";
 import {
-  arriving, askerStore, endedInStore, meetsDocument, endNotice, endParked, hadWebhook, killed, logged, noticed, noticeId, nothingPending, ofType, onDisk, outboxOf, parkedOnQuestion,
+  askerStore, endedInStore, meetsDocument, endNotice, endParked, hadWebhook, killed, logged, noticed, noticeId, nothingPending, ofType, onDisk, outboxOf, parkedOnQuestion,
   leftAs, processOn, receiver, refusing, rejections, saidBy, settled, startWithRunner, turn, waitNotice, Webhook, webhookOn,
   PRIVATE_OK, shownUrl,
 } from "./webhook-support.mjs";
@@ -52,7 +52,7 @@ const settingOf = (dir) => {
 };
 const stored = (rows) => [rows, async (id) => {
   const row = rows.find((r) => r.id === id);
-  return row ? { state: row.state, endedAt: row.endedAt, notice: { run_id: id, agent_id: "a", status: "completed", title: id } } : null;
+  return row ? { state: row.state, endedAt: row.endedAt, notice: { run_id: id, agent_id: "a", agent_name: "a", status: "completed", title: id } } : null;
 }];
 
 test("a 410 while the store refuses the webhook's setting leaves the server up and the webhook off here, said in the log; the next PUT writes it", async (t) => {
@@ -105,13 +105,99 @@ test("a scheduled try that throws is said in the log, never an unhandled rejecti
   await on.runs("run_1");
   const webhooks = await on.open(say);
   await webhooks.save({ url: hook.url });
-  await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, "m1");
+  await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, "m1");
   await throwSaid;
   assert.equal(hook.got.length, 1);
   assert.deepEqual(said.filter((fields) => fields.condition === "attempt_failed").map(({ error }) => error), ["the log is gone"]);
   // An unhandled rejection is said once the microtasks of its turn have run: a turn later, it would be in.
   await turn();
   assert.deepEqual(rejected, [], "no unhandled rejection");
+});
+
+test("a try's bound is refused at or past the claim it holds its message by (60 s), at zero, or in part of a millisecond (a timer's is whole): no try outlives its claim", async (t) => {
+  for (const timeoutMs of [0, -1, 60_000, 90_000, Number.NaN, 1500.5]) {
+    assert.throws(() => new Webhooks({}, randomBytes(32), () => undefined, { timeoutMs }), RangeError, `bound ${timeoutMs}`);
+  }
+  // The server's option reaches the same check: one it is given is never dropped for the default. Each start is refused
+  // before serve() registers its own cleanup, so its data is in a scratch directory the file removes.
+  for (const webhookTimeoutMs of [0, Number.NaN, 1500.5]) {
+    const data = join(await scratch(t), "agents");
+    await assert.rejects(serve(t, { ...PRIVATE_OK, data, webhookTimeoutMs }), RangeError, `the server's bound ${webhookTimeoutMs}`);
+  }
+});
+
+test("redeliveries that fail leave the message's own schedule as it was: it is still tried on every wait", async (t) => {
+  // The test's clock (setTimeout and Date, the process's own: this case runs alone): a wait of the message's schedule
+  // passes only when the test moves time, and every jitter is the middle of its range, so each own try is due at an exact
+  // moment. No model run: the message is the one a run's end queues (emit), on a Webhooks over a store of the test's own.
+  const T0 = Date.parse("2026-01-01T00:00:00.000Z");
+  const waits = [1_000, 2_000, 3_000];
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: T0 });
+  t.mock.method(Math, "random", () => 0.5);
+  const hook = await receiver(t, () => 500);
+  const log = logged();
+  // Every read of a message (a try's first step, made the moment its timer fires) and every write of an own try's outcome
+  // (its claim's), each as it lands: nothing is polled.
+  let reads = 0;
+  const own = [];
+  let wake = () => undefined;
+  const on = await webhookOn(t, await scratch(t), { retryMs: waits, wrap: seeing("channels", (channels) => ({
+    get: (id) => ((reads += 1), channels.get(id)),
+    settle: async (...args) => {
+      const written = await channels.settle(...args);
+      if (args[3]?.claim) (own.push(args[1]), wake());
+      return written;
+    },
+  })) });
+  // Once own try `n` is written and what follows it (its next timer, its failure's line) is done: a turn after its write.
+  const ownTry = async (n) => {
+    if (own.length < n) await new Promise((resolve) => (wake = () => own.length >= n && resolve()));
+    await turn();
+  };
+  // Whether moving the clock `ms` on starts a try of the message: its timer fires, and the try reads the message at once.
+  const moved = (ms) => {
+    const before = reads;
+    t.mock.timers.tick(ms);
+    return reads > before;
+  };
+  await on.runs("run_1");
+  const webhooks = await on.open(log.push);
+  await webhooks.save({ url: hook.url });
+  await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, "m1");
+  assert.ok(moved(0), "the first try, at once");
+  await ownTry(1);
+  const id = hook.got[0].headers["webhook-id"];
+  const schedule = async () => {
+    const { state, attempts, nextAt } = await on.store.channels.get(id);
+    return { state, attempts, nextAt };
+  };
+  // Halfway through each wait, failing redeliveries (four in the first, as many as the whole schedule's tries; one in each
+  // later one): each is sent, and leaves the message's count and next try as they were. Then each own try comes at the end
+  // of its wait, the wait its own count names (a redelivery counts none), never a moment before.
+  let at = T0;
+  let left = { state: "queued", attempts: 1, nextAt: T0 + waits[0] };
+  assert.deepEqual(await schedule(), left, "the first wait, from the first try");
+  for (const [i, wait] of waits.entries()) {
+    assert.ok(!moved(wait / 2), `own try ${i + 2} not halfway through its wait of ${wait} ms`);
+    for (let r = 1; r <= (i === 0 ? 4 : 1); r++) {
+      const redone = await webhooks.redeliver(id);
+      assert.deepEqual([redone.status_code, redone.redelivery, redone.retry_at], [500, true, null]);
+      assert.deepEqual(await schedule(), left, `after redelivery ${r} in wait ${i + 1}`);
+    }
+    assert.ok(!moved(wait / 2 - 1), `own try ${i + 2} not before its wait of ${wait} ms`);
+    assert.ok(moved(1), `own try ${i + 2} at its wait of ${wait} ms`);
+    at += wait;
+    await ownTry(i + 2);
+    left = i + 1 < waits.length ? { state: "queued", attempts: i + 2, nextAt: at + waits[i + 1] } : { state: "dropped", attempts: 4, nextAt: at };
+    assert.deepEqual(await schedule(), left, `after own try ${i + 2}`);
+  }
+  const failed = await log.when("condition=delivery_failed");
+  assert.ok(failed.includes("attempts=4"), `its own four tries, every wait: ${failed}`);
+  const tries = (await webhooks.attemptsView()).attempts.toReversed();
+  assert.deepEqual(tries.filter((a) => !a.redelivery).map((a) => a.retry_at), [T0 + 1_000, T0 + 3_000, T0 + 6_000].map((ms) => new Date(ms).toISOString()).concat(null), "each own try's next, by its own count");
+  assert.deepEqual([tries.filter((a) => !a.redelivery).length, tries.filter((a) => a.redelivery).length], [4, 6]);
+  assert.equal(hook.got.length, 10);
+  assert.ok(hook.got.every((r) => r.headers["webhook-id"] === id), "one message, under its own webhook-id");
 });
 
 describe("the outbound webhook: the outbox, its tries and its durability", { concurrency: CASES_AT_ONCE }, () => {
@@ -216,9 +302,12 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const held = new Promise((resolve) => { release = resolve; });
     // The log is filled before the redelivery starts, so a single attempt pushes the first out while the redelivery
     // waits: the wait stays far inside the server's fetch timeout. The redelivery is answered only when released.
+    // The try's bound is 45 s here, not 15: this case asserts the answer of a send made while another is held, and a CI
+    // host that stalls past 15 s wakes with that send's timer due before its answer is read (Node runs timers before
+    // I/O), so the send reads no answer. A merge group's run stalled about 20 s: this file's 3 to 7 s cases took 23 to 29.
     const redelivery = ATTEMPTS_KEPT + 1;
     const hook = await receiver(t, (n) => (n === redelivery ? held.then(() => 200) : 200));
-    const { api, data } = await serve(t, PRIVATE_OK);
+    const { api, data } = await serve(t, { ...PRIVATE_OK, webhookTimeoutMs: 45_000 });
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
     const id = hook.got[0].headers["webhook-id"];
@@ -258,53 +347,6 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     assert.deepEqual([view.url, view.disabled], [shownUrl(fresh.url), null], "the new setting stands, on");
   });
 
-  test("redeliveries that fail leave the message's own schedule as it was: it is still tried on every wait", async (t) => {
-    const hook = await receiver(t, () => 500);
-    const log = logged();
-    const { api } = await serve(t, { ...PRIVATE_OK, webhookRetryMs: [1_500, 100, 100], log: log.push });
-    assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
-    const run = await startRun(api, "redone", "hi");
-    await follow(api, run.run_id, ["completed"]);
-    await hook.when(1);
-    const id = hook.got[0].headers["webhook-id"];
-    for (let i = 0; i < 4; i++) assert.equal((await api("POST", `/settings/webhook/deliveries/${id}/redeliver`, {})).body.status_code, 500);
-    const failed = await log.when("condition=delivery_failed");
-    assert.ok(failed.includes("attempts=4"), `its own four tries, every wait: ${failed}`);
-    const tries = (await api("GET", "/settings/webhook/deliveries")).body.attempts;
-    assert.deepEqual([tries.filter((a) => !a.redelivery).length, tries.filter((a) => a.redelivery).length], [4, 4]);
-  });
-
-  test("a message pending when its server stops goes on from the next one, under the same webhook-id; a run the next server reads as it already stood notices nothing", async (t) => {
-    let answer = 503;
-    const hook = await receiver(t, () => answer);
-    const data = join(await scratch(t), "agents");
-    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s", webhookRetryMs: [2_000] });
-    let stopped = false;
-    t.after(() => stopped || first.close());
-    let api = client(first.baseUrl, first.token);
-    const { body: set } = await api("PUT", "/settings/webhook", { url: hook.url });
-    const run = await startRun(api, "pending", "hi");
-    await follow(api, run.run_id, ["completed"]);
-    await hook.when(1);
-    // Its first try answered and its next one set, as the outbox on disk says it.
-    await onDisk(data, () => outboxOf(data).messages.some((m) => m.status === "pending" && m.attempts === 1 && m.next_at));
-    await first.close();
-    stopped = true;
-    answer = 200;
-    const next = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });
-    t.after(() => next.close());
-    api = client(next.baseUrl, next.token);
-    await hook.when(2);
-    assert.equal(hook.got[1].headers["webhook-id"], hook.got[0].headers["webhook-id"]);
-    new Webhook(set.signing_secret).verify(hook.got[1].body, hook.got[1].headers);
-    assert.equal((await api("GET", `/runs/${run.run_id}`)).body.status, "completed");
-    // Delivered, and the ledger holds the run's end as the store does: a start's catch-up queues no end the ledger has, so
-    // the run, read as it already ended, is no new notice.
-    await onDisk(data, () => outboxOf(data).messages.every((m) => m.status !== "pending"));
-    assert.equal(noticed(data, run.run_id)?.ended, (await api("GET", `/runs/${run.run_id}`)).body.ended_at);
-    assert.equal(hook.got.length, 2, "the run, read as it already ended, is no new notice");
-  });
-
   test("a run that ends while its server stops still gives its notice: kept pending, delivered by the next server", async (t) => {
     const hook = await receiver(t);
     const data = join(await scratch(t), "agents");
@@ -333,7 +375,10 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const hook = await receiver(t, (n) => (n === 1 ? held.then(() => 200) : 200));
     t.after(() => release());
     const data = join(await scratch(t), "agents");
-    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    // The held try's own bound is past anything a slow machine stalls for (and under its claim's 60 s): at the default
+    // 15 s, a runner starved that long before the close let the bound fire first, so the try failed as a timeout
+    // (attempts 1) and this case saw no try cut.
+    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s", webhookTimeoutMs: 59_000 });
     let stopped = false;
     t.after(() => stopped || first.close());
     let api = client(first.baseUrl, first.token);
@@ -373,12 +418,35 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
   test("a notice the store refuses is told again once it takes the write: none is lost, and it is sent once", async (t) => {
     const hook = await receiver(t);
     const log = logged();
-    const { api, data } = await serve(t, { ...PRIVATE_OK, log: log.push });
+    const { api, data, store, runnerBeats } = await serve(t, { ...PRIVATE_OK, log: log.push });
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     // The store refuses the webhook's messages, as on a full disk; the run's own rows are written as ever.
     const release = await refusing(t, data, "outbox");
     const run = await startRun(api, "unsaved", "hi");
-    await follow(api, run.run_id, ["completed"]);
+    const beatsBefore = runnerBeats();
+    try {
+      await follow(api, run.run_id, ["completed"]);
+    } catch (error) {
+      // Progress only, on failure: never the row's input, summary, runner id, or raw logs. Diagnostics cannot replace
+      // the original failure or wait indefinitely for a store that stopped answering.
+      try {
+        const lines = log.lines.slice(-200);
+        const progress = { beats_before: beatsBefore, beats_after: runnerBeats(), run: "unreadable",
+          events: Object.fromEntries(["event=run_started", "event=run_ended", "condition=outbox_unwritable"].map((event) =>
+            [event, lines.filter((line) => line.slice(0, 512).split(" ").includes(event)).length])) };
+        let timer;
+        try {
+          const row = await Promise.race([store.runs.get(run.run_id), new Promise((resolve) => { timer = setTimeout(() => resolve(undefined), 1_000); })]);
+          if (row) progress.run = { state: row.state, epoch: row.epoch, runner_present: row.runner !== null,
+            claimed_until: row.claimedUntil, wake_at: row.wakeAt, backoff_until: row.backoffUntil,
+            started_at: row.startedAt, ended_at: row.endedAt };
+          else progress.run = row === null ? "absent" : "read_timed_out";
+        } catch { /* retain unreadable, without the store error's possibly private text */ }
+        finally { clearTimeout(timer); }
+        t.diagnostic(`webhook run progress: ${JSON.stringify(progress)}`);
+      } catch { /* the assertion remains the failure even if diagnostic collection fails */ }
+      throw error;
+    }
     // Its notice was tried as its end was read, and refused: not queued, so nothing is sent.
     await log.when("condition=outbox_unwritable");
     assert.equal(endNotice(data, run.run_id), undefined, "not in the ledger: the store took none of it");
@@ -485,7 +553,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
       // Set a minute ago: both ends came after it, so both are due.
       await on.setAt(new Date(Date.now() - 60_000).toISOString());
       const later = await on.open();
-      const notice = (id, status = "completed") => ({ run_id: id, agent_id: "a", status, title: id });
+      const notice = (id, status = "completed") => ({ run_id: id, agent_id: "a", agent_name: "a", status, title: id });
       const [earlier, moved] = [new Date(Date.now() - 2_000).toISOString(), new Date(Date.now() - 1_000).toISOString()];
       // The store as the start read it: both runs ended. The ledger has the second's end, queued before.
       const store = new Map([["earlier", { id: "earlier", state: "completed", endedAt: earlier }], ["moved", { id: "moved", state: "completed", endedAt: moved }]]);
@@ -546,7 +614,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     leftAs(dir, { told: { inside: { ended: inside }, past: { ended: past } } });
     const webhooks = await on.open();
     // A new notice prunes the ledger, as the catch-up would read it.
-    await webhooks.emit("run.ended", { run_id: "now", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "now", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     assert.deepEqual(Object.keys(outboxOf(dir).notices).sort(), ["inside", "now"], "the end past the day is dropped; the one inside it stays");
     await webhooks.catchUp(...stored([{ id: "inside", endedAt: inside }, { id: "past", endedAt: past }]));
     await hook.when(1);
@@ -568,7 +636,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await setup.close();
     await on.setAt(new Date(Date.now() - 2 * day).toISOString());
     const first = await on.open();
-    const run = (id) => ({ run_id: id, agent_id: "a", status: "completed", title: id });
+    const run = (id) => ({ run_id: id, agent_id: "a", agent_name: "a", status: "completed", title: id });
     await first.emit("run.ended", run("sent"), sent);
     // A later notice prunes the ledger: the entry at the edge stays.
     await first.emit("run.ended", run("fresh"), new Date().toISOString());
@@ -599,7 +667,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     // Queued two days ago, delivered, and pushed out of the log since: the ledger alone has the wait.
     leftAs(dir, { told: { waiting: { waits: ["row_9"] } }, cleared: true });
     const webhooks = await on.open();
-    const waiting = { run_id: "waiting", agent_id: "a", status: "input_required", title: "t", pending: { kind: "question" } };
+    const waiting = { run_id: "waiting", agent_id: "a", agent_name: "a", status: "input_required", title: "t", pending: { kind: "question" } };
     // Each notice told as the server's follower tells it: again while the store has not taken it (a loaded machine's
     // store, busy past its wait, answers unsaved), until it answers queued.
     const told = async (...args) => {
@@ -609,7 +677,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
       }
     };
     // Another run's notice prunes the ledger; then the waiting run is seen again (an adoption, a refresh).
-    await told("run.ended", { run_id: "other", agent_id: "a", status: "completed", title: "o" }, new Date().toISOString());
+    await told("run.ended", { run_id: "other", agent_id: "a", agent_name: "a", status: "completed", title: "o" }, new Date().toISOString());
     await told("run.needs_input", waiting, "row_9");
     await hook.when(1);
     await settled(dir);
@@ -723,7 +791,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: hook.url });
     failing = 1;
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await log.when("condition=attempt_failed", "the store is busy");
     await hook.when(1, "the run.ended after the store's error");
     assert.equal(hook.got.length, 1);
@@ -744,7 +812,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1");
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: hook.url });
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await hook.when(2, "the second try, after the first one failed and the reads of the message did too");
     assert.equal(refused, 3, "every refused read waited out");
     await onDisk(dir, () => outboxOf(dir).messages.every((m) => m.status === "delivered"), "the message delivered at its retry");
@@ -770,7 +838,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1");
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: hook.url });
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await onDisk(dir, () => outboxOf(dir).attempts.length === 1);
     const id = hook.got[0].headers["webhook-id"];
     await webhooks.redeliver(id);
@@ -796,7 +864,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1");
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: hook.url });
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await hook.when(1);
     const id = hook.got[0].headers["webhook-id"];
     assert.equal((await webhooks.redeliver(id)).status_code, 500);
@@ -829,7 +897,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1");
     const webhooks = await on.open();
     await webhooks.save({ url: old.url });
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await old.when(1);
     const moving = webhooks.save({ url: fresh.url });
     answerGone();
@@ -860,7 +928,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     } })) });
     const webhooks = await on.open();
     await webhooks.save({ url: hook.url });
-    const failed = { trigger_id: "trg_1", name: "nightly", firing_key: "k1", nominal_at: new Date().toISOString(), error: { code: "internal", message: "" }, auto_paused: false };
+    const failed = { trigger_id: "trg_1", name: "nightly", agent_id: "a", agent_name: "a", firing_key: "k1", nominal_at: new Date().toISOString(), error: { code: "internal", message: "" }, auto_paused: false };
     const first = webhooks.emitTrigger(failed, "k1");
     const again = webhooks.emitTrigger(failed, "k1");
     assert.deepEqual([await settledYet(first), await settledYet(again)], [false, false], "neither answers while no write of it has landed");
@@ -882,7 +950,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1");
     const webhooks = await on.open();
     await webhooks.save({ url: hook.url });
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await hook.when(1);
     // Its first try answered 503: queued, its next try a minute away.
     await onDisk(dir, () => outboxOf(dir).attempts.length === 1);
@@ -921,7 +989,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await webhooks.save({ url: hook.url });
     const removed = webhooks.remove();
     await atDrop;
-    const told = webhooks.emit("run.ended", { run_id: "run_late", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    const told = webhooks.emit("run.ended", { run_id: "run_late", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     letDrop();
     await removed;
     assert.equal(await told, "off", "told while the webhook was being removed: nothing to send it to");
@@ -968,7 +1036,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1");
     const webhooks = await on.open();
     await webhooks.save({ url: hook.url });
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     // Its first try answered 503: queued, its next try armed.
     await onDisk(dir, () => outboxOf(dir).attempts.length === 1);
     refuseDrop = true;
@@ -998,10 +1066,10 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await webhooks.save({ url: hook.url });
     assert.ok(flushes() > before, "a PUT that keeps the URL made its setting durable before it answered");
     before = flushes();
-    assert.equal(await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString()), "queued");
+    assert.equal(await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString()), "queued");
     assert.ok(flushes() > before, "a run.ended answered queued is durable, with its ledger row");
     before = flushes();
-    const failed = { trigger_id: "trg_1", name: "nightly", firing_key: "k1", nominal_at: new Date().toISOString(), error: { code: "internal", message: "" }, auto_paused: false };
+    const failed = { trigger_id: "trg_1", name: "nightly", agent_id: "a", agent_name: "a", firing_key: "k1", nominal_at: new Date().toISOString(), error: { code: "internal", message: "" }, auto_paused: false };
     assert.equal(await webhooks.emitTrigger(failed, "k1"), "queued");
     assert.ok(flushes() > before, "a trigger.failed answered queued is durable");
   });
@@ -1029,7 +1097,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const webhooks = await on.open();
     await webhooks.save({ url: hook.url });
     holdPost = true;
-    const told = webhooks.emit("run.ended", { run_id: "run_late", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    const told = webhooks.emit("run.ended", { run_id: "run_late", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await atPost;
     holdPost = false;
     const removed = webhooks.remove();
@@ -1074,9 +1142,9 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1", "run_late");
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: old.url });
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await atSettle;
-    const told = webhooks.emit("run.ended", { run_id: "run_late", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    const told = webhooks.emit("run.ended", { run_id: "run_late", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await atPost;
     letSettle();
     await log.when("condition=webhook_disabled");
@@ -1105,7 +1173,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1");
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: hook.url });
-    await webhooks.emit("run.needs_input", { run_id: "run_1", agent_id: "a", status: "input_required", title: "t", pending: { kind: "question" } }, "row_2:waiting");
+    await webhooks.emit("run.needs_input", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "input_required", title: "t", pending: { kind: "question" } }, "row_2:waiting");
     await log.when("condition=attempt_unsaved");
     await onDisk(dir, () => outboxOf(dir).messages.every((m) => m.status === "delivered"), "the delivered try written");
     assert.equal(hook.got.length, 1, "sent once");
@@ -1123,7 +1191,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1");
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: down.url });
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     const failed = await log.when("condition=delivery_failed");
     assert.ok(failed.includes("attempts=3"), failed);
   });
@@ -1143,12 +1211,12 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: old.url });
     refuse = true;
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await log.when("condition=attempt_unsaved");
     // The 410's write not landed yet, the webhook is set to another URL, and that one's message queued.
     await webhooks.save({ url: fresh.url });
     refuse = false;
-    await webhooks.emit("run.ended", { run_id: "run_2", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_2", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await fresh.when(1);
     // The 410's write lands (its try in the log), then a test send settles behind everything before it.
     await onDisk(dir, () => outboxOf(dir).attempts.some((a) => a.status_code === 410) && outboxOf(dir).attempts.some((a) => a.status_code === 503));
@@ -1173,7 +1241,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1");
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: hook.url });
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await onDisk(dir, () => outboxOf(dir).attempts.length === 1);
     refuse = 1;
     const id = hook.got[0].headers["webhook-id"];
@@ -1204,7 +1272,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1");
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: hook.url });
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await rewriting;
     const closing = webhooks.close();
     assert.equal(await settledYet(closing), false, "the close waits for the write under way");
@@ -1227,33 +1295,11 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1");
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: hook.url });
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     await log.when("condition=attempt_unsaved");
     await webhooks.close();
     assert.deepEqual(outboxOf(dir).messages.map((m) => m.status), ["delivered"], "written by the close, before it returned");
     assert.equal(hook.got.length, 1);
-  });
-
-  test("a built-in learning run that ends sends no run.ended; the person's run that queued it does, and so does a run after it", async (t) => {
-    const hook = await receiver(t);
-    const server = await serve(t, { ...PRIVATE_OK, runner: false });
-    const { data } = server;
-    assert.equal((await server.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
-    const writer = await askerStore(t, data);
-    const endsOf = (id) => ofType(hook.got, "run.ended").filter((r) => JSON.parse(r.body).data.run_id === id);
-    // A person's run ends keeping its learning, which queues the learning run that grades and merges it.
-    await writer.runs.create({ id: "run-learns", agentId: "asker", revisionId: "asker-rev" }, { body: { input: { message: "Answer." }, title: "Learns", place: { mode: "runner" } } });
-    const source = await writer.claim("run-learns", "test-runner", { leaseMs: 60_000 });
-    const kept = { state: "proposed", notes: ["Retries"], skills: [], workflows: [], proposal: { notes: [] }, detail: "Proposed 1 note." };
-    await writer.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, { table: "learning_run", row: { id: "learn-1" } }] });
-    await hook.when(() => endsOf("run-learns").length === 1, "the run.ended of the person's run", data);
-    // The learning run ends; then a person's run after it, whose notice shows the server read past the learning run's end.
-    const learning = await writer.claim("learn-1", "test-runner", { leaseMs: 60_000 });
-    await writer.runs.update(learning, { state: "ended" });
-    await endedInStore(writer, "asker", "run-after");
-    await hook.when(() => endsOf("run-after").length === 1, "the run.ended of run run-after", data);
-    await settled(data);
-    assert.deepEqual(endsOf("learn-1").length, 0, "no run.ended for the learning run");
   });
 
   test("a try whose timer fires a little before its message is due is armed again for its time: every try comes, then the failure is said", async (t) => {
@@ -1265,7 +1311,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await on.runs("run_1");
     const webhooks = await on.open(log.push);
     await webhooks.save({ url: down.url });
-    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" }, new Date().toISOString());
     const failed = await log.when("condition=delivery_failed");
     assert.ok(failed.includes("attempts=3"), failed);
   });

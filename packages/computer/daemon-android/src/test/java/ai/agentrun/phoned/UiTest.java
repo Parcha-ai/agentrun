@@ -6,6 +6,8 @@ import static ai.agentrun.phoned.Check.map;
 import static ai.agentrun.phoned.Check.refuses;
 import static ai.agentrun.phoned.Check.yes;
 
+import ai.agentrun.phoned.device.Device;
+import ai.agentrun.phoned.device.Rect;
 import ai.agentrun.phoned.fake.FakeDevice;
 import ai.agentrun.phoned.fake.FakeNode;
 import java.util.Arrays;
@@ -482,6 +484,9 @@ final class UiTest {
 		Map<String, Object> seen = phone.call("ui.observe", "{" + target + "}");
 		String search = (String) phone.node(seen, "Search settings").get("ref");
 		Map<String, Object> acted = phone.call("ui.act", "{" + target + ",\"state\":\"s1\",\"steps\":[{\"press\":\"" + search + "\"}]}");
+		// The press landed: another app is in front after it, and its window, once it shows, differs from Settings'. The
+		// step is verified against that window, never against Settings' own, which lingers unchanged past the step's read.
+		eq(Json.obj("route", "semantic", "verified", true), step(acted, 0));
 		eq(true, acted.get("changed"));
 		eq("s2", acted.get("state"));
 		// The state it answers is the search page's: the app in front, observed since it, shows nothing new.
@@ -492,6 +497,7 @@ final class UiTest {
 		String field = null;
 		for (Object n : list(front, "nodes")) if ("search_src_text".equals(map(n).get("id"))) field = (String) map(n).get("ref");
 		Map<String, Object> still = phone.call("ui.act", "{\"steps\":[{\"press\":\"" + field + "\"}]}");
+		eq(Json.obj("route", "semantic", "verified", false), step(still, 0));
 		eq(false, still.get("changed"));
 		eq("s4", still.get("state"));
 		// A page of the act's own app (Settings' Network & internet, as About phone) answers changed, as before.
@@ -499,6 +505,7 @@ final class UiTest {
 		Map<String, Object> again = phone.call("ui.observe", "{" + target + "}");
 		String network = (String) phone.node(again, "Network & internet").get("ref");
 		Map<String, Object> page = phone.call("ui.act", "{" + target + ",\"steps\":[{\"press\":\"" + network + "\"}]}");
+		eq(Json.obj("route", "semantic", "verified", true), step(page, 0));
 		eq(true, page.get("changed"));
 		eq("Internet", map(phone.call("ui.observe", "{\"since\":\"" + page.get("state") + "\"}").get("window")).get("title"));
 	}
@@ -576,7 +583,7 @@ final class UiTest {
 		String late = refuses("timeout", () -> phone.call("apps.launch", "{\"id\":\"" + FakeDevice.SETTINGS + "\"}"));
 		long waited = phone.device.clock().now() - before;
 		yes(waited >= UiDriver.LAUNCH_WINDOW_MS && waited < UiDriver.LAUNCH_WINDOW_MS + 200, "waited " + waited + " ms");
-		yes(late.contains("apps.launch: " + FakeDevice.SETTINGS + " opened no window within 10000 ms (the accessibility tree shows window 30 application \"UI fixture\" of " + FakeDevice.FIXTURE + ")"), late);
+		yes(late.contains("apps.launch: Settings opened no window within 10000 ms (the accessibility tree shows window 30 application \"UI fixture\" of UI fixture)"), late);
 		// A terminate takes the launch that has not shown yet with it.
 		phone.call("apps.terminate", "{\"id\":\"" + FakeDevice.SETTINGS + "\"}");
 		eq(FakeDevice.FIXTURE, map(phone.call("apps.list", "{}")).get("foreground"));
@@ -600,7 +607,35 @@ final class UiTest {
 		long before = phone.device.clock().now();
 		String missing = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}}"));
 		eq(before, phone.device.clock().now());
-		yes(missing.equals(FakeDevice.FIXTURE + " has no window on the screen (the accessibility tree shows window 10 application \"Settings\" of " + FakeDevice.SETTINGS + "): open it with apps.launch first"), missing);
+		yes(missing.equals("UI fixture has no window on the screen (the accessibility tree shows window 10 application \"Settings\" of Settings): open it with apps.launch first"), missing);
+	}
+
+	static void testANotFoundNamesAppsByTheirLabelsAndNoBareId() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		String wikipedia = "org.wikipedia";
+		String systemUi = "com.android.systemui";
+		phone.device.apps.add(new Device.App(wikipedia, "Wikipedia", "2"));
+		phone.device.systemLabels.put(systemUi, "System UI");
+		// Two system windows (a navigation bar and another) on the screen, and no window of Wikipedia.
+		for (int id : new int[] {2, 5}) {
+			FakeDevice.FakeWindow w = new FakeDevice.FakeWindow(id, id == 2 ? "Navigation bar" : null, new Rect(0, 0, 1080, 100), FakeNode.of("android.widget.FrameLayout").pkg(systemUi));
+			w.type = "system";
+			w.active = false;
+			phone.device.windows.add(w);
+		}
+		String missing = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"" + wikipedia + "\"}}"));
+		yes(missing.startsWith("Wikipedia has no window on the screen ("), missing);
+		yes(missing.contains("window 2 system \"Navigation bar\" of System UI; window 5 system of System UI"), missing);
+		yes(!missing.contains("org.") && !missing.contains("com."), missing);
+		// An app the phone gives no label for keeps its id, once, in parentheses after the words.
+		phone.device.apps.add(new Device.App("org.nolabel", null, "1"));
+		String bare = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"org.nolabel\"}}"));
+		yes(bare.startsWith("the app (org.nolabel) has no window on the screen ("), bare);
+		yes(!bare.contains("com."), bare);
+		// Android's loadLabel gives the package name for an app with no label: that is no label either.
+		phone.device.apps.add(new Device.App("org.sameasid", "org.sameasid", "1"));
+		String same = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"org.sameasid\"}}"));
+		yes(same.startsWith("the app (org.sameasid) has no window on the screen ("), same);
 	}
 
 	static void testAWindowSitsWhereItsElementsAreThoughTheServicePutsItElsewhere() throws Exception {

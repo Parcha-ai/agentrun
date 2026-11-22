@@ -49,11 +49,29 @@ export function danglingCalls(lines: readonly string[]): DanglingCall[] {
   return [...calls.values()];
 }
 
+/** The next paginated record number. Old unnumbered journals keep their format; a partly numbered or invalid journal
+ *  cannot establish append order and is refused, never repaired. Call before dispatching any resumed host effect too. */
+export function nextRolloutOrdinal(lines: readonly string[]): number | undefined {
+  const parsed = lines.map(parseLine);
+  if (!parsed.some((line) => line !== undefined && Object.hasOwn(line, 'ordinal'))) return undefined;
+  let previous = -1;
+  for (const line of parsed) {
+    const ordinal = line?.ordinal;
+    if (typeof ordinal !== 'number' || !Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal <= previous) {
+      throw new Error('Codex rollout ordinal order is missing or invalid; retained records require review before resuming.');
+    }
+    previous = ordinal;
+  }
+  if (previous === Number.MAX_SAFE_INTEGER) throw new Error('Codex rollout ordinal cannot be safely advanced; retained records require review before resuming.');
+  return previous + 1;
+}
+
 /** `lines` with the dangling call `callId` given `outcome`: one `function_call_output` line after the last, its output the
  *  bridge's text (Codex's rollout keeps no failure flag for a function's output: a failure or refusal is in its words).
  *  Throws when the call does not dangle: an answered call is never rewritten. */
 export function settleCall(lines: readonly string[], callId: string, outcome: CallOutcome, now = Date.now()): string[] {
   if (!danglingCalls(lines).some((call) => call.callId === callId)) throw new Error(`Codex's rollout has no call ${callId} of the host's that it made and never got an output for`);
-  const output = JSON.stringify({ timestamp: new Date(now).toISOString(), type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: outcome.text } });
+  const ordinal = nextRolloutOrdinal(lines);
+  const output = JSON.stringify({ timestamp: new Date(now).toISOString(), ...(ordinal === undefined ? {} : { ordinal }), type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output: outcome.text } });
   return [...lines, output];
 }

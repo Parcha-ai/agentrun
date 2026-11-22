@@ -17,7 +17,7 @@ import { type HarnessEntry, harnessOf, onAdapter } from "./harness-table.js";
 import type { ModelRef } from "./model.js";
 import { HarnessUnavailable, type InstallFix, providerFor } from "./provider.js";
 import { keyShaped } from "./secret-cut.js";
-import { servedSkills } from "./learn/skills.js";
+import { servedSkills } from "./learn/workflow-draft.js";
 import { runKeyOf } from "./key-refusal.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
@@ -150,7 +150,7 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
 }
 
 /** What an adapter's own setup error says installing fixes, by the code its facts name for each: none for any other error. */
-function fixOf(facts: AdapterFacts, error: unknown): InstallFix | undefined {
+export function fixOf(facts: AdapterFacts, error: unknown): InstallFix | undefined {
   const code = (error as { code?: unknown } | null)?.code;
   return code === facts.install.codes.install ? "install" : code === facts.install.codes.pins ? "pins" : undefined;
 }
@@ -322,14 +322,17 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     // The CLI runs Anthropic's own id, which it knows the limits and betas of, and sends it as it is, OpenRouter too
     // (providerFor's modelId); the key goes as the endpoint takes it, and the run is priced by the catalog entry of
     // whoever bills it (its priceModel).
-    const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth } : { origin: "", credential: () => "" };
+    const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth, ...(provider.headers ? { headers: provider.headers } : {}) } : { origin: "", credential: () => "" };
     const priced = provider ? { ...needs, model: provider.priceModel } : native;
     // Its CLI checked off the event loop first (hashed and run as a child), so the server goes on answering: a pass is
     // kept, and the adapter's own check answers from it. A CLI that fails its pins is the adapter's to report, in its
     // order (the SDK before the CLI).
     await claude.verifyClaudeAgentCliAsync(sdk.cliPath);
     // The skills only when there are some: with none, the adapter keeps its Skill tool off.
-    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, provider: endpoint, price: priceOf(priced), log: harnessLog(claudeFacts.id, env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(needs.now ? { now: needs.now } : {}), ...(needs.zone ? { zone: needs.zone } : {}), ...nativeOptions(claudeFacts, env) });
+    // On Claude Code's login on this machine: the login's directories in place of a provider, billed to the plan, never
+    // priced here.
+    const source = provider?.login ? { login: provider.login, price: () => null } : { provider: endpoint, price: priceOf(priced) };
+    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, ...source, log: harnessLog(claudeFacts.id, env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(needs.now ? { now: needs.now } : {}), ...(needs.zone ? { zone: needs.zone } : {}), ...nativeOptions(claudeFacts, env) });
   } catch (error) {
     // The adapter's own install line is a project's; here Claude Code is installed into the data's harnesses directory.
     const message = (error as Error).message.split(claude.CLAUDE_AGENT_SDK_INSTALL).join(line);
@@ -398,7 +401,7 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   const provider = providerFor(openCodeFacts.wire, env, needs.model, openCodeFacts.id);
   // Its instructions list each skill by the description its SKILL.md's front matter gives on one LF line, which is all the
   // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
-  // line each), as a learned skill already does, so a CRLF file or a folded description is listed by its own words.
+  // line each), so a CRLF file or a folded description is listed by its own words.
   const skills = needs.skills && servedSkills(needs.skills);
   return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }

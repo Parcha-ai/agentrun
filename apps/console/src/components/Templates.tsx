@@ -9,11 +9,13 @@ import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { formColumnsClass, Input } from "@/components/ui/field";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { runTemplatePrompt } from "@/lib/codingAgentPrompts";
-import { type Client, ClientError, type FieldIssue } from "@/lib/client";
+import { allPages, type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
-import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
+import { cn } from "@/lib/utils";
+import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine, TRIGGER_KINDS } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
 import { type FieldSpec, fieldIssueWords, fieldKind, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, schemaFields } from "@/lib/inputForm";
@@ -35,23 +37,34 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
     v2.listTemplates().then((r) => { if (live) setTemplates(r.templates); }, (e) => { if (live) setError(problem(e, "the templates")); });
     return () => { live = false; };
   }, [v2, tries, install]);
-  if (install !== undefined) return <div className="p-5 md:p-8"><InstallTemplate v2={v2} source={install} go={go} /></div>;
   const shown = name === undefined ? undefined : templates?.find((t) => t.id === name);
+  const body = install !== undefined ? <InstallTemplate v2={v2} source={install} go={go} />
+    : error && !templates ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
+    : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
+    : name === undefined ? <TemplateList v2={v2} templates={templates} go={go} playground={playground} onRemoved={() => setTries((n) => n + 1)} />
+    : shown ? <ApplyTemplate key={`${shown.id}:${draft ?? ""}`} v2={v2} template={shown} go={go} playground={playground} draft={draft} />
+    : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href={catalogHash(playground)} className="underline">See its templates</a>.</p>;
+  // In the API playground the page sits under the playground's own bar, with its own way back.
+  if (playground) return <div className="p-5 md:p-8">{body}</div>;
+  // Its own page has the sections' top bar: the list names the section; a template, or a package being read, leads back to it.
+  const listing = install === undefined && name === undefined;
   return (
-    <div className="p-5 md:p-8">
-      {error && !templates ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
-        : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
-        : name === undefined ? <TemplateList v2={v2} templates={templates} go={go} playground={playground} onRemoved={() => setTries((n) => n + 1)} />
-        : shown ? <ApplyTemplate key={`${shown.id}:${draft ?? ""}`} v2={v2} template={shown} go={go} playground={playground} draft={draft} />
-        : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href={catalogHash(playground)} className="underline">See its templates</a>.</p>}
-    </div>
+    <section className="flex min-h-full flex-col">
+      <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
+        {listing
+          ? <h1 className={pageTitleClass}><LayoutTemplate className="size-4" aria-hidden />Templates</h1>
+          : <nav aria-label="Breadcrumb"><a href="#/templates" className={cn(pageTitleClass, "text-muted-foreground hover:text-foreground")}><ArrowLeft className="size-4" aria-hidden />Templates</a></nav>}
+      </header>
+      <div className="p-5 md:p-6">{body}</div>
+    </section>
   );
 }
 
-/** An imported package's provenance in one line: its source, the commit it was read at, its publisher. */
+/** An imported package's provenance in one line: its source, the commit it was read at, its publisher; an uploaded one
+ *  (`agentrun deploy`, no publisher) its id and the start of its sha256. */
 export function TemplateProvenance({ t }: { t: Pick<TemplateView, "source" | "sha" | "publisher"> }) {
   if (!t.source) return null;
-  return <p className="mt-1 break-all font-mono text-small text-muted-foreground" data-provenance>{t.source} at {t.sha?.slice(0, 12)}, published by {t.publisher}</p>;
+  return <p className="mt-1 break-all font-mono text-small text-muted-foreground" data-provenance>{t.source} at {t.sha?.slice(0, 12)}{t.publisher ? `, published by ${t.publisher}` : ", uploaded"}</p>;
 }
 
 /** The list, with the "Add from URL" box: a package on GitHub is read and shown whole (the install page) before it is stored. */
@@ -67,7 +80,7 @@ function TemplateList({ v2, templates, go, playground, onRemoved }: { v2: Client
   };
   return (
     <>
-      <Heading className="mb-5 text-2xl font-semibold">Templates</Heading>
+      {playground && <Heading className="mb-5 text-2xl font-semibold">Templates</Heading>}
       <form aria-label="Add from URL" className="mb-5 flex flex-wrap items-end gap-2 border bg-card px-4 py-3" onSubmit={(e) => { e.preventDefault(); if (source.trim()) go(installHash(source.trim())); }}>
         <label className="min-w-0 flex-1">
           <span className="caps text-small font-semibold">Add from URL</span>
@@ -136,15 +149,13 @@ function InstallTemplate({ v2, source, go }: { v2: Client; source: string; go: (
       go(templateHash(done.template.id));
     } catch (e) { setSaid(refusalText(e)); } finally { setInstalling(false); }
   };
-  const back = <a href="#/templates" className="caps mb-4 inline-flex items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>;
-  if (error) return <div className="max-w-3xl">{back}<p className="border px-4 py-6 font-mono text-body text-destructive-text" role="alert">{error}</p></div>;
+  if (error) return <div className="max-w-3xl"><p className="border px-4 py-6 font-mono text-body text-destructive-text" role="alert">{error}</p></div>;
   if (!read) return <ListSkeleton label="Reading the package from GitHub" rows={3} />;
   const t = read.template;
   const owner = t.publisher ?? "";
   const files = Object.entries(read.skill_files);
   return (
     <section aria-label="Install from GitHub" className="max-w-3xl">
-      {back}
       <h1 className="font-mono text-2xl font-semibold">{titleOf(t)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></h1>
       <dl className="mt-3 space-y-1 border bg-card px-4 py-3 font-mono text-small">
         <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted-foreground">Publisher</dt><dd data-publisher>{owner}{read.publisher_trusted ? " (trusted here)" : " (new here)"}</dd></div>
@@ -220,6 +231,13 @@ const installHash = (source: string) => `#/templates/install?src=${encodeURIComp
  *  show first: a schedule with when it runs and its next run, as the Triggers page says them. */
 /** How long the Apply page waits on one of its new triggers' read-back before it leaves that trigger out. */
 export const TRIGGER_READ_MS = 3_000;
+/** What an apply did to its agent, as its answer says it (agent_change, revision_version): the title's last word and the
+ *  sentence above its warnings. An Update that changed nothing wrote no revision, and says so. */
+const CHANGE_WORDS: Record<TemplateApplied["agent_change"], { title: string; said: (rev: number) => string }> = {
+  made: { title: "applied", said: () => "The agent is made" },
+  updated: { title: "updated", said: (rev) => `Updated: rev ${rev}` },
+  unchanged: { title: "unchanged", said: (rev) => `Nothing to update: rev ${rev} is current` },
+};
 /** `promise`'s answer, or undefined once `ms` have passed without one. */
 function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -249,11 +267,22 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   // The refusal's own words beside Apply; `withIssues` when it came with issues, so it goes once the last of them does.
   const [said, setSaid] = useState<{ text: string; withIssues: boolean } | null>(null);
   const [made, setMade] = useState<TemplateApplied | null>(null);
-  // The schedules the apply made, each read back (GET /triggers/{id}) for its next run.
+  // The schedules the apply made, each read back (GET /triggers/{id}) for its line and next run.
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   // The parameters an apply sent: what its "applied" title names, whatever was typed while it was under way.
   const [sentValues, setSentValues] = useState<ParameterText>({});
   const keys = useRef(keeper()).current;
+  // The agents here this template made (GET /agents, `template.id`): each is offered as Update <agent> beside Apply, which
+  // applies onto it (agent_id) in place of making another. A read that fails offers none; Apply still works.
+  const [mine, setMine] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    let live = true;
+    // Every page, to the list's end: an agent it made far down the list is offered too.
+    allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents, Number.POSITIVE_INFINITY)
+      .then((agents) => agents.filter((a) => a.template?.id === t.id).map((a) => ({ id: a.agent_id, name: a.definition?.name || a.agent_id })))
+      .then((found) => { if (live) setMine(found); }, () => {});
+    return () => { live = false; };
+  }, [v2, t.id]);
   // Whether this page is still the one shown: an Apply that answers after the owner left never takes them anywhere.
   const shown = useRef(true);
   // Set on every setup, not only the first: StrictMode runs setup, cleanup, then setup again.
@@ -314,33 +343,31 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
     setValues((was) => ({ ...was, [key]: value }));
     if (fieldValid(p, value)) setIssues((was) => was.filter((i) => fieldOfIssue(i.field, "parameters") !== key));
   };
-  const apply = async () => {
+  // `onto`: the agent an Update applies onto (agent_id); none, a new agent.
+  const apply = async (onto?: string) => {
     if (!applies || blocked || waiting.length) return;
     setApplying(true); setIssues([]); setSaid(null);
     const sending = values;
+    const sent = onto ? { ...body, agent_id: onto } : body;
     try {
-      const done = await v2.applyTemplate(t.id, body, keys.keyFor(t.id, body));
+      const done = await v2.applyTemplate(t.id, sent, keys.keyFor(t.id, sent));
       keys.done();
-      // Each trigger the apply made, read back: a schedule shows when it runs next. One that can't be read, or isn't
-      // answered within TRIGGER_READ_MS, is left out (the Triggers page has it): a slow read never holds the result back.
+      // Each schedule the apply made, read back for when it runs next. One that can't be read, or isn't answered within
+      // TRIGGER_READ_MS, is said by the answer's words alone: a slow read never holds the result back.
       const schedulesOf = async (): Promise<Schedule[]> => {
-        const read = await Promise.all(done.trigger_ids.map((id) => bounded(v2.getTrigger(id), TRIGGER_READ_MS).catch(() => null)));
+        const read = await Promise.all(done.triggers.filter((x) => x.kind === "schedule").map((x) => bounded(v2.getTrigger(x.trigger_id), TRIGGER_READ_MS).catch(() => null)));
         return read.filter((x): x is Schedule => x !== null && x !== undefined && isScheduleTrigger(x));
       };
-      // A warning or a webhook's once-shown secret is shown at once; its schedules are added as they are read.
-      if (done.warnings.length || done.webhook_secrets?.length) {
-        setSentValues(sending);
-        setMade(done);
-        void schedulesOf().then(setSchedules, () => {});
-        return;
-      }
-      // Otherwise the agent opens at once, unless a schedule's next run is there to show first.
-      const scheduled = done.trigger_ids.length ? await schedulesOf() : [];
+      // An apply that changed the agent, made no trigger and says nothing more opens the agent at once. One that changed
+      // nothing (agent_change unchanged) says so first.
       if (!shown.current) return;
-      if (!scheduled.length) { go(agentHash(done.agent_id)); return; }
+      if (done.agent_change !== "unchanged" && !done.warnings.length && !done.webhook_secrets?.length && !done.triggers.length) { go(agentHash(done.agent_id)); return; }
+      // Otherwise its result is shown at once, in the answer's words for what it did (CHANGE_WORDS): a warning, a webhook's
+      // once-shown secret, and every trigger it made or kept (the answer's own list); a schedule's line and next run are
+      // added as it is read back.
       setSentValues(sending);
-      setSchedules(scheduled);
       setMade(done);
+      if (done.triggers.some((x) => x.kind === "schedule")) void schedulesOf().then((read) => { if (shown.current) setSchedules(read); }, () => {});
     } catch (e) {
       if (e instanceof ClientError && e.fields?.length) {
         setIssues(e.fields); setSaid({ text: e.message, withIssues: true });
@@ -359,34 +386,25 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   const placed = (i: FieldIssue) => /^(parameters|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field) || (i.field === "overrides.choice" && !!t.model?.choices?.length)
     || (i.field.startsWith("secrets.") && [...t.secrets, ...choiceKeys(picked?.secrets ?? [])].includes(i.field.slice("secrets.".length)));
   if (made) {
+    const change = CHANGE_WORDS[made.agent_change];
     return (
       <section aria-label="Applied" className="max-w-page">
-        <Heading className="mb-4 flex items-center gap-2 text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</Heading>
+        <Heading className="mb-4 flex items-center gap-2 text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} {change.title}</Heading>
+        {made.agent_change !== "made" && made.warnings.length === 0 && <p className="mb-3 text-lead">{change.said(made.revision_version)}.</p>}
         {made.warnings.length > 0 && <>
-          <p className="mb-3 text-lead">The agent is made. The server says:</p>
+          <p className="mb-3 text-lead">{change.said(made.revision_version)}. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-body" role="status" aria-label="Warnings">
-            {made.warnings.map((w, i) => {
-              // A webhook trigger's (triggers.<i>.secret): the trigger the apply made (trigger_ids, in the template's order)
-              // opens from here, where its secret is shown with Rotate. One webhook_secrets speaks for gets its link there.
-              const hook = /^triggers\.(\d+)\.secret$/.exec(w.field);
-              const id = hook ? made.trigger_ids[Number(hook[1])] : undefined;
-              const named = hook ? t.triggers[Number(hook[1])]?.name : undefined;
-              if (id && made.webhook_secrets?.some((x) => x.trigger_id === id)) return <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}</li>;
-              return (
-                <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}
-                  {id && <a href={`#/triggers/${encodeURIComponent(id)}`} className="mt-1 block font-mono text-small text-primary-text underline-offset-2 hover:underline">Open {typeof named === "string" && named ? named : id} to get its signing secret (Rotate)</a>}
-                </li>
-              );
-            })}
+            {made.warnings.map((w, i) => (
+              <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}</li>
+            ))}
           </ul>
         </>}
         {/* Each webhook trigger the apply made: its signing secret this once, in the first answer to this session (held in
             this screen's state alone, never stored or logged), beside its URL; else the server's note and the trigger to
             rotate it from. */}
         {made.webhook_secrets?.map((x) => {
-          const index = made.trigger_ids.indexOf(x.trigger_id);
-          const named = index >= 0 ? t.triggers[index]?.name : undefined;
-          const name = typeof named === "string" && named ? named : x.trigger_id;
+          const named = made.triggers.find((one) => one.trigger_id === x.trigger_id)?.name;
+          const name = named || x.trigger_id;
           return x.signing_secret
             ? <SecretOnce key={x.trigger_id} label={`The webhook's URL and secret (${name})`} url={hookUrlOf({ id: x.trigger_id })} secret={x.signing_secret} />
             : (
@@ -396,15 +414,27 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
               </div>
             );
         })}
-        {/* Each schedule the apply made: its line (scheduleLine), as the Triggers page says it. */}
-        {schedules.length > 0 && (
-          <ul className="mt-4 divide-y border" aria-label="Schedules">
-            {schedules.map((s) => (
-              <li key={s.id} data-trigger={s.id} className="px-4 py-3">
-                <a href={`#/triggers/${encodeURIComponent(s.id)}`} className="break-words text-prose font-semibold hover:underline">{s.name}</a>
-                <p className="mt-1 break-words font-mono text-small text-muted-foreground">{scheduleLine(s.source, s.next_at)}</p>
-              </li>
-            ))}
+        {/* Every trigger the apply made or kept, of any kind, by the package's name for it: what starts it in words and
+            whether it is on. A schedule read back says its line and next run (scheduleLine), as the Triggers page does. A
+            webhook with no webhook_secrets item (one the apply kept) says its page is where its secret is. */}
+        {made.triggers.length > 0 && (
+          <ul className="mt-4 divide-y border" aria-label="Triggers">
+            {made.triggers.map((x) => {
+              const s = schedules.find((one) => one.id === x.trigger_id);
+              const kept = x.kind === "webhook" && !made.webhook_secrets?.some((one) => one.trigger_id === x.trigger_id);
+              return (
+                <li key={x.trigger_id} data-trigger={x.trigger_id} className="px-4 py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <a href={`#/triggers/${encodeURIComponent(x.trigger_id)}`} className="break-words text-prose font-semibold hover:underline">{x.name}</a>
+                    {kept && <span className="text-small text-muted-foreground">Open it to get its signing secret (Rotate)</span>}
+                    <Chip tone={x.enabled ? "success" : "plain"}>{x.enabled ? "on" : "off"}</Chip>
+                  </div>
+                  {/* Its kind and what starts a run of it, as the Triggers page says each kind. */}
+                  <p className="mt-1 break-words text-body">{TRIGGER_KINDS[x.kind].label} · {TRIGGER_KINDS[x.kind].what}{x.enabled ? "" : " It is off: it starts nothing until it is turned on."}</p>
+                  {s && <p className="mt-1 break-words font-mono text-small text-muted-foreground">{scheduleLine(s.source, s.next_at)}</p>}
+                </li>
+              );
+            })}
           </ul>
         )}
         <div className="mt-5" />
@@ -414,7 +444,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   }
   return (
     <div>
-      <a href={catalogHash(playground)} className="caps mb-4 inline-flex min-h-6 items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
+      {playground && <a href={catalogHash(playground)} className="caps mb-4 inline-flex min-h-6 items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>}
       <Heading className="text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></Heading>
       <TemplateProvenance t={t} />
       <p className="mt-2 max-w-prose text-lead leading-[1.6]">{t.description}</p>
@@ -456,7 +486,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
               {servers && matches.length === 0 && (
                 <p role="status" data-missing-mcp={m.toolkit} className="mt-2 border border-warning/50 px-3 py-2 text-small text-warning-text">
                   {m.required ? `${m.toolkit} is required and not set up here: Apply is refused until it is.` : `${m.toolkit} is not set up here: Apply makes the agent without its tools (${m.tools.map((x) => x.name).join(", ")}).`}{" "}
-                  <a href={setUpHref(m)} className="font-mono text-primary-text underline-offset-2 hover:underline">{m.source === "github" ? "Set up GitHub App access" : m.source === "composio" ? `Add ${m.toolkit} from Composio` : `Set up ${m.toolkit}`}</a>
+                  <a href={setUpHref(m)} className="font-mono text-primary-text underline underline-offset-2 hover:decoration-2">{m.source === "github" ? "Set up GitHub App access" : m.source === "composio" ? `Add ${m.toolkit} from Composio` : `Set up ${m.toolkit}`}</a>
                 </p>
               )}
               <Issues issues={[...at(`mcp.${m.toolkit}`), ...at(`servers.${m.toolkit}`)]} />
@@ -470,8 +500,9 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
                         <span className="min-w-0">
                           <span className="font-mono text-body">{tool.name}</span> <span className="font-mono text-label text-muted-foreground">{tool.tool}</span>
                           {/* A tick is a grant, with no permission set: the section's note says what a granted tool then does.
-                              What the template asks for is said apart. */}
-                          <span className="block text-small text-muted-foreground">{tool.asks === "allow" ? "The template asks you to grant this." : "The template does not ask for this; unticked, the agent doesn't get it."}</span>
+                              Every tool the package lists is one the template uses, so each row asks for it; `asks: "ask"`
+                              (a write) only means each of its calls waits for approval, said in one clause. */}
+                          <span className="block text-small text-muted-foreground">The template asks you to grant this.{tool.asks === "ask" && " Each call waits for your OK unless you allowed it in Settings or pick Never ask."}</span>
                         </span>
                       </label>
                       {index >= 0 && <Issues issues={at(`grants.${index}`)} />}
@@ -546,6 +577,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
       <div className="mt-1 flex flex-wrap items-center gap-3">
         {applies ? <>
           <Button size="sm" variant="primary" onClick={() => void apply()} disabled={applying || blocked || waiting.length > 0} title={unread ? (serversError ? "The saved MCP servers couldn't be read: try again first" : "Reading the saved MCP servers…") : unpicked.length ? `Pick the server for ${unpicked.join(", ")} first` : reading ? `Reading ${reading.what}…` : undefined}>{applying ? "Applying…" : "Apply"}</Button>
+          {mine.map((a) => <Button key={a.id} size="sm" variant="outline" onClick={() => void apply(a.id)} disabled={applying || blocked || waiting.length > 0} title={`Apply this template onto ${a.name}: a new revision of it, its runs, notes and triggers kept`}>{`Update ${a.name}`}</Button>)}
           {!playground && <CodingAgentAction variant="outline" label="Set it up with an agent" disabled={blocked} prompt={runTemplatePrompt(location.origin, t, body)} playgroundHref={templatePlaygroundHref(t, body)} />}
           {waiting.map((r) => held[r.id] === "unmet"
             ? <p key={r.id} role="status" data-requirement={r.id} className="min-w-0 text-body text-warning-text">{r.unmet.before}<a href={r.unmet.href} className="font-mono text-primary-text underline-offset-2 hover:underline">{r.unmet.link}</a>{r.unmet.after}</p>

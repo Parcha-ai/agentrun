@@ -14,7 +14,7 @@ import { inspect } from "node:util";
 import { queued, storeOn } from "./store-helpers.mjs";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly, schemaOf } from "./store-target.mjs";
 
-const { migrate, migrationsIn, openPostgresStore, postgresVersionOf: versionOf, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreBusy, StoreConstraint, STORE_CONNECT_TIMEOUT_MS, StoreDeadline, StoreOwned, Unanswered, LEASE_DEADLINE_MS } = await import("../dist/store/index.js");
+const { LAST_UNMARKED, migrate, migrationsIn, openPostgresStore, postgresVersionOf: versionOf, postgresWhere, openStore, PgConnection, RunnerBelowFloor, SchemaVersionUnknown, storeTarget, StoreBusy, StoreConstraint, STORE_CONNECT_TIMEOUT_MS, StoreDeadline, StoreOwned, Unanswered, LEASE_DEADLINE_MS } = await import("../dist/store/index.js");
 const { RUNNER_RENEW_EVERY_MS, RunnerRefused, startRunnerProcess } = await import("../dist/runner/main.js");
 
 const ONLY = postgresOnly("the Postgres adapter");
@@ -731,7 +731,7 @@ test("servers of two schemas in one database hold their own owner locks", ONLY, 
   await one.close();
 });
 
-test("a runner refuses a schema not set up yet, and one of a version it does not know (SchemaVersionUnknown); so does a server", ONLY, async (t) => {
+test("a runner refuses a schema not set up yet, and one a later build migrated past its runner floor (RunnerBelowFloor); a server refuses any later schema", ONLY, async (t) => {
   const schema = await schemaFor(t);
   await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === null && error.message.includes(`the Postgres schema ${schema}`));
   const server = await openPostgresStore({ url: PG_URL, schema });
@@ -739,8 +739,15 @@ test("a runner refuses a schema not set up yet, and one of a version it does not
   // A later build's migration, applied: one past this build's last.
   const known = migrationsIn().at(-1).version;
   await sql(schema, "INSERT INTO schema_migrations (version, name, sha256, applied_at) VALUES ($1, 'later', 'x', 0)", known + 1);
-  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === known + 1 && error.known === known);
-  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "server" }), SchemaVersionUnknown, "nor does the server open a later build's schema");
+  // Additive (unmarked): the runner floor stays, and a runner of this build runs on the schema ahead of it.
+  const runner = await openPostgresStore({ url: PG_URL, schema, role: "runner" });
+  assert.deepEqual(await runner.schemaState(), { version: known + 1, runnerFloor: LAST_UNMARKED, known });
+  await runner.close();
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "server" }), SchemaVersionUnknown, "the server does not open a later build's schema");
+  // Breaking (marked): the floor rises past this build, and its runner is refused, as a schema it does not know.
+  await sql(schema, "INSERT INTO schema_migrations (version, name, sha256, applied_at, runners_breaking) VALUES ($1, 'later_breaking', 'y', 0, true)", known + 2);
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof RunnerBelowFloor && error instanceof SchemaVersionUnknown && error.found === known + 2 && error.known === known && error.floor === known + 2);
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "server" }), SchemaVersionUnknown, "nor does the server");
 });
 
 test("a runner sets nothing up: its open of a schema not set up leaves no schema behind", ONLY, async (t) => {
@@ -796,9 +803,11 @@ test("a store holding two answers to one approval is refused migration 0003 in w
   // The store as a build before 0003 left it, after an approve and a deny of call-1 raced and both were written; call-2 has
   // one answer, which the migration keeps as it is. Every migration from 0003 on is unrecorded, so the open applies them
   // again from 0003 (0004 on runs.outcome's check, 0007's computer_viewers.host, 0008's tables, 0010's imported_templates, 0011's
-  // revisions.mcp_pin and 0015's runs.labels, made only where missing, run twice unharmed; 0009's column is dropped, as a build before it left it).
+  // revisions.mcp_pin, 0015's runs.labels and 0021's purge times, made only where missing, run twice unharmed; 0009's column and 0020's runners
+  // table are dropped, as a build before them left the store: 0020 renames the runner_relays 0019 makes).
   await sql(schema, "DROP INDEX commands_one_answer");
   await sql(schema, "ALTER TABLE commands DROP COLUMN answer");
+  await sql(schema, "DROP TABLE runners");
   await sql(schema, "DELETE FROM schema_migrations WHERE version >= 3");
   const answer = async (kind, call) => (await sql(schema, "INSERT INTO commands (run_id, kind, body, created_at) VALUES ('run-1', $1, $2, 0) RETURNING id", kind, JSON.stringify({ approval: call })))[0].id;
   const first = await answer("approve", "call-1");

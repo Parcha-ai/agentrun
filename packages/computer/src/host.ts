@@ -7,7 +7,7 @@
 // the words of every refusal. These doc comments are the contract a new vendor reads (PROVIDERS.md, "The eleven
 // members").
 import type { ProviderDescriptor } from "./descriptor.js";
-import type { ComputerCapabilities, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
+import type { ComputerCapabilities, ComputerResources, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
 
 /**
@@ -90,6 +90,13 @@ export interface MachineHost {
 	 * streams the file through exec's stdin as base64 text, which root decodes (`base64 -d`, in coreutils and busybox).
 	 */
 	upload?(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void>;
+	/**
+	 * What agentrun-dial wrote in a dial machine, for a create whose machine never dialed: the adapter adds its last lines
+	 * to the timeout's words. undefined when agentrun-dial never started there. A host that started agentrun-dial itself
+	 * and can read its output has it (Daytona's: its session command's log); it replaces the machine's token with
+	 * `<token>` should agentrun-dial have written it. A read that fails throws, and the timeout's words stay as they were.
+	 */
+	dialLog?(id: string, ctx: HostCall): Promise<string | undefined>;
 	/**
 	 * The code of an error the vendor's client threw: one of ComputerErrorCode. Optional: the adapter reads a HostError's
 	 * own code, an AbortError as "aborted" and a TimeoutError as "timeout" itself, and anything else a host does not map
@@ -198,6 +205,9 @@ export interface Machine {
 	createdAt?: Date;
 	/** The vendor's words for a machine that is gone because it failed: a create stops in them. */
 	why?: string;
+	/** What the vendor's answer says the machine was given (its CPUs, memory, disk, GPUs), where it says it: a create
+	 *  returns these as its computer's resources. Absent where the answer says none. */
+	resources?: ComputerResources;
 }
 
 /** A process exec started: its output as it comes, its stdin, and its end. */
@@ -240,7 +250,7 @@ export interface HostFacts {
 	arch: "amd64" | "arm64";
 	/** The TCP ports the vendor's own agent listens on inside the machine (E2B's envd 49983). */
 	vendorAgentPorts: number[];
-	/** Whether its desktops run WINDOW_MANAGER (xfwm4, which its image has) once the display answers. Default none. */
+	/** Whether its desktops run a window manager (xfwm4, which its image has), which computerd starts (init --window-manager). Default none. */
 	windowManager?: boolean;
 	/** What spec.user may ask for, beside the daemon user: with it, the spec's user goes in MachineRequest.user. */
 	user?: Array<"root" | "uid">;

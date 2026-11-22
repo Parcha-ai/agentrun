@@ -975,3 +975,217 @@ describe("the Screen tab's recording", () => {
     expect(exports).toEqual([]);
   });
 });
+
+// A finished run's recording plays where its live screen was: a muted, inline <video> of the run files route's file (the
+// Export's URL with no download flag), sized as the live view is; with several, a picker in the header. A run still
+// going keeps its live view.
+describe("the Screen tab plays a finished run's recording", () => {
+  const done = { ...f.run, status: "completed", state: "idle" } as Run;
+  const rec = (path: string, finished = true) => ({ path, computer: "desk", seconds: 12.5, bytes: 4096, finished });
+  const URL_OF = (path: string) => `/v2/runs/${RUN}/files/${path}`;
+  async function played(run: Run, read: () => Promise<RunComputer>, fileUrl: ((path: string) => string) | null = URL_OF) {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows: [], files: [], actions: {}, readComputer: read, computerEvery: 20, tab: "screen", ...(fileUrl ? { fileUrl } : {}) } as never));
+    });
+    await settle();
+    const panel = host.querySelector('section[aria-label="Screen"]') as HTMLElement;
+    return { panel, video: () => panel.querySelector("video"), exports: () => [...panel.querySelectorAll("a[download]")] as HTMLAnchorElement[] };
+  }
+  const closedDesktop = async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }) as RunComputer;
+  const onDesktop = (recordings: ReturnType<typeof rec>[], run: Run = done) => ({ ...run, computer: { kind: "desktop", provider: "docker", state: "ready" }, recordings }) as Run;
+
+  it("a finished desktop run plays its one recording from the file route, inline, muted, and keeps Export", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4")]), closedDesktop);
+    const video = p.video();
+    expect(video, "a player where the live screen was").toBeTruthy();
+    expect(video!.getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+    expect(video!.hasAttribute("controls")).toBe(true);
+    expect(video!.muted).toBe(true);
+    expect(video!.hasAttribute("playsinline")).toBe(true);
+    expect(video!.getAttribute("preload")).toBe("metadata");
+    expect(video!.className).toContain("aspect-[16/10]");
+    expect(p.panel.textContent).not.toContain("closed when the run ended");
+    expect(p.exports().map((a) => a.getAttribute("href"))).toEqual([`${URL_OF("recordings/desk.mp4")}?download=1`]);
+  });
+
+  it("a finished phone run's player is framed as the phone is, at the height below it", async () => {
+    const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON() {} }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.tagName === "VIDEO") return rect(350, 0);
+      if (this.hasAttribute("data-scroll-pane")) return rect(200, 600);
+      return rect(0, 0);
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) { return this.hasAttribute("data-scroll-pane") ? 600 : 0; });
+    const run = { ...done, computer: { kind: "phone", provider: "phone-harness", state: "ready" }, recordings: [rec("recordings/phone.mp4")] } as Run;
+    const p = await played(run, async () => ({ state: "none", kind: "phone", hold: "agent", session: "closed" }));
+    const video = p.video();
+    expect(video!.getAttribute("src")).toBe(URL_OF("recordings/phone.mp4"));
+    expect(video!.className).toContain("aspect-[9/19]");
+    expect(video!.style.height).toBe(`${600 - 150 - 32}px`);
+  });
+
+  it("a live phone whose run ends in its recording fits the player, not the frame it replaced, and refits it", async () => {
+    let paneHeight = 600;
+    const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON() {} }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.tagName === "IFRAME") return rect(350, 0);
+      if (this.tagName === "VIDEO") return rect(300, 0);
+      if (this.hasAttribute("data-scroll-pane")) return rect(200, paneHeight);
+      return rect(0, 0);
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) { return this.hasAttribute("data-scroll-pane") ? paneHeight : 0; });
+    const phone = { computer: { kind: "phone", provider: "phone-harness", state: "ready" }, recordings: [rec("recordings/phone.mp4")] };
+    const props = (run: Run) => ({ run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows: [], files: [], actions: {}, readComputer: async () => ({ state: "live", kind: "phone", viewer: VIEWER, hold: "agent" }), computerEvery: 20, tab: "screen", fileUrl: URL_OF }) as never;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(RunDetail, props({ ...working, ...phone } as Run))); });
+    await settle();
+    expect((host.querySelector("iframe") as HTMLIFrameElement).style.height).toBe(`${600 - 150 - 32}px`);
+    await act(async () => { root!.render(createElement(RunDetail, props({ ...done, ...phone } as Run))); });
+    await settle();
+    const video = () => host.querySelector("video") as HTMLVideoElement;
+    expect(host.querySelector("iframe")).toBeNull();
+    expect(video().style.height).toBe(`${600 - 100 - 32}px`);
+    paneHeight = 650;
+    await act(async () => { window.dispatchEvent(new Event("resize")); });
+    expect(video().style.height).toBe(`${650 - 100 - 32}px`);
+  });
+
+  it("with several recordings, a picker in the header plays the one picked; every Export stays", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4"), rec("recordings/desk-2.mp4")]), closedDesktop);
+    expect(p.video()!.getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+    const picker = p.panel.querySelector('header [role="radiogroup"]') as HTMLElement;
+    expect(picker, "the picker sits in the header").toBeTruthy();
+    const second = [...picker.querySelectorAll("input")][1] as HTMLInputElement;
+    await act(async () => { second.click(); });
+    expect(p.video()!.getAttribute("src")).toBe(URL_OF("recordings/desk-2.mp4"));
+    expect(p.exports()).toHaveLength(2);
+  });
+
+  it("one finished recording has no picker, and one still being written is not played", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4"), rec("recordings/desk-2.mp4", false)]), closedDesktop);
+    expect(p.video()!.getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+    expect(p.panel.querySelector('[role="radiogroup"]')).toBeNull();
+  });
+
+  it("a run still going keeps its live view and its Recording chip: no player", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4"), rec("recordings/desk-2.mp4", false)], working), async () => ({ state: "live", kind: "desktop", viewer: VIEWER, hold: "agent" }));
+    expect(p.video()).toBeNull();
+    expect(p.panel.querySelector("iframe")).toBeTruthy();
+    expect(p.panel.textContent).toContain("Recording");
+  });
+
+  it("a finished run with no file route says its words, with no player", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4")]), closedDesktop, null);
+    expect(p.video()).toBeNull();
+    expect(p.panel.textContent).toContain("The desktop closed when the run ended.");
+  });
+});
+
+// A finished run's recording has the run's steps beside it: the timeline's own steps that began while the file was
+// recorded, each at its time on the video (its row's time less the time of the row that says the recording began). A
+// step is a button that moves the video there; the step the video is at is marked. With no row that says when the
+// recording began there is no list, and the player is alone as before.
+describe("the Screen tab's recording has the run's steps beside it", () => {
+  const done = { ...f.run, status: "completed", state: "idle" } as Run;
+  const URL_OF = (path: string) => `/v2/runs/${RUN}/files/${path}`;
+  const rec = (path: string) => ({ path, computer: "desk", seconds: 60, bytes: 4096, finished: true });
+  const recorded = (recordings: ReturnType<typeof rec>[]) => ({ ...done, computer: { kind: "desktop", provider: "docker", state: "ready" }, recordings }) as Run;
+  const at = (s: number) => new Date(Date.parse("2026-11-05T09:00:00Z") + s * 1000).toISOString();
+  let n = 0;
+  const row = (kind: TimelineRow["kind"], summary: string, timestamp: string, more: Partial<TimelineRow> = {}) => ({
+    id: `v${(n += 1)}`, seq: n, kind, summary, text: null, timestamp, created_at: timestamp, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null,
+    tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, ...more,
+  }) as TimelineRow;
+  const ROWS = [
+    row("user_message", "You: Find the cheapest nonstop.", at(-20)),
+    row("phase", "Recording the desktop's screen into recordings/desk.mp4.", at(0)),
+    row("tool_use", "computer_act", at(4), { tool_name: "computer_act", tool_use_id: "c1" }),
+    row("tool_result", "Opened Chrome: ok", at(6), { tool_name: "computer_act", tool_use_id: "c1", tool_status: "success" }),
+    row("phase", "You took over the desktop", at(75 - 60)),
+    row("tool_use", "computer_act", at(31), { tool_name: "computer_act", tool_use_id: "c2" }),
+    row("tool_result", "Clicked “Sort”: no element with that name", at(32), { tool_name: "computer_act", tool_use_id: "c2", tool_status: "failed" }),
+    row("phase", "Recording the desktop's screen into recordings/desk-2.mp4.", at(200)),
+    row("final_answer", "Skyline 214, $238.", at(210)),
+  ];
+  async function played(run: Run, rows: TimelineRow[]) {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab: "screen", fileUrl: URL_OF } as never));
+    });
+    await settle();
+    const panel = host.querySelector('section[aria-label="Screen"]') as HTMLElement;
+    const list = () => panel.querySelector('ol[aria-label="The recording\'s steps"]');
+    const steps = () => [...(list()?.querySelectorAll("button") ?? [])] as HTMLButtonElement[];
+    return { panel, video: () => panel.querySelector("video") as HTMLVideoElement, list, steps, said: () => steps().map((b) => b.textContent), current: () => steps().filter((b) => b.getAttribute("aria-current") === "step").map((b) => b.textContent) };
+  }
+
+  it("lists the steps made while the file was recorded, each at its time on the video, in the timeline's words", async () => {
+    const p = await played(recorded([rec("recordings/desk.mp4")]), ROWS);
+    expect(p.said()).toEqual([
+      "0:00PhaseRecording the desktop's screen into recordings/desk.mp4.",
+      "0:06Computer actOpened Chrome",
+      "0:15PhaseYou took over the desktop",
+      "0:32Computer actClicked “Sort”: no element with that name",
+    ]);
+    // What came before the recording, and after its length, is not a step of this video.
+    expect(p.panel.textContent).not.toContain("Find the cheapest nonstop");
+    expect(p.panel.textContent).not.toContain("Skyline 214");
+    // A step that failed reads as failed.
+    expect(p.steps()[3]!.querySelector(".text-destructive-text")?.textContent).toBe("Clicked “Sort”: no element with that name");
+    // The player is the same one: the file route's file, sized as the live view is.
+    expect(p.video().getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+    expect(p.video().className).toContain("aspect-[16/10]");
+  });
+
+  it("a step moves the video to its time and is marked; the mark follows the video as it plays", async () => {
+    const p = await played(recorded([rec("recordings/desk.mp4")]), ROWS);
+    expect(p.current()).toEqual(["0:00PhaseRecording the desktop's screen into recordings/desk.mp4."]);
+    await act(async () => { p.steps()[2]!.click(); });
+    expect(p.video().currentTime).toBe(15);
+    expect(p.current()).toEqual(["0:15PhaseYou took over the desktop"]);
+    // The video plays on past the next step: the mark moves with it, on the player's own events.
+    await act(async () => { p.video().currentTime = 33; p.video().dispatchEvent(new Event("timeupdate")); });
+    expect(p.current()).toEqual(["0:32Computer actClicked “Sort”: no element with that name"]);
+    // Dragged back with the player's own bar.
+    await act(async () => { p.video().currentTime = 7; p.video().dispatchEvent(new Event("seeked")); });
+    expect(p.current()).toEqual(["0:06Computer actOpened Chrome"]);
+  });
+
+  it("another recording picked has its own steps, from its own start", async () => {
+    const p = await played(recorded([rec("recordings/desk.mp4"), rec("recordings/desk-2.mp4")]), ROWS);
+    const second = [...p.panel.querySelectorAll('header [role="radiogroup"] input')][1] as HTMLInputElement;
+    await act(async () => { second.click(); });
+    expect(p.video().getAttribute("src")).toBe(URL_OF("recordings/desk-2.mp4"));
+    expect(p.said()).toEqual(["0:00PhaseRecording the desktop's screen into recordings/desk-2.mp4.", "0:10AnswerSkyline 214, $238."]);
+  });
+
+  it("steps that arrive after the player is drawn come beside the same player: it is not made again", async () => {
+    const run = recorded([rec("recordings/desk.mp4")]);
+    const props = (rows: TimelineRow[]) => ({ run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab: "screen", fileUrl: URL_OF }) as never;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(RunDetail, props([]))); });
+    await settle();
+    const before = host.querySelector("video") as HTMLVideoElement;
+    expect(host.querySelector('ol[aria-label="The recording\'s steps"]')).toBeNull();
+    before.currentTime = 7;
+    // The timeline's pages come in.
+    await act(async () => { root!.render(createElement(RunDetail, props(ROWS))); });
+    await settle();
+    expect(host.querySelector("video"), "the same element").toBe(before);
+    expect(before.currentTime).toBe(7);
+    const marked = [...host.querySelectorAll('ol[aria-label="The recording\'s steps"] button[aria-current="step"]')].map((b) => b.textContent);
+    expect(marked, "marked where the video already is").toEqual(["0:06Computer actOpened Chrome"]);
+  });
+
+  it("with no row that says when the recording began there is no list: the player alone", async () => {
+    const p = await played(recorded([rec("recordings/desk.mp4")]), ROWS.filter((r) => r.kind !== "phase"));
+    expect(p.list()).toBeNull();
+    expect(p.panel.textContent).not.toContain("Steps");
+    expect(p.video().getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+  });
+});

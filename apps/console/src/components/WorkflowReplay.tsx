@@ -8,8 +8,10 @@ import { Slider } from "@/components/ui/slider";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Chip } from "@/components/ui/chip";
 import { ReplayRevision, replayable } from "@/components/ReplayRevision";
+import { givenToRuns } from "@/lib/learning";
 import { recordOf, replayLine, standingOf, stoppedOf } from "@/lib/learningLoop";
 import type { Client } from "@/lib/client";
+import { cn } from "@/lib/utils";
 import { runLabel, when } from "@/lib/format";
 import { replaySteps } from "@/lib/workflowReplay";
 import type { LearningCost, Promotion, Serving, WorkflowRevisions } from "@/lib/v2";
@@ -26,19 +28,20 @@ const LIMIT = 50;
 /** How long a step stays up while playing. */
 export const STEP_MS = 1800;
 
-/** The learned workflows in use (`workflows`: the tab's list), one replay at a time, the first by default. Nothing when
- *  none is active. `v2` is read when it shows, and again on Try again. */
-export function WorkflowReplay({ v2, agentId, workflows, promotions = [], serving = [], cost = null, onReplayed }: { v2: Client; agentId: string; workflows: { name: string; status: string }[]; promotions?: readonly Promotion[]; serving?: readonly Serving[]; cost?: Pick<LearningCost, "workflows"> | null; onReplayed?: () => void }) {
-  const active = workflows.filter((w) => w.status === "active").map((w) => w.name);
+/** The learned workflows in use (`workflows`: the tab's list, those given to runs: neither pending nor retired), one replay
+ *  at a time, the first by default. Nothing when none is. `v2` is read when it shows, and again on Try again. `className`
+ *  is the card's, for where the tab stands it. */
+export function WorkflowReplay({ v2, agentId, workflows, promotions = [], serving = [], cost = null, onReplayed, className }: { v2: Client; agentId: string; workflows: { name: string; status: string }[]; promotions?: readonly Promotion[]; serving?: readonly Serving[]; cost?: Pick<LearningCost, "workflows"> | null; onReplayed?: () => void; className?: string }) {
+  const active = workflows.filter((w) => givenToRuns(w.status)).map((w) => w.name);
   const [picked, setPicked] = useState<string | null>(null);
   const name = picked !== null && active.includes(picked) ? picked : (active[0] ?? null);
   if (name === null) return null;
-  return <Replay key={name} v2={v2} agentId={agentId} name={name} choices={active} onPick={setPicked} promotions={promotions} serving={serving} stopped={stoppedOf(cost, name)} onReplayed={onReplayed} />;
+  return <Replay key={name} v2={v2} agentId={agentId} name={name} choices={active} onPick={setPicked} promotions={promotions} serving={serving} stopped={stoppedOf(cost, name)} onReplayed={onReplayed} className={className} />;
 }
 
 const TITLE = "Learned workflow";
 
-function Replay({ v2, agentId, name, choices, onPick, promotions, serving, stopped, onReplayed }: { v2: Client; agentId: string; name: string; choices: string[]; onPick: (name: string) => void; promotions: readonly Promotion[]; serving: readonly Serving[]; stopped: string | null; onReplayed?: () => void }) {
+function Replay({ v2, agentId, name, choices, onPick, promotions, serving, stopped, onReplayed, className }: { v2: Client; agentId: string; name: string; choices: string[]; onPick: (name: string) => void; promotions: readonly Promotion[]; serving: readonly Serving[]; stopped: string | null; onReplayed?: () => void; className?: string }) {
   const [data, setData] = useState<WorkflowRevisions | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [asked, setAsked] = useState(0);
@@ -56,10 +59,10 @@ function Replay({ v2, agentId, name, choices, onPick, promotions, serving, stopp
     </header>
   );
   if (error && !data) return (
-    <section className="border" aria-label={TITLE}>{heading}<div className="p-4"><ProblemCard problem={problem(error, "the learned workflow")} onRetry={() => setAsked((n) => n + 1)} className="" /></div></section>
+    <section className={cn("border", className)} aria-label={TITLE}>{heading}<div className="p-4"><ProblemCard problem={problem(error, "the learned workflow")} onRetry={() => setAsked((n) => n + 1)} className="" /></div></section>
   );
-  if (!data) return <section className="border" aria-label={TITLE} aria-busy>{heading}<div className="p-4"><Bone className="h-48 w-full" /></div></section>;
-  return <section className="border" aria-label={TITLE}>{heading}<Steps data={data} promotions={promotions} serving={serving.find((one) => one.workflow === data.name)?.digest ?? null} stopped={stopped} replay={{ v2, agentId, onStarted: onReplayed, onDecided: () => { setAsked((n) => n + 1); onReplayed?.(); } }} /></section>;
+  if (!data) return <section className={cn("border", className)} aria-label={TITLE} aria-busy>{heading}<div className="p-4"><Bone className="h-48 w-full" /></div></section>;
+  return <section className={cn("border", className)} aria-label={TITLE}>{heading}<Steps data={data} promotions={promotions} serving={serving.find((one) => one.workflow === data.name)?.digest ?? null} stopped={stopped} replay={{ v2, agentId, onStarted: onReplayed, onDecided: () => { setAsked((n) => n + 1); onReplayed?.(); } }} /></section>;
 }
 
 /** The replay of a read: the controls, the step's line and date, its graph. `stopped`: the digest the money rule stopped
@@ -116,7 +119,9 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
         <p className="mt-1 break-words text-lead" role="status" data-testid="replay-line">{step.line}</p>
         {step.reason && <p className="mt-0.5 line-clamp-2 break-words text-body text-muted-foreground">{step.reason}</p>}
         <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-body" data-testid="standing">
-          <Chip tone={standing.tone}>{standing.text}</Chip>
+          {/* The standing and its proof are longer than a narrow card (beside the cost chart, or on a small phone): there
+              the chip takes a second line, never the card's edge. */}
+          <Chip tone={standing.tone} className="h-auto min-h-5 max-w-full shrink whitespace-normal py-0.5 leading-tight">{standing.text}</Chip>
           <span className="min-w-0 break-words text-muted-foreground">{record ? replayLine(record) : step.digest ? "No check yet: a new revision is checked on the inputs of the agent's own runs before it serves." : "Its file did not read: no standing."}</span>
         </p>
         {replay && step.digest && <ReplayRevision key={step.digest} v2={replay.v2} agentId={replay.agentId} workflow={data.name} digest={step.digest} offered={replayable(standing)} resume={record?.decided === "replaying" ? (record.replay_id ?? null) : null} onStarted={replay.onStarted} onDecided={replay.onDecided} />}

@@ -1,5 +1,6 @@
-// A new agent's place: the box is the default machine. An agentic definition that names no place is saved with the
-// Docker box as its place wherever this server has docker, and one that names no tools gets a shell (bash). Where docker is not there, a new agent is saved as
+// A new agent's place: the box is the default machine for a shell. An agentic definition that names no place and no tools
+// is saved with the Docker box as its place wherever this server has docker, and gets a shell (bash); one that names its
+// tools gets the box only when one needs a shell, and else runs on the runner. Where docker is not there, a new agent is saved as
 // before, with no place, and runs on the runner; capabilities say why (places.default_reason). The default is stamped on
 // the revision at its create, so an agent saved before keeps running where it ran: a stored revision with no place is the
 // runner, whatever this server has now. A workflow is never given a box, and an explicit runner is kept. Everything runs
@@ -121,14 +122,31 @@ test("a new agent on a server with docker can start a command in the background 
   assert.equal(said[2].text, "Background process 1 exited with code 0. Output bytes 0 to 20 of 20, the end.\n\nfrom the background\n");
 });
 
-test("a new agent that names its tools gets exactly those in the box; one that names the runner, or a tool the box refuses, keeps the runner; a workflow is never given a box", { timeout: 60_000 }, async (t) => {
+test("a first agent with no place whose tools need no shell (none named, or only read and write) runs on the runner and starts no container; one that names bash keeps the box", { timeout: 60_000 }, async (t) => {
+  const docker = await fakeDocker(t);
+  const { api } = await serve(t, { faux: PROBE });
+  for (const [id, tools, plan] of [["notes", [], []], ["writer", ["read", "write"], [{ tool: "write", args: { path: "a.txt", content: "a" } }]]]) {
+    const made = await api("POST", "/agents", agent(id, { tools }));
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    assert.deepEqual([made.body.definition.place, made.body.definition.tools], [undefined, tools], `${id}: saved with no place`);
+    const run = await probe(api, id, plan);
+    assert.deepEqual(run.place, RUNNER, `${id}: its run is on the runner`);
+    await follow(api, run.run_id, ["completed"]);
+  }
+  assert.deepEqual(docker.runs(), [], "no container was started");
+  const shell = await api("POST", "/agents", agent("shell", { tools: ["bash"] }));
+  assert.equal(shell.status, 201, JSON.stringify(shell.body));
+  assert.deepEqual([shell.body.definition.place, shell.body.definition.tools], [DOCKER, ["bash"]], "a shell keeps the box");
+});
+
+test("a new agent that names a shell among its tools gets exactly those in the box; one that names the runner, or a tool the box refuses, keeps the runner; a workflow is never given a box", { timeout: 60_000 }, async (t) => {
   await fakeDocker(t);
   const { api, data } = await serve(t, { faux: PROBE });
-  const named = await api("POST", "/agents", agent("named", { tools: ["read"] }));
+  const named = await api("POST", "/agents", agent("named", { tools: ["read", "bash"] }));
   assert.equal(named.status, 201, JSON.stringify(named.body));
-  assert.deepEqual([named.body.definition.place, named.body.definition.tools], [DOCKER, ["read"]]);
+  assert.deepEqual([named.body.definition.place, named.body.definition.tools], [DOCKER, ["read", "bash"]]);
   const none = await api("POST", "/agents", agent("toolless"));
-  assert.deepEqual([none.body.definition.place, none.body.definition.tools], [DOCKER, []], "an empty list is a list named");
+  assert.deepEqual([none.body.definition.place, none.body.definition.tools], [undefined, []], "an empty list is a list named, and needs no shell");
   const runner = await api("POST", "/agents", { definition: { id: "runner", name: "runner", instructions: "Probe.", place: RUNNER } });
   assert.equal(runner.status, 201, JSON.stringify(runner.body));
   assert.deepEqual([runner.body.definition.place, runner.body.definition.tools], [RUNNER, []], "an explicit runner is kept, and gets no shell");
@@ -143,10 +161,10 @@ test("a new agent that names its tools gets exactly those in the box; one that n
   assert.equal(flow.status, 201, JSON.stringify(flow.body));
   assert.equal("place" in flow.body.definition, false, "a workflow names no place, and none is stamped");
   assert.equal("place" in storedBodies(data).find((body) => body.workflow), false);
-  // An edit that names no place keeps the agent's, as before: the box.
-  const edited = await api("PUT", "/agents/named/definition", { definition: { instructions: "Probe again.", tools: ["read", "bash"] } });
+  // An edit that names no place keeps the agent's, as before: the box, a shell named or not.
+  const edited = await api("PUT", "/agents/named/definition", { definition: { instructions: "Probe again.", tools: ["read"] } });
   assert.equal(edited.status, 200, JSON.stringify(edited.body));
-  assert.deepEqual([edited.body.definition.place, edited.body.definition.tools], [DOCKER, ["read", "bash"]]);
+  assert.deepEqual([edited.body.definition.place, edited.body.definition.tools], [DOCKER, ["read"]]);
 });
 
 test("with no docker, a new agent is saved as before, with no place, and runs on the runner; capabilities say why: docker turned off (AGENTRUN_BOXES=none), or its image failed", { timeout: 60_000 }, async (t) => {
@@ -186,7 +204,7 @@ test("a revision that names no place runs where default_place says, as a new age
   assert.equal(now.body.revision, made.body.revision, "the same revision, still with no place");
   assert.equal("place" in now.body.definition, false);
   const run = await probe(api, "old", [{ tool: "write", args: { path: "a.txt", content: "a" } }]);
-  assert.deepEqual(run.place, DOCKER, "where default_place says, not the runner");
+  assert.deepEqual(run.place, RUNNER, "its tools need no shell: the runner, with no container to wait for");
   assert.equal("default" in places, false, "one field says where a revision with no place runs: default_place");
   await follow(api, run.run_id, ["completed"]);
   // An edit that names no place keeps none, and may name bash: the place it resolves to has a shell.
@@ -194,12 +212,12 @@ test("a revision that names no place runs where default_place says, as a new age
   assert.equal(edited.status, 200, JSON.stringify(edited.body));
   assert.equal("place" in edited.body.definition, false, "an edit is no create: absent keeps the agent's, which is none");
   const shell = await probe(api, "old", [{ tool: "bash", args: { command: "printf 'hi\\n' > out.txt" } }]);
-  assert.deepEqual(shell.place, DOCKER);
+  assert.deepEqual(shell.place, DOCKER, "where default_place says, not the runner");
   await follow(api, shell.run_id, ["completed"], { deadlineMs: 60_000 });
-  // A box-placed run gets its computer when the runner claims it, whatever its tools (the first run, of write, was placed in
-  // the box too): one computer for each of the two runs placed there, and none for what stays on the runner, below.
+  // A box-placed run gets its computer when the runner claims it: one for the run with bash, and none for the run before
+  // it or what stays on the runner, below.
   const computers = docker.runs().filter((args) => args.includes("agentrun.computer=1")).map((args) => args.find((arg) => arg.startsWith("agentrun.run=")));
-  assert.deepEqual(computers, [`agentrun.run=${run.run_id}`, `agentrun.run=${shell.run_id}`], "one computer for each run placed in the box");
+  assert.deepEqual(computers, [`agentrun.run=${shell.run_id}`], "one computer, for the run placed in the box");
   // A tool the box refuses keeps the runner, as at create; a workflow is never given a box.
   // (Its run may still be refused for the browser's keys, which this test does not hold: never for its place.)
   const browsing = await api("POST", "/agents/browsing/runs", { input: { content: JSON.stringify({ probe: [] }) } });

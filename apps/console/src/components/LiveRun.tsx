@@ -5,11 +5,11 @@ import { RunDetail } from "@/components/RunDetail";
 import { RunError } from "@/components/RunError";
 import { type GraphActions, GraphUnavailable, isPermanent, RunGraphView, useRunGraph } from "@/components/RunGraphView";
 import { RunSkeleton } from "@/components/Skeleton";
-import { type Capabilities, type Client, ClientError, follow } from "@/lib/client";
+import { type Client, ClientError, follow } from "@/lib/client";
 import { APPROVAL_ROW, approvalRefusal } from "@/lib/approval";
 import { keeper, sendOnce } from "@/lib/idempotency";
 import { problem, refusalTitle } from "@/lib/problem";
-import { type HarnessRead, messageOffer, readHarness } from "@/lib/liveRun";
+import { type HarnessRead, type MessageCaps, messageOffer, readHarness } from "@/lib/liveRun";
 import { costOf, type RunGraph, usd } from "@/lib/runGraph";
 import { latest } from "@/lib/viewing";
 import { useLearningSettle } from "@/lib/useLearningSettle";
@@ -31,7 +31,7 @@ const RECORDING_REREAD_MS = 3_000;
 
 /** A run from the live server: its record, its timeline followed from the cursor, its files, and stop, cancel and
  *  messages. A write's acceptance is not its effect: the page shows what the run and its timeline say afterwards. */
-export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: string; caps: Capabilities | null; agentName: (id: string) => string }) {
+export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: string; caps: MessageCaps | null; agentName: (id: string) => string }) {
   const [run, setRun] = useState<Run | null>(null);
   // The newest timeline page's cost: each page carries the run's cost as it stands, so while the run works the header
   // follows it (the first read of the run can be older than every priced request); once it ends, the run's own read has it.
@@ -167,7 +167,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
         outputSchema={harness.state === "read" ? harness.outputSchema : undefined}
-        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} fileUrl={(path) => v2.fileUrl(runId, path)}readLearningDiff={() => v2.runLearningDiff(runId)} readLearning={() => v2.runLearning(runId)} readLearningResult={() => v2.runLearningResult(runId)} readComputer={() => v2.runComputer(runId)} onTakeOver={() => computerMove(() => v2.takeOverComputer(runId))} onHandBack={(outcome) => computerMove(() => v2.handBackComputer(runId, outcome))} readComputers={() => v2.computers()} onMessage={message} onApprove={approve} onGrade={grade}
+        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} fileUrl={(path) => v2.fileUrl(runId, path)} readTrace={() => v2.runTrace(runId)} readUsage={() => v2.runUsage(runId)} readLearningDiff={() => v2.runLearningDiff(runId)} readLearning={() => v2.runLearning(runId)} readLearningResult={() => v2.runLearningResult(runId)} readComputer={() => v2.runComputer(runId)} onTakeOver={() => computerMove(() => v2.takeOverComputer(runId))} onHandBack={(outcome) => computerMove(() => v2.handBackComputer(runId, outcome))} readComputers={() => v2.computers()} onMessage={message} onApprove={approve} onGrade={grade}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), onRaiseCap: raiseCap, busy }} />
     </div>
   );

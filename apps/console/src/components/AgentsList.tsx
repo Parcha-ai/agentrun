@@ -1,12 +1,17 @@
-import { ObservedSessions } from "@/components/ObservedSessions";
+import { cliLearningOf, cliLearningLabel } from "@/lib/cliLearning";
+import { ConnectedAgentCard } from "@/components/ObservedSessions";
 import type { ObservationRead } from "@/lib/observations";
-import { Archive, ArchiveRestore, Bot, History, Pencil, Play, Search, Workflow } from "lucide-react";
+import { agentInventory } from "@/lib/agentInventory";
+import { Archive, ArchiveRestore, Bot, Brain, History, Pencil, Play, Search, Workflow } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
+import { Banner } from "@/components/ui/banner";
 import { Chip } from "@/components/ui/chip";
 import { fieldBoxClass, Input } from "@/components/ui/field";
-import type { Agent } from "@/lib/agentForm";
+import { type Agent, learningOn } from "@/lib/agentForm";
+import { AgentCardFrame, AgentCardLearning } from "@/components/AgentCard";
+import { agentHash } from "@/components/AgentPage";
 import { nativeReadinessOf, nativeRuntimeLabel, nativeStateLabel } from "@/lib/native";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { waitingOf, waitingWords } from "@/lib/learning";
@@ -14,18 +19,24 @@ import { cn } from "@/lib/utils";
 import { workflowShape } from "@/lib/workflowDoc";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { buildAgentPrompt, editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 
 export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onLearning?: (id: string) => void; onArchive?: (id: string, archive: boolean) => void };
 
 /** The hosted console's agent grid: a search box, the count, and a card per agent (name, kind, harness, what it does,
  *  its revision and runs, and its actions). Archived agents are their own view. */
-export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error, handoff, observations }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null; handoff?: ReactNode; observations?: ObservationRead }) {
+export function AgentsList({ agents, archived = false, onArchivedChange, actions = {}, error, handoff, observations, learning }: { agents: Agent[] | null; archived?: boolean; onArchivedChange?: (archived: boolean) => void; actions?: AgentsListActions; error?: string | null; handoff?: ReactNode; observations?: ObservationRead; learning?: "on" | "off" | null }) {
   const [q, setQ] = useState("");
-  const shown = (agents ?? []).filter((a) => `${a.definition.name} ${a.definition.description ?? ""}`.toLowerCase().includes(q.toLowerCase()));
+  // Source sessions have no archive operation. Their latest report and any linked learning profile share one card.
+  const connected = archived ? undefined : observations;
+  const { agents: shown, sessions, count } = agentInventory(agents ?? [], connected?.data?.sessions ?? [], { archived, query: q });
+  const loading = (!agents && !error) || !!(connected?.loading && !connected.data);
+  const incomplete = loading || !!error || !!connected?.error;
+  const storageFull = connected?.data?.connectors.some((connector) => connector.storage_full);
   return (
     <section className="flex min-h-full flex-col">
-      <header className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-b px-5 py-2">
-        <h1 className="caps flex items-center gap-2 text-body font-semibold"><Bot className="size-4" aria-hidden />{archived ? "Archived agents" : "Connected agents"}</h1>
+      <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
+        <h1 className={pageTitleClass}><Brain className="size-4" aria-hidden />{archived ? "Archived agents" : "Connected agents"}</h1>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{handoff}{!archived && <CodingAgentAction variant="primary" label="Build an agent" prompt={buildAgentPrompt(location.origin)} playgroundHref="#/playground?operation=create-agent" />}</div>
       </header>
       <div className="p-5 md:p-6">
@@ -38,70 +49,70 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
         </label>
         <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onArchivedChange?.(!archived)}><Archive aria-hidden /> Archived</Button>
       </div>
-      {error ? <p className="border p-4 font-mono text-body text-destructive-text" role="alert">{error}</p>
-        : !agents ? <ListSkeleton label="Loading the agents" rows={6} />
-        : !shown.length && !observations?.data?.sessions.length ? (
+      <div className="space-y-4">
+      {error && <Banner tone="error">Could not refresh agents: {error}</Banner>}
+      {connected?.error && <Banner tone="error" actions={<Button size="xs" disabled={connected.loading} onClick={connected.refresh}>Try again</Button>}>Some connected agents could not be refreshed: {connected.error}</Banner>}
+      {storageFull && <Banner tone="warning" title="Telemetry needs attention">A connector has reached its telemetry storage capacity. New reports cannot be accepted until storage becomes available.</Banner>}
+      {count > 0 && <>
+        <p className="font-mono text-small text-muted-foreground" aria-label="Agent count">{count} {count === 1 ? "agent" : "agents"}{incomplete ? " shown" : ""}</p>
+        <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3" aria-label="Agents">
+          {shown.map((a) => <AgentCard key={`agent:${a.agent_id}`} agent={a} actions={actions} learning={learning} />)}
+          {sessions.map((session) => <ConnectedAgentCard key={`session:${session.id}`} session={session} />)}
+        </ul>
+      </>}
+      {loading && (count ? <p role="status" className="text-small text-muted-foreground">Loading more agents…</p> : <ListSkeleton label="Loading the agents" rows={6} />)}
+      {!count && !incomplete && (
           <div className="border px-4 py-16 text-center">
             <p className="font-mono text-body text-muted-foreground">{q ? "No agent matches." : archived ? "No archived agents." : "No agents yet."}</p>
             {!q && !archived && <a className="mt-4 inline-block text-lead text-primary-text hover:underline" href="#/agents/new">Describe your agent or start from a template</a>}
           </div>
-        ) : (
-          <>
-            {!!shown.length && <p className="mb-3 font-mono text-small text-muted-foreground">{shown.length} {shown.length === 1 ? "agent" : "agents"}</p>}
-            <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
-              {shown.map((a) => <AgentCard key={a.agent_id} agent={a} actions={actions} />)}
-            </ul>
-          </>
-        )}
-      {observations && <div className="mt-6"><ObservedSessions read={observations} view="cards" query={q} /></div>}
+      )}
+      </div>
       </div>
     </section>
   );
 }
 
-function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListActions }) {
+function AgentCard({ agent: a, actions, learning }: { agent: Agent; actions: AgentsListActions; learning?: "on" | "off" | null }) {
   const Icon = a.kind === "workflow" ? Workflow : Bot;
   const archived = !!a.archived_at;
   const native = nativeReadinessOf(a);
   const sdk = backendSdkOf(a.definition);
+  const cli = cliLearningOf(a.definition);
   // Its learned items that wait for its owner's OK (the list's own read: each agent's `learning.pending`); nothing at 0.
   const waiting = waitingOf(a);
+  const supportsLearning = a.kind === "agentic" && learning !== null;
+  const learningState = !supportsLearning ? "unsupported" : learning === undefined ? "unknown" : learning === "off" || !learningOn(a.definition.learning) ? "off" : "on";
+  const learningReason = a.kind === "workflow" ? "Learning is configured on the agent that produces this workflow."
+    : learning === null ? "This server does not support learning." : learning === undefined ? "The server's learning status has not been read yet."
+      : learning === "off" ? "Learning is disabled on this server. Its owner must enable it before this agent can learn." : undefined;
   return (
-    <li className={cn("flex flex-col border p-5 transition-colors hover:border-border-strong", archived && "opacity-70")}>
-      <button type="button" className="flex min-w-0 items-start gap-2.5 text-left" onClick={() => actions.onOpen?.(a.agent_id)}>
-        <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-center gap-2">
-            <span className="text-base font-semibold">{a.definition.name}</span>
-            <Chip>{a.kind}</Chip>
-            {a.kind === "agentic" && <Chip>{sdk ? backendSdkLabel(sdk.runtime) : native ? nativeRuntimeLabel(native.runtime) : a.definition.harness ?? "pi"}</Chip>}
-            {native && <Chip tone={native.connected && native.state === "ready" ? "success" : "warning"}>{nativeStateLabel(native)}</Chip>}
-            {archived && <Chip tone="muted">Archived</Chip>}
-          </span>
-          <span className="mt-2 line-clamp-2 block text-lead leading-relaxed text-muted-foreground">{a.definition.description || (a.kind === "workflow" ? workflowShape(a.definition.workflow) : "No description.")}</span>
-        </span>
-      </button>
-      {native && <p className="mt-3 break-all font-mono text-small text-muted-foreground">{native.project} · {native.machine_id}</p>}
-      {/* Keep each count on one line. The actions move together to their own row when space is tight;
-          if that row is narrower than all four actions, wrap whole controls, never their split buttons. */}
-      <div data-testid="agent-card-footer" className="mt-auto flex min-w-0 flex-wrap items-start gap-x-2 gap-y-1 pt-5">
-        <div data-testid="agent-card-chips" className="flex min-w-0 flex-auto flex-wrap items-center gap-x-2 gap-y-1.5 py-1.5">
+    <AgentCardFrame name={a.definition.name} icon={Icon} harness={a.kind === "workflow" ? "workflow" : cli?.runtime ?? sdk?.runtime ?? native?.runtime ?? a.definition.harness ?? "pi"} archived={archived} onOpen={() => actions.onOpen?.(a.agent_id)}
+      badges={<><Chip>{a.kind}</Chip>
+        {a.kind === "agentic" && <Chip>{cli ? cliLearningLabel(cli.runtime) : sdk ? backendSdkLabel(sdk) : native ? nativeRuntimeLabel(native.runtime) : a.definition.harness ?? "pi"}</Chip>}
+        {native && <Chip tone={native.connected && native.state === "ready" ? "success" : "warning"}>{nativeStateLabel(native)}</Chip>}
+        {archived && <Chip tone="muted">Archived</Chip>}</>}
+      description={a.definition.description || (a.kind === "workflow" ? workflowShape(a.definition.workflow) : "No description.")}
+      facts={<>
+        <AgentCardLearning state={learningState} serverDisabled={learning === "off"}
+          href={supportsLearning && (!archived || learningOn(a.definition.learning)) ? agentHash(a.agent_id, "learning") : undefined} reason={learningReason} />
           <Chip className="shrink-0 whitespace-nowrap">{a.revisions} {a.revisions === 1 ? "revision" : "revisions"}</Chip>
           {a.runs && <Chip className="shrink-0 whitespace-nowrap">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</Chip>}
           {waiting > 0 && (
             <Button size="xs" type="button" aria-label={waitingWords(waiting)} onClick={() => actions.onLearning?.(a.agent_id)}
               className="h-5 shrink-0 whitespace-nowrap border-warning/50 bg-warning/10 px-1.5 text-micro text-warning-text hover:bg-warning/20">Learning · {waiting}</Button>
           )}
-        </div>
-        <div data-testid="agent-card-actions" className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
-          {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id, sdk?.runtime)} playgroundHref={sdk ? undefined : `#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
-          <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!native, sdk?.runtime)} playgroundHref={native || sdk ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
+      </>}
+      actions={<>
+          {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id, sdk, cli?.runtime)} playgroundHref={sdk || cli ? undefined : `#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
+          <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!native, sdk, cli?.runtime)} playgroundHref={native || sdk || cli ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
           <Button size="sm" className="gap-1 px-2" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden />{a.runs?.count ?? 0}</Button>
           <Button size="icon" variant="outline" aria-label={`${archived ? "Unarchive" : "Archive"} ${a.definition.name}`} onClick={() => actions.onArchive?.(a.agent_id, !archived)}>
             {archived ? <ArchiveRestore aria-hidden /> : <Archive aria-hidden />}
           </Button>
-        </div>
-      </div>
-    </li>
+      </>}
+    >
+      {native && <p className="break-all font-mono">{native.project} · {native.machine_id}</p>}
+    </AgentCardFrame>
   );
 }

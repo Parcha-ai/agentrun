@@ -42,10 +42,11 @@ describe("route", () => {
     expect(route("#/triggers/new-webhook")).toEqual({ section: "triggers", trigger: null, kind: "webhook" });
     expect(route("#/triggers/new-github")).toEqual({ section: "triggers", trigger: null, kind: "github" });
     expect(route("#/triggers/new-feed")).toEqual({ section: "triggers", trigger: null, kind: "feed" });
+    expect(route("#/triggers/new-email")).toEqual({ section: "triggers", trigger: null, kind: "email" });
     expect(route("#/triggers/trg_1")).toEqual({ section: "triggers", trigger: "trg_1" });
     expect(route("#/triggers/trg_1/edit")).toEqual({ section: "triggers", trigger: "trg_1", edit: true });
   });
-  it("opens Settings → Tool keys at its own address, and at #/settings", () => {
+  it("opens Settings → API Keys at its own address, and at #/settings", () => {
     expect(route("#/settings/keys")).toEqual({ section: "settings", settings: "keys" });
     expect(route("#/settings")).toEqual({ section: "settings", settings: "keys" });
     expect(route("#/settings/webhook")).toEqual({ section: "settings", settings: "webhook" });
@@ -62,10 +63,6 @@ describe("route", () => {
     expect(route("#/agents/x")).toEqual({ section: "agents", agent: "x" });
     expect(route("#/agents/x/workflow")).toEqual({ section: "agents", agent: "x", tab: "workflow" });
     expect(route("#/agents/x/learning")).toEqual({ section: "agents", agent: "x", tab: "learning" });
-    // A run's chip points at the notes it read or kept: the Learning tab, each note named.
-    expect(route("#/agents/refund%20finder/learning?note=a.md&note=b.md")).toEqual({ section: "agents", agent: "refund finder", tab: "learning", notes: ["a.md", "b.md"] });
-    expect(route("#/agents/x/learning?note=a&note=b")).toEqual({ section: "agents", agent: "x", tab: "learning", notes: ["a", "b"] });
-    expect(route("#/agents/x/learning?")).toEqual({ section: "agents", agent: "x", tab: "learning", notes: [] });
     expect(route("#/agents/x/edit")).toEqual({ section: "agents", agent: "x", edit: true });
     expect(route("#/agents/new")).toEqual({ section: "agents", agent: null });
     expect(route("#/agents?archived=true")).toEqual({ section: "agents", archived: true });
@@ -220,7 +217,7 @@ describe("App, Settings", () => {
   it("#/settings/tools opens Tools, with a tab for each settings page, when the server offers a choice of provider", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/tools", choiceTools);
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
-    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["Tool keys", null], ["Tools", "page"], ["MCP servers", null], ["GitHub", null], ["Email", null], ["Computers", null], ["Workspace", null]]);
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["API Keys", null], ["Tools", "page"], ["MCP servers", null], ["GitHub", null], ["Email", null], ["Computers", null], ["Workspace", null]]);
     expect(page.host.querySelector('tr[data-tool="web_search"] button[aria-haspopup=listbox]')).toBeTruthy();
     expect(page.asked).toContain("GET /v2/settings/tools");
   });
@@ -239,7 +236,7 @@ describe("App, Settings", () => {
   // secrets_writable there too; the console reads it on every server, and words a "no" by the server's reason.
   it("accounts off, the server saying the session may write secrets: Paste shows, with no sign-in or setup", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys", [], { accounts: false, secrets_writable: true });
-    expect(page.host.querySelector("h1")?.textContent).toBe("Keys");
+    expect(page.host.querySelector("h1")?.textContent).toBe("API Keys");
     expect([...page.host.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Paste")).toBe(true);
   });
 
@@ -256,11 +253,11 @@ describe("App, Settings", () => {
     expect([...page.host.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Paste")).toBe(false);
   });
 
-  it("shows Settings when the server has the routes, and #/settings/keys opens Tool keys", async () => {
+  it("shows Settings when the server has the routes, and #/settings/keys opens API Keys", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
     expect(page.nav()).toContain("Settings");
     expect(page.host.querySelector('[aria-current="page"]')?.textContent?.trim()).toBe("Settings");
-    expect(page.host.querySelector("h1")?.textContent).toBe("Keys");
+    expect(page.host.querySelector("h1")?.textContent).toBe("API Keys");
     expect(page.host.textContent).toContain("MONID_API_KEYMissing");
   });
 
@@ -269,26 +266,26 @@ describe("App, Settings", () => {
     expect(page.host.querySelector("h1")?.textContent).toBe("Webhook");
     expect(page.asked).toContain("GET /v2/settings/webhook");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["Tool keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"]]);
+    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"]]);
   });
 
   it("has a tab for each settings page on a server with tool keys, a choice of provider and the webhook routes", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, webhooks: { routes: true, events: ["run.needs_input", "run.ended"], signing: "standard-webhooks/v1", at_rest: "sealed" } }, "#/settings/webhook", choiceTools);
     expect(page.host.querySelector("h1")?.textContent).toBe("Webhook");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["Tool keys", "#/settings/keys", null], ["Tools", "#/settings/tools", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"]]);
+    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["Tools", "#/settings/tools", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"]]);
   });
 
   it("has no Webhook tab on a server without the webhook routes", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim());
-    expect(tabs).toEqual(["Tool keys", "MCP servers", "GitHub", "Email", "Computers", "Workspace"]);
+    expect(tabs).toEqual(["API Keys", "MCP servers", "GitHub", "Email", "Computers", "Workspace"]);
   });
 
   it("lists MCP servers in Settings on every server, its capabilities naming no MCP routes, and opens the page there", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, mcp_client: { transports: ["streamable-http"], auth: ["none", "bearer"], at_rest: "sealed", harnesses: ["pi"] } }, "#/settings/mcp");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["Tool keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", "page"], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null]]);
+    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", "page"], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null]]);
     expect(page.asked).toContain("GET /v2/settings/mcp-servers");
   });
 
@@ -632,7 +629,7 @@ describe("App, the no-model bar", () => {
     const asked = serve(() => ({ source: "providers", default: ready ? "anthropic/claude-sonnet-5-5" : null, ready, needs: ready ? null : "key" }));
     const host = await mount("#/playground");
     await until(() => !!bar(host));
-    expect(bar(host)?.textContent).toBe("No model yet. Add a key in Settings → Model keys (one OpenRouter key gives every harness its model), and it takes effect at once. Or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts, and restart.");
+    expect(bar(host)?.textContent).toBe("No model yet. Add a key in Settings → Model keys (one OpenRouter key gives every harness its model), and it takes effect at once. Or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY where AgentRun starts, and restart.");
     expect(bar(host)?.querySelector("a")?.textContent).toBe("Add a key in Settings → Model keys");
     expect(bar(host)?.querySelector("a")?.getAttribute("href")).toBe("#/settings/keys");
     ready = true;
@@ -679,7 +676,7 @@ describe("App, the no-model bar", () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), false);
     const host = await mount("#/playground");
     await until(() => !!bar(host));
-    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart.");
+    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY, and restart.");
     expect(bar(host)?.querySelector("a")).toBeNull();
   });
 
@@ -687,7 +684,7 @@ describe("App, the no-model bar", () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), "unavailable");
     const host = await mount("#/playground");
     await until(() => !!bar(host));
-    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart.");
+    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY, and restart.");
     expect(bar(host)?.querySelector("a")).toBeNull();
   });
 

@@ -79,10 +79,12 @@ test("a run of an archived agent is refused, 409 agent_not_runnable saying it is
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "Now.");
 });
 
-test("archiving deletes nothing: DELETE stays 405, and capabilities name the archive routes", async (t) => {
+test("archiving deletes nothing: an agent made here not archived is not purged (409), and capabilities name the archive routes", async (t) => {
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
-  for (const path of ["/agents/calc", "/runs/x"]) assert.equal((await api("DELETE", path)).status, 405, path);
+  // DELETE /agents/{id} purges an agent made here only once archived (agent-purge.test.mjs): this one is kept.
+  assert.equal((await api("DELETE", "/agents/calc")).status, 409);
+  assert.equal((await api("GET", "/agents/calc")).status, 200, "the agent is kept");
   const caps = (await api("GET", "/capabilities")).body;
   assert.deepEqual(caps.features.archive, {
     agents: true, runs: true, list_param: "archived",

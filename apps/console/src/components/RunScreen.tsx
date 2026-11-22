@@ -1,10 +1,13 @@
 import { Download, Globe, Maximize2, Minimize2, Monitor, Smartphone, Terminal } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { RunVideoSteps, VIDEO_WITH_STEPS } from "@/components/RunVideoSteps";
 import { Chip } from "@/components/ui/chip";
+import { Segmented } from "@/components/ui/segmented";
 import { ClientError } from "@/lib/client";
 import { METERED } from "@/lib/computers";
 import { bytes } from "@/lib/format";
+import { videoSteps } from "@/lib/runVideo";
 import { httpHref } from "@/lib/safeUrl";
 import { cn } from "@/lib/utils";
 import type { ComputerHold, Run, RunComputer, RunMachine, TimelineRow } from "@/lib/v2";
@@ -130,6 +133,9 @@ const same = (prev: ScreenView | null, next: Exclude<RunComputer, { state: "off"
 const closed = (from: ScreenView | RunComputer): ScreenView | null =>
   from.state === "off" ? null : from.state === "signed_out" ? from : { state: "none", kind: from.kind, hold: "agent", session: from.state === "none" && from.session === "unopened" ? "unopened" : "closed" };
 
+/** No timeline given: the one empty list, so a render without one changes nothing a hook depends on. */
+const NO_ROWS: readonly TimelineRow[] = [];
+
 type Kind = RunMachine["kind"];
 const ICONS = { browser: Globe, desktop: Monitor, phone: Smartphone, sandbox: Terminal } as const;
 const NAMES: Record<Kind, string> = { browser: "Browser", desktop: "Desktop", phone: "Phone", sandbox: "Sandbox" };
@@ -143,7 +149,7 @@ const DRIVES: Record<ComputerHold, string> = { agent: "The agent drives", pendin
  *  viewer: the iframe is made again for it. A browser is taken over and handed back in its own viewer; a desktop or a
  *  phone here, with Take over and Hand back (`onTake`, `onHand`: each resolves with the refusal to say, or null). A
  *  metered provider's line shows for every kind but the browser. */
-export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, waitsFor, keptUntil, onTake, onHand, recordings = [], fileUrl }: {
+export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, waitsFor, keptUntil, onTake, onHand, recordings = [], fileUrl, rows = NO_ROWS }: {
   /** The run whose screen this is: only a viewer under its own path is framed. */
   runId: string;
   screen: ScreenView | null;
@@ -163,9 +169,13 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   onTake?: () => Promise<string | null>;
   onHand?: () => Promise<string | null>;
   /** The run read's `recordings` (its agent's computer.record): "Recording" shows while one is being written, and each
-   *  finished one is exported through the run files route (`fileUrl`, a path's URL there) with ?download=1. */
+   *  finished one is exported through the run files route (`fileUrl`, a path's URL there) with ?download=1. A run that
+   *  can no longer open its computer plays a finished one where its live screen was (the same URL, inline). */
   recordings?: readonly RunRecording[];
   fileUrl?: (path: string) => string;
+  /** The run's timeline: the recording a finished run plays has its steps beside it, each a jump to its time on the
+   *  video (RunVideoSteps), where the timeline says when the recording began. */
+  rows?: readonly TimelineRow[];
 }) {
   // Each viewer gets an iframe of its own (a new session is a new page); the key is a count, never the viewer itself.
   const session = useRef({ viewer: "", n: 0 });
@@ -198,12 +208,24 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   const wasFull = useRef(false);
   const showing = Boolean(live && src);
   useEffect(() => { if (!showing) setFull(false); }, [showing]);
+  // A run that can no longer open its computer plays its recording where the live screen was: a finished file, through
+  // the run files route inline (Export's URL without ?download=1), muted; with several, the one picked in the header.
+  const done = recordings.filter((r) => r.finished);
+  const [picked, setPicked] = useState(0);
+  const reel = !opens && !live && screen?.state !== "signed_out" && fileUrl ? done[Math.min(picked, done.length - 1)] : undefined;
+  const player = useRef<HTMLVideoElement | null>(null);
+  // The player's element as state too: its steps listen to it, from the render it is drawn in.
+  const [video, setVideo] = useState<HTMLVideoElement | null>(null);
+  const playerRef = useCallback((el: HTMLVideoElement | null) => { player.current = el; setVideo(el); }, []);
+  const told = useMemo(() => (reel ? videoSteps(rows, reel) : []), [rows, reel?.path, reel?.seconds]); // eslint-disable-line react-hooks/exhaustive-deps
   // A phone is tall: its frame takes the height the run page shows below it (phoneHeight), so the whole phone is on
-  // screen at once, its bottom (the keyboard, the nav bar) never under the composer.
+  // screen at once, its bottom (the keyboard, the nav bar) never under the composer. Its recording's player is sized so too.
   const [phoneH, setPhoneH] = useState<number | undefined>(undefined);
+  // Which of the two is up: a live view that ends in its recording is a new element to measure.
+  const sized = showing ? "frame" : reel ? "player" : null;
   useLayoutEffect(() => {
-    const el = frame.current;
-    if (kind !== "phone" || full || !showing || !el) return;
+    const el = sized === "frame" ? frame.current : sized === "player" ? player.current : null;
+    if (kind !== "phone" || full || !el) return;
     const pane = el.closest<HTMLElement>("[data-scroll-pane]");
     const fit = () => setPhoneH(phoneHeight(roomBelow(el, pane), window.innerHeight));
     fit();
@@ -212,7 +234,7 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
     if (pane) for (const box of [pane, ...pane.children]) watch?.observe(box);
     window.addEventListener("resize", fit);
     return () => { watch?.disconnect(); window.removeEventListener("resize", fit); };
-  }, [kind, full, showing, said, metered, session.current.n]);
+  }, [kind, full, sized, said, metered, session.current.n]);
   // While it fills the window it is a modal dialog: focus moves into its bar, Tab stays among its bar and the viewer, and
   // closing puts the focus back on the button that opened it (when the screen is still up).
   useEffect(() => {
@@ -250,6 +272,9 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
       try { inner?.removeEventListener("keydown", onInnerKey, true); } catch { /* the viewer's page went away */ }
     };
   }, [full, session.current.n]);
+  // The live view's box, and its recording's: a desktop's shape, or a phone's frame at the height below it.
+  const screenBox = kind === "phone" ? cn("mx-auto block aspect-[9/19] max-w-full bg-background", phoneH === undefined && "h-[70vh]") : "block aspect-[16/10] w-full bg-background";
+  const screenHeight = kind === "phone" && phoneH !== undefined ? { height: `${phoneH}px` } : undefined;
   const who = live ? (kind === "browser" ? "browser · take over in the view below" : `${DRIVES[live.hold]} · ${kind}`) : "";
   const hands = controls && (controls.hold === "person"
     ? <Button size="sm" variant="solid" disabled={busy} onClick={() => void act(onHand)}>Hand back</Button>
@@ -268,6 +293,10 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
             which says who has it; the served hold doesn't follow that take, so it isn't said here. */}
         <span className="flex-1 font-mono text-small text-muted-foreground">{who}</span>
         {recordings.some((r) => !r.finished) && <Chip tone="active" title="A video of this screen is being recorded">Recording</Chip>}
+        {reel && done.length > 1 && (
+          <Segmented size="sm" label="Recording to play" name={`recording-${runId}`} value={String(done.indexOf(reel))} onChange={(i) => setPicked(Number(i))}
+            options={done.map((r, i) => ({ value: String(i), label: String(i + 1), title: r.path }))} />
+        )}
         {fileUrl && recordings.filter((r) => r.finished).map((r, i, done) => (
           <a key={r.path} href={`${fileUrl(r.path)}?download=1`} download className={buttonVariants({ variant: "ghost", size: "sm" })} aria-label={`Export ${r.path} (${bytes(r.bytes)})`}>
             <Download aria-hidden /> Export{done.length > 1 ? ` ${i + 1}` : ""}
@@ -292,9 +321,16 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
             )}
             {/* A refused Take over or Hand back, said where the person is looking. */}
             {full && said && <p className="border-b px-4 py-2 text-small text-warning-text" role="alert">{said}</p>}
-            <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : kind === "phone" ? cn("mx-auto block aspect-[9/19] max-w-full bg-background", phoneH === undefined && "h-[70vh]") : "block aspect-[16/10] w-full bg-background"} style={!full && kind === "phone" && phoneH !== undefined ? { height: `${phoneH}px` } : undefined} />
+            <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : screenBox} style={full ? undefined : screenHeight} />
           </div>
-        : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">{words(kind, screen, machine, opens, followUp, waitsFor, keptUntil)}</p>}
+        : reel && fileUrl
+          // One box whether or not the steps are known yet: the timeline's pages arrive after the player is drawn, and the
+          // player stays the same element (its place in the video kept) when its steps come.
+          ? <div className={told.length ? VIDEO_WITH_STEPS : undefined}>
+              <video ref={playerRef} src={fileUrl(reel.path)} controls muted playsInline preload="metadata" aria-label={`The run's recording, ${reel.path}`} className={screenBox} style={screenHeight} />
+              {told.length > 0 && <RunVideoSteps key={reel.path} video={video} steps={told} />}
+            </div>
+          : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">{words(kind, screen, machine, opens, followUp, waitsFor, keptUntil)}</p>}
     </section>
   );
 }

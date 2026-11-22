@@ -1,61 +1,31 @@
-// The checker of what a run proposes for its agent's learning folder (SPEC.md): its notes, a skill and workflow drafts,
-// each a change against the commit the run started from. Structure only, never whether a note is any good,
-// which is the grader's. The host reads the copy itself (regular files only, never a link followed) and hands each change
-// here with its bytes; nothing the checker refuses is ever written to git. Every problem it reports is printable: its
-// path and detail are cut of the host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
+// The checker of a workflow draft a run's compile turn gives its agent's learning folder (SPEC.md): its workflow.json and
+// README.md, each a change against what the folder holds. Structure only, and what must never be stored; nothing the
+// checker refuses is ever written to git. Every problem it reports is printable: its path and detail are cut of the
+// host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
 import { placeholdersOf, placeholderValue } from "@parcha/agentrun-dsl";
 import { hiddenCharacter } from "./invisible.js";
-import { compiledLineBytes, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile, ruleOf } from "./notes.js";
+import { REPICK_PASSES, repickCheckOf, repickLabelOf, repickMarked, type RepickSite } from "./repick.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
-import { childNodes, type DraftDecisions, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
+import { childNodes, type DraftDecisions, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, isNode, isObject, learnedPlace, type LearnedPlace, readmeProblems, WORKFLOW_NAME, WORKFLOWS_DIR } from "./workflow-draft.js";
 
-/** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
- *  each (notes.ts mergedNote). */
-const HOST_LINES = Buffer.byteLength("origin: you\nstatus: pending\n");
-
-/** A note's bytes as the note cap counts them: all of `text` but the `compiled_into` line the host adds when a learned
- *  workflow is compiled from it (notes.ts compiledLineBytes). A note at the cap stays one once marked: it retires,
- *  restores, and a later note supersedes it through the grader, each checked against `note`. A run never sets the line
- *  (checkProposal refuses it), so a run's note is counted whole. */
-export const noteBytes = (text: string): number => Buffer.byteLength(text) - compiledLineBytes(text);
-
-/** Byte caps (UTF-8) and counts. Over a cap is refused, never cut. */
+/** Byte caps (UTF-8). Over a cap is refused, never cut. */
 export const CAPS = Object.freeze({
-  /** One note's file, as noteBytes counts it: the host's `compiled_into` line on top. */
-  note: 4096,
-  /** One note a run proposes: the note cap less HOST_LINES, so a run's note stays within `note` once the host merges
-   *  it, and a person can still retire it and a later run supersede it, each read and checked against `note`. */
-  runNote: 4096 - HOST_LINES,
-  /** New notes in one run. */
-  newNotes: 8,
-  /** Notes one run's new notes supersede, together. */
-  supersedes: 8,
-  /** Changed paths in one run; over it nothing else is read. */
-  changes: 64,
-  /** One skill's SKILL.md, or one workflow draft's workflow.json: one grader reads each whole beside the notes, so the
-   *  most a run proposes stays within its prompt (grade.ts GRADE_CAPS.prompt). */
+  /** One draft's workflow.json. */
   file: 16_384,
   /** One draft's README.md, which the host writes from the one-line description its block gives. */
   readme: 1_024,
-  /** Skills one run adds or changes. */
-  skills: 1,
-  /** Workflow drafts one run adds or changes. */
-  workflows: 1,
 });
 
 /** The rule a problem breaks. SPEC.md lists each. */
 export type Rule =
-  | "too_many_files" | "outside" | "file_name" | "file_mode" | "encoding" | "edited" | "deleted" | "exists" | "too_large"
-  | "too_many_notes" | "invisible_unicode" | "secret_shape" | "secret_value" | "note" | "status" | "supersedes" | "index_full"
-  | "skill" | "skill_outcome" | "too_many_skills" | "workflow" | "too_many_workflows" | "no_tool_list" | "executable_node"
-  | "skill_front_matter" | "skill_status" | "duplicate";
+  | "outside" | "file_name" | "file_mode" | "encoding" | "deleted" | "too_large" | "invisible_unicode" | "secret_shape"
+  | "secret_value" | "workflow" | "no_tool_list" | "executable_node" | "front_matter" | "kept";
 
-/** One problem with what a run proposed, printable as it is. */
+/** One problem with a draft, printable as it is. */
 export type Problem = { readonly rule: Rule; readonly path?: string; readonly detail: string };
 
-/** One file of the run's copy that differs from the commit it started from. `mode` is git's (`100644` a regular file,
- *  `120000` a link, `040000` a folder; anything else is not a regular file). A change that is not a deletion carries its
- *  bytes, or only its `size` when that is over the note cap. */
+/** One file a draft adds or changes. `mode` is git's (`100644` a regular file, `120000` a link, `040000` a folder;
+ *  anything else is not a regular file). A change that is not a deletion carries its bytes. */
 export type Change = {
   readonly path: string;
   readonly status: "added" | "modified" | "deleted";
@@ -64,56 +34,43 @@ export type Change = {
   readonly bytes?: Uint8Array;
 };
 
-/** The folder a proposal is checked against (the run's seed, or main at merge time): every path it holds, and its active
- *  notes. */
-/** What a proposal is checked against: every path at the seed's top, its active notes, and `rules`, when the caller read
- *  the active notes' texts, each one's rule (notes.ts ruleOf) to its file: a new note of the same rule is a duplicate. */
-export type Base = { readonly files: Iterable<string>; readonly active: readonly LearnedNote[]; readonly rules?: ReadonlyMap<string, string> };
-/** A new note that passed, with its whole text. */
-export type ProposedNote = LearnedNote & { readonly text: string };
-
-export type CheckInput = {
-  readonly base: Base;
+export type DraftCheckInput = {
   readonly changes: readonly Change[];
   /** Values the host holds as secrets: a file, or a file's name, that holds one is refused. */
   readonly refuseValues?: readonly string[];
-  /** How the run's job ended, its status (`completed`, `failed`, ...). Only a completed run adds or changes a skill:
-   *  without it, none does. */
-  readonly outcome?: string;
   /** The tools a workflow draft may name: the agent's granted tools a workflow's call node runs here (tools.ts
    *  learnedWorkflowTools). Without it, a draft that names a tool is refused. */
   readonly tools?: readonly string[];
   /** The agent's granted tools the gate does not allow, with what each is set to (tools.ts learnedDraftTools): a draft
-   *  whose call node calls one is refused, in the words a workflow revision's is (learn/skills.ts gatedNodes). */
+   *  whose call node calls one is refused (workflow-draft.ts gatedNodes). */
   readonly gated?: Readonly<Record<string, string>>;
   /** Where each of `gated`'s denies was set (this agent's settings or this server's), for the refusal's words. */
   readonly deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>;
-  /** False for a run of a revision that says `learning: "notes"`: a workflow draft it gives is left out (rule `workflow`,
-   *  NOTES_ONLY), and its notes and skill go on. */
-  readonly workflows?: false;
   /** Explicit host adapter capabilities; absent keeps the managed runner defaults. */
   readonly workflowAdapters?: readonly ("runNode" | "runJudge")[];
-  /** The workflow DSL a draft is read with; a proposal that holds a draft is checked with it, never without. */
-  readonly dsl?: DraftReader;
-  /** The decision providers a draft's decision nodes may ask, and the gate's setting of each (learn/skills.ts
+  /** The agent's learning.repick (learning-setting.ts): true, a re-pick loop whose body is the pass marker the host derives
+   *  from its pass 1 (learn/repick.ts repickPassOne) is read as that pass 1 by the compact state rule, so its clone's page
+   *  read passes; any other page read on the agent's model is refused as ever. */
+  readonly repick?: boolean;
+  /** The workflow DSL a draft is read with. */
+  readonly dsl: DraftReader;
+  /** The decision providers a draft's decision nodes may ask, and the gate's setting of each (workflow-draft.ts
    *  DraftDecisions, LS-07). Without them, a draft with a decision node is refused. */
   readonly decisions?: DraftDecisions;
-  /** Each draft's dry run (skills.ts draftDryRun), by its workflow.json's path: one that failed is refused, rule
+  /** Each draft's dry run (workflow-draft.ts draftDryRun), by its workflow.json's path: one that failed is refused, rule
    *  `workflow`, when the draft has no other problem. A draft with none given is checked without one. */
   readonly dryRuns?: Readonly<Record<string, DraftDryRun>>;
-  /** The skills' and drafts' files whose text in the run's seed has a status (a person retired it, or it waits for its
-   *  owner's OK): a run never changes those. A draft's is its README.md. */
+  /** The drafts' files whose text on main has a status (a person retired it, or it waits for its owner's OK): a run
+   *  never changes those. A draft's is its README.md. */
   readonly kept?: readonly string[];
 };
-/** `ok` when `problems` is empty; then `notes` are the new notes, each in shape. */
-export type ProposalCheck = { readonly ok: boolean; readonly problems: Problem[]; readonly notes: ProposedNote[] };
 
 const MODES: Record<string, string> = { "120000": "a link: never followed", "040000": "a folder: nothing in it was read" };
-/** Why a draft from a run of a revision that learns notes alone (`learning: "notes"`) is left out. */
-const NOTES_ONLY = "this agent learns notes and skills alone (learning: \"notes\"): it keeps no workflow draft";
 
-/** Why a run's path is none of what it may propose. */
-const OUTSIDE = "a run proposes notes at the folder's top, skills/<name>/SKILL.md, and workflows/<name>/ with its workflow.json and README.md";
+/** Why a path is none of what a draft may write. */
+const OUTSIDE = "a draft writes workflows/<name>/ with its workflow.json and README.md";
+/** Why a workflow.json checked with no workflow DSL is refused. */
+const NO_DSL = "no workflow DSL to read it with: it was not checked";
 
 /** `problem` as it may be printed: its path and detail cut of `values` and of every shape learning refuses, a bank's
  *  numbers too (redactLearned: a name refused for one never prints it), whole when over PRINT_MAX. */
@@ -131,29 +88,6 @@ type Add = (rule: Rule, detail: string, path?: string) => void;
 function nameScanned(path: string, refused: (text: string) => boolean, add: Add): void {
   for (const kind of learnedSecretShapes(path)) add("secret_shape", `its name holds text shaped like a secret (${kind})`, path);
   if (refused(path)) add("secret_value", "its name holds a value the host named as secret", path);
-}
-
-/** A note's file name, whoever writes it: nameScanned, and a note's own (a `.md` file at the folder's top). False when
- *  it is not a note's name, and nothing else is read. */
-function nameChecked(path: string, refused: (text: string) => boolean, add: Add, outside = "only a .md file at the folder's top is a note"): boolean {
-  nameScanned(path, refused, add);
-  if (path.includes("/") || !path.endsWith(".md")) return add("outside", outside, path), false;
-  if (!NOTE_FILE.test(path)) return add("file_name", "a note's name is letters, digits, dots, dashes and underscores, starting with a letter or digit, and ends .md", path), false;
-  return true;
-}
-
-/** A note's text by itself, whoever writes it: within the cap, UTF-8, no hidden character, no secret's shape or the host's
- *  values, its front matter in shape. The note when it is. */
-function textChecked(path: string, size: number, bytes: Uint8Array | undefined, refused: (text: string) => boolean, add: Add, run = false): ProposedNote | undefined {
-  const cap = run ? CAPS.runNote : CAPS.note;
-  // A person's note (or one main holds) is counted without the host's compiled_into line; a run's whole (it may not set it).
-  if (!run && bytes) size -= compiledLineBytes(Buffer.from(bytes).toString("utf8"));
-  if (size > cap) return void add("too_large", `${size} bytes; the cap is ${cap}${run ? " for a run's note" : ""}`, path);
-  const text = textOf(path, bytes, refused, add);
-  if (text === undefined) return undefined;
-  const note = parseNoteFile(path, text);
-  if (Array.isArray(note)) return void note.forEach((reason) => add("note", reason, path));
-  return { ...note, text };
 }
 
 /** A file's text, whatever it holds: UTF-8, no hidden character, no secret's shape or the host's values. Undefined,
@@ -174,9 +108,9 @@ function textOf(path: string, bytes: Uint8Array | undefined, refused: (text: str
   return found ? undefined : text;
 }
 
-/** A learned file at `path` as it is read later, its escapes decoded: a skill's SKILL.md or a draft's README.md, its front
- *  matter read as YAML reads it (skills.ts frontValues, the value a harness is served); a draft's workflow.json, every
- *  string it decodes to, keys too, as JSON.parse reads it (skills.ts decodedStrings, what draftProblems and a learned
+/** A learned file at `path` as it is read later, its escapes decoded: a draft's README.md, its front matter read as YAML
+ *  reads it (workflow-draft.ts frontValues, the value a harness is served); a draft's workflow.json, every string it
+ *  decodes to, keys too, as JSON.parse reads it (workflow-draft.ts decodedStrings, what draftProblems and a learned
  *  call's run read). A hidden character, a secret's shape or the host's value there is refused as one in its text is,
  *  though the text as stored spells it in escapes. True when it found one. */
 function decodedScanned(path: string, text: string, refused: (text: string) => boolean, add: Add, deep = true): boolean {
@@ -200,8 +134,7 @@ function decodedScanned(path: string, text: string, refused: (text: string) => b
 
 /** The model node kinds a tier routes (model.ts MODEL_NODES); a decision node (judge, pick, sift) goes to its decision
  *  provider, never a tier. */
-const TIERED_KINDS: ReadonlySet<string> = new Set(["agent", "decide", "extract", "report"]);
-const isNode = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) && typeof (value as { node?: unknown }).node === "string";
+export const TIERED_KINDS: ReadonlySet<string> = new Set(["agent", "decide", "extract", "report"]);
 /** The state key a step writes (the DSL's writeKeyOf): a report's `report_markdown`, else its `as`, else an agent's,
  *  decide's or extract's label. */
 const writeKeyOf = (node: Record<string, unknown>): unknown => (node.node === "report" ? "report_markdown" : typeof node.as === "string" && node.as ? node.as : ["agent", "decide", "extract"].includes(node.node as string) ? node.label : undefined);
@@ -290,9 +223,14 @@ function pagesRead(value: unknown, state: Record<string, unknown>, out = new Set
  *  child sees an input key as a page when its value reads one. Pages reach a step on the agent's model only through a fast-tier step's
  *  output: chain14b's drafts fed whole pages to the answering step (4.1 requests a run at ~70k cached tokens each,
  *  $0.364 a served run), where the research shape (a fast extract's compact facts to the answering step) booked ~$0.08.
- *  One line each, in words the compile retry acts on. */
-export function compactStateProblems(doc: unknown): string[] {
+ *  One line each, in words the compile retry acts on. With `repick` (the agent's learning.repick), the answer's re-pick
+ *  loop (repickSiteOf), when its body is the host's pass marker, is read as its pass 1 (learn/repick.ts repickMarked):
+ *  the clone its pass 2 runs reads the pages by the owner's setting, the one page read on the agent's model a draft may
+ *  hold, and only that exact clone at that place. */
+export function compactStateProblems(doc: unknown, { repick = false }: { readonly repick?: boolean } = {}): string[] {
   const problems = new Set<string>();
+  // The answer's re-pick loop alone (repickMarked): a marker anywhere else is read as written.
+  const marked = repick ? repickMarked(repickSiteOf(doc)) : undefined;
   const walk = (node: unknown, pages: ReadonlySet<string>, depth: number): Set<string> => {
     const after = new Set(pages);
     if (!isNode(node) || depth > 32) return after;
@@ -330,13 +268,14 @@ export function compactStateProblems(doc: unknown): string[] {
       // until the marks stop changing. The set read grows on each further pass, so it stops within one pass a key the
       // workflow names, and never past maxIters; each pass's way out holds the ones before it.
       const passes = typeof node.maxIters === "number" && node.maxIters >= 1 ? Math.floor(node.maxIters) : Number.POSITIVE_INFINITY;
+      const body = node === marked?.loop ? marked.step : node.body;
       let read = after;
-      let out = walk(node.body, read, depth + 1);
+      let out = walk(body, read, depth + 1);
       for (let pass = 2; pass <= passes; pass++) {
         const next = new Set([...read, ...out]);
         if (next.size === read.size) break;
         read = next;
-        out = walk(node.body, read, depth + 1);
+        out = walk(body, read, depth + 1);
       }
       return out;
     }
@@ -384,7 +323,6 @@ export function compactStateProblems(doc: unknown): string[] {
 
 /** The property names that make an answer carry quotes. */
 const QUOTE_KEYS: ReadonlySet<string> = new Set(["quote", "quotes"]);
-const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** A place in an answer holding quotes: its keys from the answer down ("[]" for an array's items, "*" for any key of a
  *  map), and the quote_missing `path` (from the answer down) and `field` that read them, when one pair can: a quote, a
@@ -571,19 +509,24 @@ export function quoteCheckProblems(doc: unknown): string[] {
 
 const siteKey = (site: QuoteSite): string => site.keys.join("\u0000");
 
-/** The passes of a checked answer's re-pick loop: the draft, then one re-pick. */
-const REPICK_PASSES = 2;
 /** A quote_missing predicate as a refusal writes it out. */
 type QuoteRead = { readonly path: unknown; readonly field: unknown; readonly pages: readonly unknown[] };
 const quoteMissingText = ({ path, field, pages }: QuoteRead): string =>
   `{"predicate": "quote_missing", "path": ${JSON.stringify(path)}${field ? `, "field": ${JSON.stringify(field)}` : ""}, "pages": ${JSON.stringify(pages)}}`;
 /** Whether `step` is the re-pick of an answer `check` reads: a loop of REPICK_PASSES until that check's quote_missing (its
  *  path, field and pages) no longer holds. */
-const repicks = (step: unknown, check: QuoteRead): boolean => {
-  if (!isNode(step) || step.node !== "loop" || step.maxIters !== REPICK_PASSES || !isObject(step.until) || step.until.predicate !== "not" || !isObject(step.until.of)) return false;
-  const of = step.until.of;
-  return of.predicate === "quote_missing" && of.path === check.path && (of.field ?? "") === check.field && JSON.stringify(of.pages) === JSON.stringify(check.pages);
+const repickOn = (step: unknown, check: QuoteRead): boolean => {
+  const of = repickCheckOf(step);
+  return !!of && of.path === check.path && (of.field ?? "") === check.field && JSON.stringify(of.pages) === JSON.stringify(check.pages);
 };
+/** Where `workflow`'s answer is re-picked (quoteRule `repick`): what learning.repick rewrites (learn/repick.ts). */
+export const repickSiteOf = (workflow: unknown): RepickSite | undefined => (isObject(workflow) ? quoteRule(workflow, {}).repick : undefined);
+/** The labels a run's loop events give `workflow`'s quote re-pick (repickSiteOf): what marks a loop's exit a re-pick
+ *  (learned-nodes.ts LoopRow `repick`). Any other loop that ran twice is an ordinary loop. */
+export function repickLabels(workflow: unknown): Set<string> {
+  const site = repickSiteOf(workflow);
+  return new Set(site ? [repickLabelOf(site)] : []);
+}
 /** Whether a step's `state` map names state key `key` as the whole marked placeholder `"{answer?}"` (a whole string):
  *  null on a re-pick loop's first pass, before any draft exists, and the failed draft on its second. No path below the
  *  key counts (`"{answer.x?}"`, `"{state.answer?}"`, unmarked `"{answer}"`): paths are not validated, so only the key
@@ -625,29 +568,34 @@ const quoteEscalatesIn = (node: unknown, depth = 0): string[] => {
  *  (its path and field; a place no one pair reads is refused, as quote_missing reads none of it). Its pages are state keys holding a page as
  *  fetched (holdsPage). A composed workflow node writing the whole answer (its `as` the answer's path) whose child
  *  passes this rule in its own state has checked the places in the answer its child's schema declares too; the parent
- *  still checks any other place its own schema declares. `checked`: the places a passing workflow checked. */
-function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<string, unknown>, depth = 0): { applies: boolean; problems: string[]; checked: string[] } {
-  const none = { applies: false, problems: [], checked: [] };
+ *  still checks any other place its own schema declares. `checked`: the places a passing workflow checked. `repick`:
+ *  where the answer is re-picked, whether the rule applies or not: the step writing the answer when it is a loop of
+ *  REPICK_PASSES until `not` of a quote_missing, else that step's composed child's, which the DSL labels
+ *  `<step>/<its label>` (scopeDepsToChild). */
+function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<string, unknown>, depth = 0): { applies: boolean; problems: string[]; checked: string[]; repick: RepickSite | undefined } {
   const output = isObject(workflow.output) ? workflow.output : {};
   const answerPath = typeof output.path === "string" ? output.path : "";
   const schemas = isObject(workflow.schemas) ? workflow.schemas : schemasAround;
   const schemaId = typeof output.schemaId === "string" ? output.schemaId : "";
-  if (!answerPath || !Object.hasOwn(schemas, schemaId) || depth > 8) return none;
+  if (!answerPath || depth > 8) return { applies: false, problems: [], checked: [], repick: undefined };
+  const steps = isNode(workflow.root) && workflow.root.node === "chain" && Array.isArray(workflow.root.steps) ? workflow.root.steps as unknown[] : [workflow.root];
+  const answered = steps.findLastIndex((step) => writesKey(step, answerPath.split(".")[0]));
+  const writer = steps[answered];
+  const child = isNode(writer) && writer.node === "workflow" && isObject(writer.workflow) ? quoteRule(writer.workflow, schemas, depth + 1) : undefined;
+  const repick: RepickSite | undefined = !isNode(writer) ? undefined : repickCheckOf(writer) ? { at: answered, step: writer } : child?.repick && { at: answered, step: writer, inner: child.repick };
+  const none = { applies: false, problems: [], checked: [], repick };
+  if (!Object.hasOwn(schemas, schemaId)) return none;
   // Its refs read as the DSL reads them (resolveSchemaForWorkflow): the schema's own inline definitions first, then the catalog.
   const answerSchema = schemas[schemaId];
   const inline = isObject(answerSchema) && isObject(answerSchema.definitions) ? answerSchema.definitions : {};
   const { sites: declared, over } = quoteSitesOf(answerSchema, { ...schemas, ...inline });
   if ((!declared.length && !over) || !fetches(workflow.root)) return none;
-  if (over) return { applies: true, checked: [], problems: [`the answer's schema (${schemaId.slice(0, 64)}) holds quotes in more than ${QUOTE_SITES_MAX} places or nests past ${QUOTE_SITE_DEPTH} keys, past what the quote check reads, and the workflow fetches pages: give the answer fewer places holding quotes, each a quote, a list of quotes or a list of records holding one`] };
+  if (over) return { applies: true, checked: [], repick, problems: [`the answer's schema (${schemaId.slice(0, 64)}) holds quotes in more than ${QUOTE_SITES_MAX} places or nests past ${QUOTE_SITE_DEPTH} keys, past what the quote check reads, and the workflow fetches pages: give the answer fewer places holding quotes, each a quote, a list of quotes or a list of records holding one`] };
   const where = (site: QuoteSite) => `${schemaId}.${site.keys.join(".").replace(/\.(\[\]|\*)/g, "$1")}`.slice(0, 120);
   const pages = pageKeysOf(workflow.root);
-  const steps = isNode(workflow.root) && workflow.root.node === "chain" && Array.isArray(workflow.root.steps) ? workflow.root.steps as unknown[] : [workflow.root];
-  const answered = steps.findLastIndex((step) => writesKey(step, answerPath.split(".")[0]));
-  const writer = steps[answered];
-  const child = isNode(writer) && writer.node === "workflow" && isObject(writer.workflow) ? quoteRule(writer.workflow, schemas, depth + 1) : none;
-  const covered = child.applies && !child.problems.length && isNode(writer) && writer.as === answerPath ? child.checked : [];
+  const covered = child?.applies && !child.problems.length && isNode(writer) && writer.as === answerPath ? child.checked : [];
   const sites = declared.filter((site) => !covered.includes(siteKey(site)));
-  const passed = { applies: true, problems: [], checked: declared.map(siteKey) };
+  const passed = { applies: true, problems: [], checked: declared.map(siteKey), repick };
   if (!sites.length) return passed;
   // A place no one path and field reads (quotes under two lists, in a map, in records with no quote key): quote_missing
   // would read none of its quotes, so no check passes it.
@@ -684,48 +632,45 @@ function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<stri
     } else if (!problems.length && first && isNode(writer) && writer.node === "loop" && quoteEscalatesIn(writer.body).length) {
       // A check inside the loop's body hands back on the first draft's miss: the loop never re-picks.
       problems.push(`the re-pick loop ${JSON.stringify(String(writer.label ?? "(no label)").slice(0, 64))} holds the quote_missing escalate ${JSON.stringify(quoteEscalatesIn(writer.body)[0])} in its body, which hands back on the first draft's miss, so the loop never re-picks: the check after the loop, never inside it, as a step of the top-level chain`);
-    } else if (!problems.length && first && isNode(writer) && writer.node === "loop" && repicks(writer, first) && blindRepicks(writer.body, answerPath.split(".")[0]!).length) {
+    } else if (!problems.length && first && isNode(writer) && writer.node === "loop" && repickOn(writer, first) && blindRepicks(writer.body, answerPath.split(".")[0]!).length) {
       // The re-pick must see the failed draft, and only through a state map that names it optionally (never the pages).
       problems.push(`the step ${JSON.stringify(blindRepicks(writer.body, answerPath.split(".")[0]!)[0])} in the re-pick loop ${JSON.stringify(String(writer.label ?? "(no label)").slice(0, 64))} writes the answer without reading its failed draft, so its second pass writes the same miss again: give it ${draftWords(answerPath.split(".")[0]!)}. Naming it unmarked ("{${answerPath.split(".")[0]!}}") fails the first pass, and no "state" map reads the whole state, the pages included`);
-    } else if (!problems.length && first && !checks.every((check) => repicks(writer, check))) {
+    } else if (!problems.length && first && !checks.every((check) => repickOn(writer, check))) {
       problems.push(`the step ${JSON.stringify(String(isNode(writer) ? writer.label ?? writer.node : "(no label)").slice(0, 64))} writes the answer and the escalate ${JSON.stringify(first.label)} hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": ${REPICK_PASSES}, "until": {"predicate": "not", "of": ${quoteMissingText(first)}}, "body": <the step>} in its place, the step with ${draftWords(answerPath.split(".")[0]!)} and its instructions saying that a draft there failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back: the check after the loop, never inside it`);
     }
   }
   // A composed workflow writing the answer that applies the rule and fails it: its own check is the one to fix.
-  if (problems.length && child.problems.length) return { applies: true, checked: [], problems: child.problems.map((problem) => `the composed workflow step ${JSON.stringify(String((writer as Record<string, unknown>).label ?? "(no label)").slice(0, 64))} writes the answer: ${problem}`) };
-  return problems.length ? { applies: true, problems, checked: [] } : passed;
+  if (problems.length && child?.problems.length) return { applies: true, checked: [], repick, problems: child.problems.map((problem) => `the composed workflow step ${JSON.stringify(String((writer as Record<string, unknown>).label ?? "(no label)").slice(0, 64))} writes the answer: ${problem}`) };
+  return problems.length ? { applies: true, problems, checked: [], repick } : passed;
 }
 
-/** What a run may write of a skill or a workflow draft (`place`), by itself: a good folder name, never a deletion, a
- *  regular file within CAPS.file (a README within CAPS.readme), its text as textOf takes it, and in shape: a skill's
- *  front matter (skillProblems), with no `status`, which is the host's; a draft the DSL validates against `tools` with
- *  no node that runs code (draftProblems), whose answering step runs on the agent's model (answerTierProblems), whose
- *  steps there read no page (compactStateProblems), whose quotes of the pages it fetched are checked in code
- *  (quoteCheckProblems); a README that names its folder and says what
- *  the draft is for. */
-function learnedChecked(change: Change, place: LearnedPlace, refused: (text: string) => boolean, input: CheckInput, add: Add): void {
+/** What a draft may write of a workflow (`place`), by itself: a good folder name, never a deletion, a regular file
+ *  within CAPS.file (a README within CAPS.readme), its text as textOf takes it, and in shape: a draft the DSL validates
+ *  against `tools` with no node that runs code (draftProblems), whose answering step runs on the agent's model
+ *  (answerTierProblems), whose steps there read no page (compactStateProblems), whose quotes of the pages it fetched are
+ *  checked in code (quoteCheckProblems); a README that names its folder and says what the draft is for. */
+function learnedChecked(change: Change, place: LearnedPlace, refused: (text: string) => boolean, input: DraftCheckInput, add: Add): void {
   const { path } = change;
   nameScanned(path, refused, add);
-  if (!learnedName(place.kind, place.name)) return add("file_name", place.kind === "skill" ? "a skill's name is lowercase letters, digits and single dashes, at most 64" : "a workflow's name is lowercase letters, digits, dashes and underscores, at most 64, starting with a letter or digit", path);
-  if (change.status === "deleted") return add("deleted", "a run never deletes a skill or a workflow", path);
-  if (place.kind === "workflow" && input.workflows === false) return add("workflow", NOTES_ONLY, path);
+  if (!WORKFLOW_NAME.test(place.name)) return add("file_name", "a workflow's name is lowercase letters, digits, dashes and underscores, at most 64, starting with a letter or digit", path);
+  if (change.status === "deleted") return add("deleted", "a run never deletes a workflow", path);
   if (change.mode !== undefined && change.mode !== "100644") return add("file_mode", MODES[change.mode] ?? "not a regular file: never read", path);
   const size = change.size ?? change.bytes?.length ?? 0;
   const cap = place.kind === "readme" ? CAPS.readme : CAPS.file;
   if (size > cap) return add("too_large", `${size} bytes; the cap is ${cap}`, path);
-  // A person's call stands: a skill or a draft whose seed text has a status (retired, or waiting for its owner's OK).
+  // A person's call stands: a draft whose text on main has a status (retired, or waiting for its owner's OK).
   const readmeOf = `${path.slice(0, path.lastIndexOf("/"))}/README.md`;
-  if (input.kept?.includes(path) || (place.kind === "workflow" && input.kept?.includes(readmeOf))) return add("skill_status", "a person retired it, or it waits for its owner's OK: a run never changes it", path);
+  if (input.kept?.includes(path) || (place.kind === "workflow" && input.kept?.includes(readmeOf))) return add("kept", "a person retired it, or it waits for its owner's OK: a run never changes it", path);
   const text = textOf(path, change.bytes, refused, add);
   if (text === undefined || decodedScanned(path, text, refused, add)) return;
   if (place.kind === "workflow") {
-    if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
+    if (!input.dsl) return add("workflow", NO_DSL, path);
     const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy, input.decisions, input.workflowAdapters);
     // A draft the DSL reads parses: its answering step is held to the agent's model, its steps there to compact state
     // (the SDK bridge's runNode picks every model itself: it names no tier), and its quote check to code.
     if (!problems.length) {
       const doc = JSON.parse(text);
-      const compact = input.workflowAdapters === undefined ? compactStateProblems(doc) : [];
+      const compact = input.workflowAdapters === undefined ? compactStateProblems(doc, { repick: input.repick === true }) : [];
       problems.push(...[...answerTierProblems(doc), ...compact, ...quoteCheckProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail })));
     }
     for (const { rule, detail } of problems) add(rule, detail, path);
@@ -734,39 +679,22 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
     if (!problems.length && dry?.status === "failed") add("workflow", dry.detail ?? DRY_RUN_FAILED, path);
     return;
   }
-  for (const reason of skillProblems(text, place.name)) add(place.kind === "skill" ? "skill" : "workflow", reason, path);
-  // Its front matter says what it is and nothing more: Claude Code reads directives (a hook is a shell command) from any
-  // other key. `status` has its own rule.
+  for (const reason of readmeProblems(text, place.name)) add("workflow", reason, path);
+  // Its front matter says what it is and nothing more: a reader takes directives from any other key. `status` is the
+  // host's (`kept`).
   const extra = (frontKeys(text) ?? []).filter((key) => !LEARNED_KEYS.includes(key) && key !== "status");
-  if (extra.length) add("skill_front_matter", `its front matter sets ${extra.join(", ")}: a learned ${place.kind === "skill" ? "skill" : "workflow"} sets name and description alone`, path);
-  if (place.kind === "skill" && setsStatus(text)) add("status", "a run never sets a skill's status: the host does, when it holds one for its owner's OK", path);
+  if (extra.length) add("front_matter", `its front matter sets ${extra.join(", ")}: a learned workflow sets name and description alone`, path);
 }
 
-/** The checks one note's file passes by itself (SPEC.md), as a person writes it through the host: its name, the note cap,
- *  UTF-8, hidden characters, secret shapes and the host's values in its name and text, and its front matter. A person
- *  may set `status` and `superseded_by`; what a run may not do (edit, delete, set status) is checkProposal's. Every
- *  problem is printable. */
-export function checkNote(path: string, bytes: Uint8Array, refuseValues: readonly string[] = []): { problems: Problem[]; note?: ProposedNote } {
-  const problems: Problem[] = [];
-  const add: Add = (rule, detail, at) => void problems.push(printable(at === undefined ? { rule, detail } : { rule, path: at, detail }, refuseValues));
-  const refused = valueMatcher(refuseValues);
-  const note = nameChecked(path, refused, add) ? textChecked(path, bytes.length, bytes, refused, add) : undefined;
-  return problems.length || !note ? { problems } : { problems, note };
-}
-
-/** Checks what a run proposes against SPEC.md: its notes, and a skill or workflow drafts beside them (learnedChecked).
- *  `MEMORY.md` is the host's: a change to it is ignored, never refused. */
 /** What must never be stored, in every change's name and text, whatever the checks would refuse it for first: the
- *  name and text scans (nameScanned, textOf) of each change, its text read whole (an edit, a file over its cap, one not
- *  a regular file included), printable as checkProposal's are. A text that is not UTF-8 is `encoding`: unread, so
- *  never trusted. Empty when nothing in them must be refused. Ahead of keeping some items of a proposal the checks
- *  refuse (propose.ts): an item refused before its text was read hides nothing. */
+ *  name and text scans (nameScanned, textOf) of each change, its text read whole (a file over its cap, one not a regular
+ *  file included), printable as checkDraft's are. A text that is not UTF-8 is `encoding`: unread, so never trusted.
+ *  Empty when nothing in them must be refused. */
 export function unstorable(changes: readonly Change[], refuseValues: readonly string[] = []): Problem[] {
   const problems: Problem[] = [];
   const add: Add = (rule, detail, path) => void problems.push(printable(path === undefined ? { rule, detail } : { rule, path, detail }, refuseValues));
   const refused = valueMatcher(refuseValues);
   for (const change of changes) {
-    if (change.path === INDEX_FILE) continue;
     nameScanned(change.path, refused, add);
     const text = change.bytes ? textOf(change.path, change.bytes, refused, add) : undefined;
     if (text !== undefined) decodedScanned(change.path, text, refused, add, false);
@@ -774,215 +702,36 @@ export function unstorable(changes: readonly Change[], refuseValues: readonly st
   return problems;
 }
 
-export function checkProposal(input: CheckInput): ProposalCheck {
+/** Checks one workflow draft (its workflow.json and README.md, given together by draftFiles) against SPEC.md: each file
+ *  under workflows/<name>/ (learnedChecked), nothing else, and the two together (a workflow whose files are otherwise in
+ *  shape with one of them missing names it: restore reads the README). Never throws: a draft it could not read (no
+ *  workflow DSL, a check that threw) is a problem in words. Every problem printable; none when it passes. */
+export function checkDraft(input: DraftCheckInput): Problem[] {
   const values = input.refuseValues ?? [];
   const problems: Problem[] = [];
   const add: Add = (rule, detail, path) => void problems.push(printable(path === undefined ? { rule, detail } : { rule, path, detail }, values));
-  const given = input.changes.filter((change) => change.path !== INDEX_FILE);
   const refused = valueMatcher(values);
-  // Each count cap names the items past it, in the order the answer gave them, so they alone are left out (propose.ts)
-  // and the rest is kept. The changed paths past CAPS.changes are named unread; but what refuses the whole answer by its
-  // path alone (a path outside what a run may write, a deletion, a name holding a secret) is read on every path first,
-  // past the cap too, so the cap never turns a whole refusal into one item left out.
-  for (const change of given.slice(CAPS.changes)) {
-    nameScanned(change.path, refused, add);
-    if (!learnedPlace(change.path) && (change.path.includes("/") || !change.path.endsWith(".md"))) add("outside", OUTSIDE, change.path);
-    else if (change.status === "deleted") add("deleted", "a run never deletes a note, a skill or a workflow", change.path);
-    add("too_many_files", `${given.length} changed paths; the cap is ${CAPS.changes} a run, and this one, past it, was not read`, change.path);
-  }
-  const changes = given.slice(0, CAPS.changes);
-  const base = new Set(input.base.files);
-  // The new notes that pass their own checks, in the answer's order. Which of them is a duplicate is settled after,
-  // with the merge's checks (settled below).
-  const candidates: ProposedNote[] = [];
-  const skills: string[] = [];
-  const workflows = new Set<string>();
-  const added: string[] = [];
-  const one = (change: Change): void => {
-    const { path } = change;
-    const place = learnedPlace(path);
-    if (place) {
-      // What the run writes, under a good name, is counted: a skill against the run's, a draft's file against its pair.
-      if (change.status !== "deleted" && learnedName(place.kind, place.name)) {
-        if (place.kind === "skill") skills.push(path);
-        else workflows.add(place.name);
-      }
-      return learnedChecked(change, place, refused, input, add);
-    }
-    if (change.status === "added") added.push(path);
-    if (!nameChecked(path, refused, add, OUTSIDE)) return;
-    if (change.status === "deleted") return add("deleted", "a run never deletes a note", path);
-    if (change.mode !== undefined && change.mode !== "100644") return add("file_mode", MODES[change.mode] ?? "not a regular file: never read", path);
-    if (change.status === "modified") return add("edited", "a run never edits a note: to replace one, it adds a new note that supersedes it", path);
-    if (base.has(path)) return add("exists", "the folder has a note by this name", path);
-    const note = textChecked(path, change.size ?? change.bytes?.length ?? 0, change.bytes, refused, add, true);
-    if (!note) return;
-    if (["status", "superseded_by", "retired_from", "origin", "compiled_into"].some((key) => note.keys.includes(key))) return add("status", "a run never sets status, superseded_by, retired_from, origin or compiled_into: the host does, when it merges the note, a later one supersedes it, a learned workflow is compiled from it or a person retires it", path);
-    candidates.push(note);
-  };
-  for (const change of changes) one(change);
-  for (const path of added.slice(CAPS.newNotes)) add("too_many_notes", `${added.length} new notes; the cap is ${CAPS.newNotes} a run, and this one is past it`, path);
-  for (const path of skills.slice(CAPS.skills)) add("too_many_skills", `${skills.length} skills added or changed; a run adds or changes at most ${CAPS.skills}, and this one is past it`, path);
-  for (const name of [...workflows].slice(CAPS.workflows)) add("too_many_workflows", `${workflows.size} workflow drafts added or changed; a run adds or changes at most ${CAPS.workflows}, and this one is past it`, `${WORKFLOWS_DIR}/${name}/workflow.json`);
-  // A skill is what every later run reads as how to do the job: only a run that did it writes one.
-  if (input.outcome !== "completed") for (const path of skills) add("skill_outcome", `the run's outcome is ${input.outcome ?? "not known"}: only a completed run adds or changes a skill`, path);
-  // A draft is its workflow.json and its README.md, together, as the folder will hold them.
-  const gone = new Set(changes.filter((change) => change.status === "deleted").map((change) => change.path));
-  const after = new Set([...base, ...changes.filter((change) => change.status !== "deleted").map((change) => change.path)].filter((path) => !gone.has(path)));
-  for (const name of workflows) {
-    const [json, readme] = ["workflow.json", "README.md"].map((file) => `${WORKFLOWS_DIR}/${name}/${file}`) as [string, string];
-    if (after.has(json) !== after.has(readme)) add("workflow", `the folder holds ${after.has(json) ? "workflow.json" : "README.md"} without the other file`, after.has(json) ? readme : json);
-  }
-  const notes = problems.length ? [] : settled(candidates);
-  return { ok: problems.length === 0, problems, notes: problems.length ? [] : notes };
-
-  /** `candidates` once nothing else is wrong, settled in one order, so no note is ever lost to another's failure:
-   *  1. Each note alone against the base (ownProblems): what it supersedes, active there, and how many. One that fails
-   *     is left out with its own reason.
-   *  2. The survivors by rule: the first of a rule holds it, the rest are its alternates. A rule the seed's active
-   *     notes hold is held already (an alternate that supersedes its holder is an update, and holds it).
-   *  3. The holders' shared checks (sharedProblems): two notes superseding one note, the supersedes cap over the run,
-   *     the index's lines, each counted in order, after the duplicates are out. A holder they refuse is left out with
-   *     that reason, and its next alternate holds the rule in its place; then 3 again, until nothing changes (each
-   *     round leaves one note out or more: bounded by the count).
-   *  4. Only then the alternates no rule needed are left out, each as the duplicate of its rule's holder.
-   *  The notes that pass, in the answer's order. */
-  function settled(all: readonly ProposedNote[]): ProposedNote[] {
-    const survivors = all.filter((note) => {
-      const own = ownProblems(input.base, note);
-      for (const problem of own) add(problem.rule, problem.detail, problem.path);
-      return own.length === 0;
-    });
-    const out = new Set<string>();
-    for (;;) {
-      const { holders } = byRule(survivors.filter((note) => !out.has(note.file)));
-      const shared = sharedProblems(input.base, holders);
-      if (!shared.length) {
-        const { holders: kept, alternates } = byRule(survivors.filter((note) => !out.has(note.file)));
-        for (const [note, holder] of alternates) add("duplicate", `it says what ${holder} says`, note.file);
-        return kept;
-      }
-      for (const problem of shared) {
-        add(problem.rule, problem.detail, problem.path);
-        out.add(problem.path!);
-      }
-    }
-  }
-
-  /** `notes` by rule, in order: the first of a rule holds it, the rest are its alternates (each with its holder). A
-   *  rule the seed's active notes hold is held by that note, unless the new note supersedes it (an update), or any of
-   *  `notes` does: a note this proposal supersedes keeps no rule after it, so a copy of its rule under another name is
-   *  no duplicate, and the rule is never left with no active note. */
-  function byRule(notes: readonly ProposedNote[]): { holders: ProposedNote[]; alternates: [ProposedNote, string][] } {
-    const going = new Set(notes.flatMap((note) => note.supersedes));
-    const rules = new Map([...(input.base.rules ?? [])].filter(([, holder]) => !going.has(holder)));
-    const holders: ProposedNote[] = [];
-    const alternates: [ProposedNote, string][] = [];
-    for (const note of notes) {
-      const rule = ruleOf(note.body);
-      const holder = rules.get(rule);
-      if (holder !== undefined && !note.supersedes.includes(holder)) {
-        // An update of the holder the seed has, after a copy of its rule: the update holds the rule, the copy is its
-        // alternate (else the update is dropped as the copy's duplicate, and the copy as the seed's, on the next pass).
-        const original = input.base.rules?.get(rule);
-        const at = holders.findIndex((one) => one.file === holder);
-        if (original !== undefined && holder !== original && at >= 0 && note.supersedes.includes(original)) {
-          // At its own place in the answer (the end of the holders so far), not the copy's: the shared checks name notes
-          // in answer order, so an update must not jump ahead of a note between the two.
-          alternates.push([holders.splice(at, 1)[0]!, note.file]);
-          holders.push(note);
-          rules.set(rule, note.file);
-          continue;
-        }
-        alternates.push([note, holder]);
-        continue;
-      }
-      rules.set(rule, note.file);
-      holders.push(note);
-    }
-    return { holders, alternates };
-  }
-}
-
-/** What `note` alone cannot join `base` with, needing no other note: a `supersedes` that names no active note of `base`,
- *  or more of them than CAPS.supersedes. */
-function ownProblems(base: Base, note: LearnedNote): Problem[] {
-  const active = new Set(base.active.map((one) => one.file));
-  const out: Problem[] = note.supersedes.filter((old) => !active.has(old)).map((old) => ({ rule: "supersedes", path: note.file, detail: `it supersedes ${old}, which is not an active note` }));
-  if (note.supersedes.length > CAPS.supersedes) out.push({ rule: "supersedes", path: note.file, detail: `it supersedes ${note.supersedes.length} notes; the cap is ${CAPS.supersedes} a run` });
-  return out;
-}
-
-/** What stops the holders `notes` (one a rule, each passing ownProblems) from joining `base` together, each named by the
- *  note it falls on. In the answer's order: a note that supersedes one an earlier note supersedes, or that takes the
- *  notes superseded past CAPS.supersedes (a note named counts toward neither, so a later one that fits is kept). Then
- *  the index over the rest, whole (each active new note a line, each note it supersedes one fewer), so a note that frees
- *  lines counts wherever it stands: past INDEX_LINES, the notes that add lines are named from the answer's end until
- *  it fits. */
-function sharedProblems(base: Base, notes: readonly LearnedNote[]): (Problem & { path: string })[] {
-  const out: (Problem & { path: string })[] = [];
-  const replaced = new Set<string>();
-  const fits: LearnedNote[] = [];
-  for (const note of notes) {
-    const twice = note.supersedes.find((old) => replaced.has(old));
-    if (twice) {
-      out.push({ rule: "supersedes", path: note.file, detail: `${twice} is superseded by another new note too` });
+  /** Each workflow's files given, by its name. */
+  const given = new Map<string, Set<LearnedPlace["kind"]>>();
+  for (const change of input.changes) {
+    const place = learnedPlace(change.path);
+    if (!place) {
+      nameScanned(change.path, refused, add);
+      add("outside", OUTSIDE, change.path);
       continue;
     }
-    const would = new Set([...replaced, ...note.supersedes]);
-    if (would.size > CAPS.supersedes) {
-      out.push({ rule: "supersedes", path: note.file, detail: `with it the new notes supersede ${would.size} notes; the cap is ${CAPS.supersedes} a run` });
-      continue;
+    if (change.status !== "deleted") given.set(place.name, (given.get(place.name) ?? new Set()).add(place.kind));
+    try {
+      learnedChecked(change, place, refused, input, add);
+    } catch (error) {
+      add("workflow", `it could not be checked: ${String((error as Error)?.message ?? error).slice(0, 200)}`, change.path);
     }
-    for (const old of note.supersedes) replaced.add(old);
-    fits.push(note);
   }
-  const net = (note: LearnedNote) => (note.status === "active" ? 1 : 0) - note.supersedes.length;
-  let lines = base.active.length + fits.reduce((sum, note) => sum + net(note), 0);
-  for (const note of [...fits].reverse()) {
-    if (lines <= INDEX_LINES) break;
-    if (net(note) <= 0) continue;
-    out.push({ rule: "index_full", path: note.file, detail: `with it the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so supersede a note rather than add one` });
-    lines -= net(note);
+  for (const [name, kinds] of given) {
+    const dir = `${WORKFLOWS_DIR}/${name}/`;
+    if (kinds.size === 2 || problems.some((problem) => problem.path?.startsWith(dir))) continue;
+    const missing = kinds.has("workflow") ? "README.md" : "workflow.json";
+    add("workflow", `${OUTSIDE}: its ${missing} is missing`, `${dir}${missing}`);
   }
-  return out;
-}
-
-/** The notes the active ones of `notes` supersede, each by the note that supersedes it. A note that waits for its
- *  owner's OK (`status: pending`) supersedes nothing until it is approved: what it names stays active. The one rule the
- *  merge writes by (runner/learning-loop.ts mergeChangeOf) and its index is counted by (mergeProblems). */
-export function supersededBy(notes: readonly LearnedNote[]): Map<string, string> {
-  return new Map(notes.filter((note) => note.status === "active").flatMap((note) => note.supersedes.map((old) => [old, note.file] as const)));
-}
-
-/** What stops `notes` from joining `base` as they are: a name `base` holds (`exists`), a `supersedes` that names no
- *  active note of `base` or one another new note supersedes too, or more than CAPS.supersedes notes superseded, and an
- *  index past INDEX_LINES, counted as the merge makes it (supersededBy: a pending note adds no line and replaces none).
- *  The checker asks it of the run's seed, where every new note is active; the host asks it again of main at merge time,
- *  with each note as it merges it, since other runs may have merged meanwhile. */
-export function mergeProblems(base: Base, notes: readonly LearnedNote[], refuseValues: readonly string[] = []): Problem[] {
-  const files = new Set(base.files);
-  const active = new Set(base.active.map((note) => note.file));
-  const out: Problem[] = [];
-  const replaced = new Set<string>();
-  // The grader reads each note superseded in full (grade.ts): their count is capped, as the new notes' is. Counted in
-  // the order the notes come: a note that would take the count past the cap is named (and left out), and what it
-  // supersedes is neither counted nor held as superseded for the notes after it, so a later one that fits is kept.
-  const counted = new Set<string>();
-  for (const note of notes) {
-    if (files.has(note.file)) out.push({ rule: "exists", path: note.file, detail: "the folder has a note by this name" });
-    const would = new Set([...counted, ...note.supersedes]);
-    const over = would.size > CAPS.supersedes;
-    for (const old of note.supersedes) {
-      if (!active.has(old)) out.push({ rule: "supersedes", path: note.file, detail: `it supersedes ${old}, which is not an active note` });
-      else if (replaced.has(old)) out.push({ rule: "supersedes", path: note.file, detail: `${old} is superseded by another new note too` });
-      if (!over) replaced.add(old);
-    }
-    if (over) out.push({ rule: "supersedes", path: note.file, detail: `with it the new notes supersede ${would.size} notes; the cap is ${CAPS.supersedes} a run` });
-    else for (const old of note.supersedes) counted.add(old);
-  }
-  const gone = supersededBy(notes);
-  const lines = [...active].filter((file) => !gone.has(file)).length + notes.filter((note) => note.status === "active").length;
-  if (lines > INDEX_LINES) out.push({ rule: "index_full", detail: `the index would hold ${lines} lines; it holds at most ${INDEX_LINES}, so supersede a note rather than add one` });
-  return out.map((problem) => printable(problem, refuseValues));
+  return problems;
 }

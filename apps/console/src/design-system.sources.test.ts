@@ -26,8 +26,11 @@ const RULES: Rule[] = [
   { id: "numbered-layer", says: "A layer has a name.", fix: "z-raised, z-sticky, z-overlay, z-dialog, z-popover, z-toast",
     find: /(?<![\w-])-?z-(?:\d+|\[)/ },
   { id: "rounded", says: "Rounded corners belong to action buttons, the active sidebar item and the build composer.", fix: "use Button, buttonVariants or NavItem; keep fields and surfaces square", find: /(?<![\w-])rounded(?![\w(]|-none\b)(?:-[a-z0-9[\]]+)*(?=[\s"'`])/ },
+  // A bare `shadow` is a class only in a string that is a class list (lower case, no sentence's capitals or apostrophes;
+  // an apostrophe after a letter opens no string): "an audit's shadow run" in a title or a readout is the learning
+  // words, not a class.
   { id: "shadow", says: "There is one shadow, under what floats over the page.", fix: "shadow-float; for a halo round a mark, ring-*",
-    find: /(?<![\w-])shadow-(?:sm|md|lg|xl|2xl|inner|\[)|(?<![\w-])shadow(?=[\s"'`])(?=[^<>]*")/ },
+    find: /(?<![\w-])shadow-(?:sm|md|lg|xl|2xl|inner|\[)|(?:["`]|(?<![A-Za-z])')[a-z0-9\s:[\]/.!_-]*(?<![\w-])shadow(?=[\s"'`])[a-z0-9\s:[\]/.!_-]*["'`]/ },
   { id: "off-scale-motion", says: "A duration and an easing are tokens.", fix: "duration-fast, duration-base, duration-slow; ease-standard",
     find: /\bduration-(?:\d+|\[)|\bease-(?:in|out|in-out)\b|\bdelay-(?:\d+|\[)/ },
   { id: "caps-by-hand", says: "Mono caps is the .caps class.", fix: "caps", find: /(?<![\w-])uppercase\b(?=[\s"'`])/, skip: (path) => path === "components/ui/tip.tsx" },
@@ -38,6 +41,8 @@ const RULES: Rule[] = [
   { id: "button-by-hand", says: "An action is a Button.", fix: '<Button size="xs|sm|md"> from @/components/ui', find: /^<button\b.*["`\s]caps\s[^"`]*\bborder\b(?!-[blrtxy]\b)|^<button\b.*["`\s]border\s[^"`]*\bcaps\b/, skip: outsideUi, tag: true },
   { id: "field-by-hand", says: "A field is Input, Textarea or Picker.", fix: "the primitive from @/components/ui, inside a Field",
     find: /^<(?:select|textarea)\b|^<input\b(?!.*\btype="(?:hidden|file|checkbox|radio)")/, skip: outsideUi, tag: true },
+  { id: "toolbar-by-hand", says: "A page's top bar is pageToolbarClass: 48px, its edge level with the one under the navigation's logo.", fix: "cn(pageToolbarClass, \"flex-wrap gap-2 px-5\") from @/components/ui, with control-sm controls in it",
+    find: /^<header\b.*\bmin-h-12\b/, skip: outsideUi, tag: true },
   { id: "choice-by-hand", says: "A checkbox or a radio shows in the brand's colour.", fix: "Checkbox or Radio from @/components/ui, or accent-primary on the input; a segment's own radio is sr-only",
     find: /^<input\b.*\btype="(?:checkbox|radio)"/, unless: /sr-only|accent-primary/, skip: outsideUi, tag: true },
 ];
@@ -51,6 +56,8 @@ const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
   { rule: "focus-removed", file: "components/ui/field.tsx", has: "bareFieldClass", why: "A bare control sits in a fieldBoxClass box, which draws the ring while the control has the focus." },
   { rule: "focus-removed", file: "components/ui/menu.tsx", has: "shadow-float outline-none", why: "An open menu holds the focus itself and shows it on the active item (data-[focus]:bg-accent)." },
   { rule: "focus-removed", file: "components/ui/picker.tsx", has: "shadow-float outline-none", why: "An open list holds the focus itself and shows it on the active option (data-[focus]:bg-accent)." },
+  { rule: "shadow", file: "lib/learningBill.ts", has: 'row.source === "shadow"', why: "An audit ledger row's source, the API's word for an audit's shadow run, not a class." },
+  { rule: "shadow", file: "lib/learningTab.fixture.ts", has: 'source: "shadow"', why: "An audit ledger row's source in the tab's invented reads, the API's word for an audit's shadow run, not a class." },
 ];
 
 /** A source with its comments turned to spaces of the same shape, so every line number stays what it was. A `//` or
@@ -71,13 +78,13 @@ function withoutComments(text: string): string {
   return out;
 }
 
-/** Each opening tag of a native control in a source, joined onto one line, with the line it starts on. A `>` inside
+/** Each opening tag of a native control (or a header, for toolbar-by-hand) in a source, joined onto one line, with the line it starts on. A `>` inside
  *  braces (an arrow function, a comparison) or inside quotes (a title) is not the tag's end. A tag in a comment, or
  *  one that is the text of a string, is no control and is not read. */
 function controlTags(text: string): { line: number; text: string }[] {
   const tags: { line: number; text: string }[] = [];
   text = withoutComments(text);
-  for (const m of text.matchAll(/<(?:button|input|select|textarea)\b/g)) {
+  for (const m of text.matchAll(/<(?:button|input|select|textarea|header)\b/g)) {
     if (/["'`]/.test(text[m.index - 1] ?? "")) continue;
     let end = m.index + m[0].length;
     for (let depth = 0, quote = ""; end < text.length; end++) {
@@ -149,6 +156,9 @@ describe("the console's sources follow the design system", () => {
     expect(breaks(rule("choice-by-hand"), one(slashes)[0]!)).toBe(false);
     expect(breaks(rule("choice-by-hand"), one('<input type="checkbox" title="a /* b" className="accent-primary" />')[0]!)).toBe(false);
     expect(one("<p>Couldn't read it</p> // <input name=\"q\" />\n<input name=\"real\" />")).toEqual(['<input name="real" />']);
+    // A page's top bar written by hand is found however its opening tag is wrapped; one on pageToolbarClass is not.
+    expect(breaks(rule("toolbar-by-hand"), one('<header aria-label="Bar"\n  className="flex min-h-12 border-b px-5">')[0]!)).toBe(true);
+    expect(breaks(rule("toolbar-by-hand"), one('<header\n  className={cn(pageToolbarClass, "gap-2 px-5")}>')[0]!)).toBe(false);
   });
   it("reads a wrapped class list's focus replacement, a token's variable in any spelling, and layer 0", () => {
     const rule = (id: string) => RULES.find((r) => r.id === id)!;
@@ -165,6 +175,13 @@ describe("the console's sources follow the design system", () => {
     expect(found("token-by-hand", 'className="w-[var(--button-width)] [--anchor-gap:2px]"')).toBe(0);
     for (const c of ["z-0", "z-10", "-z-1", "z-[5]"]) expect(found("numbered-layer", `className="${c}"`), c).toBe(1);
     expect(found("numbered-layer", 'className="z-popover"')).toBe(0);
+  });
+  it("reads a shadow in a class list, never the word in a sentence", () => {
+    const shadow = RULES.find((r) => r.id === "shadow")!;
+    const found = (source: string) => lineHits(shadow, source.split("\n")).length;
+    for (const c of ['className="border shadow p-2"', 'className={cn("shadow", on && "bg-card")}', 'const card = "p-2 shadow";', 'className="shadow-lg"', 'className="hover:shadow-md"']) expect(found(c), c).toBe(1);
+    // An audit's shadow run is the learning words S3c ships: a title, a readout line, a sentence in JSX.
+    for (const c of ['<span title="An audit\'s shadow run of the agent checked it">', 'const said = ["Audited: a shadow run of the agent checked it"];', "<p>its audit&apos;s shadow run, with each replay</p>", 'className="shadow-float"']) expect(found(c), c).toBe(0);
   });
   it("every exception still names a line that needs it", () => {
     const stale = ALLOWED.filter((a) => !hits.some((h) => h.rule === a.rule && h.file === a.file && h.text.includes(a.has))).map((a) => `${a.rule} ${a.file} "${a.has}"`);

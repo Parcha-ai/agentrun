@@ -1,39 +1,37 @@
 import type { NativeBinding } from "./native";
 import { type Place, type Places, computerOfPlace, placeOf } from "./place";
 import type { ClientError } from "./client";
-import type { NoteProblem } from "./learning";
-import type { AgentTool, Approvals, Computer, ServedAgent, ToolSettings } from "./v2";
+import type { LearningProblem } from "./learning";
+import type { Agent, Approvals, Computer, ToolSettings } from "./v2";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
 export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
-/** `learning`: whether the agent's runs learn, and what (an agentic revision's; absent is off): true, notes, skills and
- *  learned workflows; an object, the same with the loop's numbers set (compile_after, agree_min, alone_min); "notes",
- *  notes and skills alone. */
-export type LearningSetting = boolean | "notes" | { compile_after?: number; agree_min?: number; alone_min?: number };
-/** Whether a definition's `learning` is on: true, "notes" or an object of the loop's numbers. */
-export const learningOn = (learning: unknown): boolean => learning === true || learning === "notes" || (typeof learning === "object" && learning !== null && !Array.isArray(learning));
+/** `learning`: whether the agent's runs learn (an agentic revision's; absent is off): true, its owner's corrections and a
+ *  learned workflow; an object, the same with the loop's numbers set (compile_after, agree_min, alone_min) and the answer
+ *  fields its check and audit compare on (agree_on). */
+export type LearningSetting = boolean | { compile_after?: number; agree_min?: number; alone_min?: number; agree_on?: string[] };
+/** Whether a definition's `learning` is on: true or an object of the loop's numbers. */
+export const learningOn = (learning: unknown): boolean => learning === true || (typeof learning === "object" && learning !== null && !Array.isArray(learning));
 /** `max_cost_usd`: the agent's default spend cap per run, in dollars, for a run (or a trigger) with no cap of its own; an
  *  agentic revision's only. Absent or 0 is none, and an edit clears it only with an explicit 0. */
 export type Definition = { native?: NativeBinding; version: number; approvals?: Approvals; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: LearningSetting; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
 /** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
-export type SaveWarning = { field: string; reason: string; message: string };
-/** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
- *  the agent's page that opens after it (client.ts). */
-/** The console's agent, and of the served agent (GET /v2/agents/{id}, generated) its `sign_ins`, which only that read
- *  carries (a list's agents and a write's answer have none). */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; native_status?: NativeBinding; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } } & Partial<Pick<ServedAgent, "sign_ins">>;
+export type SaveWarning = NonNullable<Agent["warnings"]>[number];
+export type { Agent };
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
-/** The body of a definition edit: the current definition with the edited fields; name and
- *  description stay as the agent was created. Every field the
+/** The body of a definition edit: the current definition with the edited fields; the name stays as the agent was created,
+ *  and a changed description is sent (serve writes it with the new revision). Every field the
  *  form does not show (schemas, tools, a workflow, connection references) is kept as it is, never dropped. A workflow
  *  revision keeps no thinking level (the server refuses one). Skill files are not sent, so they stay as they are. */
 export function editBody(agent: Agent, fields: AgentFields, note: string): { definition: Definition; note?: string; unchanged: boolean } {
-  // The agent store keeps an agent's id, name and description from its creation: an edit never sends a changed one.
-  const { name: _name, description: _description, ...editable } = fields as AgentFields & { id?: string };
+  // The agent store keeps an agent's id and name from its creation: an edit never sends a changed one.
+  const { name: _name, ...editable } = fields as AgentFields & { id?: string };
   const edited: Definition = { ...agent.definition, ...editable };
+  // An agent with no description, left blank in the form, still has none: not a change.
+  if (edited.description === "" && agent.definition.description === undefined) delete edited.description;
   // The computer is the setting; place is the server's view of it. A definition with a computer goes without its place,
   // which would still say the old computer after a change (the server writes place from computer).
   const current: Definition = { ...agent.definition };
@@ -76,12 +74,14 @@ export function same(a: unknown, b: unknown): boolean {
 }
 
 /** The picker's choice that makes a decision agent: a workflow revision from the starter decision workflow. It is a
- *  choice in the form only, never a harness id: the revision names no harness, so its model nodes run on the default. */
-export const DECISION = "decision";
+ *  choice in the form only, never a harness id: the revision names no harness, so its model nodes run on the default.
+ *  Its value has a colon, which no harness id has (`^[a-z][a-z0-9-]{0,39}$`), so a harness a server's module adds as
+ *  `decision` stays a harness. */
+export const DECISION = "starter:decision";
 
 /** The picker's choice that makes a general workflow agent: a workflow revision from the general starter
- *  (workflowStarter.ts), which every server runs. A choice in the form only, as Decision is. */
-export const WORKFLOW = "workflow";
+ *  (workflowStarter.ts), which every server runs. A choice in the form only, as Decision is, and never a harness id. */
+export const WORKFLOW = "starter:workflow";
 
 /** The workflow each starter choice creates the agent from: Decision's judge names the server's decision provider. */
 const STARTERS: Record<string, (decisionProvider?: string) => unknown> = { [DECISION]: decisionStarter, [WORKFLOW]: workflowStarter };
@@ -195,24 +195,28 @@ export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefin
 /** The tools the server refuses in a sandbox place (serve's runnable.ts, `runnerOnly`): the browser, which files the run's
  *  work/ from the server by path. The server's own rule, until its capabilities mark them. */
 const RUNNER_ONLY: ReadonlySet<string> = new Set(["browser"]);
+/** The tools that run only in a box (serve's tools.ts, `sandboxOnly`; capabilities' `sandbox_only`): bash and the
+ *  background tools. A revision with no place gets the box only when it names one. */
+const SANDBOX_ONLY: ReadonlySet<string> = new Set(["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]);
 
 /** Where a revision that names no place runs, as the server resolves it at each run: this mirrors the server's
  *  defaultPlaceOf (packages/serve/src/place.ts), which the server does not report per revision. The runner for a workflow,
- *  and for one that names a tool that runs only there (the browser); else this server's default_place. The editor's
- *  picker and its tool checks both read it, so they agree with the server and with each other. */
+ *  for one whose tools need no shell, and for one that names a tool that runs only there (the browser); else this
+ *  server's default_place. The editor's picker and its tool checks both read it, so they agree with the server and with
+ *  each other. */
 export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place =>
-  workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) || !places ? { mode: "runner" } : places.defaultPlace;
+  workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) || !tools.some((tool) => SANDBOX_ONLY.has(tool)) || !places ? { mode: "runner" } : places.defaultPlace;
 
 /** Where an agent's current revision runs: its own place, else where the server resolves one that names none
  *  (defaultPlaceOf), with `byDefault` saying so. Undefined for a revision that names no place while the server's places are
- *  not read yet (and it names no runner-only tool), whose place is not known. The agent page's fact and the Learning
- *  tab's host-bash line both read it. */
+ *  not read yet (and it names a shell tool and no runner-only one), whose place is not known. The agent page's fact and
+ *  the Learning tab's host-bash line both read it. */
 export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Places | null | undefined): { place: Place; byDefault: boolean } | undefined {
   const own = placeOf(agent.definition.place);
   if (own) return { place: own, byDefault: false };
   const workflow = agent.kind === "workflow";
   const tools = agent.definition.tools ?? [];
-  if (!workflow && !tools.some((tool) => RUNNER_ONLY.has(tool)) && !places) return undefined;
+  if (!workflow && !tools.some((tool) => RUNNER_ONLY.has(tool)) && tools.some((tool) => SANDBOX_ONLY.has(tool)) && !places) return undefined;
   return { place: defaultPlaceOf(workflow, tools, places), byDefault: true };
 }
 
@@ -230,15 +234,20 @@ export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TO
 const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex", opencode: "OpenCode" };
 const ORDER: HarnessId[] = ["pi", "claude-agent", "codex", "opencode"];
 
-/** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), each one the
- *  server does not run shown disabled with its reason. A harness the server does not list is not offered. With
- *  `decision` (a new agent), the starters follow them: Decision, available when the server runs decision workflows,
- *  and Workflow, available on every server. */
-export function harnessOptions(harnesses: { id: string; available: boolean; reason?: string }[], decision?: { available: boolean }) {
-  const options: { id: string; label: string; available: boolean; reason?: string }[] = ORDER.flatMap((id) => {
-    const h = harnesses.find((x) => x.id === id);
-    return h ? [{ id, label: LABEL[id], available: h.available, reason: h.reason }] : [];
-  });
+/** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), then
+ *  any other harness it lists (one its harness modules add), by the label it gives, else its id; each one the server does
+ *  not run shown disabled with its reason. A harness the server does not list is not offered. With `decision` (a new
+ *  agent), the starters follow them: Decision, available when the server runs decision workflows, and Workflow,
+ *  available on every server. */
+export function harnessOptions(harnesses: { id: string; label?: string; available: boolean; reason?: string }[], decision?: { available: boolean }) {
+  const option = (h: { id: string; label?: string; available: boolean; reason?: string }, label: string) => ({ id: h.id, label, available: h.available, reason: h.reason });
+  const options: { id: string; label: string; available: boolean; reason?: string }[] = [
+    ...ORDER.flatMap((id) => {
+      const h = harnesses.find((x) => x.id === id);
+      return h ? [option(h, LABEL[id])] : [];
+    }),
+    ...harnesses.filter((h) => !(ORDER as string[]).includes(h.id)).map((h) => option(h, h.label ?? h.id)),
+  ];
   if (decision) {
     options.push({ id: DECISION, label: "Decision", available: decision.available, reason: decision.available ? undefined : "This server runs no decision workflows: it has no decision provider's key." });
     options.push({ id: WORKFLOW, label: "Workflow", available: true, reason: undefined });
@@ -256,18 +265,19 @@ export function saveError(e: ClientError): SaveProblem {
   return { kind: "other", message: e.message };
 }
 
-/** What a refused note write means for the Learning tab, as saveError does for a definition: a stale If-Match (412) is
- *  a change made since the note was read, or, creating one, a name already taken; a 400 with `problems` lists what the
- *  checks refuse; anything else is shown as the server said it. */
-export type NoteSaveProblem = { kind: "conflict" } | { kind: "taken" } | { kind: "refused"; problems: NoteProblem[] } | { kind: "other"; message: string; code: string };
-export function noteSaveError(e: ClientError, creating = false): NoteSaveProblem {
-  if (e.status === 412 || e.code === "precondition_failed") return creating ? { kind: "taken" } : { kind: "conflict" };
+/** What a refused learning write means for the Learning tab (corrections.md, or a workflow draft's approve, retire or
+ *  restore), as saveError does for a definition: a stale If-Match (412) is a change made since the file was read; a 400
+ *  with `problems` lists what the checks refuse; anything else is shown as the server said it. */
+export type LearningWriteProblem = { kind: "conflict" } | { kind: "refused"; problems: LearningProblem[] } | { kind: "other"; message: string; code: string };
+export function learningWriteError(e: ClientError): LearningWriteProblem {
+  if (e.status === 412 || e.code === "precondition_failed") return { kind: "conflict" };
   if (e.problems?.length) return { kind: "refused", problems: e.problems };
   return { kind: "other", message: e.fields?.[0]?.message ?? e.message, code: e.code };
 }
 
-/** The warnings that name `field` of the definition, or a part of it (`tools` takes `definition.tools[2]`). */
-export function warningsFor(warnings: SaveWarning[] | undefined, field: string): SaveWarning[] {
+/** The warnings (or a refusal's issues) that name `field` of the definition, or a part of it (`tools` takes
+ *  `definition.tools[2]`). */
+export function warningsFor<T extends { field: string }>(warnings: readonly T[] | undefined, field: string): T[] {
   const at = `definition.${field}`;
   return (warnings ?? []).filter((w) => w.field === at || w.field.startsWith(`${at}[`) || w.field.startsWith(`${at}.`) || w.field.startsWith(`${at}/`));
 }

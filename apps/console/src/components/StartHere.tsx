@@ -45,7 +45,7 @@ export function StartHere({ harnesses, tools, onTry, imported = 0, keySettings =
         <div className="min-w-0">
           <h2 className="text-base font-semibold">Bring your agents into view</h2>
           <p className="mt-1 text-lead text-muted-foreground">Connect your Claude Code or Codex setup on this server or another machine. Your coding agent helps choose a live connection or a history import. No model key needed to connect.</p>
-          {imported > 0 && <p className="mt-2 text-body text-muted-foreground">{imported} imported {imported === 1 ? "session" : "sessions"} · <a href="#/runs" className="text-primary-text underline-offset-4 hover:underline">Browse history</a></p>}
+          {imported > 0 && <p className="mt-2 text-body text-muted-foreground">{imported} imported {imported === 1 ? "session" : "sessions"} · <a href="#/runs" className="text-primary-text underline underline-offset-4 hover:decoration-2">Browse history</a></p>}
         </div>
         <button type="button" aria-label="Dismiss introduction" className="shrink-0 p-1 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => {
           setDismissed(true);
@@ -73,7 +73,7 @@ export function StartHere({ harnesses, tools, onTry, imported = 0, keySettings =
                   <p className="mt-1 font-mono text-label text-muted-foreground">{t.shows}</p>
                   <p className="mt-2 flex-1 text-lead leading-relaxed text-muted-foreground">{t.description}</p>
                   {offer.ok
-                    ? <Button type="button" variant={t.id === "hello" ? "solid" : "outline"} size="sm" className="mt-4 self-start" disabled={trying !== null} onClick={() => void tryIt(t)}>{trying === t.id ? "Starting…" : "Try it"}</Button>
+                    ? <Button type="button" size="sm" className="mt-4 self-start" disabled={trying !== null} onClick={() => void tryIt(t)}>{trying === t.id ? "Starting…" : "Try it"}</Button>
                     : <p className="mt-4 font-mono text-small text-muted-foreground">{offer.reason}</p>}
                 </li>
               );

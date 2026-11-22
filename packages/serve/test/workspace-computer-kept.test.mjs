@@ -14,13 +14,15 @@ import { after, test } from "node:test";
 import { AttachHub, readBackOf } from "@parcha/agentrun-computer";
 import { FakeUiDriver, serveUiSocket } from "@parcha/agentrun-computer/fake-ui-driver";
 import { getSealedKey, putSealedKey } from "../dist/server-keys.js";
-import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
+import { archilWorkspace, computerForClaim, localWorkspace, runKey } from "../dist/workspace/index.js";
+import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
 import { pairedOf } from "../dist/workspace/attached-computers.js";
 import { fauxComputers } from "../dist/faux-computers.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote } from "../dist/workspace/computer-deps.js";
 import { computerLapsedWords, endKept, KEEP_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
 import { startJanitor, sweepKeptComputers } from "../dist/workspace/computer-janitor.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
+import { memoryIntervals } from "./memory-intervals.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
 const dirs = [];
@@ -50,13 +52,23 @@ function memorySettings() {
 /** The store parts the claim reads, its settings shared by every claim and the janitor (one server's store). */
 function memoryStore() {
   const keys = new Map();
-  const runs = new Map([["run-1", { id: "run-1", state: "parked" }]]);
+  const runs = new Map([["run-1", { id: "run-1", state: "parked", epoch: 0, runner: null }]]);
   return {
-    runs: { get: async (id) => runs.get(id), heldAt: async () => undefined, list: async () => [...runs.values()], set: (id, state) => runs.set(id, { id, state }) },
+    // `take`: a runner's claim of the run, at `epoch` (the store's claim moves the epoch up and names the runner); `end`:
+    // its end, park or release commit (the epoch up by one, no runner).
+    runs: {
+      get: async (id) => runs.get(id),
+      heldAt: async () => undefined,
+      list: async () => [...runs.values()],
+      set: (id, state) => runs.set(id, { ...runs.get(id), id, state }),
+      take: (id, epoch) => runs.set(id, { ...runs.get(id), epoch, runner: `runner-${epoch}` }),
+      end: (id) => runs.set(id, { ...runs.get(id), epoch: runs.get(id).epoch + 1, runner: null }),
+    },
     agents: { revision: async () => undefined },
     settings: memorySettings(),
     sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async (name) => void keys.delete(name), all: async () => [...keys].map(([name]) => ({ name })) },
     computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },
+    computerIntervals: memoryIntervals(),
   };
 }
 
@@ -108,7 +120,7 @@ function vendor(root, groups, machine = "linux") {
       return { ok: true, value: undefined };
     },
   };
-  return { provider, computers, calls };
+  return { provider, computers, calls, computer };
 }
 
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
@@ -118,17 +130,20 @@ const SPEC = () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, netwo
 const T0 = 1_800_000_000_000;
 
 /** One server: its store, a vendor's account, a clock, and its claims of run-1 (each a claim at `epoch`). */
-async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS, machine, keys = { E2B_API_KEY: "fake-test-key" } } = {}) {
+async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS, machine, keys = { E2B_API_KEY: "fake-test-key" }, workspace } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const account = vendor(root, groups, machine);
   const clock = { now: T0 };
-  const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness"].map((id) => [id, () => account.provider]));
+  const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness", "daytona"].map((id) => [id, () => account.provider]));
   const mounts = { revoked: 0, inherited: 0 };
-  const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1), inheritMount: () => void (mounts.inherited += 1), now: () => clock.now };
-  const claim = (epoch, extra = {}) => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
+  const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1), inheritMount: () => void (mounts.inherited += 1), now: () => clock.now };
+  const claim = (epoch, extra = {}) => {
+    store.runs.take("run-1", epoch);
+    return computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
+  };
   const janitor = () => sweepKeptComputers({ store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, now: () => clock.now });
   return { store, account, clock, mounts, claim, janitor, sealKey, keys };
 }
@@ -341,7 +356,7 @@ test("a sandbox parked and resumed within 10 minutes is the same sandbox: no cre
   assert.equal(await first.park("approval"), true, "kept");
   assert.deepEqual(deletes(one.account), [], "nothing deleted at the park");
   assert.equal(one.mounts.revoked, 0);
-  assert.deepEqual(await readKept(one.store.settings, "run-1"), { provider: "docker", kind: "sandbox", id: "c1", name: "c1", epoch: 3, until: T0 + KEEP_MS });
+  assert.deepEqual(await readKept(one.store.settings, "run-1"), { provider: "docker", kind: "sandbox", id: "c1", name: "c1", epoch: 3, until: T0 + KEEP_MS, folder: "bind" }, "the row says how it holds the run's folder");
 
   one.clock.now = T0 + 60_000;
   const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) });
@@ -387,6 +402,132 @@ test("a sandbox's park hold words and timeout words", () => {
   assert.equal(computerLapsedWords("sandbox"), "The sandbox wasn't kept: 10 minutes passed.");
 });
 
+/** A Mode 2 Daytona sandbox with no DAYTONA_ARCHIL_EGRESS (a synced folder), its run's folder on a fake disk. */
+const RUN_ROOT = runKey("acme", "r1");
+const text = (bytes) => (bytes === undefined ? undefined : Buffer.from(bytes).toString());
+async function syncedServer() {
+  const disk = new FakeArchilDisk();
+  const one = await server({ setting: { kind: "sandbox", provider: "daytona" }, mode: 2, groups: ["exec", "files", "processes"], keys: { DAYTONA_API_KEY: "fake-test-key" }, workspace: archilWorkspace(disk, RUN_ROOT) });
+  // The fake computer has no tar: a push into a new one is taken as landed (every computer of the account is one host
+  // folder, which already holds what the disk does).
+  const connect = one.account.provider.connect;
+  one.account.provider.connect = async (ref) => {
+    const connected = await connect(ref);
+    if (!connected.ok) return connected;
+    const client = connected.value.client;
+    const call = (method, params, options) => (method.startsWith("tar.push.") ? Promise.resolve({ ok: true, value: method === "tar.push.begin" ? { id: "push-1" } : {} }) : client.call(method, params, options));
+    return { ok: true, value: { ...connected.value, client: Object.assign(Object.create(client), { call }) } };
+  };
+  return { ...one, disk };
+}
+
+/** Real time until `done()` holds, for what runs after a mocked timer fired. */
+async function until(done, what) {
+  for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(done(), what);
+}
+
+test("a synced folder's park lands its delta on the disk before the computer is kept; its end at its time deletes it with no read-back, so what was written while kept is lost", async (t) => {
+  const one = await syncedServer();
+  const first = await one.claim(3);
+  assert.equal(first.keeps, "sandbox");
+  one.account.computer.plant.file("/workspace/before-park.log", "written before the park\n");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    assert.equal(await first.park("approval"), true, "kept");
+    assert.equal(text(one.disk.files.get(`${RUN_ROOT}/before-park.log`)), "written before the park\n", "the park's delta landed");
+    assert.equal((await readKept(one.store.settings, "run-1")).folder, "sync", "the row says it holds a synced folder");
+    // A background program of the run's writes while it is kept: no call of the run's lands it.
+    one.account.computer.plant.file("/workspace/while-kept.log", "written while kept\n");
+    const before = one.account.calls.length;
+    t.mock.timers.tick(KEEP_MS);
+    t.mock.timers.reset();
+    await until(() => deletes(one.account).includes("c1"), "deleted at its time");
+    assert.equal(one.disk.files.has(`${RUN_ROOT}/while-kept.log`), false, "no read-back before the delete");
+    const after = one.account.calls.slice(before).map(([verb, , how]) => (how ? `${verb} ${how}` : verb));
+    assert.deepEqual(after, ["release delete"], "the delete alone, as the janitor's");
+    assert.equal(one.mounts.revoked, 1);
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("a synced folder's park whose delta does not land keeps nothing: the computer goes as at the run's end, saying writes may be lost, no row", async () => {
+  const one = await syncedServer();
+  const first = await one.claim(3);
+  one.account.computer.plant.file("/workspace/late.log", "x");
+  one.disk.putObject = async () => { throw new FakeDiskError(503, "ServiceUnavailable", "the disk is away"); };
+  await assert.rejects(first.park("approval"), /^Error: the run's folder was not let go cleanly: the final sync failed \(.*late\.log: .*the disk is away\), so writes since the last sync may be lost$/, "not kept; the runner logs why");
+  assert.deepEqual(deletes(one.account), ["c1"]);
+  assert.equal(await readKept(one.store.settings, "run-1"), undefined);
+  assert.equal(one.mounts.revoked, 1);
+});
+
+test("a runner that lost its claim has its writes to the run's folder refused by the claim epoch: once runner B holds the run, nothing runner A sends reaches the disk, and B's writes land", async () => {
+  const one = await syncedServer();
+  const writes = () => one.disk.calls.filter(({ op }) => op === "putObject" || op === "deleteObject" || op === "appendObject").length;
+  const a = await one.claim(1);
+  const aClient = a.computer.computer.client;
+  one.account.computer.plant.file("/workspace/a1.txt", "A, holding the claim\n");
+  assert.equal((await aClient.call("files.mkdir", { path: "/workspace/d1" })).ok, true);
+  assert.equal(text(one.disk.files.get(`${RUN_ROOT}/a1.txt`)), "A, holding the claim\n");
+
+  // Runner B claims the run at epoch 2; runner A goes on, not knowing yet.
+  const b = await one.claim(2);
+  const before = writes();
+  one.account.computer.plant.file("/workspace/a2.txt", "A, after B's claim\n");
+  const late = await aClient.call("files.mkdir", { path: "/workspace/d2" });
+  assert.equal(late.ok, false, "A's call answers that its folder was not made durable");
+  assert.match(late.error.message, /^files\.mkdir ran, but the run's folder could not be made durable: .*this runner no longer holds the run's claim/);
+  assert.equal(writes(), before, "nothing A sent reached the disk");
+  assert.equal(one.disk.files.has(`${RUN_ROOT}/a2.txt`), false);
+  assert.equal(one.disk.dirs.has(`${RUN_ROOT}/d2`), false);
+  // A's release: its final delta is refused too (its computer, which B's claim let go, is gone already).
+  await a.release().catch(() => undefined);
+  assert.equal(writes(), before, "nothing of A's final delta reached the disk");
+
+  // B's writes land.
+  one.account.computer.plant.file("/workspace/b.txt", "B\n");
+  assert.equal((await b.computer.computer.client.call("files.mkdir", { path: "/workspace/d3" })).ok, true);
+  assert.equal(text(one.disk.files.get(`${RUN_ROOT}/b.txt`)), "B\n");
+  assert.equal(one.disk.dirs.has(`${RUN_ROOT}/d3`), true);
+  await b.release();
+
+  // B's run ends (its end commit: the epoch up by one, no runner), so no claim holds the run: A is still refused.
+  one.store.runs.end("run-1");
+  const after = writes();
+  one.account.computer.plant.file("/workspace/a3.txt", "A, after B's end\n");
+  const later = await aClient.call("files.mkdir", { path: "/workspace/d4" });
+  assert.equal(later.ok, false, "a run that a later claim ended is not A's again");
+  assert.match(later.error.message, /this runner no longer holds the run's claim/);
+  assert.equal(writes(), after);
+  assert.equal(one.disk.files.has(`${RUN_ROOT}/a3.txt`), false);
+});
+
+test("a claim's own end or park lets its final writes through: the epoch one past its own with no runner is still the claim's", async () => {
+  const one = await syncedServer();
+  const a = await one.claim(4);
+  // The adapter loop's end commit lands before the final delta: the epoch up by one, no runner.
+  one.store.runs.end("run-1");
+  one.account.computer.plant.file("/workspace/last.txt", "written after the end commit\n");
+  await a.release();
+  assert.equal(text(one.disk.files.get(`${RUN_ROOT}/last.txt`)), "written after the end commit\n");
+});
+
+test("a kept computer holding the run's folder another way is not taken back: as any kind or provider mismatch, the claim's launch deletes it as an older claim's and makes a new one, its row and mount token left to its keep's end", async () => {
+  const one = await syncedServer();
+  const made = await one.account.provider.create({ labels: { "agentrun.run": "run-1", "agentrun.epoch": "3" }, mount: { kind: "archil", disk: "dsk-1", region: "aws-us-east-1", folder: "acme/r1/work" } });
+  await writeKept(one.store.settings, "run-1", { provider: "daytona", kind: "sandbox", id: made.value.id, name: made.value.name, epoch: 3, until: T0 + KEEP_MS, folder: "archil" });
+  const resumed = await one.claim(5, { hadComputer: async () => true });
+  assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
+  assert.deepEqual(deletes(one.account), ["c1"], "the kept one deleted, never attached");
+  assert.equal(one.account.calls.some(([verb, id]) => verb === "attach" && id === "c1"), false);
+  assert.deepEqual([one.mounts.inherited, one.mounts.revoked], [0, 0], "its Archil token is still the parking claim's");
+  assert.equal((await readKept(one.store.settings, "run-1")).id, "c1", "its row is left to its keep's end");
+  assert.equal(resumed.computer.kind, "sandbox");
+  await resumed.release();
+});
+
 test("a park closes the desktop's live view with what the run waits for and until when it is kept, never `ended`", async () => {
   for (const cause of ["approval", "answer", "cap", "refusal", "workflow"]) {
     const one = await server();
@@ -407,6 +548,7 @@ test("a paired computer and --faux's desktop are never kept: their park lets the
   assert.equal(fauxDesk.keeps, undefined, "--faux's desktop");
   assert.equal(await fauxDesk.park(), false);
   assert.equal(store.settings.rows.size, 0);
+  assert.equal(store.computerIntervals.rows.size, 0, "--faux's desktop is no computer of a provider's: no interval");
 
   const driver = new FakeUiDriver({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] });
   const row = { id: "c-1", name: "Test Mac", hello: driver.hello(), driver: "0", labels: { owner: "test" }, pairingId: "p-1", createdAt: 0, seenAt: 0, revokedAt: null };
@@ -420,6 +562,7 @@ test("a paired computer and --faux's desktop are never kept: their park lets the
     assert.equal(held.keeps, undefined, "a paired computer");
     assert.equal(await held.park(), false);
     assert.equal(pairedStore.settings.rows.size, 0);
+    assert.equal(pairedStore.computerIntervals.rows.size, 0, "a paired computer is no computer of the run's own: no interval");
   } finally {
     driver.close();
   }
@@ -441,3 +584,236 @@ function socketPair() {
   });
   return [side(ends[0], ends[1]), side(ends[1], ends[0])];
 }
+
+// Each computer a run made, from its create to its proven delete (computer-intervals.ts): the rows the claim, its park,
+// its release and the janitor write. The expected rows are worked out from the vendor's ids (c1, c2, ...) and the test's
+// clock, under the setting's provider (e2b): this server's id for the provider, not the provider object's own ("fake").
+const intervalsOf = (one) => one.store.computerIntervals.forRun("run-1");
+
+test("a run's desktop has an interval: opened at its create by the provider's id, the create's asks null where it asked none; kept at the park; ended when the keep's end deletes it", async () => {
+  const one = await server();
+  const first = await one.claim(3);
+  const opened = { runId: "run-1", provider: "e2b", providerId: "c1", kind: "desktop", gpuType: null, gpuCount: null, cpus: null, memoryMb: null, diskGb: null, startedAt: T0 };
+  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: false, endedAt: null, bookedMs: 0 }]);
+  one.clock.now = T0 + 30_000;
+  assert.equal(await first.park(), true);
+  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: true, endedAt: null, bookedMs: 0 }], "kept past its claim, not ended");
+  one.clock.now = T0 + 30_000 + KEEP_MS;
+  assert.deepEqual(await one.janitor(), { ended: ["c1"], failed: [] });
+  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: true, endedAt: T0 + 30_000 + KEEP_MS, bookedMs: 0 }], "ended when its delete answered ok");
+});
+
+test("a run's sandbox released at its end is ended at that moment; a release whose delete fails leaves it open, never a guessed end", async () => {
+  const one = await server(SANDBOX);
+  const first = await one.claim(3, { spec: () => ({ ...SPEC(), cpus: 2, memoryMb: 4096 }) });
+  one.clock.now = T0 + 90_000;
+  await first.release();
+  assert.deepEqual(await intervalsOf(one), [{ runId: "run-1", provider: "docker", providerId: "c1", kind: "sandbox", gpuType: null, gpuCount: null, cpus: 2, memoryMb: 4096, diskGb: null, startedAt: T0, kept: false, endedAt: T0 + 90_000, bookedMs: 0 }]);
+
+  const two = await server(SANDBOX);
+  const held = await two.claim(3);
+  two.account.provider.release = async () => ({ ok: false, error: { code: "unavailable", message: "the vendor did not answer" } });
+  await assert.rejects(held.release(), /the vendor did not answer/);
+  assert.deepEqual((await intervalsOf(two)).map((row) => [row.providerId, row.endedAt]), [["c1", null]], "left open: no delete was proven");
+});
+
+test("an earlier claim's computer let go by a later claim's launch is ended; the new one is opened beside it", async () => {
+  const one = await server();
+  await one.claim(3);
+  // The runner that held claim 3 is lost: claim 5 lets its desktop go (releaseOlderClaims) and makes a new one.
+  one.clock.now = T0 + 60_000;
+  const later = await one.claim(5);
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.providerId, row.startedAt, row.endedAt]), [["c1", T0, T0 + 60_000], ["c2", T0 + 60_000, null]]);
+  await later.release();
+});
+
+test("an earlier claim's computer deleted before another one's delete failed keeps its end, though the later claim fails (#3332 review)", async () => {
+  const one = await server();
+  await one.claim(3);
+  // A second computer of claim 3 (a lost runner's retry), whose delete the vendor refuses.
+  one.account.computers.set("x9", { id: "x9", labels: { ...one.account.computers.get("c1").labels } });
+  const release = one.account.provider.release.bind(one.account.provider);
+  one.account.provider.release = async (ref, how) => (ref.id === "x9" ? { ok: false, error: { code: "unavailable", message: "the vendor did not answer" } } : release(ref, how));
+  one.clock.now = T0 + 60_000;
+  await assert.rejects(one.claim(5), /the vendor did not answer/);
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.providerId, row.endedAt]), [["c1", T0 + 60_000]], "c1's delete answered ok: its end is kept");
+});
+
+test("a resumed kept desktop is the same interval: no second row, and the run's end ends it", async () => {
+  const one = await server();
+  await (await one.claim(3)).park();
+  one.clock.now = T0 + 60_000;
+  const resumed = await one.claim(5, { hadComputer: async () => true });
+  one.clock.now = T0 + 120_000;
+  await resumed.release();
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.providerId, row.kept, row.endedAt]), [["c1", true, T0 + 120_000]]);
+});
+
+test("an interval that can't be written never fails the claim: it is said on the log, and the computer is the run's as before", async () => {
+  const one = await server();
+  one.store.computerIntervals = memoryIntervals({ fail: true });
+  const said = [];
+  const held = await one.claim(3, { log: (line) => void said.push(line) });
+  assert.equal(held.computer.kind, "desktop");
+  assert.equal(await held.park(), true, "its park keeps it as before");
+  assert.deepEqual(said, ["the computer interval of e2b c1 (run run-1) was not written: the store is down", "the computer interval of e2b c1 was not written: the store is down"]);
+});
+
+// A computer's time on the run's ledger (compute-cost.ts), priced by the operator's per-resource settings: its first
+// stretch held before its create, each stretch booked and the next held, the rest booked when it is let go. The ledger
+// here records each admit and settle; `refuse` refuses a hold (never an owed booking) in the cap's words.
+function ledgerOf({ refuse = () => false } = {}) {
+  const admits = [];
+  const settles = [];
+  const pauses = [];
+  const paid = {
+    async admit(request) {
+      if (!request.owed && refuse(request)) throw Object.assign(new Error("spend_cap_reached: this run's cap of $0.01 has no room for the computer's next stretch"), { code: "spend_cap_reached", forGood: false });
+      admits.push(request);
+      return {};
+    },
+    async settle(id, usd, options) {
+      settles.push([id, usd, options?.givenBack === true]);
+      return usd;
+    },
+  };
+  return { admits, settles, pauses, ledger: { paid, pause: async (refusal) => void pauses.push(refusal) } };
+}
+/** $0.00001 a vCPU-second and $0.000002 a GiB-second on e2b: 2 vCPUs and 4 GiB cost $0.000028 a second, $0.0084 a stretch. */
+const PRICES = { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_E2B: "0.00001", AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_E2B: "0.000002" };
+const SIZED = () => ({ ...SPEC(), cpus: 2, memoryMb: 4096 });
+/** The meter's timer, run by hand: `tick()` runs each stretch's tick once and waits for it. */
+function ticker() {
+  const ticks = new Set();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+  return { every: (tick) => (ticks.add(tick), () => ticks.delete(tick)), settle, tick: async () => { for (const tick of ticks) tick(); await settle(); } };
+}
+const bookings = (admits) => admits.filter((one) => one.owed && !one.hold).map((one) => [one.tag, Math.round(one.holdUsd * 1e9) / 1e9]);
+
+test("a priced computer's first stretch is held before its create; a cap with no room for it makes nothing, in the cap's words", async () => {
+  const one = await server();
+  const { ledger, admits } = ledgerOf({ refuse: () => true });
+  await assert.rejects(one.claim(3, { spec: SIZED, compute: { ledger, env: PRICES } }), /spend_cap_reached: this run's cap of \$0\.01 has no room for the computer's next stretch/);
+  assert.deepEqual(creates(one.account), [], "nothing made, nothing billed");
+  assert.deepEqual(admits, [], "nothing held");
+});
+
+test("a priced computer's time is booked each stretch, the next held; the rest is booked at its delete, its holds given back, and its interval says how much was booked", async () => {
+  const one = await server();
+  const { ledger, admits, settles } = ledgerOf();
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env: PRICES, every: clock.every } });
+  await clock.settle();
+  const holds = () => admits.filter((one) => one.hold).map((one) => [one.holdUsd, one.owed === true]);
+  assert.deepEqual(holds(), [[0.0084, false], [0.0084, true]], "a stretch held before the create, then one owed for the computer made");
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  // 300 s of 2 vCPUs at $0.00001 is $0.006; of 4 GiB at $0.000002, $0.0024.
+  assert.deepEqual(bookings(admits), [["vcpu", 0.006], ["memory", 0.0024]]);
+  assert.ok(admits.filter((one) => one.owed && !one.hold).every((one) => one.tool === "compute" && one.chargedBy === "e2b"));
+  one.clock.now = T0 + 345_000;
+  await held.release();
+  // The last 45 s at its delete: $0.0009 and $0.00036.
+  assert.deepEqual(bookings(admits), [["vcpu", 0.006], ["memory", 0.0024], ["vcpu", 0.0009], ["memory", 0.00036]]);
+  await clock.settle();
+  const holdIds = admits.filter((one) => one.hold).map((one) => one.id);
+  assert.ok(holdIds.every((id) => settles.some(([settled, usd, back]) => settled === id && usd === 0 && back)), `every hold given back: ${JSON.stringify(settles)}`);
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.cpus, row.memoryMb, row.bookedMs, row.endedAt]), [[2, 4096, 345_000, T0 + 345_000]]);
+});
+
+test("a cap with no room for a computer's next stretch pauses the run once, and the time it runs on is still booked, never refused", async () => {
+  const one = await server();
+  let full = false;
+  const { ledger, admits, pauses } = ledgerOf({ refuse: () => full });
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env: PRICES, every: clock.every } });
+  full = true;
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  one.clock.now = T0 + 600_000;
+  await clock.tick();
+  assert.equal(pauses.length, 1, "paused once, in the cap's words");
+  assert.match(pauses[0].refuse, /spend_cap_reached/);
+  assert.equal(pauses[0].forGood, false, "a raise lets it go on");
+  assert.deepEqual(bookings(admits), [["vcpu", 0.006], ["memory", 0.0024], ["vcpu", 0.006], ["memory", 0.0024]], "both stretches booked");
+  await held.release();
+});
+
+test("a computer with no price set is never refused and never held: it runs as before, its time on the usage read alone", async () => {
+  const one = await server();
+  const { ledger, admits } = ledgerOf({ refuse: () => true });
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env: {} } });
+  assert.deepEqual(creates(one.account), ["c1"]);
+  one.clock.now = T0 + 60_000;
+  await held.release();
+  assert.deepEqual(admits, [], "nothing held or booked");
+  assert.deepEqual((await intervalsOf(one)).map((row) => row.bookedMs), [0]);
+});
+
+test("the provider's own figures price the computer where its create said them, over what was asked", async () => {
+  const one = await server();
+  const create = one.account.provider.create.bind(one.account.provider);
+  one.account.provider.create = async (spec) => {
+    const made = await create(spec);
+    return { ok: true, value: { ...made.value, resources: { cpus: 4, memoryMb: 8192, diskGb: 20 } } };
+  };
+  const { ledger, admits } = ledgerOf();
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env: PRICES, every: clock.every } });
+  one.clock.now = T0 + 100_000;
+  await held.release();
+  // 100 s of 4 vCPUs: $0.004; of 8 GiB: $0.0016. Its disk has no price set: unpriced, never booked.
+  assert.deepEqual(bookings(admits), [["vcpu", 0.004], ["memory", 0.0016]]);
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.cpus, row.memoryMb, row.diskGb]), [[4, 8192, 20]]);
+});
+
+test("a computer's next stretch is asked for once the booked one's hold is given back, so a cap with room for it holds it (#3338 review)", async () => {
+  // A cap of $0.02 that counts what is booked and what is still held: a stretch is $0.0084. At the first tick $0.0084 is
+  // booked; with the booked stretch's hold still counted, a next $0.0084 would make $0.0252 and be refused.
+  const one = await server();
+  const live = new Map();
+  let spent = 0;
+  const admits = [];
+  const pauses = [];
+  const paid = {
+    async admit(request) {
+      const held = [...live.values()].reduce((sum, usd) => sum + usd, 0);
+      if (!request.owed && spent + held + request.holdUsd > 0.02 + 1e-12) throw Object.assign(new Error("spend_cap_reached: no room"), { code: "spend_cap_reached", forGood: false });
+      admits.push(request);
+      if (request.hold) live.set(request.id, request.holdUsd);
+      else spent += request.holdUsd;
+      return {};
+    },
+    async settle(id, usd) {
+      live.delete(id);
+      return usd;
+    },
+  };
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger: { paid, pause: async (refusal) => void pauses.push(refusal) }, env: PRICES, every: clock.every } });
+  await clock.settle();
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  assert.deepEqual(pauses, [], "the run is not paused: the cap has room for the next stretch");
+  assert.equal(live.size, 1, "the next stretch is held");
+  assert.ok(Math.abs([...live.values()][0] - 0.0084) < 1e-9);
+  await held.release();
+  await clock.settle();
+  assert.equal(live.size, 0, "every hold given back at its delete");
+});
+
+test("a computer whose resources the operator priced at $0 is booked at $0 each stretch, never held, so its usage reads $0 and not unpriced (#3338 review)", async () => {
+  const one = await server();
+  const { ledger, admits } = ledgerOf({ refuse: () => true });
+  const clock = ticker();
+  const env = { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_E2B: "0", AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_E2B: "0" };
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env, every: clock.every } });
+  assert.deepEqual(creates(one.account), ["c1"], "made, though the cap refuses every hold: nothing is held");
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  one.clock.now = T0 + 345_000;
+  await held.release();
+  assert.deepEqual(admits.filter((one) => one.hold), [], "nothing held");
+  assert.deepEqual(bookings(admits), [["vcpu", 0], ["memory", 0], ["vcpu", 0], ["memory", 0]], "each stretch booked at $0");
+  assert.deepEqual((await intervalsOf(one)).map((row) => row.bookedMs), [345_000], "its time is held by the claim, not unheld");
+});

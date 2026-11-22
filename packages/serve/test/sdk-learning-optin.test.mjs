@@ -8,11 +8,11 @@ import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { runEntries } from "../dist/store-reads/journal.js";
 
 const manifest = { workflow_tools: [{ name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 }] };
-const disabled = { enabled: false, revision: null, context: "", skills: [], workflows: [] };
+const disabled = { enabled: false, revision: null, context: "", workflows: [] };
 const input = { input: "Report release status.", instructions: "Keep the backend policy and tools." };
 
-for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
-  test(`${runtime} omitted and false learning stay Off through completion without a grader`, async (t) => {
+for (const runtime of ["claude-agent-sdk", "codex-sdk", "eve"]) {
+  test(`${runtime} omitted and false learning stay Off through completion without a compile model`, async (t) => {
     const server = await serve(t, { runner: false });
     const { api, store, data } = server;
     for (const learning of [undefined, false]) for (const bridge of [false, true]) await t.test(`${learning === undefined ? "omitted" : "false"}, bridge ${bridge}`, async () => {
@@ -27,9 +27,9 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       const receipt = await sdkRuns.start(entry, { ...input, runtime, ...(bridge ? manifest : {}) }, {
         pinnedOf: async () => ({ revision: entry.revision, version: entry.version }),
         learning: "on",
-        // There is deliberately no gradeModel. Off must not even read a learning seed.
+        // Off must not even read a learning seed.
         seedFor: async () => assert.fail("Off must not read learned context"),
-      }, undefined, async () => assert.fail("Off must not require a grading model"), server.baseUrl);
+      }, undefined, { check: async () => assert.fail("Off must not require a compile model") }, server.baseUrl);
       assert.deepEqual(receipt.learning, disabled);
       const launch = (await store.runs.launch(receipt.run_id)).body;
       assert.equal(launch.learning, undefined);
@@ -41,7 +41,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       let modelCalls = 0;
       const loop = createSdkLoop(launch, { store, data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => {
         modelCalls++;
-        assert.fail("Off must not reflect or grade completed SDK work");
+        assert.fail("Off must not ask a learning turn of completed SDK work");
       })({ journal: () => journal, flush: () => store.flush(), signal: new AbortController().signal });
       assert.deepEqual(await loop.start(claim), { state: "ended" });
       assert.equal(modelCalls, 0);
@@ -49,25 +49,24 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       assert.equal(read.status, "completed");
       assert.equal(read.result.final_answer, "Ready.");
       assert.equal(read.learning, null);
-      assert.equal(await store.runs.get(`${receipt.run_id}-learning`), undefined);
       const entries = await runEntries(store, receipt.run_id, BACKGROUND_CONTEXT);
-      assert.ok(!entries.some(({ kind }) => kind === "agentrun.sdk.reflecting" || kind === "agentrun.end-of-run.turn"));
+      assert.ok(!entries.some(({ kind }) => kind === "agentrun.end-of-run.turn"));
       assert.deepEqual((await getAgent(store, id)).revision.body, before, "starting and completing a run must not alter the saved learning mode");
     });
   });
 
-  test(`${runtime} only enabled workflow learning falls back to notes without a bridge`, async (t) => {
+  test(`${runtime} enabled learning offers learned workflows only with a bridge`, async (t) => {
     const { api, store } = await serve(t, { runner: false });
-    for (const learning of [true, "notes"]) for (const bridge of [false, true]) await t.test(`${learning}, bridge ${bridge}`, async () => {
-      const id = `enabled-${learning}-${bridge}`;
-      assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: input.instructions, sdk: { runtime }, tools: [], learning } })).status, 201);
+    for (const bridge of [false, true]) await t.test(`bridge ${bridge}`, async () => {
+      const id = `enabled-${bridge}`;
+      assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: input.instructions, sdk: { runtime }, tools: [], learning: true } })).status, 201);
       const before = (await getAgent(store, id)).revision.body;
       const started = await api("POST", `/agents/${id}/sdk-runs`, { ...input, runtime, ...(bridge ? manifest : {}) }, { "Idempotency-Key": id });
       assert.equal(started.status, 201, JSON.stringify(started.body));
       assert.equal(started.body.learning.enabled, true);
       const launch = (await store.runs.launch(started.body.run_id)).body;
-      assert.equal(launch.learning.notesOnly, learning === "notes" || !bridge ? true : undefined);
-      assert.deepEqual((await getAgent(store, id)).revision.body, before, "fallback affects this run, not the saved definition");
+      assert.equal(launch.learning.noWorkflows, bridge ? undefined : true, "a run without a bridge can't serve a workflow");
+      assert.deepEqual((await getAgent(store, id)).revision.body, before, "the run's start leaves the saved definition as it was");
     });
   });
 }

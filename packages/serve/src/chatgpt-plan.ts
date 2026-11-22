@@ -14,13 +14,15 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { inspect } from "node:util";
 import { CredentialUnavailable } from "@parcha/agentrun-kernel/host";
 import { holdSecret } from "./secrets.js";
-import { registerSecretWrite } from "./secret-writes.js";
+import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
 import { putSealedKey } from "./server-keys.js";
+import { held } from "./runner/held.js";
 import { type SealedKeys, sealColumn, sealedAt, type Settings, STORE_WRITE_DEADLINE_MS, unsealColumn } from "./store/index.js";
 
 // Every operation of the sign-in is the owner's session's alone (secret-writes.ts), the token in none of them: its view
 // holds no token, but a pending sign-in's link is the owner's to open.
 for (const operation of ["getChatGPTSignIn", "startChatGPTSignIn", "finishChatGPTSignIn", "signOutChatGPT"]) registerSecretWrite(operation, () => true);
+registerSecretPage(["getChatGPTSignIn", "startChatGPTSignIn", "finishChatGPTSignIn", "signOutChatGPT"], "/#/settings/keys");
 
 /** The sealed row that holds the sign-in. */
 export const CHATGPT_PLAN_ROW = "chatgpt:plan";
@@ -562,7 +564,8 @@ export async function planBeforeRun(env: NodeJS.ProcessEnv, model: { provider: s
 
 /** A runner's reader of the plan over its store, loaded now: none when the server holds no sign-in. */
 export async function planReaderOf(store: ChatGPTPlanDeps["store"], sealKey: Buffer | undefined): Promise<PlanReader | undefined> {
-  if (!sealKey) return undefined;
+  // A run's own process holds no seal key: its runner's reader, for a claim whose models reach the plan (held.ts).
+  if (!sealKey) return held()?.plan();
   const plan = await new ChatGPTPlan({ store, sealKey }).load();
   return plan.state === "signed_out" ? undefined : plan;
 }

@@ -89,9 +89,22 @@ func (s *server) start() *httptest.Server {
 			}
 		})(w, req)
 	})
-	srv := httptest.NewServer(refuse)
+	srv := httptest.NewServer(ours(refuse))
 	s.t.Cleanup(srv.Close)
 	return srv
+}
+
+// ours answers a request for / with 404 and hands every other to h. No client under test asks for /, but a port watcher
+// on the machine running the tests may GET / on each new loopback listener, and a test server that counts or records
+// what it was sent must not take that for the client's.
+func ours(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/" {
+			http.NotFound(w, req)
+			return
+		}
+		h.ServeHTTP(w, req)
+	})
 }
 
 // refuse is a socket refused at the upgrade with status.
@@ -168,7 +181,7 @@ func TestADialRedialAndRefusalNeverLogTheToken(t *testing.T) {
 			t.Errorf("the log says no %q: %s", want, log)
 		}
 	}
-	if strings.Contains(log, testToken) || strings.Contains(log, strings.Repeat("0", 64)) {
+	if strings.Contains(log, testToken[len("art_"):]) {
 		t.Fatalf("the log holds the token: %s", log)
 	}
 }
@@ -263,6 +276,8 @@ func TestTheRedialDelayDoublesToAMinuteLessUpToAFifth(t *testing.T) {
 }
 
 func TestFromEnvRefusesAMissingOrMalformedURLOrTokenWithoutSayingIt(t *testing.T) {
+	// No token file: an empty AGENTRUN_ATTACH_TOKEN finds none to read.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, tc := range [][2]string{
 		{"", testToken},
 		{"https://agentrun.example.com/v2/computers/attach", testToken},
@@ -271,6 +286,9 @@ func TestFromEnvRefusesAMissingOrMalformedURLOrTokenWithoutSayingIt(t *testing.T
 		{"wss://agentrun.example.com", testToken},
 		{"wss://agentrun.example.com/v2/computers/attach", ""},
 		{"wss://agentrun.example.com/v2/computers/attach", "art_" + strings.Repeat("A", 64)},
+		// 32 bytes in hex: no machine token. A server minted one for a hosted machine before tokens had one shape, and
+		// that machine runs the computerd its server served then.
+		{"wss://agentrun.example.com/v2/computers/attach", "art_" + strings.Repeat("0f", 32)},
 		{"wss://agentrun.example.com/v2/computers/attach", testToken + "\r\nX-Other: 1"},
 	} {
 		t.Setenv(URLEnv, tc[0])

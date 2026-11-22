@@ -15,7 +15,7 @@ import WebSocket from "ws";
 import { serve, storeBytes } from "./support.mjs";
 import { attachDriver, DRIVER_HELLO } from "./fixtures/attach-driver.mjs";
 
-const { ATTACH_PATH, ATTACH_SUBPROTOCOL } = await import("@parcha/agentrun-computer");
+const { ATTACH_PATH, ATTACH_SUBPROTOCOL, MACHINE_TOKEN_SOURCE } = await import("@parcha/agentrun-computer");
 const { DAEMON_FETCHES_PER_MINUTE } = await import("../dist/computer-attach.js");
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -54,9 +54,9 @@ test("a minted token: kept as its SHA-256, it dials the attach socket as its mac
   assert.equal(server.dial.hub, server.attachHub, "a dial provider's machines land in the server's hub");
   assert.equal(server.dial.url, undefined, "with no public URL, no address to dial: a dial provider's create refuses");
   const token = await server.dial.tokens.mint("computer-00000000000a", { ...MINT, expiresAt: inMs(60_000) });
-  assert.match(token, /^art_[0-9a-f]{64}$/, "art_ and 32 random bytes in hex");
+  assert.match(token, new RegExp(`^${MACHINE_TOKEN_SOURCE}$`), "art_ and 32 random bytes in base64url");
   const row = await server.store.mintedTokens.get("computer-00000000000a");
-  assert.deepEqual({ ...row, createdAt: typeof row.createdAt }, { machine: "computer-00000000000a", ...MINT, expiresAt: row.expiresAt, revokedAt: null, createdAt: "number" });
+  assert.deepEqual({ ...row, createdAt: typeof row.createdAt }, { machine: "computer-00000000000a", ...MINT, expiresAt: row.expiresAt, revokedAt: null, createdAt: "number", runner: null, incarnation: null, run: null, refused: null }, "the server's own process minted it: no runner on its row, this mint named no run, and no dial of it was refused");
   const db = new DatabaseSync(join(server.data, "store.sqlite"), { readOnly: true });
   t.after(() => db.close());
   assert.equal(db.prepare("SELECT token_sha256 FROM minted_tokens WHERE machine = ?").get("computer-00000000000a").token_sha256, sha256(token), "the store keeps the SHA-256");
@@ -111,6 +111,18 @@ test("a minted token: kept as its SHA-256, it dials the attach socket as its mac
   assert.match(logged, /machine_token_revoked/);
 });
 
+test("a hosted machine minted before tokens had one shape (art_ and 64 hex) keeps its socket and its daemon fetch after the upgrade, until its delete: the server checks a token by its SHA-256 alone", async (t) => {
+  const server = await serve(t, { runner: false });
+  // The row an earlier server wrote for its hex token, as the store keeps it across the upgrade.
+  const hex = `art_${"0f".repeat(32)}`;
+  await server.store.mintedTokens.mint({ machine: "computer-0000000000b1", tokenSha256: sha256(hex), ...MINT, expiresAt: inMs(60_000).getTime() });
+  assert.deepEqual(await dial(server, hex), { open: true }, "its machine still dials the attach socket");
+  assert.equal((await fetchDaemon(server, hex, "x86")).status, 422, "and the daemon route takes its token (x86 is no arch it serves)");
+  await server.dial.tokens.revoke("computer-0000000000b1");
+  assert.deepEqual(await dial(server, hex), { open: false, status: 401 }, "its delete ends it, as any token's");
+  assert.equal((await fetchDaemon(server, hex, "x86")).status, 401);
+});
+
 test("an API-only server takes a run's hosted machine on the attach socket and the daemon route, and a paired computer's token (the console's) as unknown", async (t) => {
   const server = await serve(t, { apiOnly: true, runner: false });
   const token = await server.dial.tokens.mint("computer-0000000000a1", { ...MINT, expiresAt: inMs(60_000) });
@@ -121,7 +133,7 @@ test("an API-only server takes a run's hosted machine on the attach socket and t
   assert.equal((await fetchDaemon(server, token, "x86")).status, 422, "the daemon route is served, and takes the token");
   assert.equal((await fetchDaemon(server, UNKNOWN)).status, 401);
 
-  const pairedToken = `art_${"1".repeat(64)}`;
+  const pairedToken = `art_${"B".repeat(43)}`;
   await server.store.pairedComputers.addCode("pairing-api-only", sha256("code"), Date.now() + 60_000);
   assert.equal(await server.store.pairedComputers.pair(sha256("code"), { id: "cmp-apionly", name: "laptop", hello: DRIVER_HELLO, labels: {}, tokenSha256: sha256(pairedToken) }), true);
   assert.deepEqual(await dial(server, pairedToken), { open: false, status: 401 }, "a paired computer is the console's");

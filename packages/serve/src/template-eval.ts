@@ -3,7 +3,7 @@
 // Everything goes through the v2 API alone, on an in-process server over a temp data directory by default (an eval never
 // touches the owner's server) or on one named by its address and token. Per case: a fake MCP server per `mcp` fixture,
 // saved under its name with no credential and recording every call; the package applied with the case's parameters and
-// grants, a fresh agent per run, its learning seeded from the case's notes; one run per `runs` with the prompt's body as
+// grants, a fresh agent per run, its learning seeded from the case's corrections; one run per `runs` with the prompt's body as
 // its input and the case's cap, on the case's clock when it sets one (`now`), waited for; then its answer, its tool calls (its timeline read with calls=whole, each
 // call's arguments and its output's head through the run's redaction, and the fakes' own logs) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
 // the server's own verdict). Every grader is deterministic but `llm`, which is itself a run on the same
@@ -16,8 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument } from "yaml";
 import { answerJson, lastJsonBlock } from "./answer-json.js";
-import { checkNote } from "./learn/index.js";
-import { NOTE_FILE } from "./learn/notes.js";
+import { correctionsProblems } from "./learn/index.js";
 import { linkCheck } from "./link-check.js";
 import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
@@ -26,15 +25,20 @@ import type { EvalFakes } from "./runner/adapter-run-spec.js";
 import { type EvalClock, evalClock, type Layout, LAYOUTS, type MailboxAfter, type MailboxFixture, mailboxAfter, mailboxFixtureOf, type MailboxRecord, mailboxText, mailboxVerdict, seed, seededFaux, type Snapshot, snapshot } from "./eval-mailbox.js";
 import type { EmailFaux } from "./email/email-faux.js";
 import { type CaseFeeds, caseFeeds, type FeedFixture, feedFixtureOf } from "./eval-feed.js";
+import { HANDED_KINDS, handedPrevious, handedVerdict, type PreviousFixture, previousFixtureOf, type Seeded, seedPrevious } from "./eval-previous.js";
+import type { PreviousHandover } from "./trigger-targets.js";
+import type { Store } from "./store/index.js";
 import { EMAIL_TOOLS } from "./email/names.js";
 import { CALENDAR_EVENTS } from "./calendar/names.js";
 import type { IcsFaux } from "./calendar/ics-faux.js";
 import type { MonidFake } from "./runner/monid-run.js";
-import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
+import { nameMapOf, settingsKeyOf, shellToolOf } from "./tool-gate.js";
+import { builtinHarness } from "./harness-table.js";
 import { webShownOf } from "./timeline/index.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { type WebFake, webFixtureOf } from "./web-fake.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
+import { WEB_SAVE_TOOL } from "./web-save.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { dayIn, serverZone } from "./environment.js";
 import { instantOf } from "./trigger-adapter.js";
@@ -71,13 +75,14 @@ export const ON_DATA_WITH_SERVER = "--on-data is the data folder of the eval's o
 
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
-const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed"];
+const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
   tool_used: ["type", "tool", "tools", "expect", "count", "at_least", "args"],
   file_exists: ["type", "path"],
   mailbox: ["type", "message_id", "in", "not_in"],
+  handed: ["type", "expect", "dropped"],
 };
 /** A target: a field of the answer's JSON, dotted for a nested one. */
 const TARGET = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
@@ -88,7 +93,7 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule each fake MCP server li
 const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule a server on this machine reaches the fakes
 
 /** A case's fields that the eval's own runner alone binds (EvalFakes), each with what it does: a named server refuses them. */
-const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"]];
+const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed" | "previous", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"], ["previous", "previous seeds the case's earlier runs in the server's store"]];
 
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
@@ -99,6 +104,7 @@ export type Grader = (
   | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; atLeast?: number; args?: Json }
   | { file: string; type: "file_exists"; path: string }
   | { file: string; type: "mailbox"; messageId: string; in?: string; notIn: string[] }
+  | { file: string; type: "handed"; expect: PreviousHandover["kind"]; dropped?: Record<string, number> }
 ) & {
   /** An email case's layouts this grader grades the runs of; absent, every run. */
   layouts?: Layout[];
@@ -132,8 +138,8 @@ export type EvalCase = {
   /** How the case's runs' monid endpoints answer in place of monid (runner/monid-run.ts): `unavailable`, as monid
    *  unreachable does, never sent. The eval's own server's runner alone binds it. Absent: monid. */
   monid?: MonidFake;
-  /** The notes a run's agent starts with (not MEMORY.md, which the server builds from them). */
-  learning: { file: string; text: string }[];
+  /** The owner's corrections a run's agent starts with (its corrections.md, whole). Absent: none. */
+  learning?: string;
   graders: Grader[];
   /** The case's clock (`now:`, an RFC 3339 date-time with its offset, as written): each run's current date and time,
    *  which the eval's own runner alone sets, and its llm graders are told. Absent: the real clock. */
@@ -148,6 +154,9 @@ export type EvalCase = {
   /** The case's fake feed (eval-feed.ts): each run gets fake feeds served from it, read in place of the URLs the
    *  package's feed trigger names, and is started by that trigger as it would be. */
   feed?: FeedFixture;
+  /** The case's previous runs (eval-previous.ts): each run's agent gets them seeded as completed runs of the package's
+   *  schedule trigger, which then starts the run as it would, handing it the last one's result. */
+  previous?: PreviousFixture;
 };
 
 /** Cases that do not check: every problem, each naming its file. */
@@ -301,13 +310,22 @@ function graderOfType(p: Package, file: string, text: string, bad: (message: str
       if (data.in === undefined && !notIn.length) return bad(`${file}: a mailbox grader says where the message is (in) or is not (not_in)`), undefined;
       return { file, type, messageId: data.message_id, ...(typeof data.in === "string" ? { in: data.in } : {}), notIn: notIn as string[] };
     }
+    case "handed": {
+      // What a previous case's run was handed after its message (eval-previous.ts handedPrevious): its kind, and for carried
+      // fields how many first entries each carried array gave up.
+      if (!(HANDED_KINDS as readonly unknown[]).includes(data.expect)) return bad(`${file}: expect is ${HANDED_KINDS.slice(0, -1).join(", ")} or ${HANDED_KINDS.at(-1)}`), undefined;
+      const dropped = data.dropped;
+      if (dropped !== undefined && !(isObject(dropped) && Object.values(dropped).every((n) => Number.isSafeInteger(n) && (n as number) >= 0))) return bad(`${file}: dropped is a mapping of a carried array's field to how many of its first entries were dropped, 0 or more`), undefined;
+      if (dropped !== undefined && data.expect !== "carried") return bad(`${file}: dropped counts a carried array's entries, and expect is ${String(data.expect)}, not carried`), undefined;
+      return { file, type, expect: data.expect as PreviousHandover["kind"], ...(isObject(dropped) ? { dropped: dropped as Record<string, number> } : {}) };
+    }
   }
   return undefined;
 }
 
 /** The package in `dir`, checked as the server checks it, and its eval cases (all, or those `names` lists), each read and
  *  checked whole: the prompt, case.yaml against the package (an apply's parameters and grants), each fake MCP server's
- *  fixture, each learned note as the learning API checks one, and each grader's fields. Nothing runs. PackageError or
+ *  fixture, its corrections as the learning API checks them, and each grader's fields. Nothing runs. PackageError or
  *  CaseError with every problem found. */
 export function readCases(dir: string, names?: readonly string[]): { pkg: Package; cases: EvalCase[] } {
   // The cases are read below, each fixture checked there in the case's own words (a CaseError), not by the package read.
@@ -335,8 +353,8 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     const spec = lstatSync(join(root, "case.yaml"), { throwIfNoEntry: false })?.isFile() ? yamlOf(readFileSync(join(root, "case.yaml"), "utf8")) : {};
     const c = typeof spec === "string" ? (bad(`${at}/case.yaml: ${spec}`), {}) : isObject(spec) ? spec : (bad(`${at}/case.yaml: is not a mapping`), {});
     for (const field of unknown(c, CASE_FIELDS)) bad(`${at}/case.yaml: no field ${field}: its fields are ${CASE_FIELDS.join(", ")}`);
-    // An email case's run is on its trigger's input, and its prompt gives none (`email` below holds it to that).
-    if (c.email === undefined && c.feed === undefined) for (const issue of inputIssues(runInput(body, fields), inputSchemaOf(pkg.inputSchema))) bad(`${at}/prompt.md: ${issue.message}`);
+    // An email, feed or previous case's run is on its trigger's input, and its prompt gives none (each holds it to that).
+    if (c.email === undefined && c.feed === undefined && c.previous === undefined) for (const issue of inputIssues(runInput(body, fields), inputSchemaOf(pkg.inputSchema))) bad(`${at}/prompt.md: ${issue.message}`);
     if (c.parameters !== undefined && !isObject(c.parameters)) bad(`${at}/case.yaml: parameters is a mapping, the apply's parameters`);
     if (c.grants !== undefined && !(Array.isArray(c.grants) && c.grants.every((g) => typeof g === "string"))) bad(`${at}/case.yaml: grants is a list of gate names (mcp:<server>/<tool>)`);
     if (c.now !== undefined && instantOf(c.now) === undefined) bad(`${at}/case.yaml: now is a date and time with its offset (2026-11-14T09:00:00Z), not ${JSON.stringify(c.now)}`);
@@ -374,7 +392,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     if (c.web !== undefined) {
       const path = c.web === "unavailable" ? undefined : inside(root, c.web, "file");
       // Only a package that names a web tool has one: one that names no tools gets its computer's shell tools, or none.
-      if (!pkg.tools?.includes(WEB_SEARCH_TOOL) && !pkg.tools?.includes(WEB_FETCH_TOOL)) bad(`${at}/case.yaml: web fakes web_search and web_fetch, and the package's tools name neither`);
+      if (![WEB_SEARCH_TOOL, WEB_FETCH_TOOL, WEB_SAVE_TOOL].some((tool) => pkg.tools?.includes(tool))) bad(`${at}/case.yaml: web fakes web_search, web_fetch and web_save, and the package's tools name none of them`);
       else if (c.web === "unavailable") web = "unavailable";
       else if (!path) bad(`${at}/case.yaml: web is unavailable, or a fixture file in the case (not ${JSON.stringify(c.web)})`);
       else {
@@ -459,24 +477,40 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       // Its run is the trigger's, on the trigger's input and cap: the prompt gives neither.
       if (body || fields || f.max_cost_usd !== undefined) bad(`${at}/prompt.md: a feed case's run is started by the package's trigger, on the trigger's input and cap: its prompt.md holds description and runs alone`);
     }
-    const learning: EvalCase["learning"] = [];
-    if (c.learning !== undefined) {
-      const folder = inside(root, c.learning, "dir");
-      if (!folder) bad(`${at}/case.yaml: learning names ${JSON.stringify(c.learning)}, not a folder in the case`);
+    // The case's previous runs: its fixture, and the package's schedule trigger its runs start from (eval-previous.ts).
+    let previous: PreviousFixture | undefined;
+    if (c.previous !== undefined) {
+      const path = inside(root, c.previous, "file");
+      let parsed: unknown;
+      if (c.email !== undefined || c.feed !== undefined) bad(`${at}/case.yaml: a previous case's run is started by the package's schedule trigger: previous goes with neither email nor feed`);
+      if (!path) bad(`${at}/case.yaml: previous is a previous-runs fixture file in the case (not ${JSON.stringify(c.previous)})`);
       else {
-        for (const entry of readdirSync(join(root, folder), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
-          if (entry.name === "MEMORY.md") continue;
-          const path = `${at}/${folder}/${entry.name}`;
-          if (!entry.isFile() || !NOTE_FILE.test(entry.name)) {
-            bad(`${path}: a learning folder holds MEMORY.md and notes (<name>.md) only`);
-            continue;
-          }
-          const bytes = readFileSync(join(root, folder, entry.name));
-          const checked = checkNote(entry.name, bytes);
-          if (!checked.note) for (const problem of checked.problems) bad(`${path}: ${problem.detail}`);
-          learning.push({ file: entry.name, text: bytes.toString("utf8") });
+        try {
+          parsed = JSON.parse(readFileSync(join(root, path), "utf8"));
+        } catch (error) {
+          bad(`${at}/${path}: is not JSON (${(error as Error).message})`);
         }
-        if (!learning.length) bad(`${at}/${folder}: holds no note`);
+      }
+      const fixture = parsed === undefined ? undefined : previousFixtureOf(parsed, `${at}/${path}`, pkg.outputSchema, bad);
+      const kindOf = (t: Json) => (isObject(t.source) ? t.source.kind : undefined);
+      const named = fixture?.trigger === undefined ? undefined : pkg.triggers.find((t) => t.name === fixture.trigger);
+      const starts = named ? [named] : pkg.triggers.filter((t) => kindOf(t) === "schedule");
+      if (!fixture) undefined;
+      else if (fixture.trigger !== undefined && !named) bad(`${at}/${path}: trigger ${fixture.trigger} is not one of the package's triggers (${pkg.triggers.map((t) => String(t.name)).join(", ") || "none"})`);
+      else if (starts.length !== 1 || kindOf(starts[0]!) !== "schedule") bad(`${at}/${path}: a previous case starts its run through the package's schedule trigger, and ${named ? `${fixture.trigger} is a ${String(kindOf(named))} trigger` : starts.length ? `the package has ${starts.length}: name one with trigger` : "the package has none"}`);
+      else previous = { ...fixture, trigger: String(starts[0]!.name) };
+      // Its run is the trigger's, on the trigger's input and cap: the prompt gives neither.
+      if (body || fields || f.max_cost_usd !== undefined) bad(`${at}/prompt.md: a previous case's run is started by the package's schedule trigger, on the trigger's input and cap: its prompt.md holds description and runs alone`);
+    }
+    let learning: string | undefined;
+    if (c.learning !== undefined) {
+      const file = inside(root, c.learning, "file");
+      if (!file) bad(`${at}/case.yaml: learning names ${JSON.stringify(c.learning)}, not a file in the case`);
+      else {
+        // The owner's corrections as the learning API takes them (PUT .../learning/corrections): one file, within its cap.
+        learning = readFileSync(join(root, file), "utf8");
+        for (const problem of correctionsProblems(learning)) bad(`${at}/${file}: ${problem.detail}`);
+        if (!learning.trim()) bad(`${at}/${file}: holds no correction`);
       }
     }
     const graders: Grader[] = [];
@@ -485,6 +519,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       const grader = graderOf(pkg, `${at}/graders/${entry.name}`, readFileSync(join(root, "graders", entry.name), "utf8"), bad);
       const unrun = grader?.layouts?.filter((layout) => email && !email.layouts.includes(layout)) ?? [];
       if (grader?.type === "mailbox" && c.email === undefined) bad(`${at}/graders/${entry.name}: a mailbox grader reads the case's fake mailbox, and the case has no email`);
+      else if (grader?.type === "handed" && c.previous === undefined) bad(`${at}/graders/${entry.name}: a handed grader reads what a previous case's run was handed, and the case has no previous`);
       else if (grader?.layouts && c.email === undefined) bad(`${at}/graders/${entry.name}: layouts grades the runs of an email case's layouts, and the case has no email`);
       else if (unrun.length) bad(`${at}/graders/${entry.name}: layouts names ${unrun.join(", ")}, which the case's fixture does not run on (${email!.layouts.join(", ")})`);
       else if (grader) graders.push({ ...grader, file: entry.name });
@@ -493,7 +528,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
       ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
-      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), learning, graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}),
+      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), ...(learning !== undefined ? { learning } : {}), graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}), ...(previous ? { previous } : {}),
     });
   }
   if (problems.length) throw new CaseError(dir, problems);
@@ -519,6 +554,8 @@ export type RunRecord = {
   now?: string;
   /** Its fake mailbox after it, for a case with `email` (eval-mailbox.ts). */
   mailbox?: MailboxRecord;
+  /** What it was handed of its trigger's last result after its message, for a case with `previous` (eval-previous.ts). */
+  handed?: PreviousHandover;
 };
 export type Verdict = { pass: boolean; reason: string; cost_usd?: number | null; run_id?: string };
 
@@ -643,6 +680,8 @@ export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run
     }
     case "mailbox":
       return run.mailbox ? mailboxVerdict(run.mailbox, grader.messageId, grader.in, grader.notIn) : { pass: false, reason: "the run has no fake mailbox to read" };
+    case "handed":
+      return handedVerdict(run.handed, grader.expect, grader.dropped);
   }
 }
 
@@ -916,10 +955,12 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
  *  its output's head as the rows of a calls=whole read carry them (tool_input, tool_result_text), else its previews. */
 export function callsOf(rows: readonly Json[], harness: string, toolkits: Readonly<Record<string, string>> = {}): ToolCall[] {
   const results = new Map(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id).map((row) => [String(row.tool_use_id), row]));
+  // The rows are a server's, read over its API: the names are the built-in harness's, the only facts known here.
+  const names = nameMapOf(harness, builtinHarness(harness)?.facts);
   return rows.filter((row) => row.kind === "tool_use" && typeof row.tool_name === "string").map((row) => {
     const name = row.tool_name as string;
     const result = results.get(String(row.tool_use_id));
-    const key = settingsKeyOf(harness, name);
+    const key = settingsKeyOf(harness, name, names);
     const output = typeof result?.tool_result_text === "string" ? result.tool_result_text : ((result?.tool_result_preview as string | undefined) ?? null);
     return { tool: shellToolOf(name) ?? (key === undefined ? undefined : onServerName(key, toolkits)) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, ...(isObject(row.tool_input) ? { arguments: row.tool_input } : {}), status: (result?.tool_status as string | undefined) ?? null, result: output };
   });
@@ -1008,7 +1049,7 @@ type Made = { agents: string[]; runs: Set<string>; triggers: Set<string> };
 /** `fakes`: each run's fakes by its agent's id, read by the eval's own runner (runner/beside.ts evalFakes). `clock`: the
  *  eval's own server's trigger clock, for a package with an email case (a run starts as its trigger's); `owner`, the
  *  headers of that server's console session, which saves and removes its email account (a secret write). */
-type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; fakes: Map<string, EvalFakes>; clock?: EvalClock; owner?: Record<string, string>; feedRoutes?: FeedRoutes };
+type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; fakes: Map<string, EvalFakes>; clock?: EvalClock; owner?: Record<string, string>; feedRoutes?: FeedRoutes; store?: () => Promise<Store> };
 /** The running feed case's route to its fake feeds (eval-feed.ts CaseFeeds), which the eval's own server reads through. */
 type FeedRoutes = { route?: (url: string) => string | undefined };
 export type GraderResult = { grader: string; type: string; pass: boolean; reason: string; cost_usd: number | null; run_id?: string };
@@ -1018,8 +1059,9 @@ export type GraderResult = { grader: string; type: string; pass: boolean; reason
 export type RunMetrics = { input: number; cache_read: number; cache_write: number; output: number; requests: number; unmetered: number; tool_calls: number; tools: Record<string, { calls: number; errors: number }> };
 /** `answer`, `calls`, `mcp_calls`, `created_at`, `ended_at` and `metrics`: what the run left, kept in the report so a caller scores the
  *  run itself after the eval's temp server is gone (a hill climb's parser and judge, say). An email case's run carries
- *  its fake mailbox's `layout` and what it left there (`mailbox_after`). */
-export type RunResult = { run: number; agent_id: string | null; run_id: string | null; status: string; pass: boolean; error?: string; cost_usd: number | null; graders: GraderResult[]; answer?: string; calls?: ToolCall[]; mcp_calls?: ToolCall[]; created_at?: string | null; ended_at?: string | null; metrics?: RunMetrics | null; layout?: Layout; mailbox_after?: MailboxAfter };
+ *  its fake mailbox's `layout` and what it left there (`mailbox_after`); a previous case's run, what it was handed of its
+ *  trigger's last result (`handed_previous`). */
+export type RunResult = { run: number; agent_id: string | null; run_id: string | null; status: string; pass: boolean; error?: string; cost_usd: number | null; graders: GraderResult[]; answer?: string; calls?: ToolCall[]; mcp_calls?: ToolCall[]; created_at?: string | null; ended_at?: string | null; metrics?: RunMetrics | null; layout?: Layout; mailbox_after?: MailboxAfter; handed_previous?: PreviousHandover };
 export type CaseResult = { name: string; description: string; pass: boolean; runs: RunResult[]; error?: string; cost_usd: number };
 export type Report = {
   package: { name: string; version: string; dir: string };
@@ -1055,7 +1097,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   if (refused.length) throw new CaseError(options.dir, refused);
   // Each run's fakes, by the agent the eval made for it (runOnce), which the runner beside the server reads at the claim.
   const fakes = new Map<string, EvalFakes>();
-  const clock = !options.server && cases.some((one) => one.email || one.feed) ? evalClock() : undefined;
+  const clock = !options.server && cases.some((one) => one.email || one.feed || one.previous) ? evalClock() : undefined;
   // Where the eval's own server reads each feed: the running feed case's fakes (feedRun). A feed no case routes (a feed
   // trigger of the package's that the eval deletes once the apply made it, read at its creation) is served nowhere: its
   // read is unreachable at once, never sent, so no eval reads a real feed.
@@ -1078,7 +1120,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
       const work = await workOf(options.data).catch((error: unknown) => (removeTree(scratch!), Promise.reject(error)));
       if (work) {
         removeTree(scratch!);
-        throw new Error(`the server on ${options.data} has work of its own: ${work}, which the eval's server and runner would take up: disable its triggers and let its runs and learning batches end (or stop them), then run the eval; or run it without --on-data`);
+        throw new Error(`the server on ${options.data} has work of its own: ${work}, which the eval's server and runner would take up: disable its triggers and let its runs end (or stop them), then run the eval; or run it without --on-data`);
       }
     }
     const { startServe } = await import("./server.js");
@@ -1131,7 +1173,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     }
     // On the owner's folder, an email case's fake mailbox would replace the account its server keeps (one account, saved
     // and removed per run): refused before anything runs, the account as it was.
-    if (clock && options.data !== undefined) {
+    // Only an email case saves a mailbox: a previous or feed case on the clock leaves the account alone.
+    if (cases.some((one) => one.email) && options.data !== undefined) {
       const kept = await api("GET", "/settings/email", undefined, owner).catch(() => undefined);
       const address = kept?.status === 200 && isObject(kept.body) ? kept.body.address : undefined;
       if (typeof address === "string" || kept?.status !== 200) {
@@ -1159,8 +1202,12 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const results: CaseResult[] = [];
   let grader: string | undefined;
   const made: Made = { agents: [], runs: new Set(), triggers: new Set() };
+  // A previous case's earlier runs are written in the eval's own server's store (eval-previous.ts seedPrevious), opened
+  // beside the server as its runner opens it, once, when the first such run seeds.
+  let opened: Promise<Store> | undefined;
+  const store = data !== undefined && cases.some((one) => one.previous) ? () => (opened ??= import("./store/open.js").then(({ openStore }) => openStore({ dataDir: data, role: "runner" }))) : undefined;
   const ctx: Ctx = {
-    api, pkg, options, made, log, fakes, feedRoutes, ...(clock ? { clock } : {}), ...(owner ? { owner } : {}),
+    api, pkg, options, made, log, fakes, feedRoutes, ...(clock ? { clock } : {}), ...(owner ? { owner } : {}), ...(store ? { store } : {}),
     graderAgent: async () => {
       if (grader) return grader;
       // No computer: a grader reads, it never runs a command, and a server with no sandbox would fail its run at the start.
@@ -1182,6 +1229,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     await cleanUp(api, made);
     // On an owner's server, what the eval made goes to the archive (an archived agent and its runs stay readable).
     if (options.server || options.data !== undefined) for (const id of made.agents) await api("POST", `/agents/${encodeURIComponent(id)}/archive`, {}).catch(() => undefined);
+    await opened?.then((one) => one.close(), () => undefined);
     await close();
     if (scratch) removeTree(scratch);
   }
@@ -1282,15 +1330,11 @@ async function workOf(data: string): Promise<string | undefined> {
   const store = await openStore({ dataDir: data, role: "server" });
   try {
     const triggers = (await store.triggers.all()).filter((one) => one.enabled && !one.disabled).length;
-    // The runs not ended a list shows, and every run a runner would claim: the list leaves out built-in learning runs
-    // (a kept learning's), which the eval's runner claims as any other.
+    // The runs not ended a list shows, and every run a runner would claim.
     const runs = new Set<string>();
     for (const state of ["queued", "running", "parked"] as const) for (const run of await store.runs.list({ state })) runs.add(run.id);
     for (const id of await store.runs.claimable()) runs.add(id);
-    // A learning batch still running, which the eval's server would resume at its start (learning-batch.ts resume), its
-    // next rows' runs with it.
-    const batches = (await store.settings.all()).filter(({ key, value }) => /^learning_batch\/lb_[0-9a-f]{16}$/.test(key) && isObject(value) && value.status === "running").length;
-    const said = [triggers ? `${triggers} enabled trigger${triggers === 1 ? "" : "s"}` : "", runs.size ? `${runs.size} run${runs.size === 1 ? "" : "s"} not ended` : "", batches ? `${batches} learning batch${batches === 1 ? "" : "es"} running` : ""].filter(Boolean);
+    const said = [triggers ? `${triggers} enabled trigger${triggers === 1 ? "" : "s"}` : "", runs.size ? `${runs.size} run${runs.size === 1 ? "" : "s"} not ended` : ""].filter(Boolean);
     return said.length ? said.join(", ") : undefined;
   } finally {
     await store.close();
@@ -1380,7 +1424,7 @@ async function triggerRun(ctx: Ctx, name: string, agentId: string, triggerId: st
   }
 }
 
-/** One run of a case: a fresh agent (so one run's learning never reaches the next), its notes, the run, its grades. An
+/** One run of a case: a fresh agent (so one run's learning never reaches the next), its corrections, the run, its grades. An
  *  email case's run (`mail`) is its trigger's (triggerRun). */
 async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], mail?: MailOf, feeds?: CaseFeeds): Promise<RunResult> {
   const { api, pkg, options, made } = ctx;
@@ -1393,8 +1437,8 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // every run. Left where the run before took it, a schedule's next time is a later day each run, with no mail of the case.
   // A millisecond before it: a schedule's next time is strictly after the clock, so a case whose `now` is the schedule's
   // own time (an evening digest's 18:00) fires for that time, not the next day's.
-  // An email or feed case's run is its one trigger's (readCases chose it): `via`, that trigger's name.
-  const via = mail ? one.email!.trigger : feeds ? one.feed!.trigger : undefined;
+  // An email, feed or previous case's run is its one trigger's (readCases chose it): `via`, that trigger's name.
+  const via = mail ? one.email!.trigger : feeds ? one.feed!.trigger : one.previous?.trigger;
   if (via !== undefined && one.now !== undefined) ctx.clock?.set(instantOf(one.now)! - 1);
   // Approvals never, for the eval's own agent only: a run that stopped at its first ask would measure nothing. The
   // package's default (ask, say, for a template whose tools cost money) is the owner's at install, and stays as it is;
@@ -1406,9 +1450,9 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // their own, into the fakes' logs, and outlive the eval. Each one the apply made is deleted at once.
   // An email or feed case's run is its one trigger's: that one stays, until the run is read.
   let kept: string | undefined;
-  for (const id of Array.isArray(applied.trigger_ids) ? (applied.trigger_ids as unknown[]).map(String) : []) {
-    if (via !== undefined && !kept && expectOk(`reading the package's trigger ${id}`, await api("GET", `/triggers/${encodeURIComponent(id)}`)).name === via) kept = id;
-    else made.triggers.add(id);
+  for (const one of Array.isArray(applied.triggers) ? (applied.triggers as { trigger_id: string; name: string }[]) : []) {
+    if (via !== undefined && !kept && one.name === via) kept = one.trigger_id;
+    else made.triggers.add(one.trigger_id);
   }
   await deleteTriggers(api, made, true);
   if (via !== undefined && !kept) throw new ApiFailure(`the apply made no trigger named ${via}`);
@@ -1418,8 +1462,10 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const used = Object.fromEntries(Object.entries(isObject(applied.servers) ? applied.servers : {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   await sameAsLocal(ctx, one, agent, used);
   stopped();
-  for (const note of one.learning) {
-    expectOk(`seeding the note ${note.file}`, await api("PUT", `/agents/${encodeURIComponent(agentId)}/learning/files/${encodeURIComponent(note.file)}`, note.text, { "if-none-match": "*" }));
+  if (one.learning !== undefined) {
+    const corrections = `/agents/${encodeURIComponent(agentId)}/learning/corrections`;
+    const read = expectOk("reading the agent's corrections", await api("GET", corrections));
+    expectOk("seeding the agent's corrections", await api("PUT", corrections, { text: one.learning }, { "if-match": String(read.etag) }));
   }
   stopped();
   // The case's fakes, for this run's agent alone, before its run can be claimed.
@@ -1440,6 +1486,15 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
         before = snapshot(mail.faux);
       }, fixture.message ? " (its accept rules may leave the case's message)" : "");
       fired = { mailbox: () => mailboxAfter(mail.faux, mail.layout, before!) };
+    } else if (one.previous) {
+      // The case's earlier results, each a completed run of this agent that a firing of the trigger started, ended before
+      // the clock's time, so the trigger's own firing hands the run the last one's (trigger-targets.ts previousResultOf).
+      if (!ctx.store || !ctx.clock) throw new ApiFailure("a previous case's earlier runs are seeded in the eval's own server's store, and this eval has none");
+      const trigger = expectOk(`reading the package's trigger ${via}`, await api("GET", `/triggers/${encodeURIComponent(kept)}`));
+      const target = isObject(trigger.target) && isObject(trigger.target.input) ? trigger.target.input : {};
+      const previous = await seedPrevious(await ctx.store(), one.previous, { agentId, triggerId: kept, content: typeof target.content === "string" ? target.content : "", before: ctx.clock.now() });
+      runId = await triggerRun(ctx, via, agentId, kept, () => undefined, "");
+      fired = { previous };
     } else {
       runId = await triggerRun(ctx, via, agentId, kept, () => feeds!.deliver(), " (its accept rules may leave the case's item)");
       fired = {};
@@ -1459,8 +1514,18 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   }
 }
 
-/** A run its trigger started (an email or feed case's): `mailbox`, an email run's fake mailbox, read once it has ended. */
-type Fired = { mailbox?: () => Promise<MailboxRecord> };
+/** A run its trigger started (an email, feed or previous case's): `mailbox`, an email run's fake mailbox, read once it has
+ *  ended; `previous`, a previous case's earlier runs as seeded, what its input is read against. */
+type Fired = { mailbox?: () => Promise<MailboxRecord>; previous?: readonly Seeded[] };
+
+/** What a previous case's run, its input content `content`, was handed of the last result `seeded`: that run read back as
+ *  the trigger reads it (its result.output and end, GET /runs/{id}), handed over as the trigger hands it (handedPrevious). */
+async function handedOf(api: Api, content: string, seeded: readonly Seeded[]): Promise<PreviousHandover> {
+  const last = seeded.at(-1)!;
+  const read = expectOk(`reading the seeded run ${last.runId}`, await api("GET", `/runs/${last.runId}`));
+  const output = isObject(read.result) ? (read.result.output ?? null) : null;
+  return handedPrevious(content, last, { output, endedAt: typeof read.ended_at === "string" ? read.ended_at : null });
+}
 
 /** The started run `runId` of `agentId` waited on, read and graded; its calls on the saved servers `used` gave its needs
  *  ({toolkit: server}) named on the package's toolkits; a run its trigger started (`fired`) graded on the input it was
@@ -1475,6 +1540,7 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // Its metrics once it has ended (a cancelled run's end writes them too), before the eval's server can go.
   const metrics = await metricsOf(api, agentId, options.signal);
   const mailbox = fired?.mailbox ? await fired.mailbox() : undefined;
+  const handed = fired?.previous ? await handedOf(api, isObject(view.input) && typeof view.input.content === "string" ? view.input.content : "", fired.previous) : undefined;
   stopped();
   const result = isObject(view.result) ? view.result : {};
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
@@ -1489,9 +1555,10 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     })(),
     ...(one.now !== undefined ? { now: one.now } : {}),
     ...(mailbox ? { mailbox } : {}),
+    ...(handed ? { handed } : {}),
   };
   stopped();
-  const base = { run: n, agent_id: agentId, run_id: runId, status: ended.status, cost_usd: costOf(view), answer: record.answer, calls: record.calls, mcp_calls: record.mcpCalls, created_at: typeof view.created_at === "string" ? view.created_at : null, ended_at: typeof view.ended_at === "string" ? view.ended_at : null, metrics, ...(mailbox ? { mailbox_after: mailbox.after } : {}) };
+  const base = { run: n, agent_id: agentId, run_id: runId, status: ended.status, cost_usd: costOf(view), answer: record.answer, calls: record.calls, mcp_calls: record.mcpCalls, created_at: typeof view.created_at === "string" ? view.created_at : null, ended_at: typeof view.ended_at === "string" ? view.ended_at : null, metrics, ...(mailbox ? { mailbox_after: mailbox.after } : {}), ...(handed ? { handed_previous: handed } : {}) };
   // The grader's task: the input the run was given, an email or feed run's its trigger's (the payload in its tag).
   const task = fired ? inputMessage(view.input ?? {}) : inputMessage(runInput(one.input, one.fields));
   // Waiting on its person's answer (an ask_person question, a tool call's approval) is where such a run stops, and is

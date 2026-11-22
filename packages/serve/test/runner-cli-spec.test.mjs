@@ -5,6 +5,7 @@
 // on its Workspace, its gate the store's tool settings. Every harness here is a stand-in on loopback: no network, no key.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
@@ -45,7 +46,7 @@ const until = async (done, what, ms = 30_000) => {
   for (;;) {
     const value = await done();
     if (value) return value;
-    if (Date.now() > end) throw new Error(`not within ${ms} ms: ${what}`);
+    if (Date.now() > end) throw new Error(`not within ${ms} ms: ${typeof what === "function" ? what() : what}`);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 };
@@ -135,7 +136,7 @@ async function runOn(t, { harness, model, env: envOf, prepare, launch: more = {}
  *  over that disk fake, Archil's control plane the fake as a fetch function (`control`: no port, every request recorded). `env`: more of the
  *  runner's environment; `model`: the launch's model; `crashed`: a first claim died with its folder in place (deadClaim);
  *  `body`: more of the revision's body. */
-async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-6.1-sol" }, prepare, deps: given = {}, crashed = false, body = {} } = {}) {
+async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-6.1-sol" }, prepare, deps: given = {}, crashed = false, body = {}, launch: moreLaunch = {}, skills } = {}) {
   const control = archil ? archilControlFetch() : undefined;
   // A second net: in Mode 2, any fetch to a host other than this machine's loopback is refused and recorded (`outbound`).
   const outbound = [];
@@ -164,8 +165,8 @@ async function specOn(t, harness, { archil, env: more = {}, model = { provider: 
     rmSync(dir, { recursive: true, force: true });
   });
   await prepare?.(dir);
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read", "write", "bash"], ...body } });
-  const launch = { input: { content: "Write a file." }, title: "t", place: { mode: "runner" }, harness, model };
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read", "write", "bash"], ...body }, ...(skills ? { skills } : {}) });
+  const launch = { input: { content: "Write a file." }, title: "t", place: { mode: "runner" }, harness, model, ...moreLaunch };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   // Mode 2: the server's Archil settings row, and its account key sealed under the runner's seal key, as the server saves
   // them. No disk token is kept: a computer's mount credential is minted per run from the account key.
@@ -345,8 +346,16 @@ test("a CLI run whose runner died mid-claim: the dead claim's folder is swept an
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
   assert.ok(row.epoch > dead.epoch, `the run was claimed again after the dead claim (epoch ${dead.epoch} → ${row.epoch})`);
   const scratch = scratchFolder(dir, "agent-1", RUN);
-  const left = () => (existsSync(scratch) ? readdirSync(scratch, { recursive: true }).join(", ") : "nothing");
-  await until(() => !existsSync(scratch), `the run's scratch folder swept at its end; left: ${left()}`, 10_000);
+  // What is left, read only if the wait fails: the folder is being removed while the wait starts, so a read then can
+  // meet a directory already gone (ENOENT), and what it saw then is not what was left at the end.
+  const left = () => {
+    try {
+      return existsSync(scratch) ? readdirSync(scratch, { recursive: true }).join(", ") : "nothing";
+    } catch (error) {
+      return `nothing it could read (${error.code})`;
+    }
+  };
+  await until(() => !existsSync(scratch), () => `the run's scratch folder swept at its end; left: ${left()}`, 10_000);
 });
 
 // A claim's start sweeps what earlier claims of its run left (a killed runner's): its own folder and another run's stay.
@@ -495,9 +504,39 @@ test("Mode 2 (the server's Archil settings saved): the CLI still works in the ru
   assert.equal(ran.isError, false, ran.text);
   assert.ok(disk.calls.some((one) => one.op === "exec"), "bash ran as the disk's exec");
   assert.equal(Buffer.from(disk.files.get(`${runKey("agent-1", RUN)}/y.txt`) ?? "").toString("utf8"), "hi");
-  // No computer: the run's mount credential is never minted, so Archil's control plane hears nothing, from build to end.
+  // No computer: the run's mount credential is never minted, so Archil's control plane hears only the claim's read of its
+  // disk (run-disk.ts), from build to end.
   await built.release();
   // Every request the claim made: the fake is a function only the claim holds, so nothing else on this machine reaches it.
-  assert.deepEqual(control.requests, [], "no request at all: no list, no mint, no remove");
+  assert.deepEqual(control.requests.map((one) => `${one.method} ${one.path}`), [`GET /api/disks/${ARCHIL_SETTINGS.diskId}`], "the disk read once; no list, no mint, no remove");
   assert.deepEqual(outbound, [], "and nothing left this machine");
+});
+
+for (const harness of ["codex", "claude-agent"]) test(`a moved ${harness} claim discovers skills from the full seeded workspace and preserves task deletions`, async t => {
+  const binding = { id: "a".repeat(64), snapshot: "b".repeat(64), project: "b".repeat(64), configuration: "c".repeat(64) };
+  const marker = JSON.stringify({ version: 1, digest: binding.project, phase: "complete" });
+  const sourceProject = { version: 1, sourceId: binding.id, baselineRevision: "rev-1", digest: binding.project, receipt: createHash("sha256").update(marker).digest("hex") };
+  const authored = "---\nname: check\ndescription: Read the binary reference and execute its authored script.\n---\nUse assets/reference.bin and scripts/check.sh.\n";
+  const { sourceRunControlFolder } = await import("../dist/workspace/paths.js");
+  const { spec: built, dir } = await specOn(t, harness, { body: { sourceSync: binding, skills: { "check/SKILL.md": "ignored hash", "removed/SKILL.md": "ignored hash" } },
+    skills: { "check/SKILL.md": authored, "removed/SKILL.md": "Removed by the previous turn." }, launch: { sourceProject },
+    ...(harness === "claude-agent" ? { model: { provider: "anthropic", modelId: "claude-haiku-5-5" }, env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` } } : {}),
+    prepare: async data => {
+      await linkHarnesses(data);
+      const control = sourceRunControlFolder(data, "agent-1", RUN); mkdirSync(control, { recursive: true }); writeFileSync(join(control, "source-seed.json"), marker);
+      const skill = join(runFolder(data, "agent-1", RUN), ".agents", "skills", "check");
+      mkdirSync(join(skill, "assets"), { recursive: true }); mkdirSync(join(skill, "scripts"));
+      writeFileSync(join(skill, "SKILL.md"), authored); writeFileSync(join(skill, "assets", "reference.bin"), Buffer.from([0, 255, 128]));
+      writeFileSync(join(skill, "scripts", "check.sh"), "#!/bin/sh\nprintf checked\n", { mode: 0o755 });
+    } });
+  assert.match(built.session.system.join("\n"), /\.agents\/skills\/check\/SKILL\.md/);
+  assert.equal(existsSync(join(runFolder(dir, "agent-1", RUN), ".agents", "skills", "removed")), false, "claim must not resurrect a deleted authored skill");
+  assert.deepEqual(readFileSync(join(runFolder(dir, "agent-1", RUN), ".agents", "skills", "check", "assets", "reference.bin")), Buffer.from([0, 255, 128]));
+});
+
+test("a moved claim without its private completion receipt refuses before writing run inputs", async t => {
+  let data;
+  const binding = { id: "a".repeat(64), snapshot: "b".repeat(64), project: "b".repeat(64), configuration: "c".repeat(64) };
+  await assert.rejects(specOn(t, "codex", { body: { sourceSync: binding }, prepare: async dir => { data = dir; await linkHarnesses(dir); } }), /project.*placement|completion.*receipt/i);
+  assert.equal(existsSync(join(runFolder(data, "agent-1", RUN), "inputs", "message.md")), false);
 });

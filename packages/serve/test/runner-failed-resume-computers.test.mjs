@@ -174,6 +174,11 @@ test("a resumed claim whose image fails (its computer never started): the lost r
   assert.deepEqual(run.docker.made.map((one) => one.epoch), ["1"], "the later claim made none");
   assert.deepEqual(end.left, [], "no sandbox of the run is left when its end is said");
   assert.ok(run.logged.some((line) => line.includes("an earlier claim left on docker, c1")), `said: ${JSON.stringify(run.logged)}`);
+  // Its interval, in the store: opened by runner a's claim, ended by the run's end's delete (computer-intervals.ts).
+  const [interval, ...more] = await run.server.computerIntervals.forRun(RUN);
+  assert.deepEqual(more, []);
+  assert.deepEqual([interval.provider, interval.providerId, interval.kind, interval.kept], ["docker", "c1", "sandbox", false]);
+  assert.ok(interval.endedAt !== null && interval.endedAt >= interval.startedAt, `ended once its delete answered ok: ${JSON.stringify(interval)}`);
 });
 
 test("a resumed claim whose computer is refused here (computer_unavailable, before anything is made): the lost runner's sandbox is let go", { timeout: 120_000 }, async (t) => {
@@ -254,4 +259,6 @@ test("a run whose only claim ends it lets its own sandbox go at its end, and the
   assert.deepEqual(run.docker.made.map((one) => one.epoch), ["1"]);
   assert.deepEqual(end.left, []);
   assert.deepEqual(run.logged, []);
+  // The claim's own release ended its interval.
+  assert.deepEqual((await run.server.computerIntervals.forRun(RUN)).map((one) => [one.providerId, one.endedAt !== null]), [["c1", true]]);
 });

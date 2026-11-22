@@ -2,7 +2,7 @@
 // the disk (a flush at FULL, or a write behind another process's lock) waits here, never on the event loop the runner's
 // loops share. WAL with synchronous=NORMAL: a commit is durable against a process crash at once, and against a lost box
 // only after the next FULL commit (flush). Every write starts BEGIN IMMEDIATE, so a write never upgrades a read lock and
-// deadlocks another writer; busy_timeout covers another process's write in flight. Foreign keys are on.
+// deadlocks another writer; busy_timeout covers another process's write in flight. Foreign keys and secure_delete are on.
 //
 // The messages (connection.ts sends them one at a time, in order):
 //   open {file, busyTimeoutMs, owner}     the connection and its pragmas; `owner` also takes the store's owner lock (one
@@ -18,7 +18,11 @@
 //                                         an interactive transaction (connection.ts transaction()), its statements sent
 //                                         as stmt, or as step (one statement, its changes and rows, its `expect` checked)
 //                                         in between
+//   checkpoint {busyMs}                   a WAL checkpoint (TRUNCATE) that waits `busyMs` at most for another connection's
+//                                         reader or writer, not the connection's own busy wait: the requests queued behind
+//                                         it never wait on it longer. Its result row (busy, log, checkpointed)
 //   close
+import { chmodSync, closeSync, openSync } from "node:fs";
 import { parentPort } from "node:worker_threads";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { inMemory } from "./memory.js";
@@ -39,7 +43,10 @@ export type Request =
   | { op: "step"; statement: Statement }
   | { op: "commit" }
   | { op: "rollback" }
+  | { op: "checkpoint"; busyMs: number }
   | { op: "close" };
+/** A WAL checkpoint's result: whether another connection held it back (`busy` 1), the log's frames, and those copied. */
+export type CheckpointResult = { busy: number; log: number; checkpointed: number };
 /** An error as the worker reports it: busy (the lock outlasted busy_timeout), constraint, miss (an expectation), owned
  *  (another server holds the store), closed, or sql (anything else). */
 export type WorkerError =
@@ -183,16 +190,40 @@ function takeOwnerLock(file: string): void {
   owner = lock;
 }
 
+/** The store's files, the server's alone (0600) whatever the umask: a run's process, a user of its own that may cross the
+ *  data directory to its folders, opens none of them. The file is made 0600 before SQLite opens it, and SQLite makes its
+ *  WAL and shared-memory files with the database file's mode; each one already there is set again (a store an earlier
+ *  start made 0644). A file this process does not own (a runner's on the server's store) is left as it is. */
+function keepPrivate(file: string, made: boolean): void {
+  if (inMemory(file)) return;
+  if (made) {
+    try {
+      closeSync(openSync(file, "a", 0o600));
+    } catch {}
+  }
+  for (const each of [file, `${file}-wal`, `${file}-shm`, `${file}.owner`, `${file}.owner-journal`]) {
+    try {
+      chmodSync(each, 0o600);
+    } catch {}
+  }
+}
+
 function handle(request: Request): unknown {
   switch (request.op) {
     case "open": {
+      if (request.owner) keepPrivate(request.file, true);
       if (request.owner) takeOwnerLock(request.file);
       db = new DatabaseSync(request.file);
       busyTimeout = Math.max(0, Math.floor(request.busyTimeoutMs));
       db.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
       db.exec("PRAGMA journal_mode = WAL");
+      if (request.owner) keepPrivate(request.file, false);
       db.exec(NORMAL);
       db.exec("PRAGMA foreign_keys = ON");
+      // Every byte a write of this connection frees (a deleted row, an overwritten value, a freed page) is zeroed in the
+      // page it writes, so a purge (or any delete) leaves no copy in the file's free space once the WAL is checkpointed
+      // (sqlite/store.ts #purged). Per connection: the server's and each runner's, every one that writes, set here.
+      db.exec("PRAGMA secure_delete = ON");
       return null;
     }
     case "exec":
@@ -229,6 +260,15 @@ function handle(request: Request): unknown {
     case "rollback":
       if (inTx) end(false);
       return null;
+    case "checkpoint": {
+      const conn = opened();
+      conn.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(request.busyMs))}`);
+      try {
+        return conn.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() ?? null;
+      } finally {
+        conn.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
+      }
+    }
     case "close": {
       if (inTx) end(false);
       db?.close();

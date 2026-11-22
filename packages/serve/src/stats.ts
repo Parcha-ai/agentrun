@@ -33,7 +33,8 @@ export function statsView(stats: StoreStats, statusOf: (id: string) => Status | 
     agents: stats.agents,
     runs: { total: stats.runs.total, active: running.active, needs_input: running.needs_input, failed: stats.runs.failed + ends.filter((end) => end === "failed").length, needs_review: stats.runs.escalated, status_unknown: running.status_unknown },
     per_agent: stats.byAgent.map((a) => ({ agent_id: a.id, name: a.name, runs: a.runs })),
-    cost: { usd, basis: usd === null ? null : "estimate", unknown_runs: stats.cost.unknown - ends.length },
+    // How the summed costs were reached (metrics.ts CostBasis), null while no cost is known.
+    cost: { usd, basis: usd === null ? null : stats.cost.basis, unknown_runs: stats.cost.unknown - ends.length },
     archived: { agents: stats.archivedAgents, runs: stats.archivedRuns },
   };
 }
@@ -77,7 +78,7 @@ export function analyticsFilter(url: URL): AnalyticsFilter {
 }
 
 /** A group's counts: an escalated run is completed, and needs review; never failed. */
-const group = (g: AnalyticsGroup) => ({ runs: g.runs, completed: g.completed, needs_review: g.needsReview, failed: g.failed, runs_with_metrics: g.runsWithMetrics, tokens: g.tokens, cost_usd: round(g.costUsd), unknown_cost_runs: g.unknownCostRuns });
+const group = (g: AnalyticsGroup) => ({ runs: g.runs, completed: g.completed, needs_review: g.needsReview, failed: g.failed, runs_with_metrics: g.runsWithMetrics, runs_with_token_metrics: g.runsWithTokenMetrics, tokens: g.tokens, cost_usd: round(g.costUsd), unknown_cost_runs: g.unknownCostRuns });
 
 export function analyticsView(a: StoreAnalytics, filter: AnalyticsFilter) {
   const t = a.totals;

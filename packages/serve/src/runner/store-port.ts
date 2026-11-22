@@ -12,6 +12,12 @@ export type RunnerStore = Pick<Store, "claim" | "renew" | "renewMany" | "release
   /** The server's settings, for the one the runner removes at a run's end (browser-wait-ended.ts). A store without it (a
    *  test's) keeps none. */
   readonly settings?: Store["settings"];
+  /** Every runner's word that it is there (runner/presence.ts): the runner keeps its own for as long as it runs. A store
+   *  without it (a test's) keeps none. */
+  readonly runners?: Store["runners"];
+  /** Each claim's turn and attempt: the runner says a claim it lost was cut by its lease's lapse. A store without it (a
+   *  test's) keeps none. */
+  readonly runAttempts?: Pick<Store["runAttempts"], "lapsed">;
 };
 
 /** The store's fence: a write under an epoch that moved. */

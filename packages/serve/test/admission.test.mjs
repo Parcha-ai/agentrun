@@ -13,6 +13,7 @@ import * as table from "../dist/harness-table.js";
 import * as host from "../dist/host.js";
 import { agent, follow, scratch, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+import { installGoose, needsGoose } from "./fixtures/goose-installed.mjs";
 
 const MiB = 2 ** 20;
 // Read as names, not bindings: a build without them fails each test on its own, not the file at its import.
@@ -52,6 +53,15 @@ test("the memory math: what runs may hold is the host's memory less the server's
   assert.equal(neverFits("codex", 300 * MiB), "This server has 300 MB of memory and keeps 128 MB for itself; a codex run needs about 192 MB more, so it can't start here. pi runs fit.");
 });
 
+test("the memory words name Goose among the runs that fit only once it is installed: not before", { skip: needsGoose }, async (t) => {
+  const { DATA_ENV } = await import("../dist/files.js");
+  const bare = { [DATA_ENV]: join(await scratch(t), "agents") };
+  assert.match(neverFits("claude-agent", 384 * MiB, bare), / pi and codex runs fit\.$/, "not installed: not named");
+  const installed = { [DATA_ENV]: installGoose(join(await scratch(t), "agents")) };
+  // 384 MB keeps 256 for runs: one Goose run (256) fits, as one codex run (192) does.
+  assert.match(neverFits("claude-agent", 384 * MiB, installed), / pi, codex and goose runs fit\.$/);
+});
+
 test("an opencode run reserves its own measured size, 704 MB, not the largest: 1 GB holds one, 2 GB two and 512 MB none, said in words", () => {
   assert.equal(RUN_MIB.opencode, 704, "measured (opencode's facts)");
   assert.equal(host.runMibOf("opencode"), 704);
@@ -80,7 +90,11 @@ test("a 384 MB server: claude-agent is unavailable with why in capabilities, its
   // The details hold the contract's blocked shape (openapi.ts): nothing unbound, nothing missing, and the harness.
   assert.deepEqual([refused.status, refused.body.error.code, refused.body.error.message, refused.body.error.details], [409, "agent_not_runnable", why, { unbound: [], missing: {}, harness: "claude-agent" }], JSON.stringify(refused.body));
   assert.equal(refused.headers.get("retry-after"), null);
+  // The agent's read says the same before anyone presses Run: the run's own check, its message and fields.
+  const read = (await api("GET", "/agents/big")).body;
+  assert.deepEqual([read.run_blockers?.message, read.run_blockers?.fields.map((f) => f.field)], [why, ["definition.harness"]], JSON.stringify(read.run_blockers));
   assert.equal((await api("POST", "/agents", agent("small"))).status, 201);
+  assert.equal((await api("GET", "/agents/small")).body.run_blockers, null, "an agent that runs here reads no blockers");
   const run = await api("POST", "/agents/small/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"]);

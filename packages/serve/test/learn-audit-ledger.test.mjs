@@ -1,5 +1,5 @@
-// The shadow audit (runner/audit.ts, learn/audit.ts): a run its promoted learned workflow serves first (answered alone or
-// handed back) is drawn for an audit at 1/k, a seeded choice that is a function of the run's id alone (k is the agent
+// The shadow audit (runner/audit.ts, learn/audit.ts): a run its promoted learned workflow answered alone (path `workflow`;
+// never one it handed back) is drawn for an audit at 1/k, a seeded choice that is a function of the run's id alone (k is the agent
 // definition's `learning.audit_every`, 10 by default). A drawn run starts a shadow run at its end: the same agent on the
 // same input with learning off, marked as the audit of that run (its launch's `audit`, its record's path `audit`), billed
 // to the agent as learning cost, capped at what the served run's cap left (none left: no shadow, a `skipped` row). A
@@ -104,8 +104,8 @@ const FINAL = ["ended", "failed", "stopped"];
  *  workflow's node submits `submit(requestText)` ({answer: 42, sure: true} by default); the agent answers AGENT_SAYS; a
  *  first compile ask is answered with BROKEN_DRAFT, and a revision ask is refused. `says(body)`: the agent's answer to a
  *  request instead (undefined: AGENT_SAYS); `call(body)`: a tool call the agent makes instead of answering; `tools` and
- *  `toolSettings`: the agent's (none by default). */
-async function world(t, { learning, prior = 0, submit, paused = false, env = {}, priced, says, call, tools = [], toolSettings } = {}) {
+ *  `toolSettings`: the agent's (none by default); `outputSchema`: its definition's output_schema (none by default). */
+async function world(t, { learning, prior = 0, submit, paused = false, env = {}, priced, says, call, tools = [], toolSettings, outputSchema } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-ledger-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -125,7 +125,7 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
     rmSync(dir, { recursive: true, force: true });
   });
   // No tool that can write (learn/audit.ts auditWriterOf): an agent the audit may run a second time.
-  await server.agents.create({ id: "agent-1", name: "Audited" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools, learning, ...(toolSettings ? { toolSettings } : {}) } });
+  await server.agents.create({ id: "agent-1", name: "Audited" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools, learning, ...(toolSettings ? { toolSettings } : {}), ...(outputSchema ? { outputSchema } : {}) } });
   // `priced`: what each request costs, in order (the route's price is the booking's figure), else its tokens at the price.
   const price = (model, usage) => (priced ? priced(model, usage) : ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6);
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
@@ -534,6 +534,28 @@ test("(r2) the served count reads past the shadows: audit_every 1 over 1,100 ser
   assert.equal((await lastRunsOf(store, "agent-1", 2_000, servedAt)).length, 1_100, "the served count's read");
 });
 
+test("a run before the agent's learning reset, or on a named disk, starts no audit at its end (a reopened one included): drawn at 1 in 1, no shadow is made", async (t) => {
+  const { startAudit } = await import("../dist/runner/audit.js");
+  const learning = { audit_every: 1 };
+  const launch = { input: { content: "Next?" }, title: "Next", place: { mode: "runner" }, learning: startAt("0".repeat(40)) };
+  const serve = { name: "answer", digest: DIGEST };
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-reset-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const servedRow = (id, startedAt, disk = null) => ({ id, agentId: "agent-1", state: "ended", runner: null, archivedAt: null, importedFrom: null, outcome: "completed", startedAt, disk, metrics: { path: "workflow", workflow: "answer", workflow_digest: DIGEST } });
+  const endOf = async (row, resetAt) => {
+    const { store, made, rows } = servedStore(3, learning, DIGEST);
+    rows.unshift(row);
+    store.settings.get = async (key) => (resetAt !== undefined && key === "learning.reset-at.agent-1" ? { at: resetAt } : undefined);
+    store.runs.seededBefore = async () => [];
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId: row.id, launch }, serve);
+    return made;
+  };
+  // The reset at 10,000 leaves no served run before it counted, so the rate is 1 in 1.
+  assert.deepEqual(await endOf(servedRow("after", 20_000), 10_000), ["audit.after"], "a run after the reset is drawn and its shadow made");
+  assert.deepEqual(await endOf(servedRow("before", 5_000), 10_000), [], "a run before the reset starts none");
+  assert.deepEqual(await endOf(servedRow("named", 20_000, "disk-b")), [], "a run on a named disk starts none");
+});
+
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64QkBm): the shadow's cap is what its served run's cap left, read at the served
 // run's end, so the two never spend past it; less than a run's smallest cap left starts no shadow.
 test("(r4) a shadow's cap is the served run's cap less what it spent: served cap $1.00, spent $0.30, the shadow's cap is $0.70", { timeout: 240_000 }, async (t) => {
@@ -573,6 +595,82 @@ test("(r4) a shadow that stops on its cap is `parked`: no verdict, never counted
   assert.equal(after.metrics?.path, "agent", `held on the uncapped disagreement: ${JSON.stringify(after.metrics)}`);
   const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
   assert.deepEqual([held.decided, held.audit.disagreements.map((one) => one.served)], ["hold", ["wide-1"]], JSON.stringify(held));
+});
+
+// learning.agree_on: the audit compares the served answer and its shadow's on the paths that say the decision, as the
+// check does (learn/promote.ts sameAnswer; nested paths are pinned in learn-agree-on.test.mjs: this workflow's answer is
+// its Answer schema's {answer, sure}, nothing beside them). The agent (so each shadow) answers as a real model does,
+// prose then a fenced json block with a rationale the workflow's answer never repeats: no disagreement on agree_on, a
+// declared field that differs still holds.
+const SHADOW_SAYS = `Six sevens.\n\n\`\`\`json\n${JSON.stringify({ answer: 42, sure: true, why: "six times seven is forty-two" })}\n\`\`\``;
+test("(agree_on) a served answer that differs from its shadow's only in its rationale is no disagreement on answer and sure; a declared field that differs holds", { timeout: 300_000 }, async (t) => {
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1, agree_on: ["answer", "sure"] }, says: () => SHADOW_SAYS, submit: (text) => (text.includes("Wrong question") ? WRONG : { answer: 42, sure: true }) });
+  const served = await w.start("same-1", "What is six times seven");
+  assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
+  const next = await w.start("same-next", "What is seven times six");
+  assert.equal(next.metrics?.path, "workflow", `not held: ${JSON.stringify(next.metrics)}`);
+  const row = (await w.audits()).find((one) => one.run === "same-1");
+  assert.equal(row?.agreed, true, JSON.stringify(row));
+  assert.equal((await promotionsOf(w.server.settings, "agent-1")).at(-1).decided, "promote");
+  await w.start("wrong-1", "Wrong question one");
+  const after = await w.start("wrong-next", "Question 98");
+  assert.equal(after.metrics?.path, "agent", `held on the declared field: ${JSON.stringify(after.metrics)}`);
+  assert.equal((await w.audits()).find((one) => one.run === "wrong-1")?.agreed, false);
+});
+
+// Review on #3182 (PRRT_kwDOUmdVMs64_0mJ): a revision read that fails while an audit is settled is no "no agree_on": the
+// row is not written (the audits are settled at a later claim), never compared on the whole answer and written as a
+// disagreement for good. The read fails only for the audit's agree_on (the rest of the run reads its revision as ever).
+test("(agree_on) a revision read that fails while the audit is settled leaves its row for a later claim, never a whole-answer disagreement", { timeout: 300_000 }, async (t) => {
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1, agree_on: ["answer", "sure"] }, says: () => SHADOW_SAYS, submit: () => ({ answer: 42, sure: true }) });
+  const revision = w.store.agents.revision.bind(w.store.agents);
+  let failing = false;
+  w.store.agents.revision = (id) => (failing && /agreeOnOfRevision/.test(new Error().stack ?? "") ? Promise.reject(new Error("the store is busy")) : revision(id));
+  const served = await w.start("same-1", "What is six times seven");
+  assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
+  failing = true;
+  const next = await w.start("same-next", "What is seven times six");
+  assert.equal(next.metrics?.path, "workflow", `not held on a failed read: ${JSON.stringify(next.metrics)}`);
+  assert.equal((await w.audits()).find((one) => one.run === "same-1"), undefined, "no row while the read fails");
+  assert.ok(w.logs.some((line) => line.includes("the audits were not settled") && line.includes("the store is busy")), w.logs.join("\n"));
+  failing = false;
+  const later = await w.start("same-later", "What is seven times six again");
+  assert.equal(later.metrics?.path, "workflow", `not held: ${JSON.stringify(later.metrics)}`);
+  assert.equal((await w.audits()).find((one) => one.run === "same-1")?.agreed, true, "settled at the later claim on agree_on");
+});
+
+// Review on #3182 (PRRT_kwDOUmdVMs65A5Eo): the check's side of the same rule. A revision read that fails when a new
+// revision's check starts saves no bar (a bar with no agree_on would compare the whole answer for the check's life): the
+// agent takes that run, and the next claim starts the check on the definition's agree_on.
+test("(agree_on) a revision read that fails when a check starts saves no check: the agent takes the run, the next claim checks on agree_on", { timeout: 300_000 }, async (t) => {
+  const w = await world(t, { prior: 3, learning: { compile_after: 3, agree_on: ["answer", "sure"] }, says: () => SHADOW_SAYS, submit: () => ({ answer: 42, sure: true }) });
+  const revision = w.store.agents.revision.bind(w.store.agents);
+  let failing = false;
+  w.store.agents.revision = (id) => (failing && /loopOfRevision/.test(new Error().stack ?? "") ? Promise.reject(new Error("the store is busy")) : revision(id));
+  await landRevision(w.dir, answerFlow(REVISED), "prior-2");
+  failing = true;
+  const first = await w.start("run-a", "Question 50");
+  assert.equal((await promotionsOf(w.server.settings, "agent-1")).find((one) => one.digest === DIGEST_2), undefined, "no check saved while the read fails");
+  // promotionGate's catch: a promotion that could not be read leaves the run to its agent.
+  assert.equal(first.metrics?.path, "agent", JSON.stringify(first.metrics));
+  assert.ok(w.logs.some((line) => line.includes("could not be read") && line.includes("the store is busy")), w.logs.join("\n"));
+  failing = false;
+  await w.start("run-b", "Question 51");
+  const checking = (await promotionsOf(w.server.settings, "agent-1")).find((one) => one.digest === DIGEST_2 && one.decided === "replaying");
+  assert.deepEqual(checking?.check?.agree_on, ["answer", "sure"], JSON.stringify(checking));
+  await w.replaysEnded(3);
+});
+
+// No agree_on: the whole answer, whatever the output schema says (no field is picked from it: a schema's enum can be an
+// echo of the owner's setting, not the decision). The same rationale-only difference is a disagreement, and it holds.
+test("(agree_on) with an output schema of enum and boolean fields and no agree_on, the audit compares the whole answer: a rationale-only difference disagrees", { timeout: 300_000 }, async (t) => {
+  const outputSchema = { type: "object", properties: { answer: { enum: [41, 42] }, sure: { type: "boolean" }, why: { type: "string" } } };
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, outputSchema, says: () => SHADOW_SAYS, submit: () => ({ answer: 42, sure: true }) });
+  const served = await w.start("same-1", "What is six times seven");
+  assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
+  const next = await w.start("same-next", "What is seven times six");
+  assert.equal(next.metrics?.path, "agent", `held on the whole answer: ${JSON.stringify(next.metrics)}`);
+  assert.equal((await w.audits()).find((one) => one.run === "same-1")?.agreed, false);
 });
 
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64SUUv): a shadow never waits on a person. Its agent only reads (web_fetch, a
@@ -703,4 +801,14 @@ test("(r4) a served run's all-in is unknown while its shadow is queued or runnin
   }
   assert.deepEqual(await allInOf(storeWith({ id: "audit.served-1", state: "ended", costUsd: 0.25 }), served), { cost_usd: 0.2, learning_usd: 0.25, total_usd: 0.45 });
   assert.deepEqual(await allInOf(storeWith(undefined), served), { cost_usd: 0.2, learning_usd: 0, total_usd: 0.2 }, "never drawn: nothing beside it");
+});
+
+test('a moved project refuses an auxiliary audit before starting a shadow and preserves its learning configuration', async t => {
+  const { startAudit } = await import('../dist/runner/audit.js');
+  const learning = { audit_every: 1 }, f = servedStore(0, learning, DIGEST), logs = [];
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'moved-audit-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const launch = { input: { content: 'Work.' }, title: 'Work', place: { mode: 'runner' }, learning: startAt('0'.repeat(40)), sourceProject: { version: 1, sourceId: 'a'.repeat(64), baselineRevision: 'rev-1', digest: 'b'.repeat(64), receipt: 'c'.repeat(64) } };
+  await startAudit({ store: f.store, agentId: 'agent-1', revisionId: 'rev-1', context: {}, folder: () => learningWorkspace({ mode: 'local', data: dir, agentId: 'agent-1' }), shown: async () => ({ text: text => text }), log: line => logs.push(line), runId: 'source-run', launch }, { name: 'answer', digest: DIGEST });
+  assert.deepEqual(f.made, []); assert.match(logs.join('\n'), /project placement/i);
+  assert.deepEqual((await f.store.agents.revision('rev-1')).body.learning, learning);
 });

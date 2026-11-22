@@ -16,7 +16,7 @@ const base: TemplateView = {
   id: "notes/daily", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   name: "notes/daily", display_name: "Daily notes", version: "1.0.0", description: "Writes the day's notes.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,
-  computer: null, computer_here: null, checkout: null, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
+  computer: null, needs: null, computer_here: null, checkout: null, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
   mcp: [],
   parameters: { type: "object", additionalProperties: false, properties: { topic: { type: "string", description: "Topic" } } },
 };
@@ -27,7 +27,7 @@ const inbox: TemplateView = { ...base, id: "inbox/assistant", name: "inbox/assis
 const NONE: EmailAccount = { configured: false, preset: null, address: null } as EmailAccount;
 const SAVED: EmailAccount = { configured: true, preset: "gmail", address: "me@example.com" } as EmailAccount;
 
-const applyTemplate = vi.fn(async () => ({ agent_id: "made-1", trigger_ids: [], warnings: [] }));
+const applyTemplate = vi.fn(async () => ({ agent_id: "made-1", triggers: [], warnings: [] }));
 const go = vi.fn();
 const client = (templates: TemplateView[], emailAccount: () => Promise<EmailAccount> = async () => NONE) =>
   ({ listTemplates: async () => ({ templates }), listMcpServers: async () => ({ servers: [] }), applyTemplate, emailAccount: vi.fn(emailAccount) });

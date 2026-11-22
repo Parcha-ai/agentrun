@@ -62,9 +62,9 @@ async function mountedRun(t, { existing = [] } = {}) {
   const controller = new AbortController();
   const claim = await archilClaim({
     settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: controller.signal, makeDisk: () => disk,
-    // The run's agent's disk, as its launch record names it (run-disk.ts): no Archil call resolves it.
+    // The run's agent's disk, as its launch record names it (run-disk.ts): read at Archil once at the claim, never made.
     run: { agentId: "a", launch: { diskId: SETTINGS.diskId, kind: "agent" }, store: agentDiskStore("a", SETTINGS.diskId) },
-    mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: control.baseUrl },
+    mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000 }, control: { baseUrl: control.baseUrl },
   });
   const workspace = archilWorkspace(disk, "agents/a/runs/run-1/work", { region: SETTINGS.region, mountToken: () => claim.token() });
   const created = [];
@@ -79,7 +79,9 @@ async function mountedRun(t, { existing = [] } = {}) {
     attach: async () => ({ ok: true, value: { id: "c1", name: "c1", spec: { image: "i", user: "1000:1000", network: "none" } } }),
     release: async () => ({ ok: true, value: undefined }),
   };
-  const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider: "e2b" } }, store, {
+  // The run's row as the claim's own (epoch 3, its runner), which fences the claim's writes of the run's folder.
+  const claimStore = { agents: store.agents, sealedKeys: store.sealedKeys, computerLedger: store.computerLedger, settings: store.settings, runs: { get: async () => ({ epoch: 3, runner: "runner-3" }) } };
+  const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider: "e2b" } }, claimStore, {
     mode: 2, kinds: KINDS, sealKey, providers: { e2b: () => provider },
     spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }),
     workspace, check: { readBackOf, epoch: 3 }, revokeMount: () => claim.revoke(),

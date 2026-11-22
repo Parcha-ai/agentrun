@@ -13,11 +13,12 @@
 //   committed, staged, unstaged and untracked ones, plus every workspace that depends on one, by its package.json. A changed
 //   file outside the workspaces picks them all, unless no workspace test reads it (UNRELATED). --list prints the plan only.
 // Exit: 0 when every script passed, 1 when one failed, 2 on a usage error, 128 + the signal when stopped.
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync, globSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { availableParallelism, constants } from 'node:os';
 import { join } from 'node:path';
+import { npmSpawn } from './npm-command.mjs';
 
 const root = process.cwd();
 const fail = (message) => { console.error(`test-workspaces: ${message}`); process.exit(2); };
@@ -149,7 +150,7 @@ const { NODE_TEST_CONTEXT, ...childEnv } = process.env;
 function start(ws) {
   const { text, env } = commandOf(ws);
   console.log(`start ${ws.name} (${ws.dir}): ${text}`);
-  const child = spawn('npm', ['exec', '--workspace', ws.name, '-c', text], {
+  const child = npmSpawn(['exec', '--workspace', ws.name, '-c', text], {
     cwd: root, detached: true, env: { ...childEnv, ...env }, stdio: ['ignore', live ? 'inherit' : 'pipe', live ? 'inherit' : 'pipe'],
   });
   const job = { ws, child, started: Date.now(), output: [] };

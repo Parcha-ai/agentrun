@@ -7,6 +7,7 @@
 import { PassThrough } from "node:stream";
 import { DAEMON_IN_COMPUTER, helloDrift, SOCKET_DIR, WORK } from "../drift.js";
 import { readOwnNetwork, TOOL_USER } from "../isolation.js";
+import { WORKSPACE } from "../mount.js";
 import type { ComputerCapabilities, ComputerConnection } from "../provider.js";
 import { fail, ok, type Result } from "../result.js";
 
@@ -27,22 +28,25 @@ const HELD = 'held() { x=$1; while :; do set -- $(ls -ldn "$x" 2>/dev/null); cas
  *  them to the daemon's user), and prints who installed it and the installed binary's sha256. As root, or through passwordless sudo; else
  *  it says why. The daemon's directory is made root's (0755) even when the image already had it, a stale entry at
  *  the daemon's path is removed first, and the whole path is held to `held` before and after; a path another user can
- *  change is refused with nothing installed. Every tool is in BusyBox and in coreutils alike: no privilege tool of the
- *  image's is relied on. */
+ *  change is refused with nothing installed. A synced folder's /workspace is made the daemon's user's, 0700, before the
+ *  daemon is moved into place, so before init starts. Every tool is in BusyBox and in coreutils alike: no privilege tool
+ *  of the image's is relied on. */
 const INSTALL_SCRIPT = [
 	"# agentrun-computer: install",
 	// a: when set, the binary goes in beside its path and is moved into place last, so a pid1 entrypoint waiting for the
 	// path never starts one half written; e: when set too, the sha256 it must read before it is moved, so the entrypoint
 	// never starts one that is not the daemon uploaded; n: when set too, this create's nonce, written to the marker beside
 	// the daemon once it is in place, so the entrypoint starts the daemon this create installed and never one the image
-	// had there. (Not x: held() assigns x.)
-	"s=$1; d=$2; h=$3; r=$4; a=${5-}; e=${6-}; n=${7-}; b=${d%/*}; t=$d; [ -z \"$a\" ] || t=$d.part",
+	// had there; k: when set, a synced folder's directory, made u's (the daemon's user, uid:gid). (Not x: held() assigns
+	// x, and its `set --` the arguments, so every one is read here.)
+	"s=$1; d=$2; h=$3; r=$4; a=${5-}; e=${6-}; n=${7-}; k=${8-}; u=${9-}; b=${d%/*}; t=$d; [ -z \"$a\" ] || t=$d.part",
 	'if [ "$(id -u)" = 0 ]; then p=; elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then p="sudo -n"; else echo "the sandbox user $(id -un) is not root and has no passwordless sudo, so the daemon cannot be installed"; exit 3; fi',
 	HELD,
 	'[ -d "${b%/*}" ] || $p mkdir -p -m 0755 "${b%/*}" || { echo "installing the daemon at $d failed"; exit 5; }',
 	'held "${b%/*}" || exit 6',
 	'[ ! -L "$b" ] || { echo "the daemon at $d is not root\'s alone: $b is a symbolic link"; exit 6; }',
 	'$p mkdir -p "$b" "$h" "$r" && $p chown 0:0 "$b" && $p chmod 0755 "$b" && $p rm -f "$d" "$t" "$d.installed" && $p install -m 0755 -o 0 -g 0 "$s" "$t" || { echo "installing the daemon at $d failed"; exit 5; }',
+	'[ -z "$k" ] || { [ ! -L "$k" ] && $p mkdir -p "$k" && $p chown "$u" "$k" && $p chmod 0700 "$k"; } || { echo "the synced folder $k was not made the computer user\'s"; exit 8; }',
 	'if [ -n "$a" ] && [ -n "$e" ]; then w=$($p sha256sum "$t" | cut -c1-64); [ "$w" = "$e" ] || { echo "sha256 $w"; echo "the daemon written to $t reads sha256 $w, not $e, so it is not moved into place"; $p rm -f "$t"; exit 7; }; fi',
 	'[ "$t" = "$d" ] || $p mv -f "$t" "$d" || { echo "installing the daemon at $d failed"; exit 5; }',
 	'held "$d" || exit 6',
@@ -69,15 +73,17 @@ export function installerOf(output: string): string | undefined {
  *  them at the deadline. A display, when given, is init's DISPLAY, the X display its screen and input methods drive; a
  *  maximum, when given, is the most deadline.extend may move the deadline to; a network form, when given (open, or
  *  allow: and a list), has init start the egress proxy that serves it before it leaves the machine's network
- *  (./network.ts). */
+ *  (./network.ts); a ninth argument, when not empty, has init start the desktop's window manager on the display
+ *  (--window-manager). */
 const INIT_SCRIPT = [
 	"# agentrun-computer: init",
-	// The display is v, not x: held() assigns x, and runs before the exec that reads it. The network form is n.
-	"d=$1; t=$2; w=$3; h=$4; r=$5; v=${6-}; m=${7-}; n=${8-}",
+	// The display is v, not x: held() assigns x, and runs before the exec that reads it. The network form is n, the
+	// window manager g.
+	"d=$1; t=$2; w=$3; h=$4; r=$5; v=${6-}; m=${7-}; n=${8-}; g=${9-}",
 	HELD,
 	'held "$d" >&2 || exit 6',
 	ROOT,
-	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" \${v:+DISPLAY="$v"} sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w" --own-network \${m:+--max-deadline "$m"} \${n:+--network "$n"}`,
+	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" \${v:+DISPLAY="$v"} sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w" --own-network \${m:+--max-deadline "$m"} \${n:+--network "$n"} \${g:+--window-manager}`,
 ].join("\n");
 
 /** The bridge one connection runs: stdin and stdout to init's socket. As root, to reach a socket in a directory that is
@@ -86,7 +92,8 @@ const INIT_SCRIPT = [
  *  install is checked too. */
 const STDIO_SCRIPT = ["# agentrun-computer: stdio", "d=$1; r=$2", HELD, 'held "$d" >&2 || exit 6', ROOT, `exec $p env -i PATH=${PATH} AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" "$d" stdio`].join("\n");
 
-const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
+/** One word for a shell, single-quoted. */
+export const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
 /** One string for a shell: `sh -c '<script>' sh '<arg>' ...`, every word quoted. */
 export const shellCommand = (script: string, args: readonly string[]) => ["sh", "-c", quote(script), "sh", ...args.map(quote)].join(" ");
 /** One argv as one shell line, every word but a plain one ("sh", "-c") single-quoted: for a vendor whose exec takes a line. */
@@ -221,7 +228,7 @@ export interface HostedCommands {
  * wait for the daemon (and gate, for an Archil computer); with atomic, install moves the daemon into place last, and only
  * once it reads sha256, when given, then writes nonce, when given, to the marker the entrypoint waits for. sockets are
  * the patterns a child's sockets command closes (default SESSION_BUSES); rootOnly the paths its root-only command takes
- * others' write off (default none).
+ * others' write off (default none). With workspace, install makes WORKSPACE the user's, 0700: a synced folder's.
  */
 export function hostedCommands({
 	staging = "",
@@ -237,11 +244,14 @@ export function hostedCommands({
 	sockets = SESSION_BUSES,
 	rootOnly = [],
 	network = "",
-}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string; sockets?: readonly string[]; rootOnly?: readonly string[] } = {}): HostedCommands {
-	const init = initScriptArgs({ deadline, user, display, maxDeadline, network });
-	const initArgs = ["init", ...initFlags({ deadline, user, maxDeadline, network })];
+	workspace = false,
+	windowManager = false,
+}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string; sockets?: readonly string[]; rootOnly?: readonly string[]; workspace?: boolean } = {}): HostedCommands {
+	const init = initScriptArgs({ deadline, user, display, maxDeadline, network, windowManager });
+	const initArgs = ["init", ...initFlags({ deadline, user, maxDeadline, network, windowManager })];
+	const atomicArgs = atomic ? ["1", sha256, nonce] : workspace ? ["", "", ""] : [];
 	return {
-		install: argvOf(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR, ...(atomic ? ["1", sha256, nonce] : [])]),
+		install: argvOf(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR, ...atomicArgs, ...(workspace ? [WORKSPACE, user] : [])]),
 		start: argvOf(START_SCRIPT, [INIT_LOG, ...argvOf(INIT_SCRIPT, init)]),
 		stdio: argvOf(STDIO_SCRIPT, [DAEMON_IN_COMPUTER, SOCKET_DIR]),
 		log: argvOf(LOG_SCRIPT, [INIT_LOG]),
@@ -264,22 +274,34 @@ export interface ChildCommandOptions {
 	maxDeadline?: string;
 	/** The network form init's egress proxy serves (./network.ts networkFormOf): open, or allow: and a list; none, no proxy. */
 	network?: string;
+	/** Init starts the desktop's window manager on the display (--window-manager): a desktop whose host runs one. */
+	windowManager?: boolean;
 }
 
 /**
  * init's flags, as start and a pid1 entrypoint give them: the deadline, the user, --own-network, and the most
- * deadline.extend may move it to and the network form where given. A dial machine's AGENTRUN_INIT_ARGS, space-separated:
- * no value holds a space.
+ * deadline.extend may move it to, the network form and --window-manager where given. A dial machine's
+ * AGENTRUN_INIT_ARGS, space-separated: no value holds a space.
  */
-export function initFlags({ deadline = "", user = TOOL_USER, maxDeadline = "", network = "" }: Omit<ChildCommandOptions, "staging" | "display">): string[] {
-	return ["--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline]), ...(network === "" ? [] : ["--network", network])];
+export function initFlags({ deadline = "", user = TOOL_USER, maxDeadline = "", network = "", windowManager = false }: Omit<ChildCommandOptions, "staging" | "display">): string[] {
+	return [
+		"--deadline",
+		deadline,
+		"--user",
+		user,
+		"--own-network",
+		...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline]),
+		...(network === "" ? [] : ["--network", network]),
+		...(windowManager ? ["--window-manager"] : []),
+	];
 }
 
 /** The init script's arguments: the daemon, the deadline, the user, home and the socket's folder, then the display, the
- *  maximum and the network form, each empty when not given, where any of them is. */
-function initScriptArgs({ deadline = "", user = TOOL_USER, display = "", maxDeadline = "", network = "" }: ChildCommandOptions): string[] {
+ *  maximum, the network form and the window manager ("1"), each empty when not given, where any of them is. */
+function initScriptArgs({ deadline = "", user = TOOL_USER, display = "", maxDeadline = "", network = "", windowManager = false }: ChildCommandOptions): string[] {
 	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
-	if (network !== "") init.push(display, maxDeadline, network);
+	if (windowManager) init.push(display, maxDeadline, network, "1");
+	else if (network !== "") init.push(display, maxDeadline, network);
 	else if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
 	return init;
 }
@@ -289,8 +311,8 @@ function initScriptArgs({ deadline = "", user = TOOL_USER, display = "", maxDead
  * its sha256 printed), init (long-lived) and stdio (one per connection). Each is one string for a shell, `sh -c` with
  * every argument quoted.
  */
-export function childCommands({ staging = "", deadline = "", user = TOOL_USER, display = "", maxDeadline = "", network = "" }: ChildCommandOptions = {}) {
-	const init = initScriptArgs({ deadline, user, display, maxDeadline, network });
+export function childCommands({ staging = "", deadline = "", user = TOOL_USER, display = "", maxDeadline = "", network = "", windowManager = false }: ChildCommandOptions = {}) {
+	const init = initScriptArgs({ deadline, user, display, maxDeadline, network, windowManager });
 	return {
 		install: shellCommand(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR]),
 		init: shellCommand(INIT_SCRIPT, init),

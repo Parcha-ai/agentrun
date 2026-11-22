@@ -31,7 +31,7 @@ async function mount() {
   const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
   const render = (id = "a") => act(async () => root!.render(createElement(ObservedSessionPage, { v2, sessionId: id, go: () => {} })));
   await render(); await flush();
-  const refresh = () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh session"]')!;
+  const refresh = () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh agent"]')!;
   const settle = (n: number, data: Observations) => act(async () => { requests[n].resolve(data); });
   return { requests, host, render, refresh, settle };
 }

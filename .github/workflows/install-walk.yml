@@ -1,0 +1,183 @@
+name: Install walk
+
+# The installer (packages/agentrun/install.sh) and `agentrun service` on fresh machines with no Node.js on PATH
+# (packages/agentrun/test/install-walk.sh): an Ubuntu container with no service manager, x64 and arm64; an Ubuntu VM with a
+# systemd user session; a macOS runner with launchd in its Aqua session. On a pull request or push it installs this
+# checkout's launcher, packed; after a release, the published one. The container also walks --tailscale with a fake
+# tailscale (packages/agentrun/test/fake-tailscale.sh): no tailnet, no secret. No model is called. Not a required check.
+# The first-run jobs walk the setup prompt's own lines (docs/SKILL.md) from the installer to a finished first run on a
+# local model (walk-model.mjs, a stand-in for Ollama), the time against the bar (5 minutes) in the job summary: a
+# container on x64 and arm64, the systemd user service and the macOS LaunchAgent.
+# The vps job walks --vps as root on a runner whose Docker it purges first (packages/agentrun/test/vps-walk.sh): the
+# release's published image, then, on a pull request or push, this checkout's, with a faux model (no key).
+
+on:
+  pull_request:
+    paths:
+      - 'packages/agentrun/install.sh'
+      - 'packages/agentrun/lib/service.mjs'
+      - 'packages/agentrun/lib/tailscale.mjs'
+      - 'packages/agentrun/bin/agentrun.mjs'
+      - 'packages/agentrun/test/install-walk.sh'
+      - 'packages/agentrun/test/first-run.sh'
+      - 'packages/agentrun/test/fake-tailscale.sh'
+      - 'packages/agentrun/test/vps-walk.sh'
+      - 'packages/agentrun/test/vps-faux-shell.mjs'
+      - 'packages/agentrun/test/walk-model.mjs'
+      - 'packages/serve/test/fixtures/gateway-answers.mjs'
+      - 'docs/SKILL.md'
+      - '.github/workflows/install-walk.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/agentrun/install.sh'
+      - 'packages/agentrun/lib/service.mjs'
+      - 'packages/agentrun/lib/tailscale.mjs'
+      - 'packages/agentrun/bin/agentrun.mjs'
+      - 'packages/agentrun/test/install-walk.sh'
+      - 'packages/agentrun/test/first-run.sh'
+      - 'packages/agentrun/test/fake-tailscale.sh'
+      - 'packages/agentrun/test/vps-walk.sh'
+      - 'packages/agentrun/test/vps-faux-shell.mjs'
+      - 'packages/agentrun/test/walk-model.mjs'
+      - 'packages/serve/test/fixtures/gateway-answers.mjs'
+      - 'docs/SKILL.md'
+      - '.github/workflows/install-walk.yml'
+  workflow_run:
+    workflows: ['Publish verified beta']
+    types: [completed]
+  workflow_dispatch:
+  # The daily walk (ways-in-daily.yml): the whole walk, on main's launcher.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-install-walk-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pack:
+    name: lint and pack the launcher
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      package: ${{ steps.pack.outputs.package }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.3'
+      - name: shellcheck
+        run: shellcheck --severity=warning -s sh packages/agentrun/install.sh packages/agentrun/test/fake-tailscale.sh packages/agentrun/test/first-run.sh && shellcheck -x --severity=warning packages/agentrun/test/install-walk.sh packages/agentrun/test/vps-walk.sh
+      # After a release the walk installs what npm serves; otherwise this checkout's launcher.
+      - name: Pack
+        id: pack
+        run: |
+          mkdir -p launcher
+          if [ "${{ github.event_name }}" = workflow_run ]; then
+            echo "package=" >> "$GITHUB_OUTPUT"
+          else
+            npm pack ./packages/agentrun --pack-destination launcher
+            echo "package=$(ls launcher)" >> "$GITHUB_OUTPUT"
+          fi
+          ls -la launcher
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher
+          path: launcher
+          if-no-files-found: ignore
+
+  # Each machine walks two modes: the installer and `agentrun service` (container, service), and the setup prompt's own
+  # lines to a finished first run (first-run).
+  container:
+    name: ${{ matrix.mode == 'first-run' && 'first run, container' || 'container, no service manager' }} (${{ matrix.runner }})
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [container, first-run]
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    # Ubuntu 24.04 with curl and its certificates already in (and wget and gnupg, which the walk never uses): no Node.js, and
+    # no apt-get against Ubuntu's mirror, which took 8 to 20 minutes for curl alone on x64 and timed one job out.
+    container: buildpack-deps:noble-curl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.pack.outputs.package != '' }}
+        with:
+          name: launcher
+          path: /tmp/launcher
+      - name: Walk
+        shell: bash
+        env:
+          PACKAGE: ${{ needs.pack.outputs.package }}
+          MODE: ${{ matrix.mode }}
+          # The container walk on x64 pins Node to the launcher's floor (--node-version), so a failure there is never a new
+          # Node release; the others take the installer's choice, the newest on the floor's major line.
+          NODE_PIN: ${{ matrix.mode == 'container' && runner.arch == 'X64' && '1' || '' }}
+        run: packages/agentrun/test/install-walk.sh $MODE ${PACKAGE:+--package /tmp/launcher/$PACKAGE}
+      - name: The server's log
+        if: ${{ always() }}
+        run: cat ~/.agentrun/logs/agentrun.log || true
+
+  vps:
+    name: VPS, Docker Compose as root (--vps)
+    needs: pack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Walk
+        env:
+          BUILD: ${{ github.event_name != 'workflow_run' && '--build' || '' }}
+        run: sudo packages/agentrun/test/vps-walk.sh $BUILD
+
+  service:
+    name: ${{ matrix.mode == 'first-run' && 'first run, ' || '' }}${{ matrix.name }}
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [service, first-run]
+        os: [linux, macos]
+        include:
+          - os: linux
+            name: Linux, systemd user service
+            runner: ubuntu-24.04
+            path: /usr/sbin:/usr/bin:/sbin:/bin
+          - os: macos
+            name: macOS, launchd LaunchAgent
+            runner: macos-26
+            path: /usr/bin:/bin:/usr/sbin:/sbin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.pack.outputs.package != '' }}
+        with:
+          name: launcher
+          path: /tmp/launcher
+      # The runner's user has no session of its own: lingering starts its systemd user manager, as a login would.
+      - name: A systemd user session
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo loginctl enable-linger "$USER"
+          for i in $(seq 1 30); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+      - name: Walk
+        shell: bash
+        env:
+          PACKAGE: ${{ needs.pack.outputs.package }}
+          MODE: ${{ matrix.mode }}
+          WALK_PATH: ${{ matrix.path }}
+        run: PATH=$WALK_PATH packages/agentrun/test/install-walk.sh $MODE ${PACKAGE:+--package /tmp/launcher/$PACKAGE}
+      - name: The service's log
+        if: ${{ always() }}
+        run: cat ~/.agentrun/logs/agentrun.log || true

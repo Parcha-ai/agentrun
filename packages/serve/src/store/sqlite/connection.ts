@@ -10,12 +10,14 @@ import { cleanText, type Dialect, SQLITE } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { ONE_ANSWER_INDEX } from "../schema.js";
 import { AnswerTaken, type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
-import type { Mode, Params, Reply, Request, Statement, StatementResult, WorkerError } from "./worker.js";
+import type { CheckpointResult, Mode, Params, Reply, Request, Statement, StatementResult, WorkerError } from "./worker.js";
 
 export type { Params, Statement, StatementResult } from "./worker.js";
 
 /** How long a transaction may stay open (it holds every other call of the process) before it is rolled back. */
 export const DEFAULT_TRANSACTION_DEADLINE_MS = 10_000;
+/** How long a connection waits for another process's lock on the store file by default (its open's busyTimeoutMs). */
+export const DEFAULT_BUSY_TIMEOUT_MS = 10_000;
 /** The interactive transactions open in this process, on any of its connections: each with where it was opened and when
  *  it began. A transaction's StoreDeadline, and a begin's StoreBusy, name them in their stack (never their message, which
  *  an answer may carry), so a log says who held the store: the deadline's own transaction, or another of this process's
@@ -233,7 +235,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
   }
 
   /** Starts the worker and opens `file` in it; `owner` takes the store's owner lock too (StoreOwned when another holds it). */
-  static async open(file: string, { busyTimeoutMs = 10_000, owner = false }: { busyTimeoutMs?: number; owner?: boolean } = {}): Promise<Connection> {
+  static async open(file: string, { busyTimeoutMs = DEFAULT_BUSY_TIMEOUT_MS, owner = false }: { busyTimeoutMs?: number; owner?: boolean } = {}): Promise<Connection> {
     const execArgv = workerExecArgv(process.execArgv);
     const worker = new Worker(new URL("./worker.js", import.meta.url), execArgv ? { execArgv } : {});
     const connection = new Connection(worker);
@@ -342,6 +344,11 @@ export class Connection implements SqliteDatabase, StoreConnection {
   }
   all<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T[]> {
     return this.#queued(async () => (await this.#stmt(sql, params, "all")) as T[]);
+  }
+  /** A WAL checkpoint (TRUNCATE) that waits `busyMs` at most for another connection's reader or writer (default: the
+   *  connection's own busy wait): every call queued behind it waits that long at most for it. Busy (1) when one held it. */
+  checkpoint(busyMs = this.#busyTimeoutMs): Promise<CheckpointResult | undefined> {
+    return this.#queued(async () => ((await this.#send({ op: "checkpoint", busyMs })) ?? undefined) as CheckpointResult | undefined);
   }
 
   /** One write transaction of fixed statements: in order; an expectation miss or an error rolls all of them back. `full`: a

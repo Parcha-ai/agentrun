@@ -4,7 +4,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Analytics, cachedShare, compact, costLine, duration, missionFrom, type MissionView, outcomes, rangeFrom, type Stats, successRate, trendDays } from "@/lib/mission";
 import { MissionControl } from "./MissionControl";
+import { pageTitleClass } from "@/components/ui/toolbar";
 import type { Run } from "@/lib/v2";
+import type { ObservedSession, ObservationRead } from "@/lib/observations";
 import { pick } from "@/test/picker";
 
 const run = (id: string, status: Run["status"], state: Run["state"], title: string): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
@@ -41,15 +43,9 @@ describe("MissionControl", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     for (const s of ["Mission Control", ">2<", ">7<", "Active", "Needs input", "Failed"]) expect(html).toContain(s);
   });
-  it("names the registered-work counts when externally observed sessions are shown separately", () => {
-    const html = renderToStaticMarkup(createElement(MissionControl, { view, hasObservedSessions: true, observations: createElement("div", null, "Observed sessions") }));
-    const host = document.createElement("div"); host.innerHTML = html;
-    const registered = host.querySelector('section[aria-label="Registered agents and runs"]')!;
-    expect(registered.querySelector("h2")?.textContent).toBe("Registered agents & runs");
-    expect(registered.textContent).toContain("Agents2");
-    expect(registered.textContent).toContain("Runs7");
-    expect(registered.textContent).not.toContain("Observed sessions");
-    expect(renderToStaticMarkup(createElement(MissionControl, { view }))).not.toContain("Registered agents &amp; runs");
+  it("names itself in its top bar as every section does: mono caps at body size", () => {
+    const html = renderToStaticMarkup(createElement(MissionControl, { view }));
+    expect(html).toContain(`<h1 class="${pageTitleClass}">`);
   });
   it("links each recent run to its page, and each agent to its page's Runs tab", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
@@ -61,10 +57,66 @@ describe("MissionControl", () => {
     const none = analytics({ totals: { ...g(0, 0, 0, 0, 0, null), input: 0, cache_read: 0, cache_write: 0, output: 0, requests: 0, unmetered: 0 }, time: { ended_runs: 0, wall_ms: 0, active_runs: 0, active_ms: 0 }, by_harness_effort: [], by_day: [], by_source: [], tools: [] });
     const empty: MissionView = { agents: 0, runs: { total: 0, active: 0, needsInput: 0, failed: 0, statusUnknown: 0, needsReview: 0 }, perAgent: [], cost: { usd: null, basis: null, unknownRuns: 0 }, recent: [], analytics: none };
     const html = renderToStaticMarkup(createElement(MissionControl, { view: empty }));
-    expect(html).toContain("No agents yet");
+    expect(html).toContain("No connected agents yet");
     expect(html).toContain("No runs yet");
     expect(html).not.toMatch(/\$0(\.0+)?\b/);
   });
+});
+
+describe("Mission Control's combined agent inventory", () => {
+  const usage = { input_tokens: null, output_tokens: null, cache_read_tokens: null, cache_write_tokens: null, total_tokens: null, cache_hit_rate: null };
+  const session = (id: string, over: Partial<ObservedSession> = {}): ObservedSession => ({
+    id, connector_id: "connector", source_id: "project", external_session_id: id, harness: "codex", activity: "working", reported_activity: "working", connection_state: "online", selection_active: true,
+    occurred_at: "2026-11-17T12:00:00Z", received_at: "2026-11-17T12:00:00Z", created_at: "2026-11-17T11:00:00Z", updated_at: "2026-11-17T12:00:00Z", sequence: 1, display_name: id, models: [], usage, observation_only: true, ...over,
+  });
+  const read = (sessions: ObservedSession[], over: Partial<ObservationRead> = {}): ObservationRead => ({
+    data: { sessions, connectors: [], usage: { ...usage, models: [], daily: [], status: "unavailable" } }, loading: false, error: null, refresh: vi.fn(), ...over,
+  });
+  const card = (observed: ObservationRead, registered = 0) => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(createElement(MissionControl, { view: { ...view, agents: registered }, observed }));
+    return host.querySelector('a[href="#/agents"]')!;
+  };
+  it("counts retained connected agents without separating their execution source", () => {
+    const tile = card(read([session("one"), session("two"), session("old-qa", { connection_state: "disconnected" }), session("unselected", { selection_active: false })]));
+    expect(tile.querySelector(".text-display")?.textContent).toBe("4");
+    expect(tile.textContent).not.toMatch(/registered|observed/);
+    expect(card(read([session("one"), session("two")]), 3).querySelector(".text-display")?.textContent).toBe("5");
+  });
+  it("shows connected agents in the same panel when no server agent exists", () => {
+    const html = renderToStaticMarkup(createElement(MissionControl, { view: { ...view, agents: 0, perAgent: [] }, agents: [], observed: read([session("one"), session("two")]) }));
+    expect(html).not.toContain("No connected agents yet");
+    expect(html).toContain('href="#/observations/one"');
+    expect(html).toContain('href="#/observations/two"');
+  });
+  it("retains ended, idle and disconnected agents with their actual states", () => {
+    const tile = card(read([session("idle", { activity: "idle" }), session("ended", { activity: "finished" }), session("offline", { connection_state: "offline" })]));
+    expect(tile.querySelector(".text-display")?.textContent).toBe("3");
+  });
+  it("counts each session once even when its newest report changes state", () => {
+    const tile = card(read([session("one"), session("one"), session("old", { connection_state: "disconnected", received_at: "2026-11-17T12:01:00Z", sequence: 2 }), session("old")]));
+    expect(tile.querySelector(".text-display")?.textContent).toBe("2");
+  });
+  it.each([
+    ["loading", { data: null, loading: true }],
+    ["failed", { error: "Read failed" }],
+    ["unavailable", { data: null }],
+  ] as const)("keeps the total unknown when a connection read is %s", (_state, over) => {
+    const tile = card(read([session("stale")], over), 3);
+    expect(tile.querySelector(".text-display")?.textContent).toBe("–");
+    expect(tile.textContent).not.toMatch(/registered|observed/);
+  });
+  it("distinguishes a confirmed empty list from an unknown count and retains the last count during refresh", () => {
+    expect(card(read([]), 3).querySelector(".text-display")?.textContent).toBe("3");
+    expect(card(read([session("one")], { loading: true }), 3).querySelector(".text-display")?.textContent).toBe("4");
+  });
+  it("keeps the combined total unknown when the agent definition read is unavailable", () => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(createElement(MissionControl, { view, agents: null, observed: read([session("one")]) }));
+    expect(host.querySelector('a[href="#/agents"] .text-display')?.textContent).toBe("–");
+    expect(host.textContent).toContain("one");
+  });
+
 });
 
 describe("costLine: a total said honestly, never $0 for a cost not known", () => {
@@ -95,6 +147,10 @@ describe("missionFrom: GET /v2/stats and the latest runs, as the page shows them
     });
     expect(costLine(v.cost)).toBe("Unknown");
   });
+  it("reads the server's cost basis: a reported sum says reported, one nothing priced says no word", () => {
+    expect(costLine(missionFrom({ ...stats, cost: { usd: 1.5, basis: "reported", unknown_runs: 0 } }, []).cost)).toBe("$1.50 reported");
+    expect(costLine(missionFrom({ ...stats, cost: { usd: 0, basis: "unpriced", unknown_runs: 0 } }, []).cost)).toBe("$0.0000");
+  });
   it("reads the server's cost basis: an estimate says est.", () => {
     expect(costLine(missionFrom({ ...stats, cost: { usd: 1.5, basis: "estimate", unknown_runs: 0 } }, []).cost)).toBe("$1.50 est.");
   });
@@ -109,6 +165,13 @@ describe("missionFrom: GET /v2/stats and the latest runs, as the page shows them
 
 const withA = (a: Analytics): MissionView => ({ ...view, analytics: a });
 const render = (v: MissionView, scope?: Parameters<typeof MissionControl>[0]["scope"]) => renderToStaticMarkup(createElement(MissionControl, { view: v, scope }));
+const tokenCard = (html: string) => {
+  const host = document.createElement("div");
+  host.innerHTML = html;
+  return host.querySelector('dl[aria-label="Token breakdown"]')?.closest("li");
+};
+const tokenBreakdown = (html: string) => [...(tokenCard(html)?.querySelectorAll('dl[aria-label="Token breakdown"] dt') ?? [])]
+  .map((term) => [term.textContent, term.nextElementSibling?.querySelector('[data-token-count]')?.textContent ?? term.nextElementSibling?.textContent]);
 const scope = { range: "30d" as const, onRange: () => {}, agent: null, onAgent: () => {} };
 
 // The fixtures' days are fixed, so the page's clock is too: the trend and the heading count days back from today.
@@ -117,15 +180,18 @@ const atNow = () => { beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] });
 describe("MissionControl's analytics", () => {
   atNow();
   it("the heading names the range of the figures on screen, not a range picked whose answer is still on its way", () => {
-    expect(render(withA(analytics()), { ...scope, range: "7d", refreshing: true })).toContain("Runs started in the last 30 days");
-    expect(render(withA(analytics({ filter: { from: "2026-10-26T00:00:00.000Z", to: null, agent: "calc" } })), scope)).toContain("Runs started in the last 7 days, of Calc");
-    expect(render(withA(analytics({ filter: { from: null, to: null, agent: null } })), scope)).toContain("All runs");
+    expect(render(withA(analytics()), { ...scope, range: "7d", refreshing: true })).toContain("Activity in the last 30 days");
+    expect(render(withA(analytics({ filter: { from: "2026-10-26T00:00:00.000Z", to: null, agent: "calc" } })), scope)).toContain("Activity in the last 7 days, of Calc");
+    expect(render(withA(analytics({ filter: { from: null, to: null, agent: null } })), scope)).toContain("All recorded activity");
   });
 
-  it("shows tokens with the cached share and output, run time, success rate and cost, by harness and effort, per day and by tool", () => {
+  it("shows total, input including caches and output beside run time, success rate and cost", () => {
     const html = render(withA(analytics()), scope);
-    expect(html).toContain("Runs started in the last 30 days");
-    for (const s of ["1.3M", "60% of input cached · 284K output", "1.5 h", "wall time of 11 ended runs", "82%", "9 completed · 2 failed", "$1.23 est."]) expect(html).toContain(s);
+    expect(html).toContain("Activity in the last 30 days");
+    for (const s of ["1.5 h", "wall time of 11 ended runs", "82%", "9 completed · 2 failed", "$1.23 est."]) expect(html).toContain(s);
+    expect(tokenCard(html)?.children[1]?.querySelector('[data-token-count]')?.textContent).toBe("1,284,000");
+    expect(tokenBreakdown(html)).toEqual([["Input", "1,000,000"], ["Output", "284,000"]]);
+    expect(html).not.toMatch(/of input cached|Model request counts|Reported token usage/);
     expect(html).not.toContain("active, over");
     expect(html).not.toContain("tokens from");
     // By harness and effort: an unset effort says so; success and tokens per row.
@@ -149,27 +215,29 @@ describe("MissionControl's analytics", () => {
     expect(html).not.toContain("Imported from");
   });
 
-  it("keeps unknown native token totals and chart days unknown without inventing cache ratios", () => {
+  it("keeps unknown totals and chart days unknown, with accessible missing input and output", () => {
     const a = analytics({ totals: { ...analytics().totals, tokens: null, input: null, output: null, cache_read: 100, cache_write: null }, by_harness_effort: [{ ...analytics().by_harness_effort[0], tokens: null }], by_day: [{ ...analytics().by_day[0], tokens: null }, analytics().by_day[1]] });
     const html = render(withA(a), scope);
     expect(html).toContain("Unknown");
     expect(html).toContain("2026-10-30: Unknown tokens");
+    expect(tokenBreakdown(html)).toEqual([["Input", "—"], ["Output", "—"]]);
+    expect(html.match(/aria-label="Not reported"/g)).toHaveLength(2);
     expect(html).not.toContain("of input cached");
     expect(html).not.toMatch(/NaN|Infinity/);
   });
 
-  it("makes native model request counts explicitly unknown when telemetry cannot report them", () => {
+  it("keeps the token breakdown when model request counts are unavailable without showing request diagnostics", () => {
     const a = analytics({ totals: { ...analytics().totals, requests: null, unmetered: null } });
     const html = render(withA(a), scope);
-    expect(html).toContain("Model request counts unavailable");
-    expect(html).not.toContain("0 requests with no token count");
+    expect(tokenBreakdown(html)).toEqual([["Input", "1,000,000"], ["Output", "284,000"]]);
+    expect(html).not.toMatch(/Model request counts|requests with no token count/);
   });
 
-  it("says when tokens leave runs out, when requests were unmetered, and when runs were at work", () => {
+  it("keeps token coverage and active run time without showing unmetered request diagnostics", () => {
     const a = analytics({ totals: { ...analytics().totals, runs_with_metrics: 9, unmetered: 2 }, time: { ended_runs: 11, wall_ms: 5_400_000, active_runs: 3, active_ms: 1_800_000 } });
     const html = render(withA(a), scope);
     expect(html).toContain("tokens from 9 of 12 runs");
-    expect(html).toContain("2 requests with no token count");
+    expect(html).not.toContain("requests with no token count");
     expect(html).toContain("30 min active, over 3 runs");
     const row = render(withA(analytics({ by_harness_effort: [{ harness: "pi", effort: null, ...g(5, 4, 1, 3, 1000, 0.1) }] })), scope);
     expect(row).toContain("tokens from 3 of 5 runs");

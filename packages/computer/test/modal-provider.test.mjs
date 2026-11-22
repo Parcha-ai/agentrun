@@ -3,7 +3,8 @@
 // refuses, the conformance module's names), each read from options or from what the SDK slice is handed. The adapter's
 // lifecycle is tested once, against its one fake host (hosted-provider.test.mjs); Modal's own lifecycle is proven live
 // (test/modal). The SDK slice here only records what it is given and answers nothing that makes a sandbox: no sandbox
-// exists, no Modal client is constructed unless a test says so, and nothing reaches the network.
+// exists, no Modal client is constructed unless a test says so, and nothing reaches the network. One test, the desktop
+// over dial, gives the slice sandboxes it keeps, each booted from its env (fake-dial-host.mjs bootDial).
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -12,8 +13,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, recordedMount, sweep } from "../dist/index.js";
+import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, mountsOf, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
+import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 
 const modal = await import("../dist/modal.js");
 const { MODAL } = await import("../dist/descriptors/modal.js");
@@ -129,20 +131,20 @@ test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, ini
 		maxLifetimeMs: DAY_MS,
 		user: ["uid"],
 		release: ["delete"],
-		mount: ["archil"],
+		mount: ["archil", "sync"],
 		vendorAgentPorts: [],
 		gpu: {
 			types: ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"],
 			max: 8,
 			isolation: "gvisor",
 			preemptible: true,
-			mounts: [],
+			mounts: ["sync"],
 			unmounted: { why: "Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279)", yet: true },
 			fence: "userns-netns",
 		},
 	});
 	assert.deepEqual(MODAL.capabilities[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
-	assert.deepEqual(provider.capabilities().mount, ["archil"]);
+	assert.deepEqual(provider.capabilities().mount, ["archil", "sync"]);
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend(): Modal's timeout cannot move");
 	assert.equal(provider.stream, undefined, "no stream()");
@@ -507,6 +509,7 @@ test("no real Modal client: the provider and the conformance module import nothi
 		app: "COMPUTER_MODAL_APP",
 		serverUrl: "COMPUTER_MODAL_SERVER_URL",
 		connect: "COMPUTER_MODAL_CONNECT",
+		kind: "COMPUTER_MODAL_KIND",
 	});
 	assert.equal(module.CONFORMANCE_MAX_LIFETIME_MS, 30 * 60_000);
 	assert.equal(modal.modalCommands, undefined, "the scripts are the adapter's");
@@ -838,17 +841,77 @@ test("connect dial: init is agentrun-dial's child, no Archil mount (refused in w
 	const { provider, rec } = setup({ connect: "dial", dial: dialOf() });
 	const caps = provider.capabilities();
 	assert.equal(caps.daemon, "child");
-	assert.deepEqual(caps.mount, []);
+	assert.deepEqual(caps.mount, ["sync"], "a synced folder alone: agentrun-dial makes /workspace");
 	assert.equal(caps.gpu?.isolation, "gvisor");
 	const refusals = provider.check({ ...SPEC, mount: { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "not-a-secret" } });
 	assert.deepEqual(refusals.map(({ field }) => field), ["mount"]);
-	assert.match(refusals[0].message, /Modal's machines dial this server, and a machine that dials takes no Archil mount yet/);
+	assert.ok(refusals[0].message.includes(mountsOf(MODAL, () => false, true).unmounted.archil), refusals[0].message);
 	assert.throws(() => setup({ connect: "ssh" }), /connect is how Modal reaches its machines, "exec" \(the default\) or "dial", not "ssh"/);
 	assert.deepEqual(MODAL.settings, [
 		{ name: "modalApp", option: "app", default: "agentrun" },
 		{ name: "modalConnect", option: "connect" },
 	]);
 	assert.deepEqual(rec.calls, []);
+});
+
+test("kind desktop on connect dial: the desktop's groups, no GPU, the window manager, and DISPLAY beside the boot env, for init; on connect exec it is refused when made, in words", async () => {
+	const dial = dialOf();
+	const { provider, rec } = setup({ connect: "dial", dial, kind: "desktop" });
+	const caps = provider.capabilities();
+	assert.equal(caps.kind, "desktop");
+	assert.deepEqual(caps.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"]);
+	assert.equal(caps.gpu, undefined, "a desktop offers no GPU");
+	assert.deepEqual(provider.check({ ...SPEC, gpu: { type: "T4", count: 1 } }).map(({ field }) => field), ["gpu"]);
+	assert.equal(provider.host.facts.windowManager, true, "the box image has xfwm4");
+	const result = await create(provider);
+	assert.equal(result.error?.code, "invalid", "a create Modal refused made nothing");
+	const { env } = rec.params();
+	assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS", "DISPLAY"]);
+	assert.equal(env.DISPLAY, ":0");
+	// connect exec makes kind linux, as it always has: a desktop there is refused before any SDK call, naming the connect
+	// its descriptor's desktop configuration takes.
+	for (const connect of [undefined, "exec"]) {
+		assert.throws(() => setup({ ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: Modal gives a desktop computer on connect "dial" alone, not "exec"$/);
+	}
+	assert.equal(setup({ kind: "linux" }).provider.capabilities().kind, "linux");
+});
+
+test("Modal's desktop configuration, as serve builds it over connect exec, makes a desktop over dial: the sandbox boots from its env, dials, and its X server and xfwm4 start over that socket", async () => {
+	const dial = dialServer();
+	const sandboxes = new Map();
+	let booted;
+	// The SDK's slice keeping what it makes: a sandbox boots from the env it was given (bootDial), runs until terminated.
+	const rec = recorder();
+	const sandboxOf = (id, params) => {
+		let finished = null;
+		return { sandboxId: id, params, poll: async () => finished, getTags: async () => ({ ...params.tags }), terminate: async () => void (finished = 0) };
+	};
+	rec.sdk.sandboxes = {
+		create: async (app, image, params) => {
+			const sandbox = sandboxOf(`sb-${sandboxes.size + 1}`, params);
+			sandboxes.set(sandbox.sandboxId, sandbox);
+			booted = bootDial(params.env, dial, { daemon: readFileSync(DAEMON_PATH) });
+			return sandbox;
+		},
+		fromId: async (id) => {
+			if (!sandboxes.has(id)) throw Object.assign(new Error("Sandbox not found"), { name: "NotFoundError" });
+			return sandboxes.get(id);
+		},
+		list: ({ tags }) => ({
+			async *[Symbol.asyncIterator]() {
+				yield* [...sandboxes.values()].filter(({ params }) => Object.entries(tags).every(([key, value]) => params.tags[key] === value));
+			},
+		}),
+	};
+	const { options } = MODAL.capabilities.find(({ kind }) => kind === "desktop");
+	// serve's options for this provider: the keys' and the settings' (modalConnect exec), then the configuration's.
+	const provider = new ModalProvider({ sdk: rec.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedStableMs: 0 }, dial, connect: "exec", ...options });
+	assert.equal(provider.capabilities().kind, "desktop");
+	assert.equal(provider.host.facts.connect, "dial");
+	await desktopOverDial(provider, dial, () => booted, { image: BOX_IMAGE, lifetimeMs: 600_000, network: "none" });
+	const [sandbox] = sandboxes.values();
+	assert.deepEqual([sandbox.params.runtime, sandbox.params.cpuLimit, sandbox.params.memoryLimitMiB, sandbox.params.gpu], ["vm", 1, 4096, undefined], "2 CPUs (1 physical core) and 4 GiB on the VM runtime, no GPU");
+	assert.equal(await sandbox.poll(), 0, "release terminated the sandbox");
 });
 
 test("the conformance module reads COMPUTER_MODAL_CONNECT as connect, and its dialKit refuses in words: this process is no public server", async () => {

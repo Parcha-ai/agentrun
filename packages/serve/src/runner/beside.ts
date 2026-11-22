@@ -2,7 +2,7 @@
 // the template eval's in-process server (template-eval.ts), which would otherwise leave every run it starts queued.
 import { maxRunsOf } from "../host.js";
 import { durationMs } from "../print.js";
-import { type RunnerEvent, runnerCloseBoundMs } from "./runner.js";
+import { RUNNER_LOOPS, type RunnerEvent, runnerCloseBoundMs } from "./runner.js";
 
 /** How long a busy run may finish its turn when the server stops, unless --drain-timeout says (cli.ts). */
 export const DRAIN_TIMEOUT = "30s";
@@ -11,11 +11,12 @@ export const DRAIN_TIMEOUT = "30s";
  *  number maxRunsOf gives the capabilities' max_concurrent_runs: AGENTRUN_MAX_RUNS, else as many pi runs as this host's
  *  memory holds), and on its close lets each held run finish its turn for up to --drain-timeout (default DRAIN_TIMEOUT)
  *  before it stops the rest to resume. The server has checked both by the time this reads them (startServe). */
-export function besideRunnerOptions(serve: { maxRuns?: number; drainTimeout?: string }, env: NodeJS.ProcessEnv): { loops: number; drainMs: number } {
+export function besideRunnerOptions(serve: { maxRuns?: number; drainTimeout?: string }, env: NodeJS.ProcessEnv): { loops: number; loopsTold: boolean; drainMs: number } {
   const drainTimeout = serve.drainTimeout ?? DRAIN_TIMEOUT;
   const drainMs = durationMs(drainTimeout);
   if (drainMs === undefined) throw new Error(`the drain timeout ${drainTimeout} is not a duration such as 8s`);
-  return { loops: maxRunsOf(env, serve.maxRuns), drainMs };
+  // `loopsTold`: the number was given (--max-runs, AGENTRUN_MAX_RUNS), not the host's memory's count.
+  return { loops: maxRunsOf(env, serve.maxRuns), loopsTold: serve.maxRuns !== undefined || Boolean(env.AGENTRUN_MAX_RUNS), drainMs };
 }
 
 /** What the CLI's stop waits on (stop-signals.ts StopDeps.stopping) with a runner beside the server: the server's runs
@@ -33,8 +34,9 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  too (workspace/computer-janitor.ts), as the CLI's start asks. `hub`: the server's AttachHub (Serve.attachHub), which
  *  holds each paired computer's socket in this process, so a run here takes one. `dial`: the server's (Serve.dial), which
  *  a remote provider's create takes, so a machine that dials the server lands in this process's hub. Returns the runner
- *  and a close() that stops both and closes its store. */
-export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, hub, dial, mcpLoopback, mcpOwn, evalFakes, harnessInstall, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; dial?: import("@parcha/agentrun-computer").HostedDial; mcpLoopback?: boolean; mcpOwn?: readonly string[]; evalFakes?: (agentId: string) => import("./adapter-run-spec.js").EvalFakes | undefined; harnessInstall?: import("../harness-install.js").HarnessInstaller; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+ *  and a close() that stops both and closes its store. `loopsTold`: `loops` was given (besideRunnerOptions), so on uid
+ *  isolation a number past the helper's slots is refused rather than cut. */
+export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs, env, janitor, ownProcesses, hub, dial, mcpLoopback, mcpOwn, evalFakes, harnessInstall, onLine, onRunEnded }: { loops?: number; loopsTold?: boolean; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; ownProcesses?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; dial?: import("@parcha/agentrun-computer").HostedDial; mcpLoopback?: boolean; mcpOwn?: readonly string[]; evalFakes?: (agentId: string) => import("./adapter-run-spec.js").EvalFakes | undefined; harnessInstall?: import("../harness-install.js").HarnessInstaller; onLine?: (line: string) => void; onRunEnded?: (status: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { runnerName, startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
@@ -71,9 +73,30 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   // email), by the agent each of its runs is of; only the eval, in its own process, hands them. `harnessInstall`: what a
   // claim's first-use install installs with (the eval's sharedInstaller, which the server beside it takes too).
   const { installForClaim } = await import("../harness-install.js");
-  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}), ...(mcpOwn ? { mcpOwn } : {}), ...(evalFakes ? { evalFakes } : {}), ...(harnessInstall ? { installForClaim: (entry, dir, pins, given) => installForClaim(entry, dir, pins, { ...given, install: harnessInstall }) } : {}), log: (line) => console.error(`agentrun-serve runner: ${line}`) });
-  // It claims by the host's memory as well as by --max-runs (memory-claim.ts): a heavy harness's run waits queued for room.
-  const { runnerMemory } = await import("./memory-claim.js");
+  const deps = { env: runs, data: dataDir, journal: (claim: Parameters<typeof store.journal>[0]) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}), ...(mcpOwn ? { mcpOwn } : {}), ...(evalFakes ? { evalFakes } : {}), ...(harnessInstall ? { installForClaim: ((entry, dir, pins, given) => installForClaim(entry, dir, pins, { ...given, install: harnessInstall })) satisfies typeof installForClaim } : {}), log: (line: string) => console.error(`agentrun-serve runner: ${line}`) };
+  // `ownProcesses`: each run a process of its own (run-child-host.ts), as a user of its own where the image's helper can
+  // switch, as the CLI's start runs them; a helper that cannot is refused in words naming the setting. The template eval's
+  // runner (its fakes are functions of this process) runs its runs in this one.
+  let isolation: import("./run-child-host.js").RunIsolation | undefined;
+  let held = loops;
+  if (ownProcesses && !evalFakes && !harnessInstall) {
+    const { isolationLoops, runIsolationOf } = await import("./run-child-host.js");
+    try {
+      isolation = await runIsolationOf(process.env, loopsTold ? loops : undefined, deps.log);
+    } catch (error) {
+      await store.close();
+      seal.release();
+      throw error;
+    }
+    if (loops !== undefined && isolation.kind === "uid" && loops > isolation.slots) deps.log(`each run runs as a user of its own, and the helper reaches ${isolation.slots} slots from slot ${isolation.first}: this runner holds at most ${isolation.slots} runs at once`);
+    if (loops !== undefined) held = isolationLoops(isolation, loops);
+    else if (isolation.kind === "uid") held = isolation.slots;
+  }
+  const { childLoops } = await import("./run-child-host.js");
+  const createLoop = isolation ? childLoops({ deps, isolation, log: deps.log }) : dispatchRunner(deps);
+  // It claims by the host's memory as well as by --max-runs (memory-claim.ts): a heavy harness's run waits queued for room,
+  // each run's own process weighed with it.
+  const { runnerMemory, RUN_PROCESS_MIB } = await import("./memory-claim.js");
   // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts).
   const { sweepEndedScratch } = await import("./scratch-sweep.js");
   await sweepEndedScratch(store, dataDir, { log: (line) => console.error(`agentrun-serve runner: ${line}`) });
@@ -82,17 +105,18 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   // are said in its name as the runner subcommand says them (main.ts troubleLine: a lost claim on stdout, an error on
   // stderr), so a lapse of its claims shows its cause.
   const { runLine } = await import("../print.js");
+  const { metricLine, startRunnerGauge } = await import("./runner-metrics.js");
   const name = runnerName();
   const said = (event: RunnerEvent) => {
-    const trouble = troubleLine(name, event);
-    if (trouble) return void (onLine ?? (event.type === "error" ? console.error : console.log))(trouble);
-    const line = runLine(event);
-    if (line) (onLine ?? console.log)(line);
+    for (const { line, error } of besideLines(name, event, { metricLine, troubleLine, runLine })) (onLine ?? (error ? console.error : console.log))(line);
+    // The server's anonymous counts (telemetry.ts) hear a run's end: its state alone, never which run or agent.
+    if (event.type === "ended") onRunEnded?.(event.status);
   };
   // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
   const { runEndComputers } = await import("../workspace/run-end-computers.js");
-  const runEnded = runEndComputers({ store, computers: computers.computerDeps, log: (line) => console.error(`agentrun-serve runner: ${line}`) });
-  const runner = startRunner({ store, name, createLoop, memory: runnerMemory(store), onEvent: said, runEnded, ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
+  const { projectRunEnded } = await import("../source-sync/checkpoints.js");
+  const runEnded = projectRunEnded(store, runEndComputers({ store, computers: computers.computerDeps, log: (line) => console.error(`agentrun-serve runner: ${line}`) }));
+  const runner = startRunner({ store, name, createLoop, memory: runnerMemory(store, undefined, runs, isolation ? RUN_PROCESS_MIB : 0), onEvent: said, runEnded, ...(held !== undefined ? { loops: held } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
   // The computer janitor over the same computers, when the start asks for it: never under --faux. Its lines are the
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");
@@ -100,7 +124,27 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   // Its close waits for any first-use install its claims let go of to stop (its npm ended) before it lets go of the data.
   const { claimInstallsStopped } = await import("../harness-install.js");
   // The janitor's sweep is cut and waited for on a bound of its own, beside the runner's close, never before it.
-  return { runner, close: async () => { await Promise.all([swept?.close(), runner.close()]); await claimInstallsStopped(); await store.close(); seal.release(); } };
+  // Its gauge (runner-metrics.ts): the runs it holds of its loops, and the process's memory (the server's with it), every
+  // minute until its close.
+  const gauge = startRunnerGauge({ runner: name, held: () => runner.held().length, slots: held ?? RUNNER_LOOPS, write: (line) => (onLine ?? console.log)(line) });
+  return { runner, close: async () => { gauge.stop(); await Promise.all([swept?.close(), runner.close()]); await claimInstallsStopped(); await store.close(); seal.release(); } };
+}
+
+/** The lines runner `name` beside a server says for `event`, in order, each with whether it goes to stderr (`error`): its
+ *  metric line (runner-metrics.ts metricLine: a claim, a hand-back by cause, a lost claim, the drain), then its trouble
+ *  (main.ts troubleLine: a lost claim, an error) or else its run's start or end (print.ts runLine). A lost claim says
+ *  both its metric and its trouble. The three are handed in, as runnerBeside imports them on its start. */
+export function besideLines(name: string, event: RunnerEvent, say: { metricLine: (name: string, event: RunnerEvent) => string | undefined; troubleLine: (name: string, event: RunnerEvent) => string | undefined; runLine: (event: RunnerEvent) => string | undefined }): { line: string; error: boolean }[] {
+  const lines: { line: string; error: boolean }[] = [];
+  const metric = say.metricLine(name, event);
+  if (metric) lines.push({ line: metric, error: false });
+  const trouble = say.troubleLine(name, event);
+  if (trouble) lines.push({ line: trouble, error: event.type === "error" });
+  else {
+    const line = say.runLine(event);
+    if (line) lines.push({ line, error: false });
+  }
+  return lines;
 }
 
 /** A server and one runner beside it, both in this process, as the CLI's start composes them (cli.ts): the runner holds
@@ -110,9 +154,11 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
 export async function serveWithRunner(options: import("../server.js").ServeOptions): Promise<{ serve: import("../server.js").Serve; close(): Promise<void> }> {
   const { fauxEnvOf, startServe } = await import("../server.js");
   const { besideRunEnv } = await import("./main.js");
-  const { loops, drainMs } = besideRunnerOptions(options, process.env);
+  const { loops, loopsTold, drainMs } = besideRunnerOptions(options, process.env);
   const serve = await startServe(options);
-  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
+  // Each run a process of its own, as a user of its own where the image's helper can switch, as the CLI's start runs
+  // them (cli.ts): the isolation the server's capabilities say (runIsolationOf over the same helper) is the runner's.
+  const beside = await runnerBeside(options.data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
     await serve.close();
     throw error;
   });

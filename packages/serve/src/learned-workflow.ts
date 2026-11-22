@@ -34,7 +34,9 @@ import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earend
 import { registerLabel, registerOutcome } from "./timeline/index.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX, type LearnedEnded, type LearnedNode, type LoopRow } from "./learned-nodes.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
-import { decisionsAsked, deniedDecisionWords } from "./learn/skills.js";
+import { repickLabels, repickSiteOf } from "./learn/check.js";
+import { capState, REPICK_MARK, repickMarked } from "./learn/repick.js";
+import { decisionsAsked, deniedDecisionWords } from "./learn/workflow-draft.js";
 import { DEFAULT_DECISION_PROVIDER } from "./decisions.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
@@ -263,6 +265,8 @@ export function learnedText(text: string): string {
 /** What a learned workflow's model node is refused with when it names a tool: it runs in a session of its own here.
  *  The check before the run refuses such a workflow first (draftProblems); this one holds should it not. */
 export const NODE_TOOLS_REFUSED = "a learned workflow's model node runs without tools here";
+/** What a re-pick's pass over the pages is refused with, unsent, when its state cannot fit learning.repick_max_chars. */
+export const REPICK_STATE_REFUSED = "a quote re-pick's pass over the pages is not sent past its cap";
 
 /** The tool's description, sent with every model request of the run, so it holds what a model needs to call it right and
  *  no more: one line of what the tool does (one call, by name, a JSON input with the listed fields, `*` marking a required
@@ -413,6 +417,15 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy, decisionsOf(run, dsl, flow.workflow));
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
+  // Its quote re-pick loops (check.ts repickLabels): their exits are the run's re-picks (LoopRow `repick`).
+  const repickAt = repickLabels(doc);
+  // The re-pick's pass over the run's pages (learning.repick, learn/repick.ts), by its label as the run gives it, with the
+  // most characters of state it sends: its prompt state is cut to that (capState), its longest strings first; the
+  // workflow's state, which the quote check after it reads, stays whole.
+  const pages = repickMarked(repickSiteOf(doc));
+  // The marker's key is the host's: an input holding it would pick the re-pick's pass (or fail its route), whatever the
+  // input's schema says of it, so such an input is refused before anything runs.
+  if (pages && Object.hasOwn(input as object, REPICK_MARK)) return refuse(`its input holds "${REPICK_MARK}", the key its quote re-pick keeps its pass under`);
   // What a node answered the first time this call ran it, in every rerun of the call (`nested.memo`, by `key`): a rerun
   // after a park or a crash goes on from the same answers, so its MCP calls are asked with the arguments a person saw,
   // and never does a node's work again: `work` is called only while no answer is recorded, so a model's request or a paid
@@ -464,8 +477,13 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const ref = run.modelOf(tier);
     const model = !ref ? undefined : ref.provider === PORT_PROVIDER ? (run.modelName?.(tier) ?? undefined) : ref.modelId;
     if (model && typeof request.executionPath === "string") ranOn.set(request.executionPath, { model, ...(tier ? { tier } : {}) });
+    const cap = request.label === pages?.label ? pages.cap : undefined;
+    const user = cap === undefined ? request.user : capState(request.user, cap);
+    // A state past the cap with every string cut to nothing is never sent: the node fails and the re-pick hands back.
+    if (user === undefined) throw new Error(`${REPICK_STATE_REFUSED}: its node "${request.label}" holds more than learning.repick_max_chars (${cap}) characters of state with every string cut`);
+    const sent = user === request.user ? request : { ...request, user };
     // Its own signal, which the DSL ties to the call's (a sibling's failure, a deadline, the call's stop).
-    return fixed(`node:${nestedKey(request.label, request.executionPath, request.item)}`, async () => (await runnerFor(request.tier as string | undefined))(request));
+    return fixed(`node:${nestedKey(request.label, request.executionPath, request.item)}`, async () => (await runnerFor(request.tier as string | undefined))(sent));
   };
   type EffectRequest = { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal; executionPath?: string; item?: { index: number } };
   const liveEffect = async ({ node, input: given, signal: own, executionPath, item }: EffectRequest) => {
@@ -519,7 +537,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const onEvent = (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => {
     if (event.type === "loop.exited") {
       const detail = (event.detail ?? {}) as { reason?: unknown; iterations?: unknown };
-      if (typeof detail.iterations === "number") loops.push({ node: String(event.label), iterations: detail.iterations, met: detail.reason === "condition_met" });
+      if (typeof detail.iterations === "number") loops.push({ node: String(event.label), iterations: detail.iterations, met: detail.reason === "condition_met", ...(repickAt.has(String(event.label)) ? { repick: true as const } : {}) });
       return;
     }
     if (event.type !== "node.end" || nodes.length >= LEARNED_NODES_MAX) return;
@@ -550,7 +568,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
 const nestedKey = (label: string, executionPath: string | undefined, item: { index: number } | undefined): string =>
   `${label.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 40)}-${createHash("sha256").update(JSON.stringify([label, executionPath ?? "", item?.index ?? null])).digest("hex").slice(0, 16)}`;
 
-/** The draft check's decisions for `run` (learn/skills.ts DraftDecisions): its providers, and the gate's setting of each
+/** The draft check's decisions for `run` (learn/workflow-draft.ts DraftDecisions): its providers, and the gate's setting of each
  *  provider `text` asks (its bare id as the settings key) where it is not allow, with where a deny was set. A run handed
  *  no decisions (its claim was handed no key: none named, or each denied) has no provider, so a decision node is refused
  *  in the gate's words when its provider is denied, else as one the host does not have; never asked. */

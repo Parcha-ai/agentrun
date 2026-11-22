@@ -17,7 +17,7 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const CLI = fileURLToPath(new URL("../dist/conformance/cli.js", import.meta.url));
 const GROUPS = ["health", "exec", "files", "process", "provider", "drift", "isolation", "mount", "screen", "input", "touch", "apps", "ui", "lifetime", "gpu"];
 const PROTOCOL_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "ui"];
-const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "persistence", "extend", "stream", "mount:bind", "mount:archil", "vendor-agent", "secrets", "gpu"];
+const CAPABILITIES = [...PROTOCOL_GROUPS, "network:none", "network:open", "network:allow", "lifetime:janitor", "user:root", "user:uid", "release:stop", "persistence", "extend", "stream", "mount:bind", "mount:archil", "mount:sync", "vendor-agent", "secrets", "gpu"];
 /** Groups with no Core case: lifetime's extend, the mount of the run's folder and GPUs are optional for every kind. */
 const OPTIONAL_GROUPS = ["lifetime", "mount", "gpu"];
 
@@ -1073,7 +1073,23 @@ test("each computer's daemon is in the report under its own name and role, with 
 	assert.ok(lines.includes("note fake-2 (gpu.present): fence: userns-netns"), lines.join("\n"));
 	const plain = await runConformance(fakeComputers().provider, { image: IMAGE, cases: [pass("health.ping")] });
 	assert.deepEqual(plain.daemons.map((one) => Object.hasOwn(one, "fence")), [false], "no fence in hello, none in the report");
+	assert.deepEqual(plain.daemons.map((one) => Object.hasOwn(one, "windowManager")), [false], "no window manager in hello, none in the report");
 	assert.ok(formatReport(plain).split("\n").includes("daemon fake-1 (shared): computerd 1.0.0 linux/amd64"));
+});
+
+test("a computer's daemon in the report carries the window manager its hello says computerd started, as it said it", async () => {
+	const fake = fakeComputers();
+	const provider = {
+		...fake.provider,
+		connect: async (ref) => {
+			const connected = await fake.provider.connect(ref);
+			return connected.ok ? { ok: true, value: { ...connected.value, hello: { ...connected.value.hello, fence: "netns", windowManager: { state: "running" } } } } : connected;
+		},
+	};
+	const report = await runConformance(provider, { image: IMAGE, cases: [pass("health.ping", { run: async (t) => void (await t.connect()) })] });
+	assert.equal(report.core, "pass", JSON.stringify(reasons(report)));
+	assert.deepEqual(report.daemons, [{ computer: "fake-1", role: "shared", version: "1.0.0", os: "linux", arch: "amd64", fence: "netns", windowManager: { state: "running" } }]);
+	assert.ok(formatReport(report).split("\n").includes("daemon fake-1 (shared): computerd 1.0.0 linux/amd64 · fence netns · window manager running"), formatReport(report));
 });
 
 test("drift.version passes only on a refusal that is the version drift, never on a create or connect refused for another reason", async () => {

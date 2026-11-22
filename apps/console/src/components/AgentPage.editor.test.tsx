@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "@/App";
 import { agentFixture } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { Client } from "@/lib/client";
 import { CODING_AGENT_PREFERENCE } from "@/lib/codingAgentLinks";
 import type { NativeBinding } from "@/lib/native";
@@ -20,13 +21,13 @@ afterEach(() => {
   location.hash = "";
 });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const managed: Agent = { agent_id: "inspect/a + b", kind: "agentic", revision: "r2", revisions: 2, archived_at: null,
+const managed: Agent = { ...SERVED_AGENT, agent_id: "inspect/a + b", kind: "agentic", revision: "r2", revisions: 2, archived_at: null,
   definition: { version: 2, name: "Inspector", instructions: "Current instructions.", harness: "pi", skills: [], tools: [] } };
 const native: NativeBinding = {
   runtime: "claude-code", machine_id: "source-machine", project: "/workspace/project", selector: { kind: "project" }, state: "ready",
   version: "1.0.0", model: "claude-test", fingerprint: "editor-route-fixture", configuration: [], skills: [], mcp_servers: [], issues: [],
   connected: true, verified_at: "2026-11-12T00:00:00Z",
-  capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native", usage: true },
+  capabilities: { launch: true, learning: true, workflows: false, approval: "native", usage: true },
 };
 const revisions = (agent: Agent) => [
   { revision: "r2", version: 2, created_at: "2026-11-12T00:00:00Z", current: agent.revision === "r2", note: "Current revision", definition: managed.definition },

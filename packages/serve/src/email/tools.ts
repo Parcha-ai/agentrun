@@ -19,6 +19,12 @@ import { forModel } from "../result.js";
 import type { AskContext, ToolBinding, ToolHost } from "../tools.js";
 import { isObject } from "../validate.js";
 import { isGmailAccount, keepsSentCopy, keptAccount, NO_ACCOUNT, openAccount, type OpenedAccount } from "./account.js";
+import { held } from "../runner/held.js";
+
+/** Whether this process can open the server's email account: with the seal key, or through its runner (held.ts). */
+const opens = (host: ToolHost): boolean => host.store !== undefined && (host.sealKey !== undefined || held() !== undefined);
+/** The server's email account, opened here with the seal key, or by the runner for a run its revision grants it. */
+const accountOf = async (host: ToolHost): Promise<OpenedAccount | undefined> => (host.sealKey ? openAccount(host.store!, host.sealKey) : held()?.emailAccount());
 import { EMAIL_ANSWER_MAX_CHARS, emailError, emailText } from "./answer.js";
 import { archiveDescription, EMAIL_ADDRESS, EMAIL_DESCRIPTIONS, EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND, fileDescription, LIMIT_DEFAULT, LIMIT_MAX, OUTSIDE_THREAD, SEND_CAP, type ServerKind } from "./names.js";
 import { composed, foundOf, type ImapSession, inThread, involves, MailError, type MailHead, type MailMessage, READ_BYTES, readOf, SEARCH_BYTES, SENT_HEADER, smtpSend, TOOL_SOCKET_TIMEOUT_MS, withImap } from "./mail.js";
@@ -393,7 +399,7 @@ export async function sendAsks(args: Record<string, unknown>, ctx: AskContext): 
 /** The recipients of the send `args` outside the run's thread, in words; nothing on a run that reads the whole account. */
 async function outsideWords(host: ToolHost, args: Record<string, unknown>): Promise<string | undefined> {
   const scope = await scopeOf(host, EMAIL_READ);
-  if (scope.kind === "mailbox" || !host.store || !host.sealKey) return undefined;
+  if (scope.kind === "mailbox" || !opens(host)) return undefined;
   let recipients: string[];
   try {
     const letter = letterOf(args);
@@ -402,7 +408,7 @@ async function outsideWords(host: ToolHost, args: Record<string, unknown>): Prom
     return undefined;
   }
   try {
-    const account = await openAccount(host.store, host.sealKey);
+    const account = await accountOf(host);
     // No account, or one a template eval's run may not open: the send itself is refused in its own words.
     if (!account || !fakeHeld(host, account)) return undefined;
     const mail = new Mail(account, scope, threadOf(host));
@@ -526,8 +532,8 @@ function emailTool(name: string, host: ToolHost, kind?: ServerKind): ToolRegistr
     replay: tool.replay,
     execute: async (args) => {
       try {
-        if (!host.store || !host.sealKey) return forModel(`${name}: the email tools run on the runner, which this run is not on.`, { isError: true });
-        const account = await openAccount(host.store, host.sealKey);
+        if (!opens(host)) return forModel(`${name}: the email tools run on the runner, which this run is not on.`, { isError: true });
+        const account = await accountOf(host);
         if (!account) return forModel(`${name}: ${NO_ACCOUNT}`, { isError: true });
         if (!fakeHeld(host, account)) return forModel(`${name}: this eval run reads only its case's fake mailbox, and the server's email account is another.`, { isError: true });
         const mail = new Mail(account, await (scope ??= scopeOf(host, name)), threadOf(host), host.now);
@@ -546,7 +552,7 @@ function emailTool(name: string, host: ToolHost, kind?: ServerKind): ToolRegistr
  *  kind of server, read once at bind from the account's row (no connection; the password is never used); a template
  *  eval's fake account says the kind it plays. */
 export async function bindEmail(name: string, host: ToolHost): Promise<ToolBinding> {
-  const kept = name === EMAIL_FILE && !host.emailFake && host.store && host.sealKey ? await keptAccount(host.store, host.sealKey) : undefined;
+  const kept = name === EMAIL_FILE && !host.emailFake && opens(host) ? (host.sealKey ? await keptAccount(host.store!, host.sealKey) : await accountOf(host)) : undefined;
   const registration = emailTool(name, host, host.emailFake ? host.emailFake.kind : kept ? (isGmailAccount(kept) ? "gmail" : "folders") : undefined);
   const extension = defineExtension({ name: name.replaceAll("_", "-"), tools: [registration] });
   host.install(extension);

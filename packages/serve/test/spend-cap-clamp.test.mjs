@@ -59,7 +59,8 @@ async function records(data, runId, kind) {
 
 async function gateway(t, price) {
   const endpoint = await responsesEndpoint(t, "42", 10);
-  withEnv(t, { AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL: "cap-model", AGENT_MODEL_PRICE: price }, GATEWAY_VARS);
+  // The gateway takes the server's key (a server with none needs each run's: run-model-key.ts).
+  withEnv(t, { AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, AGENT_MODEL: "cap-model", AGENT_MODEL_PRICE: price }, GATEWAY_VARS);
   const server = await serve(t, { faux: undefined });
   return { ...server, endpoint, posts: () => endpoint.asked.filter((line) => line.startsWith("POST ")).length };
 }

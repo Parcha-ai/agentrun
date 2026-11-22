@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -126,11 +127,21 @@ async function judgedRun(t, item = CUT_KEY) {
 
 /** The one store held by another connection, as a runner mid-commit holds it: the write lock taken (BEGIN IMMEDIATE) and a
  *  read open on the run's journal inside it. The graph reads the store in its own connection (WAL), so a held writer never
- *  makes it wait or serve a stale view. The hold itself waits its turn for the write lock (busy timeout): a run's last
- *  bookkeeping writes can still be committing just after it reads as ended, on a loaded machine (CI's any-3 shard). */
-function hold(t, data, runId) {
-  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 15_000 });
-  store.exec("BEGIN IMMEDIATE");
+ *  makes it wait or serve a stale view. The hold waits its turn for the write lock, for up to 15 s: the runner's release
+ *  still commits just after the run reads as ended (runner.ts, after its flush). It waits without blocking this process:
+ *  the server and its runner run in it, and a transaction of theirs takes its COMMIT from this thread, so a busy wait here
+ *  (DatabaseSync's timeout) would hold that commit back and fail at its own deadline, the lock never freed. */
+async function hold(t, data, runId) {
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  t.after(() => store.isOpen && store.close());
+  for (const end = Date.now() + 15_000; ; await sleep(25)) {
+    try {
+      store.exec("BEGIN IMMEDIATE");
+      break;
+    } catch (error) {
+      if (!/database is locked|SQLITE_BUSY/.test(String(error?.message)) || Date.now() >= end) throw error;
+    }
+  }
   store.prepare("SELECT count(*) FROM pi_entries WHERE run_id = ?").get(runId);
   const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
   t.after(release);
@@ -154,7 +165,7 @@ test("a map item's label cut at 200 characters inside a held key, and a decision
 test("a graph read while another connection holds the run's store: read whole and lock-free, never stale, and no part of a held key", { timeout: 60_000 }, async (t) => {
   const { api, data, runId } = await judgedRun(t);
   const whole = (await api("GET", `/runs/${runId}/graph`)).body;
-  const release = hold(t, data, runId);
+  const release = await hold(t, data, runId);
   const held = await api("GET", `/runs/${runId}/graph`);
   release();
   assert.equal(held.status, 200, JSON.stringify(held.body));
@@ -195,7 +206,7 @@ test("a key saved after a graph read: the next read, while another connection ho
   const first = (await api("GET", `/runs/${runId}/graph`)).body;
   assert.ok(JSON.stringify(first.nodes).includes(saved.slice(0, 10)), "not held yet: the label shows it, cut at 200");
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: saved } })).status, 204);
-  const release = hold(t, data, runId);
+  const release = await hold(t, data, runId);
   const graph = (await api("GET", `/runs/${runId}/graph`)).body;
   release();
   assert.equal(graph.stale, undefined, "read whole, lock-free");

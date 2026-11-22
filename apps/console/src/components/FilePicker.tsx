@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 /** This server's upload limits (capabilities' `limits`): the largest file (null: no limit), and the most files one run
  *  names. Absent until the capabilities read answers, and then nothing is checked here. */
-export type UploadLimits = Capabilities["limits"];
+export type UploadLimits = Pick<Capabilities["limits"], "max_upload_bytes" | "max_files_per_run">;
 
 /** One file the person picked: sending (`progress` 0 to 1), or sent (`file`), and `removing` while its delete is asked. */
 export type Attached = { key: string; name: string; size: number; progress: number; file?: { file_id: string }; removing?: boolean };

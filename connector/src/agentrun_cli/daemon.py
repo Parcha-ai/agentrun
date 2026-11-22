@@ -14,6 +14,7 @@ import time
 from .adapters import observe
 from .network import APIError, request
 from .queue import Queue, destination
+from .learning_association import discover_learning
 
 
 def lock(directory):
@@ -53,6 +54,18 @@ def tick(state, queue, stopping=None):
     api_origin, token = state.data["origin"], state.data["credential"]
     prefix = "/connectors/" + state.data["connector_id"]
     online = True
+    checked = getattr(queue, 'usage_capability_checked_at', None)
+    if checked is not None and (checked == 0 or time.monotonic() - checked > 300):
+        try:
+            capabilities = request(api_origin, None, 'GET', '/connectors/capabilities')
+            queue.polling_usage_enabled = (capabilities.get('token_usage') or {}).get('polling') is True
+            queue.session_labels_enabled = capabilities.get('session_labels') is True
+            queue.learning_associations_enabled = (capabilities.get('cli_learning') or {}).get('session_association') is True
+        except (APIError, OSError):
+            queue.polling_usage_enabled = False
+            queue.session_labels_enabled = False
+            queue.learning_associations_enabled = False
+        queue.usage_capability_checked_at = time.monotonic()
     try:
         response = request(api_origin, token, "POST", prefix + "/heartbeat", {"dropped_events": queue.dropped()})
         if not state.accept_heartbeat(heartbeat, response, queue.retain_sources):
@@ -76,15 +89,37 @@ def tick(state, queue, stopping=None):
     if stopping is not None and stopping():
         return "observation_stopped"
     candidates = observe(state, stopping=stopping)
+    learning_reports = {}
+    if getattr(queue, 'learning_associations_enabled', False):
+        cache = {}
+        for candidate in candidates:
+            if stopping is not None and stopping():
+                return "observation_stopped"
+            learning_reports[candidate.id] = discover_learning(candidate, api_origin, cache)
 
     def enqueue(_latest):
+        # A failed session can still have final counters since its last poll.
+        # Keep reading its checkpointed tail while selected, under the same
+        # 32 MiB rotating budget as the loaded sessions.
+        eligible = [candidate.id for candidate in candidates if candidate.harness == 'codex' and
+                    candidate.activity in {'working', 'waiting_input', 'idle', 'failed'} and getattr(candidate, 'usage_path', None)]
+        cursor = getattr(queue, 'usage_cursor', 0) % max(1, len(eligible))
+        selected_usage = set((eligible[cursor:] + eligible[:cursor])[:32])
+        queue.usage_cursor = cursor + 32
         for candidate in candidates:
             source = next((source for source in selected if source["harness"] == candidate.harness and
                            ((source["mode"] == "session" and source["external_session_id"] == candidate.id) or
                             (source["include_future_sessions"] and (source["mode"] == "harness" or
                              (source["mode"] == "project" and source["source_id"] == candidate.project_id))))), None)
             if source:
-                queue.observe(source["source_id"], candidate)
+                options = {}
+                if getattr(queue, 'polling_usage_enabled', False) and candidate.id in selected_usage:
+                    options['collect_usage'] = True
+                if getattr(queue, 'session_labels_enabled', False):
+                    options['collect_labels'] = True
+                if candidate.id in learning_reports:
+                    options.update(cli_learning=learning_reports[candidate.id], connector_id=epoch['connector_id'])
+                queue.observe(source["source_id"], candidate, **options)
 
     if not state.apply_connection_epoch(epoch, enqueue):
         return "connection_changed"
@@ -224,6 +259,10 @@ def run(state, once=False, interval=30, ready_fd=None):
             queue = Queue(state.directory, max_events=state.data.get("queue_limit", 1000),
                           max_bytes=state.data.get("queue_byte_limit", 1_000_000), refresh_seconds=state.data.get("refresh_seconds", 60),
                           binding=destination(state))
+        queue.polling_usage_enabled = False
+        queue.session_labels_enabled = False
+        queue.learning_associations_enabled = False
+        queue.usage_capability_checked_at = 0
         if not once:
             if socket_path.exists() and not socket_path.is_socket():
                 raise ValueError("unsafe_state")

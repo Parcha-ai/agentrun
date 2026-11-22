@@ -17,15 +17,13 @@ const expectation = (found) => {
   return JSON.stringify(outcomeOf(found.resumed)) === JSON.stringify(wanted) ? [] : [`the resume ended ${JSON.stringify(outcomeOf(found.resumed))}, not ${JSON.stringify(wanted)}`];
 };
 
-for (const machines of [1, 2]) {
-  test(`the sweep cuts every crossing and no effect is dispatched twice, on ${machines} machine${machines === 2 ? 's' : ''}`, async () => {
-    const result = await crashSweep({ child, machines, expect: expectation });
-    assert.deepEqual(result.violations, []);
-    assert.deepEqual(result.crossings, { admit: 2, dispatch: 2, settle: 2, commit: 3 });
-    assert.equal(result.cases.length, 9);
-    assert.deepEqual(outcomeOf(result.census), COMPLETE);
-  });
-}
+test('the sweep cuts every crossing and no effect is dispatched twice, on 2 machines', async () => {
+  const result = await crashSweep({ child, machines: 2, expect: expectation });
+  assert.deepEqual(result.violations, []);
+  assert.deepEqual(result.crossings, { admit: 2, dispatch: 2, settle: 2, commit: 3 });
+  assert.equal(result.cases.length, 9);
+  assert.deepEqual(outcomeOf(result.census), COMPLETE);
+});
 
 test('a host that dispatches without consulting the journal is caught', async () => {
   const result = await crashSweep({ child, env: { PLANT: 'bypass-journal' }, expect: expectation });

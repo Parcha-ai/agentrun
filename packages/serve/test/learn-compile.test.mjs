@@ -1,36 +1,29 @@
 // The compile turn (learn/compile.ts): once an agent's job repeats (its definition's compile_after completed runs, and no
-// learned workflow yet), the end-of-run look-back writes the whole job as a learned workflow from
-// its notes and its last runs' traces. It authors against the checker: a DSL reference generated from the DSL's own
-// vocabulary, one worked example the checks pass, then the static checks and the dry run, their refusals sent back up to
-// COMPILE_RETRIES times, every attempt recorded. The notes it absorbs get `compiled_into: <workflow>` when it merges, and
-// stay served; a run never sets that key itself. The three-offers draft ask it replaces is gone.
+// learned workflow yet), the end-of-run step writes the whole job as a learned workflow from its last runs' traces. It
+// authors against the checker: a DSL reference generated from the DSL's own vocabulary, one worked example the checks
+// pass, then the static checks and the dry run, their refusals sent back up to COMPILE_RETRIES times, every attempt
+// recorded. A draft that passes is committed directly; the three-offers draft ask it replaced is gone.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
-import { baseOf, added, DRAFT_PATH, note, README_PATH, readme, richWorkflow } from "./learn-format-support.mjs";
-import { git, repoOf } from "./learn-support.mjs";
+import { added, DRAFT_PATH, README_PATH, readme, richWorkflow } from "./learn-format-support.mjs";
 
 const compile = await import("../dist/learn/compile.js");
-const { draftProblems, draftDryRun } = await import("../dist/learn/skills.js");
-const { answerTierProblems, checkProposal, compactStateProblems, quoteCheckProblems } = await import("../dist/learn/check.js");
-const { compiledInto, parseNoteFile } = await import("../dist/learn/notes.js");
-const { learningCommit } = await import("../dist/learn/commit.js");
-const { seedOf } = await import("../dist/learning.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
+const { draftProblems, draftDryRun, draftDecisionProviders } = await import("../dist/learn/workflow-draft.js");
+const { answerTierProblems, checkDraft, compactStateProblems, quoteCheckProblems, repickLabels } = await import("../dist/learn/check.js");
 const { reflectRequestId, reflectRanges } = await import("../dist/runner/end-of-run.js");
-const reflect = await import("../dist/learn/reflect.js");
 const learningEnd = await import("../dist/runner/learning-end.js");
 const { runLearningBody } = await import("../dist/learning-routes.js");
 const { secretsShown } = await import("../dist/learning.js");
 const { said } = await import("../dist/learning-words.js");
 const { labelled } = await import("../dist/reflect-range.js");
-const reflect_ = reflect;
 
-const NOTES = [{ file: "rule-1.md", text: note({ name: "Rule 1", description: "First" }) }, { file: "rule-2.md", text: note({ name: "Rule 2", description: "Second" }) }];
-const ASK = (extra = {}) => ({ mode: "new", reference: compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), notes: NOTES, traces: [], tools: ["web_fetch"], judges: false, ...extra });
+const ASK = (extra = {}) => ({ mode: "new", reference: compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), traces: [], tools: ["web_fetch"], judges: false, ...extra });
+/** A draft's workflow.json `text` and its README through the checks a compile draft meets (learn/check.ts checkDraft). */
+const draftChecked = (text, tools) => checkDraft({ changes: [added(DRAFT_PATH, text), added(README_PATH, readme)], tools, dsl });
+/** The checks passing a draft, as learning-end.ts checkDraftOf answers: no errors, what is committed, and its digest. */
+const passed = (text, digest) => ({ errors: [], kept: { name: "answer", files: [{ path: "workflows/answer/workflow.json", text }] }, ...(digest ? { digest } : {}) });
+const refused = (detail) => ({ errors: [`workflow: ${detail}`] });
 
 test("compileDue: a completed run of an agent with its definition's compile_after completed runs and no learned workflow, not compiled lately", () => {
   const due = (facts) => compile.compileDue({ completed: true, runs: 0, workflows: 0, compileAfter: 20, ...facts });
@@ -58,6 +51,22 @@ test("the compile reference is generated from the DSL's own author contract, wit
   assert.match(compile.compileReference(dsl, { tools: [], judges: false }), /There is no tool for a call node to run: author no call node\./);
 });
 
+test("a run with decision providers is offered judge, pick and sift nodes by the compile turn; a run with none (or only a denied one) is not, and neither is offered a code node", () => {
+  // As runner/learning-end.ts compileAskOf decides it: judges when the run has a provider its gate does not deny.
+  const judgesOf = (decisions) => draftDecisionProviders(decisions).length > 0;
+  for (const decisions of [undefined, { providers: {}, default: "jev" }, { providers: { jev: {} }, default: "jev", gated: { jev: "deny" } }]) {
+    assert.equal(judgesOf(decisions), false, JSON.stringify(decisions));
+    assert.ok(!compile.learnedHost({ tools: ["read"], judges: false }).nodeKinds.some((kind) => ["judge", "pick", "sift", "code"].includes(kind)));
+  }
+  for (const decisions of [{ providers: { jev: {} }, default: "jev" }, { providers: { jev: {} }, default: "jev", gated: { jev: "ask" } }]) {
+    assert.equal(judgesOf(decisions), true, JSON.stringify(decisions));
+    const kinds = compile.learnedHost({ tools: ["read"], judges: true }).nodeKinds;
+    for (const kind of ["judge", "pick", "sift"]) assert.ok(kinds.includes(kind), kind);
+    assert.ok(!kinds.includes("code"));
+    assert.equal(compile.compileReference(dsl, { tools: ["read"], judges: true }), dsl.authorContract({ host: compile.learnedHost({ tools: ["read"], judges: true }) }));
+  }
+});
+
 // The worked example is the cascade skeleton (H1, H5d): fetch, a fast extract writes compact facts, the answer on the
 // agent's model reads only those facts and its own draft, a quote_missing check after a re-pick loop of 2, and an escalate
 // for a case the policy does not cover. Every check the compile turn's draft meets passes it, and it carries no guard.
@@ -72,8 +81,7 @@ test("the worked example is the cascade skeleton and every check passes it: the 
     assert.deepEqual(answerTierProblems(doc), [], `fetches ${fetches}: the answer's tier`);
     assert.deepEqual(compactStateProblems(doc), [], `fetches ${fetches}: compact state`);
     assert.deepEqual(quoteCheckProblems(doc), [], `fetches ${fetches}: the quote check and its re-pick`);
-    const checked = checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, text), added(README_PATH, readme)], outcome: "completed", tools, dsl });
-    assert.deepEqual(checked.problems, [], `fetches ${fetches}: checkProposal`);
+    assert.deepEqual(draftChecked(text, tools), [], `fetches ${fetches}: checkDraft`);
     assert.doesNotMatch(text, /"guard"|"threshold"|"signal"|"jev"/, "no guard field anywhere");
     assert.equal(dsl.validateWorkflow(doc, { executeCode: false, tools }).ok, true);
   }
@@ -91,7 +99,7 @@ test("the worked example is the cascade skeleton and every check passes it: the 
   assert.equal(doc.root.steps[5].when.predicate, "field_equals", "an uncovered case hands back on a value a step wrote");
 });
 
-test("the compile prompt: no tool, the reference, the worked example, the input's field names (never values), the tools, the notes and traces fenced as data, and one block asked for", () => {
+test("the compile prompt: no tool, the reference, the worked example, the input's field names (never values), the tools, the traces fenced as data, and one block asked for", () => {
   const traces = [{ input: "Is 6x7 42?", calls: [{ tool: "web_fetch", input: "{\"url\":\"https://x.example\"}", failed: true }], answer: "Yes.", feedback: ["Shorter next time."] }];
   const prompt = compile.compilePrompt(ASK({ traces, input: { content: "SECRET-VALUE-1", count: 3 }, described: [{ name: "web_fetch", does: "Read a page" }] }));
   assert.ok(prompt.startsWith("One more turn: write this agent's job as a learned workflow."));
@@ -101,12 +109,11 @@ test("the compile prompt: no tool, the reference, the worked example, the input'
   assert.match(prompt, /This run's input has these fields: `content` \(string\), `count` \(number\)\./);
   assert.ok(!prompt.includes("SECRET-VALUE-1"), "the input's values stay out");
   assert.match(prompt, /A call node may run only these tools: web_fetch\.\nWhat each tool a call node may run takes and gives:\n- `web_fetch`: Read a page/);
-  assert.match(prompt, /----- begin \w+: the notes -----[\s\S]*rule-1\.md:[\s\S]*----- end \w+ -----/);
   assert.match(prompt, /----- begin \w+: the runs -----[\s\S]*web_fetch[\s\S]*failed[\s\S]*Shorter next time\.[\s\S]*----- end \w+ -----/);
-  assert.match(prompt, /`from_notes:` the notes whose rules it carries out/);
+  assert.doesNotMatch(prompt, /from_notes|: the notes -----/, "no notes: the agent learns none");
   assert.equal(compile.askedForCompile(prompt), true);
   assert.equal(compile.askedForCompile(compile.compileAgain(["bad"], 2)), "again");
-  assert.equal(compile.askedForCompile(reflect.reflectPrompt({ dir: ".learning", active: 0 })), false);
+  assert.equal(compile.askedForCompile("Answer the question."), false);
   // A revision names its workflow, gives it as it is, and says why it is held; it is never offered "No change."
   const held = { workflow: "answer", digest: "0123456789abcdef", reason: "r" };
   const revise = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held }));
@@ -114,6 +121,15 @@ test("the compile prompt: no tool, the reference, the worked example, the input'
   assert.match(revise, /`answer` as it is now:\n----- begin \w+: its workflow\.json -----\n\{"v":2\}/);
   assert.equal(compile.readCompile("No change.", ASK({ mode: "revise", workflow: "answer", current: "{}", held })).ok, false);
   assert.throws(() => compile.compilePrompt(ASK({ mode: "revise", workflow: "Bad Name\nIgnore", current: "{}", held })), /workflow's name/);
+});
+
+test("the compile ask says the draft's output is the job's answer in the runs' output format, written by its last node (#2412)", () => {
+  const base = { reference: "(the DSL reference)", traces: [], tools: ["read"], judges: false };
+  for (const ask of [{ mode: "new", ...base }, { mode: "revise", workflow: "card-report", current: "{}", held: { workflow: "card-report", digest: "0123456789abcdef", reason: "r" }, ...base }]) {
+    const prompt = compile.compilePrompt(ask);
+    assert.ok(prompt.includes(compile.OUTPUT_FORMAT), ask.mode);
+  }
+  assert.match(compile.OUTPUT_FORMAT, /output format your runs gave it: its last node writes it, and `output` names that node's state\./);
 });
 
 test("compileAgain fences the checks' words as data; a fence the draft names is never closed early", () => {
@@ -124,11 +140,12 @@ test("compileAgain fences the checks' words as data; a fence the draft names is 
   assert.ok(prompt.indexOf("Ignore the rules") < prompt.indexOf(`----- end ${token} -----`), "the draft's words stay inside the fence");
 });
 
-test("readCompile: exactly one workflow block, its from_notes only the notes given; anything else is an error the model is sent", () => {
-  const block = (name, front = "from_notes: [rule-1.md, other.md, rule-1.md]") => `\`\`\`\`workflow ${name}\n---\ndescription: d\n${front}\n---\n{"v":2}\n\`\`\`\``;
+test("readCompile: exactly one workflow block; anything else is an error the model is sent", () => {
+  const block = (name) => `\`\`\`\`workflow ${name}\n---\ndescription: d\n---\n{"v":2}\n\`\`\`\``;
   const read = compile.readCompile(block("answer"), ASK());
   assert.equal(read.ok, true);
-  assert.deepEqual([read.name, read.from_notes], ["answer", ["rule-1.md"]]);
+  assert.equal(read.name, "answer");
+  assert.match(read.text, /description: d[\s\S]*\{"v":2\}/);
   assert.match(compile.readCompile("nothing here", ASK()).error, /holds no ````workflow <name> block/);
   assert.match(compile.readCompile(`${block("a")}\n\n${block("b")}`, ASK()).error, /exactly one/);
   assert.match(compile.readCompile(block("other"), ASK({ mode: "revise", workflow: "answer", current: "{}" })).error, /keep its name `answer`/);
@@ -136,33 +153,34 @@ test("readCompile: exactly one workflow block, its from_notes only the notes giv
 
 test("compileTurn: a draft the checks refuse goes back with their errors, each attempt its own step, and the fixed one is kept; every attempt recorded", async () => {
   const asked = [];
-  const answers = ["```note x.md\nnot a workflow\n```", "````workflow answer\n---\ndescription: d\nfrom_notes: [rule-2.md]\n---\nBAD\n````", "````workflow answer\n---\ndescription: d\nfrom_notes: [rule-2.md]\n---\nGOOD\n````"];
+  const answers = ["````workflow a\n---\ndescription: d\n---\n{}\n````\n\n````workflow b\n---\ndescription: d\n---\n{}\n````", "````workflow answer\n---\ndescription: d\n---\nBAD\n````", "````workflow answer\n---\ndescription: d\n---\nGOOD\n````"];
   const result = await compile.compileTurn({
     ask: async (prompt, attempt) => (asked.push({ prompt, attempt }), { answer: answers[attempt - 1] }),
     compile: ASK(),
-    answer: "",
-    check: async (answer) => (answer.includes("GOOD") ? { state: "proposed", workflows: 1, proposal: { files: [{ file: "workflows/answer/workflow.json", text: JSON.stringify(compile.compileExample(false)) }] } } : { state: "dropped", reason: "checker", problems: [{ rule: "workflow", path: "workflows/answer/workflow.json", detail: "its JSON does not parse" }] }),
+    check: async (draft) => (draft.text.includes("GOOD") ? passed(draft.text) : refused("its JSON does not parse")),
   });
   assert.deepEqual(asked.map(({ attempt }) => attempt), [1, 2, 3]);
   assert.ok(asked[0].prompt.startsWith("One more turn: write this agent's job"));
   assert.match(asked[1].prompt, /attempt 2 of 4[\s\S]*exactly one/);
   assert.match(asked[2].prompt, /attempt 3 of 4[\s\S]*workflow: its JSON does not parse/);
   assert.deepEqual(result.record.attempts.map(({ ok }) => ok), [false, false, true]);
-  assert.deepEqual(result.record.from_notes, ["rule-2.md"]);
+  assert.equal(result.record.workflow, "answer");
   assert.deepEqual(result.draftErrors, []);
-  assert.match(result.kept.answer, /GOOD/);
+  assert.match(result.kept.files[0].text, /GOOD/);
 });
 
 test("compileTurn: one that never passes stops after 1 + 3 attempts with its errors; a turn that ends unanswered is recorded too", async () => {
   let asks = 0;
-  const failing = await compile.compileTurn({ ask: async () => (asks++, { answer: "no block" }), compile: ASK(), answer: "", check: async () => assert.fail("nothing to check") });
+  const failing = await compile.compileTurn({ ask: async () => (asks++, { answer: "no block" }), compile: ASK(), check: async () => assert.fail("nothing to check") });
   assert.equal(asks, 4);
   assert.deepEqual([failing.record.workflow, failing.record.attempts.length], [compile.UNNAMED, 4], "recorded, though no attempt named a workflow");
   assert.ok(failing.draftErrors.length > 0);
-  const named = await compile.compileTurn({ ask: async () => ({ answer: "````workflow answer\n---\ndescription: d\n---\n{}\n````" }), compile: ASK(), answer: "", check: async () => ({ state: "dropped", reason: "checker", problems: [{ rule: "workflow", path: "workflows/answer/workflow.json", detail: "no root" }] }) });
+  assert.equal(failing.drafted, true, "it answered: the compile's attempt");
+  const named = await compile.compileTurn({ ask: async () => ({ answer: "````workflow answer\n---\ndescription: d\n---\n{}\n````" }), compile: ASK(), check: async () => refused("no root") });
   assert.equal(named.record.attempts.length, 4);
   assert.deepEqual(named.draftErrors, ["workflow: no root"]);
-  const silent = await compile.compileTurn({ ask: async () => undefined, compile: ASK(), answer: "", check: async () => assert.fail("nothing to check") });
+  const silent = await compile.compileTurn({ ask: async () => undefined, compile: ASK(), check: async () => assert.fail("nothing to check") });
+  assert.equal(silent.drafted, undefined, "never answered: no compile attempt");
   assert.match(silent.draftErrors.join(" "), /ended before it answered/);
   assert.deepEqual(silent.record.attempts, [{ ok: false, errors: ["the turn ended before it answered"] }]);
 });
@@ -178,107 +196,16 @@ test("each compile attempt is its own request id: never answered from the look-b
   assert.deepEqual([reflectRequestId("run-1", false, 2), reflectRequestId("run-1", false, 2, "compile-1")], ["learn-reflect-run-1:round-2", "learn-reflect-run-1:round-2:compile-1"]);
 });
 
-test("the three-offers draft ask is gone: no DRAFT_AFTER_RUNS, no draftForOf, and the look-back's prompt keeps no workflow", () => {
-  assert.equal(reflect.DRAFT_AFTER_RUNS, undefined);
+test("the three-offers draft ask is gone: no draftForOf; the compile ask is the one way a workflow is drafted", () => {
   assert.equal(learningEnd.draftForOf, undefined);
   assert.equal(typeof learningEnd.compileAskOf, "function");
-  assert.doesNotMatch(reflect.reflectPrompt({ dir: ".learning", active: 0, draftFor: ["weekly-report"] }), /````workflow|has now served/);
-});
-
-test("a run never sets compiled_into on its own note: the host does, when a compiled workflow merges", () => {
-  const text = note({ extra: "compiled_into: answer\n" });
-  const { problems } = checkProposal({ base: baseOf(), changes: [added("rule-9.md", text)] });
-  assert.ok(problems.some((problem) => problem.rule === "frontmatter" || /compiled_into/.test(problem.detail)), JSON.stringify(problems));
-  assert.match(problems.map(({ detail }) => detail).join(" "), /compiled_into/);
-});
-
-test("compiledInto marks a note's front matter, once, its status and body kept; a bad workflow name is refused", () => {
-  const marked = compiledInto(compiledInto(note(), "answer"), "answer-v2");
-  const parsed = parseNoteFile("rule-1.md", marked);
-  assert.ok(!Array.isArray(parsed), JSON.stringify(parsed));
-  assert.equal(parsed.status, "active");
-  assert.equal(marked.match(/compiled_into:/g).length, 1);
-  assert.match(marked, /compiled_into: answer-v2/);
-  assert.equal(parsed.body, "Open /policies/ before searching the store.\n");
-  assert.throws(() => compiledInto(note(), "Bad\nname"), /learned workflow's name/);
-});
-
-test("a merge that writes a compiled workflow marks each active note it absorbed compiled_into, in the same commit; the notes stay active and in the index", async (t) => {
-  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-compile-"));
-  t.after(() => rmSync(data, { recursive: true, force: true }));
-  await seedOf(data, "agent-1");
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
-  try {
-    for (const { file, text } of NOTES) {
-      const made = await learningCommit(folder.workspace, { kind: "person", action: "created", file, text, ifMatch: null });
-      assert.equal(made.ok, true, JSON.stringify(made));
-    }
-    const flow = JSON.stringify(compile.compileExample(false));
-    const readme = "---\nname: refund-request\ndescription: Answers a refund request\n---\n";
-    const merged = await learningCommit(folder.workspace, { kind: "merge", runId: "run-1", reason: "compiled", graded: {}, files: [{ path: "workflows/refund-request/workflow.json", text: flow }, { path: "workflows/refund-request/README.md", text: readme }], compiled: { workflow: "refund-request", notes: ["rule-1.md", "gone.md"] } });
-    assert.equal(merged.ok, true, JSON.stringify(merged));
-    assert.ok(merged.files.includes("rule-1.md"), JSON.stringify(merged.files));
-    assert.ok(!merged.files.includes("rule-2.md"));
-  } finally {
-    await folder.end();
-  }
-  const repo = repoOf(data, "agent-1");
-  assert.ok(existsSync(repo), repo);
-  const at = (path) => git(repo, ["show", `main:${path}`]);
-  assert.match(at("rule-1.md"), /compiled_into: refund-request/);
-  assert.doesNotMatch(at("rule-2.md"), /compiled_into/);
-  assert.match(at("MEMORY.md"), /rule-1\.md/, "still in the index: still served");
-});
-
-test("a note at the 4 KB cap a compiled workflow marks stays a note: the host's compiled_into line never counts against the cap, so it still retires, restores, and a later note supersedes it through the grader", async (t) => {
-  const { writeNote } = await import("../dist/learning-routes.js");
-  const { gradePrompt } = await import("../dist/learn/grade.js");
-  const { checkNote } = await import("../dist/learn/check.js");
-  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-compile-cap-"));
-  t.after(() => rmSync(data, { recursive: true, force: true }));
-  await seedOf(data, "agent-1");
-  const head = note({ name: "Full", description: "A note at the cap", body: "" });
-  const full = `${head}${"x".repeat(4095 - Buffer.byteLength(head))}\n`;
-  assert.equal(Buffer.byteLength(full), 4096);
-  // An owner's note at the cap, through the route a person writes it by.
-  assert.equal((await writeNote(data, "agent-1", "full.md", { ifNoneMatch: "*", body: Buffer.from(full), refuse: [] })).status, 201);
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
-  try {
-    const flow = JSON.stringify(compile.compileExample(false));
-    const readme = "---\nname: refund-request\ndescription: Answers a refund request\n---\n";
-    const merged = await learningCommit(folder.workspace, { kind: "merge", runId: "run-1", reason: "compiled", graded: {}, files: [{ path: "workflows/refund-request/workflow.json", text: flow }, { path: "workflows/refund-request/README.md", text: readme }], compiled: { workflow: "refund-request", notes: ["full.md"] } });
-    assert.equal(merged.ok, true, JSON.stringify(merged));
-  } finally {
-    await folder.end();
-  }
-  const repo = repoOf(data, "agent-1");
-  // git() trims its output: the note ends in its newline.
-  const compiled = `${git(repo, ["show", "main:full.md"])}\n`;
-  assert.match(compiled, /compiled_into: refund-request/);
-  assert.ok(Buffer.byteLength(compiled) > 4096, "the mark is on top of the cap");
-  // A person's own read of it: the note checks pass it as it is on main.
-  assert.deepEqual(checkNote("full.md", Buffer.from(compiled)).problems, []);
-  // A later run's note that supersedes it: the grader reads it whole.
-  const newer = note({ name: "Fuller", description: "The rule again", extra: "supersedes: [full.md]\n" });
-  assert.match(gradePrompt({ run: "run-2", active: [parseNoteFile("full.md", compiled)], superseded: [{ file: "full.md", text: compiled }], proposed: [{ file: "fuller.md", text: newer }] }), /compiled_into: refund-request/);
-  // Retired, then restored: the cap holds for each without the host's line.
-  const etag = () => `"${git(repo, ["rev-parse", "main:full.md"])}"`;
-  const retired = await writeNote(data, "agent-1", "full.md", { ifMatch: etag(), refuse: [] });
-  assert.equal(retired.status, 200);
-  assert.match(retired.text, /status: retired/);
-  const restored = await writeNote(data, "agent-1", "full.md", { ifMatch: etag(), refuse: [], restore: true });
-  assert.equal(restored.status, 200);
-  assert.equal(restored.text, compiled, "back as it was, its mark kept");
-  // A person still cannot write past the cap by adding the line by hand beyond it: the cap counts everything else.
-  const over = `${head}${"x".repeat(4096 - Buffer.byteLength(head))}\n`.replace("type: reference\n", "type: reference\ncompiled_into: refund-request\n");
-  assert.deepEqual(checkNote("over.md", Buffer.from(over)).problems.map(({ rule }) => rule), ["too_large"]);
 });
 
 test("GET /runs/{id}/learning serves the compile record and a failed draft's errors, each cut of the host's secrets", () => {
   const SECRET = ["sk", "test", "0123456789abcdef0123456789"].join("-"); // built at run time: the source export scans for literal keys
-  const learning = { state: "proposed", reason: null, detail: said.proposed(1, 0, 0), at: new Date(0).toISOString(), compiled: { workflow: "answer", from_notes: ["rule-1.md"], attempts: [{ ok: false, errors: [`workflow: leaks ${SECRET}`] }] }, draft_errors: [`workflow: leaks ${SECRET}`] };
+  const learning = { state: "dropped", reason: "checker", detail: "x", at: new Date(0).toISOString(), compiled: { workflow: "answer", attempts: [{ ok: false, errors: [`workflow: leaks ${SECRET}`] }] }, draft_errors: [`workflow: leaks ${SECRET}`] };
   const body = runLearningBody({ id: "run-1", learning, seed: null, settled: true }, secretsShown([SECRET]), [SECRET]);
-  assert.deepEqual(body.compiled.from_notes, ["rule-1.md"]);
+  assert.equal(body.compiled.workflow, "answer");
   assert.equal(body.compiled.attempts[0].ok, false);
   assert.ok(!JSON.stringify(body).includes(SECRET), JSON.stringify(body));
   assert.equal(body.draft_errors.length, 1);
@@ -289,8 +216,8 @@ test("GET /runs/{id}/learning serves the compile record and a failed draft's err
 test("a run's timeline shows the compile turn's asks in the host's words, never the ask itself", () => {
   const reflect = { outcome: "completed", after: 1, deadline: new Date(0).toISOString() };
   const row = (n, text) => ({ id: `c:${n}`, kind: "user_message", text, summary: text });
-  const rows = labelled(reflect, [row(2, reflect_.reflectPrompt({ dir: ".learning", active: 0 })), row(3, compile.compilePrompt(ASK())), row(4, compile.compileAgain(["x"], 2))]);
-  assert.deepEqual(rows.map(({ text }) => text), [said.asked, said.askedCompile, said.askedCompileAgain]);
+  const rows = labelled(reflect, [row(3, compile.compilePrompt(ASK())), row(4, compile.compileAgain(["x"], 2))]);
+  assert.deepEqual(rows.map(({ text }) => text), [said.askedCompile, said.askedCompileAgain]);
 });
 
 
@@ -317,6 +244,33 @@ test("held by its check: the revise ask says the check's numbers and offers no '
   assert.match(plain, /Your learned workflow `answer` does not run first: it was held \(the check could not run\)\. It stays held until a new revision of it\./);
 });
 
+// Batch 28 item 1: a connected agent's hold on give-backs checked no input (n 0). Its revise ask says why it was held and
+// that there are no disagreements to show, and never that nothing compiles again: such a hold spends no recompile and
+// revises at a first compile's cadence; two failed revise drafts stop it.
+test("held on give-backs: the revise ask says nothing was checked, shows no disagreements, and never says nothing compiles again", () => {
+  const check = { n: 0, compile_after: 20, alone: 0, agreed: 0, alone_min: 0.8, agree_min: 0.9, of: [], released: 5 };
+  const held = { workflow: "answer", digest: "0123456789abcdef", reason: "the connected agent gave back 5 reserved native turns in a row with no answer to check it against (the last: no shadow report)", check };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held }));
+  assert.match(prompt, /does not run first: it was held \(the connected agent gave back 5 reserved native turns in a row/);
+  assert.doesNotMatch(prompt, /checked on 0 inputs/);
+  assert.match(prompt, /no disagreements to show/);
+  assert.doesNotMatch(prompt, /nothing compiles again/);
+  assert.doesNotMatch(prompt, /answers these inputs alone/);
+});
+
+// A give-back hold written after landed turns keeps their disagreements: the revise shows them, and says how many inputs
+// were checked before it was held, never that none were.
+test("held on give-backs after landed turns: the revise ask shows their disagreements and says how many inputs were checked", () => {
+  const one = { run: "r1", input: "release 7", agent: "ready", draft: "not ready" };
+  const check = { n: 0, compile_after: 20, alone: 0, agreed: 0, alone_min: 0.8, agree_min: 0.9, of: [], released: 5, disagreements: [one], turns: { n: 3, agreed: 2, alone: 3, of: ["a", "b", "c"], outcomes: { answered: 3, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [one] } };
+  const held = { workflow: "answer", digest: "0123456789abcdef", reason: "the connected agent gave back 5 reserved native turns in a row", check };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held }));
+  assert.match(prompt, /Input 1: release 7\nYour answer: ready\nThe draft's answer: not ready/);
+  assert.match(prompt, /3 of your inputs were checked before it was held/);
+  assert.doesNotMatch(prompt, /checked on no input|no disagreements to show/);
+  assert.doesNotMatch(prompt, /nothing compiles again/);
+});
+
 // CompiledRecord.promoted is the promotion step's (learn/promote.ts): the kept draft's digest, read against the agent's
 // promotion records when the run's learning is read.
 test("a held revision asks its compile turn for a revision while its champion serves, however often the champion is checked after; a champion's own hold asks too", () => {
@@ -335,7 +289,8 @@ test("a kept compile records its draft's digest, and promotedOf reads it against
   const result = await compile.compileTurn({
     ask: async () => ({ answer: `\`\`\`\`workflow refund-request\n---\ndescription: d\n---\n${text}\n\`\`\`\`` }),
     compile: ASK(), answer: "",
-    check: async () => ({ state: "proposed", workflows: 1, proposal: { files: [{ file: "workflows/refund-request/workflow.json", text }] } }),
+    // As learning-end.ts checkDraftOf answers: the digest of the workflow.json it keeps (the block less its front matter).
+    check: async () => ({ errors: [], kept: { name: "refund-request", files: [{ path: "workflows/refund-request/workflow.json", text }] }, digest: workflowDigest({ workflow: text }) }),
   });
   const digest = workflowDigest({ workflow: text });
   assert.equal(result.record.digest, digest, "the digest a run serving it records");
@@ -349,30 +304,12 @@ test("a kept compile records its draft's digest, and promotedOf reads it against
 });
 
 test("GET /runs/{id}/learning: compiled.promoted is null until its promotion is decided, then true or false; its digest is served", () => {
-  const base = { state: "proposed", reason: null, detail: said.proposed(0, 0, 1), at: new Date(0).toISOString() };
-  const compiled = { workflow: "answer", from_notes: [], attempts: [{ ok: true, errors: [] }], digest: "0123456789abcdef" };
+  const base = { state: "merged", reason: null, detail: "x", at: new Date(0).toISOString() };
+  const compiled = { workflow: "answer", attempts: [{ ok: true, errors: [] }], digest: "0123456789abcdef" };
   const body = (extra) => runLearningBody({ id: "run-1", learning: { ...base, compiled: { ...compiled, ...extra } }, seed: null, settled: true }, secretsShown([]), []).compiled;
   assert.deepEqual([body({}).promoted, body({}).digest], [null, "0123456789abcdef"]);
   assert.equal(body({ promoted: true }).promoted, true);
   assert.equal(body({ promoted: false }).promoted, false);
-});
-
-// #2641 review (class B): the compile turn reads the agent's notes whole; notes past NOTES_MAX compile nothing and say
-// why, never a workflow from a cut set of rules.
-test("the compile prompt keeps every note whole, past what a cut would have kept; notes over NOTES_MAX ask nothing and record why", async () => {
-  const body = "Always do the thing this rule says, every time. ".repeat(80);
-  const notes = Array.from({ length: 7 }, (_, i) => ({ file: `rule-${i + 1}.md`, text: note({ name: `Rule ${i + 1}`, description: `Rule ${i + 1}` }) + body + `END-OF-RULE-${i + 1}` }));
-  assert.ok(notes.reduce((sum, one) => sum + one.text.length, 0) > 24_000, "past the old cut");
-  const prompt = compile.compilePrompt(ASK({ notes }));
-  for (let i = 1; i <= 7; i++) assert.ok(prompt.includes(`END-OF-RULE-${i}`), `rule ${i} whole`);
-  assert.ok(!/…\n----- end/.test(prompt), "nothing cut");
-  const many = Array.from({ length: Math.ceil(compile.NOTES_MAX / body.length) + 1 }, (_, i) => ({ file: `rule-${i + 1}.md`, text: body }));
-  let asks = 0;
-  const over = await compile.compileTurn({ ask: async () => (asks++, { answer: "" }), compile: ASK({ notes: many }), answer: "", check: async () => assert.fail("nothing to check") });
-  assert.equal(asks, 0, "no turn asked over a cut set of rules");
-  assert.equal(over.record.workflow, compile.UNNAMED);
-  assert.equal(over.record.attempts.length, 1);
-  assert.match(over.draftErrors[0], new RegExp(`notes hold \\d+ characters, more than the ${compile.NOTES_MAX} the compile turn reads whole`));
 });
 
 // #2641 review (class D): a trace's feedback is what the person said after the run's first message, never the server's
@@ -404,16 +341,16 @@ test("a compile trace's feedback is the person's messages alone: the server's an
 // points lower. The checks refuse a draft whose answering step (the model node writing the state key its output.path
 // reads) names tier "fast", in words the compile retry acts on; a legwork step on fast, or the answer on strong, passes.
 test("the answering step runs on the agent's model: a draft whose answering node names tier fast is refused in words the retry acts on; legwork on fast passes; the worked example answers with no tier", () => {
-  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl });
+  const checked = (doc) => draftChecked(JSON.stringify(doc), ["web_fetch"]);
   const legwork = JSON.parse(richWorkflow());
   legwork.root.steps[0].tier = "fast";
-  assert.deepEqual(checked(legwork).problems, [], "a legwork step on fast passes");
+  assert.deepEqual(checked(legwork), [], "a legwork step on fast passes");
   const strong = structuredClone(legwork);
   strong.root.steps[3].tier = "strong";
-  assert.deepEqual(checked(strong).problems, [], "the answer on strong passes: only fast is refused");
+  assert.deepEqual(checked(strong), [], "the answer on strong passes: only fast is refused");
   const fast = structuredClone(legwork);
   fast.root.steps[3].tier = "fast";
-  assert.deepEqual(checked(fast).problems, [{ rule: "workflow", path: DRAFT_PATH, detail: 'the extract step "refund" writes the answer (output.path "verdict") on tier "fast": the answering node runs on the agent\'s model: drop its tier' }]);
+  assert.deepEqual(checked(fast), [{ rule: "workflow", path: DRAFT_PATH, detail: 'the extract step "refund" writes the answer (output.path "verdict") on tier "fast": the answering node runs on the agent\'s model: drop its tier' }]);
   for (const fetches of [true, false]) {
     const doc = compile.compileExample(fetches);
     const top = doc.root.steps.find((step) => step.as === doc.output.path || step.body?.as === doc.output.path);
@@ -485,7 +422,7 @@ const VERDICT = (state) => ({ node: "decide", label: "answer", instructions: "Sa
 const FACTS = { node: "extract", label: "facts", instructions: "Copy the page's refund lines.", state: { page: "{page}" }, out: "Facts", as: "facts", tier: "fast" };
 
 test("compact state (a): an answer step on the agent's model reading a call's page is refused, through its state map or the whole state, in one line the retry acts on", () => {
-  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl }).problems;
+  const checked = (doc) => draftChecked(JSON.stringify(doc), ["web_fetch"]);
   assert.deepEqual(checked(pagedDraft([VERDICT({ page: "{page}" })])), [{ rule: "workflow", path: DRAFT_PATH, detail: COMPACT("decide", "answer", READS_PAGE) }], "a state map naming the page");
   assert.deepEqual(checked(pagedDraft([VERDICT()])), [{ rule: "workflow", path: DRAFT_PATH, detail: COMPACT("decide", "answer", READS_WHOLE) }], "no state map: the whole state");
   assert.deepEqual(checked(pagedDraft([VERDICT({ text: "{state.page.text}" })])), [{ rule: "workflow", path: DRAFT_PATH, detail: COMPACT("decide", "answer", READS_PAGE) }], "a field under the page, by state.");
@@ -495,7 +432,7 @@ test("compact state (a): an answer step on the agent's model reading a call's pa
 });
 
 test("compact state (b): the same draft with a fast extract in between passes; legwork on fast may read the page", () => {
-  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl }).problems;
+  const checked = (doc) => draftChecked(JSON.stringify(doc), ["web_fetch"]);
   assert.deepEqual(checked(pagedDraft([FACTS, VERDICT({ facts: "{facts}" })])), []);
   assert.deepEqual(checked(pagedDraft([{ ...FACTS, state: undefined }, VERDICT({ facts: "{facts}", url: "{url}" })])), [], "a fast step reads the whole state; the run's own input is compact");
   // The fast extract between, but the answer still reads the page beside the facts: refused.
@@ -576,7 +513,7 @@ test("compactStateProblems (r2, literal text): a marked placeholder inside a lon
 });
 
 test("check B on the skeleton's shape: a quote output (evidence[].quote) without a quote_missing check, or with one but no re-pick, or a re-pick blind to its draft, is refused naming what to add", () => {
-  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: [compile.EXAMPLE_TOOL], dsl }).problems.map(({ detail }) => detail);
+  const checked = (doc) => draftChecked(JSON.stringify(doc), [compile.EXAMPLE_TOOL]).map(({ detail }) => detail);
   const skeleton = compile.compileExample(true);
   const without = (labels) => ({ ...skeleton, root: { ...skeleton.root, steps: skeleton.root.steps.filter((step) => !labels.includes(step.label)) } });
   const unlooped = (doc) => ({ ...doc, root: { ...doc.root, steps: doc.root.steps.map((step) => (step.node === "loop" ? step.body : step)) } });
@@ -620,10 +557,12 @@ const citedDraft = ({ check = { pages: ["page"] }, extra = [], answer = {}, repi
     ...(check ? [{ node: "escalate", label: "quotes", when: QUOTES_WHEN(check), kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" }] : []),
   ] },
 });
+/** A draft whose answer its composed workflow step "cite" writes, `child` that step's workflow. */
+const parent = (child) => ({ ...citedDraft({ check: null }), root: { node: "chain", steps: [{ node: "workflow", label: "cite", as: "answer", workflow: child }] } });
 const NO_QUOTE_CHECK = 'the answer carries quotes (Answer.evidence[].quote) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]} as a step of its top-level chain after the step that writes the answer (pages: the state keys its call steps write), never a judge';
 
 test("the quote check is code: a draft whose answer carries quotes and which fetches pages is refused without a quote_missing escalate on its answer, a judge's quote question in its place included; with one it passes", () => {
-  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl }).problems;
+  const checked = (doc) => draftChecked(JSON.stringify(doc), ["web_fetch"]);
   assert.deepEqual(checked(citedDraft()), []);
   assert.deepEqual(checked(citedDraft({ check: null })), [{ rule: "workflow", path: DRAFT_PATH, detail: NO_QUOTE_CHECK }]);
   // A judge asked whether the quotes are verbatim, and an escalate on its answer: still no code check.
@@ -644,7 +583,7 @@ test("the quote check is code: a draft whose answer carries quotes and which fet
 const NO_REPICK = (step) => `the step "${step}" writes the answer and the escalate "quotes" hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": 2, "until": {"predicate": "not", "of": {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]}}, "body": <the step>} in its place, the step with a "state" map naming the compact facts it answers from and its failed draft as an optional placeholder, "draft": "{answer?}" (null on the first pass, before any draft exists; the failed draft on the second) and its instructions saying that a draft there failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back: the check after the loop, never inside it`;
 
 test("the quote check re-picks once: a checked answer step that hands back on its first miss is refused; in a loop of 2 until that check passes it passes; more passes, or a loop until anything else, is refused", () => {
-  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl }).problems;
+  const checked = (doc) => draftChecked(JSON.stringify(doc), ["web_fetch"]);
   assert.deepEqual(checked(citedDraft()), []);
   assert.deepEqual(checked(citedDraft({ repick: false })), [{ rule: "workflow", path: DRAFT_PATH, detail: NO_REPICK("answer") }]);
   const again = (change) => {
@@ -775,7 +714,6 @@ test("quoteCheckProblems: a check reads the answer's quotes (path and field), af
   early.root.steps = [fetch, answer, check, { ...answer, label: "again" }];
   assert.deepEqual(quoteCheckProblems(early), [NO_QUOTE_CHECK], "the answer rewritten after its check");
   // A composed workflow writing the answer checks it in its own state.
-  const parent = (child) => ({ ...citedDraft({ check: null }), root: { node: "chain", steps: [{ node: "workflow", label: "cite", as: "answer", workflow: child }] } });
   assert.deepEqual(quoteCheckProblems(parent(citedDraft())), [], "the child checks its quotes against its pages");
   assert.deepEqual(quoteCheckProblems(parent(citedDraft({ check: null }))), [`the composed workflow step "cite" writes the answer: ${NO_QUOTE_CHECK}`]);
   // The child's check covers the places its own schema declares; a place only the parent's declares is the parent's.
@@ -783,6 +721,22 @@ test("quoteCheckProblems: a check reads the answer's quotes (path and field), af
   const [uncovered, ...rest] = quoteCheckProblems(wider);
   assert.deepEqual(rest, []);
   assert.match(uncovered, /^the answer carries quotes \(Answer\.extra\.quote\) and the workflow fetches pages, but no state key holds a page as fetched/);
+});
+
+// A quote re-pick is the loop the quote rule requires of the step writing the answer: its exit is the one a run's views
+// call a re-pick (learned-nodes.ts LoopRow.repick). A composed workflow writing the answer re-picks in its child, whose
+// loop's events the DSL labels `<step>/<loop>` (scopeDepsToChild). Any other loop that ran twice is an ordinary loop.
+test("repickLabels names the answer's quote re-pick loop alone, a composed child's by the label the DSL gives its events, never an ordinary loop", () => {
+  assert.deepEqual([...repickLabels(citedDraft())], ["repick"]);
+  assert.deepEqual([...repickLabels(parent(citedDraft()))], ["cite/repick"], "a composed child's re-pick");
+  assert.deepEqual([...repickLabels(parent(parent(citedDraft())))], ["cite/cite/repick"], "a composed child's composed child's");
+  const ordinary = citedDraft();
+  ordinary.root.steps.splice(1, 1, { node: "loop", label: "again", maxIters: 2, until: { predicate: "not", of: QUOTES_WHEN({ pages: ["page"] }) }, body: ordinary.root.steps[1] });
+  assert.deepEqual([...repickLabels(ordinary)], ["repick"], "a re-pick-shaped loop around another step");
+  assert.deepEqual([...repickLabels(citedDraft({ repick: false }))], [], "an answer step with no loop");
+  assert.deepEqual([...repickLabels({ ...citedDraft(), root: citedDraft().root.steps[2] })], ["repick"], "a root that is the loop itself");
+  assert.deepEqual([...repickLabels({})], []);
+  assert.deepEqual([...repickLabels(null)], []);
 });
 
 test("quoteCheckProblems: a key a model step writes over the page a call fetched is no page, and an answer schema with more quote places, or deeper, than the check reads is refused, never read in part", () => {

@@ -24,6 +24,7 @@ import type { ProviderNote } from "../mount-archil.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { dialOnlyFromServer } from "./dial-only.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import { kindFrom } from "./kind.js";
 import type { RunFolder } from "./types.js";
 
 /** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
@@ -41,6 +42,8 @@ export const MODAL_ENV = {
 	serverUrl: "COMPUTER_MODAL_SERVER_URL",
 	/** connect: exec (default) or dial, which needs the public server's process (dialKit). */
 	connect: "COMPUTER_MODAL_CONNECT",
+	/** kind: linux (default) or desktop, which create() takes on dial alone. */
+	kind: "COMPUTER_MODAL_KIND",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
@@ -99,7 +102,8 @@ function live(env: Record<string, string | undefined>): void {
 /** The provider the CLI runs; throws in words without the live switch, or when a setting is missing or wrong. */
 export async function createProvider({ env = process.env, ModalClient, daemonPath, onNote, dial }: ModalModuleOptions = {}): Promise<ModalProvider> {
 	live(env);
-	return create({ ...settingsFromEnv(env), ...(daemonPath === undefined ? {} : { daemonPath }), ...(ModalClient ? { ModalClient } : {}), ...(onNote ? { onNote } : {}), ...(dial ? { dial } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+	// create() refuses desktop without dial in words.
+	return create({ ...settingsFromEnv(env), ...kindFrom(env, MODAL_ENV.kind), ...(daemonPath === undefined ? {} : { daemonPath }), ...(ModalClient ? { ModalClient } : {}), ...(onNote ? { onNote } : {}), ...(dial ? { dial } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
 }
 
 /**

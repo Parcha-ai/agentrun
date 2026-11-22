@@ -85,6 +85,8 @@ public final class FakeDevice implements Device {
 	/** The windows on the screen, the one in front first. */
 	public final List<FakeWindow> windows = new ArrayList<>();
 	public final List<App> apps = new ArrayList<>();
+	/** Labels of packages that are not launcher apps (System UI), which apps.list does not list. */
+	public final Map<String, String> systemLabels = new LinkedHashMap<>();
 	public final boolean virtual;
 	private long now;
 	/** What an app does later, by when: run as the clock reaches it. */
@@ -838,7 +840,7 @@ public final class FakeDevice implements Device {
 			@Override
 			public void launch(String id, String url) {
 				log.add("launch " + id + (url == null ? "" : " " + url));
-				if (apps.stream().noneMatch(a -> a.id.equals(id))) throw RpcError.notFound("no app " + id + " is installed on this phone");
+				if (apps.stream().noneMatch(a -> a.id.equals(id))) throw RpcError.notFound("the app (" + id + ") is not installed on this phone");
 				Runnable opens = () -> {
 					if (id.equals(CHROME)) chrome(url);
 					else open(id);
@@ -857,6 +859,12 @@ public final class FakeDevice implements Device {
 						opens.run();
 					});
 				}
+			}
+
+			@Override
+			public String label(String id) {
+				for (App a : apps) if (a.id.equals(id)) return a.name;
+				return systemLabels.get(id);
 			}
 
 			@Override

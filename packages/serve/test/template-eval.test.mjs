@@ -104,7 +104,7 @@ test("a case that does not check fails before anything runs, each problem named"
     /all-pass\/prompt\.md: no field max_cost/, /all-pass\/prompt\.md: runs is a whole number/,
     /graders\/regex\.md: its pattern does not compile/, /graders\/file\.md: a file_exists grader names a path in the run's work folder/,
     /graders\/wrote\.md: mcp:nowhere\/thing is neither a tool this server binds, an MCP tool the package lists \(mcp:<toolkit>\/<tool>\) nor a monid endpoint it grants by name/, /graders\/wrote\.md: args is a mapping of the arguments a call must carry/,
-    /learned\/case\.yaml: parameters\.colour: parameters keeps no field colour/, /learned\/case\.yaml: learning names "fixtures\/missing\/", not a folder in the case/,
+    /learned\/case\.yaml: parameters\.colour: parameters keeps no field colour/, /learned\/case\.yaml: learning names "fixtures\/missing\/", not a file in the case/,
     /mcp-match\/fixtures\/crm\.json: tools\.get_contact is \{description, input/, /mcp-mismatch\/case\.yaml: grants\.0: grants\.0 is not a tool of the package evalpkg/,
   ]) assert.match(said, expected);
   assert.throws(() => readCases(dir, ["nope"]), (e) => e instanceof CaseError && /evals\/nope: no such case/.test(e.message));
@@ -446,8 +446,14 @@ test("a web: case checks: unavailable or a fixture file of the case whose answer
     const manifest = readFileSync(join(bare, "agent.md"), "utf8");
     writeFileSync(join(bare, "agent.md"), manifest.replace("tools: [read, write, ask_person, web_search, web_fetch]\n", tools));
     assert.notEqual(readFileSync(join(bare, "agent.md"), "utf8"), manifest);
-    assert.throws(() => readCases(bare, ["web-bare"]), (e) => e instanceof CaseError && /web-bare\/case\.yaml: web fakes web_search and web_fetch, and the package's tools name neither/.test(e.message), JSON.stringify(tools));
+    assert.throws(() => readCases(bare, ["web-bare"]), (e) => e instanceof CaseError && /web-bare\/case\.yaml: web fakes web_search, web_fetch and web_save, and the package's tools name none of them/.test(e.message), JSON.stringify(tools));
   }
+  // A package that names web_save alone gets the fake too: its files answer from the case.
+  const saver = await webPackage(t, "web-save-only", "unavailable", []);
+  const saverManifest = readFileSync(join(saver, "agent.md"), "utf8");
+  writeFileSync(join(saver, "agent.md"), saverManifest.replace("tools: [read, write, ask_person, web_search, web_fetch]\n", "tools: [read, write, web_save]\n"));
+  assert.notEqual(readFileSync(join(saver, "agent.md"), "utf8"), saverManifest);
+  assert.doesNotThrow(() => readCases(saver, ["web-save-only"]));
   const named = await webPackage(t, "search-failed", "unavailable", [["web_search", { query: "x" }]]);
   await assert.rejects(evalTemplate({ dir: named, cases: ["search-failed"], server: { baseUrl: "http://127.0.0.1:9/v2", token: "unused" } }), (e) => e instanceof CaseError && /evals\/search-failed: web fakes the web tools on the eval's own server alone: run it without --server/.test(e.message));
 });
@@ -571,7 +577,7 @@ test("readCases refuses a now that is not a date and time with its offset, and a
   await assert.rejects(evalTemplate({ dir, cases: ["clock"], server: { baseUrl: "http://127.0.0.1:9", token: "x" } }), (thrown) => thrown instanceof CaseError && thrown.problems.includes("evals/clock: now sets its runs' clock on the eval's own server alone: run it without --server"));
 });
 
-test("a learned note seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {
+test("a correction seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {
   const one = await caseOf("learned");
   assert.equal(one.pass, true, JSON.stringify(one, null, 1));
 });
@@ -678,20 +684,45 @@ test("a stopped eval cancels the run in progress and cleans up what it made, as 
 });
 
 /** A proxy on port 0 to the server at `baseUrl` (ending /v2) that answers 500 to each request `refuses(req)` says so,
- *  and passes the rest on. Its /v2 address. */
+ *  and passes the rest on. Its /v2 address. A pass-on that fails (the server closed first: its hook was added before
+ *  this proxy's, so it runs first at the test's end) is answered 502, never left as an unhandled rejection that fails
+ *  the test after its assertions passed. */
 async function refusing(t, baseUrl, refuses) {
   const proxy = createServer(async (req, res) => {
     if (refuses(req)) return void res.writeHead(500, { "content-type": "application/json" }).end('{"error":{"code":"internal","message":"refused by the test proxy"}}');
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const body = Buffer.concat(chunks);
-    const answer = await fetch(`${baseUrl.replace(/\/v2$/, "")}${req.url}`, { method: req.method, headers: Object.fromEntries(Object.entries(req.headers).filter(([name]) => name !== "host" && name !== "content-length")), ...(body.length ? { body } : {}) });
-    res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" }).end(Buffer.from(await answer.arrayBuffer()));
+    try {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = Buffer.concat(chunks);
+      const answer = await fetch(`${baseUrl.replace(/\/v2$/, "")}${req.url}`, { method: req.method, headers: Object.fromEntries(Object.entries(req.headers).filter(([name]) => name !== "host" && name !== "content-length")), ...(body.length ? { body } : {}) });
+      const passed = Buffer.from(await answer.arrayBuffer());
+      res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" }).end(passed);
+    } catch (error) {
+      if (res.headersSent) return void res.destroy();
+      res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "bad_gateway", message: `the test proxy's pass-on failed: ${error.message}` } }));
+    }
   });
   await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (proxy.closeAllConnections(), proxy.close(resolve))));
   return `http://127.0.0.1:${proxy.address().port}/v2`; // key-gate: loopback-rule the test's proxy listens on loopback
 }
+
+test("the test proxy answers 502 when the server it passes on to is gone, never an unhandled rejection", { timeout: 30_000 }, async (t) => {
+  // A server that listened and closed: its port answers nothing, as the eval's server does once its hook has run.
+  const gone = createServer();
+  await new Promise((resolve) => gone.listen(0, "127.0.0.1", resolve));
+  const { port } = gone.address();
+  await new Promise((resolve) => gone.close(resolve));
+  const closed = new URL("http://127.0.0.1/v2"); // key-gate: loopback-rule a closed loopback port the proxy cannot reach
+  closed.port = String(port);
+  const proxy = await refusing(t, closed.href, () => false);
+  // A bound on the request, so a proxy that never answers fails here, not at the test's timeout.
+  const answer = await fetch(`${proxy}/agents`, { signal: AbortSignal.timeout(10_000) });
+  assert.equal(answer.status, 502);
+  const { error } = await answer.json();
+  assert.equal(error.code, "bad_gateway");
+  assert.match(error.message, /^the test proxy's pass-on failed: /);
+});
 
 test("a run whose wait fails keeps its result and is cancelled before the eval goes on, never left going", { timeout: 300_000 }, async (t) => {
   // The held case's run never answers on its own: only a cancel ends it.
@@ -845,7 +876,7 @@ test("no case carries a schema grader: a package's output schema is held by the 
   const dir = join(await scratch(t), "evalpkg");
   cpSync(PKG, dir, { recursive: true });
   writeFileSync(join(dir, "evals/all-pass/graders/schema.md"), "---\ntype: schema\nschema: answer.schema.json\n---\n");
-  assert.throws(() => readCases(dir), (e) => e instanceof PackageError && /evals\/all-pass\/graders\/schema\.md: type is one of llm, regex, tool_used, file_exists, mailbox$/m.test(e.message));
+  assert.throws(() => readCases(dir), (e) => e instanceof PackageError && /evals\/all-pass\/graders\/schema\.md: type is one of llm, regex, tool_used, file_exists, mailbox, handed$/m.test(e.message));
 });
 
 test("code-review's cases hold the answer's head_sha to the head the prompt names: an answer naming another sha fails", () => {

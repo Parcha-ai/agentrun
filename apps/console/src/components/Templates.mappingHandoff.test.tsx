@@ -12,7 +12,7 @@ const template: TemplateView = {
   id: "github:acme/agents/templates/review", name: "review", display_name: "Review", version: "1.0.0", description: "Review changes.",
   bundled: false, source: "github:acme/agents/templates/review@main", sha: "0123456789abcdef0123456789abcdef01234567", publisher: "acme",
   category: null, tags: [], license: null, author: null, repository: null, output: null, input_schema: null,
-  harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null, computer: null, computer_here: null, checkout: null,
+  harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null, computer: null, needs: null, computer_here: null, checkout: null,
   parameters: { type: "object", additionalProperties: false, properties: {} }, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
   mcp: [{ source: "github", toolkit: "github", reason: null, required: true, tools: [{ name: "read", tool: "mcp:github/read", asks: "allow" }] }],
 };
@@ -24,7 +24,7 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 async function mount({ playground = false, prepared, list = async () => ({ servers: [saved("github-work"), saved("github-home")] }) }: {
   playground?: boolean; prepared?: string; list?: () => Promise<{ servers: ReturnType<typeof saved>[] }>;
 } = {}) {
-  const apply = vi.fn(async () => ({ agent_id: "review-1", trigger_ids: [], warnings: [] }));
+  const apply = vi.fn(async () => ({ agent_id: "review-1", triggers: [], warnings: [] }));
   const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
   await act(async () => root!.render(createElement(TemplatesPage, { v2: { listTemplates: async () => ({ templates: [template] }), listMcpServers: list, applyTemplate: apply } as never,
     name: template.id, playground, draft: prepared, go: () => {} })));

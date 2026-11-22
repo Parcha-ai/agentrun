@@ -20,11 +20,13 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/desktop"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/egress"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/isolate"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/methods"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/process"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/proctree"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/windowmanager"
 )
 
 // SocketEnv names the socket's path when it is not DefaultSocket.
@@ -34,7 +36,6 @@ const SocketEnv = "AGENTRUN_COMPUTERD_SOCKET"
 const DefaultSocket = "/run/agentrun/computerd.sock"
 
 const (
-	prSetChildSubreaper = 36
 	// sweepEvery is how often init looks for orphans when no SIGCHLD has asked it to.
 	sweepEvery = time.Second
 	// stopSlack is how long past the guards' KillGrace init waits for them on SIGTERM before it kills what is left.
@@ -68,10 +69,11 @@ type Egress struct {
 // past the maximum the provider gave, and is refused once init has decided to end the computer. With a relay, init
 // refuses to start unless it can listen, and every program it starts is told the relay is its HTTP and HTTPS proxy.
 // fence is how init holds its programs off the computer's network (FenceNetwork, FenceUserNetwork; "" none), which hello
-// reports.
-func Init(version, socket string, deadline *lifetime.Deadline, relay Egress, fence string, logger *log.Logger) int {
-	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0); errno != 0 {
-		logger.Printf("init: cannot become a child subreaper: %v", errno)
+// reports. manager, when Become or Unprivileged started one, is the desktop's window manager: init starts it once the
+// display answers (windowmanager.Manager.Run), hello says how it goes, and the sweep leaves it to its own waiter.
+func Init(version, socket string, deadline *lifetime.Deadline, relay Egress, fence string, manager *windowmanager.Manager, logger *log.Logger) int {
+	if err := isolate.BecomeSubreaper(); err != nil {
+		logger.Printf("init: cannot become a child subreaper: %v", err)
 		return 1
 	}
 	signals := make(chan os.Signal, 1)
@@ -101,7 +103,8 @@ func Init(version, socket string, deadline *lifetime.Deadline, relay Egress, fen
 	defer cancel()
 	display := desktop.New(os.Getenv("DISPLAY"))
 	defer display.Close()
-	server := rpc.NewServer(methods.Handlers(version, process.NewTable(process.Options{}), methods.Options{Display: display, Deadline: deadline, Fence: fence}), logger)
+	server := rpc.NewServer(methods.Handlers(version, process.NewTable(process.Options{}), methods.Options{Display: display, Deadline: deadline, Fence: fence, WindowManager: manager}), logger)
+	go manager.Run(ctx, func() bool { return len(display.Groups()) > 0 })
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -126,9 +129,9 @@ func Init(version, socket string, deadline *lifetime.Deadline, relay Egress, fen
 			end.Reset(time.Until(deadline.At()))
 			logger.Printf("init: the deadline moved to %s", deadline.At().UTC().Format(time.RFC3339Nano))
 		case <-signals:
-			sweep(relay.Proxy)
+			sweep(relay.Proxy, manager.Pid())
 		case <-tick.C:
-			sweep(relay.Proxy)
+			sweep(relay.Proxy, manager.Pid())
 		case sig := <-stop:
 			deadline.Stop(fmt.Sprintf("init was sent %v", sig))
 			logger.Printf("init: %v, ending every process", sig)
@@ -190,13 +193,14 @@ func listen(socket string) (net.Listener, error) {
 
 // sweep reaps every child that has ended and is no guard, and kills every other child that is no guard, with all under
 // it: such a child is an orphan handed to init because the guard above it died. The egress proxy init started (spare;
-// 0 is none) is reaped once it has ended, and never killed.
-func sweep(spare int) {
+// 0 is none) is reaped once it has ended, and never killed. The window manager's start (manager; 0 is none) is neither:
+// its own waiter reaps it.
+func sweep(spare, manager int) {
 	execrun.WithGuards(func(isGuard func(int) bool) {
 		self := os.Getpid()
 		children := proctree.Children()
 		for _, child := range children[self] {
-			if isGuard(child) {
+			if isGuard(child) || (manager != 0 && child == manager) {
 				continue
 			}
 			if proctree.Zombie(child) {

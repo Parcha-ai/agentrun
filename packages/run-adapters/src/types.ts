@@ -200,8 +200,10 @@ export interface ModelRequest {
    *  `under`: the key of the model session whose tool call it runs in (the CLI's session): a request of that session
    *  still in flight may be the one that asked for the call, unbooked until the call returns (Claude Code books its
    *  cost after its calls, Codex starts a call with its response open), so the call never waits on it (runBooking).
-   *  Not written on its record. */
-  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string };
+   *  Not written on its record. `reported`: what it is settled at is the provider's own figure for the call (its answer
+   *  says what it charged), not a price this server set; written on its record, so a read of the booking can say how a
+   *  charge's figure was reached. */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string; reported?: true };
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;
@@ -217,6 +219,10 @@ export interface ModelRequest {
    *  the proxy minted for this label: ModelProxy.sideKey): a learned workflow's model node, say. The harness's own
    *  requests carry none, and it cannot send one that does: it holds only the session's key. */
   host?: string;
+  /** The conversation its client says it is asked in (the model proxy's CONVERSATION_HEADER), when it names one: the
+   *  client's own label, opaque to the booking and not written on its record. A host whose harness runs several
+   *  conversations at once (pi's subagents) reads it to know whose request a booking is. */
+  conversation?: string;
   /** Which of the session's routes it came by, when the session has more than one (ModelProxyOptions.route: a proxy beside
    *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
    *  routes price apart is held at the price its route books it at. Absent: the session's own route. */
@@ -296,6 +302,10 @@ export interface ModelPort {
  *  them: ModelRequest's figures without the note (its `inputTokensMaxWithoutNote`), the same ones the cap admits it by. */
 export type NoteRequest = { inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number };
 
+/** What a cut answer says when the run's cap limited its output: the cap, and the least cap that sends its request with
+ *  all the output it asked (its whole input uncached and that output, beside what the run had spent and held), in USD. */
+export type CapCut = { capUsd: number; raiseToUsd: number };
+
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
 export interface ModelTicket {
   turn: number;
@@ -305,6 +315,9 @@ export interface ModelTicket {
   /** Admitted only without its host's note (ModelRequest.noted): its bytes did not fit what is left of the cap. The
    *  request goes as its client sent it, and the note waits for another request. */
   noteDropped?: true;
+  /** Limited below the output it asked (`outputTokensMax`) by what is left of its host's spend cap: an answer the provider
+   *  cuts at that limit is the cap's cut, said with these figures (turn_end's capCut), never a normal answer. */
+  capCut?: CapCut;
 }
 
 /** What the host lends a session. */
@@ -392,12 +405,16 @@ export type AdapterEvent =
   | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
   | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string; truncated?: true }
   /** `stopReason: "length"` only when the turn's final answer was cut at the model's output limit (unfinished), with that
-   *  answer's output tokens when the adapter knows them: a host reads the answer as cut, never as the run's end. */
-  | { type: "turn_end"; status: TurnStatus; stopReason?: "length"; outputTokens?: number }
+   *  answer's output tokens when the adapter knows them: a host reads the answer as cut, never as the run's end. `capCut`:
+   *  the limit it was cut at was the run's cap's (ModelTicket.capCut), with the cap and the least cap that finishes it. */
+  | { type: "turn_end"; status: TurnStatus; stopReason?: "length"; outputTokens?: number; capCut?: CapCut }
   /** The model was given these submissions (the ids `send` or `steer` placed them under): a steer placed mid-turn reaches
    *  it at the turn's next step, after the tool calls in flight. An adapter that records nothing of its own says it, so
    *  its host records the message where the model read it. */
-  | { type: "message_taken"; ids: readonly string[] };
+  | { type: "message_taken"; ids: readonly string[] }
+  /** Something of the adapter's own the person should read on the run, in its words (the ACP mirror past its budget): a
+   *  host shows it as a step of the run, never as the model's text. */
+  | { type: "notice"; text: string };
 
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
 export type HarnessEvent = (AdapterEvent
@@ -453,6 +470,10 @@ export interface AdapterSession {
 
 /** The API a harness's model proxy speaks: what its provider, its keys and its catalog follow from. */
 export type Wire = "anthropic-messages" | "openai-responses";
+/** What a harness's facts say its model is reached on: a Wire of the host's proxy, or `plan`: none, its model is its
+ *  vendor's, billed to its owner's plan on the owner's own key (Cursor), so no request of it reaches a proxy of the host's
+ *  and no provider, key or catalog of the host's is its. */
+export type HarnessWire = Wire | "plan";
 
 /** What a harness is, as its adapter states it: the host reads these and never branches on a harness's name. They
  *  describe the harness; none renames or reshapes what its model sees, and none turns its own built-ins, sandbox or
@@ -462,8 +483,8 @@ export interface AdapterFacts {
   readonly id: string;
   /** Its name in a sentence ("Claude", "Codex", "OpenCode"). */
   readonly label: string;
-  /** The API its model proxy speaks. */
-  readonly wire: Wire;
+  /** The API its model proxy speaks, or `plan` where none of the host's is its (HarnessWire). */
+  readonly wire: HarnessWire;
   /** Whether it takes a message mid-turn (else a message waits for the turn's end). */
   readonly steer: boolean;
   /** False when a tool call that started is never run again by a restart, replay-safe or not: the harness's own process

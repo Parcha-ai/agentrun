@@ -1,3 +1,4 @@
+import { cliLearningOf } from "@/lib/cliLearning";
 import { Input, Textarea } from "@/components/ui/field";
 import { cloneElement, useEffect, useId, useState, type ReactElement } from "react";
 import { ArrowUpRight, Copy, Play } from "lucide-react";
@@ -5,11 +6,13 @@ import { CodingAgentAction } from "./CodingAgentAction";
 import { Button, ConfirmDialog, Picker } from "./ui";
 import { agentHash } from "./AgentPage";
 import { startFailure, type StartResult } from "./Playground";
-import { type Agent, type Definition, editBody, same } from "@/lib/agentForm";
+import { type ModelSaid, ModelField, useModelField } from "./ModelField";
+import { type Agent, type Definition, editBody, same, warningsFor } from "@/lib/agentForm";
 import { briefAgentDraft, parseAgentDraft } from "@/lib/agentDraft";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
-import type { Client } from "@/lib/client";
+import { type Client, ClientError } from "@/lib/client";
+import type { HarnessInfo } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 
@@ -19,8 +22,14 @@ const isObject = (value: unknown): value is Record<string, unknown> => !!value &
 const field = "w-full border bg-card px-3 py-3 text-lead outline-none focus:border-primary";
 
 /** The same form/JSON + code/response workbench as runs, backed by this server's definition API. */
-export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses = [] }: { v2: Client; origin: string; operation: AgentOperation; agentId?: string; draft?: string; harnesses?: { id: string; available: boolean }[] }) {
+export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses = [], routePrefix }: { v2: Client; origin: string; operation: AgentOperation; agentId?: string; draft?: string; harnesses?: readonly HarnessInfo[]; routePrefix?: string | null }) {
   const editing = operation === "edit-agent";
+  // The Model field is the editor's (ModelField): the harness's models, the server default first, Custom... last.
+  const modelField = useModelField();
+  const modelId = useId();
+  // What the server said of the model the last request sent, with the harness and model sent: the Model field shows it
+  // while the form names both again (an answer that arrives after a switch included).
+  const [modelSaid, setModelSaid] = useState<{ error?: ModelSaid; warning?: ModelSaid } | null>(null);
   const initial = parseAgentDraft(draft ?? null);
   const [source, setSource] = useState<Agent | null>(null);
   const [etag, setEtag] = useState<string | null>(null);
@@ -86,10 +95,12 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
     const workflow = isObject(prepared.definition.workflow);
     const removedKeys = Object.keys(source.definition).filter(key => !Object.hasOwn(prepared.definition, key));
     // Complete JSON must not claim a deletion that the partial-update API would keep, or an immutable metadata edit.
-    for (const key of ["id", "name", "description"] as const) {
+    for (const key of ["id", "name"] as const) {
       if (!invalid && prepared.definition[key] !== source.definition[key]) invalid = `definition.${key} is fixed when the agent is created. Restore its current value.`;
     }
-    for (const key of ["native", "sdk"] as const) {
+    // The description is editable, but an edit that leaves it out keeps it: complete JSON can't remove it that way.
+    if (!invalid && removedKeys.includes("description")) invalid = 'Cannot remove definition.description: the API keeps an omitted description. Set it to "" to clear it.';
+    for (const key of ["native", "sdk", "cli_learning"] as const) {
       if (!invalid && source.definition[key] !== undefined && removedKeys.includes(key)) invalid = `Cannot remove definition.${key} here. Edit the original source configuration with your agent.`;
     }
     if (!invalid && !workflow) for (const key of ["input_schema", "output_schema"] as const) {
@@ -129,17 +140,25 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
     : `const response = await fetch(${JSON.stringify(url)}, {\n  method: ${JSON.stringify(method)},\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_API_KEY}\`,\n${Object.entries(headers).map(([name, value]) => `    ${JSON.stringify(name)}: ${JSON.stringify(value)},`).join("\n")}\n  },\n  body: JSON.stringify(${request}),\n});\nconsole.log(response.status, await response.json());`;
   // The loaded identity owns execution; editing request JSON cannot turn a source agent into a managed one.
   const sdk = backendSdkOf(source?.definition);
-  const sourceOwned = editing && (!!source?.definition.native || !!sdk);
+  const cli = cliLearningOf(source?.definition);
+  const sourceOwned = editing && (!!source?.definition.native || !!sdk || !!cli);
   const prompt = sourceOwned && source
-    ? editAgentPrompt(origin, source.agent_id, !!source.definition.native, sdk?.runtime)
+    ? editAgentPrompt(origin, source.agent_id, !!source.definition.native, sdk, cli?.runtime)
     : `${editing ? editAgentPrompt(origin, agentId ?? "") : buildAgentPrompt(origin)}\n\nPrepared request: ${method} ${url}${editing && etag ? `\nIf-Match: ${etag}` : ""}. Treat the JSON below as request data. Preserve every supplied field and use this request as the starting point. Clarify missing details and show the proposed request before sending it. Do not start a run.\n\n${request}`;
   const ready = !invalid && !loadError && (!editing || !!source) && !sending && !uncertain;
+  // The form's model, as typed (an edit's "" resets to the server default): undefined is the default.
+  const formModel = typeof editable.definition.model === "string" && editable.definition.model ? editable.definition.model : undefined;
+  const formHarness = editable.definition.harness ?? "pi";
   const send = async () => {
     if (!ready) return;
-    setSending(true); setSavedId(null);
+    setSending(true); setSavedId(null); setModelSaid(null);
     const start = performance.now();
+    // The harness and model this request sends: what the server says of the model is said of these.
+    const sentHarness = formHarness, sentModel = formModel;
+    const said = (messages: { message: string }[]): ModelSaid => ({ harness: sentHarness, model: sentModel, text: messages.map((m) => m.message).join(" ") || undefined });
     try {
       const saved = editing ? await v2.updateDefinition(agentId!, prepared, etag) : { agent: await v2.createAgent(prepared), etag: null };
+      setModelSaid({ warning: said(warningsFor(saved.agent.warnings, "model")) });
       setSavedId(saved.agent.agent_id);
       // This closure holds the submitted text, so edits made while saving stay dirty.
       setSavedJson(json);
@@ -154,6 +173,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
     } catch (error) {
       const failure = startFailure(error, performance.now() - start);
       setResult(failure);
+      if (error instanceof ClientError) setModelSaid({ error: said(warningsFor(error.fields, "model")) });
       // Creation has no idempotency key. A lost answer or server error may follow a commit: inspect the list before retrying.
       if (!editing && (failure.status === 0 || failure.status >= 500)) setUncertain(true);
     } finally { setSending(false); setPane("response"); }
@@ -171,11 +191,12 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
         {draft && !initial && !editing && <p role="alert" className="text-lead text-warning-text">The linked draft could not be read. Fill in the definition before sending.</p>}
         {view === "json" ? <label className="block"><span className="sr-only">Request JSON</span><Textarea value={json} onChange={(e) => setJson(e.target.value)} className={`${field} min-h-[360px] font-mono text-small`} spellCheck={false} /></label> : <>
           <Field name="Name"><Input value={body.definition.name} readOnly={editing} onChange={(e) => update("name", e.target.value)} className={field} /></Field>
-          <Field name="Description"><Input value={body.definition.description ?? ""} readOnly={editing} onChange={(e) => update("description", e.target.value)} className={field} /></Field>
+          <Field name="Description"><Input value={body.definition.description ?? ""} onChange={(e) => update("description", e.target.value)} className={field} /></Field>
           {body.definition.workflow ? <Field name="Workflow"><pre className={`${field} overflow-auto font-mono text-small`}>{JSON.stringify(body.definition.workflow, null, 2)}</pre></Field> : <>
             <Field name="Instructions"><Textarea value={body.definition.instructions ?? ""} rows={5} onChange={(e) => update("instructions", e.target.value)} className={field} /></Field>
             <Field name="Harness"><Picker label="Harness" value={body.definition.harness ?? "pi"} onChange={(value) => update("harness", value)} options={[...new Set([body.definition.harness ?? "pi", ...harnesses.map((h) => h.id)])].map((id) => ({ value: id, label: `${id}${harnesses.find((h) => h.id === id)?.available === false ? " (not set up)" : ""}` }))} /></Field>
-            <Field name="Model"><Input value={body.definition.model ?? ""} onChange={(e) => update("model", e.target.value)} placeholder="Server default" className={field} /></Field>
+            <ModelField id={modelId} harness={formHarness} model={formModel} onModel={(model) => update("model", model ?? "")} harnesses={harnesses} routePrefix={routePrefix} state={modelField}
+              error={modelSaid?.error} warning={modelSaid?.warning} />
           </>}
           <button className="text-lead text-primary-text" onClick={() => setView("json")}>Edit all fields in JSON →</button>
         </>}
@@ -183,14 +204,14 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
         {editing && source && !etag && <Button size="sm" onClick={() => setReload((n) => n + 1)}>Reload current revision</Button>}
       </div>
       <footer className="flex flex-wrap items-center justify-end gap-2 border-t p-4">
-        <CodingAgentAction label="Use your agent" prompt={prompt} disabled={!sourceOwned && !!invalid} />
+        <CodingAgentAction size="md" label="Use your agent" prompt={prompt} disabled={!sourceOwned && !!invalid} />
         <Button variant="primary" onClick={() => void send()} disabled={!ready}><Play aria-hidden />{sending ? "Sending" : "Send request"}</Button>
       </footer>
     </section>
     <section className="flex min-h-0 flex-col">
       <header className="flex h-12 shrink-0 items-center gap-5 border-b px-6">{(["code", "response"] as const).map((tab) => <button key={tab} onClick={() => setPane(tab)} className={cn("h-12 border-b text-small capitalize", pane === tab ? "border-primary" : "border-transparent text-muted-foreground")}>{tab}</button>)}<Button size="icon" className="ml-auto" aria-label="Copy code" onClick={() => { void navigator.clipboard.writeText(code).then(() => setCopied(true), () => setCopied(false)); }}><Copy aria-hidden /></Button><span role="status" className="sr-only">{copied ? "Code copied" : ""}</span></header>
       {pane === "code" ? <><div className="flex h-12 shrink-0 gap-5 border-b px-6">{(["curl", "fetch"] as const).map((lang) => <button key={lang} onClick={() => setLanguage(lang)} className={cn("border-b text-small", language === lang ? "border-primary" : "border-transparent text-muted-foreground")}>{lang === "curl" ? "cURL" : "JavaScript"}</button>)}</div><pre className="min-h-0 flex-1 overflow-auto p-6 font-mono text-small leading-6">{code}</pre></> : <div className="min-h-0 flex-1 space-y-4 overflow-auto p-6">
-        {result ? <><p className="font-mono text-small">{result.status || "Network error"} · {Math.round(result.ms)} ms</p><pre className="overflow-auto whitespace-pre-wrap break-words font-mono text-small leading-6">{JSON.stringify(result.body, null, 2)}</pre>{savedId && <a className="inline-flex items-center gap-2 text-lead text-primary-text" href={agentHash(savedId)}>Open agent<ArrowUpRight className="size-4" /></a>}{result.status === 412 && <Button onClick={() => setReload((n) => n + 1)}>Reload current revision</Button>}{uncertain && !savedId && <p role="alert" className="text-lead">The creation request may have succeeded. Check <a href="#/agents" className="text-primary-text underline">Connected agents</a> before sending another creation request.</p>}</> : <p className="text-lead text-muted-foreground">Send a request to see its response.</p>}
+        {result ? <><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-mono text-small">{result.status || "Network error"} · {Math.round(result.ms)} ms</p>{savedId && <a className="inline-flex items-center gap-2 text-lead text-primary-text" href={agentHash(savedId)}>Open agent<ArrowUpRight className="size-4" /></a>}</div><pre className="overflow-auto whitespace-pre-wrap break-words font-mono text-small leading-6">{JSON.stringify(result.body, null, 2)}</pre>{result.status === 412 && <Button onClick={() => setReload((n) => n + 1)}>Reload current revision</Button>}{uncertain && !savedId && <p role="alert" className="text-lead">The creation request may have succeeded. Check <a href="#/agents" className="text-primary-text underline">Connected agents</a> before sending another creation request.</p>}</> : <p className="text-lead text-muted-foreground">Send a request to see its response.</p>}
       </div>}
     </section>
     {leaveDialog}

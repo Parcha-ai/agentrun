@@ -23,7 +23,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -52,7 +52,8 @@ export const installDirOf = (data: string, harness: string): string => join(harn
 /** What a run shows while its harness installs (a `phase` row of its timeline). */
 export const installingWords = (label: string): string => `Installing ${label} (first use)…`;
 
-const shellWord = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`);
+/** `word` as a shell reads it back: as it is when it holds nothing a shell would read, else single-quoted. */
+export const shellWord = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`);
 
 /** The command that installs a harness by hand into `dir`, as a first use does: the lock and the package.json it locks
  *  copied into a fresh directory beside `dir`, `npm ci` there with no package's install script and with the optional
@@ -175,7 +176,7 @@ export const CLAUDE_SDK = "@anthropic-ai/claude-agent-sdk";
 /** The MCP library the SDK serves a session's tools with: its peer, installed beside it. */
 const MCP_PARTS = ["@modelcontextprotocol/sdk/server/mcp.js", "@modelcontextprotocol/sdk/types.js"] as const;
 /** The CLI an install in `dir` holds for `platform` (the SDK's platform package's). */
-const claudeCliIn = (dir: string, platform: string): string | undefined => fileInPackage(dir, `@anthropic-ai/claude-agent-sdk-${platform}`, process.platform === "win32" ? "claude.exe" : "claude");
+export const claudeCliIn = (dir: string, platform: string): string | undefined => fileInPackage(dir, `@anthropic-ai/claude-agent-sdk-${platform}`, process.platform === "win32" ? "claude.exe" : "claude");
 
 /** The SDK as installed in `dir`, checked: its package.json names it at `version`, and its entry resolves inside it. */
 export function installedSdk(dir: string, version: string): { entry: string } | undefined {
@@ -286,8 +287,9 @@ export async function npmInstall(entry: HarnessInstallEntry, dir: string, pins: 
     const old = existsSync(dir) ? `${staging}-old` : undefined;
     if (old) await rename(dir, old);
     await rename(staging, dir);
-    // Read-only once in place: a write into it by mistake fails. (The server's own uid could change that back; each CLI's
-    // sha256 is checked at every run.)
+    // Read-only once in place, and readable by every user: a write into it by mistake fails, and a run's process (a slot's
+    // user of its own, run-child-host.ts) loads it. (The server's own uid could change that back; each CLI's sha256 is
+    // checked at every run.)
     await writable(dir, false);
     // The install is in: the one it replaced goes now if it can, else it stays aside (its name the sweep's) for later.
     if (old) await removeLeftover(old);
@@ -301,32 +303,43 @@ export async function npmInstall(entry: HarnessInstallEntry, dir: string, pins: 
 /** `path` and all under it made writable, then removed (retried a few times: a file can still be closing). One that can't
  *  be removed now (an orphaned npm of a crashed server still writing into it, a folder that can't be read) stays: removing
  *  what an install leaves is housekeeping, and never fails an install or hides why one failed. */
-async function removeLeftover(path: string): Promise<void> {
+export async function removeLeftover(path: string): Promise<void> {
   await writable(path, true).then(() => rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })).catch(() => undefined);
 }
 
 /** The prefix of every directory an install into `dir` works in beside it (its staging, and the install it replaces). */
-const leftoverPrefix = (dir: string): string => `.${basename(dir)}-`;
+export const leftoverPrefix = (dir: string): string => `.${basename(dir)}-`;
 
 /** What installs into `dir` left beside it (a staging directory of an install cut short, an install replaced), each
  *  removed if it can be now (removeLeftover). Only under the install's hold (takeHold): an install that runs works in a
  *  directory of that very prefix. Never fails. */
-async function sweepLeftovers(dir: string): Promise<void> {
+export async function sweepLeftovers(dir: string): Promise<void> {
   const prefix = leftoverPrefix(dir);
   for (const name of await readdir(dirname(dir)).catch(() => [] as string[])) if (name.startsWith(prefix)) await removeLeftover(join(dirname(dir), name));
 }
 
 
-/** Every file and directory under `dir` (no link followed) made writable by its owner, or read-only for everyone. */
-async function writable(dir: string, on: boolean): Promise<void> {
+/** Every file and directory under `dir` (no link followed) made writable by its owner, or read-only for everyone and
+ *  readable by everyone: a folder entered and listed, a file read, one its owner may run run by all. */
+export async function writable(dir: string, on: boolean): Promise<void> {
   const walk = async (path: string): Promise<void> => {
     const st = await lstat(path).catch(() => undefined);
     if (!st || st.isSymbolicLink()) return;
     if (on) await chmod(path, st.mode | 0o200);
     if (st.isDirectory()) for (const name of await readdir(path)) await walk(join(path, name));
-    if (!on) await chmod(path, st.mode & ~0o222);
+    if (!on) await chmod(path, (st.mode & ~0o222) | 0o444 | (st.isDirectory() || st.mode & 0o100 ? 0o111 : 0));
   };
   await walk(dir);
+}
+
+/** An installed harness at `dir` (a link to it followed) made readable by every user, never writable: what an install
+ *  from before installs were shared left its owner's alone (its top folder 0500, as its staging was made). Once its top
+ *  folder is readable by all, it is taken as shared and not walked again. None there: nothing to do. */
+export async function shareInstall(dir: string): Promise<void> {
+  const at = await realpath(dir).catch(() => undefined);
+  const st = at === undefined ? undefined : await lstat(at).catch(() => undefined);
+  if (!at || !st?.isDirectory() || (st.mode & 0o555) === 0o555) return;
+  await writable(at, false);
 }
 
 /** How long npm has to exit after a SIGTERM before it gets SIGKILL. Once npm writes (its reify), a SIGTERM only marks
@@ -497,6 +510,25 @@ export function processIdentity(pid: number): string | undefined {
   }
 }
 
+/** Only the kernel UUID and numeric process-start format proves a boot. An absent,
+ * malformed or adapter-specific identity cannot establish that an owner is gone. */
+function identityBoot(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):[0-9]+$/i.exec(value);
+  return match?.[0] === value ? match[1]!.toLowerCase() : undefined;
+}
+
+/** A caller protecting legacy ownerless locks needs a complete, well-formed owner
+ * record before process liveness or boot identity can authorize recovery. */
+function ownerProof(held: Partial<Hold> | undefined): boolean {
+  return held !== undefined && typeof held.host === "string" && held.host.length > 0
+    && typeof held.pid === "number" && Number.isSafeInteger(held.pid) && held.pid > 0 && held.pid <= 0x7fffffff
+    && typeof held.startedAt === "number" && Number.isSafeInteger(held.startedAt) && held.startedAt >= 0
+    && typeof held.token === "string" && held.token.length > 0
+    && (held.pidns === undefined || (typeof held.pidns === "string" && /^pid:\[[0-9]+\]$/.exec(held.pidns)?.[0] === held.pidns))
+    && (held.identity === undefined || identityBoot(held.identity) !== undefined);
+}
+
 /** The hold at `at` as written, or undefined when it cannot be read (gone, cut short, not one). */
 async function readHold(at: string): Promise<Partial<Hold> | undefined> {
   try {
@@ -516,17 +548,29 @@ async function readHold(at: string): Promise<Partial<Hold> | undefined> {
  *  way. A hold its installer left (gone, or past that bound, or unreadable and older than HOLD_WRITING_MS) is taken over
  *  by one taker alone: the one that links it to a name of that very file's removes it, and only while it is still that
  *  file, so a hold another taker made meanwhile is never removed. */
-export async function takeHold(dir: string, { isAlive = alive, identity = processIdentity, host = hostname(), pidns = pidNamespace(), timeoutMs = INSTALL_TIMEOUT_MS }: { isAlive?: (pid: number) => boolean; identity?: (pid: number) => string | undefined; host?: string; pidns?: string; timeoutMs?: number } = {}): Promise<string | undefined> {
-  const at = installHoldOf(dir);
+export async function takeHold(dir: string, { isAlive = alive, identity = processIdentity, host = hostname(), pidns = pidNamespace(), timeoutMs = INSTALL_TIMEOUT_MS, holdPath = installHoldOf(dir), recoverUnknownOwner = true }: { isAlive?: (pid: number) => boolean; identity?: (pid: number) => string | undefined; host?: string; pidns?: string; timeoutMs?: number; holdPath?: string; recoverUnknownOwner?: boolean } = {}): Promise<string | undefined> {
+  const at = holdPath;
   await mkdir(dirname(at), { recursive: true });
   const token = randomUUID();
   const draft = `${at}.${token}`;
   const own = identity(process.pid);
-  await writeFile(draft, JSON.stringify({ host, ...(pidns ? { pidns } : {}), pid: process.pid, ...(own ? { identity: own } : {}), startedAt: Date.now(), token } satisfies Hold));
+  const ownBoot = identityBoot(own);
+  await writeFile(draft, JSON.stringify({ host, ...(pidns ? { pidns } : {}), pid: process.pid, ...(own ? { identity: own } : {}), startedAt: Date.now(), token } satisfies Hold), { mode: 0o600 });
   /** Whether a hold's pid can be asked of this process table: written on this host, in this pid namespace where both
    *  name one. Another namespace's (another container's on the same data, with the same hostname) is judged as another
-   *  host's. */
-  const local = (held: Partial<Hold>): boolean => held.host === host && (typeof held.pidns !== "string" || pidns === undefined || held.pidns === pidns);
+   *  host's. Strict owner proof also withholds a PID check when only one side knows its namespace. */
+  const local = (held: Partial<Hold>): boolean => held.host === host && (recoverUnknownOwner
+    ? typeof held.pidns !== "string" || pidns === undefined || held.pidns === pidns
+    : held.pidns === pidns);
+  /** An unbounded local-command hold cannot expire after a reboot. A known previous
+   * kernel boot on this host proves its owner gone even if the PID namespace changed.
+   * A container recreated within the same boot still needs proof that its old namespace
+   * died; never inspect its PID from this namespace or steal a live sibling's hold.
+   * Finite installer holds retain their existing foreign-namespace timeout policy. */
+  const previousBoot = (held: Partial<Hold>): boolean => {
+    const boot = identityBoot(held.identity);
+    return timeoutMs === Infinity && held.host === host && ownBoot !== undefined && boot !== undefined && boot !== ownBoot;
+  };
   /** Whether a hold of this host's is still its installer's: that process alive, by its identity where both are known. */
   const installing = (held: Partial<Hold> & { pid: number; startedAt: number }): boolean => {
     if (!isAlive(held.pid)) return false;
@@ -544,8 +588,9 @@ export async function takeHold(dir: string, { isAlive = alive, identity = proces
       const judged = await lstat(at).catch(() => undefined);
       if (!judged) continue;
       const held = await readHold(at);
+      if (!recoverUnknownOwner && !ownerProof(held)) return undefined;
       const live = typeof held?.pid === "number" && typeof held.startedAt === "number"
-        ? local(held) ? installing(held as Partial<Hold> & { pid: number; startedAt: number }) : Date.now() - held.startedAt <= timeoutMs + HOLD_STOP_MS
+        ? !previousBoot(held) && (local(held) ? installing(held as Partial<Hold> & { pid: number; startedAt: number }) : Date.now() - held.startedAt <= timeoutMs + HOLD_STOP_MS)
         : Date.now() - judged.mtimeMs <= HOLD_WRITING_MS;
       if (live) return undefined;
       // Left by its installer: reaped by one taker alone. The hold is never moved; a taker links it to a name of that very
@@ -577,8 +622,8 @@ export async function takeHold(dir: string, { isAlive = alive, identity = proces
 
 /** Lets go of the hold on installs into `dir` that `token` took; a hold of another's (one that took over this one past
  *  its bound) stays. */
-export async function releaseHold(dir: string, token: string): Promise<void> {
-  const at = installHoldOf(dir);
+export async function releaseHold(dir: string, token: string, { holdPath = installHoldOf(dir) }: { holdPath?: string } = {}): Promise<void> {
+  const at = holdPath;
   if ((await readHold(at))?.token === token) await rm(at, { force: true });
 }
 

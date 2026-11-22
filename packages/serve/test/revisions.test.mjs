@@ -144,10 +144,12 @@ test("GET /runs lists every agent's runs newest first, filtered by agent, revisi
   await follow(api, c.run_id, ["completed"]);
   const all = (await api("GET", "/runs")).body;
   assert.deepEqual(all.runs.map((r) => r.run_id), [c.run_id, b.run_id, a.run_id]);
-  assert.deepEqual(Object.keys(all.runs[0]).sort(), ["agent_id", "agent_version", "archived_at", "console_url", "cost", "created_at", "ended_at", "error", "imported_from", "kind", "labels", "learning", "pending", "review", "revision", "run_id", "sha", "state", "status", "title", "trigger"]);
+  assert.deepEqual(Object.keys(all.runs[0]).sort(), ["agent_id", "agent_version", "archived_at", "budget_refused_calls", "console_url", "cost", "created_at", "ended_at", "error", "imported_from", "kind", "labels", "learning", "path", "pending", "review", "revision", "run_id", "sha", "state", "status", "stopped_for", "title", "trigger", "workflow"]);
   assert.deepEqual(all.runs.map((r) => r.review), [null, null, null], "no run here escalated, so none waits for review");
   assert.deepEqual((await api("GET", "/runs?agent=one")).body.runs.map((r) => r.run_id), [c.run_id, a.run_id]);
   assert.deepEqual((await api("GET", "/runs?status=failed")).body.runs.map((r) => [r.run_id, r.agent_id, r.error.code]), [[b.run_id, "two", "run_failed"]], "a failed run keeps its own error");
+  assert.deepEqual((await api("GET", "/runs?status=completed")).body.runs.map((r) => [r.run_id, r.status]), [[c.run_id, "completed"], [a.run_id, "completed"]], "an ended run is filtered on its row's status");
+  assert.deepEqual((await api("GET", "/runs?status=working")).body.runs, [], "no ended run reads working");
   assert.equal(all.runs[0].error, null);
   const page = (await api("GET", "/runs?limit=2")).body;
   assert.deepEqual(page.runs.map((r) => r.run_id), [c.run_id, b.run_id]);
@@ -155,6 +157,11 @@ test("GET /runs lists every agent's runs newest first, filtered by agent, revisi
   assert.equal((await api("GET", "/runs?status=done")).status, 400);
   assert.equal((await api("GET", "/runs?limit=101")).status, 400);
   assert.deepEqual((await api("GET", "/runs?agent=nobody")).body, { runs: [], next_cursor: null });
+});
+
+test("a settled run's status is its row's, the status its view reads; a run still going has none from its row", async () => {
+  const { settledStatusOf } = await import("../dist/store-view.js");
+  assert.deepEqual(["completed", "escalated", "failed", "stopped", "running"].map(settledStatusOf), ["completed", "completed", "failed", "cancelled", undefined]);
 });
 
 test("a workflow agent: its definition carries the workflow, its kind is workflow, and its runs are listed with the kind", async (t) => {

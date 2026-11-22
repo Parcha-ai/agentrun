@@ -1,8 +1,9 @@
+import { sourceSyncOf } from "../source-sync/types.js";
 import { nativeEnvironment } from "./environment.js";
 import { basename } from 'node:path';
 import { ApiError, invalid } from '../errors.js';
 import { createAgent, commitAgent, getAgent, definitionOf, type AgentEntry } from '../agents-store.js';
-import type { Store } from '../store/store.js';
+import type { Store, SettingsGuard } from '../store/store.js';
 import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED } from './binding.js';
 import { discoverNative, nativeIdentity, verifyNative } from './discovery.js';
 import { snapshotNativeInstructions } from './instructions.js';
@@ -32,7 +33,8 @@ export async function connectNative(store: Store, input: unknown, env = nativeEn
  try {return await createAgent(store,{definition:{id,name:`${basename(target.project)}${target.selector.name?` · ${target.selector.name}`:''}`,instructions:'',harness:target.runtime==='claude-code'?'claude-agent':'codex',place:{mode:'runner'},tools:[],learning:false,native},skills:{}});}
  catch(error){if(error instanceof ApiError&&error.code==='agent_exists'){const entry=await getAgent(store,id);if(entry)return updateNative(store,entry,native);}throw error;}
 }
-export async function updateNative(store: Store, entry: AgentEntry, native: NativeBinding): Promise<AgentEntry> {
+export async function updateNative(store: Store, entry: AgentEntry, native: NativeBinding, settingsGuards?: readonly SettingsGuard[]): Promise<AgentEntry> {
+ if(sourceSyncOf(entry.revision?.body))throw new ApiError("input_invalid","This agent runs in AgentRun. Its source can sync setup, but reconnecting cannot take execution back.");
  const before=definitionOf(entry.agent,entry.revision!,entry.version);
  const old=nativeOf(entry.revision?.body),execution=nativeExecutionOverrides(entry.revision?.body);
  // Disconnect must remain possible, retaining these execution restrictions. Reconnect/conversion must never erase
@@ -47,7 +49,7 @@ export async function updateNative(store: Store, entry: AgentEntry, native: Nati
  // on disconnect. Reconnect fills an absent legacy harness; managed conversion adopts the selected source harness.
  const sourceHarness=native.runtime==='claude-code'?'claude-agent':'codex';
  const harness=old?((entry.revision!.body as {harness?:string}).harness??(native.connected?sourceHarness:undefined)):sourceHarness;
- return commitAgent(store,entry,{definition:{...definition,...(harness?{harness}:{}),native}},{ifCurrent:entry.revision?.id??null});
+ return commitAgent(store,entry,{definition:{...definition,...(harness?{harness}:{}),native}},{ifCurrent:entry.revision?.id??null,...(settingsGuards?{settingsGuards}:{})});
 }
 export async function verifyConnection(store:Store,entry:AgentEntry,env=nativeEnvironment()):Promise<AgentEntry>{
  const before=nativeOf(entry.revision?.body);
@@ -59,7 +61,7 @@ export async function verifyConnection(store:Store,entry:AgentEntry,env=nativeEn
  if(native.state==='ready'){
   const snapshot=await snapshotNativeInstructions(native);
   if(snapshot.incomplete||snapshot.truncated){
-   native.capabilities={...native.capabilities,notes:false,skills:false};
+   native.capabilities={...native.capabilities,learning:false};
    native.issues.push(`Self-improvement is unavailable: ${snapshot.incomplete??'the declared native instruction files exceed the 64 KiB grading evidence limit.'} Native jobs remain available; no incomplete policy is automatically graded.`);
   }
  }

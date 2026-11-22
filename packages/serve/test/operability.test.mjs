@@ -82,7 +82,7 @@ test("the stored token is printed on the boot that made it, and on no later one"
   assert.equal(second.seen.out.includes(token) || second.seen.out.includes(token.slice(0, 12)), false, "the second boot prints no token value");
 });
 
-const LINE = /^at=\S+ event=(boxes|harness_offers|request|auth_failed|run_started|run_ended)( [a-z_]+=("[^"]*"|\S+))*$/;
+const LINE = /^at=\S+ event=(boxes|harness_offers|cost_heal|request|auth_failed|run_started|run_ended)( [a-z_]+=("[^"]*"|\S+))*$/;
 const fields = (line) => Object.fromEntries([...line.matchAll(/([a-z_]+)=("[^"]*"|\S+)/g)].map(([, k, v]) => [k, v.replace(/^"|"$/g, "")]));
 
 /** Waits for a line of `event`: the runner says a run's end after the run is final, so a test that saw it complete reads the log after. */

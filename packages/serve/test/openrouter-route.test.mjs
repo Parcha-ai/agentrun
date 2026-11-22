@@ -19,6 +19,7 @@ import * as adapters from "../dist/adapters.js";
 import { agent, harnessData, scratch, serve, withEnv } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { HarnessUnavailable, modelOn, providerFor } from "../dist/provider.js";
+import { installGoose, needsGoose } from "./fixtures/goose-installed.mjs";
 
 /** OpenRouter's key in these tests: no real one. */
 const KEY = `not-a-secret-${"openrouter"}`;
@@ -112,7 +113,7 @@ test("or-7: a claude-agent run through OpenRouter is priced by OpenRouter's cata
 
 test("or-8: no model here names OpenRouter's key first, and claude-agent's names it too; a direct provider's key still wins the default", async () => {
   const { ADD_A_KEY, hostModel } = await import("../dist/model.js");
-  assert.equal(ADD_A_KEY, "add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY where AgentRun starts.");
+  assert.equal(ADD_A_KEY, "add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY where AgentRun starts.");
   assert.equal((await modelOn("anthropic-messages", {}, undefined, "claude-agent")).why, "No model yet for claude-agent: add an OpenRouter or Anthropic key in Settings → Model keys, or set OPENROUTER_API_KEY or ANTHROPIC_API_KEY where AgentRun starts.");
   // OpenRouter alone: a default for every harness.
   assert.deepEqual(["pi", "claude-agent", "codex"].map((h) => hostModel(ONLY, "default", h)), ["openrouter/openai/gpt-6.1-sol", "anthropic/claude-sonnet-5.5", "openai/gpt-6.1-sol"]);
@@ -177,7 +178,7 @@ test("or-6: a server with only OPENROUTER_API_KEY runs every harness, each with 
   const { api } = await serve(t, { faux: undefined });
   const harnesses = (await api("GET", "/capabilities")).body.harnesses;
   // How many fit at once is this host's memory (admission.test.mjs); the memory a run takes is the harness's own.
-  const row = (id) => { const { max_concurrent_runs, models: _models, free_models: _free, ...offer } = harnesses.find((h) => h.id === id); return offer; };
+  const row = (id) => { const { max_concurrent_runs, models: _models, free_models: _free, label: _label, promises: _promises, ...offer } = harnesses.find((h) => h.id === id); return offer; };
   assert.deepEqual(row("pi"), { id: "pi", available: true, steer: true, default_model: "openrouter/openai/gpt-6.1-sol", run_memory_mib: 128 });
   assert.deepEqual(row("claude-agent"), { id: "claude-agent", available: true, steer: true, default_model: "anthropic/claude-sonnet-5.5", run_memory_mib: 288 });
   assert.deepEqual(row("codex"), { id: "codex", available: true, steer: false, default_model: "openai/gpt-6.1-sol", run_memory_mib: 192 });
@@ -257,6 +258,20 @@ test("opencode on OpenRouter's key alone has codex's default there, and modelOn 
   const p = providerFor("openai-responses", ONLY, { provider: "openai", modelId: "gpt-6.1-sol" }, "opencode");
   assert.deepEqual({ origin: p.origin, key: p.credential(), model: p.modelId }, { origin: "https://openrouter.ai/api", key: KEY, model: "openai/gpt-6.1-sol" });
   assert.throws(() => providerFor("openai-responses", {}, { provider: "openai", modelId: "gpt-6.1-sol" }, "opencode"), refused(/^opencode needs OPENAI_API_KEY, OPENROUTER_API_KEY/));
+});
+
+test("OpenRouter's key runs Goose, and has a default model for it, only once Goose is installed: the key's harnesses name it then, never before", { skip: needsGoose }, async (t) => {
+  const { hostModel, keyHarnesses, MODEL_KEYS } = await import("../dist/model.js");
+  const { DATA_ENV } = await import("../dist/files.js");
+  const row = MODEL_KEYS.find((each) => each.id === "openrouter");
+  const bare = { ...ONLY, [DATA_ENV]: join(await scratch(t), "agents") };
+  assert.deepEqual(keyHarnesses(row, bare), ["pi", "claude-agent", "codex", "opencode"], "not installed: not named");
+  assert.equal(hostModel(bare, "default", "goose"), undefined, "nor given a model");
+  const installed = { ...ONLY, [DATA_ENV]: installGoose(join(await scratch(t), "agents")) };
+  assert.deepEqual(keyHarnesses(row, installed), ["pi", "claude-agent", "codex", "opencode", "goose"]);
+  // Anthropic's model on OpenRouter, as claude-agent's there: Goose talks to Anthropic's Messages API.
+  assert.equal(hostModel(installed, "default", "goose"), hostModel(ONLY, "default", "claude-agent"));
+  assert.deepEqual(keyHarnesses(MODEL_KEYS.find((each) => each.id === "openai"), installed), ["pi", "codex", "opencode"], "OpenAI's key never runs it");
 });
 
 test("a key refused on an opencode run that reaches OpenAI's model through OpenRouter is named as OpenRouter's, as codex's is", async () => {

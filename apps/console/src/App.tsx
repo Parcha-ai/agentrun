@@ -1,6 +1,6 @@
 import { backendSdkOf } from "@/lib/backendSdk";
-import { ObservedSessionPage, ObservedSessions } from "@/components/ObservedSessions";
-import { useObservations } from "@/lib/observations";
+import { ObservedSessionPage } from "@/components/ObservedSessions";
+import { observationHash, useObservations } from "@/lib/observations";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Picker } from "@/components/ui";
 import { Code, RefreshCw } from "lucide-react";
@@ -9,6 +9,8 @@ import { AgentPage } from "@/components/AgentPage";
 import { AgentDojo } from "@/components/AgentDojo";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { ChatGPTRow } from "@/components/ChatGPTSignIn";
+import { ClaudeLoginRow } from "@/components/ClaudeLoginRow";
+import { ModelGatewayRow } from "@/components/ModelGatewayRow";
 import { BuildAgent } from "@/components/BuildAgent";
 import { RunsRequest } from "@/components/RunsRequest";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
@@ -24,6 +26,7 @@ import { ModelKeyCard } from "@/components/ModelKeyCard";
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { EmailPage } from "@/components/EmailPage";
 import { WebhookPage } from "@/components/WebhookPage";
+import { SlackPage } from "@/components/SlackPage";
 import { ComputersPage } from "@/components/ComputersPage";
 import { WorkspacePage } from "@/components/WorkspacePage";
 import { ScheduleNames, type TriggerKnown } from "@/components/ScheduleChip";
@@ -32,7 +35,7 @@ import { TemplatesPage } from "@/components/Templates";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
-import { queryRunsPrompt } from "@/lib/codingAgentPrompts";
+import { queryObservedSessionPrompt, queryRunsPrompt } from "@/lib/codingAgentPrompts";
 import { NeedsYouStrip } from "@/components/NeedsYouStrip";
 import { ConnectExistingAgents, NativeConnections } from "@/components/NativeConnections";
 import { StartHere } from "@/components/StartHere";
@@ -44,7 +47,7 @@ import { type Section, Shell } from "@/components/Shell";
 import { SessionUnread, SignIn } from "@/components/SignIn";
 import { Banner } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
-import { type AuthMode, authMode, noAccounts, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
+import { type AuthMode, authMode, newCodeProblem, noAccounts, setupCodeRenewed, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { approvalRefusal } from "@/lib/approval";
 import { computerRefusal } from "@/lib/computerAsk";
 import { stepsBack, trackHistory } from "@/lib/back";
@@ -63,13 +66,15 @@ import { githubReturnOf } from "@/lib/github";
 import { addOf, signInOf } from "@/lib/mcp";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { HandBackOutcome, Run, RunStatus } from "@/lib/v2";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { cn } from "@/lib/utils";
 
 /** How often the console reads capabilities again while no model is ready for execution. */
 const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   if (h === "#/dojo") return { section: "dojo" };
@@ -82,9 +87,6 @@ export function route(h: string = location.hash): Where {
     return { section: "agents", nativeConnect: true, ...(source === "remote" || source === "observe" ? { connectionSource: source } : {}) };
   }
   if (h === "#/agents/new") return { section: "agents", agent: null };
-  // An agent's notes, pointed at from a run: its Learning tab with each `note` to show.
-  m = h.match(/^#\/agents\/([^/?]+)\/learning\?(.*)$/);
-  if (m) return { section: "agents", agent: decodeURIComponent(m[1]), tab: "learning", notes: new URLSearchParams(m[2]).getAll("note") };
   // An agent's Tools, on one tool's permission (a start refused for it links here).
   m = h.match(/^#\/agents\/([^/?]+)\/edit\?(.*)$/);
   if (m) { const tool = new URLSearchParams(m[2]).get("tool"); return { section: "agents", agent: decodeURIComponent(m[1]), edit: true, ...(tool ? { tool } : {}) }; }
@@ -116,18 +118,19 @@ export function route(h: string = location.hash): Where {
   if (h === "#/triggers/new-github") return { section: "triggers", trigger: null, kind: "github" };
   if (h === "#/triggers/new-composio") return { section: "triggers", trigger: null, kind: "composio" };
   if (h === "#/triggers/new-feed") return { section: "triggers", trigger: null, kind: "feed" };
+  if (h === "#/triggers/new-email") return { section: "triggers", trigger: null, kind: "email" };
   m = h.match(/^#\/triggers\/([^/?]+)(\/edit)?$/);
   if (m) return { section: "triggers", trigger: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
   if (h.startsWith("#/triggers")) return { section: "triggers" };
   // Settings, a page per address: #/settings/keys (and #/settings), #/settings/tools, #/settings/email,
-  // #/settings/computers, #/settings/workspace and #/settings/webhook; a later one is one more name here.
+  // #/settings/computers, #/settings/workspace, #/settings/webhook and #/settings/slack; a later one is one more name here.
   // #/settings/mcp, with an OAuth sign-in's outcome when the server sends the browser back there.
   m = h.match(/^#\/settings\/mcp(?:\?(.*))?$/);
   if (m) { const add = addOf(m[1]); return { section: "settings", settings: "mcp", signIn: signInOf(m[1]), ...(add ? { add } : {}) }; }
   // #/settings/github, with what the way back from GitHub said (github=connected, or error&reason=<code>).
   m = h.match(/^#\/settings\/github(?:\?(.*))?$/);
   if (m) { const github = githubReturnOf(m[1]); return { section: "settings", settings: "github", ...(github ? { github } : {}) }; }
-  m = h.match(/^#\/settings(?:\/(keys|tools|email|computers|workspace|webhook))?$/);
+  m = h.match(/^#\/settings(?:\/(keys|tools|email|computers|workspace|webhook|slack))?$/);
   if (m) return { section: "settings", settings: (m[1] ?? "keys") as SettingsPage };
   // Mission Control is the first page: the bare address, and the old start page's, land there.
   if (h === "" || h === "#" || h === "#/" || h.startsWith("#/start") || h.startsWith("#/mission")) return { section: "mission" };
@@ -171,6 +174,7 @@ const IMPORT_READ_TRIES = 30;
 function importLine(s: ImportState): string {
   if (s.state === "running") return "Importing this machine's sessions: agents appear as they arrive.";
   if (s.state === "stopped") return "The import of this machine's sessions stopped. It goes on when the server starts again.";
+  if (s.state === "failed") return "The import of this machine's sessions was given up before it finished. The server's log says why.";
   const runs = `${s.runs.toLocaleString("en-US")} session${s.runs === 1 ? "" : "s"}`;
   return `Imported ${runs} into ${s.agents.toLocaleString("en-US")} agent${s.agents === 1 ? "" : "s"}${s.skipped ? `; ${s.skipped.toLocaleString("en-US")} left out` : ""}.`;
 }
@@ -266,8 +270,8 @@ export function App() {
     );
     return () => { live = false; clearTimeout(timer); };
   }, [v2, sessionTry]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Setup's box, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
-  // counts read until the server has them. A read that fails once the box shows leaves it, its count unknown; one that
+  // Setup's list, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
+  // projects read until the server has them. A read that fails once the offer shows leaves it, its projects unknown; one that
   // fails before it shows (a 5xx, the network) is tried again at the next poll while setup is open, so a passing failure
   // never hides the offer. A 404 or a 403 is the server offering none: no box, and no more reads.
   const [offer, setOffer] = useState<ImportOffer | null>(null);
@@ -294,12 +298,19 @@ export function App() {
   if (auth === null) return <ConnectionProvider connection={connection}><Starting /></ConnectionProvider>;
   if (auth !== "signed_in") {
     return (
-      <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} problem={signedOutElsewhere && auth === "sign_in" ? "You were signed out. Sign in to go on." : null} onSubmit={async (password, code, importSessions) => {
-        try { await (auth === "setup" ? v2.setup(password, code, importSessions) : v2.signIn(password)); setSignedOutElsewhere(false); setAuth("signed_in"); return null; }
+      <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} problem={signedOutElsewhere && auth === "sign_in" ? "You were signed out. Sign in to go on." : null} onSubmit={async (password, code, importProjects) => {
+        try { await (auth === "setup" ? v2.setup(password, code, importProjects) : v2.signIn(password)); setSignedOutElsewhere(false); setAuth("signed_in"); return null; }
         catch (e) {
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
           if (e instanceof ClientError && e.status === 403 && auth === "setup") { await readSession().catch(() => {}); }
           return e instanceof ClientError ? signInProblem(e) : e instanceof Error ? e.message : String(e);
+        }
+      }} onNewCode={async () => {
+        try { return setupCodeRenewed(window.location.hostname, await v2.setupCode()); }
+        catch (e) {
+          // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
+          if (e instanceof ClientError && e.status === 403) await readSession().catch(() => {});
+          throw new Error(e instanceof ClientError ? newCodeProblem(e) : e instanceof Error ? e.message : String(e));
         }
       }} />
     );
@@ -345,6 +356,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const observedDays = statsRange === "7d" ? 7 : 30;
   const observations = useObservations(v2, { active: where.section === "mission" || (where.section === "runs" && !where.run && !where.runsOf && !where.archived && !where.status), days: observedDays });
   const [statsAgent, setStatsAgent] = useState<string | null>(null);
+  // Keep the selected identity through refreshes that temporarily clear the connection list.
+  const [sessionSelected, setSessionSelected] = useState(false);
   const [missionReading, setMissionReading] = useState(false);
   // Automatic refresh must not invalidate a valid slow stats/recent-runs answer. User scope changes still replace it.
   const missionPending = useRef(false);
@@ -370,8 +383,10 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   // gone, and shows as its id.
   const [namesRead, setNamesRead] = useState(false);
   const namesAsked = useRef(0);
-  // The active agents whose learned items wait for their owner's OK, with how many (Needs you).
+  // The active agents whose learned workflows wait for their owner's OK, with how many (Needs you).
   const [learningWaits, setLearningWaits] = useState<{ agent_id: string; name: string; pending: number }[]>([]);
+  const [missionAgents, setMissionAgents] = useState<Agent[] | null>(null);
+  const [missionAgentsError, setMissionAgentsError] = useState<string | null>(null);
   // The `refreshed` the names were last read for.
   const namesAfter = useRef(-1);
   const [error, setError] = useState<Problem | null>(null);
@@ -426,11 +441,11 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); return true; }, () => false); };
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
-  // view or Mission Control opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere,
-  // is named at once, and again when an import at setup ends while this page watches (`refreshed`).
-  // Only the newest read lands.
+  // view, Mission Control or Triggers opens (the list, one agent's runs, a run's page, a trigger's page), so an agent made
+  // since, here or elsewhere (a template's apply makes one with its triggers), is named at once, and again when an import
+  // at setup ends while this page watches (`refreshed`). Only the newest read lands.
   useEffect(() => {
-    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && namesAfter.current === refreshed) return;
+    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && where.section !== "triggers" && namesAfter.current === refreshed) return;
     namesAfter.current = refreshed;
     const n = ++namesAsked.current;
     setNamesRead(false);
@@ -467,7 +482,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const gates = toolGates(c?.tools);
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers, GitHub, computers and the workspace (every server has them), and the webhook (its routes).
-  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : [])];
+  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : [])];
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", triggers: "#/triggers", templates: "#/templates", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
@@ -519,8 +534,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     missionPending.current = true;
     setMissionError(null); setMissionReading(true);
     const from = rangeFrom(statsRange);
-    // An agent picked: its own latest runs, as every figure below the picker follows it.
-    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), statsAgent ? v2.listAgentRuns(statsAgent, 10) : v2.listRuns(10)])
+    // A session's usage is queryable without pretending it is a server agent with its own run endpoint.
+    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), sessionSelected ? Promise.resolve({ runs: [] }) : statsAgent ? v2.listAgentRuns(statsAgent, 10) : v2.listRuns(10)])
       .then(([s, r]) => {
         if (!live) return;
         setMission(missionFrom(s, r.runs));
@@ -531,7 +546,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
       .catch((e) => { if (live) setMissionError(problem(e, "Mission Control")); })
       .finally(() => { if (live) { missionPending.current = false; setMissionReading(false); } });
     return () => { live = false; missionPending.current = false; };
-  }, [v2, where.section, missionTry, statsRange, statsAgent, refreshed]);
+  }, [v2, where.section, missionTry, statsRange, statsAgent, sessionSelected, refreshed]);
   // Back after the server was away: Mission Control reads again what may have moved meanwhile, keeping the page.
   useResumed(() => setMissionTry((n) => n + 1));
   // Coding-agent actions happen outside this tab. Read their results on return, and keep visible counts current.
@@ -545,7 +560,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   }, [where.section]);
   useEffect(() => {
     // Left Mission Control: its counts are read afresh on the way back, so the failed runs seen start over.
-    if (where.section !== "mission") { failedSeenRef.current = null; return; }
+    if (where.section !== "mission") { failedSeenRef.current = null; setMissionAgents(null); setMissionAgentsError(null); return; }
     let live = true;
     // The failed runs the last read listed: one it did not (a run that failed since) reads the page's counts again, so the
     // failed total under the Failed tile and list ("See all N") never falls behind them. GET /stats is no cheap read (the
@@ -556,9 +571,14 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     // Up to 100 runs of each status, newest first; each read lands apart, and one that fails keeps its section's last answer.
     const upTo = (status: RunStatus) => allPages((cursor) => v2.listRuns(50, cursor, { status }), (p) => p.runs, 2);
     // With them, every active agent, for which wait for their owner's OK on what they learned (`learning.pending`): a
-    // run that ends leaving learned items shows in Needs you at the next read. A failed read keeps the last answer.
+    // run that ends leaving learned workflows shows in Needs you at the next read. A failed read keeps the last answer.
     const waiting = () => allPages((cursor) => v2.listAgents({ archived: false, cursor }), (p) => p.agents)
-      .then((agents) => { if (live) setLearningWaits(agents.filter((a) => waitingOf(a) > 0).map((a) => ({ agent_id: a.agent_id, name: a.definition.name ?? a.agent_id, pending: waitingOf(a) }))); }, () => {});
+      .then((agents) => { if (live) {
+        setLearningWaits(agents.filter((a) => waitingOf(a) > 0).map((a) => ({ agent_id: a.agent_id, name: a.definition.name ?? a.agent_id, pending: waitingOf(a) })));
+        // The dashboard and Agents page resolve source profiles through the same inventory.
+        setMissionAgents(agents);
+        setMissionAgentsError(null);
+      } }, (error) => { if (live) setMissionAgentsError(problemOf(error)); });
     const read = () => Promise.allSettled([upTo("input_required"), upTo("failed"), upTo("working"), waiting()])
       .then(([asking, failed, working]) => {
         if (!live) return;
@@ -648,10 +668,10 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const learningCap = caps ? ((caps as unknown as { features?: { learning?: "on" | "off" } }).features?.learning ?? null) : undefined;
   editorCaps.learning = learningCap ?? undefined;
   // While no managed model is ready, read capabilities again every MODEL_CHECK_MS and when the page returns to view,
-  // so execution setup clears once a model is configured. Native connections use their own authentication.
+  // so execution and learning setup clear once their models are configured. Native connections use their own authentication.
   const modelsReady = caps?.models?.ready;
   useEffect(() => {
-    if (modelsReady !== false) return;
+    if (modelsReady !== false && caps?.learning_model?.ready !== false) return;
     // Through the one guarded reader, so an older answer never undoes a newer one. The timer starts no read while its last
     // one is still answering: a read slower than MODEL_CHECK_MS would otherwise be overtaken by the next tick's, and its
     // answer dropped. Coming back into view always reads now, and that newer answer is the one that lands.
@@ -664,7 +684,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     const timer = setInterval(tick, MODEL_CHECK_MS);
     window.addEventListener("focus", again);
     return () => { clearInterval(timer); window.removeEventListener("focus", again); };
-  }, [v2, modelsReady]);
+  }, [v2, modelsReady, caps?.learning_model?.ready]);
   // The server's ChatGPT sign-in (chatgpt/1), read each time no model is ready: the first screen's card and the bar offer it
   // first. Null before it is read and on a server without it.
   const [plan, setPlan] = useState<ChatGPTView | null>(null);
@@ -713,18 +733,21 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
               : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "webhook" ? <WebhookPage v2={v2} />
+              : where.settings === "slack" ? <SlackPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} harnesses={editorCaps.harnesses}
-                  plan={<ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} />} />}
+                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
           </Settings>
         : where.section === "dojo"
-        ? <AgentDojo key={refreshed} v2={v2} server={learningCap} />
+        ? <AgentDojo key={refreshed} v2={v2} server={learningCap} modelAccess={caps?.learning_model} />
         : where.section === "mission"
         // Source connection and history browsing need no managed model; setup follows an explicit choice to run here.
         ? <div className="flex h-full flex-col">
             <div className="min-h-0 flex-1">
-              <MissionControl hasObservedSessions={!!observations.data?.sessions.length} observations={<ObservedSessions read={observations} view="summary" days={observedDays} />} view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
-                actions={<><Button size="icon" aria-label="Refresh Mission Control" disabled={missionReading} onClick={() => { setMissionTry((n) => n + 1); setNeedsTry((n) => n + 1); }}><RefreshCw className="size-4" aria-hidden /></Button><CodingAgentAction label="Query" prompt={queryRunsPrompt(location.origin, statsAgent ?? undefined)} playgroundHref={queryPlaygroundHref(statsAgent ?? undefined)} /><ConnectExistingAgents variant="primary" /></>}
-                scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
+              <MissionControl observed={observations} agents={missionAgents} agentsError={missionAgentsError} view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
+                actions={<><Button size="icon" aria-label="Refresh Mission Control" disabled={missionReading} onClick={() => { setMissionTry((n) => n + 1); setNeedsTry((n) => n + 1); observations.refresh(); }}><RefreshCw className="size-4" aria-hidden /></Button>{sessionSelected && statsAgent
+                  ? <CodingAgentAction label="Query" prompt={queryObservedSessionPrompt(location.origin, statsAgent, rangeFrom(statsRange))} playgroundHref={observationHash(statsAgent)} playgroundLabel="Connected agent" />
+                  : <CodingAgentAction label="Query" prompt={queryRunsPrompt(location.origin, statsAgent ?? undefined)} playgroundHref={queryPlaygroundHref(statsAgent ?? undefined)} />}<ConnectExistingAgents variant="primary" /></>}
+                scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: id => { setSessionSelected(!!id && !!observations.data?.sessions.some(session => session.id === id)); setStatsAgent(id); }, refreshing: missionReading && mission !== null }}
                 asking={needs && askingRead ? needs.asking.length : null} failed={needs && failedRead ? failureCount(needs.failed) : null} live={needs && liveRead ? needs.live.length : null}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false && !observations.data?.sessions.length ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
@@ -739,10 +762,10 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
         ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} failuresToPause={caps?.features?.triggers?.failures_to_pause} publicUrl={caps?.features?.triggers?.public_url} />
         : where.section === "playground"
         ? <section className="flex h-full min-h-0 flex-col">
-            <header className="flex min-h-12 shrink-0 items-center gap-2 border-b px-5"><Code className="size-4" aria-hidden /><h1 className="caps text-body font-semibold">API playground</h1></header>
+            <header className={cn(pageToolbarClass, "gap-2 px-5")}><h1 className={pageTitleClass}><Code className="size-4" aria-hidden />API playground</h1></header>
             <div className="flex flex-wrap items-center gap-3 border-b px-6 py-4">
               <label className="sr-only" htmlFor="api-operation">API operation</label>
-              <Picker id="api-operation" label="API operation" value={where.operation ?? "run"} onChange={(operation) => {
+              <Picker id="api-operation" label="API operation" steady value={where.operation ?? "run"} onChange={(operation) => {
                 const target = playgroundTarget;
                 const params = new URLSearchParams();
                 if (operation !== "run") params.set("operation", operation);
@@ -751,7 +774,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
               }} options={[{ value: "create-agent", label: "POST · Create an agent" }, { value: "apply-template", label: "POST · Apply a template" }, { value: "run", label: "POST · Start a run" }, { value: "list-runs", label: "GET · Query runs" }, { value: "edit-agent", label: "PUT · Edit agent", disabled: !playgroundTarget }]} />
               <span className="min-w-0 break-all font-mono text-small text-muted-foreground">{where.operation === "apply-template" ? `/v2/templates/${where.template ? encodeURIComponent(where.template) : "{template}"}/apply` : where.operation === "list-runs" ? (where.playgroundAgent ? `/v2/agents/${where.playgroundAgent}/runs` : "/v2/runs") : where.operation === "create-agent" ? "/v2/agents" : where.operation === "edit-agent" ? `/v2/agents/${where.playgroundAgent ?? "{agent_id}"}/definition` : "/v2/agents/{agent_id}/runs"}</span>
             </div>
-            {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} /> : <>
+            {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
               {!externalPlayground && caps?.models?.ready === false && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
               {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
@@ -760,9 +783,9 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
           </section>
         : where.section === "agents"
         ? where.observation ? <ObservedSessionPage v2={v2} sessionId={where.observation} go={go} /> : where.nativeConnect ? <NativeConnections v2={v2} go={go} initialSource={where.connectionSource} />
-          : where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
+          : where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} learning={learningCap} />
           : where.agent === null ? <BuildAgent origin={location.origin} v2={v2} />
-          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} notes={where.notes} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} />
+          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />

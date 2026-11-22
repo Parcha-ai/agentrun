@@ -2,66 +2,53 @@
 // faux model module stands in for a model. The console's real-browser flows drive Settings → Computers and a run's
 // desktop with it, with no Docker, no provider and no key that means anything. Only --faux reaches this module.
 //
-// Three providers, in the computer package's registry shape (SETTING_KINDS, PROVIDERS, servingRefusals):
+// Four providers, in the computer package's registry shape (SETTING_KINDS, PROVIDERS, servingRefusals):
 // - faux-sandbox: a sandbox with one key, FAUX_SANDBOX_KEY. Ready once the key is saved; its test then passes. It starts
 //   no computer.
 // - faux-broken: a sandbox with no key, whose test always fails: it is never reached. It starts no computer.
 // - faux-desktop: a desktop with no key. Its run computer answers screen.shot (a plain grey screen) and input.actions
 //   (each action done, none performed). Its watch gives the run's live view grey frames and takes its input, so a --faux
 //   run's desktop is watched and taken over through the same proxied viewer a real one's is; the release ends it.
+// - faux-dial: a desktop with no key whose machine dials this server, as Fly Machines' and Cloudflare's do (its
+//   descriptor's connect is "dial"). Its launch mints the machine a token through the runner's HostedDial, and a machine
+//   in this process dials the dial's public address at /v2/computers/attach with it, as agentrun-dial does, answering
+//   hello, ping, screen.shot (a grey screen) and input.actions; the run's computer calls go over the socket the runner's
+//   hub took. No dial, or one with no public address: its launch refuses in words, as the computer package's does.
+import { randomBytes } from "node:crypto";
 import { crc32, deflateSync } from "node:zlib";
-import type { HelloResult, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
+import { ATTACH_PATH, ATTACH_SUBPROTOCOL, type HelloResult, type HostedDial, type KindCapabilities, MAX_LINE_BYTES, type ProviderEntry, type ScreenWatch, type ScreenWatchHandlers, SETTING_KIND_NAMES, SETTING_KINDS, servingRefusals, type WatchOptions } from "@parcha/agentrun-computer";
+import { WebSocket } from "ws";
 import type { KeyTable, ProviderFactories } from "./computer-keys.js";
-import type { ComputerKind } from "./computer-setting.js";
-import type { KindCapabilities, KindRegistry, ProviderEntry, SettingKindSpec } from "./computers.js";
 import type { WatchOf } from "./workspace/computer-for-claim.js";
-import type { ComputerSettingKind, LaunchedComputer } from "./workspace/resolve-computer.js";
+import type { ComputerSettingKind, KindRegistry, LaunchedComputer } from "./workspace/resolve-computer.js";
 
-// The computer package's setting kinds and servingRefusals, as its kinds.ts gives them (the swap to its exports
-// replaces these two with the package's own).
-const SETTING_KINDS: Readonly<Record<ComputerKind, SettingKindSpec>> = {
-  none: { machineKinds: [], required: [], optional: [] },
-  sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-  desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "ui", "stream"] },
-  phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "ui", "stream"] },
-  browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
-} as unknown as Readonly<Record<ComputerKind, SettingKindSpec>>;
-const KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerKind[];
-
-function servingRefusals(capabilities: KindCapabilities, kind: ComputerKind): string[] {
-  const spec = Object.hasOwn(SETTING_KINDS, kind) ? SETTING_KINDS[kind] : undefined;
-  if (spec === undefined) return [`${JSON.stringify(kind)} is not a setting kind: ${KIND_NAMES.join(", ")}`];
-  if (spec.machineKinds.length === 0) return [`kind ${kind} is no computer: no provider serves it`];
-  const refusals: string[] = [];
-  if (!(spec.machineKinds as readonly string[]).includes(capabilities.kind)) refusals.push(`kind ${kind} is a ${spec.machineKinds.join(" or ")} machine, not a ${capabilities.kind} one`);
-  const groups = (Array.isArray(capabilities.groups) ? capabilities.groups : []) as readonly string[];
-  const missing = (spec.required as readonly string[]).filter((group) => !groups.includes(group));
-  if (missing.length > 0) refusals.push(`kind ${kind} needs groups ${missing.join(", ")}, which the provider does not declare`);
-  return refusals;
-}
-
-const SANDBOX = { kind: "linux", groups: ["exec", "files", "processes"] } as unknown as KindCapabilities;
+const SANDBOX: KindCapabilities = { kind: "linux", groups: ["exec", "files", "processes"] };
 const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys"] as const;
-const DESKTOP = { kind: "desktop", groups: [...DESKTOP_GROUPS] } as unknown as KindCapabilities;
+const DESKTOP: KindCapabilities = { kind: "desktop", groups: [...DESKTOP_GROUPS] };
 
 const entry = (fields: Omit<ProviderEntry, "kinds">): ProviderEntry =>
-  ({ ...fields, kinds: KIND_NAMES.filter((kind) => fields.capabilities.some((one) => servingRefusals(one, kind).length === 0)) }) as ProviderEntry;
+  ({ ...fields, kinds: SETTING_KIND_NAMES.filter((kind) => fields.capabilities.some((one) => servingRefusals(one, kind).length === 0)) });
 
+// A faux computer takes this server's allow-list as it is, none or the list, so Settings says nothing of its network and
+// AGENTRUN_BOX_ALLOW none never refuses it.
+const NETWORK = ["none", "allow"] as const;
 const PROVIDERS: readonly ProviderEntry[] = [
-  entry({ id: "faux-sandbox", label: "Faux sandbox", keys: [{ name: "FAUX_SANDBOX_KEY", required: true }], mounts: ["bind"], metered: false, capabilities: [SANDBOX] } as Omit<ProviderEntry, "kinds">),
-  entry({ id: "faux-broken", label: "Faux broken", keys: [], mounts: ["bind"], metered: false, capabilities: [SANDBOX] } as Omit<ProviderEntry, "kinds">),
-  entry({ id: "faux-desktop", label: "Faux desktop", keys: [], mounts: [], metered: false, capabilities: [DESKTOP] } as Omit<ProviderEntry, "kinds">),
+  entry({ id: "faux-sandbox", label: "Faux sandbox", keys: [{ name: "FAUX_SANDBOX_KEY", option: "apiKey", required: true }], mounts: ["bind"], network: NETWORK, metered: false, capabilities: [SANDBOX] }),
+  entry({ id: "faux-broken", label: "Faux broken", keys: [], mounts: ["bind"], network: NETWORK, metered: false, capabilities: [SANDBOX] }),
+  entry({ id: "faux-desktop", label: "Faux desktop", keys: [], mounts: [], network: NETWORK, metered: false, capabilities: [DESKTOP] }),
+  entry({ id: "faux-dial", label: "Faux dial", connect: "dial", keys: [], mounts: [], network: NETWORK, metered: false, capabilities: [DESKTOP] }),
 ];
 
 const KEYS: KeyTable = {
-  keys: { "faux-sandbox": [{ name: "FAUX_SANDBOX_KEY", option: "apiKey", required: true }], "faux-broken": [], "faux-desktop": [] },
-  labels: { "faux-sandbox": "Faux sandbox", "faux-broken": "Faux broken", "faux-desktop": "Faux desktop" },
+  keys: { "faux-sandbox": [{ name: "FAUX_SANDBOX_KEY", option: "apiKey", required: true }], "faux-broken": [], "faux-desktop": [], "faux-dial": [] },
+  labels: { "faux-sandbox": "Faux sandbox", "faux-broken": "Faux broken", "faux-desktop": "Faux desktop", "faux-dial": "Faux dial" },
 };
 
-/** Each faux provider's account test: faux-sandbox and faux-desktop answer, faux-broken is never reached. */
+/** Each faux provider's account test: faux-sandbox, faux-desktop and faux-dial answer, faux-broken is never reached. */
 const FACTORIES: ProviderFactories = {
   "faux-sandbox": () => ({ testConnection: async () => ({ ok: true, value: { detail: "Faux sandbox: the faux account answered (no computer was made)" } }) }),
   "faux-desktop": () => ({ testConnection: async () => ({ ok: true, value: { detail: "Faux desktop: the faux account answered (no computer was made)" } }) }),
+  "faux-dial": () => ({ testConnection: async () => ({ ok: true, value: { detail: "Faux dial: the faux account answered (no computer was made)" } }) }),
   "faux-broken": () => ({ testConnection: async () => ({ ok: false, error: { code: "unreachable", message: "faux-broken is --faux's broken provider: it never answers" } }) }),
 };
 
@@ -90,6 +77,9 @@ const HEIGHT = 800;
 
 /** How long a faux desktop's watch waits after a frame's ack before it gives the next. */
 const FRAME_MS = 1_000;
+/** How long a faux dial machine's launch waits for its socket in the dial's hub; and its token's life. */
+const DIAL_WAIT_MS = 10_000;
+const DIAL_LIFE_MS = 60 * 60_000;
 
 /** A started faux desktop: the claim's LaunchedComputer, with its provider's watch of its screen (ComputerProvider.watch
  *  bound to it), which feeds the run's proxied live view (computer-live.ts) as a real desktop's does. */
@@ -100,8 +90,10 @@ export interface FauxComputers {
   readonly kinds: KindRegistry;
   readonly factories: ProviderFactories;
   readonly keyTable: KeyTable;
-  /** The claim's launch: a faux desktop; the faux sandboxes start nothing, in words. */
-  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>> }): Promise<FauxDesktop>;
+  /** The claim's launch: a faux desktop, or a faux dial machine over `given.dial` (the runner's HostedDial), its token
+   *  minted for the claim's run (`spec.run`) as a dial provider's create mints it; the faux sandboxes start nothing, in
+   *  words. */
+  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly run?: string }, given?: { readonly dial?: HostedDial }): Promise<FauxDesktop | LaunchedComputer>;
   /** Whether a provider id is one of these (the claim's launch takes it): any other is the package's. */
   owns(provider: string): boolean;
 }
@@ -168,13 +160,67 @@ export function fauxComputers(): FauxComputers {
     };
   }
 
+  /** A faux dial machine for a run: its token minted through `dial`, its socket dialled to the dial's public address, and
+   *  the run's calls over the connection the dial's hub gives once it attached; its release revokes the token and ends
+   *  the socket. Refused in words where the machine has nowhere to dial, or did not attach within DIAL_WAIT_MS. */
+  async function fauxDial(dial: HostedDial | undefined, run: string | undefined): Promise<LaunchedComputer> {
+    // The computer package's words for a dial provider with no dial (hosted/provider.ts #dialed).
+    if (dial === undefined) throw new Error("Faux dial machines dial in to this server, and this runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)");
+    if (!dial.url) throw new Error("Faux dial machines dial in to this server, which has no public address: set AGENTRUN_PUBLIC_URL");
+    const name = `faux-dial-${randomBytes(6).toString("hex")}`;
+    const token = await dial.tokens.mint(name, { kind: "desktop", os: "linux", arch: "amd64", expiresAt: new Date(Date.now() + DIAL_LIFE_MS), ...(run !== undefined ? { run } : {}) });
+    const png = greyPng(WIDTH, HEIGHT);
+    const hello: HelloResult = { protocol: "0.2", version: "faux", os: "linux", kind: "desktop", arch: "amd64", groups: [...DESKTOP_GROUPS], screen: { width: WIDTH, height: HEIGHT, scale: 1 } };
+    const machine = new WebSocket(`${dial.url.replace(/^http/, "ws")}${ATTACH_PATH}`, ATTACH_SUBPROTOCOL, { headers: { authorization: `Bearer ${token}` }, maxPayload: MAX_LINE_BYTES, perMessageDeflate: false });
+    let refused: string | undefined;
+    machine.on("error", (error) => void (refused ??= error.message));
+    machine.once("unexpected-response", (_req, res) => {
+      const words: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => words.push(chunk));
+      res.on("end", () => void (refused ??= `HTTP ${res.statusCode}: ${Buffer.concat(words).toString("utf8")}`));
+      res.on("error", () => void (refused ??= `HTTP ${res.statusCode}`));
+    });
+    machine.on("message", (data, binary) => {
+      if (binary) return;
+      let message: { id?: unknown; method?: unknown; params?: { actions?: unknown } };
+      try {
+        message = JSON.parse(String(data));
+      } catch {
+        return;
+      }
+      if (message.id === undefined || typeof message.method !== "string") return;
+      const answer = (reply: Record<string, unknown>) => machine.readyState === WebSocket.OPEN && machine.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, ...reply }));
+      if (message.method === "hello") return answer({ result: hello });
+      if (message.method === "ping") return answer({ result: {} });
+      if (message.method === "screen.shot") return answer({ result: { id: `${name}-shot`, data: png.toString("base64"), eof: true, size: png.length, width: WIDTH, height: HEIGHT } });
+      if (message.method === "input.actions") return answer({ result: { done: Array.isArray(message.params?.actions) ? message.params.actions.length : 0 } });
+      return answer({ error: { code: -32601, message: `the faux dial machine has no ${message.method}` } });
+    });
+    const release = async () => {
+      machine.close(1000, "released");
+      await dial.tokens.revoke(name).catch(() => undefined);
+      dial.hub.revoke(name, `${name} was released`);
+    };
+    const until = Date.now() + DIAL_WAIT_MS;
+    for (;;) {
+      const connection = dial.hub.connection(name);
+      if (connection) return { id: name, groups: [...DESKTOP_GROUPS], hello: connection.hello, client: connection.client, release };
+      if (refused !== undefined || Date.now() >= until) {
+        await release();
+        throw new Error(refused === undefined ? `the faux dial machine ${name} did not dial ${dial.url} within ${DIAL_WAIT_MS / 1000} s` : `the faux dial machine ${name}'s dial to ${dial.url} was refused: ${refused}`);
+      }
+      await new Promise((done) => setTimeout(done, 25));
+    }
+  }
+
   return {
     kinds: { SETTING_KINDS, PROVIDERS, servingRefusals },
     factories: FACTORIES,
     keyTable: KEYS,
-    async launch(entryOf, spec) {
+    async launch(entryOf, spec, given = {}) {
       if (entryOf.id === "faux-desktop" && spec.kind === "desktop") return fauxDesktop();
-      throw new Error(`${entryOf.label} starts no computer: under --faux, only Faux desktop does (set this agent's computer to desktop on Faux desktop, or none)`);
+      if (entryOf.id === "faux-dial" && spec.kind === "desktop") return fauxDial(given.dial, spec.run);
+      throw new Error(`${entryOf.label} starts no computer: under --faux, only Faux desktop and Faux dial do (set this agent's computer to desktop on one of them, or none)`);
     },
     owns: (provider) => PROVIDERS.some((one) => one.id === provider),
   };

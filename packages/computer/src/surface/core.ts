@@ -355,10 +355,23 @@ export function createSurface(client: ComputerClient, hello: HelloResult, { cwd 
 		// The default state of a later point step stays the last observation's (stateOf): a state this act returned was never seen.
 		// A script may ask observe as options ({ image: true }); the tool's schema offers only true.
 		const again: unknown = args.observe;
-		// The window the act finished on: its app, else the app of the state it named, never the one in front.
-		const target = app ?? (args.state ? appOfState.get(args.state) : undefined);
-		if (again) done.after = await observe({ ...(typeof again === "object" ? (again as ObserveArgs) : {}), ...(target ? { app: target } : {}) }, signal);
+		if (again) done.after = await observeAfter(typeof again === "object" ? (again as ObserveArgs) : {}, app ?? (args.state ? appOfState.get(args.state) : undefined), signal);
 		return done;
+	}
+
+	/**
+	 * The window an act finished on, by the daemons' rule for it (phoned's UiDriver.after): its app's (the act's app, else
+	 * the app of the state it named), never the one in front while that app shows one; else, once the steps took it away
+	 * (a press that opened another package's page), the window in front.
+	 */
+	async function observeAfter(options: ObserveArgs, app: string | undefined, signal?: AbortSignal): Promise<State> {
+		if (!app) return observe(options, signal);
+		try {
+			return await observe({ ...options, app }, signal);
+		} catch (error) {
+			if (!(error instanceof SurfaceError) || error.kind !== "not_found") throw error;
+			return observe(options, signal);
+		}
 	}
 
 	async function readFile(path: string, encoding: string | undefined, signal?: AbortSignal): Promise<string> {

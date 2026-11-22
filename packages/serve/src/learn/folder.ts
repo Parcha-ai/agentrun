@@ -16,17 +16,20 @@
 // - A snapshot that is not main's (a write that stopped between its compare and swap and its snapshot, or a hand commit
 //   in a local folder) is rebuilt from main whole (learningRepair: the script's read, then its snapshot op), the next
 //   time a write finds main moved under it.
-// The snapshot's shape is SNAPSHOT.md's, v1: what the learning routes and a run's seed read.
+// The snapshot's shape is v1: what the learning routes and a run's seed read. The folder holds the owner's
+// corrections (corrections.md, served whole), the compiled workflows (workflows/<name>/) and the host's audit ledger
+// (audits.jsonl, never served to a run), nothing else.
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   isWorkspaceError, type LearningPlace as OneLearningPlace, type LearningWorkspace as OneLearningWorkspace,
   learningWorkspace as oneLearningWorkspace, type Workspace, WorkspaceError,
 } from "../workspace/index.js";
-import { INDEX_FILE, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
-import { learnedFront, learnedName, learnedStatus, retiredFrom, SKILLS_DIR, WORKFLOWS_DIR } from "./skills.js";
+import { CORRECTIONS_FILE } from "./corrections.js";
+import { learnedFront, learnedStatus, retiredFrom, WORKFLOW_NAME, WORKFLOWS_DIR } from "./workflow-draft.js";
+import { held, heldLearningFolder } from "../runner/held.js";
 
-/** The host's folder inside the learning folder: the snapshot, the diffs and the script. Never a note's, never seeded. */
+/** The host's folder inside the learning folder: the snapshot, the diffs and the script. Never learned, never seeded. */
 export const HOST_DIR = ".agentrun";
 export const SNAPSHOT_FILE = `${HOST_DIR}/snapshot.json`;
 export const DIFFS_DIR = `${HOST_DIR}/diffs`;
@@ -34,7 +37,7 @@ export const DIFFS_DIR = `${HOST_DIR}/diffs`;
 export const AUDITS_FILE = "audits.jsonl";
 /** The most changes the snapshot's log keeps, newest first; `log_more` says older exist. */
 export const LOG_KEEP = 200;
-/** A file main holds over this is no note and no learned file: a note is at most 4 KB (check.ts CAPS.note). */
+/** A file main holds over this is no learned file: a workflow's file is at most 16 KB (check.ts CAPS.file). */
 export const FILE_CAP = 1 << 20;
 /** A diff's file whose patch is larger than this is withheld as too large (learning.sh PATCH_CAP). */
 export const PATCH_CAP = 64 * 1024;
@@ -52,47 +55,33 @@ const PERSON_KINDS = ["approved", "edited", "created", "retired", "restored"] as
 export type PersonKind = (typeof PERSON_KINDS)[number];
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The snapshot (SNAPSHOT.md v1).
+// The snapshot (v1).
 
-export type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded"; by: "person" | "run"; at: string };
+export type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned"; by: "person" | "run"; at: string };
 export type SnapHistory = { at: string; last?: LastChange; retire?: LastChange; person?: LastChange };
-export type SnapNote = {
-  file: string; oid: string; bytes: number;
-  name: string; description: string; type: string;
-  status: "active" | "pending" | "superseded" | "retired";
-  origin: "you" | "run";
-  supersedes: string[];
-  superseded_by: string | null;
-  /** Past SNAPSHOT.md v1, additive, on a retired note alone: the status its restore gives back (notes.ts LearnedNote
-   *  retired_from). */
-  retired_from?: "active" | "pending";
-  order: number;
-  history: SnapHistory;
-};
 export type SnapFile = { path: string; oid: string; bytes: number };
 export type SnapLearned = {
   name: string; file: string; description: string;
   status: "active" | "pending" | "retired";
-  /** Past SNAPSHOT.md v1, additive, on a retired skill or draft alone: the status its restore gives back (skills.ts
-   *  retiredFrom). */
+  /** On a retired draft alone: the status its restore gives back (workflow-draft.ts retiredFrom). */
   retired_from?: "active" | "pending";
   run: string | null;
   files: SnapFile[];
   oid: string; bytes: number;
   order: number;
   history: SnapHistory;
-  /** Past SNAPSHOT.md v1, additive, present only when there are some: the paths of the tracked symbolic links (git mode
-   *  120000) in the item's folder. A seed never lays such a skill (seed-check.ts readSeed's `refused`); `files` names
-   *  regular files alone. */
+  /** Present only when there are some: the paths of the tracked symbolic links (git mode 120000) in the item's folder;
+   *  `files` names regular files alone. */
   links?: string[];
 };
 export type SnapChange = { commit: string; at: string; by: { run: string } | { user: true; via?: string }; reason: string; files: string[] };
 export type Snapshot = {
   v: 1; main: string; at: string;
-  index: { oid: string; bytes: number };
+  /** corrections.md's blob, present only when main holds it. */
+  corrections?: SnapFile;
   /** The audit ledger (learn/audit.ts AUDITS_FILE), once a row was written: the host's, never laid into a run. */
   audits?: { oid: string; bytes: number };
-  notes: SnapNote[]; skills: SnapLearned[]; workflows: SnapLearned[];
+  workflows: SnapLearned[];
   log: SnapChange[]; log_more: boolean;
 };
 /** A run's merge as `.agentrun/diffs/<run>.json` keeps it: its commit, its parent, and each file's patch. */
@@ -106,17 +95,14 @@ export const blobOid = (bytes: Uint8Array | string): string => {
   const data = typeof bytes === "string" ? Buffer.from(bytes, "utf8") : bytes;
   return createHash("sha1").update(`blob ${data.length}\0`).update(data).digest("hex");
 };
-const EMPTY_INDEX = { oid: blobOid(""), bytes: 0 };
-
-/** A key file of a learned item: a skill's SKILL.md, a draft's README.md (which says whether it waits). The file the
- *  view names for it, which its `run` follows: a skill's SKILL.md, a draft's workflow.json. */
-const keyFile = (kind: "skill" | "workflow", name: string) => (kind === "skill" ? `${SKILLS_DIR}/${name}/SKILL.md` : `${WORKFLOWS_DIR}/${name}/README.md`);
-const viewFile = (kind: "skill" | "workflow", name: string) => (kind === "skill" ? `${SKILLS_DIR}/${name}/SKILL.md` : `${WORKFLOWS_DIR}/${name}/workflow.json`);
-/** The learned folder a path is in, by kind and name: `skills/<name>/...` or `workflows/<name>/...`; else undefined. */
-function folderOf(path: string): { kind: "skill" | "workflow"; name: string } | undefined {
+/** A draft's key file, its README.md (which says whether it waits), and the file the view names for it, which its `run`
+ *  follows: its workflow.json. */
+const keyFile = (name: string) => `${WORKFLOWS_DIR}/${name}/README.md`;
+const viewFile = (name: string) => `${WORKFLOWS_DIR}/${name}/workflow.json`;
+/** The draft a path is in, by name: `workflows/<name>/...`; else undefined. */
+function folderOf(path: string): string | undefined {
   const [top, name, ...rest] = path.split("/");
-  if (!name || !rest.length) return undefined;
-  return top === SKILLS_DIR ? { kind: "skill", name } : top === WORKFLOWS_DIR ? { kind: "workflow", name } : undefined;
+  return top === WORKFLOWS_DIR && name && rest.length ? name : undefined;
 }
 const byBytes = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -131,28 +117,22 @@ function changeOf(commit: CommitInfo): LastChange | undefined {
   return undefined;
 }
 
-/** `path`'s history once `commit` changed it, from what it was before (newest first walks give none, then fill in
- *  only what is missing: foldOlder). A person's action is the named file's alone; any other file their commit changed is
- *  a note it superseded. */
-function changeFor(commit: CommitInfo, path: string): LastChange | undefined {
+/** A file's history once `commit` changed it, from what it was before (newest first walks give none, then fill in
+ *  only what is missing: foldOlder). */
+function foldNewer(before: SnapHistory | undefined, commit: CommitInfo): SnapHistory {
   const change = changeOf(commit);
-  const named = change?.by === "person" ? commit.subject.slice(`learning: ${change.kind} by a person: `.length) : undefined;
-  return named !== undefined && path !== named ? { kind: "superseded", by: "person", at: commit.at } : change;
-}
-function foldNewer(before: SnapHistory | undefined, commit: CommitInfo, path: string): SnapHistory {
-  const change = changeFor(commit, path);
   const retire = change?.kind === "retired" ? change : before?.retire;
   const person = change?.by === "person" ? change : before?.person;
   return { at: commit.at, ...(change ? { last: change } : {}), ...(retire ? { retire } : {}), ...(person ? { person } : {}) };
 }
-function foldOlder(known: SnapHistory, commit: CommitInfo, path: string): void {
-  const change = changeFor(commit, path);
+function foldOlder(known: SnapHistory, commit: CommitInfo): void {
+  const change = changeOf(commit);
   if (!known.retire && change?.kind === "retired") known.retire = change;
   if (!known.person && change?.by === "person") known.person = change;
 }
 
 /** A commit's entry in the log, or undefined when it is no change: a run's merge (Run-Id) or a person's (Changed-By:
- *  user), told by its trailers. A merge's reason is the grader's, the paragraphs before the trailers; a person's commit
+ *  user), told by its trailers. A merge's reason is what it kept, the paragraphs before the trailers; a person's commit
  *  has none, so its subject says what it did. */
 function changeEntry(commit: CommitInfo, sha: string, files: string[]): SnapChange | undefined {
   const runId = commit.runId.split(",")[0]!.trim();
@@ -165,18 +145,7 @@ function changeEntry(commit: CommitInfo, sha: string, files: string[]): SnapChan
 /** Whether a commit's message holds a line git's log of changes greps for: `Run-Id: ` or `Changed-By: user`. */
 const isChange = (commit: CommitInfo) => `${commit.subject}\n${commit.body}`.split("\n").some((line) => line.startsWith("Run-Id: ") || line === "Changed-By: user");
 
-/** The view's order of notes: active first, then by their newest change (the commit's place, 0 the newest), then by
- *  name. */
-const noteOrder = (a: SnapNote, b: SnapNote) => (a.status === "active" ? 0 : 1) - (b.status === "active" ? 0 : 1) || a.order - b.order || byBytes(a.file, b.file);
 const byName = (a: SnapLearned, b: SnapLearned) => byBytes(a.name, b.name);
-
-/** A note's entry, from its text, or undefined when it is no note (out of shape). */
-function noteEntry(file: string, text: string, oid: string, bytes: number, order: number, history: SnapHistory): SnapNote | undefined {
-  if (!NOTE_FILE.test(file) || bytes > FILE_CAP) return undefined;
-  const note = parseNoteFile(file, text);
-  if (Array.isArray(note)) return undefined;
-  return { file, oid, bytes, name: note.name, description: note.description, type: note.type, status: note.status, origin: note.origin, supersedes: [...note.supersedes], superseded_by: note.superseded_by, ...(note.retired_from ? { retired_from: note.retired_from } : {}), order, history };
-}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // A snapshot from main whole (the script's `read`): a folder whose snapshot is not main's.
@@ -262,8 +231,8 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
     for (const file of files) {
       if (!order.has(file)) order.set(file, i);
       const known = history.get(file);
-      if (!known) history.set(file, foldNewer(undefined, commit, file));
-      else foldOlder(known, commit, file);
+      if (!known) history.set(file, foldNewer(undefined, commit));
+      else foldOlder(known, commit);
       if (runId && !runs.has(file)) runs.set(file, runId);
     }
     if (!isChange(commit)) return;
@@ -276,47 +245,37 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
   const regular = (entry: TreeEntry) => entry.type === "blob" && entry.mode === "100644";
   const orderOf = (path: string) => order.get(path) ?? Number.MAX_SAFE_INTEGER;
   const historyOf = (path: string) => history.get(path) ?? { at };
-  const index = tree.find((entry) => entry.path === INDEX_FILE && regular(entry));
+  const corrections = tree.find((entry) => entry.path === CORRECTIONS_FILE && regular(entry));
   const audits = tree.find((entry) => entry.path === AUDITS_FILE && regular(entry));
-  const notes: SnapNote[] = [];
-  const folders = new Map<string, { kind: "skill" | "workflow"; name: string; files: SnapFile[]; links: string[] }>();
+  const folders = new Map<string, { files: SnapFile[]; links: string[] }>();
   for (const entry of tree) {
-    if (!entry.path.includes("/")) {
-      const text = regular(entry) && entry.bytes <= FILE_CAP ? textOf(blobs.get(entry.oid)) : undefined;
-      const note = text === undefined || entry.path === INDEX_FILE ? undefined : noteEntry(entry.path, text, entry.oid, entry.bytes, orderOf(entry.path), historyOf(entry.path));
-      if (note) notes.push(note);
-      continue;
-    }
-    const folder = folderOf(entry.path);
-    if (!folder || entry.type !== "blob") continue;
-    const key = `${folder.kind}/${folder.name}`;
-    const known = folders.get(key) ?? folders.set(key, { ...folder, files: [], links: [] }).get(key)!;
+    const name = folderOf(entry.path);
+    if (!name || entry.type !== "blob") continue;
+    const known = folders.get(name) ?? folders.set(name, { files: [], links: [] }).get(name)!;
     if (entry.mode === "120000") known.links.push(entry.path);
     else if (entry.mode === "100644" || entry.mode === "100755") known.files.push({ path: entry.path, oid: entry.oid, bytes: entry.bytes });
   }
-  const skills: SnapLearned[] = [];
   const workflows: SnapLearned[] = [];
-  for (const { kind, name, files, links } of folders.values()) {
-    const item = learnedItem(kind, name, files, links, (path) => {
+  for (const [name, { files, links }] of folders) {
+    const item = learnedItem(name, files, links, (path) => {
       const entry = tree.find((one) => one.path === path);
       return entry && regular(entry) && entry.bytes <= FILE_CAP ? textOf(blobs.get(entry.oid)) : undefined;
     }, {
       order: Math.min(...files.map(({ path }) => orderOf(path))),
-      history: historyOf(keyFile(kind, name)),
-      run: runs.get(viewFile(kind, name)) ?? null,
+      history: historyOf(keyFile(name)),
+      run: runs.get(viewFile(name)) ?? null,
     });
-    if (item) (kind === "skill" ? skills : workflows).push(item);
+    if (item) workflows.push(item);
   }
-  return { v: 1, main, at, index: index ? { oid: index.oid, bytes: index.bytes } : EMPTY_INDEX, ...(audits ? { audits: { oid: audits.oid, bytes: audits.bytes } } : {}), notes: notes.sort(noteOrder), skills: skills.sort(byName), workflows: workflows.sort(byName), log, log_more: more };
+  return { v: 1, main, at, ...(corrections ? { corrections: { path: CORRECTIONS_FILE, oid: corrections.oid, bytes: corrections.bytes } } : {}), ...(audits ? { audits: { oid: audits.oid, bytes: audits.bytes } } : {}), workflows: workflows.sort(byName), log, log_more: more };
 }
 
-/** A learned item from its folder's files: listed when its folder is well named, its key file (SKILL.md, a draft's
- *  README.md) is there and reads, and a draft has its workflow.json too, each of those a regular file under FILE_CAP
- *  (only those are given their texts by `text`). */
-function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[], links: readonly string[], text: (path: string) => string | undefined, at: { order: number; history: SnapHistory; run: string | null }, said?: { description: string; status: SnapLearned["status"]; retired_from?: SnapLearned["retired_from"] }): SnapLearned | undefined {
-  if (!learnedName(kind, name)) return undefined;
-  const key = files.find(({ path }) => path === keyFile(kind, name));
-  const shown = files.find(({ path }) => path === viewFile(kind, name));
+/** A draft from its folder's files: listed when its folder is well named and its README.md and workflow.json are there,
+ *  each a regular file under FILE_CAP (only those are given their texts by `text`), and its README.md reads. */
+function learnedItem(name: string, files: SnapFile[], links: readonly string[], text: (path: string) => string | undefined, at: { order: number; history: SnapHistory; run: string | null }, said?: { description: string; status: SnapLearned["status"]; retired_from?: SnapLearned["retired_from"] }): SnapLearned | undefined {
+  if (!WORKFLOW_NAME.test(name)) return undefined;
+  const key = files.find(({ path }) => path === keyFile(name));
+  const shown = files.find(({ path }) => path === viewFile(name));
   if (!key || !shown || key.bytes > FILE_CAP || shown.bytes > FILE_CAP) return undefined;
   let fields = said;
   if (!fields) {
@@ -335,17 +294,24 @@ function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[]
  *  under `.agentrun/`. `absent`: paths that must not be on main, as git holds it (any file, any mode); `same`: paths
  *  that must be on main as they are on another commit (a run's seed). The script checks both on main as it commits. */
 export type FolderChange = {
-  /** A run's merge names the run and the grader's reason, and its `round` past the first (a follow-up's look-back): its
-   *  diff is kept under runDiffKey. */
+  /** A run's merge names the run and its reason, and its `round` past the first (a follow-up's correction): its diff is
+   *  kept under runDiffKey. The host's own book-keeping (an audit row) names what it kept. */
   by: { person: PersonKind; file: string; approved?: boolean } | { run: string; reason: string; round?: number } | { host: string };
   writes: readonly { path: string; text: string }[];
   deletes?: readonly string[];
   absent?: readonly string[];
   same?: readonly { commit: string; path: string }[];
+  /** A run's merge: the commit the run was seeded from, which the folder must still hold, whatever the merge writes (a
+   *  correction alone included), named only when this folder held it as the run's end began (commit.ts mustHold): one a
+   *  reset of the agent's learning removed refuses the merge. */
+  seed?: string;
+  /** The host's scrub of one merge of a purged run (commit.ts forgetRunText), by its diff key (runDiffKey): lands once,
+   *  as a run's merge does (a second is FolderMerged, naming the first). */
+  purged?: string;
 };
 
 /** A commit's message and trailers, as git keeps them: a person's names their action and the file, with Changed-By (and
- *  Approved-Via on an approval); a run's merge names the run, then the grader's reason, then its Run-Id. */
+ *  Approved-Via on an approval); a run's merge names the run, then what it kept, then its Run-Id. */
 function messageOf(by: FolderChange["by"] | undefined): { message: string; subject: string; body: string; runId: string; changedBy: string; approvedVia: string } {
   const clean = (text: string) => text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ");
   const paragraphs = (parts: string[]) => parts.map((part) => (part.endsWith("\n") ? part : `${part}\n`)).join("\n");
@@ -369,14 +335,13 @@ function messageOf(by: FolderChange["by"] | undefined): { message: string; subje
 /** A time in whole seconds as every snapshot says a commit's time: UTC, ending "Z" (commitTime's form). */
 const isoSeconds = (seconds: number) => new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 
-/** Every path `snapshot` names a blob for: the index, each note, each learned folder's files. */
+/** Every path `snapshot` names a blob for: corrections.md, the audit ledger and each draft's files. */
 function oidsOf(snapshot: Snapshot | undefined): Map<string, string> {
   const out = new Map<string, string>();
   if (!snapshot) return out;
-  out.set(INDEX_FILE, snapshot.index.oid);
+  if (snapshot.corrections) out.set(CORRECTIONS_FILE, snapshot.corrections.oid);
   if (snapshot.audits) out.set(AUDITS_FILE, snapshot.audits.oid);
-  for (const note of snapshot.notes) out.set(note.file, note.oid);
-  for (const item of [...snapshot.skills, ...snapshot.workflows]) for (const file of item.files) out.set(file.path, file.oid);
+  for (const item of snapshot.workflows) for (const file of item.files) out.set(file.path, file.oid);
   return out;
 }
 
@@ -387,54 +352,46 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
   const message = messageOf(change?.by);
   const commit: CommitInfo = { at: isoSeconds(seconds), ...message };
   const known = oidsOf(before);
-  const writes = new Map((change?.writes ?? (change ? [] : [{ path: INDEX_FILE, text: "" }])).map(({ path, text }) => [path, { text, oid: blobOid(text), bytes: Buffer.byteLength(text, "utf8") }]));
+  const writes = new Map((change?.writes ?? []).map(({ path, text }) => [path, { text, oid: blobOid(text), bytes: Buffer.byteLength(text, "utf8") }]));
   const deletes = new Set(change?.deletes ?? []);
   const changed = [...new Set([...[...writes].filter(([path, { oid }]) => known.get(path) !== oid).map(([path]) => path), ...[...deletes].filter((path) => !writes.has(path))])].sort(byBytes);
   const touched = new Set(changed);
   const runId = commit.runId;
 
-  const notes: SnapNote[] = (before?.notes ?? []).filter((note) => !touched.has(note.file)).map((note) => ({ ...note, order: note.order + 1 }));
-  for (const path of changed) {
-    const written = writes.get(path);
-    if (!written || path.includes("/") || path === INDEX_FILE) continue;
-    const old = before?.notes.find((note) => note.file === path);
-    const note = noteEntry(path, written.text, written.oid, written.bytes, 0, foldNewer(old?.history, commit, path));
-    if (note) notes.push(note);
-  }
-  const index = writes.has(INDEX_FILE) ? { oid: writes.get(INDEX_FILE)!.oid, bytes: writes.get(INDEX_FILE)!.bytes } : (before?.index ?? EMPTY_INDEX);
-  const audits = writes.has(AUDITS_FILE) ? { oid: writes.get(AUDITS_FILE)!.oid, bytes: writes.get(AUDITS_FILE)!.bytes } : deletes.has(AUDITS_FILE) ? undefined : before?.audits;
+  const written = writes.get(CORRECTIONS_FILE);
+  const corrections = written ? { path: CORRECTIONS_FILE, oid: written.oid, bytes: written.bytes } : deletes.has(CORRECTIONS_FILE) ? undefined : before?.corrections;
+  const ledger = writes.get(AUDITS_FILE);
+  const audits = ledger ? { oid: ledger.oid, bytes: ledger.bytes } : deletes.has(AUDITS_FILE) ? undefined : before?.audits;
 
-  const learned = (kind: "skill" | "workflow", list: readonly SnapLearned[]): SnapLearned[] => {
-    const hit = new Set(changed.map(folderOf).filter((folder) => folder?.kind === kind).map((folder) => folder!.name));
-    const out = list.filter((item) => !hit.has(item.name)).map((item) => ({ ...item, order: item.order + 1 }));
-    for (const name of hit) {
-      const old = list.find((item) => item.name === name);
-      const prefix = `${kind === "skill" ? SKILLS_DIR : WORKFLOWS_DIR}/${name}/`;
-      const files = new Map((old?.files ?? []).map((file) => [file.path, file]));
-      for (const path of changed.filter((one) => one.startsWith(prefix))) {
-        const written = writes.get(path);
-        if (written) files.set(path, { path, oid: written.oid, bytes: written.bytes });
-        else files.delete(path);
-      }
-      const key = keyFile(kind, name);
-      const keyText = writes.get(key)?.text;
-      // A link the change writes a file over, or deletes, is a link no more.
-      const links = (old?.links ?? []).filter((path) => !writes.has(path) && !deletes.has(path));
-      const item = learnedItem(kind, name, [...files.values()], links, (path) => writes.get(path)?.text, {
-        order: 0,
-        history: touched.has(key) ? foldNewer(old?.history, commit, key) : (old?.history ?? { at: commit.at }),
-        run: runId && touched.has(viewFile(kind, name)) ? runId : (old?.run ?? null),
-      }, keyText === undefined && old ? { description: old.description, status: old.status, ...(old.retired_from ? { retired_from: old.retired_from } : {}) } : undefined);
-      if (item) out.push(item);
+  const list = before?.workflows ?? [];
+  const hit = new Set(changed.map(folderOf).filter((name): name is string => name !== undefined));
+  const workflows = list.filter((item) => !hit.has(item.name)).map((item) => ({ ...item, order: item.order + 1 }));
+  for (const name of hit) {
+    const old = list.find((item) => item.name === name);
+    const prefix = `${WORKFLOWS_DIR}/${name}/`;
+    const files = new Map((old?.files ?? []).map((file) => [file.path, file]));
+    for (const path of changed.filter((one) => one.startsWith(prefix))) {
+      const write = writes.get(path);
+      if (write) files.set(path, { path, oid: write.oid, bytes: write.bytes });
+      else files.delete(path);
     }
-    return out.sort(byName);
-  };
+    const key = keyFile(name);
+    const keyText = writes.get(key)?.text;
+    // A link the change writes a file over, or deletes, is a link no more.
+    const links = (old?.links ?? []).filter((path) => !writes.has(path) && !deletes.has(path));
+    const item = learnedItem(name, [...files.values()], links, (path) => writes.get(path)?.text, {
+      order: 0,
+      history: touched.has(key) ? foldNewer(old?.history, commit) : (old?.history ?? { at: commit.at }),
+      run: runId && touched.has(viewFile(name)) ? runId : (old?.run ?? null),
+    }, keyText === undefined && old ? { description: old.description, status: old.status, ...(old.retired_from ? { retired_from: old.retired_from } : {}) } : undefined);
+    if (item) workflows.push(item);
+  }
 
   const entry = change && isChange(commit) ? changeEntry(commit, PLACEHOLDER, changed) : undefined;
   const log = [...(entry ? [entry] : []), ...(before?.log ?? [])];
   const snapshot: Snapshot = {
-    v: 1, main: PLACEHOLDER, at: commit.at, index, ...(audits ? { audits } : {}),
-    notes: notes.sort(noteOrder), skills: learned("skill", before?.skills ?? []), workflows: learned("workflow", before?.workflows ?? []),
+    v: 1, main: PLACEHOLDER, at: commit.at, ...(corrections ? { corrections } : {}), ...(audits ? { audits } : {}),
+    workflows: workflows.sort(byName),
     log: log.slice(0, LOG_KEEP), log_more: Boolean(before?.log_more) || log.length > LOG_KEEP,
   };
   return { snapshot, changed };
@@ -458,8 +415,14 @@ export type LearningFolder = OneLearningWorkspace;
 /** Agent `place.agentId`'s learning folder as a Workspace: the one learningWorkspace, or the test's stand-in. */
 export function learningWorkspace(place: LearningPlace): LearningFolder {
   if (folderTestHooks.workspace) return folderTestHooks.workspace(place);
+  // A run's own process never opens a learning folder itself: its runner does, the claim's agent's (held.ts).
+  if (held()) return heldLearningFolder();
   return oneLearningWorkspace(place);
 }
+
+/** What a learning folder's script run is, as a runner checks one a run's process asks of it (run-child-host.ts): its
+ *  argv, the script's own environment, its deadline. */
+export const LEARNING_SCRIPT = { file: (): string => SCRIPT_FILE, env: (): Record<string, string> => scriptEnv(), timeoutMs: (): number => SCRIPT_TIMEOUT_MS, ensure: (ws: Workspace): Promise<void> => ensureScript(ws) };
 
 /** A learning folder this server cannot read or write: a link in it (`link`, its words naming it), or a backend that
  *  cannot answer. Fails closed: nothing learned is read, nothing is written. */
@@ -495,8 +458,6 @@ export class FolderBusy extends Error {
 }
 /** A body that is not the snapshot's blob: the snapshot is read again once. */
 class Mismatch extends Error {}
-/** Whether `error` is a body that was not the snapshot's blob (a reader holding an older snapshot meets it). */
-export const isBodyMismatch = (error: unknown): boolean => error instanceof Mismatch;
 
 const isOidField = (value: unknown) => typeof value === "string" && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(value);
 /** The folder's snapshot, or undefined when there is none (no main yet: the agent never learned). One that does not
@@ -510,8 +471,8 @@ export async function readSnapshot(ws: Workspace): Promise<Snapshot | undefined>
     throw folderFailure(error);
   }
   const value = JSON.parse(Buffer.from(bytes).toString("utf8")) as Snapshot;
-  if (value?.v !== 1 || !isOidField(value.main) || !Array.isArray(value.notes) || !Array.isArray(value.skills) || !Array.isArray(value.workflows) || !Array.isArray(value.log) || !isOidField(value.index?.oid)) throw new Error("the learning folder's snapshot is not one this server reads (v1)");
-  return value;
+  if (value?.v !== 1 || !isOidField(value.main) || !Array.isArray(value.workflows) || !Array.isArray(value.log) || (value.corrections !== undefined && !isOidField(value.corrections?.oid)) || (value.audits !== undefined && !isOidField(value.audits?.oid))) throw new Error("the learning folder's snapshot is not one this server reads (v1)");
+  return { v: 1, main: value.main, at: value.at, ...(value.corrections ? { corrections: value.corrections } : {}), ...(value.audits ? { audits: value.audits } : {}), workflows: value.workflows, log: value.log, log_more: value.log_more };
 }
 
 /** Bodies already checked, by blob id: an oid names its bytes, so one read is good for every snapshot naming it. */
@@ -533,6 +494,14 @@ function keep(oid: string, text: string): void {
 export function forgetBodies(): void {
   bodies.clear();
   bodyBytes = 0;
+}
+
+/** Blob `oid`'s body forgotten, when it was kept: a text a purge took off main is held in this process no longer. */
+export function forgetBody(oid: string): void {
+  const held = bodies.get(oid);
+  if (held === undefined) return;
+  bodies.delete(oid);
+  bodyBytes -= held.length;
 }
 
 /** File `path`'s bytes, which must be blob `oid` (else Mismatch): through the file API, never git. */
@@ -596,10 +565,20 @@ export async function readRunDiff(ws: Workspace, run: string): Promise<RunDiff |
   return diff;
 }
 
-/** The notes of a snapshot as the learning modules take them (buildIndex, mergeProblems): their front matter, no body. */
-export const snapshotNotes = (snapshot: Snapshot | undefined): LearnedNote[] => (snapshot?.notes ?? []).map((note) => ({ file: note.file, name: note.name, description: note.description, type: note.type as LearnedNote["type"], status: note.status, origin: note.origin, superseded_by: note.superseded_by, supersedes: [...note.supersedes], retired_from: note.status === "retired" ? (note.retired_from ?? "pending") : null, keys: [], body: "" }));
-/** Every name at main's top a snapshot knows: the index, the notes, and the learned folders' tops. */
-export const topOf = (snapshot: Snapshot | undefined): string[] => (snapshot ? [INDEX_FILE, ...snapshot.notes.map((note) => note.file), ...(snapshot.skills.length ? [SKILLS_DIR] : []), ...(snapshot.workflows.length ? [WORKFLOWS_DIR] : [])] : []);
+/** Run `runId`'s merge of `round` (readRunDiff), or undefined when it never merged here. A stop between a merge's commit
+ *  and its diff file leaves main and the run's ref moved with no diff: when main's log names the run and the round has no
+ *  diff, the script's `merged` writes the diff from the run's ref (one exec), and it is read. */
+export async function runMergeOf(ws: Workspace, runId: string, round = 1): Promise<RunDiff | undefined> {
+  const key = runDiffKey(runId, round);
+  const kept = await readRunDiff(ws, key);
+  if (kept || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(key)) return kept;
+  const named = (await readSnapshot(ws))?.log.some(({ by }) => "run" in by && by.run === runId);
+  if (!named) return undefined;
+  const done = await runScript(ws, ["merged", key]);
+  if (done.code === 1) return undefined;
+  if (done.code !== 0) throw failed("merged", done);
+  return readRunDiff(ws, key);
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Writing: the script, one exec a write.
@@ -705,13 +684,15 @@ export class FolderTooLarge extends Error {
 }
 
 /** What one commit did: landed (its main and the snapshot written), stale (main is `main`, not the one it read:
- *  nothing was written), refused (a precondition failed on main: nothing was written), or landed without its files
- *  brought in line (main moved, no snapshot written). */
+ *  nothing was written), refused (a precondition failed on main: nothing was written), landed without its files
+ *  brought in line (main moved, no snapshot written), or merged (the run, this round, merged already: its merge commit,
+ *  nothing written). */
 export type Committed =
   | { landed: true; main: string; snapshot: Snapshot }
   | { stale: true; main: string | undefined }
-  | { refused: { absent: string[]; same: string[] } }
-  | { unaligned: true; main: string };
+  | { refused: { absent: string[]; same: string[]; seed?: string } }
+  | { unaligned: true; main: string }
+  | { merged: string };
 
 /**
  * One write to main, one exec of the script: `change` on the snapshot it was computed from (`base`: none for the
@@ -724,10 +705,10 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
   const { snapshot, changed } = nextSnapshot(base, change, seconds);
   // A change that changes nothing on main is no commit: main stays, and nothing is run.
   if (base && change && !changed.length) return { landed: true, main: base.main, snapshot: base };
-  const writes = change?.writes ?? [{ path: INDEX_FILE, text: "" }];
+  const writes = change?.writes ?? [];
   for (const { path } of writes) checkPath(path);
   for (const path of [...(change?.deletes ?? []), ...(change?.absent ?? []), ...(change?.same ?? []).map(({ path }) => path)]) checkPath(path);
-  for (const { commit } of change?.same ?? []) if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
+  for (const commit of [...(change?.same ?? []).map(({ commit }) => commit), ...(change?.seed !== undefined ? [change.seed] : [])]) if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
   const ref = `refs/agentrun/import-${randomBytes(8).toString("hex")}`;
   const run = change && "run" in change.by ? runDiffKey(change.by.run, change.by.round) : undefined;
   const header = [
@@ -736,6 +717,8 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
     ...(run ? changed.map((path) => `path ${path}`) : []),
     ...(change?.absent ?? []).map((path) => `absent ${path}`),
     ...(change?.same ?? []).map(({ commit, path }) => `same ${commit} ${path}`),
+    ...(change?.seed !== undefined ? [`seed ${change.seed}`] : []),
+    ...(change?.purged !== undefined ? [`purged ${change.purged}`] : []),
   ];
   const stream = importStream(ref, base?.main, writes, change?.deletes ?? [], messageOf(change?.by).message, seconds);
   const args = base ? ["commit", base.main, ...(run ? [run] : [])] : ["init"];
@@ -747,9 +730,11 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
   if (result.code === 3) return { stale: true, main: said || undefined };
   if (result.code === 4) {
     const lines = said.split("\n");
-    return { refused: { absent: lines.filter((line) => line.startsWith("absent ")).map((line) => line.slice(7)), same: lines.filter((line) => line.startsWith("same ")).map((line) => line.slice(5)) } };
+    const seed = lines.find((line) => line.startsWith("seed "))?.slice(5);
+    return { refused: { absent: lines.filter((line) => line.startsWith("absent ")).map((line) => line.slice(7)), same: lines.filter((line) => line.startsWith("same ")).map((line) => line.slice(5)), ...(seed !== undefined ? { seed } : {}) } };
   }
   if (result.code === 5 && /^[0-9a-f]{40,64}$/.test(said)) return { unaligned: true, main: said };
+  if (result.code === 6 && (run || change?.purged !== undefined) && /^[0-9a-f]{40,64}$/.test(said)) return { merged: said };
   throw failed(args[0]!, result);
 }
 
@@ -800,6 +785,16 @@ export async function textsAt(ws: Workspace, commit: string, paths: readonly str
   return out;
 }
 
+/** Whether the folder holds `commit`: one read-only exec of the script's show with no path, which reads nothing but
+ *  that. False once a reset of the agent's learning removed it (or the folder is not a repository). */
+export async function holdsCommit(ws: Workspace, commit: string): Promise<boolean> {
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
+  const result = await runScript(ws, ["show", commit]);
+  if (result.code === 1) return false;
+  if (result.code !== 0) throw failed("show", result);
+  return true;
+}
+
 export async function learningRepair(ws: Workspace): Promise<Snapshot | undefined> {
   for (let tries = 0; tries < WRITE_TRIES; tries++) {
     const read = await runScript(ws, ["read"]);
@@ -813,15 +808,7 @@ export async function learningRepair(ws: Workspace): Promise<Snapshot | undefine
   throw new Error("the learning folder's main kept moving while its snapshot was rebuilt");
 }
 
-/** Whether `main` holds anything at `path`, as git stores it (any mode, any type): what the snapshot leaves out (a file
- *  that is no note) included. A read through the script. */
-export async function heldOnMain(ws: Workspace, main: string, path: string): Promise<boolean> {
-  const result = await runScript(ws, ["has", main, checkPath(path)]);
-  if (result.code !== 0 && result.code !== 1) throw failed("has", result);
-  return result.code === 0;
-}
-
-/** The folder's first commit when it has no main yet (an empty MEMORY.md, the host's), and main's commit: through the
+/** The folder's first commit when it has no main yet (an empty tree, the host's), and main's commit: through the
  *  script's init, which makes the repository where there is none. A main with no snapshot (an init that stopped
  *  before it) is repaired. */
 export async function learningInit(ws: Workspace): Promise<string> {
@@ -844,11 +831,25 @@ export async function learningInit(ws: Workspace): Promise<string> {
 export class FolderRefused extends Error {
   readonly absent: string[];
   readonly same: string[];
-  constructor(refused: { absent: string[]; same: string[] }) {
-    super(`the learning folder's main refused the write: ${[...refused.absent.map((path) => `${path} is there`), ...refused.same.map((path) => `${path} changed`)].join(", ")}`);
+  /** A run's merge whose seed (FolderChange.seed) the folder no longer holds: its agent's learning was reset. */
+  readonly seed: string | undefined;
+  constructor(refused: { absent: string[]; same: string[]; seed?: string }) {
+    super(`the learning folder's main refused the write: ${[...(refused.seed !== undefined ? [`the run's seed ${refused.seed} is not in the folder`] : []), ...refused.absent.map((path) => `${path} is there`), ...refused.same.map((path) => `${path} changed`)].join(", ")}`);
     this.name = "FolderRefused";
     this.absent = refused.absent;
     this.same = refused.same;
+    this.seed = refused.seed;
+  }
+}
+
+/** A run's merge (its round) that is on main already, made by another call (a reclaimed run racing its first claim, or
+ *  a retry after a stop past its commit): `merge`, its commit. Nothing was written. */
+export class FolderMerged extends Error {
+  readonly merge: string;
+  constructor(merge: string) {
+    super(`the run merged on the learning folder's main already, at ${merge}`);
+    this.name = "FolderMerged";
+    this.merge = merge;
   }
 }
 
@@ -857,7 +858,7 @@ export class FolderRefused extends Error {
  * says what to write, or nothing (its result stands alone). Committed by commitChange; a main that moved under it, or
  * a body that changed as it was read, computes it again on the folder as it is then (WRITE_TRIES in all). A folder with
  * no main yet is made first (learningInit). A snapshot that is not main's is rebuilt (learningRepair). Throws
- * FolderRefused when a precondition fails on main.
+ * FolderRefused when a precondition fails on main, and FolderMerged when a run's merge (its round) is there already.
  */
 export async function writeLearning<T>(ws: Workspace, compute: (folder: FolderRead) => Promise<{ result: T; change?: FolderChange }>, maxTries = WRITE_TRIES): Promise<{ result: T; main?: string; snapshot?: Snapshot }> {
   for (let tries = 0; ; tries++) {
@@ -881,6 +882,7 @@ export async function writeLearning<T>(ws: Workspace, compute: (folder: FolderRe
     const done = await commitChange(ws, snapshot, out.change);
     if ("landed" in done) return { result: out.result, main: done.main, snapshot: done.snapshot };
     if ("refused" in done) throw new FolderRefused(done.refused);
+    if ("merged" in done) throw new FolderMerged(done.merged);
     if ("unaligned" in done) {
       const repaired = await learningRepair(ws);
       return { result: out.result, main: done.main, ...(repaired ? { snapshot: repaired } : {}) };

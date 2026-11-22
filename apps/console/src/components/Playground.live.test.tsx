@@ -4,13 +4,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { LiveRun } from "./LiveRun";
 import { Playground } from "./Playground";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { Run, TimelinePage, TimelineRow } from "@/lib/v2";
 
 // The playground follows the run it started: the same reads as the run page (the run, its timeline from the cursor),
 // until the run ends, and again after a follow-up, so its messages, steps and answer show where the request was sent.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const agent = { agent_id: "calc", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } } as Agent;
+const agent = { ...SERVED_AGENT, agent_id: "calc", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } } as Agent;
 const caps = { harnesses: [{ id: "pi", available: true, steer: true }], features: { messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false } }, limits: { max_upload_bytes: 50 * 2 ** 20, max_files_per_run: 20 }, models: { source: "providers" as const, ready: true } };
 const row = (seq: number, kind: string, text: string): TimelineRow => ({ id: `r${seq}`, seq, kind, summary: text, text, timestamp: "2026-10-30T03:40:00Z", tool_name: null } as TimelineRow);
 

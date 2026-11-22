@@ -13,6 +13,7 @@ import { storeOn, T0 } from "./store-helpers.mjs";
 
 const { viewOverStore } = await import("../dist/store-view.js");
 const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
+const { sendCommand } = await import("../dist/runner/commands.js");
 
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -176,6 +177,43 @@ test("pi: a turn a stop cut reads its cut request as a charge with no price from
   await commitWrites(journal, [{ type: "entry", value: await entry("agentrun.request_ended", { data: {} }) }], BACKGROUND_CONTEXT);
   assert.deepEqual((await viewOverStore(store, "run-1", deps)).cost, stopped.cost);
   assert.deepEqual(await usageNow(), { usd: null, requests: 2, so_far_usd: 0.0003, unpriced: 1 });
+});
+
+test("pi: a stop asked while the follow-up's request is in flight reads working until the turn is cut, never stopped at the known sum", async (t) => {
+  // The store between a stop's 202 and the runner's cut: the stop's command row is written and not taken, and the
+  // follow-up's request is still in flight (a loaded runner takes a while to cut it). The cut is what books that request
+  // as a charge with no price, so a run read stopped before it would say the known sum as its cost.
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { message: "hi" }, title: "Stopping", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const journal = store.journal(claim);
+  const entry = async (kind, more = {}) => ({ id: await journal.mintId(), conversationId: 1, kind, ...more });
+  const user = async (content) => entry("pi.user", { model: [{ role: "user", content, timestamp: T0 }] });
+  const mark = () => entry("agentrun.request_started", { data: {} });
+  const hi = await user("hi");
+  const markOne = await mark();
+  const answer = await entry("pi.assistant", { model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Hello." }], usage: { input: 47, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 50, cost: { total: 0.0003 } }, timestamp: T0 }] });
+  const followUp = await user("Take your time.");
+  const markTwo = await mark();
+  const [first, second] = [await journal.mintId(), await journal.mintId()];
+  const submission = (id, more) => ({ type: "submission", value: { type: "input", id, conversationId: 1, ...more } });
+  await commitWrites(journal, [
+    { type: "conversation", value: { id: 1 } },
+    ...[hi, markOne, answer, followUp, markTwo].map((value) => ({ type: "entry", value })),
+    submission(first, { status: "done", entry: hi.id, answer: answer.id }),
+    submission(second, { status: "placed", entry: followUp.id }),
+  ], BACKGROUND_CONTEXT);
+  await sendCommand(store, "run-1", { kind: "stop", body: {} });
+  // Read on the store's clock, so runner-a's claim holds the run (a live run, its turn open).
+  const deps = { origin: "https://run.test", serverSecrets: () => [], now: () => T0 };
+  const asked = await viewOverStore(store, "run-1", deps);
+  assert.deepEqual([asked.status, asked.state, asked.cost.usd], ["working", "working", 0.0003], `the stop asked, the turn not cut yet: ${JSON.stringify([asked.status, asked.state, asked.pending, asked.cost])}`);
+  // The cut: pi settles the message aborted. From here it reads stopped, the cut request a charge with no price.
+  await commitWrites(journal, [submission(second, { status: "unanswered", entry: followUp.id, reason: "aborted" })], BACKGROUND_CONTEXT);
+  const cut = await viewOverStore(store, "run-1", deps);
+  assert.deepEqual([cut.status, cut.state, cut.pending], ["input_required", "idle", { kind: "stopped" }]);
+  assert.deepEqual([cut.cost.usd, cut.cost.so_far_usd, cut.cost.unpriced], [null, 0.0003, 1]);
 });
 
 for (const harness of ["claude-agent", "codex"]) {

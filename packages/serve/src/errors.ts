@@ -41,6 +41,7 @@ export const ERROR_STATUS = {
   key_set_by_server: 409,
   budget_reached: 409,
   webhook_off: 409,
+  slack_off: 409,
   precondition_required: 428,
   auth_required: 422,
   not_mcp: 422,
@@ -70,17 +71,40 @@ export const ERROR_STATUS = {
   // A run of an agent given inline (POST /runs) under a version of its source already run here with another definition: a
   // version's definition never changes here, so the source publishes a new version.
   external_body_conflict: 409,
-  // A learned workflow made into an agent of its own while it waits for its owner's OK or is retired: only an active one
-  // is (learning-routes.ts promotable).
-  learned_not_active: 409,
   // A replay its owner asked of a learned workflow's revision that cannot start now (runner/promotion.ts askReplay): one
   // replays already, another revision of it replays, it is promoted, or no graded input fits it.
   replay_conflict: 409,
+  // DELETE /agents/{id} (agent-delete.ts): another system's agent whose runs did not end by the delete's wait (or one only
+  // its application ends, an SDK run's); an agent whose learning refused its delete while learning work was in flight.
+  // Both leave the agent refusing runs, and a DELETE sent again finishes it. An agent made here that is not archived:
+  // archive it first, then purge it.
+  runs_in_flight: 409,
+  learning_busy: 409,
+  agent_not_archived: 409,
+  // DELETE /runs/{id} and /agents/{id} (agent-delete.ts purgeRun): a run, or a run made from it, that is live (not final,
+  // or held by a runner). Nothing is purged.
+  run_not_final: 409,
+  // PUT /runs/{id}/grade on a run that reads ended while it still learns from that end (its look-back: a fresh run's
+  // end-of-run step, or a grade's round): graded once that ends. The same grade sent then is taken.
+  run_learning: 409,
+  // GET /agents/{id}/package (agent-package.ts) of an agent whose source is elsewhere (a native, CLI learning, SDK or
+  // another system's agent), a workflow, or one with no revision: there is no package of it to write.
+  not_exportable: 409,
+  // A run or an agent that was purged (DELETE /runs/{id}, /agents/{id}): every route of it reads its tombstone in the
+  // error's details, and its DELETE answers 204 again.
+  purged: 410,
+  // A run start, or a message that would start a turn, with no model_key where the server holds no key for the run's
+  // model (run-model-key.ts): nothing to spend, so refused before any model call.
+  model_key_required: 422,
+  // A run start while every runner here refused to claim any run (runner/presence.ts): its run isolation refused
+  // (run-child-host.ts runIsolationOf), in the runner's words and their fix. Not retryable: it stays so until the runner
+  // is started again as the words say.
+  runner_refused: 503,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;
 
-const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "rate_limited", "internal", "unavailable", "github_failed"]);
+const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "rate_limited", "internal", "unavailable", "github_failed", "runs_in_flight", "learning_busy", "run_learning"]);
 
 /** A field that is missing or wrong. `example`: a value the field accepts, read from the request body's schema (explain.ts). */
 export type InputIssue = { field: string; reason: string; message: string; expected?: string; fix?: string; code?: string; example?: unknown };

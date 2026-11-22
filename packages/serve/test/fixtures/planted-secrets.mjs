@@ -162,8 +162,8 @@ registerPlant({
 });
 
 // ---- the triggers' plants (trigger-secrets-shown.ts): a webhook trigger's minted secret, rotated, with a signed delivery
-// fired under it, so its firing's rows are read too; and the outbound webhook's minted secret, its URL then changed with
-// the token. Each value shows once, in its minting answer to the owner's session alone ----
+// fired under it, so its firing's rows are read too; and the outbound webhook's minted secret, rotated, its URL then
+// changed with the token. Each value shows once, in its minting answer to the owner's session alone ----
 
 /** A body signed by `secret` by the Standard Webhooks spec, POSTed with no token to trigger `id`'s hook: its status. */
 async function deliver(server, id, secret) {
@@ -238,15 +238,32 @@ registerPlant({
 
 registerPlant({
   name: "outbound webhook secret",
-  mints: ["saveWebhook"],
+  mints: ["saveWebhook", "rotateWebhookSecret"],
   write: async ({ owner, token }) => {
     const saved = await owner("PUT", "/v2/settings/webhook", { url: "https://hooks.example.com/planted" });
     if (saved.status !== 201) throw new Error(`the outbound webhook was not set: ${saved.status} ${saved.text}`);
+    // The owner's session rotates it: a second value, shown once in that answer, and the first kept retired, still cut.
+    const rotated = await owner("POST", "/v2/settings/webhook/secret");
+    if (rotated.status !== 200) throw new Error(`the outbound webhook's secret was not rotated: ${rotated.status} ${rotated.text}`);
     // The token changes the URL: a new secret is made and never shown to it, and the planted one is kept retired, still
     // cut; its answer is read like any other.
     const moved = await token("PUT", "/v2/settings/webhook", { url: "https://hooks.example.com/planted-2" });
     if (moved.status !== 200) throw new Error(`the token could not change the webhook's URL: ${moved.status} ${moved.text}`);
-    return [saved.json.signing_secret];
+    return [saved.json.signing_secret, rotated.json.signing_secret];
+  },
+});
+
+registerPlant({
+  name: "Slack incoming-webhook URL",
+  write: async ({ owner, token }) => {
+    const secret = `PLANTED${randomBytes(9).toString("hex").toUpperCase()}`.slice(0, 24);
+    const url = `https://hooks.slack.com/services/TPLANTED0/BPLANTED0/${secret}`;
+    const saved = await owner("PUT", "/v2/settings/slack", { url });
+    if (saved.status !== 201) throw new Error(`Slack was not set: ${saved.status} ${saved.text}`);
+    // The token turns an event off (no secret write): its answer is read like any other.
+    const events = await token("PUT", "/v2/settings/slack", { events: { "trigger.failed": false } });
+    if (events.status !== 200) throw new Error(`the token could not change Slack's events: ${events.status} ${events.text}`);
+    return [url, secret];
   },
 });
 

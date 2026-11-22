@@ -2,7 +2,8 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor, type EditorCaps } from "./AgentEditor";
-import type { Agent, AgentFields } from "@/lib/agentForm";
+import type { Agent, AgentFields, SaveProblem } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { optionsOf, pick, picker } from "@/test/picker";
 
 // The editor's Model field is a picker of the models the server offers for the harness (capabilities'
@@ -19,7 +20,7 @@ const caps: EditorCaps = {
   ],
   tools: [], thinking: [],
 };
-const agentOn = (harness: string, model?: string): Agent => ({ agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness, skills: [], tools: [], ...(model ? { model } : {}) } });
+const agentOn = (harness: string, model?: string): Agent => ({ ...SERVED_AGENT, agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness, skills: [], tools: [], ...(model ? { model } : {}) } });
 
 async function open(agent: Agent | null, onSave?: (fields: AgentFields) => void) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -128,6 +129,61 @@ describe("AgentEditor, the Model picker", () => {
   it("a harness with no free model shows no Free only switch", async () => {
     const page = await open(agentOn("pi"));
     expect(page.host.querySelector('button[role="switch"][aria-label="Free models only"]')).toBeNull();
+  });
+
+  // What the server says of a model depends on the harness ("On pi, a model is ..."): the field shows it only while the
+  // form names the harness and model it was said of.
+  const REFUSAL = 'On pi, a model is <provider>/<model id>, like anthropic/claude-sonnet-5-5 or openrouter/anthropic/claude-sonnet-5.5: "Sonnet 5.5" is not one. Did you mean anthropic/claude-sonnet-5-5?';
+  const refusal: SaveProblem = { kind: "invalid", message: "The definition is not valid.", fields: { "definition.model": REFUSAL } };
+  /** The Model field's own box: its label, its control, and what it says under them. */
+  const modelBox = (host: HTMLElement) => {
+    const label = [...host.querySelectorAll("label")].find((l) => l.htmlFor === picker(host, "Model")!.id);
+    expect(label, "the Model field has its label").toBeDefined();
+    return label!.parentElement!.parentElement!;
+  };
+  const alerts = (host: HTMLElement) => [...modelBox(host).querySelectorAll(':scope > [role="alert"]')].map((e) => e.textContent);
+  const harness = async (host: HTMLElement, id: string) => { await act(async () => { host.querySelector<HTMLInputElement>(`input[type=radio][value="${id}"]`)!.click(); }); };
+
+  it("a refusal said on pi is not shown once the harness is codex, the model the same; back on pi it is", async () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(AgentEditor, { agent: agentOn("pi", "Sonnet 5.5"), caps, step: "settings", onSave: async () => null, problem: refusal })); });
+    expect(alerts(host)).toEqual([REFUSAL]);
+    await harness(host, "codex");
+    expect(host.querySelector<HTMLInputElement>('input[aria-label="Custom model"]')?.value, "the model is still the one refused").toBe("Sonnet 5.5");
+    expect(alerts(host), "pi's words, not codex's").toEqual([]);
+    await harness(host, "pi");
+    expect(alerts(host)).toEqual([REFUSAL]);
+  });
+
+  it("a save's refusal that arrives after the harness changed is not shown at the field", async () => {
+    let answer: ((problem: SaveProblem) => void) | undefined;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(AgentEditor, { agent: agentOn("pi"), caps, step: "settings", onSave: () => new Promise<SaveProblem>((resolve) => { answer = resolve; }) })); });
+    await pick(picker(host, "Model")!, CUSTOM);
+    const box = host.querySelector<HTMLInputElement>('input[aria-label="Custom model"]')!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(box, "Sonnet 5.5"); box.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => { [...host.querySelectorAll<HTMLElement>("button")].find((b) => /^Save revision$/.test(b.textContent ?? ""))!.click(); });
+    expect(answer, "the save is waiting for its answer").toBeDefined();
+    await harness(host, "codex");
+    await act(async () => answer!(refusal));
+    expect(alerts(host), "said of pi, the form on codex").toEqual([]);
+    await harness(host, "pi");
+    expect(alerts(host), "the harness and model sent").toEqual([REFUSAL]);
+  });
+
+  it("a save's warning at the model shows at the field only while the form names the saved harness and model", async () => {
+    const WARNING = "No key for openai is set on this server: set OPENAI_API_KEY.";
+    const agent: Agent = { ...agentOn("pi", "openai/gpt-6.1-sol"), warnings: [{ field: "definition.model", reason: "not_set_up_here", message: WARNING }] };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(AgentEditor, { agent, caps, step: "settings", onSave: async () => null })); });
+    expect(modelBox(host).textContent).toContain(WARNING);
+    await harness(host, "codex");
+    expect(modelBox(host).textContent, "said of the saved revision on pi").not.toContain(WARNING);
+    await harness(host, "pi");
+    expect(modelBox(host).textContent).toContain(WARNING);
   });
 
   it("switching the harness on a new agent changes the list", async () => {

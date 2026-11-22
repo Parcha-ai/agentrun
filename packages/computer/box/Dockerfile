@@ -10,7 +10,8 @@
 #     the computer's, which reaches Archil;
 #   - nftables, for the helper's mount with an egress gateway alone: it redirects root's TCP to Archil's 8100 and 32050
 #     to computerd's archil relay on the computer's loopback;
-#   - /workspace, empty and root's, where the helper mounts the run's folder;
+#   - /workspace, empty and root's, where the helper mounts the run's folder; a synced folder's computer has it made the
+#     computer user's, 0700, before init (by the provider's install, or by agentrun-dial on a machine that dials);
 #   - a desktop, with nothing started: Xvfb and xfwm4 (with dbus-run-session, which xfconf's packages bring) and
 #     xsetroot (x11-xserver-utils, the desktop's background), which the provider starts through computerd as the tool
 #     user on :0 (src/desktop.ts), and the apps E2B Desktop has that are cheap to carry: Xfce's terminal and text editor,
@@ -35,7 +36,7 @@ COPY agentrun-archil /tmp/agentrun-box/agentrun-archil
 RUN sh /tmp/agentrun-box/install.sh && rm -rf /tmp/agentrun-box
 
 USER root
-# A computer's first process is its provider's own (Daytona's runs this when a snapshot names no entrypoint; Modal's and
-# E2B's are their own): never the base image's python. A machine whose create set AGENTRUN_ATTACH_URL dials the server
-# instead (install.sh's agentrun-dial).
+# A computer's first process is its provider's own (Daytona's toolbox, Modal's and E2B's own), never the base image's
+# python. Daytona never runs an image's CMD, only a snapshot's entrypoint, so box/build-daytona.py names this CMD as
+# the snapshot's. A machine whose create set AGENTRUN_ATTACH_URL dials the server instead (install.sh's agentrun-dial).
 CMD ["sh", "-c", "[ -z \"${AGENTRUN_ATTACH_URL-}\" ] || exec agentrun-dial; exec sleep infinity"]

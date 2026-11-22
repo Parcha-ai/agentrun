@@ -3,14 +3,15 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it } from "vitest";
 import { createClient } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { NativeBinding } from "@/lib/native";
 import { NativeAgent, NativeMutationProvider, useNativeReadiness } from "./NativeAgent";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
-const native: NativeBinding = { runtime: "codex", project: "/workspace/app", selector: { kind: "profile", name: "review" }, machine_id: "workstation", version: "0.167.2", model: "gpt-5", fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, verified_at: "2026-11-12T00:00:00Z", capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native", usage: true } };
-const agent: Agent = { agent_id: "reviewer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reviewer", tools: [], skills: [], learning: false, native } };
-it("explains native learning costs before enabling notes-only learning, turns learning fully off, and disconnects without deleting history", async () => {
+const native: NativeBinding = { runtime: "codex", project: "/workspace/app", selector: { kind: "profile", name: "review" }, machine_id: "workstation", version: "0.167.2", model: "gpt-5", fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, verified_at: "2026-11-12T00:00:00Z", capabilities: { launch: true, learning: true, workflows: false, approval: "native", usage: true } };
+const agent: Agent = { ...SERVED_AGENT, agent_id: "reviewer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reviewer", tools: [], skills: [], learning: false, native } };
+it("explains native learning costs before enabling learning, turns learning fully off, and disconnects without deleting history", async () => {
   let current = agent;
   const calls: { path: string; method: string; body: any }[] = [];
   const v2 = createClient({ fetch: (async (url, init) => {
@@ -28,10 +29,11 @@ it("explains native learning costs before enabling notes-only learning, turns le
   expect(host.textContent).toContain("Self-improving: Off");
   expect(host.textContent).toContain("neither supplies nor creates AgentRun learning");
   await act(async () => host.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
-  expect(document.body.textContent).toContain("additional native model usage");
+  expect(document.body.textContent).toContain("Task usage and learning usage are recorded separately");
+  expect(document.body.textContent).toContain("Each later job is given your corrections whole.");
   expect(calls).toEqual([]);
   await act(async () => [...document.querySelectorAll("button")].find((b) => b.textContent === "Enable self-improvement")!.click());
-  expect(calls.filter((c) => c.method === "PUT")[0]?.body.definition.learning).toBe("notes");
+  expect(calls.filter((c) => c.method === "PUT")[0]?.body.definition.learning).toBe(true);
   expect(current.definition.native).toEqual(native);
   await act(async () => host.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
   expect(calls.filter((c) => c.method === "PUT")[1]?.body.definition.learning).toBe(false);
@@ -82,7 +84,7 @@ it("serializes verification and self-improvement changes and reads the fresh ETa
   expect(button("Disconnect").disabled).toBe(true);
   await act(async () => release!());
   expect(savedEtag).toBe("r3");
-  expect(current.definition.learning).toBe("notes");
+  expect(current.definition.learning).toBe(true);
   expect(host.textContent).toContain("Self-improving: On");
 });
 

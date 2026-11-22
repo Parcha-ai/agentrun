@@ -7,13 +7,29 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { PassThrough, type Readable, Writable } from "node:stream";
 import { DaemonClient } from "./client.js";
 import { kindServed } from "./kinds.js";
-import { type ComputerClient, type ComputerKind, type ComputerOs, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
+import { EPOCH_LABEL, epochOf } from "./labels.js";
+import { checkMount, type MountReadBack, WORKSPACE } from "./mount.js";
+import { type ComputerClient, type ComputerKind, type ComputerOs, type DaemonMethod, type DaemonMethods, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, type ComputerRef, checkLifetime, kindRefusals, runLifetimeMs } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
 export const ATTACH_PATH = "/v2/computers/attach";
 /** Where a hosted machine that dials fetches the server's computerd for its arch (?arch=amd64|arm64), with its token. */
 export const DAEMON_PATH = "/v2/computers/daemon";
+/** The boot env name of a dial machine's attach egress (HostedOptions.attachEgress), which agentrun-dial and computerd attach read. */
+export const ATTACH_EGRESS_ENV = "AGENTRUN_ATTACH_EGRESS";
+const ATTACH_EGRESS = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d):(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$/;
+
+/**
+ * Reads an attach egress, `<IPv4 relay>:<port>` such as 192.0.2.40:18443: the operator's relay a dial machine opens TCP
+ * to in place of the public host, for its daemon fetch and its attach socket alike, speaking TLS and HTTP to the public
+ * host through it (the SNI, the certificate checked and the Host header stay the public host's). computerd attach holds
+ * it to the same shape. Anything else throws, in words.
+ */
+export function attachEgressOf(text: string): string {
+	if (!ATTACH_EGRESS.test(text)) throw new Error(`the attach egress is <IPv4 relay>:<port>, such as 192.0.2.40:18443, a port from 1 to 65535; not ${JSON.stringify(text)}`);
+	return text;
+}
 /** The WebSocket subprotocol a driver asks for: the protocol version it speaks. Serve answers with it or refuses. */
 export const ATTACH_SUBPROTOCOL = `agentrun.computer.${PROTOCOL_VERSION}`;
 /** Each side pings this often (WebSocket ping frames, not JSON-RPC), so a NAT keeps the path open. */
@@ -38,7 +54,7 @@ export const ATTACH_CLOSE = {
 	binary: 1003,
 	/** A frame over maxLineBytes. */
 	tooBig: 1009,
-	/** The computer's hello is not what it paired as (another kind or os): pair again. */
+	/** The computer's hello is not what it paired as (another kind, os or arch): pair again. */
 	mismatch: 4400,
 	/** The token is unknown or was revoked: pair again. */
 	unauthorized: 4401,
@@ -127,7 +143,7 @@ export function socketStreams(socket: AttachSocket): { readable: Readable; writa
 export interface PairedComputer {
 	id: string;
 	name: string;
-	/** What it paired as: its hello at pairing. A later hello of another kind or os is refused (ATTACH_CLOSE.mismatch). */
+	/** What it paired as: its hello at pairing. A later hello of another kind, os or arch is refused (ATTACH_CLOSE.mismatch). */
 	hello: HelloResult;
 	labels: Record<string, string>;
 	/** A hosted machine that dials with a minted token (mintedComputer), not a person's: its hello keeps its arch too. */
@@ -142,12 +158,24 @@ export interface MachineMint {
 	arch: string;
 	/** The machine's backstopAt: past it the token is refused, whatever else holds. */
 	expiresAt: Date;
+	/** The run the machine works for, as its create's labels name it (RUN_LABEL): what a server's words about its dial
+	 *  name. Absent for a computer of no run. */
+	run?: string;
 }
+
+/** A machine token's shape, as a RegExp source without anchors or flags: `art_` and 43 base64url characters (32 bytes).
+ *  computerd takes this alone (daemon/internal/attach/attach.go tokenPattern, the same source anchored); a scrub
+ *  builds its global RegExp from it. */
+export const MACHINE_TOKEN_SOURCE = "art_[A-Za-z0-9_-]{43}";
+
+/** A new machine token, a paired computer's or a hosted machine's: `art_` and 32 random bytes in base64url
+ *  (MACHINE_TOKEN_SOURCE). */
+export const newMachineToken = (): string => `art_${randomBytes(32).toString("base64url")}`;
 
 /**
  * The tokens of hosted machines that dial (spec/computer/attach.md, Hosted machines that dial), as the server's store
- * keeps them: HostedProvider mints one at each dial create and revokes it at the delete. A token is `art_` and 64 hex
- * digits (32 random bytes); the store keeps only its sha256, bound to the machine and its mint, and never logs it. The
+ * keeps them: HostedProvider mints one at each dial create and revokes it at the delete. A token is newMachineToken's;
+ * the store keeps only its sha256, bound to the machine and its mint, and never logs it. The
  * server's attach upgrade and its daemon route take it while it is neither revoked nor past expiresAt, and hand its
  * socket to the AttachHub as mintedComputer(machine, mint). machine is the computer's name, computer-<12 hex digits>,
  * from its create's request id (computerNameFor): what the provider's connect and release are given.
@@ -157,6 +185,10 @@ export interface MachineTokens {
 	mint(machine: string, mint: MachineMint): Promise<string>;
 	/** The machine's token refused from now on; a machine with none is done. */
 	revoke(machine: string): Promise<void>;
+	/** Why the server refused the machine's dial, in its words (a relay to the runner that minted the token, serve's
+	 *  dial-relay.ts, that it could not make): they name the machine's run, then the machine, and never its token.
+	 *  Undefined while none was refused. A create waiting for the machine's socket ends in these words. */
+	refused(machine: string): Promise<string | undefined>;
 }
 
 const sha256 = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -172,7 +204,7 @@ export class MemoryMachineTokens implements MachineTokens {
 	// No await in either: a mint replaces the machine's token at once, so two of one machine leave one token, not two.
 	async mint(machine: string, mint: MachineMint): Promise<string> {
 		this.#drop(machine);
-		const token = `art_${randomBytes(32).toString("hex")}`;
+		const token = newMachineToken();
 		this.#held.set(sha256(token), { machine, mint: { ...mint } });
 		this.#hashOf.set(machine, sha256(token));
 		return token;
@@ -180,6 +212,11 @@ export class MemoryMachineTokens implements MachineTokens {
 
 	async revoke(machine: string): Promise<void> {
 		this.#drop(machine);
+	}
+
+	// One process: its own attach route takes every dial, and no relay to a runner apart is refused.
+	async refused(_machine: string): Promise<string | undefined> {
+		return undefined;
 	}
 
 	#drop(machine: string): void {
@@ -234,12 +271,18 @@ export function helloMismatch(paired: PairedComputer, hello: HelloResult): { cod
 	if (missing.length > 0) {
 		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver ${hello.version} answered a protocol ${PROTOCOL_VERSION} hello without ${missing.join(", ")}: ${update}` };
 	}
-	if (paired.minted && (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os || hello.arch !== paired.hello.arch)) {
+	if (paired.minted) {
+		// A minted desktop says linux until its display answers: its create starts the X server over this socket (desktop.ts).
+		const kind = hello.kind === paired.hello.kind || (paired.hello.kind === "desktop" && hello.kind === "linux");
+		if (!kind || hello.os !== paired.hello.os || hello.arch !== paired.hello.arch) {
+			const was = paired.hello;
+			return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} was made a ${was.os} ${was.kind} on ${was.arch} and says ${hello.os} ${hello.kind} on ${hello.arch}: its token is that machine's alone` };
+		}
+	} else if (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os || (hello.arch !== paired.hello.arch && paired.hello.os !== "macos")) {
+		// Its arch too, so a token copied to a machine of another arch is refused; but a Mac's: its driver may move from
+		// amd64 (under Rosetta) to arm64 on the same machine.
 		const was = paired.hello;
-		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} was made a ${was.os} ${was.kind} on ${was.arch} and says ${hello.os} ${hello.kind} on ${hello.arch}: its token is that machine's alone` };
-	}
-	if (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os) {
-		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} paired as a ${paired.hello.os} ${paired.hello.kind} and now says ${hello.os} ${hello.kind}: pair it again` };
+		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} paired as a ${was.os} ${was.kind} on ${was.arch} and now says ${hello.os} ${hello.kind} on ${hello.arch}: pair it again` };
 	}
 	// A computer that lacks a group its kind needs can't be given to an agent: refused at connect, in the hello's own
 	// words for what it is, never at a run's first call.
@@ -269,6 +312,9 @@ export class AttachHub {
 	readonly #live = new Map<string, Live>();
 	/** The run holding each computer: the hold's own token, its labels, and its deadline with the timer that ends it. */
 	readonly #claims = new Map<string, { hold: string; labels: Record<string, string>; deadline?: Date; timer?: ReturnType<typeof setTimeout> }>();
+	/** The call still running on each computer that changes it (changing): no hold on it ends before it has ended. A
+	 *  create sends them one at a time, and none after its abort. */
+	readonly #changing = new Map<string, Promise<unknown>>();
 	/** The sockets still saying hello, by computer: a revoke closes them too, so none comes back after it. */
 	readonly #pending = new Map<string, Set<AttachSocket>>();
 	/** Each computer's connections given out, by the function that closes one. */
@@ -404,7 +450,7 @@ export class AttachHub {
 		this.#expire(id);
 		if (this.#claims.has(id)) return undefined;
 		const hold = randomUUID().replaceAll("-", "").slice(0, 16);
-		const timer = deadline === undefined ? undefined : setTimeout(() => this.unclaim(id, hold), Math.max(0, deadline.getTime() - Date.now()));
+		const timer = deadline === undefined ? undefined : setTimeout(() => void this.unclaim(id, hold), Math.max(0, deadline.getTime() - Date.now()));
 		timer?.unref?.();
 		this.#claims.set(id, { hold, labels: { ...labels }, ...(deadline === undefined ? {} : { deadline, timer }) });
 		return hold;
@@ -429,22 +475,47 @@ export class AttachHub {
 	}
 
 	/**
-	 * Ends the hold named by its token, and closes the connections it was given. A token of a hold already ended (a late
-	 * release, after the deadline gave the computer to another run) ends nothing: false.
+	 * `answer`, a call that changes the computer (a create's files.remove or KILL), kept until it ends: computerd ends
+	 * what a cancelled call started, so it has ended only when the computer answers it or its connection closes. No hold
+	 * on the computer ends before that (unclaim).
 	 */
-	unclaim(id: string, hold: string): boolean {
+	changing(id: string, answer: Promise<unknown>): void {
+		this.#changing.set(id, answer);
+		void answer.finally(() => {
+			if (this.#changing.get(id) === answer) this.#changing.delete(id);
+		});
+	}
+
+	/** Resolves once no call that changes the computer runs (changing), one sent after another's answer too: at once
+	 *  while none does. */
+	async unchanged(id: string): Promise<void> {
+		for (let running = this.#changing.get(id); running !== undefined; running = this.#changing.get(id)) await Promise.allSettled([running]);
+	}
+
+	/**
+	 * Ends the hold named by its token, and closes the connections it was given: at once, or while a call that changes
+	 * the computer still runs (changing), once it has ended, so no next run is given a computer an earlier call still
+	 * changes. A token of a hold already ended (a late release, after the deadline gave the computer to another run), or
+	 * ended by another unclaim while this one waited, ends nothing: false.
+	 */
+	async unclaim(id: string, hold: string): Promise<boolean> {
 		const held = this.#claims.get(id);
 		if (held === undefined || held.hold !== hold) return false;
+		// Checked again after each wait: a create still running sends its next remove once the last one answers.
+		while (this.#changing.has(id)) {
+			await this.unchanged(id);
+			if (this.#claims.get(id) !== held) return false;
+		}
 		clearTimeout(held.timer);
 		this.#claims.delete(id);
 		this.#closeGiven(id);
 		return true;
 	}
 
-	/** A hold past its deadline ends at once, whether or not its timer has run yet. */
+	/** A hold past its deadline ends at once, whether or not its timer has run yet (once its changing calls end). */
 	#expire(id: string): void {
 		const held = this.#claims.get(id);
-		if (held?.deadline !== undefined && held.deadline.getTime() <= Date.now()) this.unclaim(id, held.hold);
+		if (held?.deadline !== undefined && held.deadline.getTime() <= Date.now()) void this.unclaim(id, held.hold);
 	}
 
 	/** Ends a computer's attachment: its token was revoked, or the computer was removed. */
@@ -463,22 +534,117 @@ export class AttachHub {
 
 const ATTACHED_NOTE = "an attached computer is a person's own machine: release ends the run's hold on it, and deletes nothing";
 
+/** How a person makes a Linux box's /workspace, in the words a refusal names it by (attach.md, A Linux box). */
+const WORKSPACE_FIX = `make ${WORKSPACE} a directory of computerd's user's own, mode 0700, as root: the tmpfiles.d line in spec/computer/attach.md, A Linux box (d ${WORKSPACE} 0700 <user> <user> -), then systemd-tmpfiles --create`;
+
+/**
+ * Why the paired Linux box `name`'s /workspace can't hold a run's synced folder, in words naming the fix, or undefined
+ * when it can: a directory, never a link (a push follows /workspace itself, then writes only under it, opening each name
+ * with O_NOFOLLOW), of the user computerd runs as (the effective uid its /proc/self/status says), with no access for its
+ * group or others. Read through `client` (computerd's), which runs nothing on the box.
+ */
+async function pairedWorkspaceWhy(client: ComputerClient, name: string, signal?: AbortSignal): Promise<Result<string | undefined>> {
+	const options = signal ? { signal } : {};
+	const status = await client.call("files.read", { path: "/proc/self/status" }, options);
+	if (!status.ok) return fail(status.error.code, `reading the user computerd runs as on ${name}: ${status.error.message}`);
+	const uid = /^Uid:\s+\d+\s+(\d+)/m.exec(Buffer.from(status.value.data, "base64").toString("utf8"))?.[1];
+	if (uid === undefined) return fail("invalid", `${name}'s /proc/self/status names no user computerd runs as`);
+	const folder = await client.call("files.stat", { path: WORKSPACE, follow: false }, options);
+	if (!folder.ok) return folder.error.code === "not_found" ? ok(`${name} has no ${WORKSPACE}, where a run's synced folder goes: ${WORKSPACE_FIX}`) : fail(folder.error.code, `reading ${WORKSPACE} on ${name}: ${folder.error.message}`);
+	const { type, uid: owner, mode } = folder.value;
+	if (type === "symlink") return ok(`${WORKSPACE} on ${name} is a link, and a run's synced folder is never written through one: remove it, then ${WORKSPACE_FIX}`);
+	if (type !== "dir") return ok(`${WORKSPACE} on ${name} is a ${type}, where a run's synced folder needs a directory: remove it, then ${WORKSPACE_FIX}`);
+	if (String(owner) !== uid) return ok(`${WORKSPACE} on ${name} is uid ${owner}'s, not uid ${uid}'s, the user computerd runs as: ${WORKSPACE_FIX}`);
+	if ((mode & 0o077) !== 0) return ok(`${WORKSPACE} on ${name} is open to its group or others (mode ${(mode & 0o7777).toString(8).padStart(4, "0")}): ${WORKSPACE_FIX}`);
+	return ok(undefined);
+}
+
+/**
+ * A call that changes the box (files.remove, process.signal), sent with no abort of its own: computerd still ends what a
+ * cancelled call started, so the call has ended only when the box answers it or its connection closes. Its answer goes
+ * to `changing` (AttachHub.changing), which keeps the box's hold until then. The caller's own wait still ends at
+ * `signal`, and none is sent once that has aborted.
+ */
+function changeBox<M extends DaemonMethod>(client: ComputerClient, changing: (answer: Promise<unknown>) => void, method: M, params: DaemonMethods[M]["params"], signal?: AbortSignal): Promise<Result<DaemonMethods[M]["result"]>> {
+	if (signal?.aborted) return Promise.resolve(fail("aborted", `${method} was aborted before it was sent`));
+	const answer = client.call(method, params);
+	changing(answer);
+	if (signal === undefined) return answer;
+	const aborted = new Promise<Result<never>>((resolve) => {
+		const onAbort = () => resolve(fail("aborted", `${method} was aborted`));
+		signal.addEventListener("abort", onAbort, { once: true });
+		void answer.finally(() => signal.removeEventListener("abort", onAbort));
+	});
+	return Promise.race([answer, aborted]);
+}
+
+/** Every program computerd still runs on `name` ended, waited for up to 5 s each: the box outlives its runs, and one
+ *  run holds it at a time, so a program running at a claim is an earlier run's (a background program left when its hold
+ *  ended at its deadline, or its runner was lost), which could read or write the next run's folder. KILL goes to its
+ *  process group; init kills what left that group once its guard is gone. Each KILL goes to `changing` (changeBox). */
+async function endPrograms(client: ComputerClient, name: string, changing: (answer: Promise<unknown>) => void, signal?: AbortSignal): Promise<Result<void>> {
+	const options = signal ? { signal } : {};
+	const words = (message: string) => `ending an earlier run's programs on ${name}: ${message}`;
+	for (let from = 0; ; ) {
+		const listed = await client.call("process.list", { from }, options);
+		if (!listed.ok) return fail(listed.error.code, words(listed.error.message));
+		for (const program of listed.value.processes.filter((one) => one.running)) {
+			const killed = await changeBox(client, changing, "process.signal", { id: program.id, signal: "KILL" }, signal);
+			if (!killed.ok && killed.error.code !== "not_found") return fail(killed.error.code, words(killed.error.message));
+			const waited = await client.call("process.wait", { id: program.id, timeoutMs: 5_000 }, options);
+			if (waited.ok && waited.value.running) return fail("refused", words(`${program.argv.join(" ")} (pid ${program.pid}) is still running 5 s after KILL`));
+		}
+		if (!listed.value.truncated) return ok(undefined);
+		from = listed.value.next;
+	}
+}
+
+/** Everything in `name`'s /workspace removed, the folder itself kept (only root makes one): each entry of its first
+ *  level, a directory with what it holds, a link removed and never followed (files.remove). An entry a remove can't
+ *  find (a name that is not UTF-8 reaches the wire changed) is left: a whole listing with one left, or a truncated one
+ *  that a pass removes nothing of, refuses the box in words naming what was left. Each remove goes to `changing`
+ *  (changeBox): a cancelled one's RemoveAll still deletes on the box. */
+async function emptyWorkspace(client: ComputerClient, name: string, changing: (answer: Promise<unknown>) => void, signal?: AbortSignal): Promise<Result<void>> {
+	const options = signal ? { signal } : {};
+	const words = (message: string) => `emptying ${WORKSPACE} on ${name} of an earlier run's folder: ${message}`;
+	for (;;) {
+		const listed = await client.call("files.list", { path: WORKSPACE }, options);
+		if (!listed.ok) return fail(listed.error.code, words(listed.error.message));
+		const left: string[] = [];
+		for (const entry of listed.value.entries) {
+			const removed = await changeBox(client, changing, "files.remove", { path: entry.path, recursive: true }, signal);
+			if (removed.ok) continue;
+			if (removed.error.code !== "not_found") return fail(removed.error.code, words(removed.error.message));
+			left.push(`${entry.path}: ${removed.error.message}`);
+		}
+		// A truncated listing is listed again while a pass removes something; what is left past that stays.
+		const stuck = listed.value.truncated ? left.length === listed.value.entries.length : left.length > 0;
+		if (stuck) return fail("refused", words(`${left.length} entries could not be removed (first: ${left[0] ?? "none listed"})`));
+		if (!listed.value.truncated) return ok(undefined);
+	}
+}
+
 /**
  * One paired computer as a provider, id "attached": its capabilities are what it paired as. create claims it for a
  * run (refused while it is offline or another run holds it) and release ends the claim; a person's machine is never
- * made, stopped or deleted by a run. It has no init of ours, so its daemon mode is none.
+ * made, stopped or deleted by a run. A desktop or a phone has no init of ours, so its daemon mode is none; a Linux box
+ * (kind linux, a sandbox) runs computerd init, a child of its service manager, and takes the run's folder as a synced
+ * folder in its /workspace (pairedWorkspaceWhy), read back under the run's claim epoch.
  */
 export function attachedProvider(paired: PairedComputer, hub: AttachHub): ComputerProvider {
 	/** What the computer says now: its live hello while attached (an update may add groups), else what it paired as. */
 	const now = () => hub.hello(paired.id) ?? paired.hello;
+	const box = paired.hello.kind === "linux";
 	const capabilities = (): ComputerCapabilities => ({
 		kind: paired.hello.kind,
 		lifetime: "vendor",
 		network: ["open"],
 		isolation: "machine",
 		os: paired.hello.os,
-		daemon: "none",
+		daemon: box ? "child" : "none",
 		groups: [...now().groups],
+		// computerd attach dials out, so no agent of ours listens on the box's TCP ports.
+		...(box ? { mount: ["sync" as const], vendorAgentPorts: [] } : {}),
 		maxLifetimeMs: 24 * 60 * 60_000,
 		release: ["delete"],
 	});
@@ -500,6 +666,9 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 	const mine = (asked: { id: string }) => named(asked) !== undefined;
 	/** The hold each create request made: a request id makes one hold, ever. */
 	const holdsBy = new Map<string, string>();
+	/** A create still readying the box's synced folder, by its request id: its hold, and the answer a retry meanwhile
+	 *  shares once it asks for the same labels. */
+	const startingBy = new Map<string, { readonly hold: string; readonly answer: Promise<Result<ComputerRef & { notes: string[] }>> }>();
 	const ended = () => fail("gone", `this run's hold on ${paired.name} has ended (released, or at its deadline): another run may hold it now`);
 	const unknown = (id: string) => fail("not_found", `no attached computer ${id}: this provider is ${paired.name}'s (${paired.id})`);
 	const offline = () => fail("gone", `${paired.name} is not attached now: open its driver, which dials this server`);
@@ -507,6 +676,37 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 	/** Why a network other than open is refused: a run never narrows a person's own machine's network. */
 	const networkRefusal = (asked: unknown) =>
 		`${paired.name} is a person's own machine on its own network, which a run cannot block or limit: network ${JSON.stringify(asked)} is refused; ask for network "open"`;
+	/** The hold whose create took the run's folder as a synced folder (one run holds the machine at a time). */
+	let syncedHold: string | undefined;
+	/** The synced folder as the hold's labels record it: under the run's claim epoch. */
+	const recorded = (): MountReadBack => {
+		const epoch = epochOf(hub.claimed(paired.id));
+		return epoch.ok ? { kind: "sync", epoch: epoch.value } : { other: `a synced folder with no epoch to read it back under (${epoch.error.message})` };
+	};
+	/** The synced folder read back from inside the box: its /workspace as pairedWorkspaceWhy holds it, else in words.
+	 *  `fresh`: what an earlier run left is ended and removed first, its programs (endPrograms) and then each entry of the
+	 *  folder (a link removed and never followed), so the run's push goes into an empty folder no other run's program
+	 *  reaches, as into a hosted computer's new one. Each of those calls that changes the box is the hub's (changing)
+	 *  until it has ended, and the connection is closed only then, as a close would drop their answers. */
+	const folder = async (signal?: AbortSignal, fresh = false): Promise<Result<MountReadBack>> => {
+		const connection = hub.connection(paired.id);
+		if (connection === undefined) return offline();
+		const changing = (answer: Promise<unknown>) => hub.changing(paired.id, answer);
+		try {
+			const why = await pairedWorkspaceWhy(connection.client, paired.name, signal);
+			if (!why.ok) return why;
+			if (why.value !== undefined) return ok({ other: why.value });
+			if (fresh) {
+				const stopped = await endPrograms(connection.client, paired.name, changing, signal);
+				if (!stopped.ok) return stopped;
+				const emptied = await emptyWorkspace(connection.client, paired.name, changing, signal);
+				if (!emptied.ok) return emptied;
+			}
+			return ok(recorded());
+		} finally {
+			void hub.unchanged(paired.id).then(() => connection.close());
+		}
+	};
 	return {
 		id: "attached",
 		// The driver's version is the computer's, whatever it is: the provider never refuses a newer or older build of one
@@ -519,6 +719,9 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			...kindRefusals(capabilities()),
 			...(spec.owner === undefined ? checkLifetime(spec.lifetimeMs, capabilities()) : []),
 			...(spec.network === "open" ? [] : [{ field: "network", message: networkRefusal(spec.network) }]),
+			// A Linux box takes the run's folder as a synced folder alone; a desktop or a phone takes none.
+			...checkMount(spec.mount, capabilities().mount),
+			...(spec.mount?.kind === "sync" && !epochOf(spec.labels).ok ? [{ field: "labels", message: `a synced folder is made under the run's claim epoch: the label ${EPOCH_LABEL} is required` }] : []),
 		],
 		async create(spec, context) {
 			const refusals = this.check(spec);
@@ -526,7 +729,9 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			if (typeof context?.requestId !== "string" || context.requestId === "") return fail("invalid", "create needs a request id (CreateContext.requestId): pass the same one to retry the same request");
 			// One hold per request id (provider.md, Idempotent create): a retry while it holds answers it, and after it ended
 			// is refused, so a retry never takes the machine from the run that holds it next.
-			const before = holdsBy.get(context.requestId);
+			// A retry while its synced folder is still being readied is checked as one after, then shares that answer.
+			const starting = startingBy.get(context.requestId);
+			const before = starting?.hold ?? holdsBy.get(context.requestId);
 			if (before !== undefined) {
 				if (hub.hold(paired.id) !== before) return fail("exists", `${paired.name}'s hold ${before} was made for this request and has ended: create with a new request id`);
 				// The hold carries the labels of the request that made it: a retry that asks for other labels is another request.
@@ -534,17 +739,38 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 				const asked = spec.labels ?? {};
 				const same = Object.keys(asked).length === Object.keys(claimed).length && holds(claimed, asked);
 				if (!same) return fail("exists", `${paired.name}'s hold ${before} was made for this request with other labels: create with a new request id`);
-				return ok({ ...holdRef(before), notes: [ATTACHED_NOTE] });
+				return starting?.answer ?? ok({ ...holdRef(before), notes: [ATTACHED_NOTE] });
 			}
 			if (!hub.online(paired.id)) return offline();
 			// A run's hold ends at its lifetime, released or not: a run that never releases cannot keep the machine from the next.
 			const deadline = spec.owner === undefined ? new Date(Date.now() + runLifetimeMs(spec)) : undefined;
 			const hold = hub.claim(paired.id, spec.labels ?? {}, deadline);
 			if (hold === undefined) return fail("refused", `${paired.name} is held by another run: one run at a time`);
-			holdsBy.set(context.requestId, hold);
-			return ok({ ...holdRef(hold), notes: [ATTACHED_NOTE] });
+			if (spec.mount?.kind !== "sync") {
+				holdsBy.set(context.requestId, hold);
+				return ok({ ...holdRef(hold), notes: [ATTACHED_NOTE] });
+			}
+			// The run's synced folder goes in the box's /workspace, which must be computerd's user's own directory before
+			// anything is pushed there, and is cleared of an earlier run's programs and files: one that is not lets the hold
+			// go, in words. A retry of this request meanwhile shares this answer.
+			const requestId = context.requestId;
+			const answer = (async () => {
+				const read = await folder(context.signal, true);
+				if (!read.ok || "other" in read.value) {
+					// A cancelled create answers at once, but the box may still run a remove or KILL it stopped waiting for: the
+					// hold is let go once each has answered or its connection closed (unclaim), so no next run's folder lands
+					// under it.
+					void hub.unclaim(paired.id, hold);
+					return read.ok ? fail("refused", (read.value as { other: string }).other) : read;
+				}
+				syncedHold = hold;
+				holdsBy.set(requestId, hold);
+				return ok({ ...holdRef(hold), notes: [ATTACHED_NOTE] });
+			})().finally(() => startingBy.delete(requestId));
+			startingBy.set(requestId, { hold, answer });
+			return answer;
 		},
-		async attach(asked) {
+		async attach(asked, context) {
 			if ("id" in asked) {
 				const which = named(asked);
 				if (which === undefined) return unknown(asked.id);
@@ -552,12 +778,17 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			} else if (!holds({ ...paired.labels, ...hub.claimed(paired.id) }, asked.labels)) return unknown(JSON.stringify(asked.labels));
 			const deadline = hub.deadline(paired.id);
 			const found = "id" in asked ? { id: asked.id, name: paired.name } : heldRef();
-			return ok({ ...found, spec: { image: "attached", user: "the person's own", network: { other: "the machine's own network" }, kind: paired.hello.kind, ...(deadline === undefined ? {} : { deadline }) } });
+			// A hold that took the run's folder reads it back from inside the box, as a hosted computer's is.
+			const mounted = syncedHold !== undefined && hub.hold(paired.id) === syncedHold ? await folder(context?.signal) : undefined;
+			if (mounted !== undefined && !mounted.ok) return mounted;
+			return ok({ ...found, spec: { image: "attached", user: "the person's own", network: { other: "the machine's own network" }, kind: paired.hello.kind, ...(deadline === undefined ? {} : { deadline }), ...(mounted === undefined ? {} : { mount: mounted.value }) } });
 		},
 		async list(labels) {
 			const have = { ...paired.labels, ...hub.claimed(paired.id) };
 			if (!holds(have, labels)) return ok([]);
-			return ok([{ ref: heldRef(), labels: have, deadline: hub.deadline(paired.id), state: hub.online(paired.id) ? ("running" as const) : ("stopped" as const), network: { other: "the machine's own network" } }]);
+			// list runs nothing on the box: a hold's synced folder is the one its labels record.
+			const mount = syncedHold !== undefined && hub.hold(paired.id) === syncedHold ? { mount: recorded() } : {};
+			return ok([{ ref: heldRef(), labels: have, deadline: hub.deadline(paired.id), state: hub.online(paired.id) ? ("running" as const) : ("stopped" as const), network: { other: "the machine's own network" }, ...mount }]);
 		},
 		async network(asked, policy) {
 			if (!mine(asked)) return unknown(asked.id);
@@ -576,8 +807,9 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			if (which === undefined) return unknown(asked.id);
 			if (how === "stop") return fail("unsupported", `${paired.name} is a person's own machine: a run releases its hold, and never stops it`);
 			if (which.hold === undefined) return fail("invalid", `release names the run's hold on ${paired.name}, the ref create gave (${paired.id}.<hold>), never the computer itself`);
-			// A hold already ended is released already: the hold on the computer now, if any, is another run's and stays.
-			hub.unclaim(paired.id, which.hold);
+			// A hold already ended is released already: the hold on the computer now, if any, is another run's and stays. A
+			// release while a create's remove or KILL still runs on the box answers once the hold has ended, after it.
+			await hub.unclaim(paired.id, which.hold);
 			return ok(undefined);
 		},
 	};

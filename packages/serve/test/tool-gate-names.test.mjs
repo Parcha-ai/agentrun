@@ -11,11 +11,11 @@ import { BACKGROUND_TOOLS } from "../dist/background.js";
 import { hostToolNames, isTableTool } from "../dist/tool-list.js";
 import * as gate from "../dist/tool-gate.js";
 import { permissionsOf, SERVE_OWN_TOOLS } from "../dist/tool-plane.js";
-import { runnerGate } from "./gate-support.mjs";
+import { builtinKeyOf, runnerGate } from "./gate-support.mjs";
 
 const { deniedText, noApproverText } = gate;
-/** The mapping, where the module has one; none (the red), every name maps to nothing. */
-const keyOf = (harness, name) => (typeof gate.settingsKeyOf === "function" ? gate.settingsKeyOf(harness, name) : undefined);
+/** The mapping on each built-in harness's facts. */
+const keyOf = builtinKeyOf;
 const isKey = (key) => typeof key === "string" && (isTableTool(key) || SERVE_OWN_TOOLS.includes(key) || /^monid:[a-z0-9][a-z0-9.-]*\/.+$/.test(key) || /^mcp:[a-z][a-z0-9-]*\/.+$/.test(key));
 /** A monid endpoint as the gate is asked about it: by its catalog name, on every harness. */
 const MONID = "monid:faux/person/enrich";

@@ -104,6 +104,43 @@ function cliOf(env, seen) {
   };
 }
 
+test("CLI capture API commands resolve their documented noun and verb through the public bin", async (t) => {
+  const { env } = scratch(t);
+  const server = await listener(t, () => [200, "application/json", '{"received":true}']);
+  const reference = readFileSync(new URL("../skills/agentrun-cli/references/commands.md", import.meta.url), "utf8");
+  const token = "capture-command-test-token";
+  const cases = [
+    { verb: "enroll", method: "POST", path: "/connections", body: { runtime: "codex", project: "/fixture/project" } },
+    { verb: "list", method: "GET", path: "/connections" },
+    { verb: "revoke", method: "DELETE", path: "/connections/connection-1", args: ["connection-1"] },
+    { verb: "start", method: "POST", path: "/connections/connection-1/runs", args: ["connection-1"],
+      body: { session_id: "session-1", turn_id: "turn-1", input: "Review the report.", instructions: "Keep it brief.", policy_complete: true },
+      flags: ["--idempotency-key", "source-turn-1"] },
+    { verb: "get", method: "GET", path: "/runs/run-1", args: ["run-1"] },
+    { verb: "events", method: "POST", path: "/runs/run-1/events", args: ["run-1"],
+      body: { sequence: 1, events: [{ type: "message", role: "user", text: "Review the report." }] } },
+    { verb: "complete", method: "POST", path: "/runs/run-1/complete", args: ["run-1"],
+      body: { status: "completed", answer: "Report ready.", evidence_complete: true } },
+  ];
+  for (const example of cases) await t.test(example.verb, async () => {
+    const args = ["cli-learning", example.verb, ...(example.args ?? []), ...(example.flags ?? []),
+      ...(example.body ? ["--body", JSON.stringify(example.body)] : []), "--base-url", server.base];
+    const before = server.requests.length;
+    const result = await run(env, args, { extra: { AGENTRUN_API_KEY: token }, timeout: 10_000 });
+    assert.equal(result.code, 0, result.err);
+    assert.deepEqual(JSON.parse(result.out), { received: true });
+    assert.equal(server.requests.length, before + 1, "one API request, with no local installer dispatch");
+    const request = server.requests.at(-1);
+    assert.equal(request.method, example.method);
+    assert.equal(request.url, `/v2/cli-learning${example.path}`);
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    assert.equal(request.headers["idempotency-key"], example.verb === "start" ? "source-turn-1" : undefined);
+    assert.deepEqual(request.body.length ? JSON.parse(request.body.toString()) : undefined, example.body);
+    assert.doesNotMatch(result.out + result.err, new RegExp(token));
+    assert.ok(reference.includes(`### \`agentrun cli-learning ${example.verb}${example.args ? " " : "`"}`), "the generated reference advertises the invocation tested");
+  });
+});
+
 test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs and sends it a message, the token never in its output", { timeout: 120_000 }, async (t) => {
   const { dir, env } = scratch(t);
   const server = await serve(t, dir, env);
@@ -356,7 +393,7 @@ test("header parameters are flags; a required one is checked; a raw body goes as
   const fired = await run(env, ["triggers", "fire", "trg_1", "--idempotency-key", "k-1", ...at], { extra });
   assert.equal(fired.code, 0, fired.err);
   assert.equal(server.requests.at(-1).headers["idempotency-key"], "k-1");
-  const retired = await run(env, ["learning", "retire", "a", "MEMORY.md", "--if-match", '"etag-1"', ...at], { extra });
+  const retired = await run(env, ["learning", "retire", "a", "workflows/find-policies/README.md", "--if-match", '"etag-1"', ...at], { extra });
   assert.equal(retired.code, 0, retired.err);
   assert.equal(server.requests.at(-1).headers["if-match"], '"etag-1"');
 
@@ -550,19 +587,18 @@ test("a learning file whose name holds a slash is one argument, and a home file 
   const data = ["--data", server.data];
   writeFileSync(join(dir, "agent.json"), JSON.stringify({ definition: { id: "demo", version: 1, name: "demo", instructions: "Answer.", skills: [], tools: [], learning: true } }));
   assert.equal(cli(["agents", "create", "--body", `@${join(dir, "agent.json")}`, ...data]).code, 0);
-  writeFileSync(join(dir, "SKILL.md"), "---\nname: find-policies\ndescription: Find the policies.\n---\nLook in policies/.\n");
-  // A person may not write a skill (a run's learning does), and this agent has none yet: both answers are the learning
-  // routes' own, past the route's match, where a name split on its slashes gets the server's "no route".
-  const wrote = cli(["learning", "write", "demo", "skills/find-policies/SKILL.md", "--if-none-match", "*", "--body-type", "text/markdown", "--body", `@${join(dir, "SKILL.md")}`, ...data]);
-  assert.equal(wrote.code, 1);
-  assert.match(JSON.parse(wrote.err).error.message, /a person edits and creates notes/);
-  const read = cli(["learning", "read", "demo", "skills/find-policies/SKILL.md", ...data]);
+  // This agent has no workflow yet: the answer is the learning route's own, past the route's match, where a name split
+  // on its slashes gets the server's "no route".
+  const read = cli(["learning", "read", "demo", "workflows/find-policies/README.md", ...data]);
   assert.equal(read.code, 1);
   assert.match(JSON.parse(read.err).error.message, /no such file on main/);
-  writeFileSync(join(dir, "note.md"), "---\nname: policies\ndescription: Where the policies are.\n---\nLook in policies/.\n");
-  const note = cli(["learning", "write", "demo", "policies.md", "--if-none-match", "*", "--body-type", "text/markdown", "--body", `@${join(dir, "note.md")}`, ...data]);
-  assert.equal(note.code, 0, note.err);
-  assert.match(cli(["learning", "read", "demo", "policies.md", ...data]).out, /Look in policies\//);
+  const current = cli(["learning", "corrections", "demo", ...data]);
+  assert.equal(current.code, 0, current.err);
+  writeFileSync(join(dir, "corrections.md"), "- Look in policies/.\n");
+  const wrote = cli(["learning", "write-corrections", "demo", "--if-match", JSON.parse(current.out).etag, "--body-type", "text/markdown", "--body", `@${join(dir, "corrections.md")}`, ...data]);
+  assert.equal(wrote.code, 0, wrote.err);
+  assert.equal(JSON.parse(cli(["learning", "corrections", "demo", ...data]).out).text, "- Look in policies/.\n");
+  assert.equal(cli(["learning", "read", "demo", "corrections.md", ...data]).code, 1, "corrections.md has its own route");
   writeFileSync(join(dir, "deep.txt"), "deep\n");
   assert.equal(cli(["home", "write", "demo", "a/b/deep.txt", "--body", `@${join(dir, "deep.txt")}`, ...data]).code, 0);
   assert.deepEqual([cli(["home", "read", "demo", "a/b/deep.txt", ...data]).out], ["deep\n"]);
@@ -584,10 +620,10 @@ test("a file path argument keeps its slashes and refuses a dot segment (plain or
     assert.equal((await run(env, ["runs", "get", value, ...at], { extra })).code, 2, value);
   }
   assert.equal(server.requests.length, 0, "nothing was sent");
-  assert.equal((await run(env, ["learning", "read", "a", "skills/find-policies/SKILL.md", ...at], { extra })).code, 0);
+  assert.equal((await run(env, ["learning", "read", "a", "workflows/find-policies/README.md", ...at], { extra })).code, 0);
   assert.equal((await run(env, ["home", "read", "a", "notes/a b.md", ...at], { extra })).code, 0);
   const homeFile = ["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"].join("/");
-  assert.deepEqual(server.requests.map((r) => r.url), ["/v2/agents/a/learning/files/skills%2Ffind-policies%2FSKILL.md", homeFile]);
+  assert.deepEqual(server.requests.map((r) => r.url), ["/v2/agents/a/learning/files/workflows%2Ffind-policies%2FREADME.md", homeFile]);
 });
 
 test("agents create --help and runs start --help end with the document's working body as a --body to paste, and pasted it works", { timeout: 120_000 }, async (t) => {

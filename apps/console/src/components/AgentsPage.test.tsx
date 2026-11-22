@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditPage, AgentsPage } from "./AgentsPage";
 import { AgentPage } from "./AgentPage";
 import { ClientError } from "@/lib/client";
-import type { Agent } from "@/lib/agentForm";
+import { type Agent, DECISION, WORKFLOW } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 
 /** A fake client with no computers list unless it brings its own: the Computer step then shows where runs go. */
 const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
@@ -14,7 +15,7 @@ const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const agentAt = (revision: string, instructions: string, archived = false): Agent => ({
-  agent_id: "calc", kind: "agentic", revision, revisions: revision === "r1" ? 1 : 2, archived_at: archived ? "2026-10-30T05:00:00Z" : null,
+  ...SERVED_AGENT, agent_id: "calc", kind: "agentic", revision, revisions: revision === "r1" ? 1 : 2, archived_at: archived ? "2026-10-30T05:00:00Z" : null,
   definition: { version: revision === "r1" ? 1 : 2, name: "Calc", instructions, harness: "pi", skills: [], tools: [] },
 });
 const caps = { harnesses: [{ id: "pi", available: true }], tools: [], thinking: ["low"] };
@@ -83,7 +84,7 @@ describe("AgentEditPage, a new agent from a starter", () => {
    *  provider is `provider`, or none: what was sent, where the page went, and the page and host to look at after. */
   async function createFrom(choice: string, provider?: string) {
     const { DECISION_STARTER } = await import("@/lib/decisionStarter");
-    const made: Agent = { agent_id: "gambling-check", kind: "workflow", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] } };
+    const made: Agent = { ...SERVED_AGENT, agent_id: "gambling-check", kind: "workflow", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] } };
     let sent: { definition: Record<string, unknown> } | undefined;
     let went: string | undefined;
     const v2 = {
@@ -112,7 +113,7 @@ describe("AgentEditPage, a new agent from a starter", () => {
     await settle();
     return { DECISION_STARTER, sent, went, host, v2, settle };
   }
-  const createDecision = (provider: string) => createFrom("decision", provider);
+  const createDecision = (provider: string) => createFrom(DECISION, provider);
 
   it("creates a workflow agent from the starter decision workflow, with no harness, and opens its page on the Workflow tab", async () => {
     const { DECISION_STARTER, sent, went, host, v2, settle } = await createDecision("jev");
@@ -131,7 +132,7 @@ describe("AgentEditPage, a new agent from a starter", () => {
 
   it("on a server with no decision provider, creates a workflow agent from the general starter and opens its Workflow tab", async () => {
     const { WORKFLOW_STARTER } = await import("@/lib/workflowStarter");
-    const { sent, went } = await createFrom("workflow");
+    const { sent, went } = await createFrom(WORKFLOW);
     expect(sent?.definition).toEqual({ version: 1, name: "Gambling check", workflow: WORKFLOW_STARTER, skills: [], tools: [] });
     expect(went).toBe("#/agents/gambling-check/workflow");
   });

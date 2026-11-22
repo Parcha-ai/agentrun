@@ -72,6 +72,11 @@ export type LiveViewHost = {
   known(tag: string): LiveView | null;
   /** True while a person is driving this session (viewer input within the gate's idle window). */
   driving(tag: string): boolean;
+  /** The host watches the session's screen with or without a viewer (serve's run video): one screencast per session, the
+   *  viewer's and the watchers' alike, never a second. Each frame reaches `watcher.frame` and is acked by the viewer's send,
+   *  or at once with none; `ended` once if the browser's socket ends unasked (a release ends the watch with no call). The
+   *  answer stops watching; null when the session has no view. */
+  watch(tag: string, watcher: Watcher): (() => void) | null;
   /** The token is dead, the viewer's socket closed, the stream and the gate ended. Idempotent. */
   release(tag: string): Promise<void>;
   /** What the host holds, for diagnostics and tests: the sessions with a viewer URL and the opens in flight. Neither grows with the sessions it once released. */
@@ -98,7 +103,13 @@ const BAD_WINDOW_MS = 10_000;
 /** `epoch`: the driving gate's when the message arrived; one delivered after the browser changed hands is dropped. */
 type Queued = { message: Exclude<ClientMessage, { type: "hello" | "take" | "give" }>; started: boolean; epoch: number };
 type Viewer = { conn: WsConn; stream: Stream; gate: DrivingGate; unsubscribe: () => void; chain: Promise<void>; bad: number[]; queued: number; tail: Queued | null };
-type Entry = { tag: string; id: string; token: string; cdpUrl: string; view: LiveView | null; released: boolean; viewer: Viewer | null; pending: Set<WsConn>; taking?: boolean };
+/** A host's watch of a session's frames (LiveViewHost.watch). */
+export type Watcher = { frame(jpeg: Buffer, page: { w: number; h: number }): void; ended(): void };
+/** What the session's stream last said, while it is open: a viewer that joins a stream already running (a watcher's) is
+ *  told it, since the browser sends a frame only when the page changes. */
+type Shown = { page?: ServerMessage; dialog?: ServerMessage; frame?: { jpeg: Buffer; page: { w: number; h: number } } };
+/** `stream`: the session's one screencast, open while a viewer or a watcher has it. */
+type Entry = { tag: string; id: string; token: string; cdpUrl: string; view: LiveView | null; released: boolean; viewer: Viewer | null; pending: Set<WsConn>; taking?: boolean; stream: Stream | null; watchers: Set<Watcher>; shown: Shown };
 
 export function createLiveView(options: LiveViewOptions): LiveViewHost {
   const takeOver = options.readOnly ? undefined : options.takeOver;
@@ -196,19 +207,10 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     // One authenticated viewer per session, told so, and the first is never replaced.
     if (entry.viewer) return refuse(conn, "viewer_in_use");
     let viewer: Viewer;
+    const running = entry.stream !== null;
     try {
       const gate = (options.gates ?? drivingGates)(entry.tag);
-      const stream = (options.stream ?? openStream)(entry.cdpUrl, {
-        frame(jpeg, page, ack) {
-          if (conn.closed || conn.buffered > SLOW_VIEWER_BYTES) { ack(); return; }
-          if (!conn.send(encodeFrame(jpeg, page.w, page.h), ack)) ack();
-        },
-        page: (page) => send(conn, { type: "page", url: page.url, title: page.title }),
-        noPage: () => send(conn, { type: "no_page" }),
-        dialog: (dialog) => send(conn, dialog ? { type: "dialog", ...dialog } : { type: "dialog_closed" }),
-        closed: () => { if (entry.viewer?.conn === conn) { send(conn, { type: "ended", reason: "browser_closed" }); conn.close(CLOSE_CODES.browser_closed, "browser_closed"); } },
-      });
-      viewer = { conn, stream, gate, unsubscribe: gate.onChange((drive) => send(conn, { type: "status", drive })), chain: Promise.resolve(), bad: [], queued: 0, tail: null };
+      viewer = { conn, stream: streamOf(entry), gate, unsubscribe: gate.onChange((drive) => send(conn, { type: "status", drive })), chain: Promise.resolve(), bad: [], queued: 0, tail: null };
     } catch { conn.close(1011, "unavailable"); return; }
     entry.viewer = viewer;
     // A person who sits still with the viewer open is still using the session: custody does not release it on its own while this is set. A read-only viewer
@@ -216,6 +218,52 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     if (takeOver) viewer.gate.setPresent?.(true);
     else if (!options.readOnly) viewer.gate.setViewing(true);
     send(conn, { type: "ready", drive: viewer.gate.state(), ...(options.readOnly ? { readOnly: true as const } : takeOver ? { takeOver: true as const, held: isHolding(viewer.gate) } : {}) });
+    // Joining a watcher's stream: what it last said, its newest frame too (already acked).
+    if (!running) return;
+    const { page, dialog, frame } = entry.shown;
+    for (const said of [page, dialog]) if (said) send(conn, said);
+    if (frame) conn.send(encodeFrame(frame.jpeg, frame.page.w, frame.page.h));
+  };
+
+  /** The session's one stream, opened at its first viewer or watcher: each frame to every watcher, then to the viewer,
+   *  whose send acks it (or at once, with no viewer or a slow one); the rest to the viewer alone. Kept in `shown` while it is
+   *  open, for a viewer that joins later. */
+  const streamOf = (entry: Entry): Stream => (entry.stream ??= (options.stream ?? openStream)(entry.cdpUrl, {
+    frame(jpeg, page, ack) {
+      for (const watcher of entry.watchers) try { watcher.frame(jpeg, page); } catch { /* a watcher's failure never holds the frame's ack */ }
+      entry.shown.frame = { jpeg, page };
+      const conn = entry.viewer?.conn;
+      if (!conn || conn.closed || conn.buffered > SLOW_VIEWER_BYTES) { ack(); return; }
+      if (!conn.send(encodeFrame(jpeg, page.w, page.h), ack)) ack();
+    },
+    page: (page) => tell(entry, "page", { type: "page", url: page.url, title: page.title }),
+    noPage: () => {
+      // The closed tab's picture goes with it: a viewer that joins now is told no page, and shown none.
+      delete entry.shown.frame;
+      tell(entry, "page", { type: "no_page" });
+    },
+    dialog: (dialog) => tell(entry, "dialog", dialog ? { type: "dialog", ...dialog } : { type: "dialog_closed" }),
+    closed: () => {
+      const conn = entry.viewer?.conn;
+      entry.stream = null;
+      entry.shown = {};
+      if (conn) { send(conn, { type: "ended", reason: "browser_closed" }); conn.close(CLOSE_CODES.browser_closed, "browser_closed"); }
+      const watchers = [...entry.watchers];
+      entry.watchers.clear();
+      for (const watcher of watchers) try { watcher.ended(); } catch { /* each watcher is told */ }
+    },
+  }));
+  const tell = (entry: Entry, key: "page" | "dialog", message: ServerMessage): void => {
+    entry.shown[key] = message;
+    if (entry.viewer) send(entry.viewer.conn, message);
+  };
+  /** The stream ends once neither a viewer nor a watcher has it. */
+  const unused = (entry: Entry): void => {
+    if (entry.viewer || entry.watchers.size > 0 || !entry.stream) return;
+    const stream = entry.stream;
+    entry.stream = null;
+    entry.shown = {};
+    try { stream.close(); } catch { /* the stream is gone either way */ }
   };
 
   const onViewerMessage = (entry: Entry, viewer: Viewer, data: string | Buffer, binary: boolean): void => {
@@ -336,7 +384,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     viewer.unsubscribe();
     if (takeOver) viewer.gate.setPresent?.(false);
     else if (!options.readOnly) viewer.gate.setViewing(false);
-    try { viewer.stream.close(); } catch { /* the stream is gone either way */ }
+    unused(entry);
   };
 
   const ensureServer = (): Promise<void> => {
@@ -364,6 +412,9 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     entry.pending.clear();
     const viewer = entry.viewer;
     endViewer(entry);
+    // Its watchers stop with no call: the host that released it ends what it watches for.
+    entry.watchers.clear();
+    unused(entry);
     // The gate is the session's, so it ends with it even when no viewer ever took it.
     (options.gates ?? drivingGates)(tag).end();
     void viewer;
@@ -390,7 +441,7 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
       }
       const raced = byTag.get(tag);
       if (raced?.view) return raced.view;
-      const entry: Entry = { tag, id: newViewerId(), token: newToken(), cdpUrl, view: null, released: false, viewer: null, pending: new Set() };
+      const entry: Entry = { tag, id: newViewerId(), token: newToken(), cdpUrl, view: null, released: false, viewer: null, pending: new Set(), stream: null, watchers: new Set(), shown: {} };
       const url = `${origin}${prefix}/v/${entry.id}#t=${entry.token}`;
       entry.view = { fullscreen: url, framed: url, pages: [] };
       byTag.set(tag, entry);
@@ -399,6 +450,13 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
     },
     known: (tag) => { const entry = byTag.get(tag); return entry && !entry.released ? entry.view : null; },
     driving: (tag) => { const entry = byTag.get(tag); if (!entry) return false; const gate = (options.gates ?? drivingGates)(tag); return isHeld(gate) || (!!entry.viewer && gate.state() === "person"); },
+    watch(tag, watcher) {
+      const entry = byTag.get(tag);
+      if (!entry || entry.released) return null;
+      entry.watchers.add(watcher);
+      try { streamOf(entry); } catch { entry.watchers.delete(watcher); return null; }
+      return () => { if (entry.watchers.delete(watcher)) unused(entry); };
+    },
     tracked: () => ({ sessions: byTag.size, opening: [...opening.values()].reduce((n, marks) => n + marks.size, 0) }),
     release,
     async close() {

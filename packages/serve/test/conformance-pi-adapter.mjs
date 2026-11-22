@@ -119,7 +119,8 @@ function tracked(adapter) {
 
 /** The adapter loop for the suite's setup: pi through the adapter, its model through the session proxy to the script. */
 export function piAdapterSpec(setup, options = {}) {
-  strictOptions("piAdapterSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
+  // `received` (a case's diagnostic) is taken and left unsaid: the scripted origin reports no priority.
+  strictOptions("piAdapterSpec's setup", setup, ["script", "tools", "hooks", "agentId", "received"]);
   // `native`: pi-native tools beside the session's (PiAdapterOptions.tools, as the subagent tool is).
   strictOptions("piAdapterSpec", options, ["fetch", "requests", "price", "system", "native"]);
   const { script, tools, hooks, agentId } = setup;

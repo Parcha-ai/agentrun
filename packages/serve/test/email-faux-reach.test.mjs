@@ -36,6 +36,10 @@ test("the account routes refuse the fake: no preset or field names it, and its s
   const tested = await api("POST", "/settings/email/test", byName);
   assert.equal(tested.status, 200, JSON.stringify(tested.body));
   assert.deepEqual([tested.body.ok, tested.body.imap.ok, tested.body.smtp.ok], [false, false, false], JSON.stringify(tested.body));
+  // A save signs in as the test does, so the fake by a name is not saved either.
+  const kept = await api("PUT", "/settings/email", byName);
+  assert.equal(kept.status, 424, JSON.stringify(kept.body));
+  assert.equal((await api("GET", "/settings/email")).body.configured, false);
 });
 
 /** The server's files, each with the files it imports (static or dynamic, by a relative name), comments left out. */

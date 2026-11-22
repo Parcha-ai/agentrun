@@ -67,6 +67,16 @@ describe("createClient", () => {
     expect(rotate.init?.credentials).toBe("same-origin");
   });
 
+  it("rotates the webhook's secret with no body at all: the route refuses any, `{}` too", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { configured: true, url: "https://hooks.example.test/…erun", signing: "sealed", secret: { name: "webhook:outbound", set: true, source: "console", changed_at: null }, disabled: null, updated_at: "2026-11-03T12:00:00.000Z", signing_secret: "whsec_fake" }));
+    const v2 = createClient({ fetch: fn });
+    await v2.rotateWebhookSecret();
+    const [rotate] = calls;
+    expect([rotate.init?.method, rotate.url]).toEqual(["POST", "/v2/settings/webhook/secret"]);
+    expect(rotate.init?.body).toBeUndefined();
+    expect(new Headers(rotate.init?.headers).get("content-type")).toBe("application/json");
+  });
+
   it("asks the timeline from its cursor and long-polls", async () => {
     const { fn, calls } = fakeFetch(() => json(200, running.body));
     const v2 = createClient({ fetch: fn });
@@ -150,35 +160,28 @@ describe("agents", () => {
     }
   });
 
-  it("retires a learned skill's SKILL.md and a draft's README.md through the note's retire route, slashes percent-encoded, under If-Match", async () => {
-    const { fn, calls } = fakeFetch(() => new Response("---\nname: find-policies\nstatus: retired\n---\n", { status: 200, headers: { "content-type": "text/markdown", etag: '"skill-v2"' } }));
+  it("retires a draft's README.md through its file's retire route, slashes percent-encoded, under If-Match", async () => {
+    const { fn, calls } = fakeFetch(() => new Response("---\nname: check-refunds\nstatus: retired\n---\n", { status: 200, headers: { "content-type": "text/markdown", etag: '"readme-v2"' } }));
     const v2 = createClient({ fetch: fn });
-    const done = await v2.retireNote("refunds", "skills/find-policies/SKILL.md", '"skill-v1"');
-    await v2.retireNote("refunds", "workflows/check-refunds/README.md", '"readme-v1"');
-    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual([
-      "POST /v2/agents/refunds/learning/files/skills%2Ffind-policies%2FSKILL.md/retire",
-      "POST /v2/agents/refunds/learning/files/workflows%2Fcheck-refunds%2FREADME.md/retire",
-    ]);
-    expect(new Headers(calls[0].init?.headers).get("if-match")).toBe('"skill-v1"');
-    expect(new Headers(calls[1].init?.headers).get("if-match")).toBe('"readme-v1"');
+    const done = await v2.retireWorkflow("refunds", "workflows/check-refunds/README.md", '"readme-v1"');
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual(["POST /v2/agents/refunds/learning/files/workflows%2Fcheck-refunds%2FREADME.md/retire"]);
+    expect(new Headers(calls[0].init?.headers).get("if-match")).toBe('"readme-v1"');
     expect(calls[0].init?.credentials).toBe("same-origin");
-    expect(done).toEqual({ note: "---\nname: find-policies\nstatus: retired\n---\n", etag: '"skill-v2"' });
+    expect(done).toEqual({ text: "---\nname: check-refunds\nstatus: retired\n---\n", etag: '"readme-v2"' });
   });
 
-  it("makes a learned workflow an agent through its promote route, the name percent-encoded, as same-origin JSON with an empty body under its Idempotency-Key; its warnings show on the new agent's next read", async () => {
-    const warnings = [{ code: "no_model_key", message: "No key for its model yet." }];
-    const made = { agent_id: "check-refunds", revision: "rv1", revisions: 1, kind: "workflow", archived_at: null, warnings, definition: { version: 1, name: "check-refunds", workflow: {} } };
-    const { fn, calls } = fakeFetch((c) => (c.init?.method === "POST" ? json(201, made) : new Response(JSON.stringify({ ...made, warnings: undefined }), { status: 200, headers: { "content-type": "application/json", etag: '"rv1"' } })));
+  it("reads corrections.md whole and writes it back whole as same-origin JSON under If-Match", async () => {
+    const file = { text: "# Learned\n- Keep it short.\n", etag: '"c1"', cap_bytes: 2048 };
+    const { fn, calls } = fakeFetch((c) => (c.init?.method === "PUT" ? json(200, { ...file, text: "# Learned\n- Keep it to three lines.\n", etag: '"c2"' }) : new Response(JSON.stringify(file), { status: 200, headers: { "content-type": "application/json", etag: '"c1"' } })));
     const v2 = createClient({ fetch: fn });
-    const answer = await v2.promoteWorkflow("refunds", "check refunds", "key-1");
-    expect(answer).toMatchObject({ agent_id: "check-refunds", kind: "workflow" });
-    expect(`${calls[0].init?.method} ${calls[0].url}`).toBe("POST /v2/agents/refunds/learning/workflows/check%20refunds/promote");
-    expect(new Headers(calls[0].init?.headers).get("content-type")).toBe("application/json");
-    expect(calls[0].init?.body).toBe("{}");
-    expect(new Headers(calls[0].init?.headers).get("idempotency-key")).toBe("key-1");
-    expect(calls[0].init?.credentials).toBe("same-origin");
-    const read = await v2.getAgent("check-refunds");
-    expect(read.agent.warnings).toEqual(warnings);
+    expect(await v2.corrections("my agent")).toEqual(file);
+    const saved = await v2.writeCorrections("my agent", "# Learned\n- Keep it to three lines.\n", '"c1"');
+    expect(saved).toMatchObject({ etag: '"c2"', cap_bytes: 2048 });
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual(["GET /v2/agents/my%20agent/learning/corrections", "PUT /v2/agents/my%20agent/learning/corrections"]);
+    expect(new Headers(calls[1].init?.headers).get("if-match")).toBe('"c1"');
+    expect(new Headers(calls[1].init?.headers).get("content-type")).toBe("application/json");
+    expect(JSON.parse(String(calls[1].init?.body))).toEqual({ text: "# Learned\n- Keep it to three lines.\n" });
+    expect(calls[1].init?.credentials).toBe("same-origin");
   });
 
   it("lists runs in one state, or the archived ones, with the server's list parameters", async () => {
@@ -319,6 +322,12 @@ describe("the owner's session", () => {
 });
 
 describe("setup's import status", () => {
+  it("sends the projects chosen at setup by id, and no import at all when none is", async () => {
+    const { fn, calls } = fakeFetch(() => json(201, { signed_in: true }));
+    const v2 = createClient({ fetch: fn });
+    await v2.setup("pw-1", undefined, ["imp-a", "imp-b"]); await v2.setup("pw-2", undefined, []);
+    expect(calls.map((c) => c.init?.body)).toEqual(['{"password":"pw-1","import":["imp-a","imp-b"]}', '{"password":"pw-2"}']);
+  });
   it("reads a 200 that says there is no offer as none, and a 404 (no such route without accounts, or to a caller not signed in) or a 403 too", async () => {
     const answers: [number, unknown][] = [
       [200, { offer: false }],

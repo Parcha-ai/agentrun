@@ -22,7 +22,7 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { STORE_FILE } from "../dist/store/sqlite/store.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, linkHarnesses, printed, responsesEndpoint, runDir, scratch } from "./support.mjs";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, LAUNCH_HOOK_URL, launchHookCanary, linkHarnesses, printed, responsesEndpoint, runDir, scratch } from "./support.mjs";
 import { client as pgClient, PG_URL, postgresOnly } from "./store-target.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
@@ -53,22 +53,25 @@ const DECISION_KEYS = ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"];
 const BROWSERBASE = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"];
 const BROWSER = [...BROWSERBASE, "KERNEL_API_KEY"];
 const TOOL_KEYS = ["MONID_API_KEY", ...BROWSER];
+/** A harness's own key (harness-table.ts ownKeys): handed to that harness's runs alone, never another's. */
+const OWN_KEYS = ["CURSOR_API_KEY"];
 /** The model keys: every key of pi-ai's providers and the gateway's. A run's process gets those its model needs and no
  *  other: a pi run its model's provider's (per tier), or the gateway's behind AGENT_MODEL_BASE_URL; codex OpenAI's, or
  *  the gateway's; claude-agent Anthropic's. TypeSafe's is a decision key, never on the pipe. */
 const MODEL_KEYS = [...new Set([...Object.values(PROVIDER_KEYS).flat(), "AGENT_MODEL_API_KEY"])].filter((name) => !DECISION_KEYS.includes(name));
 /** Amazon Bedrock's keys, which pi-ai's table of keys by provider leaves out as ambient: its request reads them itself. */
 const BEDROCK = ["AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"];
-/** The keys pi-ai reads for each of its built-in providers, by its own table (findEnvKeys, asked of an environment that
- *  sets every name), and the names each provider's auth asks its context for when none is set. */
+/** The keys the runtime catalog reads: pi-ai's built-ins and serve's local providers. Ask pi-ai's own table
+ *  (findEnvKeys, with every name set) and each provider's auth context with none set. */
 async function piAiKeys() {
   const { findEnvKeys } = await import("@earendil-works/pi-ai/compat");
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  const { withLocalModels } = await import("../dist/local-models.js");
   const every = new Proxy({}, { get: () => "set" });
   const out = {};
-  for (const { id } of builtinModels().getProviders()) {
+  for (const { id } of withLocalModels(builtinModels()).getProviders()) {
     const asked = new Set();
-    await builtinModels({ authContext: { env: async (name) => void asked.add(name), fileExists: async () => false } }).getAuth(id);
+    await withLocalModels(builtinModels({ authContext: { env: async (name) => void asked.add(name), fileExists: async () => false } })).getAuth(id);
     out[id] = { table: findEnvKeys(id, every) ?? [], asked: [...asked] };
   }
   return out;
@@ -97,7 +100,9 @@ function processes() {
   return out;
 }
 
-/** What each descriptor of `pid` points at, and what any pipe of it has unread (read without blocking). */
+/** What each descriptor of `pid` points at, and what any pipe of it has unread (read without blocking). A pipe whose two
+ *  ends `pid` holds both is its event loop's own (a wake-up, or libuv's signal lock once it has a child to reap): no other
+ *  process writes it, and a read takes the byte the loop waits on, which leaves the process blocked for good. */
 function descriptors(pid) {
   const out = [];
   let fds = [];
@@ -106,15 +111,20 @@ function descriptors(pid) {
   } catch {
     return out;
   }
+  const targets = new Map();
   for (const fd of fds) {
-    let target;
     try {
-      target = readlinkSync(`/proc/${pid}/fd/${fd}`);
-    } catch {
-      continue;
-    }
+      targets.set(fd, readlinkSync(`/proc/${pid}/fd/${fd}`));
+    } catch {}
+  }
+  // A descriptor's access mode is the low two bits of its octal flags: 0 read, 1 write.
+  const writes = (fd) => (Number.parseInt(/^flags:\s+([0-7]+)/m.exec(read(`/proc/${pid}/fdinfo/${fd}`)?.toString() ?? "")?.[1] ?? "0", 8) & 3) === 1;
+  const pipes = [...targets].filter(([, target]) => target.startsWith("pipe:"));
+  const written = new Set(pipes.filter(([fd]) => writes(fd)).map(([, target]) => target));
+  const own = new Set(pipes.filter(([fd, target]) => !writes(fd) && written.has(target)).map(([, target]) => target));
+  for (const [fd, target] of targets) {
     let unread = Buffer.alloc(0);
-    if (target.startsWith("pipe:") || target.endsWith(" (deleted)")) {
+    if ((target.startsWith("pipe:") && !own.has(target)) || target.endsWith(" (deleted)")) {
       try {
         const own = openSync(`/proc/${pid}/fd/${fd}`, constants.O_RDONLY | constants.O_NONBLOCK);
         const chunks = [];
@@ -143,9 +153,9 @@ function canaries() {
   // Each its own. The tokens' are the API's, 32 characters or more.
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
   // The seal key's must be a key the server takes (43 base64url characters: it never starts on a bad one), and is still a
-  // canary: the canary is base64url, padded to a key's length.
+  // canary: the canary is base64url, padded to a key's length. The launch hook's is a whsec_ one holding its canary.
   const sealKey = (value) => (assert.ok(value.length <= 43, value), value.padEnd(43, "k"));
-  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_TOKENS" ? `rotation:${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : `${canary}-${i}`])) };
+  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_TOKENS" ? `rotation:${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : name === "AGENTRUN_LAUNCH_HOOK_SECRET" ? launchHookCanary(`${canary}-${i}`) : `${canary}-${i}`])) };
 }
 
 /** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment.
@@ -160,8 +170,10 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
   // The launcher's own temporary directory, where its FIFO is made: the test's, so it can see that nothing is left.
   const tmp = join(dir, "tmp");
   mkdirSync(tmp);
-  // The seal key the launcher makes when none is given goes in the test's own config directory, never the user's.
-  const child = spawn(LAUNCHER, typeof args === "function" ? await args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), ...env, TMPDIR: tmp } });
+  // The seal key the launcher makes when none is given goes in the test's own config directory, never the user's. The
+  // launch hook's secret takes its URL beside it.
+  const hook = env.AGENTRUN_LAUNCH_HOOK_SECRET ? LAUNCH_HOOK_URL : {};
+  const child = spawn(LAUNCHER, typeof args === "function" ? await args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), ...hook, ...env, TMPDIR: tmp } });
   // Whether the launcher's pid is still its own: once it exits and Node reaps it, that number, and so its group's id, can
   // be given to another process (on this box the PIDs wrap in minutes under test load, so another lane's), and a kill of
   // it or of the group, or a walk from it, would reach that process. Each is done only while it is alive.
@@ -237,9 +249,9 @@ function noSecretAnywhere(root, ...canaries) {
 }
 
 // The launcher's custody: the secrets reach the server over a pipe, so none is in the environment or command line of any
-// process of the user, the launcher's pipe is closed, and no pipe holds one unread. The runner is beside the server, in the
-// same process (a run's own process is gone: custody of a run's keys is custody-runner-e2e.test.mjs), so a run going while the
-// processes are read is read too.
+// process of the user, the launcher's pipe is closed, and no pipe holds one unread. The runner is beside the server, and a run
+// going is a process of its own under it (its keys come over a descriptor, never its environment: run-custody.test.mjs), so
+// the run's process is read too while the processes are read.
 test("started by its launcher, no process of its user holds a secret in its environment, command line or a pipe, a run going included", { timeout: 120_000 }, async (t) => {
   const { canary, secrets } = canaries();
   // Without the store URL, which names a Postgres store (its own case, below).
@@ -383,7 +395,7 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-01T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
   const agentic = (tools) => revision("agentic", { instructions: "Answer.", tools });
   const workflow = (flow, tools = []) => revision("workflow", { workflow: flow, tools });
-  const without = (...names) => RUN_SECRETS.filter((name) => !names.includes(name) && !MODEL_KEYS.includes(name));
+  const without = (...names) => RUN_SECRETS.filter((name) => !names.includes(name) && !MODEL_KEYS.includes(name) && !OWN_KEYS.includes(name));
   for (const name of [...TOOL_KEYS, ...MODEL_KEYS]) assert.ok(RUN_SECRETS.includes(name), `${name} is among a run's secrets`);
 
   // A monid endpoint, or a provider's every endpoint, is unlocked by monid's key (its row's monid:*).
@@ -396,7 +408,7 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   // Only a `tool` row's fields are scoped by the tools: a row of another kind (a model's) leaves its field to the model,
   // so a run on OpenAI's model gets OpenAI's key, unless the same row is a tool key's that unlocks none of its tools.
   const { TOOL_KEYS: ROWS } = await import("../dist/tool-keys.js");
-  assert.deepEqual(ROWS.map((row) => [row.id, row.kind]), [["parallel", "tool"], ["monid", "tool"], ["browserbase", "tool"], ["kernel", "tool"], ["typesafe", "tool"], ["anthropic", "model"], ["openai", "model"], ["openrouter", "model"]]);
+  assert.deepEqual(ROWS.map((row) => [row.id, row.kind]), [["parallel", "tool"], ["monid", "tool"], ["browserbase", "tool"], ["kernel", "tool"], ["typesafe", "tool"], ["anthropic", "model"], ["openai", "model"], ["particle", "model"], ["openrouter", "model"]]);
   const onOpenai = revision("agentic", { instructions: "Answer.", tools: [], model: "openai/gpt-6.1-sol" });
   assert.deepEqual(await secretsOf(onOpenai, ROWS), [...without(...TOOL_KEYS), "OPENAI_API_KEY"].sort((a, b) => RUN_SECRETS.indexOf(a) - RUN_SECRETS.indexOf(b)), "OPENAI_API_KEY with them, the tool keys still not");
   assert.deepEqual(await secretsOf(onOpenai, ROWS.map((row) => (row.id === "openai" ? { ...row, kind: "tool" } : row))), without(...TOOL_KEYS), "the same row as a tool key is scoped");
@@ -418,7 +430,7 @@ test("secretsFor: a run is handed exactly the model keys its model needs: a pi r
   const { RUN_SECRETS, secretsFor } = await import("../dist/run-secrets.js");
   const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
   const agentic = (extra = {}) => revision("agentic", { instructions: "Answer.", ...extra });
-  const others = RUN_SECRETS.filter((name) => !MODEL_KEYS.includes(name) && !TOOL_KEYS.includes(name));
+  const others = RUN_SECRETS.filter((name) => !MODEL_KEYS.includes(name) && !TOOL_KEYS.includes(name) && !OWN_KEYS.includes(name));
   /** The model keys a run of `rev` is handed on a host of `env`, sorted; and the rest exactly what a run naming no
    *  model and no tool gets. */
   const held = async (rev, env) => {
@@ -457,6 +469,46 @@ test("secretsFor: a run is handed exactly the model keys its model needs: a pi r
   const drafting = revision("workflow", { workflow: flow });
   assert.deepEqual(await held(drafting, { AGENT_MODEL: "deepseek/deepseek-chat", AGENT_MODEL_FAST: "google/gemini-2.5-flash" }), ["DEEPSEEK_API_KEY", "GEMINI_API_KEY"], "and the default tier an llm call runs on");
   assert.deepEqual(await held(drafting, { ...GATEWAY, AGENT_MODEL: "m-1" }), ["AGENT_MODEL_API_KEY"], "a workflow behind a gateway: the gateway's");
+  // A harness's own key: Cursor's run is handed CURSOR_API_KEY and no model key; no other harness's run is (above).
+  const cursor = await secretsFor(agentic({ harness: "cursor", model: "cursor/gpt-5.4-nano" }), undefined, { OPENROUTER_API_KEY: "set" });
+  assert.ok(cursor.includes("CURSOR_API_KEY"), "Cursor's run takes its own key");
+  assert.deepEqual(cursor.filter((name) => MODEL_KEYS.includes(name)), [], "and no model key: its model is its own plan's");
+});
+
+test("secretsFor: only a built-in harness owns a key: a harness module's entry that claims one (ownKeys) moves no key from another harness's run", async (t) => {
+  const { secretsFor } = await import("../dist/run-secrets.js");
+  const dir = await scratch(t);
+  const module = join(dir, "key-claimer.cjs");
+  writeFileSync(module, `exports.entries = (builtins) => ({ "key-claimer": { ...builtins.pi, label: "Key claimer", ownKeys: ["OPENROUTER_API_KEY"], runner: { record: "loop", adapter: async () => { throw new Error("not run"); } } } });\n`);
+  const pi = { id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind: "agentic", body: { skills: {}, tools: [], instructions: "Answer." } };
+  const env = { OPENROUTER_API_KEY: "set" };
+  assert.ok((await secretsFor(pi, undefined, env)).includes("OPENROUTER_API_KEY"), "a pi run on OpenRouter's key is handed it");
+  assert.ok((await secretsFor(pi, undefined, { ...env, AGENTRUN_HARNESS_MODULES: JSON.stringify([module]) })).includes("OPENROUTER_API_KEY"), "and still is with a module that claims it");
+});
+
+test("secretsFor: a built-in harness's own key goes to that harness's runs alone: an entry of another id that names it in ownKeys is never handed it, and Cursor's run still is", async (t) => {
+  const { secretsFor } = await import("../dist/run-secrets.js");
+  const { BUILTIN_OWN_KEYS } = await import("../dist/harness-table.js");
+  const dir = await scratch(t);
+  // A test's table (AGENTRUN_HARNESS_TABLE) is the path a module's load rule doesn't stand in front of, so keysFor holds it.
+  const table = join(dir, "own-key-claimer.cjs");
+  writeFileSync(table, `exports.entries = (builtins) => ({ "own-key-claimer": { ...builtins.pi, label: "Own key claimer", ownKeys: ${JSON.stringify([...BUILTIN_OWN_KEYS])} } });\n`);
+  const revision = (body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind: "agentic", body: { skills: {}, tools: [], instructions: "Answer.", ...body } });
+  const env = { CURSOR_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "set", AGENTRUN_HARNESS_TABLE: table, NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1" };
+  const claimer = await secretsFor(revision({ harness: "own-key-claimer", model: "openrouter/anthropic/claude-sonnet-5.5" }), undefined, env);
+  assert.deepEqual(claimer.filter((name) => BUILTIN_OWN_KEYS.includes(name)), [], "the claimer's run is handed no key a built-in harness owns");
+  assert.ok(claimer.includes("OPENROUTER_API_KEY"), "and is handed its model's key, so the claim was read");
+  assert.ok((await secretsFor(revision({ harness: "cursor", model: "cursor/gpt-5.4-nano" }), undefined, env)).includes("CURSOR_API_KEY"), "Cursor's run still takes CURSOR_API_KEY");
+});
+
+test("harnessTable: a harness module's entry that names a key a built-in harness owns in ownKeys is refused at load (HARNESS_KEY_OWNED), by the module, the id and the key", async (t) => {
+  const { BUILTIN_OWN_KEYS, harnessTable } = await import("../dist/harness-table.js");
+  const dir = await scratch(t);
+  for (const key of BUILTIN_OWN_KEYS) {
+    const module = join(dir, `own-key-module-${key}.cjs`);
+    writeFileSync(module, `exports.entries = (builtins) => ({ "own-key-module": { ...builtins.pi, label: "Own key module", ownKeys: ["OPENROUTER_API_KEY", ${JSON.stringify(key)}], runner: { record: "loop", adapter: async () => { throw new Error("not run"); } } } });\n`);
+    assert.throws(() => harnessTable({ AGENTRUN_HARNESS_MODULES: JSON.stringify([module]) }), (error) => error.code === "HARNESS_KEY_OWNED" && error.message.includes(module) && error.message.includes("own-key-module") && error.message.includes(key), `a module claiming ${key} is refused by name`);
+  }
 });
 
 /** The names a provider's auth asks for that no run is handed, each with why. Every other name pi-ai reads for a provider
@@ -483,10 +535,10 @@ test("every name pi-ai's providers read is a held key handed by provider, or nam
   const unlisted = Object.entries(keys).flatMap(([id, read]) => reads(id, read).filter((name) => !SECRET_NAMES.includes(name)).map((name) => `${id} ${name}`));
   assert.deepEqual(unlisted, [], "each is held as OPENAI_API_KEY is, so no environment holds it: add it to the launcher's SECRETS, or to NOT_HANDED with its reason");
   // And each is handed to a run on its provider's model: model.ts' PROVIDER_KEYS names every one under its provider,
-  // and only providers pi-ai has, every name on the launcher's list.
+  // and only providers the runtime catalog has, every name on the launcher's list.
   const unhanded = Object.entries(keys).flatMap(([id, read]) => reads(id, read).filter((name) => !(PROVIDER_KEYS[id] ?? []).includes(name)).map((name) => `${id} ${name}`));
   assert.deepEqual(unhanded, [], "add it to model.ts' PROVIDER_KEYS under its provider");
-  assert.deepEqual(Object.keys(PROVIDER_KEYS).filter((id) => !(id in keys)), [], "a provider pi-ai does not have");
+  assert.deepEqual(Object.keys(PROVIDER_KEYS).filter((id) => !(id in keys)), [], "a provider the runtime catalog does not have");
   assert.deepEqual(Object.values(PROVIDER_KEYS).flat().filter((name) => !SECRET_NAMES.includes(name)), [], "a provider's key the launcher does not hold");
   // A name no run is handed and named like a key is cut from every run's environment; a setting passes.
   assert.deepEqual(Object.keys(NOT_HANDED).filter((name) => keyShaped(name)), ["AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "GOOGLE_APPLICATION_CREDENTIALS"]);

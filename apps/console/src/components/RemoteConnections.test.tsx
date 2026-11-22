@@ -12,7 +12,7 @@ const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 
 const connector: RemoteConnector = {
   connector_id: "source/one", label: "Development laptop", status: "online", last_seen_at: "2026-11-12T20:00:00Z", created_at: "2026-11-12T19:00:00Z",
   capabilities: { observe: true, native_execution: true },
-  targets: [{ target_id: "target-1", agent_id: "reviewer/one", name: "Review profile", runtime: "codex", machine_id: "source-machine", state: "ready", issues: [], capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native", usage: true } }],
+  targets: [{ target_id: "target-1", agent_id: "reviewer/one", name: "Review profile", runtime: "codex", machine_id: "source-machine", state: "ready", issues: [], capabilities: { launch: true, learning: true, workflows: false, approval: "native", usage: true } }],
 };
 const buttons = (text: string) => [...document.querySelectorAll("button")].filter((button) => button.textContent === text);
 
@@ -53,7 +53,7 @@ it("creates a one-use code only on request, keeps it out of handoffs/storage and
   await act(async () => root.render(createElement(RemoteConnections, { v2 })));
   expect(calls).toEqual([{ path: "/v2/connectors", method: "GET", body: null }]);
   await act(async () => buttons("Create connection code")[0]!.click());
-  expect(calls.at(-1)).toEqual({ path: "/v2/connectors/enrollment", method: "POST", body: { capabilities: { native_execution: true, history_import: false } } });
+  expect(calls.at(-1)).toEqual({ path: "/v2/connectors/enrollment", method: "POST", body: { capabilities: { native_execution: true, history_import: false, config_sync: true } } });
   expect(document.querySelector<HTMLInputElement>('input[readonly]')?.value).toBe(code);
   expect([...document.querySelectorAll("a")].some((link) => link.href.includes(code))).toBe(false);
   expect(Object.values(localStorage)).not.toContain(code);
@@ -83,7 +83,7 @@ it.each([
   await act(async () => option.click());
   expect(bodies).toHaveLength(0);
   await act(async () => buttons("Create connection code")[0]!.click());
-  expect(bodies).toEqual([{ capabilities }]);
+  expect(bodies).toEqual([{ capabilities: { ...capabilities, config_sync: true } }]);
 });
 
 it("shows history-only sources as imported history without asking for an execution worker", async () => {
@@ -127,4 +127,20 @@ it("keeps a failed list read visible and supports retry without losing the desti
   await act(async () => buttons("Try again")[0]!.click());
   expect(host.textContent).toContain("No remote machines connected");
   expect(host.textContent).not.toContain("Connection interrupted");
+});
+
+it("defaults setup sync on and lets the owner opt out before source enrollment", async () => {
+  const writes: unknown[] = [];
+  const v2 = createClient({ fetch: (async (_url, init) => {
+    if (init?.method === "POST") { writes.push(JSON.parse(String(init.body))); return json({ enrollment_token: "fixture-code", expires_at: new Date(Date.now() + 600_000).toISOString(), workspace_id: "local" }); }
+    return json({ connectors: [] });
+  }) as typeof fetch });
+  const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+  await act(async () => root.render(createElement(RemoteConnections, { v2 })));
+  const sync = host.querySelector<HTMLButtonElement>('[role="switch"][aria-labelledby="new-connector-sync"]')!;
+  expect(sync.getAttribute("aria-checked")).toBe("true");
+  expect(host.textContent).toContain("approved project");
+  await act(async () => sync.click());
+  await act(async () => buttons("Create connection code")[0]!.click());
+  expect(writes).toEqual([{ capabilities: { native_execution: true, history_import: false, config_sync: false } }]);
 });

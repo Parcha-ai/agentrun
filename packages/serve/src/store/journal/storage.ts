@@ -72,7 +72,8 @@ function readsOf(db: JournalConnection): Pick<SqliteExecutor, "get" | "all"> {
 }
 
 /** A run's first id to mint: pi's root conversation is 1. */
-const FIRST_ID = 2;
+export const JOURNAL_FIRST_ID = 2;
+const FIRST_ID = JOURNAL_FIRST_ID;
 
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 
@@ -382,6 +383,9 @@ export class RunStorage implements Journal {
           `INSERT INTO ${T.metadata} (run_id, next_id, next_seq) VALUES (?, ?, ?) ON CONFLICT (run_id) DO UPDATE SET next_id = excluded.next_id, next_seq = excluded.next_seq`,
           this.#runId, String(Math.max(Number(metadata.next_id), candidateNextId)), next,
         );
+        // What the run's list shows may have moved with what this commit stored (a turn, an ask, a request's cost): its
+        // listing is behind from this commit on (store/schema.ts RUN_LISTING_COLUMNS), in this commit's transaction.
+        await tx.run("UPDATE runs SET list_mark = list_mark + 1 WHERE id = ?", this.#runId);
         // The run patch's fenced UPDATE (0 rows: Fenced), then its rows (store/sqlite/run-patch.ts, as runs.update writes
         // them), then the takes.
         const now = this.#now();
@@ -395,7 +399,7 @@ export class RunStorage implements Journal {
         }
         // A run patch that made the run final: its other untaken rows are refused in this commit, after its own takes.
         // A person's message that came while it was ending opens a completed run again instead (refuseLeftovers).
-        if (patching) await refuseLeftovers(tx, this.#runId, staged?.run?.state, now, this.#dialect);
+        if (patching) await refuseLeftovers(tx, this.#runId, staged?.run?.state, now, this.#dialect, staged?.run?.keepsEnd === true);
       }
     });
     this.#nextId = Math.max(this.#nextId, candidateNextId);

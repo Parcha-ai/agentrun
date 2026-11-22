@@ -218,7 +218,8 @@ function fakeDaemon(hello, computer) {
  *   lifetime past maxLifetimeMs. `hello` is merged over the hello the daemon gives.
  * - `mount`: the mount kinds capabilities() declares (absent: none); check() refuses any other kind. A computer made with
  *   a mount reaches the run's folder at /workspace: a bind's path, or an Archil mount's folder under `disks[disk]`, a
- *   folder on this machine standing for the disk. attach() and list() read the mount back, without the token.
+ *   folder on this machine standing for the disk. attach() and list() read the mount back, without the token. A synced
+ *   folder reads back under the computer's epoch and reaches no folder of this machine.
  * - `brokenMount`: "unbound" (the mount is read back, but nothing is bound at /workspace), "no-read-back" (attach and
  *   list report no mount), "token-in-read-back" (attach reports the token), "token-in-label" (the computer carries the
  *   token as a label), "check-ignores" (check() takes any mount kind, declared or not), "host-refuses" (check()
@@ -311,13 +312,15 @@ export function fakeComputers({
 		if (asked === undefined || brokenMount === "no-read-back") return {};
 		if (asked.kind === "bind") return { mount: { kind: "bind", path: asked.path } };
 		const epoch = epochOf(labels);
+		if (asked.kind === "sync") return { mount: epoch.ok ? { kind: "sync", epoch: epoch.value } : { other: `a synced folder: ${epoch.error.message}` } };
 		if (!epoch.ok) return { mount: { other: `an Archil mount of ${asked.disk}:/${asked.folder}: ${epoch.error.message}` } };
 		const region = brokenMount === "no-region" ? {} : { region: asked.region };
 		const token = brokenMount === "token-in-read-back" ? { token: asked.token } : {};
 		return { mount: { kind: "archil", disk: asked.disk, ...region, folder: asked.folder, exclusive: true, epoch: epoch.value, ...token } };
 	};
 	const folderOf = (asked) => {
-		if (asked === undefined || brokenMount === "unbound") return undefined;
+		// A synced folder is no folder of this machine: the computer's own /workspace, which the runner syncs.
+		if (asked === undefined || brokenMount === "unbound" || asked.kind === "sync") return undefined;
 		return asked.kind === "bind" ? asked.path : join(disks[asked.disk], asked.folder);
 	};
 	const computers = new Map();

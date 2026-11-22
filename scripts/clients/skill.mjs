@@ -164,9 +164,9 @@ export function skillText(commands) {
     '',
     'On the machine with the existing Claude Code or Codex setup, use `npx @parcha/agentrun native discover --project /absolute/project` to inspect supported project defaults, named Claude agents and Codex profiles without a model call. Then run `npx @parcha/agentrun native connect --project /absolute/project --runtime claude-code` (or `codex`), adding `--agent NAME` or `--profile NAME` for a discovered selector. The local server uses `--data DIR`; `--url http://127.0.0.1:PORT` selects its loopback address. For another machine, use the existing Python connector\'s `remote` command from the same reviewed build, with the matching `agentrun-serve remote-bridge` runtime. The released observation-only connector is not a remote execution worker. Pair using the console\'s one-use code entered into the secure CLI prompt; never send a broad server token or put the code in a command argument. Source configuration and sign-in stay on that machine. For completed project history, preview with the matching Python connector’s `remote history-preview --project /absolute/project --runtime claude-code` (or `codex`). Select History only or Both when creating the owner’s code; the source must also explicitly pass `--history-only` or `--history` to `remote connect`. History-only starts no worker or learning and needs no native sign-in. History flags reject named-agent/profile selectors because native logs cannot attribute sessions to them reliably. Re-import the approved target with `remote import-history --state-dir /private/connector`; duplicates are skipped. Historical records never become live jobs or automatic learning. Local-store imports still use the separate maintenance-window flow in the server skill.',
     '',
-    'For an authorized live connection, open the connected agent, verify its native sign-in, and turn Self-improving On only when requested to use the existing checked/graded learning pipeline. Native projects keep their original instructions, tools, hooks, permissions and login. AgentRun adds notes and skills without rewriting those files. Native dollar caps, interactive approvals, learned workflows and attachment to an already-running desktop conversation are unavailable; never bypass native permissions to make a run work. Off supplies and creates no AgentRun learning on subsequent runs. Reflection and grading make additional model calls using native sign-in unless the server has an explicit grading model route.',
+    'For an authorized live connection, open the connected agent, verify its native sign-in, and turn Self-improving On only when requested to use the existing checked learning pipeline. Native projects keep their original instructions, tools, hooks, permissions and login. AgentRun adds the owner\'s corrections (corrections.md) to the run\'s context without rewriting those files. Native dollar caps, interactive approvals, learned workflows and attachment to an already-running desktop conversation are unavailable; never bypass native permissions to make a run work. Off supplies and creates no AgentRun learning on subsequent runs. The end-of-run step makes additional model calls using native sign-in.',
     '',
-    'For the remote development build, install the Python connector from `./connector` in the same reviewed checkout after building its Node runtime (Python 3.12+ and Node 24.22.3+). A checkout build does not put `agentrun-serve` on PATH: pass `--bridge /absolute/path/to/checkout/packages/serve/dist/native/remote-worker-bridge.js` to discovery and connection. The Python connector and Node management CLI share the name `agentrun`; verify the executable, or use `python -m agentrun_cli` inside the installed connector environment. Keep its source worker online for live jobs. Inspect accepted notes and skills in Learning Dojo, then verify a fresh run uses them; imported history never supplies that learning automatically.',
+    'For the remote development build, install the Python connector from `./connector` in the same reviewed checkout after building its Node runtime (Python 3.12+ and Node 24.22.3+). A checkout build does not put `agentrun-serve` on PATH: pass `--bridge /absolute/path/to/checkout/packages/serve/dist/native/remote-worker-bridge.js` to discovery and connection. The Python connector and Node management CLI share the name `agentrun`; verify the executable, or use `python -m agentrun_cli` inside the installed connector environment. Keep its source worker online for live jobs. Inspect the corrections in Learning Dojo, then verify a fresh run uses them; imported history never supplies that learning automatically.',
     '',
     ...RECIPES(commands),
     '',
@@ -186,15 +186,19 @@ export function skillText(commands) {
     '',
     '## Commands',
     '',
-    ...[...groups].map(([noun, entries]) => entries.length === 1 && entries[0].command.length === 1
-      ? `- \`${usage(entries[0])}\`: ${entries[0].summary}`
-      : `- \`agentrun ${noun}\`: ${entries.map((entry) => entry.command[1]).join(', ')}`),
+    // A command of one word is its usage and summary, even with verbs of its own (deploy: its summary names them).
+    ...[...groups].map(([noun, entries]) => {
+      const own = entries.find((entry) => entry.command.length === 1);
+      return own ? `- \`${usage(own)}\`: ${own.summary}` : `- \`agentrun ${noun}\`: ${entries.map((entry) => entry.command[1]).join(', ')}`;
+    }),
     '- `agentrun api METHOD PATH [--body JSON|@FILE|-]`: any route, PATH under the base URL',
     '',
   ].join('\n');
 }
 
 const cell = (text) => (text ?? '').replace(/\s+/g, ' ').trim();
+// The wildcard media type `*/*` in code: bare, its asterisks are Markdown emphasis and vanish.
+const wildcard = (text) => text.replace(/(^|[\s,(])\*\/\*(?=$|[\s,;)])/g, '$1`*/*`');
 
 /** references/commands.md: one entry per command, its usage, summary, flags and route. */
 export function referenceText(commands) {
@@ -211,7 +215,7 @@ export function referenceText(commands) {
     lines.push('', `### \`${usage(entry)}\``, '', `${cell(entry.summary)}.`.replace(/\.\.$/, '.'), '', `Route: ${entry.route ? `\`${entry.route}\`` : 'none, it runs on this machine'}.${entry.raw ? ' It prints the answer\'s bytes as they are.' : ''}${entry.multiSegment?.length ? ` ${entry.multiSegment.map((name) => name.toUpperCase()).join(', ')} keeps its slashes.` : ''}`);
     if (entry.flags.length) {
       lines.push('');
-      for (const f of entry.flags) lines.push(`- \`${f.name}${f.value ? ` ${f.value}` : ''}\` (${f.type}${f.required ? ', required' : ''}${f.own ? ', this CLI\'s own' : ''})${cell(f.description) ? `: ${cell(f.description)}` : ''}`);
+      for (const f of entry.flags) lines.push(`- \`${f.name}${f.value ? ` ${f.value}` : ''}\` (${wildcard(f.type)}${f.required ? ', required' : ''}${f.own ? ', this CLI\'s own' : ''})${cell(f.description) ? `: ${wildcard(cell(f.description))}` : ''}`);
     }
     if (entry.bodyFill) lines.push('', `Built from flags alone, the body also has: ${Object.entries(entry.bodyFill).map(([name, value]) => `\`${name}\` \`${JSON.stringify(value)}\``).join(', ')}.`);
   }

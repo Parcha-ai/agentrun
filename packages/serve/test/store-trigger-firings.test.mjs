@@ -24,7 +24,7 @@ test("a trigger made, read, changed and removed: its fields as the API keeps the
   const { store, trigger } = await withTrigger(t, { maxActiveRuns: 2 });
   assert.deepEqual(
     { ...trigger },
-    { id: "trg-1", agentId: "agent-1", name: "nightly", enabled: true, source: { kind: "schedule" }, target, nextAt: T0 + 60_000, lastRunId: null, catchupWindowS: 3600, failuresInARow: 0, disabled: null, maxActiveRuns: 2, createdAt: T0, updatedAt: T0 },
+    { id: "trg-1", agentId: "agent-1", name: "nightly", enabled: true, source: { kind: "schedule" }, target, nextAt: T0 + 60_000, lastRunId: null, catchupWindowS: 3600, failuresInARow: 0, disabled: null, maxActiveRuns: 2, createdAt: T0, updatedAt: T0, templateId: null },
   );
   const changed = await store.triggers.update("trg-1", { name: "daily", enabled: false, nextAt: null, disabled: { at: "x", reason: "auto_paused" } });
   assert.deepEqual([changed.name, changed.enabled, changed.nextAt, changed.disabled], ["daily", false, null, { at: "x", reason: "auto_paused" }]);
@@ -118,12 +118,42 @@ test("prune: the history kept to its size, a sender's keys kept for their day, n
   await store.triggers.record("trg-1", [{ key: "fir-manual", by: "manual", nominalAt: T0, status: "skipped" }, { key: "fir-clock", by: "schedule", nominalAt: T0, status: "skipped" }]);
   clock.now += 1;
   await store.triggers.record("trg-1", [{ key: "fir-new", by: "schedule", nominalAt: T0, status: "skipped" }]);
-  await store.triggers.prune("trg-1", { history: 1, dayMs: DAY, keepByKey });
+  await store.triggers.prune("trg-1", { history: 1, dayMs: DAY, keepByKey, now: clock.now });
   const shown = (await store.triggers.firings("trg-1")).map((f) => f.key).sort();
   assert.deepEqual(shown, ["fir-act", "fir-due", "fir-new", "fir-untold"], "past the history: only what must stay");
   assert.equal((await store.triggers.firing("trg-1", "fir-manual")).shown, false, "a run now's key kept for its day");
   assert.equal(await store.triggers.firing("trg-1", "fir-clock"), undefined, "a clock's firing past the history is gone");
   clock.now += DAY + 1;
-  await store.triggers.prune("trg-1", { history: 1, dayMs: DAY, keepByKey });
+  await store.triggers.prune("trg-1", { history: 1, dayMs: DAY, keepByKey, now: clock.now });
   assert.equal(await store.triggers.firing("trg-1", "fir-manual"), undefined, "gone past its day");
+});
+
+test("a firing its launch hook's host took with no run keeps its start_by (never a retry), is never pending, and stays in the history, attrs and all, until its start_by has passed", async (t) => {
+  const { store, clock } = await withTrigger(t);
+  const keepByKey = (by) => by === "manual" || by === "webhook";
+  const startBy = T0 + 600_000;
+  await store.triggers.record("trg-1", [due("fir-pushed", "webhook", { attrs: { event: "push" } }), due("fir-clock")]);
+  for (const key of ["fir-pushed", "fir-clock"]) {
+    const sent = await store.triggers.settle("trg-1", key, { status: "sent", reason: "handed", keepAttrs: true, startBy }, { reset: true });
+    // Its reason and its attrs both kept in one write: on Postgres, an update that names a column twice is refused.
+    assert.deepEqual([sent.firing.status, sent.firing.reason, sent.firing.startBy, sent.firing.retryAt, sent.firing.attempts], ["sent", "handed", startBy, null, 0], `${key}: its reason and start_by kept, never read as a retry`);
+  }
+  assert.deepEqual((await store.triggers.pending()).map((f) => f.key), [], "neither is pending: never driven, never handed again");
+  assert.equal(await store.triggers.soonest(), T0 + 60_000, "the soonest time is the trigger's next one, never a start_by");
+  clock.now += 1;
+  await store.triggers.record("trg-1", [{ key: "fir-new", by: "schedule", nominalAt: T0, status: "skipped" }]);
+
+  await store.triggers.prune("trg-1", { history: 1, dayMs: DAY, keepByKey, now: startBy });
+  assert.deepEqual((await store.triggers.firings("trg-1")).map((f) => f.key).sort(), ["fir-clock", "fir-new", "fir-pushed"], "past the history, within their start_by: both stay");
+  assert.deepEqual((await store.triggers.firing("trg-1", "fir-pushed")).attrs, { event: "push" }, "its attrs kept for the run its host starts late");
+
+  await store.triggers.prune("trg-1", { history: 1, dayMs: DAY, keepByKey, now: startBy + 1 });
+  const pushed = await store.triggers.firing("trg-1", "fir-pushed");
+  assert.deepEqual([pushed.shown, pushed.attrs], [false, null], "past its start_by, a pushed one's key is kept for its day as any");
+  assert.equal(await store.triggers.firing("trg-1", "fir-clock"), undefined, "and a clock's goes");
+
+  // A start_by is the hook's alone: no other settle out of due keeps a time.
+  await store.triggers.record("trg-1", [due("fir-skip")]);
+  const skipped = await store.triggers.settle("trg-1", "fir-skip", { status: "skipped", reason: "x", startBy });
+  assert.deepEqual([skipped.firing.startBy, skipped.firing.retryAt], [null, null]);
 });

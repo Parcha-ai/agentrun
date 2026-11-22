@@ -12,6 +12,7 @@ import { boxImageRef } from "../box-image.js";
 import { create, type FlyProvider } from "../fly.js";
 import type { MachineHost } from "../host.js";
 import type { ProviderNote } from "../mount-archil.js";
+import { kindFrom } from "./kind.js";
 import type { DialKit } from "./types.js";
 
 /** The environment this module reads, by name, each for the option its comment names. */
@@ -20,6 +21,8 @@ export const FLY_ENV = {
 	token: "COMPUTER_FLY_API_TOKEN",
 	/** app, required: the Fly app the run's machines live in. */
 	app: "COMPUTER_FLY_APP",
+	/** kind: linux (default) or desktop, which needs the public server's process (dialKit). */
+	kind: "COMPUTER_FLY_KIND",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
@@ -53,6 +56,7 @@ export interface FlyModuleOptions {
 export function createProvider({ env = process.env, dial, daemonPath, fetch, onNote }: FlyModuleOptions = {}): FlyProvider {
 	return create({
 		...settingsFromEnv(env),
+		...kindFrom(env, FLY_ENV.kind),
 		...(dial ? { dial } : {}),
 		...(daemonPath === undefined ? {} : { daemonPath }),
 		...(fetch ? { fetch } : {}),

@@ -34,6 +34,12 @@ type Opened = { paste: string } | { remove: string };
 /** A provider's last Test connection here: the server's passed (with its detail) or failed (with its why), and when. */
 type Tested = { ok: boolean; words: string; at: string };
 
+/** Whether Test connection has something to test: a provider's account, read with its saved keys. A provider with no
+ *  key (this machine's Docker) says whether it answers in its Ready or Not ready; one with a required key missing could
+ *  only fail, saying the key its Not ready already names. */
+export const testable = (p: ComputerProvider): boolean =>
+  p.secrets.some((secret) => secret.set) && p.required.every((name) => p.secrets.some((secret) => secret.name === name && secret.set));
+
 /** How often the page reads the computers again while a pairing code is up, so the computer that uses it shows. */
 export const PAIRING_POLL_MS = 2_000;
 
@@ -45,7 +51,7 @@ export const PAIRING_POLL_MS = 2_000;
  *  server doesn't offer says the server's why. Each provider shows under every kind it serves, with its secrets as
  *  SecretRows (the KEY, Set or Missing, Optional unless required, where from and when, never a value), whether a run
  *  could have it now (and the server's why not), Paste or Replace of one key (PUT …/keys with that KEY), a removal
- *  (null), and Test connection (POST …/test). A key the provider lists as picked (Orgo's workspace) is never pasted: once
+ *  (null), and Test connection (POST …/test) once its keys are saved (testable). A key the provider lists as picked (Orgo's workspace) is never pasted: once
  *  its required keys are saved, it is picked by name from the vendor's own list (KeyChoices). A save or removal reads the whole page again: a key can make a provider
  *  ready, and a kind offered, under every kind at once. Keys change only on a writable session. A metered provider of a kind
  *  that bills by the minute says so, and that those minutes are outside a run's spending cap. */
@@ -64,6 +70,9 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
   const [tested, setTested] = useState<Record<string, Tested>>({});
   const [testing, setTesting] = useState<ReadonlySet<string>>(new Set());
   const reads = useRef(0);
+  // Each provider's key changes so far: a test answers for the keys it started with, so one that started before a save
+  // is dropped when it lands after it.
+  const keyChanges = useRef<Record<string, number>>({});
 
   const load = useCallback(() => {
     const n = ++reads.current;
@@ -89,10 +98,14 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
       return null;
     }
     setOpen(null);
+    // A key that changed makes the provider's last test stale: it said what the keys before it answered.
+    keyChanges.current[provider.id] = (keyChanges.current[provider.id] ?? 0) + 1;
+    setTested((t) => { const rest = { ...t }; delete rest[provider.id]; return rest; });
     load();
     return null;
   };
   const test = async (provider: ComputerProvider) => {
+    const keys = keyChanges.current[provider.id] ?? 0;
     setTesting((s) => new Set(s).add(provider.id));
     let next: Tested;
     try {
@@ -101,7 +114,7 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
     } catch (e) {
       next = { ok: false, words: problemOf(e), at: new Date().toISOString() };
     }
-    setTested((t) => ({ ...t, [provider.id]: next }));
+    if ((keyChanges.current[provider.id] ?? 0) === keys) setTested((t) => ({ ...t, [provider.id]: next }));
     setTesting((s) => { const left = new Set(s); left.delete(provider.id); return left; });
   };
 
@@ -223,6 +236,7 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
             {live
               ? <p className="text-body">Type both into the driver on the computer. The code pairs one computer, once, in the next <span data-countdown className="font-mono">{countdown}</span>.</p>
               : <p role="status" className="text-body text-muted-foreground">This code has expired. Make a new one.</p>}
+            {pairing.code.runs_refused && <p data-runs-refused role="status" className="text-small text-warning-text">{pairing.code.runs_refused}</p>}
             <div className="flex gap-2">
               <Button size="sm" onClick={() => void make()} disabled={making}>{making ? "Making…" : "New code"}</Button>
               <Button size="sm" variant="ghost" onClick={() => setPairing(null)}>Done</Button>
@@ -241,8 +255,10 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
                       {computer.online ? <Chip tone="success">Online</Chip> : <Chip tone="muted">Offline</Chip>}
                       {computer.held_by_run && <Chip tone="active">In use by run {runLabel(computer.held_by_run)}</Chip>}
                       {computer.unserved && <Chip tone="warning">No agent can use it</Chip>}
+                      {computer.runs_refused && <Chip tone="warning">No run here can use it</Chip>}
                     </p>
                     {computer.unserved && <p data-unserved role="status" className="mt-1.5 text-small text-warning-text">{computer.unserved}</p>}
+                    {computer.runs_refused && <p data-runs-refused role="status" className="mt-1.5 text-small text-warning-text">{computer.runs_refused}</p>}
                     {computer.held_by_run && computer.held_until && <p data-held-until className="mt-1.5 text-small text-muted-foreground">The run's hold ends by {when(computer.held_until)}, released or not.</p>}
                     {!computer.online && <p className="mt-1.5 font-mono text-small text-muted-foreground">Open its driver on that computer: it dials this server.</p>}
                     <p data-machine className="mt-2 text-small text-muted-foreground">{machineOf(computer)}</p>
@@ -306,6 +322,7 @@ function ProviderRow({ v2, kind, provider: p, writable, serves, tested, testing,
   const row = useRef<HTMLLIElement>(null);
   const pasting = open && "paste" in open ? open.paste : null;
   const removing = open && "remove" in open ? open.remove : null;
+  const canTest = testable(p);
   return (
     <li ref={row} className="border-b p-4 last:border-b-0">
       <div className="flex flex-wrap items-start gap-3">
@@ -314,9 +331,12 @@ function ProviderRow({ v2, kind, provider: p, writable, serves, tested, testing,
           <p className="flex flex-wrap items-center gap-2">
             <span data-provider className="font-mono text-prose font-semibold">{p.name}</span>
             {p.ready ? <Chip tone="success">Ready</Chip> : <Chip>Not ready</Chip>}
+            {p.runs_refused && <Chip tone="warning">No run here can use it</Chip>}
             {p.metered && <span data-metered className="text-small text-muted-foreground">Metered</span>}
           </p>
           {!p.ready && p.why && <p className="mt-1.5 font-mono text-small text-muted-foreground">{p.why}</p>}
+          {/* A server whose runner runs apart: the server's words, with the fix (a dial provider's machines). */}
+          {p.runs_refused && <p data-runs-refused role="status" className="mt-1.5 text-small text-warning-text">{p.runs_refused}</p>}
           {p.metered && BY_THE_MINUTE.has(kind) && <p className="mt-1.5 text-small text-muted-foreground">{METERED}</p>}
           {p.secrets.length > 0 && (
             <ul className="mt-3 space-y-1.5">
@@ -326,7 +346,7 @@ function ProviderRow({ v2, kind, provider: p, writable, serves, tested, testing,
                 const key = keyOf(secret.name);
                 // A picked key is chosen from the vendor's list below (KeyChoices), never pasted.
                 const picked = p.picked?.includes(secret.name) ?? false;
-                return <SecretRow key={secret.name} field={secret} required={p.required.includes(secret.name)} writable={writable && !open}
+                return <SecretRow key={secret.name} field={secret} required={p.required.includes(secret.name)} writable={writable && !open} actionsInline
                   onPaste={picked ? undefined : () => void pasteFromClipboard(() => onOpen({ paste: key }), () => row.current?.querySelector("form")?.elements.namedItem(key) as HTMLInputElement | null)} onRemove={() => onOpen({ remove: key })} />;
               })}
             </ul>
@@ -334,13 +354,14 @@ function ProviderRow({ v2, kind, provider: p, writable, serves, tested, testing,
           {p.picked && p.picked.length > 0 && p.required.every((name) => p.secrets.some((secret) => secret.name === name && secret.set)) && (
             <KeyChoices v2={v2} provider={p} writable={writable && !open} onSave={onSave} />
           )}
-          {tested && (
-            <p data-test className={`mt-2 text-small ${tested.ok ? "text-success-text" : "text-destructive-text"}`}>{`${tested.ok ? "Passed" : "Failed"} · ${clock(tested.at)} · ${tested.words}`}</p>
+          {/* After the keys it reads with: the step that follows saving them. */}
+          {canTest && (
+            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+              <Button size="sm" onClick={onTest} disabled={testing}>{testing ? "Testing…" : "Test connection"}</Button>
+              {tested && <p data-test className={`text-small ${tested.ok ? "text-success-text" : "text-destructive-text"}`}>{`${tested.ok ? "Passed" : "Failed"} · ${clock(tested.at)} · ${tested.words}`}</p>}
+            </div>
           )}
           <p className="mt-2 text-small text-muted-foreground">{p.secrets.length ? "" : "No key. "}Serves: {serves.join(", ")}</p>
-        </div>
-        <div className="flex gap-2">
-          <Button size="sm" onClick={onTest} disabled={testing}>{testing ? "Testing…" : "Test connection"}</Button>
         </div>
       </div>
       {writable && pasting && <ComputerKeyForm provider={p.name} name={pasting} set={p.secrets.some((secret) => keyOf(secret.name) === pasting && secret.set)} onSave={onSave} onCancel={() => onOpen(null)} />}

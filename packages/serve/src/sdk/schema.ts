@@ -1,5 +1,6 @@
 import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "../run-labels.js";
 import { MCP_TOOL_KEY_PATTERN } from "../tool-names.js";
+import { SDK_RUNTIMES, SDK_PLATFORM_MAX_LENGTH, SDK_PLATFORM_PATTERN } from "./runtimes.js";
 
 const text = { type: "string" };
 const object = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
@@ -8,7 +9,20 @@ const object = (properties: Record<string, unknown>, required = Object.keys(prop
   properties,
   required,
 });
-export const SDK_BINDING = object({ runtime: { enum: ["claude-agent-sdk", "codex-sdk"] } });
+const platform = {
+  ...text, minLength: 1, maxLength: SDK_PLATFORM_MAX_LENGTH, pattern: SDK_PLATFORM_PATTERN,
+  description: "External source's display label, such as openclaw or capy. Preserved exactly; no surrounding whitespace, controls or lone surrogates. Never selects a managed harness or workflow capability.",
+};
+/** Closed alternatives keep platform required only for external sources in every generated client. External starts
+ *  do not accept bridge fields, even an empty catalog: a platform name never confers an integration's capabilities. */
+const sdkObject = (properties: Record<string, unknown> = {}, required = Object.keys(properties)) => ({
+  "x-agentrun-python-preserve-object": true,
+  oneOf: [
+    object({ runtime: { enum: SDK_RUNTIMES.filter(runtime => runtime !== "external") }, ...properties }, ["runtime", ...required]),
+    object({ runtime: { const: "external" }, platform, ...Object.fromEntries(Object.entries(properties).filter(([key]) => key !== "workflow_tools" && key !== "workflow_adapters")) }, ["runtime", "platform", ...required]),
+  ],
+});
+export const SDK_BINDING = sdkObject();
 const usage = object(
   Object.fromEntries(
     ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd"].map((key) => [
@@ -19,8 +33,7 @@ const usage = object(
   [],
 );
 export const SDK_RUN = {
-  ...object({
-    runtime: SDK_BINDING.properties.runtime,
+  ...sdkObject({
     model: { type: ["string", "null"] },
     session_id: { type: ["string", "null"] },
     learning_revision: { type: ["string", "null"] },
@@ -32,6 +45,13 @@ const event = {
   oneOf: [
     object({ type: { const: "text" }, text: { ...text, maxLength: 128000 } }),
     object({ type: { const: "session" }, session_id: { ...text, maxLength: 256 } }),
+    object({
+      type: { const: "workflow_check" }, id: { ...text, maxLength: 256 }, digest: { ...text, maxLength: 256 },
+      outcome: { enum: ["answered", "handed_back", "failed", "skipped_write"] },
+      answer: { ...text, maxLength: 128000 }, reason: { ...text, maxLength: 8000 },
+      skipped: object({ tool: { ...text, maxLength: 256 }, unmarked: { const: true } }, ["tool"]),
+      fresh_reads: { type: "integer", minimum: 1, maximum: 256 },
+    }, ["type", "id", "digest", "outcome"]),
     object(
       {
         type: { const: "tool" },
@@ -60,10 +80,10 @@ const errors = Object.fromEntries(
 const learning = object({
   enabled: { type: "boolean" },
   revision: { type: ["string", "null"] },
-  context: text,
-  skills: { type: "array", items: object({ name: text, files: { type: "object", additionalProperties: text } }) },
-  workflows: { type: "array", items: object({ name: text, workflow: text, description: text }), description: "Approved, capability-compatible workflows pinned to this run; empty without a backend workflow bridge or when learning is notes-only or Off." },
-});
+  context: { ...text, description: "The agent's corrections.md as the run reads it under # Learned; empty when Off or nothing is learned yet." },
+  workflows: { type: "array", items: object({ name: text, workflow: text, description: text }), description: "Promoted, capability-compatible learned workflows pinned to this run; empty without a backend workflow bridge, during an independent shadow-check turn, or when learning is Off." },
+  check: { ...object({ id: text, revision: text, digest: text, workflow: object({ name: text, workflow: text, description: text }) }), description: "One compiled draft reserved for a shadow check against this run's native answer. Keep outside the model context; replay only recorded tool results after the native turn and submit workflow_check evidence." },
+}, ["enabled", "revision", "context", "workflows"]);
 export const SDK_PATHS = {
   "/agents/{agent_id}/sdk-runs": {
     post: {
@@ -71,12 +91,11 @@ export const SDK_PATHS = {
       operationId: "startSdkRun",
       summary: "Register a task executed by an existing backend SDK",
       description:
-        "Requires an SDK agent definition. Captures the actual original policy and input, pins approved learning, and returns a credential scoped to this run. The backend retains all model/tool/auth settings. Learning requires a configured server reflection/grading model; learning Off needs no server model key. The run takes evidence until an hour after this request; each events batch moves that deadline to an hour after the batch, up to 24 hours after this request (capabilities.features.sdk_runs.max_open_s).",
+        "Requires an SDK agent definition. Captures the actual original policy and input, pins promoted workflows and any compiled shadow-check candidate separately, and returns a credential scoped to this run. The backend retains all model/tool/auth settings. Learning requires a configured server reflection/grading model; learning Off needs no server model key. The run takes evidence until an hour after this request; each events batch moves that deadline to an hour after the batch, up to 24 hours after this request (capabilities.features.sdk_runs.max_open_s).",
       parameters: [id("agent_id"), { ...key, required: true }],
       requestBody: body(
-        object(
+        sdkObject(
           {
-            runtime: SDK_BINDING.properties.runtime,
             input: { ...text, maxLength: 128000 },
             instructions: { ...text, maxLength: 128000 },
             model: { ...text, maxLength: 256 },
@@ -99,7 +118,7 @@ export const SDK_PATHS = {
               description: "The caller's own labels for the run, under the same rules as RunCreate.labels: kept on the run, served on every read of it and matched by GET /runs' label. Put no secret in one: a label holding a server secret is refused.",
             },
           },
-          ["runtime", "input", "instructions"],
+          ["input", "instructions"],
         ),
       ),
       responses: {
@@ -122,7 +141,7 @@ export const SDK_PATHS = {
       operationId: "getSdkRun",
       summary: "Read SDK run and learning state",
       description:
-        "Use the scoped token returned by startSdkRun. A completed task can still have proposed learning awaiting its separate grader. The learning field is the ordinary run learning view.",
+        "Use the scoped token returned by startSdkRun. A completed task can still be reflecting while its compile turn runs. The learning field is the ordinary run learning view.",
       parameters: [id("run_id")],
       responses: {
         200: response(

@@ -1,0 +1,28 @@
+{
+  "version": "2026.11.13-eacade1",
+  "platforms": {
+    "linux-x86_64": {
+      "sha256": "c02e4321f20d691ee03af94d29948dc3a81c6c34e7328da7bb1afade4c75812f",
+      "binarySha256": "2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a233",
+      "treeSha256": "b224cfc7d2aa702ae4c9335fba6a4fc4b04250584bf615a8dcefa946ac5e64f6",
+      "walked": "2026-11-19",
+      "at": {
+        "turn": {
+          "files": 40,
+          "key": 0,
+          "token": 0
+        },
+        "kill": {
+          "files": 40,
+          "key": 0,
+          "token": 0
+        },
+        "close": {
+          "files": 0,
+          "key": 0,
+          "token": 0
+        }
+      }
+    }
+  }
+}

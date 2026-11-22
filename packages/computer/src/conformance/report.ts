@@ -57,7 +57,7 @@ export function formatReport(report: ConformanceReport): string {
 		lines.push(`core ${"not run".padEnd(9)} ${first}`, ...rest.map((more) => `${INDENT}${more}`));
 	}
 	// Each computer's daemon, named with its role: computers of one run may answer differently (a GPU computer's fence).
-	for (const daemon of daemons) lines.push(`daemon ${daemon.computer} (${daemon.role}): ${said(daemon)}${daemon.fence === undefined ? "" : ` · fence ${daemon.fence}`}`);
+	for (const daemon of daemons) lines.push(`daemon ${daemon.computer} (${daemon.role}): ${said(daemon)}${daemon.fence === undefined ? "" : ` · fence ${daemon.fence}`}${daemon.windowManager === undefined ? "" : ` · window manager ${daemon.windowManager.state}${daemon.windowManager.why ? `: ${daemon.windowManager.why}` : ""}`}`);
 	for (const note of report.notes ?? []) lines.push(`note: ${note}`);
 	for (const { computer, role, note } of report.computerNotes ?? []) lines.push(`note ${computer} (${role}): ${note}`);
 	// What a provider said through onNote, such as a release whose final sync or checkin did not go cleanly.

@@ -23,7 +23,7 @@ from . import _generated
 from ._http import StreamedResponse
 from ._types import AnswerKind, Operation, OperationBody, RawBody, Tagged
 
-__version__ = "0.3.10"
+__version__ = "0.3.20"
 
 __all__ = [
     "AgentRun",
