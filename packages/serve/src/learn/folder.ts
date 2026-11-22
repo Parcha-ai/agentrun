@@ -640,12 +640,15 @@ export async function snapshotAt(store: LearningStore, commit: string): Promise<
   return snapshotOf(store, checkCommit(commit));
 }
 
-/** `commit` as main had it (snapshotAt) with the blobs its tree holds (no host path), by oid. Undefined when the store
+/** `commit` as main had it (snapshotAt) with the blobs its snapshot names (no marker), by oid. Undefined when the store
  *  does not hold it. */
 export async function folderAt(store: LearningStore, commit: string): Promise<{ snapshot: Snapshot; blobs: ReadonlyMap<string, Buffer> } | undefined> {
   const snapshot = await snapshotOf(store, checkCommit(commit));
   if (!snapshot) return undefined;
-  const files = await store.read(commit);
+  // The files the snapshot names alone, never the markers: one more each merge, and code.storage reads each body in a
+  // call of its own.
+  const paths = [...(snapshot.corrections ? [snapshot.corrections.path] : []), ...(snapshot.audits ? [AUDITS_FILE] : []), ...snapshot.workflows.flatMap((workflow) => workflow.files.map((file) => file.path))];
+  const files = await store.read(commit, paths);
   if (!files) return undefined;
   const blobs = new Map<string, Buffer>();
   for (const file of files) if (!isHostPath(file.path)) blobs.set(blobOid(file.body), file.body);

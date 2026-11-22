@@ -300,7 +300,7 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
   async function remove(): Promise<void> {
     const response = await call("delete", "DELETE", "repos/delete", ["repo:write"]);
     const body = await bodyOf(response);
-    if (response.ok || response.status === 404 || response.status === 409) return;
+    if (response.ok || response.status === 404) return;
     throw unavailable(new CodeStorageFailed("delete", response.status, body));
   }
 

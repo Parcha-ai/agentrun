@@ -213,3 +213,15 @@ test("code.storage: the repo is agentrun-<server id>-<agent id>, every call's to
   assert.deepEqual([...new Set(fake.calls.map((call) => call.repo))], ["agentrun-srv1-agent-one"]);
   assert.ok(fake.calls.every((call) => !/BEGIN|PRIVATE/.test(call.search)), "no key in a URL");
 });
+
+test("code.storage: a delete answered 409 is no removal: remove fails retryable and the repository and its commits stay", async () => {
+  const { codeStorageLearningStore } = await import("../dist/learn/code-storage.js");
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const fake = codeStorageFake({ name: "example-org", publicKey });
+  const conflicted = async (url, init) => (init?.method === "DELETE" ? new Response(JSON.stringify({ error: "conflict" }), { status: 409, headers: { "content-type": "application/json" } }) : fake.fetch(url, init));
+  const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: conflicted, serverId: async () => "srv1" }, "agent-one");
+  const one = (await save(store, null, [{ path: "corrections.md", text: "- one\n" }])).saved;
+  await assert.rejects(store.remove(), (error) => error.name === "FolderUnreadable" && error.link === false);
+  assert.equal(await store.head(), one);
+  assert.ok(fake.repos.has("agentrun-srv1-agent-one"));
+});
