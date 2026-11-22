@@ -1555,9 +1555,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The shell this server can give a template's agent now (templates.ts pickComputer's `shell`), by the rules a run
    *  has it by (shellOf): Archil's serverless exec on the runner in Mode 2 (bash alone); else the box a new agent is saved
    *  with (Docker), where it answers now (computerReady asks the daemon, not the start's offers: a Docker stopped since
-   *  is no shell), whose shell runs the shell tools; else none, and why. */
-  const shellHere = async (): Promise<ShellHere> => {
-    if ((await shellOf({ kind: "none" })) === "local") return { computer: { kind: "none" }, tools: [...shellTools("local")], words: "Archil's serverless exec" };
+   *  is no shell), whose shell runs the shell tools; else none, and why. A package that needs programs (`sandbox`) asks
+   *  for a sandbox alone, whose box a run checks for them: Archil's exec is none, so in Mode 2 it is told why no sandbox
+   *  answers (the Docker box can't mount Archil's workspaces), never given the exec. */
+  const shellHere = async (wants: { sandbox?: boolean } = {}): Promise<ShellHere> => {
+    const exec = (await shellOf({ kind: "none" })) === "local";
+    if (exec && !wants.sandbox) return { computer: { kind: "none" }, tools: [...shellTools("local")], words: "Archil's serverless exec" };
     const fresh = newAgentPlace(boxOffers);
     let why = "why" in fresh ? fresh.why : "it is not set up";
     if ("place" in fresh && fresh.place.mode === "sandbox") {
@@ -1566,14 +1569,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if ("refused" in ready) why = ready.refused;
       else if ((await shellOf(computer)) === "computer") return { computer, tools: [...shellTools("computer")], words: `the ${fresh.place.box} sandbox` };
     }
+    if (exec) return { none: `no sandbox answers here: Archil's serverless exec is no sandbox, and the docker box is unavailable here (${why})` };
     return { none: `this server has no shell to give an agent now: Archil is off (Settings → Workspace), and the docker box is unavailable here (${why})` };
   };
   /** Each package's computer list read against this server now, as a listing shows it (`computer_here`): what an apply
    *  here would pick (pickComputer), the shell asked for once for them all. */
   const computerHere = async (packages: readonly Package[]) => {
-    const here = packages.some((one) => one.computer) ? await shellHere() : undefined;
+    const here = packages.some((one) => one.computer && !one.needs) ? await shellHere() : undefined;
+    const sandbox = packages.some((one) => one.computer && one.needs) ? await shellHere({ sandbox: true }) : undefined;
     return (pkg: Package) => {
-      const pick = here && pickComputer(pkg, here);
+      const shell = pkg.needs ? sandbox : here;
+      const pick = shell && pickComputer(pkg, shell);
       if (!pick) return null;
       if ("refused" in pick) return { entry: null, computer: null, shell: null, dropped: [], note: pick.refused };
       return { entry: pick.entry, computer: pick.computer, shell: pick.shell, dropped: pick.dropped, note: pick.note };
@@ -3112,8 +3118,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The package's computer list: the first entry this server meets now (templates.ts pickComputer), written as the
     // agent's computer; a fallback, or a shell tool that computer does not run, said under `computer`. A list none of
     // whose entries is met (a shell alone, where there is none) refuses the apply: nothing is made.
-    const pick = pickComputer(pkg, await shellHere());
-    if (pick && "refused" in pick) throw new ApiError("agent_not_runnable", pick.refused, { fields: [{ field: "computer", reason: NOT_SET_UP, message: pick.refused, fix: COMPUTER_FIX }] });
+    const pick = pickComputer(pkg, await shellHere({ sandbox: Boolean(pkg.needs) }));
+    if (pick && "refused" in pick) throw new ApiError("agent_not_runnable", pick.refused, { fields: [{ field: "computer", reason: NOT_SET_UP, message: pick.refused, fix: pick.fix ?? COMPUTER_FIX }] });
     const computerWarnings: InputIssue[] = pick?.note ? [{ field: "computer", reason: pick.entry === "none" ? NOT_SET_UP : "not_an_option", message: pick.note }] : [];
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}, so the agent was made without its tools (${need.tools.join(", ")}).`, fix: mcpSetUp(need) }));
