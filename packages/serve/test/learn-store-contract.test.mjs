@@ -1,23 +1,29 @@
 // The learning store's contract (src/learn/store.ts LearningStore), with the SAME assertions over both stores: the
 // local git folder through learning.sh (the default, src/learn/store-local.ts) and code.storage over its in-memory fake
 // (src/learn/code-storage.ts, fixtures/code-storage-fake.mjs). Each case starts from an empty store. What a store
-// holds is files at paths; a save is one commit on main by compare and swap on the head it read; a run's merge and a
-// purge leave marker files (.agentrun/runs/<key>, .agentrun/purged/<key>) in the same commit.
+// holds is files at paths; a save is one commit on main by compare and swap on the head it read; a run's merge leaves
+// its marker file (.agentrun/runs/<key>) in the same commit; a run's purge rewrites the whole history without its text
+// (src/learn/purge.ts), marking .agentrun/purged/<run>.
 //
 // Against the real code.storage too, when this process is started with its settings (CI never sets them):
 //   AGENTRUN_CODE_STORAGE_NAME=<org> AGENTRUN_CODE_STORAGE_KEY="$(cat key.pem)" [AGENTRUN_CODE_STORAGE_API_URL=<url>] \
 //     node --test packages/serve/test/learn-store-contract.test.mjs
-// Each case there is a repository of its own, agentrun-smoke<random hex>-agent-one, deleted (by its exact id) when the
-// case ends.
+// Each case there is a server id of its own (12 fresh hex digits), so its repositories are
+// agentrun-<that id>-agent-one-g<N>; every generation is deleted (each by its exact id, no listing) when the case ends.
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { codeStorageFake } from "./fixtures/code-storage-fake.mjs";
 
 const HEX = /^[0-9a-f]{40}$/;
+/** The fakes' server id: 12 hex digits, as archil-settings.ts serverIdOf makes one. */
+const SRV = "0123456789ab";
+/** Every repository id this server may name (code.storage.ts AGENTRUN_REPO's start). */
+const GUARD = /^agentrun-[0-9a-f]{12}-/;
 const at = () => Math.floor(Date.now() / 1000);
 const text = (files, path) => {
   const file = files?.find((one) => one.path === path);
@@ -29,19 +35,66 @@ const save = (store, old, writes, extra = {}) => store.save({ old, message: extr
 /** Every code.storage fake the suite made: the repository ids each was sent are checked at its end. */
 const FAKES = [];
 
+/** The learning's own modules: its writes, its purge and its reads. */
+const learn = async () => ({ ...(await import("../dist/learn/commit.js")), ...(await import("../dist/learn/purge.js")), ...(await import("../dist/learn/folder.js")) });
+
+/** Runs merged on `store`, one each of `words` (run_<word lowercased>), each a correction line and a reason of its own. */
+async function merged(store, ...words) {
+  const { learningCommit } = await learn();
+  for (const word of words) {
+    const done = await learningCommit(store, { runId: `run_${word.toLowerCase()}`, reason: `${word} reason words`, files: [], correction: `${word} line from the owner` });
+    assert.equal(done.ok, true, JSON.stringify(done));
+  }
+}
+
+/** Every text the store serves of main's whole history: each commit's message, every file at it, and its diff. */
+async function everything(store) {
+  const head = await store.head();
+  if (!head) return "";
+  const out = [];
+  for (const commit of (await store.log(head)) ?? []) {
+    out.push(commit.message);
+    for (const file of (await store.read(commit.sha)) ?? []) out.push(file.path, Buffer.from(file.body).toString("utf8"));
+    for (const file of (await store.diff(commit.sha)) ?? []) out.push(file.path, file.patch ?? "");
+  }
+  return out.join("\n");
+}
+
+/** Every byte the fake keeps, of every repository: each commit's message and files. */
+const fakeText = (fake) => [...fake.repos.values()].flatMap((repo) => [...repo.commits.values()].flatMap((commit) => [commit.message, ...[...commit.tree.values()].map((body) => Buffer.from(body).toString("utf8"))])).join("\n");
+
+/** The local folder's .git under `data`. */
+function gitDirOf(data) {
+  const found = readdirSync(data, { recursive: true }).map(String).find((path) => path.endsWith(".git") && statSync(join(data, path)).isDirectory());
+  assert.ok(found, "the folder's .git");
+  return join(data, found);
+}
+
+/** A code.storage store over a fake whose `fetch` is `wrap(fake.fetch)`; `fake` on it. */
+async function wrappedStore(wrap) {
+  const { codeStorageLearningStore } = await import("../dist/learn/code-storage.js");
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const fake = codeStorageFake({ name: "example-org", publicKey });
+  FAKES.push(fake);
+  const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: wrap(fake.fetch), serverId: async () => SRV }, "agent-one");
+  return Object.assign(store, { fake });
+}
+/** The repository a request's token names. */
+const repoOf = (init) => JSON.parse(Buffer.from(String(init?.headers?.authorization ?? "").split(" ")[1].split(".")[1], "base64url").toString("utf8")).repo;
+
 /** Each store, made empty for one case: its `store`, and `done` to clean up. */
 const STORES = {
   local: async (t) => {
     const { localLearningStore } = await import("../dist/learn/store-local.js");
     const data = mkdtempSync(join(tmpdir(), "learn-store-"));
     t.after(() => rmSync(data, { recursive: true, force: true }));
-    return localLearningStore(data, "agent-one");
+    return Object.assign(localLearningStore(data, "agent-one"), { data });
   },
   "code.storage": async () => {
     const { codeStorageLearningStore } = await import("../dist/learn/code-storage.js");
     const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
     const fake = codeStorageFake({ name: "example-org", publicKey });
-    const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => "srv1" }, "agent-one");
+    const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => SRV }, "agent-one");
     FAKES.push(fake);
     return Object.assign(store, { fake });
   },
@@ -50,9 +103,9 @@ const STORES = {
       const { codeStorageLearningStore } = await import("../dist/learn/code-storage.js");
       const { codeStorageFromEnv } = await import("../dist/learn/store-of.js");
       const settings = codeStorageFromEnv(process.env, (name) => process.env[name]);
-      const serverId = `smoke${randomBytes(6).toString("hex")}`;
+      const serverId = randomBytes(6).toString("hex");
       const store = codeStorageLearningStore({ ...settings, serverId: async () => serverId }, "agent-one");
-      t.after(() => store.remove());
+      t.after(() => store.remove({ erase: true }));
       return store;
     },
   } : {}),
@@ -136,7 +189,7 @@ for (const [kind, make] of Object.entries(STORES)) {
     assert.match(three.saved, HEX, JSON.stringify(three));
   });
 
-  test(`${kind}: a run merges once; a purged run's key can't merge`, async (t) => {
+  test(`${kind}: a run merges once`, async (t) => {
     const store = await make(t);
     const one = (await save(store, null, [{ path: "corrections.md", text: "- one\n" }])).saved;
     const merge = (await save(store, one, [{ path: "corrections.md", text: "- one\n- run\n" }], { run: "run_a", message: "learning: run_a: merged" })).saved;
@@ -148,13 +201,6 @@ for (const [kind, make] of Object.entries(STORES)) {
     // A round past the first is a key of its own.
     const round = await save(store, merge, [{ path: "workflows/x/README.md", text: "x\n" }], { run: "run_a.r2" });
     assert.match(round.saved, HEX);
-    // A purge's scrub leaves its key's purged marker; a merge of that key is then already, at the purge.
-    const purge = (await save(store, round.saved, [{ path: "corrections.md", text: "- one\n" }], { purged: "run_b" })).saved;
-    assert.ok(paths(await store.read(purge)).includes(".agentrun/purged/run_b"));
-    assert.deepEqual(await save(store, purge, [{ path: "workflows/y/README.md", text: "y\n" }], { run: "run_b" }), { already: purge });
-    // The purge itself lands once.
-    assert.deepEqual(await save(store, purge, [{ path: "corrections.md", text: "- zero\n" }], { purged: "run_b" }), { already: purge });
-    assert.equal(await store.head(), purge);
   });
 
   test(`${kind}: a read at an older commit, and none at one the store does not hold`, async (t) => {
@@ -221,49 +267,173 @@ for (const [kind, make] of Object.entries(STORES)) {
     // And a seed the old store held is gone.
     assert.deepEqual(await save(store, merged.saved, [{ path: "workflows/z/README.md", text: "z\n" }], { seed: one }), { refused: { absent: [], same: [], seed: one } });
   });
+
+  test(`${kind}: a purge takes run B's text out of every commit (no read, log message, diff or snapshot at any commit holds it), A's and C's diffs stay, B merges no more, and a purge again does nothing`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText, readSnapshot, runMergeOf } = await learn();
+    await merged(store, "ALPHA", "BRAVO", "CHARLIE");
+    const before = await store.head();
+    assert.match(await everything(store), /BRAVO/);
+    const done = await forgetRunText(store, "run_bravo");
+    assert.match(done.commit ?? "", HEX, JSON.stringify(done));
+    assert.equal(await store.head(), done.commit);
+    const all = await everything(store);
+    assert.doesNotMatch(all, /BRAVO/);
+    assert.match(all, /ALPHA line from the owner/);
+    assert.match(all, /CHARLIE reason words/);
+    // The old history is gone from the store: no read at its head.
+    assert.equal(await store.read(before), undefined);
+    // B's merge is kept, empty of its text; the tip marks the purge.
+    const log = await store.log(done.commit);
+    assert.ok(log.some((commit) => commit.message === "learning: run_bravo: merged\n\nmerged\n\nRun-Id: run_bravo\n"), JSON.stringify(log.map((commit) => commit.message)));
+    assert.ok(paths(await store.read(done.commit)).includes(".agentrun/purged/run_bravo"));
+    // The snapshot is main's, rebuilt: every commit it names is in the new history, B's reason cut.
+    const snapshot = await readSnapshot(store);
+    assert.equal(snapshot?.main, done.commit);
+    const shas = new Set(log.map((commit) => commit.sha));
+    assert.ok(snapshot.log.every((change) => shas.has(change.commit)), JSON.stringify(snapshot.log));
+    assert.deepEqual(snapshot.log.filter((change) => change.by.run === "run_bravo").map((change) => change.reason), ["merged"]);
+    // A's and C's diffs are still theirs, their lines added.
+    for (const [run, word] of [["run_alpha", "ALPHA"], ["run_charlie", "CHARLIE"]]) {
+      const diff = await runMergeOf(store, run);
+      assert.ok(shas.has(diff?.merge), run);
+      assert.match(diff.files.find((file) => file.path === "corrections.md")?.patch ?? "", new RegExp(`^\\+.*${word} line`, "m"), run);
+      assert.doesNotMatch(JSON.stringify(diff), /BRAVO/, run);
+    }
+    // B merges no more, any round: already, nothing written.
+    for (const key of ["run_bravo", "run_bravo.r2"]) assert.ok("already" in (await save(store, done.commit, [{ path: "corrections.md", text: "BRAVO again\n" }], { run: key })), key);
+    assert.equal(await store.head(), done.commit);
+    // A purge sent again, or one of a run that never merged, does nothing.
+    assert.deepEqual(await forgetRunText(store, "run_bravo"), {});
+    assert.deepEqual(await forgetRunText(store, "run_zulu"), {});
+    assert.equal(await store.head(), done.commit);
+    // No byte of the old history is left in the store itself.
+    if (store.data) {
+      const git = gitDirOf(store.data);
+      const objects = execFileSync("git", ["--git-dir", git, "cat-file", "--batch-all-objects", "--batch"], { maxBuffer: 64 << 20 }).toString("utf8");
+      assert.match(objects, /ALPHA/);
+      assert.doesNotMatch(objects, /BRAVO/);
+      assert.equal(execFileSync("git", ["--git-dir", git, "for-each-ref", "--format=%(refname)"]).toString("utf8").trim(), "refs/heads/main");
+      assert.equal(execFileSync("git", ["--git-dir", git, "reflog", "show", "--all"]).toString("utf8").trim(), "");
+    }
+    if (store.fake) {
+      assert.deepEqual([...store.fake.repos.keys()], [`agentrun-${SRV}-agent-one-g1`]);
+      assert.doesNotMatch(fakeText(store.fake), /BRAVO/);
+    }
+  });
 }
 
-test("code.storage: the repo is agentrun-<server id>-<agent id>, every call's token names it, and the key never travels", async (t) => {
+test("code.storage: the repo is agentrun-<server id>-<agent id>-g0, every call's token names it, and the key never travels", async (t) => {
   const store = await STORES["code.storage"](t);
   const one = (await save(store, null, [{ path: "corrections.md", text: "- one\n" }])).saved;
   await store.read(one);
   await store.log(one);
-  await store.remove();
+  await store.remove({ erase: true });
   const { fake } = store;
   assert.ok(fake.calls.length > 4);
-  assert.deepEqual([...new Set(fake.calls.map((call) => call.repo))], ["agentrun-srv1-agent-one"]);
+  // The erasure deletes g0 and the generation past it, g1, each by its exact id.
+  assert.deepEqual([...new Set(fake.calls.map((call) => call.repo))], [`agentrun-${SRV}-agent-one-g0`, `agentrun-${SRV}-agent-one-g1`]);
   assert.ok(fake.calls.every((call) => !/BEGIN|PRIVATE/.test(call.search)), "no key in a URL");
 });
 
-test("code.storage: a delete answered 409 is no removal: remove fails retryable and the repository and its commits stay", async () => {
-  const { codeStorageLearningStore } = await import("../dist/learn/code-storage.js");
-  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
-  const fake = codeStorageFake({ name: "example-org", publicKey });
-  FAKES.push(fake);
-  const conflicted = async (url, init) => (init?.method === "DELETE" ? new Response(JSON.stringify({ error: "conflict" }), { status: 409, headers: { "content-type": "application/json" } }) : fake.fetch(url, init));
-  const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: conflicted, serverId: async () => "srv1" }, "agent-one");
-  const one = (await save(store, null, [{ path: "corrections.md", text: "- one\n" }])).saved;
-  await assert.rejects(store.remove(), (error) => error.name === "FolderUnreadable" && error.link === false);
-  assert.equal(await store.head(), one);
-  assert.ok(fake.repos.has("agentrun-srv1-agent-one"));
+test("code.storage: a purge killed mid-build leaves the live repository untouched; the retry deletes the half-built next generation by its exact id and finishes", async () => {
+  const { forgetRunText } = await learn();
+  let packs = 0;
+  let killAfter = Infinity;
+  const store = await wrappedStore((inner) => async (url, init) => {
+    if (new URL(url).pathname.endsWith("/repos/commit-pack") && ++packs > killAfter) throw new Error("killed mid-build");
+    return inner(url, init);
+  });
+  await merged(store, "ALPHA", "BRAVO", "CHARLIE");
+  const live = await store.head();
+  const before = await everything(store);
+  packs = 0;
+  killAfter = 2;
+  await assert.rejects(forgetRunText(store, "run_bravo"), (error) => error.name === "FolderUnreadable");
+  assert.equal(await store.head(), live);
+  assert.equal(await everything(store), before, "the live repository is untouched");
+  const next = `agentrun-${SRV}-agent-one-g1`;
+  assert.equal(store.fake.repos.get(next)?.commits.size, 2, "the next generation, half built, is no one's");
+  killAfter = Infinity;
+  const done = await forgetRunText(store, "run_bravo");
+  assert.match(done.commit ?? "", HEX);
+  assert.deepEqual([...store.fake.repos.keys()], [next]);
+  assert.doesNotMatch(fakeText(store.fake), /BRAVO/);
+  // Each delete named its exact id: the half-built g1 before each build, then g0 once the agent was on g1.
+  assert.deepEqual(store.fake.calls.filter((call) => call.method === "DELETE").map((call) => call.repo), [next, next, `agentrun-${SRV}-agent-one-g0`]);
 });
 
-test("code.storage: the repository id is agentrun-<server id>-<agent id> whatever the ids: a forged agent id (a slash, ../, empty) maps under agentrun-, and a server id that can't name one, or any id outside agentrun-, is refused before a request goes out", async () => {
+test("code.storage: an agent's erasure deletes every generation it ever had, each by its exact id (no listing): after two purges, a third killed mid-build and a reset whose old generation's delete failed, nothing under its prefix is left", async () => {
+  const { forgetRunText } = await learn();
+  let packs = 0;
+  let killAfter = Infinity;
+  let refuseDelete;
+  const store = await wrappedStore((inner) => async (url, init) => {
+    if (new URL(url).pathname.endsWith("/repos/commit-pack") && ++packs > killAfter) throw new Error("killed mid-build");
+    if (init?.method === "DELETE" && repoOf(init) === refuseDelete) return new Response(JSON.stringify({ error: "unavailable" }), { status: 503, headers: { "content-type": "application/json" } });
+    return inner(url, init);
+  });
+  const id = (n) => `agentrun-${SRV}-agent-one-g${n}`;
+  await merged(store, "ALPHA", "BRAVOONE");
+  await forgetRunText(store, "run_bravoone");
+  await merged(store, "BRAVOTWO");
+  await forgetRunText(store, "run_bravotwo");
+  assert.deepEqual([...store.fake.repos.keys()], [id(2)]);
+  // A third purge killed mid-build leaves g3.
+  await merged(store, "BRAVOTHREE");
+  packs = 0;
+  killAfter = 1;
+  await assert.rejects(forgetRunText(store, "run_bravothree"));
+  killAfter = Infinity;
+  // A reset flips past it (to g4) and its delete of g2 fails: g2 and g3 are left, named for the next call.
+  refuseDelete = id(2);
+  await assert.rejects(store.remove(), (error) => error.name === "FolderUnreadable");
+  assert.deepEqual([...store.fake.repos.keys()].sort(), [id(2), id(3)]);
+  refuseDelete = undefined;
+  const sent = store.fake.calls.length;
+  await store.remove({ erase: true });
+  assert.deepEqual([...store.fake.repos.keys()].filter((repo) => repo.startsWith(`agentrun-${SRV}-agent-one-`)), []);
+  // g0 through g5 (the generation, 4, and the one past it), each by its exact id.
+  assert.deepEqual(store.fake.calls.slice(sent).map((call) => [call.method, call.repo]), [0, 1, 2, 3, 4, 5].map((n) => ["DELETE", id(n)]));
+  // The agent's generation dropped with them: a store of the agent made again starts at g0.
+  assert.equal(await store.head(), null);
+  assert.equal(store.fake.calls.at(-1).repo, id(0));
+});
+
+test("code.storage: a reset whose old generation's delete fails reports it retryable; the store is already reset, the old repository kept named and deleted by the next call", async () => {
+  let refuse = true;
+  const store = await wrappedStore((inner) => async (url, init) => (refuse && init?.method === "DELETE" && repoOf(init) === `agentrun-${SRV}-agent-one-g0` ? new Response(JSON.stringify({ error: "conflict" }), { status: 409, headers: { "content-type": "application/json" } }) : inner(url, init)));
+  const one = (await save(store, null, [{ path: "corrections.md", text: "- one\n" }])).saved;
+  assert.match(one, HEX);
+  await assert.rejects(store.remove(), (error) => error.name === "FolderUnreadable" && error.link === false);
+  assert.ok(store.fake.repos.has(`agentrun-${SRV}-agent-one-g0`), "the old repository is there until its delete lands");
+  assert.equal(await store.head(), null);
+  refuse = false;
+  assert.equal(await store.head(), null);
+  assert.ok(!store.fake.repos.has(`agentrun-${SRV}-agent-one-g0`), "the next call deleted it");
+});
+
+test("code.storage: the repository id is agentrun-<12 hex>-<agent id>-g<N> whatever the ids: a forged agent id (a slash, ../, empty, 65 characters, an h- form) maps under agentrun-<server id>-, and a server id that is not 12 hex digits, or any id outside agentrun-<12 hex>-, is refused before a request goes out", async () => {
   const { agentrunRepo, codeStorageLearningStore, repoIdOf, RepoIdRefused } = await import("../dist/learn/code-storage.js");
-  for (const agent of ["../etc", "a/b", "", "x".repeat(65), "..", "agent one", "h-x-0123456789abcdef01234567"]) {
-    const id = repoIdOf("srv1", agent);
-    assert.match(id, /^agentrun-srv1-h-[A-Za-z0-9_-]*-[0-9a-f]{24}$/, JSON.stringify(agent));
+  for (const agent of ["../x", "../etc", "a/b", "", "x".repeat(65), "..", "agent one", "h-x-0123456789abcdef01234567"]) {
+    const id = repoIdOf(SRV, agent);
+    assert.match(id, new RegExp(`^agentrun-${SRV}-h-[A-Za-z0-9_-]*-[0-9a-f]{24}-g0$`), JSON.stringify(agent));
+    assert.match(id, GUARD);
     assert.ok(!id.includes("/") && !id.includes(".."), id);
   }
-  assert.equal(repoIdOf("srv1", "agent-one"), "agentrun-srv1-agent-one");
-  for (const server of ["", "a/b", "../x", "a-b", "x".repeat(65), undefined]) assert.throws(() => repoIdOf(server, "agent-one"), RepoIdRefused, JSON.stringify(server));
-  for (const id of ["grep-prod", "other", "agentrun-", "agentrun-a/b", "agentrun-../x", "xagentrun-a", ""]) assert.throws(() => agentrunRepo(id), RepoIdRefused, id);
+  assert.equal(repoIdOf(SRV, "agent-one"), `agentrun-${SRV}-agent-one-g0`);
+  assert.equal(repoIdOf(SRV, "agent-one", 3), `agentrun-${SRV}-agent-one-g3`);
+  for (const server of ["", "x/y", "a/b", "../x", "a-b", "srv1", "smoke0123456789ab", "0123456789AB", "x".repeat(65), undefined]) assert.throws(() => repoIdOf(server, "agent-one"), RepoIdRefused, JSON.stringify(server));
+  for (const generation of [-1, 1.5, Number.NaN]) assert.throws(() => repoIdOf(SRV, "agent-one", generation), RepoIdRefused, String(generation));
+  for (const id of ["grep-prod", "other", "agentrun-", "agentrun-a/b", "agentrun-../x", "xagentrun-a", "", "agentrun-srv1-agent-one", `agentrun-${SRV}`, `agentrun-${SRV}-`, `agentrun-${SRV}-a/b`]) assert.throws(() => agentrunRepo(id), RepoIdRefused, id);
   // A store whose server id can't name a repository sends nothing at all.
-  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
-  const fake = codeStorageFake({ name: "example-org", publicKey });
-  const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => "" }, "agent-one");
-  for (const call of [() => store.head(), () => store.read("a".repeat(40)), () => store.log("a".repeat(40)), () => store.diff("a".repeat(40)), () => save(store, null, [{ path: "corrections.md", text: "x\n" }]), () => store.remove()]) await assert.rejects(call(), RepoIdRefused);
-  assert.deepEqual(fake.calls, [], "no request went out");
+  for (const server of ["", "x/y"]) {
+    const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const fake = codeStorageFake({ name: "example-org", publicKey });
+    const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => server }, "agent-one");
+    for (const call of [() => store.head(), () => store.read("a".repeat(40)), () => store.log("a".repeat(40)), () => store.diff("a".repeat(40)), () => save(store, null, [{ path: "corrections.md", text: "x\n" }]), () => store.rewrite("a".repeat(40), async () => "a".repeat(40)), () => store.remove(), () => store.remove({ erase: true })]) await assert.rejects(call(), RepoIdRefused);
+    assert.deepEqual(fake.calls, [], `no request went out (${JSON.stringify(server)})`);
+  }
 });
 
 test("code.storage: each token is signed by its key's kind, as the SDK signs: an RSA key RS256, an Ed25519 key EdDSA (EC is ES256, the suite's)", async () => {
@@ -272,18 +442,19 @@ test("code.storage: each token is signed by its key's kind, as the SDK signs: an
     const { privateKey, publicKey } = generateKeyPairSync(kind, options);
     const fake = codeStorageFake({ name: "example-org", publicKey });
     FAKES.push(fake);
-    const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => "srv1" }, "agent-one");
+    const store = codeStorageLearningStore({ name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => SRV }, "agent-one");
     const one = (await save(store, null, [{ path: "corrections.md", text: "- one\n" }])).saved;
     assert.match(one, HEX, kind);
     assert.equal(text(await store.read(one), "corrections.md"), "- one\n", kind);
-    assert.ok(fake.calls.every((call) => call.repo === "agentrun-srv1-agent-one"), "each token verified under the key's own alg");
+    assert.ok(fake.calls.every((call) => call.repo === `agentrun-${SRV}-agent-one-g0`), "each token verified under the key's own alg");
   }
 });
 
-test("code.storage: every repository id the whole suite sent starts agentrun- (no other repository of the org is created, read, written or deleted), and no call listed repositories", () => {
+test("code.storage: every repository id the whole suite sent is agentrun-<12 hex>-... (no other repository of the org is created, read, written or deleted), and no call listed repositories", () => {
   const sent = FAKES.flatMap((fake) => fake.calls);
   assert.ok(sent.length > 50, `the suite's calls: ${sent.length}`);
-  for (const call of sent) assert.match(String(call.repo), /^agentrun-[A-Za-z0-9_-]+$/, JSON.stringify(call));
+  for (const call of sent) assert.match(String(call.repo), GUARD, JSON.stringify(call));
+  for (const call of sent) assert.match(String(call.repo), /^agentrun-[0-9a-f]{12}-[A-Za-z0-9_-]+$/, JSON.stringify(call));
   assert.deepEqual(sent.filter((call) => /^repos\/?$/.test(call.path) && call.method === "GET"), [], "no repository listing");
   assert.deepEqual([...new Set(sent.filter((call) => call.method === "DELETE").map((call) => call.path))], ["repos/delete"]);
 });

@@ -8,7 +8,8 @@ import { test } from "node:test";
 import {
   blobOid, FolderTooLarge, forgetBodies, commitChange, learningInit, LOG_KEEP, nextSnapshot, readLearning, readSnapshot, runMergeOf, SNAPSHOT_FILE, WRITE_MAX, writeLearning,
 } from "../dist/learn/folder.js";
-import { forgetRunText, learningCommit, purgedContextOut, putCorrections } from "../dist/learn/commit.js";
+import { learningCommit, putCorrections } from "../dist/learn/commit.js";
+import { forgetRunText } from "../dist/learn/purge.js";
 import { held, readmeOf, released, restoredLearned, retiredLearned } from "../dist/learn/workflow-draft.js";
 
 const CORRECTIONS = "corrections.md";
@@ -46,8 +47,7 @@ function shaped(snapshot) {
     assert.deepEqual(extra, [], `no key the snapshot does not name: ${JSON.stringify(value).slice(0, 200)}`);
     for (const key of required) assert.ok(key in value, `${key} is there: ${JSON.stringify(value).slice(0, 200)}`);
   };
-  keys(snapshot, ["v", "main", "at", "workflows", "log", "log_more"], ["corrections", "audits", "purged"]);
-  if (snapshot.purged) assert.ok(snapshot.purged.length && snapshot.purged.every((run, i) => typeof run === "string" && (i === 0 || snapshot.purged[i - 1] < run)), JSON.stringify(snapshot.purged));
+  keys(snapshot, ["v", "main", "at", "workflows", "log", "log_more"], ["corrections", "audits"]);
   assert.equal(snapshot.v, 1);
   assert.match(snapshot.main, HEX);
   if (snapshot.corrections) keys(snapshot.corrections, ["path", "oid", "bytes"]);
@@ -410,7 +410,18 @@ export function folderSuite(backend, make, { skew = 0 } = {}) {
     assert.equal(await textOn(store, CORRECTIONS), "- Retry more slowly next time.\n", "its corrections line is on main");
   });
 
-  test(`${backend}: a run's purge (forgetRunText) takes each of its merges' corrections lines off main once, each scrub marked by its merge's key; no file of main keeps its words (the snapshot's log, kept or rebuilt, keeps no reason of it); another merge's diff is served without its line as context`, async (t) => {
+  /** Every text main's whole history serves: each commit's message, every file at it, and its diff. */
+  const history = async (store) => {
+    const out = [];
+    for (const commit of (await store.log(await store.head())) ?? []) {
+      out.push(commit.message);
+      for (const file of (await store.read(commit.sha)) ?? []) out.push(file.path, text(file.body));
+      for (const file of (await store.diff(commit.sha)) ?? []) out.push(file.path, file.patch ?? "");
+    }
+    return out.join("\n");
+  };
+
+  test(`${backend}: a run's purge (forgetRunText) rewrites main's history without its words: no commit's files, message or diff keeps them, every round's merge kept empty of them, the snapshot (kept or rebuilt) whole; another merge's diff stays its own; a purge again writes nothing`, async (t) => {
     const store = await make(t);
     const mark = "PURGE-MARK-7f3a";
     const merged = async (change) => {
@@ -426,21 +437,23 @@ export function folderSuite(backend, make, { skew = 0 } = {}) {
     assert.match(done.commit, HEX);
     assert.equal(await textOn(store, CORRECTIONS), "- Answer in words.\n", "its lines leave main, another run's stays");
     const markers = (await onMain(store)).map(({ path }) => path).filter((path) => path.startsWith(".agentrun/purged/")).sort();
-    assert.deepEqual(markers, [".agentrun/purged/run-gone", ".agentrun/purged/run-gone.r3"]);
-    for (const file of await onMain(store)) assert.ok(!text(file.body).includes(mark), `main's ${file.path} keeps no word of the purged run`);
+    assert.deepEqual(markers, [".agentrun/purged/run-gone"]);
+    const all = await history(store);
+    assert.ok(!all.includes(mark) && !all.includes("Count in words."), "no commit of main's history keeps a word of the purged run");
     forgetBodies();
     assert.ok(!JSON.stringify(await readSnapshot(rebuilt(store))).includes(mark), "nor a snapshot rebuilt from main's history");
     await matchesMain(store);
-    const served = JSON.stringify(await purgedContextOut(store, (await runMergeOf(store, "run-kept")).files));
+    const served = JSON.stringify((await runMergeOf(store, "run-kept")).files);
     assert.ok(!served.includes(mark) && served.includes("Answer in words."), served);
+    for (const round of [1, 3]) assert.ok(!JSON.stringify(await runMergeOf(store, "run-gone", round)).includes(mark), `round ${round}'s merge is kept, empty of its words`);
 
-    // Again (a DELETE sent again): each scrub landed, so nothing is written, though main holds no line of it to find.
+    // Again (a DELETE sent again): the tip marks the purge, so nothing is written.
     const head = await store.head();
     assert.deepEqual(await forgetRunText(store, "run-gone"), {});
     assert.equal(await store.head(), head);
   });
 
-  test(`${backend}: a purged run whose corrections line a person took off first still lands its scrub's marker (the snapshot keeps no reason of it), and another merge's diff is served without the line as context`, async (t) => {
+  test(`${backend}: a purged run whose corrections line a person took off first leaves the history too: the commits before the person's edit held it, and none does after the purge`, async (t) => {
     const store = await make(t);
     const mark = "PURGE-MARK-9c1e";
     for (const change of [{ runId: "run-gone", reason: `It learned ${mark}.`, correction: `Never say ${mark}.` }, { runId: "run-kept", reason: "It answers in words.", correction: "Answer in words." }]) {
@@ -450,18 +463,16 @@ export function folderSuite(backend, make, { skew = 0 } = {}) {
     const now = await textOn(store, CORRECTIONS);
     const put = await putCorrections(store, { text: "- Answer in words.\n", ifMatch: blobOid(now) });
     assert.equal(put.ok, true, JSON.stringify(put));
-    const files = (await runMergeOf(store, "run-kept")).files;
-    assert.match(JSON.stringify(await purgedContextOut(store, files)), new RegExp(mark), "before its purge, the run's line is the kept merge's context");
+    assert.match(await history(store), new RegExp(mark), "before its purge, the history holds the run's line");
 
     const done = await forgetRunText(store, "run-gone");
-    assert.match(done.commit, HEX, "the scrub lands with no line to drop");
-    assert.deepEqual((await onMain(store)).map(({ path }) => path).filter((path) => path.startsWith(".agentrun/purged/")), [".agentrun/purged/run-gone"]);
-    for (const file of await onMain(store)) assert.ok(!text(file.body).includes(mark), `main's ${file.path} keeps no word of the purged run`);
-    assert.deepEqual((await readSnapshot(store)).purged, ["run-gone"], "main's snapshot names the purged run");
+    assert.match(done.commit, HEX);
+    assert.equal(await textOn(store, CORRECTIONS), "- Answer in words.\n");
+    assert.ok(!(await history(store)).includes(mark), "no commit keeps the run's line");
     forgetBodies();
-    assert.deepEqual((await readSnapshot(rebuilt(store))).purged, ["run-gone"], "as one rebuilt from main does");
+    assert.ok(!JSON.stringify(await readSnapshot(rebuilt(store))).includes(mark));
     await matchesMain(store);
-    const served = JSON.stringify(await purgedContextOut(store, (await runMergeOf(store, "run-kept")).files));
+    const served = JSON.stringify((await runMergeOf(store, "run-kept")).files);
     assert.ok(!served.includes(mark) && served.includes("Answer in words."), served);
     const head = await store.head();
     assert.deepEqual(await forgetRunText(store, "run-gone"), {});

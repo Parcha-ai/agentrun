@@ -109,7 +109,7 @@ test("a runner apart from its server's disk with no code.storage set runs a lear
   const before = await learning.head();
   // The runner's start (learningStoreFromEnv, apart, no code.storage settings): its log names the two settings, once.
   const warned = [];
-  learningStoreFromEnv(runnerData, {}, async () => "srv1", { apart: true, key: () => undefined, warn: (line) => warned.push(line) });
+  learningStoreFromEnv(runnerData, {}, { get: async () => undefined, putIfAbsent: async (_key, value) => value, replaceIf: async () => false, remove: async () => undefined }, { apart: true, key: () => undefined, warn: (line) => warned.push(line) });
   assert.equal(learningApart(runnerData), true);
   assert.equal(warned.length, 1, JSON.stringify(warned));
   assert.match(warned[0], /its runs run with nothing learned: .*AGENTRUN_CODE_STORAGE_NAME and AGENTRUN_CODE_STORAGE_KEY/);
@@ -132,7 +132,7 @@ test("a runner apart from its server's disk with no code.storage set runs a lear
 test("with code.storage set, a runner apart from its server's disk uses the one remote store: its run is laid what the server learned, learns, and the server reads the merge", async (t) => {
   const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const fake = codeStorageFake({ name: "example-org", publicKey });
-  const settings = { name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => "srv1" };
+  const settings = { name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => "0123456789ab" };
   const { serverData, runnerData, learning } = await twoDisks(t, settings);
   // The runner's start: apart, code.storage set on it as on the server.
   useLearningStore(runnerData, settings);
@@ -147,6 +147,6 @@ test("with code.storage set, a runner apart from its server's disk uses the one 
   const view = await agentLearning(serverData, "agent-1", noShown, { merged: 0, dropped: {} }, {}, () => "pending", async () => new Set());
   assert.equal(view.main, main);
   assert.deepEqual(view.workflows.map((item) => item.name), ["answer"]);
-  assert.deepEqual([...new Set(fake.calls.map((call) => call.repo))], ["agentrun-srv1-agent-1"], "one repository, the agent's");
+  assert.deepEqual([...new Set(fake.calls.map((call) => call.repo))], ["agentrun-0123456789ab-agent-1-g0"], "one repository, the agent's");
   assert.equal(existsSync(agentLearningFolder(runnerData, "agent-1")), false, "no local learning folder on the runner's disk");
 });

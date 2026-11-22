@@ -24,7 +24,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { purgeRun } from "../dist/agent-delete.js";
 import { keepRunDisk, runDiskKey, saveArchilSettings, storeAgentDisk } from "../dist/archil-settings.js";
 import { shadowRunId } from "../dist/learn/audit.js";
-import { appendCorrection, learningCommit, purgedContextOut } from "../dist/learn/commit.js";
+import { appendCorrection, learningCommit } from "../dist/learn/commit.js";
 import { runMergeOf } from "../dist/learn/folder.js";
 import { learningStoreOf } from "../dist/learn/store-of.js";
 import { StoreConstraint } from "../dist/store/index.js";
@@ -662,18 +662,19 @@ async function learned(data, agentId, write) {
   return done.commit;
 }
 
-/** Run `runId`'s merge's diff on agent `agentId`'s learning store as the run's diff route serves its patches (a purged
- *  run's line left out of its context), by path. */
+/** Run `runId`'s merge's diff on agent `agentId`'s learning store as the run's diff route serves its patches, by path. */
 async function servedDiff(data, agentId, runId, round) {
-  const learning = learningStoreOf(data, agentId);
-  const diff = await runMergeOf(learning, runId, round);
-  return diff ? (await purgedContextOut(learning, diff.files)).map(({ path, patch }) => [path, patch]) : undefined;
+  const diff = await runMergeOf(learningStoreOf(data, agentId), runId, round);
+  return diff ? diff.files.map(({ path, patch }) => [path, patch]) : undefined;
 }
 
-/** The scrub markers on main (`.agentrun/purged/<key>`), by key. */
+/** Every byte the folder's repository keeps: each object git holds, whatever reaches it. */
+const allObjects = (folder) => git(folder, ["cat-file", "--batch-all-objects", "--batch"]);
+
+/** The purge markers on main (`.agentrun/purged/<run>`), by run. */
 const purgedKeys = (folder) => git(folder, ["ls-tree", "-r", "--name-only", "main", "--", ".agentrun/purged"]).split("\n").filter(Boolean).map((path) => path.slice(".agentrun/purged/".length));
 
-test("a run's purge removes what its agent's learning keeps of it in its current files (its corrections line, the line as a later merge's diff shows it), as the README says, another run's kept; the agent's purge removes the store", { timeout: 120_000 }, async (t) => {
+test("a run's purge removes what its agent's learning keeps of it, history and all (its corrections line, the line as a later merge's diff shows it, every byte of the old history), as the README says, another run's kept; the agent's purge removes the store", { timeout: 120_000 }, async (t) => {
   const { api, data, store, halt } = await haltable(t);
   const [gone, kept] = await twoRuns(api, store);
   await halt();
@@ -686,11 +687,14 @@ test("a run's purge removes what its agent's learning keeps of it in its current
   const commits = Number(git(folder, ["rev-list", "--count", "main"]));
 
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
-  assert.deepEqual(purgedKeys(folder), [gone], "its scrub is marked by the run's key");
+  assert.deepEqual(purgedKeys(folder), [gone], "its purge is marked by the run's id");
   assert.equal(git(folder, ["show", "main:corrections.md"]), "- Answer in words.", "its corrections line leaves main, another run's stays");
-  assert.equal(Number(git(folder, ["rev-list", "--count", "main"])), commits + 1, "in one commit");
-  assert.equal(git(folder, ["log", "-1", "--format=%an <%ae>%n%s", "main"]), "agentrun-serve <serve@agentrun.invalid>\nhost: a purged run's corrections removed", "the host's");
-  assert.deepEqual(await servedDiff(data, "calc", kept), [["corrections.md", "@@ -1,0 +2,1 @@\n+- Answer in words.\n"]], "the later merge's diff keeps its own line, the purged one gone from its context");
+  assert.equal(Number(git(folder, ["rev-list", "--count", "main"])), commits + 1, "the history rewritten, one commit on top");
+  assert.equal(git(folder, ["log", "-1", "--format=%an <%ae>%n%s", "main"]), "agentrun-serve <serve@agentrun.invalid>\nhost: a purged run's text removed", "the host's");
+  assert.doesNotMatch(git(folder, ["log", "-p", "main"]), /six times seven/, "no commit of the history holds its line");
+  assert.doesNotMatch(allObjects(folder), /six times seven/, "nor any byte the repository keeps");
+  const keptDiff = JSON.stringify(await servedDiff(data, "calc", kept));
+  assert.ok(keptDiff.includes("+- Answer in words.") && !keptDiff.includes("six times seven"), `the later merge's diff keeps its own line, the purged one gone from its context: ${keptDiff}`);
 
   assert.equal((await api("POST", "/agents/calc/archive")).status, 200);
   assert.equal((await api("DELETE", "/agents/calc")).status, 204);
@@ -699,7 +703,7 @@ test("a run's purge removes what its agent's learning keeps of it in its current
   assert.equal(existsSync(folder), false, "a purged run's DELETE again makes no learning folder");
 });
 
-test("a run's purge takes its feedback line off main once: a DELETE again takes no other run's same line", { timeout: 120_000 }, async (t) => {
+test("a run's purge takes its feedback line out once: a DELETE again takes no other run's same line, and no round of the run merges after", { timeout: 120_000 }, async (t) => {
   const { api, data, store, halt } = await haltable(t);
   const [gone, kept] = await twoRuns(api, store);
   await halt();
@@ -710,21 +714,21 @@ test("a run's purge takes its feedback line off main once: a DELETE again takes 
   assert.equal(git(folder, ["show", "main:corrections.md"]), "- Answer in words.", "one of the two same lines leaves main");
   const commits = Number(git(folder, ["rev-list", "--count", "main"]));
 
-  // A DELETE again finds the run's merge and its line on main (the other run's): its scrub landed, so nothing goes.
+  // A DELETE again finds the purge marked on main: nothing goes, though main holds a line the same as the run's.
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
   assert.equal(git(folder, ["show", "main:corrections.md"]), "- Answer in words.", "the other run's same line stays");
   assert.equal(Number(git(folder, ["rev-list", "--count", "main"])), commits, "and commits nothing");
 
-  // A merge of the run made since its scrub (a purge that stopped before its tombstone left the run open to a grade): the
-  // next DELETE takes that line off too, in a commit of its own.
-  await learned(data, "calc", (learning) => appendCorrection(learning, { runId: gone, round: 2, text: "Count in words too." }));
-  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
-  assert.equal(git(folder, ["show", "main:corrections.md"]), "- Answer in words.", "a later round's line leaves main too");
-  assert.deepEqual(purgedKeys(folder).sort(), [gone, `${gone}.r2`].sort(), "each merge's scrub marked by its key");
-  assert.equal(Number(git(folder, ["rev-list", "--count", "main"])), commits + 2, "in its merge's commit and its scrub's");
+  // A merge of the run after its purge (a purge that stopped before its tombstone left the run open to a grade): the
+  // purge's marker refuses every round of it, so it lands nothing.
+  const late = await appendCorrection(learningStoreOf(data, "calc"), { runId: gone, round: 2, text: "Count in words too." });
+  assert.equal(late.already, true, JSON.stringify(late));
+  assert.equal(git(folder, ["show", "main:corrections.md"]), "- Answer in words.", "a later round's line never lands");
+  assert.deepEqual(purgedKeys(folder), [gone]);
+  assert.equal(Number(git(folder, ["rev-list", "--count", "main"])), commits, "nothing committed");
 });
 
-test("a run's purge scrubs its text from its agent's learning: its feedback line and its reasons leave the current files in one host commit, and the learning's history reads (the log, a workflow's revisions, a champion read by its digest) serve none of its merges; a DELETE again commits nothing", { timeout: 180_000 }, async (t) => {
+test("a run's purge takes its text out of its agent's learning: its feedback line and its reasons leave every commit of the history (rewritten, one host commit on top), and the learning's history reads (the log, a workflow's revisions, a champion read by its digest) serve none of its merges; a DELETE again commits nothing", { timeout: 180_000 }, async (t) => {
   const mark = `PURGE-MARK-${randomBytes(6).toString("hex")}`;
   const { api, data, store } = await serve(t, { learning: "on" });
   // The run: its input and its answer hold the marker (the faux model answers "On <the message>: done."), and so does its
@@ -781,21 +785,23 @@ test("a run's purge scrubs its text from its agent's learning: its feedback line
   const commits = Number(git(repo, ["rev-list", "--count", "main"]));
 
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
-  // a. Its scrub is marked on main, by its merge's key: the grade's look-back's, the one merge of it that added a
-  //    feedback line (its round 7 merged none).
-  assert.deepEqual(purgedKeys(repo), [`${gone}.r2`]);
-  // b. No file of main's tree holds the marker (the snapshot's log keeps no reason of the run); another run's line stays;
-  //    one commit, the host's.
+  // a. Its purge is marked on main, by the run's id (every round of it).
+  assert.deepEqual(purgedKeys(repo), [gone]);
+  // b. No file of main's tree holds the marker (the snapshot's log keeps no reason of the run), nor any commit of its
+  //    history, nor any byte the repository keeps; another run's line stays; the history rewritten, the host's commit
+  //    on top.
   for (const file of git(repo, ["ls-tree", "-r", "--name-only", "main"]).split("\n")) assert.ok(!git(repo, ["show", `main:${file}`]).includes(mark), `main's ${file} holds no marker`);
+  assert.ok(!git(repo, ["log", "-p", "main"]).includes(mark), "no commit of the history holds the marker");
+  assert.ok(!allObjects(repo).includes(mark), "nor any byte the repository keeps");
   assert.equal(git(repo, ["show", "main:corrections.md"]), "- Answer in whole numbers.");
-  assert.equal(Number(git(repo, ["rev-list", "--count", "main"])), commits + 1, "one commit");
+  assert.equal(Number(git(repo, ["rev-list", "--count", "main"])), commits + 1, "one commit more");
   assert.match(git(repo, ["log", "-1", "--format=%s", "main"]), /^host: /);
   // c. The history reads serve none of its merges (their commits, their reasons) and no marker: the log and the view's log
   //    leave them out, the workflow's revisions skip its merge, and its revision's digest reads as one no commit holds.
   const after = await reads();
   const said = JSON.stringify(after);
   assert.ok(!said.includes(mark), `no history read serves the marker: ${said}`);
-  // Ids stay: a promotion record keeps the commit it names, and the other run's diff its parent's id (its base).
+  // The old ids are gone with the old history: no history read names the purged run's merge.
   const history = { view: after.view, log: after.log, revisions: after.revisions, champion: championOf(after, "answer"), solo: championOf(after, "solo") };
   for (const commit of [merge, looked.view.learning.merged]) {
     const naming = Object.entries(history).filter(([, read]) => JSON.stringify(read).includes(commit)).map(([key, read]) => `${key}: ${JSON.stringify(read)}`);
@@ -804,14 +810,15 @@ test("a run's purge scrubs its text from its agent's learning: its feedback line
   assert.ok(after.log.items.some(({ by }) => by.run === kept), "another run's merge stays in the log");
   assert.deepEqual([after.revisions.revisions.length, after.revisions.total], [1, 1], "the workflow's one revision left is the other run's");
   assert.deepEqual(championOf(after, "answer"), { digest, commit: null, nodes: null, check: null }, "its digest reads as one no commit holds");
-  // The page after the one read before the purge starts where that one ended: the other run's look-back.
+  // A cursor read before the purge named a main of the history rewritten: its page starts again at main's first item
+  // (the other run's two merges, all the log serves).
   const next = (await api("GET", `/agents/keeper/learning/log?limit=2&cursor=${first.next_cursor}`)).body;
-  assert.deepEqual([next.items.map(({ by }) => by.run), next.next_cursor], [[kept], null], "the next page skips no change");
+  assert.deepEqual([next.items.map(({ by }) => by.run), next.next_cursor], [[kept, kept], null], "the page starts again, skipping no change");
   // A workflow it was the last to change reads so too, though main (the purge's commit) holds it as it left it.
   assert.equal(git(repo, ["show", "main:workflows/solo/workflow.json"]), solo);
   assert.deepEqual(championOf(after, "solo"), { digest: soloDigest, commit: null, nodes: null, check: null }, "nor at main after it");
 
-  // A DELETE again re-runs the scrub (a run purged before it): its scrub landed, so nothing is committed.
+  // A DELETE again re-runs the purge (a run purged before it): the purge is marked on main, so nothing is committed.
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
   assert.equal(Number(git(repo, ["rev-list", "--count", "main"])), commits + 1, "and commits nothing");
 });
