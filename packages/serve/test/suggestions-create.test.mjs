@@ -4,8 +4,10 @@
 // the pull request alone; a file the repository already has stops the create before anything is written; and the one
 // token each create mints holds contents and pull requests write on that one repository, and is revoked. A create and a
 // scan each claim their row in the store every server shares before they start: two servers asked at once make one agent,
-// one pull request and one run. The package is kept before its apply and taken back when the apply refuses. A reader that settles a scan late,
-// after another settled it or a newer scan replaced it, writes nothing: it claims the scan's row before any write.
+// one pull request and one run. The package is kept before its apply and taken back when the apply refuses. A create is
+// counted (the anonymous counts' `used`) only once its pull request opens, and a hook that throws fails nothing.
+// A reader that settles a scan late, after another settled it or a newer scan replaced it, writes nothing: it claims
+// the scan's row before any write.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { suggestionsFor } from "./fixtures/faux-scout.mjs";
@@ -34,13 +36,14 @@ function settings() {
 }
 
 /** The service over the fake GitHub, its scan already read; `makeAgent` as the test says. */
-async function service(t, { makeAgent }) {
+async function service(t, { makeAgent, used }) {
   const gh = await startFauxGitHub();
   t.after(() => gh.close());
   const minted = [];
   const revoked = [];
   const made = new Map();
   const cancelled = [];
+  const counted = [];
   const store = settings();
   const deps = {
     settings: store,
@@ -67,18 +70,19 @@ async function service(t, { makeAgent }) {
     },
     agentFrom: async (id, sha) => made.get(`${id}@${sha}`),
     cancelScan: async (runId) => void cancelled.push(runId),
+    used: used ?? ((event) => counted.push(event)),
   };
   const s = new Suggestions(deps);
   await s.scan({ repo: REPO });
   await s.list({});
   const state = async () => (await fetch(`${gh.url}/_faux/state`)).json();
   const permissions = async (set) => (await fetch(`${gh.url}/_faux/permissions`, { method: "POST", body: JSON.stringify(set) })).json();
-  return { s, deps, store, state, permissions, minted, revoked, cancelled, id: suggestionId(REPO, "ticket-triage") };
+  return { s, deps, store, state, permissions, minted, revoked, cancelled, counted, id: suggestionId(REPO, "ticket-triage") };
 }
 
 test("an apply refused after the push removes the branch, makes nothing, and leaves the suggestion open for a clean retry", async (t) => {
   let applies = 0;
-  const { s, state, id, minted, revoked } = await service(t, {
+  const { s, state, id, minted, revoked, counted } = await service(t, {
     makeAgent: async () => {
       applies++;
       if (applies === 1) throw new ApiError("agent_not_runnable", "This server holds no model key for the fast tier.");
@@ -92,22 +96,25 @@ test("an apply refused after the push removes the branch, makes nothing, and lea
   assert.deepEqual(minted, [{ id: FAUX_GITHUB.installation, repo: REPO, permissions: { ...PULL_PERMISSIONS } }], "one token: the one repository, contents and pull requests write");
   assert.equal(revoked.length, 1, "and it was revoked");
   assert.equal((await s.list({})).suggestions.find((x) => x.id === id).status, "open");
+  assert.deepEqual(counted, ["suggestions_scanned"], "a create that made nothing is not counted");
 
   const created = await s.create(id, {});
   assert.equal(created.status, 201);
   assert.deepEqual([created.body.created.agent_id, created.body.created.branch, created.body.created.pull_request.number], ["agent_2", "agentrun/ticket-triage", 1], "the retry reuses the branch name the failed one removed");
   assert.equal(revoked.length, 2);
+  assert.deepEqual(counted, ["suggestions_scanned", "suggested_agent_created"]);
 });
 
 test("a pull request GitHub refuses after the agent was made keeps the agent; the next create opens the pull request alone", async (t) => {
   let applies = 0;
-  const { s, state, permissions, id } = await service(t, { makeAgent: async () => ({ agentId: `agent_${++applies}`, warnings: [] }) });
+  const { s, state, permissions, id, counted } = await service(t, { makeAgent: async () => ({ agentId: `agent_${++applies}`, warnings: [] }) });
   await permissions({ pull_requests: "read" });
   await assert.rejects(s.create(id, {}), (error) => error.code === "github_failed" && error.extra.details.agent_id === "agent_1" && /was made, and its pull request was not opened/.test(error.message));
   const kept = (await s.list({})).suggestions.find((x) => x.id === id);
   assert.deepEqual([kept.status, kept.created.agent_id, kept.created.pull_request], ["created", "agent_1", null]);
   assert.match(kept.created.pull_error, /GitHub refused to open the pull request/);
   assert.ok((await state()).branches["agentrun/ticket-triage"], "the branch stays for the pull request");
+  assert.deepEqual(counted, ["suggestions_scanned"], "an agent made without its pull request is not counted yet");
 
   await permissions({ pull_requests: "write" });
   const opened = await s.create(id, {});
@@ -117,6 +124,14 @@ test("a pull request GitHub refuses after the agent was made keeps the agent; th
   const after = await state();
   assert.deepEqual([Object.keys(after.branches).sort(), after.pulls.length], [["agentrun/ticket-triage", "main"], 1], "one branch, one pull request");
   assert.equal((await s.create(id, {})).status, 200, "created: answered as it is");
+  assert.deepEqual(counted, ["suggestions_scanned", "suggested_agent_created"], "counted once, when the pull request opened");
+});
+
+test("a counts hook that throws fails no scan, discard or create", async (t) => {
+  const { s, id } = await service(t, { makeAgent: async () => ({ agentId: "agent_1", warnings: [] }), used: () => { throw new Error("the counts broke"); } });
+  const other = suggestionId(REPO, "refund-review");
+  assert.equal((await s.discard(other)).status, "discarded");
+  assert.equal((await s.create(id, {})).status, 201);
 });
 
 test("a create whose agent was made but whose row could not be kept reuses that agent next time, whatever scans ran meanwhile: one agent, one branch, one pull request", async (t) => {
@@ -306,6 +321,19 @@ test("a suggested agent's package is kept before its apply, registered after it,
   const removedMeanwhile = async () => { rows.delete(id); refuse(); };
   await assert.rejects(applyImported(deps(removedMeanwhile), id, origin("f".repeat(40)), files));
   assert.deepEqual([order, rows.has(id)], [[`put ${"f".repeat(40)}`, "apply"], false], "a row deleted meanwhile is not put back");
+});
+
+test("a scan sent while one is running answers that run, starts none, and is not counted again", async (t) => {
+  const { deps } = await service(t, { makeAgent: async () => assert.fail("no agent is made") });
+  const counted = [];
+  let starts = 0;
+  const running = new Suggestions({ ...deps, startScan: async () => `run_${++starts}`, readRun: async () => ({ status: "running" }), used: (event) => counted.push(event) });
+  const other = "faux-org/other";
+  const first = await running.scan({ repo: other });
+  const again = await running.scan({ repo: other });
+  assert.deepEqual([first.status, again.status, again.body.already_running, again.body.run_id], [202, 200, true, first.body.run_id]);
+  assert.equal(starts, 1, "one run");
+  assert.deepEqual(counted, ["suggestions_scanned"], "counted once");
 });
 
 test("a reader that settles a scan late, after a newer scan removed one of its suggestions, writes nothing: the newest scan's answer stands", async (t) => {

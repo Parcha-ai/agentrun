@@ -3,6 +3,7 @@
 // why), a discard takes one away and a rescan does not bring it back, and a create pushes the package and client on a
 // new branch with a token narrowed to the repository, makes the agent here from the very files it pushed, and opens the
 // pull request; an installation without contents write is refused first, with what is missing, and nothing is written.
+// The anonymous counts (the server's onUsage) hear each scan, discard and create once, by name alone.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -35,7 +36,8 @@ async function scanned(api, repo, { deadlineMs = 60_000 } = {}) {
 }
 
 test("scan, list, discard, rescan, create: the agent is made from the files its pull request adds, and the pull request names it", { timeout: 180_000 }, async (t) => {
-  const server = await serve(t, { faux: SCOUT, fauxGitHub: true, publicUrl: "https://agents.example.test" });
+  const used = [];
+  const server = await serve(t, { faux: SCOUT, fauxGitHub: true, publicUrl: "https://agents.example.test", onUsage: (...args) => used.push(args) });
   const { api } = server;
   const gh = await faux(server);
 
@@ -160,6 +162,10 @@ test("scan, list, discard, rescan, create: the agent is made from the files its 
   // Every token the flow minted was narrowed to the one repository and revoked; the write's held contents write.
   const discardedCreate = await api("POST", `/suggestions/${refund.id}/create`, {});
   assert.equal(discardedCreate.body.error?.code, "suggestion_decided", "a discarded one is restored before it is created");
+
+  // The counts heard each use once, its name and nothing else: a discard sent twice, a restore, a refused create and a
+  // create answered as it is add nothing.
+  assert.deepEqual(used, [["suggestions_scanned"], ["suggestion_discarded"], ["suggestion_discarded"], ["suggestions_scanned"], ["suggested_agent_created"]]);
 });
 
 test("a scan refuses a repository that is not owner/name, and an unknown suggestion is 404", { timeout: 60_000 }, async (t) => {
