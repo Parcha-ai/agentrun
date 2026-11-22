@@ -1,11 +1,14 @@
 // The held host boundary uses real immutable snapshots, placement, capture and store rows; no model calls.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { chmod, symlink, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { test } from 'node:test';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { commitWrites } from '@earendil-works/pi-durable/testing';
 import { heldFor } from '../dist/runner/run-child-host.js';
+import { runProjectCheckpoint } from '../dist/runner/project-checkpoint.js';
 import { launchBody } from '../dist/run-launch.js';
 import { sourceSnapshotDigest } from '../dist/native/source-snapshot-types.js';
 import { commitSourceSnapshot } from '../dist/source-sync/snapshots.js';
@@ -13,10 +16,12 @@ import { sourceWorkspace, sourceSnapshotReader, openRunPlacement } from '../dist
 import { projectPlacement } from '../dist/source-sync/projects.js';
 import { beginSourceIO, requireSourceIOIdle, sourceIOPrefix } from '../dist/source-sync/io.js';
 import { purgingKey } from '../dist/agent-delete.js';
+import { localWorkspace } from '../dist/workspace/local.js';
+import { runFolder, sourceSnapshotsKey, sourceRunControlKey } from '../dist/workspace/paths.js';
 import { storeOn } from './store-helpers.mjs';
 
 async function fixture(t, { sync = async () => {}, release = async () => {}, missingPlacement = false, rawComputer, auxiliary = false } = {}) {
-  let side;
+  let side, workspace;
   t.after(() => side?.release());
   const { store, dir: data, clock } = await storeOn(t), sealKey = Buffer.alloc(32, 7);
   const options = { data, sealKey, env: {} }, bytes = Buffer.from('private authored fixture content\n');
@@ -42,14 +47,183 @@ async function fixture(t, { sync = async () => {}, release = async () => {}, mis
   await placed.admitted();
   const claim = await store.claim('own-run', 'fixture', { leaseMs: 60_000 });
   const secret = 'not-a-secret-' + 'held-project-fixture-key';
-  side = heldFor({ ...options, store, env: { OPENAI_API_KEY: secret }, computerForClaim: async () => ({ syncProject: sync, release, ...(rawComputer ? { computer: rawComputer } : {}) }) },
+  side = heldFor({ ...options, store, env: { OPENAI_API_KEY: secret }, computerForClaim: async (_target, _store, options) => {
+    workspace = options.workspace;
+    return { syncProject: sync, release, ...(rawComputer ? { computer: rawComputer } : {}) };
+  } },
     { claim, run: { agentId: 'agent', revisionId: 'base', signInHanded: null }, launch: missingPlacement ? { ...placed.launch, sourceProject: undefined } : placed.launch,
       revision, claimed: { OPENAI_API_KEY: secret }, signal: new AbortController().signal },
     text => text, () => {});
   assert.equal(typeof side.held.projectCheckpoint, 'function', 'isolated runs need a claim-bound host checkpoint capability');
   const computer = !missingPlacement ? await side.held.computer({ hadComputer: async () => false }) : undefined;
-  return { store, side, clock, secret, claim, snapshot, computer };
+  return { store, side, clock, secret, claim, snapshot, computer, workspace, data, options, launch: placed.launch };
 }
+
+async function stageGitChange(f) {
+  const git = async (...args) => {
+    const result = await f.workspace.exec(['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+      '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', ...args], {
+      env: { PATH: '/usr/bin:/bin', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' },
+      timeoutMs: 10_000, maxOutput: 64 * 1024,
+    });
+    assert.equal(result.code, 0, Buffer.from(result.stderr).toString());
+    assert.equal(result.timedOut, false);
+  };
+  await git('init', '--quiet', '--initial-branch=main');
+  await git('add', 'state.txt');
+  await git('commit', '--quiet', '-m', 'Initial fixture');
+  await f.workspace.write('state.txt', 'staged fixture edit\n');
+  await git('add', 'state.txt');
+}
+
+const knownRefusals = {
+  'staged Git index': stageGitChange,
+  'held credential in an asset': f => f.workspace.write('state.txt', f.secret),
+  'unsupported symbolic link': f => symlink('state.txt', join(runFolder(f.data, 'agent', 'own-run'), 'linked.txt')),
+};
+for (const [reason, arrange] of Object.entries(knownRefusals)) {
+  test(`a settled ${reason} refusal releases ownership without publishing the rejected project`, { timeout: 30_000 }, async t => {
+    let releases = 0;
+    const f = await fixture(t, { release: async () => { releases++; } });
+    await arrange(f);
+    const receipt = await f.side.held.projectCheckpoint();
+    assert.equal(receipt.status, 'uncertain', 'refusal must never become a publishable project candidate');
+    assert.equal(receipt.stage, 'capture');
+    assert.equal(JSON.stringify(receipt).includes(f.secret), false);
+    assert.equal((await f.store.agents.get('agent')).currentRevision, 'base');
+    assert.equal((await f.store.settings.all({ prefix: sourceIOPrefix('agent') })).length, 1, 'resources remain owned until cleanup finishes');
+    await f.side.release();
+    assert.equal(releases, 1);
+    assert.deepEqual(await f.store.settings.all({ prefix: sourceIOPrefix('agent') }), [], 'completed cleanup must not leave a separate permanent writer receipt');
+    await f.store.agents.archive('agent', true); await f.store.settings.put(purgingKey('agent'), true);
+    await requireSourceIOIdle(f.store, 'agent');
+  });
+}
+
+test('a failed computer sync retains ownership after checkpoint cleanup', async t => {
+  const f = await fixture(t, { sync: async () => { throw new Error('fixture lost sync response'); } });
+  const receipt = await f.side.held.projectCheckpoint();
+  assert.equal(receipt.status, 'uncertain'); assert.equal(receipt.stage, 'sync');
+  await f.side.release();
+  await assert.rejects(requireSourceIOIdle(f.store, 'agent'));
+});
+
+test('a refused project still retains ownership when its external cleanup fails', async t => {
+  const f = await fixture(t, { release: async () => { throw new Error('fixture cleanup outcome unknown'); } });
+  await f.workspace.write('state.txt', f.secret);
+  const receipt = await f.side.held.projectCheckpoint();
+  assert.equal(receipt.status, 'uncertain'); assert.equal(receipt.stage, 'capture');
+  await f.side.release();
+  await assert.rejects(requireSourceIOIdle(f.store, 'agent'));
+});
+
+test('a lost snapshot write response keeps ownership even when bytes reached storage', async t => {
+  const f = await fixture(t);
+  await f.workspace.write('state.txt', 'a changed project needs a new immutable blob\n');
+  const prototype = Object.getPrototypeOf(localWorkspace(f.data)), write = prototype.write;
+  const prefix = `disk/${sourceSnapshotsKey('agent')}/blobs/`;
+  let written = false;
+  t.mock.method(prototype, 'write', async function (path, bytes) {
+    await write.call(this, path, bytes);
+    if (path.startsWith(prefix)) { written = true; throw new Error('fixture lost storage acknowledgment'); }
+  });
+  const receipt = await f.side.held.projectCheckpoint();
+  assert.equal(written, true, 'the immutable storage write actually happened before the response was lost');
+  assert.equal(receipt.status, 'uncertain'); assert.equal(receipt.stage, 'commit');
+  await f.side.release();
+  await assert.rejects(requireSourceIOIdle(f.store, 'agent'));
+});
+
+test('a timed-out capture command is not a settled validation refusal', async t => {
+  const f = await fixture(t);
+  const prototype = Object.getPrototypeOf(localWorkspace(f.data)), exec = prototype.exec;
+  let interrupted = false;
+  t.mock.method(prototype, 'exec', async function (argv, options) {
+    const result = await exec.call(this, argv, options);
+    if (argv[0] === 'find') { interrupted = true; return { ...result, timedOut: true }; }
+    return result;
+  });
+  const receipt = await f.side.held.projectCheckpoint();
+  assert.equal(interrupted, true);
+  assert.equal(receipt.status, 'uncertain'); assert.equal(receipt.stage, 'capture');
+  await f.side.release();
+  await assert.rejects(requireSourceIOIdle(f.store, 'agent'), 'a SnapshotError from failed execution is not proof that all backend activity settled');
+});
+
+for (const changed of ['bytes', 'metadata']) {
+  test(`observed project ${changed} changing during capture retains ownership`, async t => {
+    const f = await fixture(t);
+    const prototype = Object.getPrototypeOf(localWorkspace(f.data)), read = prototype.read;
+    let mutated = false;
+    t.mock.method(prototype, 'read', async function (path, range) {
+      if (path === 'state.txt' && !mutated) {
+        mutated = true;
+        await this.write(changed === 'bytes' ? 'state.txt' : 'arrived.txt', 'a writer changed the project after inventory\n');
+      }
+      return read.call(this, path, range);
+    });
+    const receipt = await f.side.held.projectCheckpoint();
+    assert.equal(mutated, true, 'the live project changed after the capture inventory');
+    assert.equal(receipt.status, 'uncertain'); assert.equal(receipt.stage, 'capture');
+    await f.side.release();
+    await assert.rejects(requireSourceIOIdle(f.store, 'agent'), 'an observed escaping writer remains unsafe even after scratch cleanup');
+  });
+}
+
+for (const changed of ['privileged mode', 'symbolic link']) {
+  test(`verification discovering a newly invalid ${changed} retains ownership`, async t => {
+    const f = await fixture(t);
+    const prototype = Object.getPrototypeOf(localWorkspace(f.data)), read = prototype.read;
+    let mutated = false;
+    t.mock.method(prototype, 'read', async function (path, range) {
+      const body = await read.call(this, path, range);
+      if (path === 'state.txt' && !mutated) {
+        mutated = true;
+        const absolute = join(runFolder(f.data, 'agent', 'own-run'), 'state.txt');
+        if (changed === 'privileged mode') await chmod(absolute, 0o4755);
+        else { await unlink(absolute); await symlink('missing.txt', absolute); }
+      }
+      return body;
+    });
+    const receipt = await f.side.held.projectCheckpoint();
+    assert.equal(mutated, true, 'the initially valid inventory changed after its file was read');
+    assert.equal(receipt.status, 'uncertain'); assert.equal(receipt.stage, 'capture');
+    await f.side.release();
+    await assert.rejects(requireSourceIOIdle(f.store, 'agent'), 'a policy error in verification is evidence of mutation, not a settled initial refusal');
+  });
+}
+
+test('scratch cleanup losing its acknowledgment cannot release a known capture refusal', { timeout: 30_000 }, async t => {
+  const f = await fixture(t);
+  await stageGitChange(f);
+  const prototype = Object.getPrototypeOf(localWorkspace(f.data)), remove = prototype.remove;
+  const prefix = `disk/${sourceRunControlKey('agent', 'own-run')}/capture-`;
+  let removed = false;
+  t.mock.method(prototype, 'remove', async function (path, options) {
+    await remove.call(this, path, options);
+    if (path.startsWith(prefix)) { removed = true; throw new Error('fixture lost scratch cleanup acknowledgment'); }
+  });
+  const receipt = await f.side.held.projectCheckpoint();
+  assert.equal(removed, true, 'the scratch cleanup dispatched after the staged-index refusal');
+  assert.equal(receipt.status, 'uncertain'); assert.equal(receipt.stage, 'capture');
+  await f.side.release();
+  await assert.rejects(requireSourceIOIdle(f.store, 'agent'));
+});
+
+test('a direct checkpoint releases its own settled refusal without clearing the held host receipt', { timeout: 30_000 }, async t => {
+  const f = await fixture(t);
+  await stageGitChange(f);
+  const before = await f.store.settings.all({ prefix: sourceIOPrefix('agent') });
+  assert.equal(before.length, 1);
+  const direct = runProjectCheckpoint({ store: f.store, agentId: 'agent', claim: f.claim, launch: f.launch,
+    tools: { workspace: f.workspace, settleProject: async () => [] }, computer: { syncProject: async () => {}, release: async () => {} },
+    workspace: f.options, secrets: async () => [f.secret] });
+  const receipt = await direct.capture(new AbortController().signal);
+  assert.equal(receipt.status, 'uncertain'); assert.equal(receipt.stage, 'capture');
+  assert.deepEqual(await f.store.settings.all({ prefix: sourceIOPrefix('agent') }), before, 'only the direct capture owns and clears its additional receipt');
+  await f.side.release();
+  await requireSourceIOIdle(f.store, 'agent');
+});
 
 test('host checkpoint refuses child-selected arguments before any snapshot write or synchronization', async t => {
   let syncs = 0;

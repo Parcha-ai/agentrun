@@ -13,6 +13,10 @@ Owner skill edits after Move produce a new immutable project for future runs whi
 unchanged companion assets. Git checkpoints exclude ignored dependency trees before applying project limits and
 file checks. An upload refused before project seeding releases its write receipt only after destination and upload
 cleanup have both settled; unknown or dispatched writes continue to block deletion.
+Completed checkpoint reads that refuse staged Git changes, secrets or unsupported files release their write receipt
+only after scratch, cache, tools and provider cleanup settle under the original claim. The rejected save remains
+visible and unpublished. Failed commands, changed files, lost write acknowledgments and uncertain cleanup retain
+their receipts and continue to block deletion.
 Moved projects on local storage now place attachments before restoring project files, pin their exact input paths,
 and refuse collisions before admission. Claims and follow-ups reuse the placed files; checkpoints exclude those
 attachments while retaining authored files in the same inputs directory.

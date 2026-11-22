@@ -9,6 +9,7 @@ import { commitSourceSnapshot, readSourceSnapshot } from "../source-sync/snapsho
 import { captureManagedProject, sourceSnapshotReader, sourceWorkspace, type SourceWorkspaceOptions } from "../source-sync/workspace.js";
 import { withSourceIO } from "../source-sync/io.js";
 import { held } from "./held.js";
+import { ProjectCaptureRefusal } from "../source-sync/capture-refusal.js";
 
 export function runProjectCheckpoint(input: {
   store: Store; agentId: string; claim: Claim; launch: RunLaunch; tools: Pick<RunTools, "workspace" | "settleProject">; computer: ClaimComputer;
@@ -18,11 +19,15 @@ export function runProjectCheckpoint(input: {
 }) {
   const { store, agentId, claim, launch, tools, computer } = input;
   let stage: NonNullable<ProjectUncertain["stage"]> = "drain";
+  let refusalSettled = false;
   const uncertain = (): ProjectUncertain => ({ version: 1, status: "uncertain", sourceId: launch.sourceProject!.sourceId,
     runId: claim.runId, epoch: claim.epoch, reason: ["read", "open", "capture", "commit", "cleanup"].includes(stage) ? "project_capture_failed" : "project_not_settled", stage });
   return {
     uncertain,
+    /** Host-private evidence, never a field the child can supply in a checkpoint receipt. */
+    refusalSettled: () => refusalSettled,
     async capture(signal: AbortSignal): Promise<ProjectCheckpoint> {
+      refusalSettled = false;
       signal.throwIfAborted();
       if (launch.audit || launch.replay) {
         const settle = async (): Promise<ProjectCheckpoint> => {
@@ -49,7 +54,7 @@ export function runProjectCheckpoint(input: {
       signal.throwIfAborted();
       // A later claim can finish this run while an old claim's backend request is still pending. The run's live row
       // therefore cannot protect these writes from deletion: keep independent durable ownership through cleanup.
-      const capture = async () => {
+      const captureOwned = async () => {
         stage = "settle";
         const logs = await tools.settleProject();
         signal.throwIfAborted();
@@ -73,6 +78,16 @@ export function runProjectCheckpoint(input: {
           signal.throwIfAborted();
           return projectCandidate({ sourceId: baseline.sourceId, runId: claim.runId, epoch: claim.epoch, baselineRevision: baseline.revision, baselineDigest: baseline.digest, digest });
         } finally { try { await cache.end(); } catch (error) { stage = "cleanup"; throw error; } }
+      };
+      const capture = async () => {
+        try { return await captureOwned(); }
+        catch (error) {
+          // Both captureManagedProject's scratch/backend cleanup and captureOwned's cache cleanup have completed
+          // before this catch. Execution failures and observed mutations never carry this internal brand.
+          if (!(error instanceof ProjectCaptureRefusal) || stage !== "capture" || signal.aborted) throw error;
+          refusalSettled = true;
+          return uncertain();
+        }
       };
       return input.ioHeld ? capture() : withSourceIO(store, agentId, "snapshot", capture);
     },

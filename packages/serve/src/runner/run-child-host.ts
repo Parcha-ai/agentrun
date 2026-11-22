@@ -712,7 +712,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           });
           result = await checkpoint.capture(signal);
           signal.throwIfAborted(); await projectOwns(true);
-          if (result.status !== "candidate" && result.status !== "discarded") projectFailed = true;
+          if (result.status !== "candidate" && result.status !== "discarded" && !checkpoint.refusalSettled()) projectFailed = true;
         } catch {
           projectFailed = true;
           result = checkpoint?.uncertain() ?? uncertain();

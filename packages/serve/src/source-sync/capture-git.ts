@@ -7,11 +7,12 @@ import { relativeSegments } from "../workspace/paths.js";
 import type { Workspace } from "../workspace/workspace.js";
 import type { ProjectGitCapture, ProjectGitOptions, ProjectInventorySelector } from "./capture-project.js";
 import { SnapshotError } from "./snapshots.js";
+import { ProjectCaptureRefusal, recheckCapture } from "./capture-refusal.js";
 
 const ENV = { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" };
 const GIT = ["git", "--git-dir=database", "--work-tree=work", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null", "-c", "core.excludesFile=/dev/null", "-c", "core.quotePath=false", "-c", "protocol.allow=never", "-c", "gc.auto=0", "-c", "maintenance.auto=false"];
 const digest = (body: Uint8Array): string => createHash("sha256").update(body).digest("hex");
-function refuse(message = "Git metadata needs an explicit safe, complete project representation."): never { throw new SnapshotError("prerequisite", message); }
+function refuse(message = "Git metadata needs an explicit safe, complete project representation."): never { throw new ProjectCaptureRefusal("prerequisite", message); }
 function pathOf(value: string): string {
   if (!value || /[\x00-\x1f\x7f]/.test(value) || Buffer.byteLength(value) > 4096 || value.split("/").includes(".git")) refuse();
   try { relativeSegments(value); } catch { refuse(); }
@@ -26,7 +27,8 @@ async function execute(work: Workspace, argv: readonly string[], options: Projec
   options.signal?.throwIfAborted();
   const result = await work.exec([...argv], { env: ENV, timeoutMs: 30_000, maxOutput: max, ...(stdin ? { stdin } : {}), ...(options.signal ? { signal: options.signal } : {}) });
   options.signal?.throwIfAborted();
-  if (result.code !== 0 && !(noMatches && result.code === 1) || result.signal || result.timedOut || result.truncated) refuse("Git capture could not finish within its safe bounds.");
+  if (result.code !== 0 && !(noMatches && result.code === 1) || result.signal || result.timedOut || result.truncated)
+    throw new SnapshotError("prerequisite", "Git capture could not finish within its safe bounds.");
   return Buffer.from(result.stdout);
 }
 async function databaseInventory(work: Workspace, options: ProjectGitOptions): Promise<Row[]> {
@@ -40,7 +42,7 @@ async function databaseInventory(work: Workspace, options: ProjectGitOptions): P
     const path = pathOf(raw.slice(5));
     if (!["d", "f"].includes(kind) || !/^[0-7]{1,3}$/.test(mode) || !/^\d+$/.test(bytes) || !Number.isSafeInteger(Number(bytes))) refuse();
     rows.push({ path, kind, bytes: kind === "d" ? 0 : Number(bytes), mode: parseInt(mode, 8) });
-    if (rows.length > options.limits.files) throw new SnapshotError("limit", "The Git database exceeds its file limit.");
+    if (rows.length > options.limits.files) throw new ProjectCaptureRefusal("limit", "The Git database exceeds its file limit.");
   }
   return rows.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 }
@@ -55,7 +57,7 @@ export async function captureGit(work: Workspace, scratch: Workspace, options: P
   const before = await databaseInventory(work, options), held = new Map<string, string>(), working = new Map<string, { bytes: number; sha: string }>(); let copiedBytes = 0;
   if (before.some(row => forbidden(row.path) && (row.kind === "d" || row.bytes > 0))) refuse();
   const read = async (row: Row): Promise<Buffer> => {
-    if (row.bytes > options.limits.gitBytes) throw new SnapshotError("limit", "Git control bytes exceed the checkpoint limit.");
+    if (row.bytes > options.limits.gitBytes) throw new ProjectCaptureRefusal("limit", "Git control bytes exceed the checkpoint limit.");
     const bytes = Buffer.from(await work.read(`.git/${row.path}`, { length: row.bytes + 1 })); options.signal?.throwIfAborted();
     if (bytes.length !== row.bytes) throw new SnapshotError("conflict", "Git bytes changed during checkpoint capture.");
     held.set(row.path, digest(bytes)); return bytes;
@@ -70,7 +72,7 @@ export async function captureGit(work: Workspace, scratch: Workspace, options: P
     options.signal?.throwIfAborted();
     if (row.kind === "d") await scratch.mkdir(`database/${row.path}`);
     else {
-      copiedBytes += row.bytes; if (copiedBytes > options.limits.gitBytes) throw new SnapshotError("limit", "The private Git database exceeds the checkpoint limit.");
+      copiedBytes += row.bytes; if (copiedBytes > options.limits.gitBytes) throw new ProjectCaptureRefusal("limit", "The private Git database exceeds the checkpoint limit.");
       await scratch.write(`database/${row.path}`, await read(row));
     }
   }
@@ -154,13 +156,13 @@ export async function captureGit(work: Workspace, scratch: Workspace, options: P
     if (!tracked || tracked.oid !== oid || (tracked.mode === "100755") !== !!(row.mode & 0o111)) dirty = true;
   }
   const objects = text(await git(["rev-list", "--objects", head])).split("\n").filter(Boolean);
-  if (objects.length > options.limits.files) throw new SnapshotError("limit", "Git history exceeds its object limit.");
+  if (objects.length > options.limits.files) throw new ProjectCaptureRefusal("limit", "Git history exceeds its object limit.");
   let historyBytes = 0;
   for (const line of objects) {
     const match = /^([a-f0-9]{40})(?: (.*))?$/.exec(line); if (!match || match[2] && unsafePath(pathOf(match[2]))) refuse();
     const oid = match[1]!, kind = text(await git(["cat-file", "-t", oid])).trim();
     const body = await git(["cat-file", "-p", oid], options.limits.fileBytes); historyBytes += body.length;
-    if (historyBytes > options.limits.gitBytes) throw new SnapshotError("limit", "Expanded Git history exceeds its checkpoint limit.");
+    if (historyBytes > options.limits.gitBytes) throw new ProjectCaptureRefusal("limit", "Expanded Git history exceeds its checkpoint limit.");
     await safeBytes(body);
     if (kind === "commit") {
       // Every historical alias is checked: rev-list names shared blobs only once, which is insufficient when the
@@ -171,7 +173,7 @@ export async function captureGit(work: Workspace, scratch: Workspace, options: P
     } else if (!["tree", "blob"].includes(kind)) refuse();
   }
   const bundle = await git(["bundle", "create", "-", "HEAD"], options.limits.gitBytes);
-  const verify = async (): Promise<void> => {
+  const verify = (): Promise<void> => recheckCapture(async () => {
     if (JSON.stringify(inventory) !== JSON.stringify(await options.inventory(select))) throw new SnapshotError("conflict", "Project metadata changed during checkpoint capture.");
     if (JSON.stringify(before) !== JSON.stringify(await databaseInventory(work, options))) throw new SnapshotError("conflict", "Git metadata changed during checkpoint capture.");
     for (const row of before.filter(row => held.has(row.path))) {
@@ -182,7 +184,7 @@ export async function captureGit(work: Workspace, scratch: Workspace, options: P
       const bytes = await work.read(path, { length: was.bytes + 1 }); options.signal?.throwIfAborted();
       if (bytes.length !== was.bytes || digest(bytes) !== was.sha) throw new SnapshotError("conflict", "Project bytes changed after Git capture.");
     }
-  };
+  });
   await verify();
   return { files, inventory, bundle, verify, metadata: { head, branch, dirty, deleted, history: "complete" } };
 }
