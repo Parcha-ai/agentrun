@@ -9,3 +9,4 @@ An agent's learning lives in one learning store, the local git folder under the 
 - code.storage is on when `AGENTRUN_CODE_STORAGE_NAME` is set; the key or URL set without it changes nothing, and the start says so.
 - A Mode 2 run no longer needs serverless exec on the Archil disk to learn: an Archil plan without it learns and serves as before.
 - `DELETE /agents/{id}/learning` and an agent's delete answer `503 unavailable`, retryable, while code.storage can't be reached, the agent's learning and records kept.
+- A code.storage read that answers 404 for a repository that exists (a history, listing or diff read while the agent moves generations) is `503 unavailable`, retryable, never read as an empty history; an agent reads as having learned nothing only when its repository is confirmed absent, or holds no `main`.

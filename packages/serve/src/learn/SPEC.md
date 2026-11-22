@@ -352,7 +352,12 @@ A run's purge (`purge.ts` forgetRunText) takes the run's text out of the whole h
 It reads main's history oldest first and rebuilds each commit: `corrections.md` without the lines the run's merges
 added (from its first merge on), the run's merge commits kept with their reason cut (`learning: <run>: merged`, its
 Run-Id trailer, the marker: empty of its text), each snapshot rebuilt with the new commit ids and the run's reasons
-cut, and a commit left with nothing of its own dropped. One host commit on top adds `.agentrun/purged/<run>`, so no
+cut, and a commit left with nothing of its own dropped. A learned workflow file leaves every tree from the run's first
+merge on when the run's merge wrote it last: each merge's marker lists the paths it wrote (`{"v":1,"wrote":[...]}`,
+`store.ts` runMarkerText), whether or not their bytes changed, a hand commit owns nothing, and the purged run's own
+markers are rewritten to list none; a marker of an earlier release, with no list, falls back to the merge whose diff
+changed the file's bytes last. A history read that does not start at main refuses the purge, nothing rewritten. One
+host commit on top adds `.agentrun/purged/<run>`, so no
 round of the run merges again and a purge sent again does nothing. The store's `rewrite` moves main to the new chain
 by compare and swap on the head the purge read, and leaves no byte of the old one: the local folder imports the chain
 apart from main, moves main, removes every other ref, expires the reflog and prunes (`git gc --prune=now`);
@@ -365,7 +370,10 @@ and keeps it), and a save on the fenced main is stale, so no save is reported sa
 purge sent again finds its marker and has the store `tidy` (the local folder prunes when a rewrite stopped after moving
 main left its mark, keeping an import another run's commit makes on main, and a commit whose import a rewrite removed
 is stale; code.storage deletes an old repository a flip left, or fails retryable). `forgetRunText` answers each old commit's new one (`moved`), and the
-server moves the agent's promotion records' commits by it, so every champion reads as before. What it costs the
+server moves the agent's promotion records' commits by it. A promote record whose commit no longer holds its
+revision's text is refused by every champion reader (`promote.ts` refusedOf, refused too when the read fails), so the
+champion promoted before it serves again; the trim drops nothing while that read fails; a promote recorded later at a
+commit off main, or whose writer is purged, is kept as a hold, and a replay check for one is refused. What it costs the
 owner: every commit id changes; on code.storage about 0.3 s a
 commit (the local folder is fast), learning waiting meanwhile; a run in flight merges nothing, as after a reset; every
 other run's history and diffs stay. A run's diff is found by its marker, so it survives the rewrite.
