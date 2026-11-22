@@ -290,6 +290,8 @@ with that rule's code. `agentrun harness install --recipe` and `agentrun harness
    start-up variables (`IFS`, `PS4`, `ZDOTDIR`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, ...). That one list, the
    kernel's `launchEnv`, holds for `env`, a key's handed name, `model.env` and `signIn.homeEnv` alike, in the loader
    and in the ACP adapter. A variable's name is a letter or `_`, then letters, digits and `_`, at most 128 characters.
+   A key's names, the one it is saved under and the one it is handed as, are stricter: a capital letter, then capitals,
+   digits and `_`, at most 64 characters (the kernel's `KEY_NAME`, which the loader and the ACP adapter both read).
 
 ### Billing
 
