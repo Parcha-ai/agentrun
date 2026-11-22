@@ -193,6 +193,24 @@ test("AGENTRUN_RUN_KEYS=1: the apply makes the agent with a warning naming the k
   }
 });
 
+test("a message's keys replace the run's whole set, an empty one too: `keys: {}` on a queued run that still holds its key leaves it none, so under AGENTRUN_RUN_KEYS=1 it is 409 naming keys.PARALLEL_API_KEY", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  // No runner: the run stays queued, its launch still holding the key it carried.
+  const { api } = await setup(t, { templates: searcherTemplate(dir), runKeys: true, runner: false });
+  const applied = await api("POST", "/templates/searcher/apply", {});
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const started = await api("POST", `/agents/${applied.body.agent_id}/runs`, { input: { content: "Search the web for widgets." }, keys: { PARALLEL_API_KEY: newKey() } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+
+  const emptied = await api("POST", `/runs/${runId}/messages`, { content: "Once more.", keys: {} });
+  assert.deepEqual([emptied.status, emptied.body.error?.code, emptied.body.error?.fields?.map((one) => one.field)], [409, "agent_not_runnable", ["keys.PARALLEL_API_KEY"]], JSON.stringify(emptied.body));
+  const carried = await api("POST", `/runs/${runId}/messages`, { content: "Once more.", keys: { PARALLEL_API_KEY: newKey() } });
+  assert.equal(carried.status, 202, JSON.stringify(carried.body));
+  const kept = await api("POST", `/runs/${runId}/messages`, { content: "And again." });
+  assert.equal(kept.status, 202, "a message without keys keeps the keys the queued run holds");
+});
+
 test("AGENTRUN_RUN_KEYS=1 leaves the monid key the server's: a template granting monid tools with none here is refused at its apply, at secrets.MONID_API_KEY, saying why, nothing made", { timeout: 60_000 }, async (t) => {
   const root = join(await scratch(t), "templates");
   mkdirSync(join(root, "enricher"), { recursive: true });
