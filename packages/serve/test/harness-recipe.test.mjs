@@ -444,6 +444,23 @@ test("harness-check lists what the agent reaches for beyond loopback, refused by
   assert.ok(run.report.stage2.side_requests.beyondLoopbackRefused.includes("CONNECT telemetry.invalid:443"), JSON.stringify(run.report.stage2.side_requests));
 });
 
+test("harness-check lists what the agent reached for beyond loopback even when the check stops: an agent that refuses its session while its vendor is out of reach", { skip: linux, timeout: 120_000 }, async (t) => {
+  const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "start-gate" } }));
+  const run = await check(t, file, data, env);
+  assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}`);
+  assert.equal(run.report.ok, false);
+  // Checked once with no hosts, the report names the host it needs, whether the check got to its end or not.
+  assert.ok(run.report.stage2.side_requests?.beyondLoopbackRefused?.includes("CONNECT auth.vendor.invalid:443"), JSON.stringify(run.report.stage2));
+  // The same agent on a key with keyMethod: its authenticate, before any session, is what it refuses.
+  const keyed = await installed(t, (o) => {
+    const recipe = signingIn(o);
+    return { ...recipe, env: { ...recipe.env, MODEL_AGENT_MODE: "start-gate" } };
+  });
+  const stopped = await check(t, keyed.file, keyed.data, cliEnv({ MODEL_AGENT_GEMINI_API_KEY: "fake-test-key" }));
+  assert.equal(stopped.status, 1, `${stopped.stdout}\n${stopped.stderr}`);
+  assert.ok(stopped.report.stage2.side_requests?.beyondLoopbackRefused?.includes("CONNECT auth.vendor.invalid:443"), JSON.stringify(stopped.report));
+});
+
 test("the check's egress proxy lists what a client asks it to reach (absolute-form or CONNECT), never a request to its own port as a server (origin-form, a stray that reused the port)", async (t) => {
   const { egressProxy } = await import("../dist/harness-check.js");
   const proxy = await egressProxy([]);

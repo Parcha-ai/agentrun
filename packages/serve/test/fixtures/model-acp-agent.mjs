@@ -7,6 +7,8 @@
 //   good       (default) as above;
 //   own-tools  offers its own `shell` tool beside ours on every request, as an agent whose tools are not off;
 //   side       asks its HTTPS proxy for telemetry.invalid:443 once at start, as an agent that phones home;
+//   start-gate at authenticate, session/new and session/load, asks its HTTPS proxy for auth.vendor.invalid:443 and
+//              refuses when the tunnel is refused, as an agent that checks its vendor before it signs in or opens a session;
 //   no-load    advertises no session/load, so a restart is a new session told the conversation;
 //   untied     titles each call of ours under another server's name (`github: check echo`), a title the adapter does
 //              not tie to our tool, so its permission reaches the host's gate as the agent's own (`acp_other`);
@@ -77,17 +79,23 @@ const save = (session) => {
   writeFileSync(join(store, `${session.id}.json`), JSON.stringify({ id: session.id, messages: session.messages }));
 };
 
-/** Asks the HTTPS proxy for a host beyond loopback, once: what a phoning-home agent does. */
-const phoneHome = () => new Promise((resolve) => {
+/** Asks the HTTPS proxy for `target` (host:port) beyond loopback, once: whether it tunneled. */
+const reach = (target) => new Promise((resolve) => {
   const proxy = process.env.HTTPS_PROXY;
-  if (!proxy) return resolve();
+  if (!proxy) return resolve(false);
   const url = new URL(proxy);
-  const req = httpRequest({ host: url.hostname, port: url.port, method: "CONNECT", path: "telemetry.invalid:443" });
-  req.on("connect", (res, socket) => (socket.destroy(), resolve()));
-  req.on("error", () => resolve());
-  req.on("response", () => resolve());
+  const req = httpRequest({ host: url.hostname, port: url.port, method: "CONNECT", path: target });
+  req.on("connect", (res, socket) => (socket.destroy(), resolve(res.statusCode === 200)));
+  req.on("error", () => resolve(false));
+  req.on("response", () => resolve(false));
   req.end();
 });
+/** What a phoning-home agent does. */
+const phoneHome = () => reach("telemetry.invalid:443");
+/** In start-gate mode, refuses a session while its vendor is out of reach. */
+const vendorGate = async () => {
+  if (mode === "start-gate" && !(await reach("auth.vendor.invalid:443"))) throw RequestError.internalError({ reason: "auth.vendor.invalid is out of reach" });
+};
 
 /** A Messages request to the vendor at MODEL_AGENT_VENDOR (host:port), on the agent's own key, through a CONNECT tunnel
  *  of HTTPS_PROXY: a plan-billed agent's request beyond loopback. Plain HTTP inside the tunnel; a real one is TLS. */
@@ -234,6 +242,7 @@ const app = agent({ name: "model-agent" })
   }))
   .onRequest("authenticate", async ({ params }) => {
     if (!auth) throw RequestError.invalidParams({ methodId: params.methodId });
+    await vendorGate();
     if (params.methodId === "model-agent-api-key") {
       if (!process.env[keyEnv]) throw RequestError.authRequired({ methodId: params.methodId });
     } else if (params.methodId === "model-agent-login") {
@@ -245,6 +254,7 @@ const app = agent({ name: "model-agent" })
   })
   .onRequest("session/new", async ({ params }) => {
     needsSignIn();
+    await vendorGate();
     const session = await openSession(`sess_${randomUUID()}`, params, []);
     save(session);
     return { sessionId: session.id, ...(listed.length ? { models: { availableModels: listed.map((modelId) => ({ modelId, name: modelId })), currentModelId: listed[0] } } : {}) };
@@ -258,6 +268,7 @@ const app = agent({ name: "model-agent" })
   })
   .onRequest("session/load", async ({ params }) => {
     needsSignIn();
+    await vendorGate();
     const file = join(store, `${params.sessionId}.json`);
     if (!loads || !existsSync(file)) throw RequestError.resourceNotFound(params.sessionId);
     await openSession(params.sessionId, params, JSON.parse(readFileSync(file, "utf8")).messages);
