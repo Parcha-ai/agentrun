@@ -27,9 +27,10 @@ FROM python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da52
 
 # The default image's tools (but its nodejs and npm, which Node's tarball brings), then Chromium, FFmpeg and the fonts,
 # from Debian's archive and its security archive as snapshot.debian.org held them at one instant (the step fails if a
-# source still names the live mirror). apt checks each package against that snapshot's signed index; a snapshot's index
-# is past its Valid-Until date, so apt is told not to refuse it for that.
-RUN sed -i -E 's#^URIs: http://deb\.debian\.org/(debian|debian-security)$#URIs: http://snapshot.debian.org/archive/\1/20261121T204200Z#' /etc/apt/sources.list.d/debian.sources \
+# source still names the live mirror), over https: the base already has apt's https method and the CA certificates. apt
+# checks each package against that snapshot's signed index; a snapshot's index is past its Valid-Until date, so apt is
+# told not to refuse it for that.
+RUN sed -i -E 's#^URIs: http://deb\.debian\.org/(debian|debian-security)$#URIs: https://snapshot.debian.org/archive/\1/20261121T204200Z#' /etc/apt/sources.list.d/debian.sources \
  && ! grep -q 'deb\.debian\.org' /etc/apt/sources.list.d/debian.sources \
  && apt-get -o Acquire::Check-Valid-Until=false update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git curl ca-certificates ripgrep socat unzip xz-utils \
