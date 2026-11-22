@@ -21,7 +21,7 @@ concurrency:
 jobs:
   # The release's preconditions, checked once before anything else starts: the tag is a reviewed beta tag, the run was
   # dispatched at it, it is newer than what is out and is the version the manifests at it say, and the tagged commit passed
-  # every check main requires. Every other job needs it, so the jobs the npm-release approval holds (publish, pypi, box)
+  # every check main requires. Every other job needs it, so the jobs the npm-release approval holds (publish, pypi, box, media)
   # all ask for it at the same moment and one approval covers them. Anyone with write access may dispatch the workflow;
   # the npm-release environment's required reviewers are the approval, and nothing here names a person.
   gate:
@@ -443,6 +443,91 @@ jobs:
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
         run: node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public
 
+  # The media box image (packages/computer/media/Dockerfile): the Docker box's default image plus Node, Chromium, FFmpeg,
+  # fonts and the HyperFrames CLI, for an agent that renders video, published once per Dockerfile as
+  # ghcr.io/parcha-ai/agentrun-media:<hash> (the first 12 hex digits of the Dockerfile's sha256, the tag its README's build
+  # line gives) and tagged with the release, for linux/amd64, so an operator names it in AGENTRUN_DOCKER_IMAGE with nothing
+  # built. Under the npm-release approval beside the box job: it reads no secret, but nothing is published for a release
+  # nobody approved. It depends on no npm package; an image keyed by its Dockerfile's hash is harmless to publish for a tag
+  # whose npm publish then fails. The Dockerfile takes no context and no secret; every action is pinned by commit and
+  # BuildKit by digest. A stranger's `docker pull` pulls it with no credentials, so a private package stops the job.
+  media:
+    needs: gate
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: npm-release
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/parcha-ai/agentrun-media
+      RELEASE_TAG: ${{ inputs.tag }}
+    outputs:
+      hash: ${{ steps.hash.outputs.hash }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Match the checkout to the provenance commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - name: The Dockerfile's hash
+        id: hash
+        run: |
+          hash="$(sha256sum packages/computer/media/Dockerfile | cut -c1-12)"
+          [[ "$hash" =~ ^[0-9a-f]{12}$ ]] || { echo "sha256sum printed '$hash', not a Dockerfile hash" >&2; exit 1; }
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver-opts: image=docker.io/moby/buildkit:buildx-stable-1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # A Dockerfile is built once, as a box recipe is: its tag keeps its digest (apt's packages are not pinned, so a
+      # rebuild could differ). Only the registry's "not found" builds it; any other failed read stops the job.
+      - name: Is this Dockerfile published already?
+        id: published
+        env:
+          RECIPE: ${{ steps.hash.outputs.hash }}
+        run: |
+          if read_error="$(docker buildx imagetools inspect "$IMAGE:$RECIPE" 2>&1 >/dev/null)"; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "$IMAGE:$RECIPE is published already: tagging it $RELEASE_TAG"
+          elif [[ "$read_error" == *": not found"* ]]; then
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::reading $IMAGE:$RECIPE failed, so whether it is published is unknown: $read_error" >&2
+            exit 1
+          fi
+      - if: steps.published.outputs.published != 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: packages/computer/media
+          file: packages/computer/media/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.hash.outputs.hash }}
+            ${{ env.IMAGE }}:${{ inputs.tag }}
+      - if: steps.published.outputs.published == 'true'
+        name: Tag the published Dockerfile with the release
+        env:
+          RECIPE: ${{ steps.hash.outputs.hash }}
+        run: docker buildx imagetools create --tag "$IMAGE:$RELEASE_TAG" "$IMAGE:$RECIPE"
+      - name: The image is public
+        env:
+          MEDIA_IMAGE: ${{ env.IMAGE }}:${{ steps.hash.outputs.hash }}
+        run: |
+          node scripts/ghcr-published.mjs "$MEDIA_IMAGE" || { echo "::error::$MEDIA_IMAGE can't be pulled with no credentials (GHCR's answer is the line above): the package is private. An org admin makes ${MEDIA_IMAGE%:*} public once, in the package's settings, then re-runs this job" >&2; exit 1; }
+
   # The Helm chart (deploy/helm/agentrun) as oci://ghcr.io/parcha-ai/charts/agentrun, once the image it installs is tagged
   # (image-release). Packaged from Chart.yaml, which the release pull request moves (railway-template.test.mjs).
   # The same GITHUB_TOKEN with packages: write as image-release, in this job alone: no environment and no secret. A re-run
@@ -502,12 +587,12 @@ jobs:
             || { echo "::error::$CHART/agentrun ${RELEASE_TAG#v} can't be read with no credentials: the package is private. An org admin makes ghcr.io/parcha-ai/charts/agentrun public once, in the package's settings, then re-runs this job." >&2; exit 1; }
 
   # The GitHub release, once everything it names is out: the npm packages (publish), the Python client (pypi), the server
-  # image (image-release), the Helm chart (chart), and the box image and template (box). Its notes are the version's CHANGELOG.md section as the
+  # image (image-release), the Helm chart (chart), the box image and template (box), and the media image (media). Its notes are the version's CHANGELOG.md section as the
   # publish job's fold left it (the release-changelog artifact), then the install lines (scripts/release-notes.mjs).
   # scripts/release-github.mjs publishes it on the existing tag, a prerelease for a beta: it never creates or moves a tag,
   # and stops, saying so, when the tag has a release already. The one job that writes to the repository.
   github-release:
-    needs: [publish, pypi, image-release, chart, box]
+    needs: [publish, pypi, image-release, chart, box, media]
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -728,8 +728,10 @@ never runs; the box's first process is a `sleep` of its lifetime.
 its official tarball (each architecture's sha256 checked), Chromium (also on PATH as `chrome`), FFmpeg and FFprobe,
 Noto (with CJK and colour emoji), Liberation and DejaVu fonts, and the [HyperFrames](https://github.com/heygen-com/hyperframes)
 CLI at an exact version. On amd64 it also has the `chrome-headless-shell` build that CLI pins, by sha256, so a render
-needs no download. The CLI's usage reports and update check are off unless a command turns them on. Nothing builds it for
-you, and no agent setting picks it: build it, then name its tag in `AGENTRUN_DOCKER_IMAGE`. From the repository's root:
+needs no download. The CLI's usage reports and update check are off unless a command turns them on. No agent setting
+picks it: name its tag in `AGENTRUN_DOCKER_IMAGE`. Each release from this one on publishes it for linux/amd64 as
+`ghcr.io/parcha-ai/agentrun-media:<hash>`, and tags it with the release (`:v<version>`): named in
+`AGENTRUN_DOCKER_IMAGE`, it is pulled when Docker has no image by that name, and nothing is built. To build it yourself (on arm64, or from an edited recipe), from the repository's root:
 
 ```sh
 tag=agentrun-media:$(sha256sum packages/computer/media/Dockerfile | cut -c1-12)
