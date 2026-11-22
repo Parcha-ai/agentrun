@@ -56,6 +56,12 @@ async function merged(store, ...words) {
   }
 }
 
+/** A learned workflow `name`'s two files as a run writes them, each saying `word`. */
+const flow = (name, word) => [
+  { path: `workflows/${name}/README.md`, text: `---\nname: ${name}\ndescription: ${word} answers ${name}; use when asked\n---\n` },
+  { path: `workflows/${name}/workflow.json`, text: `${JSON.stringify({ name, says: `${word} flow ${name}` })}\n` },
+];
+
 /** Every text the store serves of main's whole history: each commit's message, every file at it, and its diff. */
 async function everything(store) {
   const head = await store.head();
@@ -304,6 +310,57 @@ for (const [kind, make] of Object.entries(STORES)) {
     assert.equal(main, `- ALPHA line from the owner\n- ${shared}\n`, "the later run's line is on main");
     const diff = await runMergeOf(store, "run_later");
     assert.deepEqual(diff.files.map((file) => [file.path, file.patch?.includes(`+- ${shared}`)]), [["corrections.md", true]], "the later run's diff adds its line");
+  });
+
+  test(`${kind}: a purge takes the purged run's workflows out of every tree: one it alone learned is in no tree, read or diff; one a later run wrote after it is that run's from its merge on and in no tree before; the other runs' things stay`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText, learningCommit, readSnapshot, runMergeOf } = await learn();
+    const merge = async (change) => assert.equal((await learningCommit(store, change)).ok, true, change.runId);
+    await merge({ runId: "run_alpha", reason: "ALPHA reason words", files: flow("w", "ALPHA"), correction: "ALPHA line from the owner" });
+    await merge({ runId: "run_bravo", reason: "BRAVO reason words", files: [...flow("y", "BRAVO"), ...flow("x", "BRAVO")], correction: "BRAVO line from the owner" });
+    // A hand commit between B's merge and C's (the owner's own line): it changes no workflow's owner.
+    const head = await store.head();
+    const text = (await store.read(head, ["corrections.md"]))[0].body.toString("utf8");
+    assert.ok("saved" in (await save(store, head, [{ path: "corrections.md", text: `${text}- a hand line\n` }])));
+    await merge({ runId: "run_charlie", reason: "CHARLIE reason words", files: flow("x", "CHARLIE") });
+    const alphaBefore = (await runMergeOf(store, "run_alpha")).files;
+    const charlieX = await store.read(await store.head(), ["workflows/x/README.md", "workflows/x/workflow.json"]);
+
+    assert.ok("commit" in (await forgetRunText(store, "run_bravo")));
+    // (1) B's text (its workflow y, its text of x, its line and its reason) is in no tree, read, message or diff.
+    assert.doesNotMatch(await everything(store), /BRAVO/);
+    const tip = await store.head();
+    assert.deepEqual(paths(await store.read(tip)).filter((path) => path.startsWith("workflows/")), ["workflows/w/README.md", "workflows/w/workflow.json", "workflows/x/README.md", "workflows/x/workflow.json"]);
+    // (2) x at the tip and at C's merge is C's.
+    const charlie = await runMergeOf(store, "run_charlie");
+    for (const at of [tip, charlie.merge]) assert.deepEqual(await store.read(at, ["workflows/x/README.md", "workflows/x/workflow.json"]), charlieX, at);
+    assert.deepEqual((await readSnapshot(store)).workflows.map(({ name, run }) => [name, run]), [["w", "run_alpha"], ["x", "run_charlie"]]);
+    // (3) No tree from B's merge up to C's holds x.
+    const log = await store.log(tip);
+    const from = log.findIndex(({ message }) => message.includes("Run-Id: run_bravo"));
+    const to = log.findIndex(({ sha }) => sha === charlie.merge);
+    assert.ok(to >= 0 && from > to, JSON.stringify(log.map(({ message }) => message)));
+    for (const { sha } of log.slice(to + 1, from + 1)) assert.deepEqual(paths(await store.read(sha)).filter((path) => path.startsWith("workflows/x/")), [], sha);
+    // (4) A's things stay: its merge's diff, its workflow and its line at the tip.
+    assert.deepEqual((await runMergeOf(store, "run_alpha")).files, alphaBefore);
+    assert.equal((await store.read(tip, ["workflows/w/README.md"]))[0].body.toString("utf8"), flow("w", "ALPHA")[0].text);
+    assert.equal((await store.read(tip, ["corrections.md"]))[0].body.toString("utf8"), "- ALPHA line from the owner\n- a hand line\n");
+  });
+
+  test(`${kind}: a purge of a run that learned a workflow and no line takes that workflow out of every tree and leaves the other runs' things`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText, learningCommit, readSnapshot, runMergeOf } = await learn();
+    await merged(store, "ALPHA");
+    assert.equal((await learningCommit(store, { runId: "run_bravo", reason: "BRAVO reason words", files: flow("y", "BRAVO") })).ok, true);
+    await merged(store, "CHARLIE");
+    const alphaBefore = (await runMergeOf(store, "run_alpha")).files;
+    const done = await forgetRunText(store, "run_bravo");
+    assert.match(done.commit ?? "", HEX, JSON.stringify(done));
+    assert.doesNotMatch(await everything(store), /BRAVO/);
+    assert.deepEqual(paths(await store.read(await store.head())).filter((path) => path.startsWith("workflows/")), []);
+    assert.deepEqual((await readSnapshot(store)).workflows, []);
+    assert.deepEqual((await runMergeOf(store, "run_alpha")).files, alphaBefore);
+    assert.equal((await store.read(await store.head(), ["corrections.md"]))[0].body.toString("utf8"), "- ALPHA line from the owner\n- CHARLIE line from the owner\n");
   });
 
   test(`${kind}: a purge takes out the purged run's line after its owner moved it (the owner swaps two runs' lines): the other run's line stays`, async (t) => {
