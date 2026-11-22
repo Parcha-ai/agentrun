@@ -374,6 +374,12 @@ test("a machine that never dials: the timeout carries the host's dialLog, its la
 	leaky.fake.host.dialLog = async () => `sent ${TOKEN}\n${TOKEN} was refused\n`;
 	const redacted = await create(leaky.provider);
 	assert.ok(redacted.error.message.endsWith(`${SAID}sent <token> | <token> was refused`), redacted.error.message);
+	// A longer word whose tail reads like a token is no token: it is left whole.
+	const WORD = `restart_${"a".repeat(43)}`;
+	const wordy = setup({ dials: false }, QUICK);
+	wordy.fake.host.dialLog = async () => `${WORD} AGENTRUN_ATTACH_TOKEN=${TOKEN}\n`;
+	const kept = await create(wordy.provider);
+	assert.ok(kept.error.message.endsWith(`${SAID}${WORD} AGENTRUN_ATTACH_TOKEN=<token>`), kept.error.message);
 
 	const never = setup({ dials: false }, QUICK);
 	never.fake.host.dialLog = async () => undefined;

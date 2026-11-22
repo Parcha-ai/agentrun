@@ -1688,7 +1688,8 @@ no exec and no upload: create sends the boot env as `CreateSandbox.env`, `AGENTR
 `networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside). Once the sandbox reads
 `started` (within the create's time; `error` or `build_failed`, or a sandbox being destroyed, fails create in Daytona's
 words), create starts `agentrun-dial` itself in a toolbox session of its own, `agentrun-dial`: one async session
-command, as root, that sets `umask 077` (so init's start log and `/work` are root's alone whatever the toolbox's umask),
+command, as root, that sets `umask 077` (so init's start log is root's alone whatever the toolbox's umask, and the
+computer's programs inherit 077),
 then `&&` takes others' access off each socket `/tmp/dbus-*` names (the sockets step the exec path runs before init),
 then `&& AGENTRUN_ATTACH_URL='<url>' exec /usr/local/bin/agentrun-dial`, so a step that fails starts nothing. It is the
 launch line E2B's dial runs (`dialLaunch`), with no rootOnly paths here. The URL is no secret; the token stays in the sandbox's

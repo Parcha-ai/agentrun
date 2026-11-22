@@ -263,8 +263,9 @@ export function hostedCommands({
 }
 
 /**
- * The shell line a provider that starts agentrun-dial itself runs, as root, under umask 077 whatever the vendor's, so
- * what agentrun-dial and init make (init's start log, /work) is root's alone, as on the exec path (START_SCRIPT). On
+ * The shell line a provider that starts agentrun-dial itself runs, as root, under umask 077 whatever the vendor's, as on
+ * the exec path (START_SCRIPT): init's start log is root's alone, and init and every program the computer runs inherit
+ * 077 (init gives /work to the computer's user, 0700). On
  * dial the adapter runs nothing in the machine, so the line runs the steps the exec path runs before init first:
  * rootOnly made root's alone when it names paths (HostFacts.rootOnly), then the session buses in /tmp closed
  * (SESSION_BUSES). Joined by &&, so a step that fails starts nothing, and the machine never dials. attach, when given, is

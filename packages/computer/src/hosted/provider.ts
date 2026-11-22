@@ -204,8 +204,11 @@ const START_POLL_MS = 500;
 /** How much of agentrun-dial's output a dial timeout carries (MachineHost.dialLog): its last lines, cut to these characters. */
 const DIAL_LOG_LINES = 10;
 const DIAL_LOG_CHARS = 800;
-/** A machine token anywhere in what agentrun-dial wrote: a dial timeout's words carry `<token>` in its place. */
-const MACHINE_TOKEN = new RegExp(MACHINE_TOKEN_SOURCE, "g");
+/**
+ * A machine token anywhere in what agentrun-dial wrote, not the tail of a longer word (`restart_…`): a dial timeout's
+ * words carry `<token>` in its place.
+ */
+const MACHINE_TOKEN = new RegExp(`(?<![A-Za-z0-9_-])${MACHINE_TOKEN_SOURCE}`, "g");
 /**
  * The computerd build a hosted machine of arch runs: HostedProvider's default daemonPath, and the file serve's daemon
  * route serves, so the sha256 a dial machine checks (AGENTRUN_DAEMON_SHA256) is this file's.
