@@ -14,9 +14,10 @@
 # The snapshot's entrypoint is the Dockerfile's CMD, named: Daytona's toolbox runs a snapshot's entrypoint as its first
 # command, and a snapshot built from a Dockerfile with no ENTRYPOINT gets `sleep infinity` instead, never the CMD
 # (daytonaio/daytona@b5a5d9e7 apps/api/src/sandbox/services/snapshot.service.ts:883-901). That CMD starts agentrun-dial
-# when the create set AGENTRUN_ATTACH_URL (a Daytona computer on connect "dial"), and sleeps otherwise. The name is
-# agentrun-box-<hash>: the agentrun-archil-<hash> snapshots built before this named no entrypoint, so they never dial,
-# and a new name keeps a run from landing on one.
+# when AGENTRUN_ATTACH_URL is in the sandbox's env, and sleeps otherwise. The provider no longer needs it: on connect
+# "dial" its create leaves AGENTRUN_ATTACH_URL out of the env and starts agentrun-dial in a toolbox session itself, so a
+# box snapshot registered without this entrypoint dials too, and this one sleeps instead of dialing twice. The name is
+# agentrun-box-<hash>, the recipe's hash alone (this file is not in it).
 #
 #   python3 packages/computer/box/build-daytona.py [--gpu H100]
 import hashlib

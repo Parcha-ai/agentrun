@@ -340,6 +340,48 @@ test("a machine that never dials is deleted, its token revoked, and create fails
 	assert.deepEqual(fake.live(), [], "the machine was deleted");
 });
 
+test("a machine that never dials: the timeout carries the host's dialLog, its last 10 lines within 800 characters, or that agentrun-dial never started; a dialLog that fails, or none, keeps the message", async () => {
+	const DIALED = "did not dial ws://127.0.0.1:8080/v2/computers/attach within 1 s: the machine must reach that address";
+	const SAID = "; agentrun-dial said: ";
+	const lines = Array.from({ length: 15 }, (_, at) => `line ${at + 1}`);
+	const said = setup({ dials: false });
+	const asked = [];
+	said.fake.host.dialLog = async (id) => {
+		asked.push(id);
+		return `${lines.join("\n")}\n\n`;
+	};
+	const failed = await create(said.provider);
+	assert.equal(failed.error?.code, "timeout");
+	assert.ok(failed.error.message.includes(DIALED), failed.error.message);
+	assert.ok(failed.error.message.endsWith(`${SAID}${lines.slice(5).join(" | ")}`), failed.error.message);
+	assert.equal(asked.length, 1, "asked once, at the timeout");
+	assert.equal(typeof asked[0], "string");
+	assert.deepEqual(said.fake.live(), [], "the machine was deleted");
+
+	const long = setup({ dials: false });
+	long.fake.host.dialLog = async () => `start\n${"x".repeat(2_000)}y\n`;
+	const cut = await create(long.provider);
+	const tail = cut.error.message.slice(cut.error.message.indexOf(SAID) + SAID.length);
+	assert.equal(tail.length, 800, "the last 800 characters");
+	assert.ok(tail.endsWith("xy"));
+
+	const never = setup({ dials: false });
+	never.fake.host.dialLog = async () => undefined;
+	const silent = await create(never.provider);
+	assert.equal(silent.error?.code, "timeout");
+	assert.ok(silent.error.message.endsWith("; agentrun-dial never started"), silent.error.message);
+
+	for (const dialLog of [async () => Promise.reject(new Error("the toolbox is down")), undefined]) {
+		const plain = setup({ dials: false });
+		if (dialLog) plain.fake.host.dialLog = dialLog;
+		const kept = await create(plain.provider);
+		assert.equal(kept.error?.code, "timeout", "a log read that fails never changes the code");
+		assert.ok(kept.error.message.includes(DIALED), kept.error.message);
+		assert.doesNotMatch(kept.error.message, /agentrun-dial said|never started|the toolbox is down/);
+		assert.deepEqual(plain.fake.live(), []);
+	}
+});
+
 test("attachEgress: the machine is booted with AGENTRUN_ATTACH_EGRESS beside the five names, one that never dials fails naming the relay too, and a malformed one is refused at construction", async () => {
 	const { fake, provider } = setup({}, { attachEgress: "192.0.2.40:18443" });
 	const ref = made(await create(provider));
