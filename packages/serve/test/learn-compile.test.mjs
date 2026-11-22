@@ -245,7 +245,8 @@ test("held by its check: the revise ask says the check's numbers and offers no '
 });
 
 // Batch 28 item 1: a connected agent's hold on give-backs checked no input (n 0). Its revise ask says why it was held and
-// that there are no disagreements to show, and never that nothing compiles again: such a hold never stops.
+// that there are no disagreements to show, and never that nothing compiles again: such a hold spends no recompile and
+// revises at a first compile's cadence; two failed revise drafts stop it.
 test("held on give-backs: the revise ask says nothing was checked, shows no disagreements, and never says nothing compiles again", () => {
   const check = { n: 0, compile_after: 20, alone: 0, agreed: 0, alone_min: 0.8, agree_min: 0.9, of: [], released: 5 };
   const held = { workflow: "answer", digest: "0123456789abcdef", reason: "the connected agent gave back 5 reserved native turns in a row with no answer to check it against (the last: no shadow report)", check };
@@ -255,6 +256,19 @@ test("held on give-backs: the revise ask says nothing was checked, shows no disa
   assert.match(prompt, /no disagreements to show/);
   assert.doesNotMatch(prompt, /nothing compiles again/);
   assert.doesNotMatch(prompt, /answers these inputs alone/);
+});
+
+// A give-back hold written after landed turns keeps their disagreements: the revise shows them, and says how many inputs
+// were checked before it was held, never that none were.
+test("held on give-backs after landed turns: the revise ask shows their disagreements and says how many inputs were checked", () => {
+  const one = { run: "r1", input: "release 7", agent: "ready", draft: "not ready" };
+  const check = { n: 0, compile_after: 20, alone: 0, agreed: 0, alone_min: 0.8, agree_min: 0.9, of: [], released: 5, disagreements: [one], turns: { n: 3, agreed: 2, alone: 3, of: ["a", "b", "c"], outcomes: { answered: 3, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [one] } };
+  const held = { workflow: "answer", digest: "0123456789abcdef", reason: "the connected agent gave back 5 reserved native turns in a row", check };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held }));
+  assert.match(prompt, /Input 1: release 7\nYour answer: ready\nThe draft's answer: not ready/);
+  assert.match(prompt, /3 of your inputs were checked before it was held/);
+  assert.doesNotMatch(prompt, /checked on no input|no disagreements to show/);
+  assert.doesNotMatch(prompt, /nothing compiles again/);
 });
 
 // CompiledRecord.promoted is the promotion step's (learn/promote.ts): the kept draft's digest, read against the agent's

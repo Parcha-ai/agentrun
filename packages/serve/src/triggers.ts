@@ -24,6 +24,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "./timeline/index.js";
 import { agentDeleting, purgedAgent } from "./agents.js";
+import { ownedElsewhere } from "./agents-store.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
@@ -489,7 +490,7 @@ export class Triggers {
   private async needNotDeleting(agentId: string): Promise<void> {
     const agent = await this.store.agents.get(agentId);
     if (agent?.purgedAt != null) throw purgedAgent(agent);
-    if (agent?.archivedAt != null && agent.externalRef != null) throw agentDeleting(agentId);
+    if (agent?.archivedAt != null && ownedElsewhere(agent)) throw agentDeleting(agentId);
   }
 
   /** The store's refusal of a trigger left on for an archived agent (an archive that committed past needAgentOn) as the
