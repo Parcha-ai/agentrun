@@ -249,7 +249,7 @@ test("a purge puts back the version another run wrote before the purged run's he
 // after it. The purge puts v1 back on main. The champion record still names v2 at `gone`'s merge, a commit the purge
 // gate refuses (purgeGate), so championOf skips it: the newest promotion the gate lets through, v1's, is the champion
 // again. The promotions read names v1's commit, a run that fits it is served v1, and no byte of `gone`'s text reaches a
-// read, a run or a compile ask. A revision another run promotes after the purge wins over v1, as any newer one does.
+// read, a run or a compile ask, and the trim of a record past the bound keeps v1's. A revision another run promotes after the purge wins over v1, as any newer one does.
 test("a purge of the champion's run puts back the version before it, and the earlier champion serves again: none of the purged text is served, and a later promotion still wins", { timeout: 300_000 }, async (t) => {
   const mark = `PURGED-CHAMPION-${randomBytes(6).toString("hex")}`;
   const { api, data, store } = await serve(t, { learning: "on" });
@@ -290,6 +290,18 @@ test("a purge of the champion's run puts back the version before it, and the ear
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
   assert.deepEqual(onMain(data, "crowned").files, v1, "main holds answer v1 again, both files as `first` wrote them");
   assert.deepEqual(await reads("What is seven times six?"), { holds: false, champion: kept, served: digestOf(v1[path]) }, "no read, run or compile ask holds v2; the champion read names v1's commit, and a run that fits it is served v1");
+
+  // The PROMOTIONS_KEPT trim keeps the champion the gate leaves: a record written past the bound, through the same port
+  // the runner hands recordPromotion, drops none of v1's records, so v1 still serves.
+  const { PROMOTIONS_KEPT, recordPromotion } = await import("../dist/learn/promote.js");
+  const { refusedIn } = await import("../dist/purged-workflow.js");
+  const filler = (await store.settings.get("learning.promotions.crowned")).items;
+  for (let i = filler.length; i < PROMOTIONS_KEPT; i++) filler.push({ workflow: "other", digest: `other-${i}`, at, decided: "hold", reason: "held" });
+  await store.settings.put("learning.promotions.crowned", { v: 1, items: filler });
+  const trimmed = await recordPromotion(store.settings, "crowned", { workflow: "other", digest: "other-past", at, decided: "hold", reason: "held" }, (was) => was === undefined, refusedIn(() => learningFolderOf(data, "crowned"), store));
+  assert.equal(trimmed.won, true);
+  assert.equal((await store.settings.get("learning.promotions.crowned")).items.length, PROMOTIONS_KEPT, "the record past the bound trims one");
+  assert.deepEqual(await reads("What is seven times seven?"), { holds: false, champion: kept, served: digestOf(v1[path]) }, "past the trim, the champion read still names v1's commit, and a run that fits it is served v1");
 
   // A revision `later` promotes after the purge is the champion over v1.
   const v3 = answerAt("in tens");

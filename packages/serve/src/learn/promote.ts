@@ -406,8 +406,9 @@ export function championOf(records: readonly PromotionRecord[], workflow: string
   return now?.decided === "promote" ? now : undefined;
 }
 
-/** The promotion records championOf skips (purged-workflow.ts refusedOf: the purge gate refuses each at its commit). A
- *  reader that serves or names the champion passes it; one that only keeps records (the trim) passes none. */
+/** The promotion records championOf skips (purged-workflow.ts refusedOf: the purge gate refuses each at its commit, so
+ *  it names a record by its workflow and commit, a copy read later included). Every reader that serves or names the
+ *  champion passes it, and the trim keeps the champion past it (trimPromotions). */
 export type Refused = (record: PromotionRecord) => boolean;
 const NONE_REFUSED: Refused = () => false;
 
@@ -506,9 +507,13 @@ const blankedRuns = (record: PromotionRecord | undefined): string[] =>
  *  and of every record kept (`items`: a check across revisions, one at a time, in the same guarded write): so of two
  *  claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). What the one
  *  there now has blanked is blanked in `record` too (forgetRunIn): a record built on a copy read before a run's purge
- *  (a connected agent's next turn, release or decision carries its turns on) never writes that run's text back. */
-export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean): Promise<Recorded> {
+ *  (a connected agent's next turn, release or decision carries its turns on) never writes that run's text back. The trim
+ *  keeps the champion past what the purge gate refuses too (`refused`, purged-workflow.ts refusedIn: asked once before
+ *  the guarded write when it would trim; a record it refuses stays refused). */
+export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, refused?: (records: readonly PromotionRecord[]) => Promise<Refused>): Promise<Recorded> {
   let out: Recorded = { record, won: true };
+  const before = refused ? writtenOf(itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId)))) : [];
+  const skip = refused && before.length >= PROMOTIONS_KEPT ? await refused(before) : undefined;
   await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
     const items = writtenOf(saved);
     const now = promotionOf(items, record.workflow, record.digest);
@@ -518,25 +523,30 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
     }
     const kept = blankedRuns(now).reduce(forgetRunIn, record);
     out = { record: kept, won: true };
-    return trimPromotions([...items, kept]);
+    return trimPromotions([...items, kept], skip);
   });
   return out;
 }
 
 /** The newest records, at most PROMOTIONS_KEPT, in order, with each workflow's champion (championOf) the same after as
  *  before, whatever was dropped: championOf reads the digest promoted last and its newest record, so the trim keeps both
- *  (a held last revision is never trimmed into handing the champion back), and a replaying revision's newest record (what
- *  its settle, its runs' claims and the one-check-at-a-time rule read: dropped, a newer revision would start a second
- *  check while its runs run, and its verdict would never land). The rest is the newest records. */
-export function trimPromotions(items: readonly PromotionRecord[]): PromotionRecord[] {
+ *  (a held last revision is never trimmed into handing the champion back), read over every record and again past those
+ *  `refused` names (the purge gate's: a champion its readers skip, so the earlier one they serve is kept), and a
+ *  replaying revision's newest record (what its settle, its runs' claims and the one-check-at-a-time rule read: dropped,
+ *  a newer revision would start a second check while its runs run, and its verdict would never land). The rest is the
+ *  newest records. */
+export function trimPromotions(items: readonly PromotionRecord[], refused: Refused = NONE_REFUSED): PromotionRecord[] {
   if (items.length <= PROMOTIONS_KEPT) return [...items];
   const keep = new Set<number>();
   for (const workflow of new Set(items.map((one) => one.workflow))) {
     for (const one of replayingOf(items, workflow, null)) keep.add(items.lastIndexOf(one));
-    const last = lastPromotedOf(items, workflow);
-    if (last === undefined) continue;
-    keep.add(items.findLastIndex((one) => one.workflow === workflow && one.digest === last && one.decided === "promote"));
-    keep.add(items.findLastIndex((one) => one.workflow === workflow && one.digest === last));
+    for (const skip of [NONE_REFUSED, refused]) {
+      const own = (one: PromotionRecord) => one.workflow === workflow && !skip(one);
+      const last = items.findLast((one) => own(one) && one.decided === "promote")?.digest;
+      if (last === undefined) continue;
+      keep.add(items.findLastIndex((one) => own(one) && one.digest === last && one.decided === "promote"));
+      keep.add(items.findLastIndex((one) => own(one) && one.digest === last));
+    }
   }
   for (let i = items.length - 1, room = PROMOTIONS_KEPT - keep.size; i >= 0 && room > 0; i--) {
     if (keep.has(i)) continue;

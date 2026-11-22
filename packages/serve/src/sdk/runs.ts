@@ -19,7 +19,7 @@ import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
 import { snapshotAt } from "../learn/folder.js";
-import { purgedRun, purgeGate, refusedOf } from "../purged-workflow.js";
+import { purgedRun, purgeGate, refusedIn, refusedOf } from "../purged-workflow.js";
 import type { RunRow } from "../store/index.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
@@ -319,7 +319,7 @@ export class SdkRuns {
       // A turn is a check only when it can be one's baseline: no protected value in its task or policy, and an input the
       // draft takes (sdkTakes). A prose turn whose input the client cannot resolve is given back (releaseSdkCheck).
       const takes = (flow: LearnedWorkflow) => !redacted && sdkTakes(flow, input, resolveSchemaForWorkflow as never);
-      const checkDeps = { store: this.store, agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }) };
+      const checkDeps = { store: this.store, agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }), refused: refusedIn(() => learningFolderOf(this.data, entry.agent.id), this.store) };
       const check = learning ? await reserveSdkCheck(checkDeps, { runId, revision: learning.seed, learning: revisionBody.learning, flows: selected.candidates, takes }) : undefined;
       // A shadow check needs the original agent's own answer, not an answer produced by its existing champion.
       const workflows = check ? [] : selected.workflows;
@@ -458,7 +458,7 @@ export class SdkRuns {
       const atCommit = async (name: string, commit: string) =>
         chooseWorkflows(await seedAt(folder.workspace, commit, this.store), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
       // The champion skips a record the purge gate refuses at its commit (purged-workflow.ts refusedOf), as a claim's does.
-      const refused = (all: readonly PromotionRecord[], name: string) => refusedOf(all, [name], folder.workspace, this.store);
+      const refused = async (all: readonly PromotionRecord[], names?: Iterable<string>) => refusedOf(all, names ?? all.map((one) => one.workflow), folder.workspace, this.store);
       for (const flow of flows) {
         const { text: serving, champion } = await championTextOf(records, flow, atCommit, refused);
         if (serving && compatible(serving)) {

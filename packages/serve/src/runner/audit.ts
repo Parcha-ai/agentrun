@@ -38,8 +38,8 @@ import { isObject, type Json } from "../validate.js";
 import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
 import { lastRunsOf, sinceReset } from "../learn/compile.js";
 import { readLearning, writeLearning, type LearningFolder } from "../learn/folder.js";
-import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, type Refused, servingOf } from "../learn/promote.js";
-import { refusedOf } from "../purged-workflow.js";
+import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
+import { refusedIn } from "../purged-workflow.js";
 import { excerptShown } from "../learn/secrets.js";
 import type { Shown } from "../learning.js";
 import { auditRoomOf } from "./learning-end.js";
@@ -364,13 +364,7 @@ async function holdByLedger(deps: AuditDeps, all: readonly AuditRow[]): Promise<
   if (!all.length) return;
   const loop = await auditLoopOfRevision(deps.store, deps.revisionId);
   const records = await promotionsOf(deps.store.settings, deps.agentId);
-  const folder = deps.folder();
-  let refused: Refused;
-  try {
-    refused = await refusedOf(records, records.map((one) => one.workflow), folder.workspace, deps.store);
-  } finally {
-    await folder.end().catch(() => undefined);
-  }
+  const refused = await refusedIn(deps.folder, deps.store)(records);
   for (const { workflow, digest } of servingOf(records, refused)) {
     if (digest !== null) await applyHold(deps, all, loop, workflow, digest);
   }
@@ -410,6 +404,6 @@ async function applyHold(deps: AuditDeps, rows: readonly AuditRow[], loop: Audit
     audit: { window: loop.hold_window, disagree: loop.hold_disagree, rows: hold.rows.length, disagreements, ...(stopped ? { stopped: true as const } : {}) },
     ...(current.commit ? { commit: current.commit } : {}),
   };
-  const kept = await recordPromotion(store.settings, agentId, record, (was) => was?.decided === "promote" && was.at === current.at);
+  const kept = await recordPromotion(store.settings, agentId, record, (was) => was?.decided === "promote" && was.at === current.at, refusedIn(deps.folder, store));
   if (kept.won) log(`workflow-first: ${workflow} at ${digest} ${stopped ? `stopped (${said}, a second hold within ${loop.stop_window} served runs)` : reason}`);
 }
