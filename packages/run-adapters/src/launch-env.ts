@@ -9,6 +9,11 @@
  *  ACP adapter read the same rule, so the adapter never refuses a name the loader took. */
 export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 
+/** A key's name, as it is saved and as it is handed to the agent (`ANTIGRAVITY_GEMINI_API_KEY`, `GEMINI_API_KEY`):
+ *  capitals, digits and `_`, at most 64, stricter than ENV_NAME. The loader and the ACP adapter read this one rule, so
+ *  harness-check never refuses a key the loader took. */
+export const KEY_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+
 /** Names refused whole. */
 export const LAUNCH_ENV: readonly string[] = Object.freeze([
   "PATH",
