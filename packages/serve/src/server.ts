@@ -4483,7 +4483,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           agent: { id, name: agent.name, description: agent.description ?? null },
           definition: definitionOf(agent, revision, entry.version),
           skills: (isObject(revision.skills) ? revision.skills : {}) as Record<string, string>,
-          template: entry.template ? { id: entry.template.id, version: entry.template.version } : null,
+          template: entry.template ? { id: entry.template.id, version: entry.template.version, ...(entry.template.secrets ? { secrets: entry.template.secrets } : {}) } : null,
           origin: entry.template ? registry.get(entry.template.id) : undefined,
           servers: mcpMeta,
           triggers: views,
