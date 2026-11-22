@@ -29,7 +29,7 @@ import { repickSiteOf } from "../learn/check.js";
 import { repickLabelOf, repickRewrite } from "../learn/repick.js";
 import { folderAt, type FolderRead, holdsCommit, type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
 import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, sinceReset, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, draftFailedOf, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
-import { reviseAttemptOf } from "./promotion.js";
+import { heldOnGiveBacks, reviseAttemptOf, sdkInputText } from "./promotion.js";
 import { loopOf, repickOf } from "../learning-setting.js";
 import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, resetAtOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders, draftDryRun, draftFiles, draftMcpTools, unpricedCalls, WORKFLOWS_DIR } from "../learn/workflow-draft.js";
@@ -50,7 +50,7 @@ import { readApprovers } from "../server-approvers.js";
 import { isCliRecord, runEntries, runTimeline, withoutFeedbackRounds } from "../store-reads/journal.js";
 import { capNowOf, KINDS } from "./journal-kinds.js";
 import { bookedCapSpend, cliModelWorked, runCostOf } from "./metrics.js";
-import { fits, workflowDigest } from "./workflow-first.js";
+import { fits, sdkTakes, workflowDigest } from "./workflow-first.js";
 import { pendingFeedbackOf } from "./feedback-round.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Committed, createReflectHook, type DraftCommit } from "./reflect-hook.js";
@@ -135,7 +135,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     correctionRefused: ({ runId, agentId, round: at, text, refuse }) => withFolder(deps, agentId, (folder) => correctionRefused(folder.workspace, text, refuse, { runId, round: at })),
     // A run with no workflow binding (an SDK run's `noWorkflows`) compiles nothing.
     ...(start.noWorkflows ? {} : {
-      compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => compileAskOf(deps, { ...input, input: launch.input, seedWorkflows: start.workflows?.length ?? 0, corrections: start.section }),
+      compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => compileAskOf(deps, { ...input, input: launch.input, ...(launch.sdk ? { sdkTask: sdkInputText(launch) } : {}), seedWorkflows: start.workflows?.length ?? 0, corrections: start.section }),
       compileFailed: (input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }) => recordDraftFailed(deps, input),
     }),
     // The run's secrets, what the claim handed it, every secret the server keeps sealed, and the sign-in pointers it was
@@ -498,7 +498,7 @@ const workflowText = (doc: unknown): string => {
 };
 
 /** The digest of the failed-draft record run `runId`'s compile keeps (recordDraftFailed): one per run. */
-const draftFailedDigest = (runId: string): string => createHash("sha256").update(`draft-failed\n${runId}`).digest("hex").slice(0, 16);
+export const draftFailedDigest = (runId: string): string => createHash("sha256").update(`draft-failed\n${runId}`).digest("hex").slice(0, 16);
 
 /** Compile once: run `runId`'s compile turn whose drafts all failed their checks is the compile's attempt, kept as a
  *  promotion record of the shape a check's stop has (runner/promotion.ts stopUnchecked): a hold with nothing checked,
@@ -557,7 +557,8 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
  *  that fits the run's input and whose promotion holds it at main's digest (runner/promotion.ts: its one check on the
  *  agent's own runs fell under the bar; its champion served the run, or the agent did by hand), its text as main holds
  *  it, with the check's numbers and the inputs it disagreed on, once per hold (none when any run since the hold compiled
- *  it, read from the agent's kept learning; a stopped check's none); else, when the job is due (compileDue: the run
+ *  it, read from the agent's kept learning; a stopped check's none; a connected agent's hold on give-backs only once it
+ *  is due, as a first compile is, on its runs since the hold); else, when the job is due (compileDue: the run
  *  completed, the agent has no learned workflow active or waiting, and it has its definition's compile_after completed
  *  agent runs), a new one, compiled once: one more after a first compile whose drafts all failed their checks, and none
  *  after a recompile's (recordDraftFailed). A draft that passes is on main at once (a learned workflow then), so nothing
@@ -567,8 +568,9 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
  *  run's input (`input`, its fields for the workflow's input schema), the agent's output schema when it has one (its
  *  final output's shape) and the DSL's language with this host's addendum. An SDK run's compile, asked outside its
  *  session, also carries the owner's standing corrections it was laid with (`corrections`, its # Learned section), as an
- *  in-session compile reads them in its session. Undefined when it compiles nothing, or when the folder can't be read. */
-export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round?: number; input?: unknown; seedWorkflows?: number; corrections?: string }): Promise<CompileAsk | undefined> {
+ *  in-session compile reads them in its session; its held workflow is the one its task fits (`sdkTask`: sdkTakes, as its
+ *  start reserves a check). Undefined when it compiles nothing, or when the folder can't be read. */
+export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round?: number; input?: unknown; sdkTask?: string; seedWorkflows?: number; corrections?: string }): Promise<CompileAsk | undefined> {
   const { agentId } = input;
   // A revision is asked only of a workflow its promotion holds, once per hold. The workflows whose newest revision other
   // than their champion (learn/promote.ts championOf: it serves while that one is held) is held: the run's own may be one.
@@ -585,8 +587,9 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const since = await sinceReset(deps.store, agentId);
   const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === agentId && since(run));
   const done = earlier.filter(completedRun);
-  const byHand = (await lastOwnRuns(deps.store, agentId, compileAfter, input.runId)).length;
-  const dueWith = (workflows: number) => compileDue({ completed: input.outcome === "completed", runs: byHand + (input.outcome === "completed" ? 1 : 0), workflows, compileAfter });
+  const own = await lastOwnRuns(deps.store, agentId, compileAfter, input.runId);
+  // Due on the agent's own completed runs (`own`, or those of them since a hold), the ending one counted.
+  const dueWith = (workflows: number, runs = own) => compileDue({ completed: input.outcome === "completed", runs: runs.length + (input.outcome === "completed" ? 1 : 0), workflows, compileAfter });
   const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown } } | null | undefined)?.compiled;
   // Compile once: a recompile whose drafts failed their checks stopped the agent's new compiles (recordDraftFailed).
   const stopped = compileStoppedOf(records);
@@ -616,10 +619,12 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
       let current: string | undefined;
       let held: PromotionRecord | undefined;
       if (heldNames.size) {
-        // The one active workflow that fits the run's input (the one workflow-first would serve), held at main's digest.
+        // The one active workflow that fits the run's input (the one workflow-first would serve; an SDK run's, the one its
+        // task fits as its start reserves a check), held at main's digest.
         const active: { name: string; workflow: string }[] = [];
         for (const one of workflows) if (one.status === "active" && heldNames.has(one.name)) { const text = await textOf(one.name); if (text !== undefined) active.push({ name: one.name, workflow: text }); }
-        const fitting = active.filter((one) => fits(one as never, input.input, dsl.resolveSchemaForWorkflow as never));
+        const resolve = dsl.resolveSchemaForWorkflow as never;
+        const fitting = active.filter((one) => input.sdkTask !== undefined ? sdkTakes(one as never, input.sdkTask, resolve) : fits(one as never, input.input, resolve));
         const record = fitting.length === 1 ? promotionOf(records, fitting[0]!.name, workflowDigest(fitting[0]!)) : undefined;
         if (record?.decided === "hold" && !record.check?.stopped && !record.audit?.stopped) [held, current] = [record, fitting[0]!.workflow];
       }
@@ -646,6 +651,11 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   };
   let held: HeldAsk | undefined;
   if (read.held) {
+    // A connected agent's hold on give-backs checked nothing, so it has no disagreements to revise from: its revise waits
+    // for a first compile's cadence, compile_after completed runs of the agent's own since the hold, the ending one counted.
+    // A client that never sends a shadow check then costs one compile per compile_after runs, never one per hold.
+    const heldAt = Date.parse(read.held.at);
+    if (heldOnGiveBacks(read.held.check) && !dueWith(0, own.filter((run) => run.endedAt !== null && run.endedAt > heldAt))) return sayLeftOut(), undefined;
     // Once per hold: a run since it that compiled this workflow asked already, whatever came of it (its revision is on its
     // way to a replay, or its draft failed its checks), however many runs ago. Read from the agent's kept learning since
     // the hold, never a window of its last runs; one that can't be read asks nothing. A draft that failed since, not stopped
