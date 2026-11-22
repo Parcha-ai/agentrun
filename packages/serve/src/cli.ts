@@ -19,6 +19,7 @@ import type { Serve, ServeOptions } from "./server.js";
 import { apiOnlyFrom } from "./api-only.js";
 import { runKeysFrom } from "./run-keys-env.js";
 import { harnessModulesOf } from "./harness-table.js";
+import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
 import { installEnvProxy } from "./env-proxy.js";
 import { startTelemetry } from "./telemetry.js";
@@ -109,6 +110,10 @@ AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
 other address is a 404, and there are no accounts).
+
+AGENTRUN_LAUNCH_HOOK_URL with AGENTRUN_LAUNCH_HOOK_SECRET (a whsec_ secret): each trigger firing that would start a run
+is POSTed to that URL, signed as Standard Webhooks, and the host starts the run through the API; this server starts
+none for it. A 2xx answer marks the firing sent; any other, or none in 10 s, skipped. Set both, or neither.
 
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for
 scripts and the CLI either way). With no AGENTRUN_PUBLIC_URL, listening on loopback, the first visit to the page sets the
@@ -514,6 +519,15 @@ try {
   console.error(`${(error as Error).message}\n\n${USAGE}`);
   process.exit(2);
 }
+// The launch hook: the URL from the environment, its secret as the server holds its own (by name, on the launcher's
+// list); half set or malformed stops here, in words that never hold the secret.
+let launchHook: LaunchHook | undefined;
+try {
+  launchHook = launchHookFrom({ url: process.env[LAUNCH_HOOK_URL_ENV], secret: secret(LAUNCH_HOOK_SECRET_ENV) });
+} catch (error) {
+  console.error(`agentrun-serve: ${(error as Error).message}`);
+  process.exit(2);
+}
 const accounts = !apiOnly && process.env.AGENTRUN_ACCOUNTS !== "0";
 // The address first (listen-first.ts): the port bound and named before the rest of the server loads, then answering that
 // the server is warming until it takes the socket over. A port already taken is left to the start's own listen below,
@@ -547,7 +561,7 @@ try {
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
-    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(runKeys ? { runKeys } : {}),
+    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
     // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
     ...(trustedProxies.length ? { trustedProxies } : {}),
     // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
@@ -601,6 +615,7 @@ if (!values["no-runner"] && askedAt === undefined) {
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : givenList ? "list" : serve.tokenMade ? "made" : "file";
 for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, tokenIds: serve.tokenIds, accounts, ...(apiOnly ? { apiOnly } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
+if (launchHook) console.log(`Launch hook (${LAUNCH_HOOK_URL_ENV}): trigger firings go to ${hookOrigin(launchHook)}, whose host starts their runs; this server starts none for them.`);
 // Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
 // setup link with its code as the code was made (owner.ts).
 if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);

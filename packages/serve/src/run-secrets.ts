@@ -12,6 +12,7 @@ import { GATEWAY_KEY_ENV, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, type Ti
 import { DECISION_KEYS, SECRET_NAMES } from "./secrets.js";
 import { TOOL_FIELDS, TOOL_KEYS, unlocksTool } from "./tool-keys.js";
 import { workflowTools } from "./tools.js";
+import { LAUNCH_HOOK_SECRET_ENV } from "./trigger-launch-hook.js";
 import { ARCHIL_API_KEY_ENV } from "./workspace/archil-key.js";
 
 /** The computer providers' account keys a run never gets: every computer key (computer-keys.ts COMPUTER_KEY_NAMES) but
@@ -21,9 +22,9 @@ const COMPUTER_ACCOUNT_KEYS = COMPUTER_KEY_NAMES.filter((name) => !TOOL_FIELDS.i
 /** The server's own secrets, which a run never gets: the API token, by name or by value, the seal key the tool keys are
  *  kept under (tool-keys.ts), the store's URL (it may hold the database's password), the remote boxes' keys
  *  (place-offers.ts BOX_KEYS) and every other computer provider's account key, which only the server's and the runner's
- *  computer providers use, and the Archil account key (archil-key.ts), from which the claim mints each run's own mount
- *  credential. */
-const SERVER_ONLY: ReadonlySet<string> = new Set(["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS, ...COMPUTER_ACCOUNT_KEYS, ARCHIL_API_KEY_ENV]);
+ *  computer providers use, the Archil account key (archil-key.ts), from which the claim mints each run's own mount
+ *  credential, and the launch hook's signing secret (trigger-launch-hook.ts). */
+const SERVER_ONLY: ReadonlySet<string> = new Set(["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS, ...COMPUTER_ACCOUNT_KEYS, ARCHIL_API_KEY_ENV, LAUNCH_HOOK_SECRET_ENV]);
 /** The secrets a run may be handed: every one but the server's own and the decision keys, which go apart. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
 type KeyRow = { kind: string; fields: readonly string[]; unlocks: readonly string[] };

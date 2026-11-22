@@ -3,6 +3,10 @@
 // its assets, sign-in and setup, settings, MCP, triggers and their webhook hooks, the rest of agents and templates.
 // Off by default.
 import type { Route } from "./server.js";
+import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
+
+/** runnable.ts NOT_SET_UP, spelled here: the CLI reads this module before the server loads, so it imports no more. */
+const NOT_SET_UP = "not_set_up_here";
 
 /** The variable that turns the profile on. */
 export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
@@ -20,8 +24,9 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
  *    words, template-import.ts), which an apply then makes into its agent;
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
- *    revision back, and archives it before its delete (or unarchives it): its token already makes agents through inline
- *    runs, so it gains no new power. The apply makes no trigger, each skipped and said (apiOnlyTriggerSkipped). */
+ *    revision back, and archives it before its delete (or unarchives it, the schedule and feed triggers its archive
+ *    turned off on again when the server has the launch hook): its token already makes agents through inline runs, so it
+ *    gains no new power. A trigger the apply can't make here is skipped, and said (apiOnlyTriggerSkipped). */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
@@ -36,13 +41,22 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
 ]);
 
-/** What an apply on an API-only server (and its dry run's plan) says of `trigger` of the `packageName` template, which it
- *  does not make. It makes none, of any source: a run here starts through the backend in front of it, on that backend's
- *  keys and budget, never on this server's own clock or model key (a schedule's or a feed's), nor from a hook or a
- *  setting the profile refuses (a webhook's, GitHub's, Composio's, the email account's). */
-export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unknown; source?: unknown }): string {
+/** The trigger sources an apply on an API-only server makes once the server has the launch hook: the ones that fire on
+ *  its own clock and need nothing a refused route sets up. Each firing goes to the backend in front of it
+ *  (trigger-launch-hook.ts), which starts the run through the API on its own keys and budget, never on this server's
+ *  model key. A webhook, GitHub or Composio trigger is delivered to a hook this profile refuses, and an email trigger
+ *  reads the account Settings → Email saves: none of them is made here, hook or not. */
+export const API_ONLY_HOOKED_KINDS: ReadonlySet<string> = new Set(["schedule", "feed"]);
+
+/** Why an apply on an API-only server (and its dry run's plan) does not make `trigger` of the `packageName` template, or
+ *  undefined for one it makes: a schedule or a feed when the server has the launch hook (`hooked`). Without it, those two
+ *  are not_set_up_here (set the hook and apply again); any other source is not_an_option, hook or not. */
+export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unknown; source?: unknown }, hooked: boolean): { reason: typeof NOT_SET_UP | "not_an_option"; message: string } | undefined {
   const kind = trigger.source !== null && typeof trigger.source === "object" ? String((trigger.source as { kind?: unknown }).kind) : "";
-  return `The ${packageName} template's trigger ${String(trigger.name).trim()} (${kind}) was not made: this server serves the run API only (${API_ONLY_ENV}=1), so a run starts here through the API alone, never on a trigger. Start its runs through the API instead.`;
+  const named = `The ${packageName} template's trigger ${String(trigger.name).trim()} (${kind}) was not made: this server serves the run API only (${API_ONLY_ENV}=1)`;
+  if (!API_ONLY_HOOKED_KINDS.has(kind)) return { reason: "not_an_option", message: `${named}, which serves no route or setting a ${kind} trigger needs. Start its runs through the API instead.` };
+  if (hooked) return undefined;
+  return { reason: NOT_SET_UP, message: `${named} and has no launch hook, so its firings have nowhere to go. Start its runs through the API, or set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}) and apply again: each firing then goes to your backend, which starts its run.` };
 }
 
 /** Whether `env` turns the profile on: `1` or `true` on; unset, empty, `0` or `false` off. Any other value is refused in
