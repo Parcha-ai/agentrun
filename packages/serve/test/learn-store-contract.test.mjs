@@ -56,6 +56,24 @@ async function merged(store, ...words) {
   }
 }
 
+/** A retried purge (`retried`, after one that moved main and then failed) hands back the commit map the purge made, from
+ *  its marker: every commit of the old main (`before`) to one on the new main. The marker holds commit ids alone: no
+ *  run's text. */
+async function movedAll(store, before, retried) {
+  const tip = await store.head();
+  const now = new Set((await store.log(tip)).map(({ sha }) => sha));
+  assert.ok(retried.moved instanceof Map, `the retry hands back the commit map: ${JSON.stringify(retried)}`);
+  assert.deepEqual(before.filter((sha) => !retried.moved.has(sha)), [], "every old commit is mapped");
+  for (const sha of before) assert.ok(now.has(retried.moved.get(sha)), `${sha} maps to a commit of main`);
+  const [marker] = (await store.read(tip, [".agentrun/purged/run_bravo"])) ?? [];
+  assert.ok(marker, "the purge's marker is at main");
+  const text = Buffer.from(marker.body).toString("utf8");
+  assert.doesNotMatch(text, /ALPHA|BRAVO|CHARLIE|line|reason/i, "the marker holds no run's text");
+  const held = JSON.parse(text);
+  assert.ok(Object.entries(held.moved).length >= before.length, text);
+  for (const [from, to] of Object.entries(held.moved)) assert.ok(HEX.test(from) && HEX.test(to), text);
+}
+
 /** A learned workflow `name`'s two files as a run writes them, each saying `word`. */
 const flow = (name, word) => [
   { path: `workflows/${name}/README.md`, text: `---\nname: ${name}\ndescription: ${word} answers ${name}; use when asked\n---\n` },
@@ -407,6 +425,79 @@ for (const [kind, make] of Object.entries(STORES)) {
     assert.equal((await store.read(await store.head(), ["corrections.md"]))[0].body.toString("utf8"), "- ALPHA line from the owner\n- CHARLIE line from the owner\n");
   });
 
+  // A purge takes off only what the purged run's revisions put there: each workflow file the purged run wrote last holds
+  // the bytes it had in the rebuilt parent of that run's merge (absent there: absent), so no other run's file goes.
+  test(`${kind}: a purge gives back the workflow the purged run revised (a): A's v1 is at the tip and in every tree from B's merge on, its snapshot entry is A's again, and a workflow B wrote alone (b) is in no tree`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText, learningCommit, readSnapshot, runMergeOf } = await learn();
+    const merge = async (change) => assert.equal((await learningCommit(store, change)).ok, true, change.runId);
+    await merge({ runId: "run_alpha", reason: "ALPHA reason words", files: flow("x", "ALPHA") });
+    await merge({ runId: "run_bravo", reason: "BRAVO reason words", files: [...flow("x", "BRAVO"), ...flow("y", "BRAVO")] });
+    const alpha = await runMergeOf(store, "run_alpha");
+    const v1 = await store.read(alpha.merge, ["workflows/x/README.md", "workflows/x/workflow.json"]);
+    assert.ok("commit" in (await forgetRunText(store, "run_bravo")));
+    assert.doesNotMatch(await everything(store), /BRAVO/);
+    const tip = await store.head();
+    const log = await store.log(tip);
+    const from = log.findIndex(({ message }) => message.includes("Run-Id: run_bravo"));
+    assert.ok(from >= 0, JSON.stringify(log.map(({ message }) => message)));
+    for (const { sha } of log.slice(0, from + 1)) {
+      assert.deepEqual(await store.read(sha, ["workflows/x/README.md", "workflows/x/workflow.json"]), v1, `A's x at ${sha}`);
+      assert.deepEqual(paths(await store.read(sha)).filter((path) => path.startsWith("workflows/y/")), [], `no y at ${sha}`);
+    }
+    assert.deepEqual((await readSnapshot(store)).workflows.map(({ name, run }) => [name, run]), [["x", "run_alpha"]]);
+  });
+
+  test(`${kind}: a purge gives back the file the purged run revised alone: B rewrote only x's workflow.json, and A's README.md and workflow.json are at the tip, x's entry A's`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText, learningCommit, readSnapshot } = await learn();
+    assert.equal((await learningCommit(store, { runId: "run_alpha", reason: "ALPHA reason words", files: flow("x", "ALPHA") })).ok, true);
+    const v1 = await store.read(await store.head(), ["workflows/x/README.md", "workflows/x/workflow.json"]);
+    assert.equal((await learningCommit(store, { runId: "run_bravo", reason: "BRAVO reason words", files: [flow("x", "BRAVO")[1]] })).ok, true);
+    assert.ok("commit" in (await forgetRunText(store, "run_bravo")));
+    assert.doesNotMatch(await everything(store), /BRAVO/);
+    assert.deepEqual(await store.read(await store.head(), ["workflows/x/README.md", "workflows/x/workflow.json"]), v1);
+    assert.deepEqual((await readSnapshot(store)).workflows.map(({ name, run }) => [name, run]), [["x", "run_alpha"]]);
+  });
+
+  test(`${kind}: a purge keeps a later run's revision (c): A v1, B v2, C v3, purge B: C's v3 from C's merge on, A's v1 between B's merge and C's; a purge again changes nothing (d)`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText, learningCommit, readSnapshot, runMergeOf } = await learn();
+    for (const word of ["ALPHA", "BRAVO", "CHARLIE"]) assert.equal((await learningCommit(store, { runId: `run_${word.toLowerCase()}`, reason: `${word} reason words`, files: flow("x", word) })).ok, true);
+    const files = ["workflows/x/README.md", "workflows/x/workflow.json"];
+    const v1 = await store.read((await runMergeOf(store, "run_alpha")).merge, files);
+    const v3 = await store.read(await store.head(), files);
+    assert.ok("commit" in (await forgetRunText(store, "run_bravo")));
+    assert.doesNotMatch(await everything(store), /BRAVO/);
+    const tip = await store.head();
+    const log = await store.log(tip);
+    const charlie = log.findIndex(({ message }) => message.includes("Run-Id: run_charlie"));
+    const bravo = log.findIndex(({ message }) => message.includes("Run-Id: run_bravo"));
+    assert.ok(charlie >= 0 && bravo > charlie, JSON.stringify(log.map(({ message }) => message)));
+    for (const { sha } of log.slice(0, charlie + 1)) assert.deepEqual(await store.read(sha, files), v3, `C's x at ${sha}`);
+    for (const { sha } of log.slice(charlie + 1, bravo + 1)) assert.deepEqual(await store.read(sha, files), v1, `A's x at ${sha}`);
+    assert.deepEqual((await readSnapshot(store)).workflows.map(({ name, run }) => [name, run]), [["x", "run_charlie"]]);
+    // (d) A purge again changes nothing: main, every tree.
+    const trees = await Promise.all(log.map(async ({ sha }) => [sha, paths(await store.read(sha))]));
+    const again = await forgetRunText(store, "run_bravo");
+    assert.equal(again.nothing, "purged", JSON.stringify(again));
+    assert.equal(await store.head(), tip);
+    assert.deepEqual(await Promise.all((await store.log(tip)).map(async ({ sha }) => [sha, paths(await store.read(sha))])), trees);
+  });
+
+  test(`${kind}: two purged runs in a row end at the first writer's version (e): A v1, B v2, C v3, purge B then C: A's v1 at the tip, its entry A's`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText, learningCommit, readSnapshot, runMergeOf } = await learn();
+    for (const word of ["ALPHA", "BRAVO", "CHARLIE"]) assert.equal((await learningCommit(store, { runId: `run_${word.toLowerCase()}`, reason: `${word} reason words`, files: flow("x", word) })).ok, true);
+    const files = ["workflows/x/README.md", "workflows/x/workflow.json"];
+    const v1 = await store.read((await runMergeOf(store, "run_alpha")).merge, files);
+    assert.ok("commit" in (await forgetRunText(store, "run_bravo")));
+    assert.ok("commit" in (await forgetRunText(store, "run_charlie")));
+    assert.doesNotMatch(await everything(store), /BRAVO|CHARLIE/);
+    assert.deepEqual(await store.read(await store.head(), files), v1);
+    assert.deepEqual((await readSnapshot(store)).workflows.map(({ name, run }) => [name, run]), [["x", "run_alpha"]]);
+  });
+
   test(`${kind}: a purge takes out the purged run's line after its owner moved it (the owner swaps two runs' lines): the other run's line stays`, async (t) => {
     const store = await make(t);
     const { forgetRunText, putCorrections, readSnapshot } = await learn();
@@ -467,7 +558,7 @@ for (const [kind, make] of Object.entries(STORES)) {
     for (const key of ["run_bravo", "run_bravo.r2"]) assert.ok("already" in (await save(store, done.commit, [{ path: "corrections.md", text: "BRAVO again\n" }], { run: key })), key);
     assert.equal(await store.head(), done.commit);
     // A purge sent again, or one of a run that never merged, does nothing.
-    assert.deepEqual(await forgetRunText(store, "run_bravo"), { nothing: "purged" });
+    assert.equal((await forgetRunText(store, "run_bravo")).nothing, "purged");
     assert.deepEqual(await forgetRunText(store, "run_zulu"), { nothing: "unmerged" });
     assert.equal(await store.head(), done.commit);
     // No byte of the old history is left in the store itself.
@@ -488,7 +579,7 @@ for (const [kind, make] of Object.entries(STORES)) {
       const making = sh(["commit-tree", `${done.commit}^{tree}`, "-p", done.commit, "-m", "a run's merge being made"]);
       const importRef = "refs/agentrun/import-0123456789abcdef";
       sh(["update-ref", importRef, making]);
-      assert.deepEqual(await forgetRunText(store, "run_bravo"), { nothing: "purged" });
+      assert.equal((await forgetRunText(store, "run_bravo")).nothing, "purged");
       assert.equal(sh(["rev-parse", importRef]), making);
       // A rewrite stopped after moving main (its tidy mark left, before it pruned) left the run's bytes and a ref: a
       // purge sent again finds its marker and removes them, the import on main kept.
@@ -500,7 +591,7 @@ for (const [kind, make] of Object.entries(STORES)) {
       const lost = await store.rewrite(before, (commit) => commit({ parent: null, message: "a rewrite that loses", at: 1_700_000_000, files: [] }));
       assert.ok("stale" in lost, JSON.stringify(lost));
       assert.equal(existsSync(join(git, "agentrun-tidy")), true, "a lost rewrite keeps the mark another left");
-      assert.deepEqual(await forgetRunText(store, "run_bravo"), { nothing: "purged" });
+      assert.equal((await forgetRunText(store, "run_bravo")).nothing, "purged");
       const objects = execFileSync("git", ["--git-dir", git, "cat-file", "--batch-all-objects", "--batch"], { maxBuffer: 64 << 20 }).toString("utf8");
       assert.doesNotMatch(objects, /BRAVO/);
       assert.deepEqual(sh(["for-each-ref", "--format=%(refname)"]).split("\n").sort(), [importRef, "refs/heads/main"]);
@@ -512,6 +603,28 @@ for (const [kind, make] of Object.entries(STORES)) {
     }
   });
 }
+
+test("local: a save whose checkout a purge overtook (main moved between the save's compare and swap and its checkout) leaves the working tree at main as it stands, never at the save's own older commit", async (t) => {
+  const store = await STORES.local(t);
+  const { localStoreHooks } = await import("../dist/learn/store-local.js");
+  const clean = (await save(store, null, [{ path: "corrections.md", text: "- clean\n" }])).saved;
+  // A git in front of the script's: armed, its first read-tree is a purge's landing first (main moved to the clean
+  // commit, checked out), then the save's own read-tree runs.
+  const bin = mkdtempSync(join(tmpdir(), "learn-git-"));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const arm = join(bin, "arm");
+  writeFileSync(join(bin, "git"), `#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = read-tree ] && [ -f "${arm}" ]; then\n    to=$(cat "${arm}"); rm -f "${arm}"\n    /usr/bin/git update-ref refs/heads/main "$to" && /usr/bin/git read-tree -u --reset "$to" || exit 9\n    break\n  fi\ndone\nexec /usr/bin/git "$@"\n`, { mode: 0o755 });
+  localStoreHooks.env = { PATH: `${bin}:/usr/bin:/bin` };
+  t.after(() => {
+    localStoreHooks.env = undefined;
+  });
+  writeFileSync(arm, clean);
+  const done = await save(store, clean, [{ path: "corrections.md", text: "- clean\n- PURGED words\n" }]);
+  assert.match(done.saved ?? "", HEX, JSON.stringify(done));
+  assert.equal(existsSync(arm), false, "the purge landed between the save's compare and swap and its checkout");
+  assert.equal(await store.head(), clean, "main is the purge's");
+  assert.equal(readFileSync(join(gitDirOf(store.data), "..", "corrections.md"), "utf8"), "- clean\n", "the working tree is main's: the save checked main out again");
+});
 
 test("local: a purge on a folder an earlier release wrote leaves none of its diff files (.agentrun/diffs, kept outside git): no file in the folder holds the run's text", async (t) => {
   const store = await STORES.local(t);
@@ -534,11 +647,14 @@ test("local: a purge whose checkout fails (an index.lock left behind) is not don
   const tree = join(git, "..");
   const corrections = () => readFileSync(join(tree, "corrections.md"), "utf8");
   assert.match(corrections(), /BRAVO line/, "the working tree holds main's corrections");
+  const before = (await store.log(await store.head())).map(({ sha }) => sha);
   writeFileSync(join(git, "index.lock"), "");
   await assert.rejects(forgetRunText(store, "run_bravo"), /working tree/);
   assert.equal(existsSync(join(git, "agentrun-tidy")), true, "the tidy mark stays while the checkout is not done");
   rmSync(join(git, "index.lock"));
-  assert.deepEqual(await forgetRunText(store, "run_bravo"), { nothing: "purged" });
+  const retried = await forgetRunText(store, "run_bravo");
+  assert.equal(retried.nothing, "purged", JSON.stringify(retried));
+  await movedAll(store, before, retried);
   assert.doesNotMatch(corrections(), /BRAVO/);
   assert.match(corrections(), /ALPHA line/);
   assert.equal(existsSync(join(git, "agentrun-tidy")), false);
@@ -625,12 +741,15 @@ test("code.storage: a purge whose old repository's delete fails is not done: the
   const old = `agentrun-${SRV}-agent-one-g0`;
   const store = await wrappedStore((inner) => async (url, init) => (refuse && init?.method === "DELETE" && repoOf(init) === old ? new Response(JSON.stringify({ error: "unavailable" }), { status: 503, headers: { "content-type": "application/json" } }) : inner(url, init)));
   await merged(store, "ALPHA", "BRAVO");
+  const before = (await store.log(await store.head())).map(({ sha }) => sha);
   await assert.rejects(forgetRunText(store, "run_bravo"), (error) => error.name === "FolderUnreadable");
   assert.match(fakeText(store.fake), /BRAVO/, "the old repository is left");
   assert.doesNotMatch(await everything(store), /BRAVO/, "the agent is on the next generation");
   await assert.rejects(forgetRunText(store, "run_bravo"), (error) => error.name === "FolderUnreadable");
   refuse = false;
-  assert.deepEqual(await forgetRunText(store, "run_bravo"), { nothing: "purged" });
+  const retried = await forgetRunText(store, "run_bravo");
+  assert.equal(retried.nothing, "purged", JSON.stringify(retried));
+  await movedAll(store, before, retried);
   assert.deepEqual([...store.fake.repos.keys()], [`agentrun-${SRV}-agent-one-g1`]);
   assert.doesNotMatch(fakeText(store.fake), /BRAVO/);
 });

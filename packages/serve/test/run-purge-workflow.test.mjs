@@ -248,3 +248,38 @@ for (const via of ["the store's purge", "DELETE /runs/{id}, the history rewritte
   const refused = { status: 410, code: "purged", run: writer };
   assert.deepEqual({ again, dropped: await start("pinned"), fresh: await start("fresh") }, { again: refused, dropped: refused, fresh: { status: 201, workflows: [] } }, "the receipt sent again and a new start refuse the purged run's workflow");
 });
+
+// The lead's rule (a): a purge takes off only what the purged run's revisions put there. Run A learned answer (v1,
+// promoted), run B revised it (v2, held), and B is purged: main holds A's v1 again, the view lists it as A's, its file
+// reads A's text, and the champion record still reads it, at A's merge.
+test("a purge gives back the champion the purged run revised: A's v1 is on main again, read as A's, and the champion still reads it", { timeout: 300_000 }, async (t) => {
+  const mark = `PURGED-REVISION-${randomBytes(6).toString("hex")}`;
+  const { api, data, store } = await serve(t, { learning: "on" });
+  const first = (await startRun(api, "keeps", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
+  await ended(api, first);
+  const gone = await started(api, "keeps", "What is three?");
+  await ended(api, gone);
+  const path = "workflows/answer/workflow.json";
+  const v1 = JSON.stringify(answerFlow("Answer the question."));
+  const v2 = JSON.stringify(answerFlow(`Answer the question, ${mark}.`));
+  const champion = await learned(data, "keeps", (learning) => learningCommit(learning, { runId: first, reason: "It learned answer.", files: [{ path, text: v1 }, readmeOf("answer")] }));
+  const revised = await learned(data, "keeps", (learning) => learningCommit(learning, { runId: gone, reason: "It revised answer.", files: [{ path, text: v2 }] }));
+  const at = new Date().toISOString();
+  await store.settings.put("learning.promotions.keeps", { v: 1, items: [
+    { workflow: "answer", digest: digestOf(v1), at, decided: "promote", reason: "checked: promoted", commit: champion },
+    { workflow: "answer", digest: digestOf(v2), at, decided: "hold", reason: "checked: held", commit: revised },
+  ] });
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  const file = await api("GET", `/agents/keeps/learning/files/${encodeURIComponent(path)}`);
+  const view = (await api("GET", "/agents/keeps/learning")).body;
+  const promotions = (await api("GET", "/agents/keeps/learning/promotions")).body;
+  const line = promotions.serving.find((one) => one.workflow === "answer");
+  assert.deepEqual({
+    file: file.status,
+    v1: JSON.stringify(file.body).includes("Answer the question.") && !JSON.stringify(file.body).includes(mark),
+    listed: view.workflows.some(({ name }) => name === "answer"),
+    holds: JSON.stringify({ view, promotions }).includes(mark),
+    onMain: git(repoOf(data, "keeps"), ["show", `main:${path}`]),
+    champion: line?.champion?.commit ?? line?.serving?.commit ?? null,
+  }, { file: 200, v1: true, listed: true, holds: false, onMain: v1, champion: mergeOf(data, "keeps", first) }, "A's v1 is back on main and the champion reads it");
+});
