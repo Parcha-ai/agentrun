@@ -249,6 +249,17 @@ rewrite_ref() {
 }
 
 op=${1:-}
+# Every way back to a history main no longer holds gone: every ref but main (a leftover import's, a rewrite's), the
+# reflogs, and the objects nothing reaches then.
+tidy_history() {
+  g for-each-ref --format='%(refname)' > "$tmp/refs" || die "for-each-ref failed"
+  while IFS= read -r r; do
+    [ "$r" = refs/heads/main ] || g update-ref -d "$r" || die "ref $r could not be removed"
+  done < "$tmp/refs"
+  g reflog expire --expire=now --expire-unreachable=now --all || die "the reflog could not be expired"
+  g gc --prune=now --quiet || die "git gc failed"
+}
+
 case $op in
   head)
     main_now
@@ -387,16 +398,16 @@ case $op in
       cat "$tmp/cas" >&2
       exit 2
     fi
-    g for-each-ref --format='%(refname)' > "$tmp/refs" || die "for-each-ref failed"
-    while IFS= read -r r; do
-      [ "$r" = refs/heads/main ] || g update-ref -d "$r" || die "ref $r could not be removed"
-    done < "$tmp/refs"
     g read-tree -u --reset "$new" 2> "$tmp/checkout" || cat "$tmp/checkout" >&2
-    g reflog expire --expire=now --expire-unreachable=now --all || die "the reflog could not be expired"
-    g gc --prune=now --quiet || die "git gc failed"
+    tidy_history
     printf '%s\n' "$new"
     ;;
+  tidy)
+    # What a rewrite stopped after moving main left of the old history gone (a purge sent again runs it).
+    [ -d "$GIT_DIR" ] || exit 0
+    tidy_history
+    ;;
   *)
-    die "no op $op: head, init, commit, read, log, diff, build, drop or rewrite"
+    die "no op $op: head, init, commit, read, log, diff, build, drop, rewrite or tidy"
     ;;
 esac

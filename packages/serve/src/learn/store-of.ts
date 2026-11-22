@@ -88,7 +88,7 @@ function refusedStore(agentId: string, words: string): LearningStore {
   const no = async (): Promise<never> => {
     throw new FolderUnreadable(false, words);
   };
-  return { id: `refused:${agentId}`, head: no, read: no, log: no, diff: no, save: no, rewrite: no, remove: no };
+  return { id: `refused:${agentId}`, head: no, read: no, log: no, diff: no, save: no, rewrite: no, tidy: no, remove: no };
 }
 
 /** Data directory `data`'s learning as a start sets it from `env` (codeStorageFromEnv, its key read by `key`): on

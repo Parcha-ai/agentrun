@@ -2,7 +2,7 @@
 // forgetCopies): main's whole history rebuilt without it, the same way on every store (learn/store.ts rewrite).
 import { CORRECTIONS_FILE } from "./corrections.js";
 import { blobOid, forgetHistory, hostCommitOf, isHostPath, rewrittenSnapshot, scrubbedMessage, SNAPSHOT_FILE, type Snapshot } from "./folder.js";
-import { type ChainCommit, type LearningStore, purgedMarker, type StoreCommit, type StoreFile } from "./store.js";
+import { type ChainCommit, type LearningStore, MOVED_FILE, purgedMarker, type StoreCommit, type StoreFile } from "./store.js";
 
 /** The host's words on the commit a purge ends with (its message reads `host: <these>`). */
 const SCRUB = "a purged run's text removed";
@@ -18,9 +18,10 @@ const ATTEMPTS = 4;
  * run lands after (learn/store.ts save), and a purge run again finds it and does nothing. The store moves main to the
  * new chain by compare and swap and leaves no byte of the old one (learn/store.ts rewrite); a run merging meanwhile
  * finds main moved, as after a reset. Every commit id changes; every other run's history and diffs stay. `commit`: the
- * new main, when the purge rewrote it.
+ * new main, when the purge rewrote it; `moved`: each old commit's new one, the commit whose tree it now is (one dropped
+ * goes to the one before it), so a record naming an old commit (a promotion's) is moved to it.
  */
-export async function forgetRunText(store: LearningStore, runId: string): Promise<{ commit?: string }> {
+export async function forgetRunText(store: LearningStore, runId: string): Promise<{ commit?: string; moved?: ReadonlyMap<string, string> }> {
   for (let attempt = 1; ; attempt++) {
     const done = await purgeOnce(store, runId);
     if (done !== "stale") return done;
@@ -28,12 +29,16 @@ export async function forgetRunText(store: LearningStore, runId: string): Promis
   }
 }
 
-async function purgeOnce(store: LearningStore, runId: string): Promise<{ commit?: string } | "stale"> {
+async function purgeOnce(store: LearningStore, runId: string): Promise<{ commit?: string; moved?: ReadonlyMap<string, string> } | "stale"> {
   const old = await store.head();
   if (!old) return {};
   const [marked, newestFirst] = await Promise.all([store.read(old, [purgedMarker(runId)]), store.log(old)]);
   if (!marked || !newestFirst) return "stale";
-  if (marked.length) return {};
+  // Purged already: what a rewrite stopped after moving main kept of the old history goes now, or this throws, retryable.
+  if (marked.length) {
+    await store.tidy();
+    return {};
+  }
   const trailer = `Run-Id: ${runId}`;
   const merges = new Set(newestFirst.filter(({ message }) => message.split("\n").includes(trailer)).map(({ sha }) => sha));
   if (!merges.size) return {};
@@ -43,6 +48,7 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<{ commit?
 
   const rewritten = new Map<string, string | null>();
   const changed = new Map<string, string[]>();
+  const moved = new Map<string, string>();
   const oldBodies = new Set<string>();
   let gone: string[] = [];
   let tree: readonly StoreFile[] = [];
@@ -52,16 +58,24 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<{ commit?
     for (const one of history) {
       const files = await store.read(one.sha);
       if (!files) throw new Moved();
+      // A store's fence (a rewrite cut short after it) adds nothing but MOVED_FILE: no history to keep.
+      if (files.some(({ path }) => path === MOVED_FILE)) {
+        rewritten.set(one.sha, null);
+        if (tip) moved.set(one.sha, tip);
+        continue;
+      }
       if (merges.has(one.sha)) gone = [...gone, ...(added.get(one.sha) ?? [])];
       const built = rebuilt(one, files, gone, runId, { rewritten, changed, tree }, tip, oldBodies);
       // A commit with nothing of its own left (its tree the one before's) is no commit: a store refuses one that
       // changes nothing.
       if (!merges.has(one.sha) && sameTree(built.files, tree)) {
         rewritten.set(one.sha, null);
+        if (tip) moved.set(one.sha, tip);
         continue;
       }
       tip = await commit(built.commit(tip));
       rewritten.set(one.sha, tip);
+      moved.set(one.sha, tip);
       tree = built.files;
       landed = built.snapshot?.(tip);
     }
@@ -72,7 +86,7 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<{ commit?
   if ("stale" in saved) return "stale";
   // What this process kept of the old history: its snapshots, and the bodies that held the run's lines.
   forgetHistory(store, oldBodies);
-  return { commit: saved.saved };
+  return { commit: saved.saved, moved };
 }
 
 /** A commit read gone while its history was rebuilt: main moved. */

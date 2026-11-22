@@ -295,6 +295,11 @@ export function localLearningStore(data: string, agentId: string): LearningStore
       if (run.code === 3) return { stale: said || null };
       throw failed("rewrite", run);
     },
+    async tidy() {
+      if (!(await open(false))) return;
+      const run = await runScript(root, ["tidy"]);
+      if (run.code !== 0) throw failed("tidy", run);
+    },
     // An erasure is a reset here: the folder, every commit of it, is all the store keeps.
     async remove() {
       // Each level on the way checked first: a link there is never followed, the folder behind it never removed.

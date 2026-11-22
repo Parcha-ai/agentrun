@@ -18,7 +18,12 @@
 // - rewrite: main's whole history replaced (a run's purge, learn/purge.ts): a new chain of commits built apart from
 //   main, none of it reachable while it is built, then main moved to its tip by compare and swap on `old`, and the old
 //   history's bytes gone from the store (the local folder expires its reflog and prunes; code.storage builds the chain
-//   in the agent's next repository, flips to it, and deletes the old one). A rewrite cut short leaves main as it was;
+//   in the agent's next repository, fences the old one's main (MOVED_FILE: a save on it is stale, so none lands there
+//   reported saved and is then deleted), flips to it, and deletes the old one). A rewrite cut short leaves main as it
+//   was, or fenced until the next rewrite or reset; a chain built leaves MOVED_FILE out;
+// - tidy: what a rewrite cut short after moving main kept of the old history removed (the local folder's refs, reflog
+//   and loose objects; code.storage's old repository), or a retryable error while it can't be: a purge sent again
+//   finds its marker and tidies;
 // - remove: every commit gone (a reset, an agent's or a person's erasure); the next save makes the store again, empty.
 //   Removing a store that is gone already is done. `erase` (an agent's delete): nothing of the agent is left in the
 //   store at all, code.storage's every repository generation included.
@@ -75,6 +80,7 @@ export interface LearningStore {
   save(save: StoreSave): Promise<Saved>;
   /** `build` makes the chain, one commit at a time by `commit` (each answering its id), and answers its tip. */
   rewrite(old: string, build: (commit: (one: ChainCommit) => Promise<string>) => Promise<string>): Promise<Rewritten>;
+  tidy(): Promise<void>;
   remove(options?: { erase?: boolean }): Promise<void>;
 }
 
@@ -83,6 +89,8 @@ export const HOST_DIR = ".agentrun";
 export const runMarker = (key: string): string => `${HOST_DIR}/runs/${key}`;
 /** The marker a run's purge leaves on main (learn/purge.ts): no key of that run merges after. */
 export const purgedMarker = (runId: string): string => `${HOST_DIR}/purged/${runId}`;
+/** The file a store's rewrite fences the main it moves off with (code.storage): a commit holding it is no history to keep. */
+export const MOVED_FILE = `${HOST_DIR}/moved`;
 /** The run a merge's key names: its id, a later round's `.r<round>` cut. */
 export const runOfKey = (key: string): string => key.replace(/\.r\d+$/, "");
 /** A marker's key: a run's id and round. */

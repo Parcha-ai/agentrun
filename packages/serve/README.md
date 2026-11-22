@@ -3493,20 +3493,23 @@ stays in every total.
     blocks go back to the filesystem unwiped. Postgres's own WAL and its archived WAL keep the old values until they are
     recycled or expire, and backups keep them for their retention.
 - Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id and the
-  commits it names. A run's purge takes its text out of the learning's whole history, not only its current files: every
+  commit it names, moved to the rewritten commit by a purge. A run's purge takes its text out of the learning's whole history, not only its current files: every
   commit of main is rebuilt, oldest first, without the feedback lines the run's merges added to `corrections.md` and
   without its merges' reasons (each merge kept, its message `learning: <run>: merged`, empty of its text), each
   snapshot rebuilt, and one commit by the host on top marks `.agentrun/purged/<run>`, so no round of the run merges
   again. No byte of the old history is kept: the local folder moves main to the new history, removes every other ref,
   expires its reflog and prunes; code.storage builds the new history in the agent's next repository generation, moves
   the agent to it and deletes the old repository (a purge cut short leaves the live repository untouched, and the next
-  one deletes the half-built repository by its exact id first). What it costs: every commit id of the agent's learning
-  changes (a promotion record's commit id then names no commit, and a champion is read at main); on code.storage it
+  one deletes the half-built repository by its exact id first; before moving, it fences the old repository's main, so
+  a run's merge that lands meanwhile is either rebuilt into the new history or refused, never kept in the repository
+  deleted). A purge cut short after moving main is finished by the next `DELETE`, which removes what is left of the old
+  history (or answers `503` while it can't). What it costs: every commit id of the agent's learning changes (each
+  promotion record's commit is moved to the rewritten one, so every champion reads as before); on code.storage it
   takes about 0.3 s a commit (the local folder is fast), and the agent's learning waits meanwhile; a run of the agent
   in flight merges nothing, as after a reset; every other run's history and diffs are kept. The log, a workflow's
   revisions and a champion read by its digest leave out its merges, known by the run the log names for each (its newest
   200 changes), and a champion whose workflow it changed last is not read at main either. A second `DELETE` finds the
-  purge marked and does nothing. It covers the agent's one learning store, local or on code.storage.
+  purge marked and only finishes removing the old history, if a purge was cut short. It covers the agent's one learning store, local or on code.storage.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`. An [API-only](#api-only) server purges a run of
   an agent another system owns alone; a run of an agent made here is its profile's `404` there.

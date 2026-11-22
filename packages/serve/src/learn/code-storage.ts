@@ -24,7 +24,7 @@
 //   by the next call. Never restore_commit: it keeps the old commits reachable, so it is no erasure. No call lists
 //   repositories.
 import { createHash, createPrivateKey, type KeyObject, randomUUID, sign } from "node:crypto";
-import { type ChainCommit, CODE_STORAGE_ENV, COMMIT, FolderUnreadable, IDENTITY, type LearningStore, MARKER_KEY, PATCH_CAP, purgedMarker, type Rewritten, runMarker, runOfKey, type Saved, type StoreCommit, type StoreDiffFile, type StoreFile, type StoreSave } from "./store.js";
+import { type ChainCommit, CODE_STORAGE_ENV, COMMIT, FolderUnreadable, IDENTITY, type LearningStore, MARKER_KEY, MOVED_FILE, PATCH_CAP, purgedMarker, type Rewritten, runMarker, runOfKey, type Saved, type StoreCommit, type StoreDiffFile, type StoreFile, type StoreSave } from "./store.js";
 import type { CodeStorageSettings } from "./store-of.js";
 
 /** How long a token is good for. */
@@ -323,7 +323,12 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
       const absent: string[] = [];
       const same: string[] = [];
       let seed: string | undefined;
+      let fenced = false;
       await Promise.all([
+        // A rewrite fenced this main (MOVED_FILE): the agent is moving to its next generation, so nothing lands here.
+        ...(old ? [(async () => {
+          fenced = (await fileAt(old, MOVED_FILE)) !== undefined;
+        })()] : []),
         ...(save.absent ?? []).map(async (path) => {
           if (old && (await fileAt(old, path)) !== undefined) absent.push(path);
         }),
@@ -336,6 +341,7 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
           if (!(await holds(save.seed!))) seed = save.seed;
         })()] : []),
       ]);
+      if (fenced) return { moved: true };
       if (absent.length || same.length || seed !== undefined) return { refused: { absent: absent.sort(), same: same.sort(), ...(seed !== undefined ? { seed } : {}) } };
       if (!old) {
         // The repository made only while the agent is still on its generation: a reset or purge flipped since moves on.
@@ -391,10 +397,11 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
 
   /** The agent's generation and the ops on its repository; the generations a flip left behind deleted first (one that
    *  can't be deleted now stays named, for the next call). */
-  async function current(): Promise<{ at: Generation; ops: ReturnType<typeof on> }> {
+  async function current(strict = false): Promise<{ at: Generation; ops: ReturnType<typeof on> }> {
     let at = await generations.get(agentId);
     if (at.drop?.length) {
-      const left = (await Promise.all(at.drop.map(async (g) => (await on(await idOf(g)).drop().then(() => true, () => false)) ? [] : [g]))).flat();
+      // `strict` (tidy): a generation that can't be deleted now throws, retryable, rather than staying named.
+      const left = (await Promise.all(at.drop.map(async (g) => (await on(await idOf(g)).drop().then(() => true, (error: unknown) => (strict ? Promise.reject(error) : false))) ? [] : [g]))).flat();
       const now = { n: at.n, ...(left.length ? { drop: left } : {}) };
       if (left.length < at.drop.length) at = (await generations.set(agentId, at, now)) ? now : await generations.get(agentId);
     }
@@ -426,7 +433,11 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
       tree = files;
       return done.saved;
     });
-    if ((await ops.head()) === old && (await flip(at, at.n + 1, [at.n]))) return { saved: tip };
+    // The old main fenced by compare and swap on `old`: a save that landed since makes this stale, and one after it is
+    // refused (MOVED_FILE), so no save lands in the old repository reported saved and is then deleted with it.
+    const fence = await ops.pack("host: moving to the next generation", old, [{ path: MOVED_FILE, mode: "100644", body: Buffer.from(`${at.n + 1}\n`, "utf8") }], []);
+    // (`unchanged`: a rewrite cut short fenced it already.)
+    if (!("stale" in fence) && (await flip(at, at.n + 1, [at.n]))) return { saved: tip };
     // A reset moved past it: the chain built is no generation's.
     if ((await generations.get(agentId)).n !== at.n + 1) await next.drop();
     return { stale: await (await current()).ops.head() };
@@ -458,6 +469,7 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
       return "moved" in done ? { stale: await (await current()).ops.head() } : done;
     },
     rewrite,
+    tidy: async () => void (await current(true)),
     remove,
   };
 }

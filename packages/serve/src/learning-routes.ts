@@ -23,14 +23,14 @@ import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, 
 import { FolderUnreadable, type LearningStore, PATCH_CAP } from "./learn/store.js";
 import { learningStoreOf } from "./learn/store-of.js";
 import { ApiError, invalid } from "./errors.js";
-import type { ServingState } from "./learn/promote.js";
+import { moveRecordCommits, type ServingState } from "./learn/promote.js";
 import { type ItemStatus, detailShown, filesView, type Learning, reasonShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import { isObject } from "./validate.js";
 import { launchOf } from "./handed-values.js";
 import { learningStartOf } from "./run-launch.js";
 import { type LearnedUse, runLearningEnd } from "./store-reads/learning.js";
-import type { Store } from "./store/store.js";
+import type { Settings, Store } from "./store/store.js";
 
 /** The agent view's first page of its log, and the most a page holds. */
 const LOG_PAGE = 20;
@@ -96,11 +96,13 @@ async function servedIn(snapshot: Snapshot, purgedOf: PurgedOf): Promise<(change
 }
 
 /** Run `runId`'s text taken out of agent `agentId`'s learning at its purge, its history rewritten (learn/purge.ts
- *  forgetRunText), in the agent's queue, as every write of its learning is. */
-export async function forgetRunLearning(data: string, agentId: string, runId: string): Promise<void> {
+ *  forgetRunText), in the agent's queue, as every write of its learning is; its promotion records (in `settings`) moved
+ *  to the rewritten commits, so every champion reads as before. */
+export async function forgetRunLearning(data: string, agentId: string, runId: string, settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">): Promise<void> {
   await withAgentRepo(data, agentId, async () => {
     try {
-      await forgetRunText(learningStoreOf(data, agentId), runId);
+      const done = await forgetRunText(learningStoreOf(data, agentId), runId);
+      if (done.moved) await moveRecordCommits(settings, agentId, done.moved);
       // A page's cursor named a main of the history rewritten: its next page starts again at main now's first item.
       seen.forget(seenKey(agentId, ""));
     } catch (error) {

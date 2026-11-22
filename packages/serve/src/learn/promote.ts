@@ -370,6 +370,15 @@ export const forgetRunCopies = async (settings: Pick<Settings, "get" | "putIfAbs
   await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (items) => items.map((one) => forgetRunIn(one, runId)));
 };
 
+/** Agent `agentId`'s promotion records' learning commits moved as a purge's rewrite moved them (learn/purge.ts
+ *  forgetRunText's `moved`): a champion is still read at its record's commit, each record else as it was. No write when
+ *  none names a moved commit. */
+export const moveRecordCommits = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, moved: ReadonlyMap<string, string>): Promise<void> => {
+  const at = (one: PromotionRecord): PromotionRecord => (one.commit && moved.has(one.commit) ? { ...one, commit: moved.get(one.commit)! } : one);
+  if (itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId))).every((one) => at(one) === one)) return;
+  await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (items) => items.map(at));
+};
+
 /** Marks the kept grade `grade` (its run, given at its `at`, kept at its `seq`) with the feedback round it opened and
  *  that round's steer, in place: its `seq` stays. A newer grade of the run is left as it is, one given in the same
  *  millisecond too (its `seq` is another). The grade, marked. */

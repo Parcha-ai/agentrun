@@ -2611,7 +2611,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // as the purge had got, and the next DELETE does it again.
     forgetCopies: async (agentId, runId) => {
       await forgetRunCopies(store.settings, agentId, runId);
-      await notYetWith(() => forgetRunLearning(data, agentId, runId), ["unavailable"], "The agent's learning keeps the run's text until the DELETE is sent again.");
+      await notYetWith(() => forgetRunLearning(data, agentId, runId, store.settings), ["unavailable"], "The agent's learning keeps the run's text until the DELETE is sent again.");
     },
     // /usage's meters and a live read's spend, from its journal, as they read now (store-reads/cap.ts), and how its
     // learning ended as /stats counts it (its state and reason alone).
