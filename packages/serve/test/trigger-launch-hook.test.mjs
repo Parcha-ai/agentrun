@@ -11,6 +11,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
 import { fakeClock, firings, made, schedule, until } from "./trigger-support.mjs";
 
@@ -21,6 +23,7 @@ const { uuidv7 } = await import("../dist/ids.js");
 const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
 const { heldRedactor, secretRedactor } = await import("../dist/runner/redact.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
+const { openRunLaunch } = await import("../dist/store/index.js");
 
 /** A host's hook on 127.0.0.1: each request kept (its headers and body), answered by `answer`. One the sender cut short
  *  (its bound passed mid-body, or the test's end) is answered 400, never left to throw in the test. */
@@ -486,23 +489,24 @@ test("AGENTRUN_RUN_KEYS=1: a key the agent does not declare in the host's trigge
   assert.deepEqual([still.status, still.run_id], ["sent", null]);
 });
 
-test("the host's start runs on its trigger's target: the target's cap, which the host's max_cost_usd may lower and never raise, over the agent's default, and the target's effort", { timeout: 120_000 }, async (t) => {
+test("the host's start runs on its trigger's target: the target's cap, which the host's max_cost_usd may lower and never raise, over the agent's default; the target's effort when it sets one, else the host's", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   let api;
-  // Each trigger's host sends its own max_cost_usd: none, more than the target's, or less.
-  const hostCap = new Map();
+  // Each trigger's host sends its own max_cost_usd (none, more than the target's, or less) and effort.
+  const host = new Map();
   const hook = await hookServer(t, async (res, sent) => {
-    const cap = hostCap.get(sent.trigger_id);
-    const started = await api("POST", `/agents/${sent.agent_id}/runs`, { input: sent.input, ...(cap === undefined ? {} : { max_cost_usd: cap }), trigger_firing: { trigger_id: sent.trigger_id, firing_id: sent.firing_id } });
+    const { cap, effort } = host.get(sent.trigger_id);
+    const started = await api("POST", `/agents/${sent.agent_id}/runs`, { input: sent.input, ...(cap === undefined ? {} : { max_cost_usd: cap }), ...(effort ? { effort } : {}), trigger_firing: { trigger_id: sent.trigger_id, firing_id: sent.firing_id } });
     answerJson(res, started.status === 202 ? 202 : 400, {});
   });
   ({ api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } }));
   await made(api, "nightly", { max_cost_usd: 5 });
   const ids = {};
-  for (const [name, cap] of [["none", undefined], ["more", 10], ["less", 0.2]]) {
-    const created = await api("POST", "/triggers", { ...schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }), name, target: { kind: "start_run", agent_id: "nightly", input: { content: "Say hello." }, max_cost_usd: 0.5, effort: "high" } });
+  for (const [name, cap, effort, targetEffort] of [["none", undefined, undefined, "high"], ["more", 10, "low", "high"], ["less", 0.2, undefined, "high"], ["own", undefined, "low", undefined]]) {
+    const target = { kind: "start_run", agent_id: "nightly", input: { content: "Say hello." }, max_cost_usd: 0.5, ...(targetEffort ? { effort: targetEffort } : {}) };
+    const created = await api("POST", "/triggers", { ...schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }), name, target });
     assert.equal(created.status, 201, JSON.stringify(created.body));
-    hostCap.set(created.body.id, cap);
+    host.set(created.body.id, { cap, effort });
     ids[name] = created.body.id;
   }
   clock.to("2026-06-01T00:10:00Z");
@@ -512,10 +516,115 @@ test("the host's start runs on its trigger's target: the target's cap, which the
     return (await api("GET", `/runs/${firing.run_id}`)).body;
   };
   const none = await runOf("none");
+  const more = await runOf("more");
   assert.equal(none.cost.cap_usd, 0.5, "the target's cap, never the agent's $5 default");
-  assert.equal((await runOf("more")).cost.cap_usd, 0.5, "a host's cap never raises the target's");
+  assert.equal(more.cost.cap_usd, 0.5, "a host's cap never raises the target's");
   assert.equal((await runOf("less")).cost.cap_usd, 0.2, "a host's cap lowers it");
   assert.equal(none.effort, "high", "the target's effort");
+  assert.equal(more.effort, "high", "the target's effort over the host's");
+  assert.equal((await runOf("own")).effort, "low", "the host's effort when the target sets none");
+});
+
+/** Every model setting a keyless server's tests set or clear: it holds no model key of its own. */
+const MODEL_NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SERVE_GRADE_MODEL", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
+
+test("the host's start lays its body over the target's run as any start takes it: mcp_auth and model_key sealed for the run, as its claim opens them; max_cost_usd under the target's cap; effort the target's, else the host's", { timeout: 120_000 }, async (t) => {
+  const gw = await startFauxGateway({ text: "Answered." });
+  t.after(() => gw.close());
+  const sealKey = randomBytes(32);
+  withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "claude-sonnet-5-5", AGENTRUN_SEAL_KEY: sealKey.toString("base64") }, [...MODEL_NAMES, "AGENTRUN_SEAL_KEY"]);
+  const listToken = `not-a-secret-list-${randomBytes(6).toString("hex")}`;
+  const runToken = `not-a-secret-run-${randomBytes(6).toString("hex")}`;
+  const modelKey = `not-a-secret-model-${randomBytes(6).toString("hex")}`;
+  const mcp = await startFakeMcp({ token: (authorization) => [listToken, runToken].some((token) => authorization === `Bearer ${token}`) });
+  t.after(() => mcp.close());
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  let api;
+  const hostCap = new Map();
+  const starts = [];
+  const hook = await hookServer(t, async (res, sent) => {
+    const body = { input: sent.input, mcp_auth: { gw: { headers: { authorization: `Bearer ${runToken}` } } }, model_key: modelKey, max_cost_usd: hostCap.get(sent.trigger_id), effort: "low", trigger_firing: { trigger_id: sent.trigger_id, firing_id: sent.firing_id } };
+    const started = await api("POST", `/agents/${sent.agent_id}/runs`, body);
+    starts.push(started);
+    answerJson(res, started.status === 202 ? 202 : 400, {});
+  });
+  const server = await serve(t, { faux: undefined, triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } });
+  ({ api } = server);
+  const saved = await api("PUT", "/settings/mcp-servers/gw", { url: mcp.url, auth: { type: "per_run", headers: { authorization: `Bearer ${listToken}` } } }, { authorization: `Bearer ${server.token}` });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  await made(api, "nightly", { tools: ["mcp:gw/add"] });
+  const ids = {};
+  for (const [name, cap, effort] of [["own", 10, undefined], ["set", 0.2, "high"]]) {
+    const target = { kind: "start_run", agent_id: "nightly", input: { content: "Add two and two." }, max_cost_usd: 0.5, ...(effort ? { effort } : {}) };
+    const created = await api("POST", "/triggers", { ...schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }), name, target });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    hostCap.set(created.body.id, cap);
+    ids[name] = created.body.id;
+  }
+  clock.to("2026-06-01T00:10:00Z");
+  assert.ok(await until(() => starts.length === 2), "both hosts started their firing's run");
+  for (const started of starts) {
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    for (const secret of [runToken, modelKey]) assert.ok(!JSON.stringify(started.body).includes(secret), "the start's answer holds no credential");
+  }
+  const runOf = async (name) => {
+    const [firing] = await firings(api, ids[name], 1);
+    assert.equal(firing.status, "started", JSON.stringify(firing));
+    return (await api("GET", `/runs/${firing.run_id}`)).body;
+  };
+  for (const [name, cap, effort] of [["own", 0.5, "low"], ["set", 0.2, "high"]]) {
+    const run = await runOf(name);
+    assert.deepEqual([run.cost.cap_usd, run.effort], [cap, effort], `${name}: the cap is the lower of the two, the effort the target's, else the host's`);
+    const opened = openRunLaunch(sealKey, run.run_id, (await server.store.runs.launch(run.run_id)).sealed);
+    assert.deepEqual(opened?.mcp?.gw?.headers, { authorization: `Bearer ${runToken}` }, `${name}: the host's mcp_auth, sealed for the run`);
+    assert.equal(opened?.model?.key, modelKey, `${name}: the host's model_key, sealed for the run's turns`);
+  }
+});
+
+test("a failed hook's firing, its trigger and its trigger.failed name the failure, never the hook's URL, its query or the hook's secret", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
+  const token = `not-a-secret-query-${randomBytes(8).toString("hex")}`;
+  const secret = mintSecret();
+  const hidden = (url) => [url, token, "/agentrun/firings", secret, secret.slice("whsec_".length)];
+  const shownNone = (text, url, what) => {
+    for (const part of hidden(url)) assert.ok(!text.includes(part), `${what} holds ${part.slice(0, 24)}…`);
+  };
+
+  // A hook that answers 400: the firing fails at once, and trigger.failed is sent.
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const hook = await hookServer(t, (res) => answerJson(res, 400, { error: "no" }));
+  const receiver = await hookServer(t, (res) => answerJson(res, 200, {}));
+  const url = `${hook.url}?token=${token}`;
+  const { api } = await serve(t, { triggerClock: clock, webhookPrivateTargets: true, launchHook: { url, secret } });
+  assert.equal((await api("PUT", "/settings/webhook", { url: receiver.url })).status, 201);
+  await made(api, "nightly");
+  const created = await api("POST", "/triggers", schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  clock.to("2026-06-01T00:10:00Z");
+  const [refused] = await firings(api, created.body.id, 1);
+  assert.deepEqual([refused.status, refused.error?.code], ["failed", "hook_failed"], JSON.stringify(refused));
+  const failed = await until(() => receiver.got.map((got) => JSON.parse(got.body.toString("utf8"))).find((message) => message.type === "trigger.failed"));
+  assert.match(failed?.data?.error?.message ?? "", /^hook_failed \(400\)/, JSON.stringify(failed));
+  const firingsShown = JSON.stringify((await api("GET", `/triggers/${created.body.id}/firings`)).body);
+  shownNone(firingsShown, url, "the firings");
+  shownNone(JSON.stringify((await api("GET", `/triggers/${created.body.id}`)).body), url, "the trigger");
+  shownNone(JSON.stringify(failed), url, "trigger.failed");
+
+  // A hook that is not reached: the firing's reason names the errno, never where it went.
+  const closed = createServer();
+  await new Promise((resolve) => closed.listen(0, "127.0.0.1", resolve));
+  const gone = `http://127.0.0.1:${closed.address().port}/agentrun/firings?token=${token}`;
+  await new Promise((resolve) => closed.close(resolve));
+  const laterClock = fakeClock("2026-06-01T00:00:00Z");
+  const unreached = await serve(t, { triggerClock: laterClock, launchHook: { url: gone, secret } });
+  await made(unreached.api, "nightly");
+  const later = await unreached.api("POST", "/triggers", schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(later.status, 201, JSON.stringify(later.body));
+  laterClock.to("2026-06-01T00:10:00Z");
+  const waiting = await tried(unreached.api, later.body.id, 1);
+  assert.match(waiting.reason ?? "", /^hook_failed \(unreachable\): the launch hook was not reached \(ECONNREFUSED\)/, JSON.stringify(waiting));
+  shownNone(JSON.stringify(waiting), gone, "the unreached firing");
+  shownNone(waiting.reason, `127.0.0.1:${new URL(gone).port}`, "its reason");
 });
 
 test("the host's start of a schedule's second firing is handed the trigger's previous result, as a run started here is", { timeout: 120_000 }, async (t) => {

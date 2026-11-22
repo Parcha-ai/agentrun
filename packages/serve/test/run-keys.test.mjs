@@ -108,7 +108,7 @@ async function quotedKey(t, key) {
   assert.ok(!holdsRun(logs.join("\n"), key), "no log line holds the key");
 }
 
-test("keys names only the tool keys the run's revision reads, each a value of 8 or more characters with no space or control character: another tool's key, a name that is no tool key, a value that is not text, too short or holds a space or a newline, or keys that is not an object is 422 by name, never echoed, and nothing starts", { timeout: 60_000 }, async (t) => {
+test("keys names only the tool keys the run's revision reads, each a value of 8 or more visible ASCII characters: another tool's key, a name that is no tool key, a value that is not text, too short, holds a space or a newline, or a character past ASCII (8 UTF-16 units of 4 astral characters, 8 accented letters), or keys that is not an object is 422 by name, never echoed, and nothing starts", { timeout: 60_000 }, async (t) => {
   const { api } = await setup(t);
   assert.equal((await api("POST", "/agents", SEARCHER("searcher"))).status, 201);
   const key = newKey();
@@ -122,6 +122,8 @@ test("keys names only the tool keys the run's revision reads, each a value of 8 
     [{ PARALLEL_API_KEY: short }, "keys.PARALLEL_API_KEY", "invalid", short],
     [{ PARALLEL_API_KEY: `${key} x` }, "keys.PARALLEL_API_KEY", "invalid", key],
     [{ PARALLEL_API_KEY: `${key}\n` }, "keys.PARALLEL_API_KEY", "invalid", key],
+    [{ PARALLEL_API_KEY: "𝐀𝐁𝐂𝐃" }, "keys.PARALLEL_API_KEY", "invalid", "𝐀𝐁𝐂𝐃"],
+    [{ PARALLEL_API_KEY: "é".repeat(8) }, "keys.PARALLEL_API_KEY", "invalid", "é".repeat(8)],
     [key, "keys", "wrong_type", key],
   ];
   for (const [keys, field, reason, value] of cases) {
