@@ -377,6 +377,24 @@ for (const [kind, make] of Object.entries(STORES)) {
   });
 }
 
+test("local: a purge whose checkout fails (an index.lock left behind) is not done: the tidy mark stays, the purge fails retryable, and once the lock is gone the purge sent again checks main out and leaves no file holding the run's text", async (t) => {
+  const store = await STORES.local(t);
+  const { forgetRunText } = await learn();
+  await merged(store, "ALPHA", "BRAVO", "CHARLIE");
+  const git = gitDirOf(store.data);
+  const tree = join(git, "..");
+  const corrections = () => readFileSync(join(tree, "corrections.md"), "utf8");
+  assert.match(corrections(), /BRAVO line/, "the working tree holds main's corrections");
+  writeFileSync(join(git, "index.lock"), "");
+  await assert.rejects(forgetRunText(store, "run_bravo"), /working tree/);
+  assert.equal(existsSync(join(git, "agentrun-tidy")), true, "the tidy mark stays while the checkout is not done");
+  rmSync(join(git, "index.lock"));
+  assert.deepEqual(await forgetRunText(store, "run_bravo"), { nothing: "purged" });
+  assert.doesNotMatch(corrections(), /BRAVO/);
+  assert.match(corrections(), /ALPHA line/);
+  assert.equal(existsSync(join(git, "agentrun-tidy")), false);
+});
+
 test("code.storage: the repo is agentrun-<server id>-<agent id>-g0, every call's token names it, and the key never travels", async (t) => {
   const store = await STORES["code.storage"](t);
   const one = (await save(store, null, [{ path: "corrections.md", text: "- one\n" }])).saved;
