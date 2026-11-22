@@ -94,9 +94,6 @@ export function heldRedactor(base: Redact): HeldRedact {
   return cut;
 }
 
-/** Where a claim of run `runId` hands the run's own keys it lays (claim-secrets.ts ClaimSecretsDeps.carry): `redact`. */
-export const carryTo = (redact: HeldRedact, runId: string) => (values: readonly string[]): void => redact.carry(runId, values);
-
 /** Every string inside `value` cut by `cut`: what the run's process writes, as the runner's redactor would cut it in a
  *  loop of its own (rule three: no secret the runner holds is written). `names`: each object's and map's names too (a
  *  model may write a value as a JSON name); two names cut to one are both kept, the later ones numbered. A number that

@@ -23,7 +23,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { sandboxForClaim } from "./workspace-fake-processes.mjs";
 
-const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index.js");
+const { openSqliteStore, sealMcpCredential, sealRunLaunch } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -87,8 +87,8 @@ function captureLogs(t) {
 const storeText = (dir) => ["store.sqlite", "store.sqlite-wal", "store.sqlite-shm"].map((name) => join(dir, name)).filter(existsSync).map((file) => readFileSync(file).toString("latin1")).join("\n");
 
 /** A store on a new data directory, its MCP server saved with a planted header (sealed), an agent of `body`, and run-1
- *  launched with `launch`. */
-async function storeWith(t, body, launch) {
+ *  launched with `launch` and its `sealed` secrets. */
+async function storeWith(t, body, launch, sealed = null) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-secret-edge-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -99,7 +99,7 @@ async function storeWith(t, body, launch) {
   });
   await server.mcp.put({ name: "fake", url: "https://mcp.invalid/mcp", auth: "bearer", tools: [], sealed: sealMcpCredential(SEAL_KEY, "fake", { type: "headers", headers: { authorization: `Bearer ${MCP_HEADER}` } }, "https://mcp.invalid/mcp") });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer briefly.", ...body } });
-  await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+  await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch, sealed });
   await server.flush?.();
   assert.ok(storeText(dir).length > 0, "the store's files are there to read");
   return { dir, server, store };
@@ -176,6 +176,18 @@ test("a pi run through the runner whose agent runs `env` in its sandbox's bash: 
   assert.deepEqual(found(JSON.stringify(requests)), [], "the model's requests hold none");
   assert.deepEqual(found(storeText(opened.dir)), [], "the store's files hold none in the clear");
   assert.deepEqual(found(logs()), [], "the runner's log holds none");
+});
+
+test("a pi run carrying its own tool key, whose model says it back: the spec's claim carries the key into the runner's own redactor, so the journal holds it cut", { timeout: 120_000 }, async (t) => {
+  const carried = `planttoolrunkey${"r8".repeat(12)}`;
+  const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => PLANT.ANTHROPIC_API_KEY }, fetch: scriptedOrigin([{ say: `The key is ${carried}.` }]) };
+  const launch = { input: { content: "Say the key." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
+  const opened = await storeWith(t, { tools: ["web_search"] }, launch, sealRunLaunch(SEAL_KEY, RUN, { keys: { PARALLEL_API_KEY: carried } }));
+  const deps = { env: {}, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: noComputer };
+  const { row, journal } = await runThrough(t, opened, "pi", (given) => createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)));
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  assert.match(journal, /The key is \[redacted\]\./, "the model's words are in the journal, the key cut from them");
+  assert.ok(!journal.includes(carried), "the journal holds no run key");
 });
 
 test("pdf_pages: its programs run with no planted secret in their environment (red on cli-spec, where pdf-pages.ts runs them with this process's whole environment; fixed by untangle/tools-pdf-env 7aa36b1826, main #2016 fb70182f39: helperEnv)", async (t) => {
