@@ -172,18 +172,52 @@ test('oversized native prompt and answer complete through the real SDK lane with
  await saveConnection(server.data,connection);
  const options={runtime:'codex',project,dataDir:server.data};
  const transcript=join(project,'native.jsonl');await writeFile(transcript,'');
- const sent=[];
+ const sent=[]; let lostCompletion, deferredCompletion=false;
  const dependencies={env:{},snapshot:async()=>({text:'Keep source permissions.',files:[],truncated:false}),fetch:async(url,request)=>{
-   const response=await fetch(url,request);sent.push({path:new URL(url).pathname,status:response.status,body:JSON.parse(request.body)});return response;
+   const path=new URL(url).pathname, body=JSON.parse(request.body);
+   if (!deferredCompletion && path.endsWith('/complete') && body.session_id==='escaped-answer') {
+     deferredCompletion=true;
+     throw new Error('Fixture transport deferred the initial completion before sending.');
+   }
+   const response=await fetch(url,request);
+   if (!lostCompletion && path.endsWith('/complete') && body.session_id==='escaped-answer' && response.ok) {
+     // The server accepted the last window, but its source hook loses the response at its real transport deadline.
+     await response.text();lostCompletion={path,body};
+     await new Promise((resolve,reject)=>{
+       if(request.signal.aborted)reject(request.signal.reason);
+       else request.signal.addEventListener('abort',()=>reject(request.signal.reason),{once:true});
+     });
+   }
+   sent.push({path,status:response.status,body});return response;
  }};
  const source=(event,turn,fields)=>({hook_event_name:event,session_id:turn,turn_id:turn,cwd:project,transcript_path:transcript,...fields});
  for(const [turn,prompt,answer] of [['long-prompt','p'.repeat(130_000),'Ready.'],['long-answer','Task.','a'.repeat(130_000)],['escaped-answer','Task.','\u0001'.repeat(40_000)]]){
    await runCliLearningHook(options,source('UserPromptSubmit',turn,{prompt}),dependencies);
    await appendFile(transcript,JSON.stringify({type:'response_item',payload:{type:'message',role:'assistant',content:answer}})+'\n');
    await runCliLearningHook(options,source('Stop',turn,{last_assistant_message:answer}),dependencies);
+   if(turn!=='escaped-answer'){
+     const acknowledged=await flushCliLearning(options,{fetch:dependencies.fetch});assert.equal(acknowledged.pending,0);
+   }
  }
+ assert.equal(deferredCompletion,true,'the final hook retained its initially unsent completion');
+ if(!lostCompletion) await flushCliLearning(options,{fetch:dependencies.fetch});
+ assert.ok(lostCompletion,'the real server accepted the deliberately unanswered completion');
+ const retained=await flushCliLearning(options,{fetch:async()=>{throw new Error('Fixture transport remains offline.');}});
+ assert.equal(retained.delivered,0);assert.equal(retained.pending,1,'one accepted completion stays durable until its response is recovered');
+ // Hooks have bounded deadlines; successful completion includes draining their retained journal, not immediate delivery.
+ const retried=await flushCliLearning(options,{fetch:dependencies.fetch});assert.equal(retried.pending,0);
  const complete=sent.filter(call=>call.path.endsWith('/complete'));assert.equal(complete.length,3);
  assert.ok(sent.every(call=>call.status<300),sent.map(call=>`${call.path}: ${call.status}`).join('\n'));
  assert.ok(complete.every(call=>call.body.evidence_complete===false));
- const retried=await flushCliLearning(options,{fetch:dependencies.fetch});assert.equal(retried.pending,0);
+ assert.deepEqual(complete.find(call=>call.path===lostCompletion.path)?.body,lostCompletion.body,'retry preserves the exact frozen completion');
+ const ids=[...new Set(complete.map(call=>call.path.split('/').at(-2)))];assert.equal(ids.length,3);
+ assert.equal((await server.store.runs.list({agentId:connection.agent_id})).length,3,'lost responses cannot create another run');
+ for(const id of ids){
+   await follow(api,id,['completed']);
+   const launch=(await server.store.runs.launch(id)).body,inbox=await sdkInbox(server.store,id);
+   assert.ok(launch.input.content.length<=128000);assert.ok(inbox.completion.answer.length<=128000);
+   assert.ok(Buffer.byteLength(JSON.stringify(inbox.completion.answer))<=200000);
+   assert.equal(inbox.evidence_incomplete,true);assert.equal(inbox.completion.evidence_complete,false);
+   assert.equal((await api('GET',`/runs/${id}`)).body.cli_learning.evidence_complete,false);
+ }
 });
