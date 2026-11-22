@@ -1,18 +1,13 @@
-// Where `--to` points: an AgentRun's API base, as `agentrun deploy` (and the CLI's sign-in) takes it. `cloud` is the
-// hosted AgentRun, its address one constant here that AGENTRUN_CLOUD_URL overrides (a staging install, a test).
+// The AgentRun a command sends to (`--to`): an address, or `cloud`, the shortcut for AgentRun cloud. `agentrun login --to`
+// and `agentrun deploy --to` name a target the same way.
 
-/** The hosted AgentRun's API base: what `--to cloud` names. */
-export const CLOUD_URL = "https://api.agentrun.ai/v2";
+/** AgentRun cloud's address, which `--to cloud` names unless AGENTRUN_CLOUD_URL names another. */
+export const CLOUD_URL = "https://api.agentrun.ai";
 
-/** `--to`'s value as an API base: `cloud`, else an http or https URL with no user, password, query or fragment (a URL
- *  with no path gets /v2; a trailing slash is dropped). Anything else throws, naming --to; the URL itself is never echoed,
- *  as it may hold a password. */
-export function toBase(given, env = process.env) {
-  const raw = given === "cloud" ? env.AGENTRUN_CLOUD_URL || CLOUD_URL : given;
-  const url = typeof raw === "string" && URL.canParse(raw) ? new URL(raw) : undefined;
-  if (!url || !/^https?:$/.test(url.protocol) || /[?#]/.test(raw) || url.username || url.password) {
-    throw new Error(`--to is cloud or an AgentRun's address: an http or https URL with no user, password, query or fragment${given === "cloud" ? " (AGENTRUN_CLOUD_URL is not one)" : ""}.`);
-  }
-  const path = url.pathname.replace(/\/+$/, "");
-  return `${url.origin}${path || "/v2"}`;
+/** The API base a `--to` names, ending /v2: `cloud` is AGENTRUN_CLOUD_URL, else CLOUD_URL; an address whose path does
+ *  not end /v2 gets it appended. The caller checks the result as every base URL is checked (cli.mjs baseOf), so a query,
+ *  fragment, user or password is refused there. */
+export function toUrl(given, env) {
+  const url = (given === "cloud" ? env.AGENTRUN_CLOUD_URL || CLOUD_URL : given).replace(/\/+$/, "");
+  return /\/v2$/.test(url) ? url : `${url}/v2`;
 }

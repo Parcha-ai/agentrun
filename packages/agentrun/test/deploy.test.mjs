@@ -253,15 +253,64 @@ test("agentrun deploy refuses a folder holding a link, a missing --to, and --pau
   assert.match(linked.err, /skills\/check\/host\.md is a symbolic link: a package holds files and folders alone/);
 });
 
-test("--to names a target: cloud is api.agentrun.ai (AGENTRUN_CLOUD_URL overrides it), a URL with no path gets /v2", async () => {
-  const { CLOUD_URL, toBase } = await import("../lib/target.mjs");
-  assert.equal(CLOUD_URL, "https://api.agentrun.ai/v2");
-  assert.equal(toBase("cloud", {}), "https://api.agentrun.ai/v2");
-  assert.equal(toBase("cloud", { AGENTRUN_CLOUD_URL: "https://staging.example.test/v2/" }), "https://staging.example.test/v2");
-  assert.equal(toBase("http://127.0.0.1:7340", {}), "http://127.0.0.1:7340/v2");
-  assert.equal(toBase("https://agents.example.test/", {}), "https://agents.example.test/v2");
-  assert.equal(toBase("https://agents.example.test/v2/", {}), "https://agents.example.test/v2");
+/** A target that answers each "METHOD path" (under /v2) with `answers[key]` ([status, body]), else 404; the requests it saw. */
+async function fakeTarget(t, answers) {
+  const seen = [];
+  const fake = createServer((req, res) => {
+    const key = `${req.method} ${req.url.replace(/^\/v2/, "")}`;
+    seen.push(key);
+    req.resume();
+    const [status, body] = answers[key] ?? [404, { error: { code: "not_found", message: "Not found." } }];
+    res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+  });
+  await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (fake.closeAllConnections(), fake.close(resolve))));
+  return { base: `http://127.0.0.1:${fake.address().port}/v2`, seen };
+}
+
+test("deploy delete takes a 404 as gone only when the agent is not there: a target that did not archive or delete it keeps the lock and exits 2", { timeout: 60_000 }, async (t) => {
+  const AGENT_ID = "agt_kept";
+  const there = [200, { agent_id: AGENT_ID, name: "pr-alert", revision: "rev_1", archived: false }];
+  const gone = [404, { error: { code: "not_found", message: "Not found." } }];
+  const archived = [200, { agent_id: AGENT_ID, archived: true }];
+  const cases = [
+    { name: "archive 404, agent there", answers: { [`GET /agents/${AGENT_ID}`]: there }, code: 2, kept: true },
+    { name: "archive 404, agent gone", answers: { [`GET /agents/${AGENT_ID}`]: gone }, code: 0, kept: false },
+    { name: "delete 404, agent there", answers: { [`POST /agents/${AGENT_ID}/archive`]: archived, [`GET /agents/${AGENT_ID}`]: there }, code: 2, kept: true },
+    { name: "delete 404, agent gone", answers: { [`POST /agents/${AGENT_ID}/archive`]: archived, [`GET /agents/${AGENT_ID}`]: gone }, code: 0, kept: false },
+  ];
+  for (const one of cases) {
+    const { dir, env } = scratch();
+    const pkg = folder(dir);
+    const target = await fakeTarget(t, one.answers);
+    const lockFile = join(pkg, ".agentrun", "deploy.json");
+    mkdirSync(join(pkg, ".agentrun"), { recursive: true });
+    writeFileSync(lockFile, `${JSON.stringify({ target: target.base, workspace: null, agent_id: AGENT_ID, revision_id: "rev_1", package_sha256: null, deployed_at: new Date().toISOString() })}\n`);
+    const result = await cli(env, ["deploy", "delete", pkg, "--yes"], { AGENTRUN_API_KEY: "not-a-secret" });
+    assert.equal(result.code, one.code, `${one.name}: ${result.err}\n${target.seen.join("\n")}`);
+    assert.equal(existsSync(lockFile), one.kept, `${one.name}: the lock ${one.kept ? "is kept" : "is removed"}`);
+    if (one.kept) assert.match(result.err, new RegExp(`did not (archive|delete) ${AGENT_ID}; nothing was deleted`), one.name);
+    else assert.match(result.err, /Deleted/, one.name);
+  }
+});
+
+test("--to names a target: cloud is api.agentrun.ai (AGENTRUN_CLOUD_URL overrides it), /v2 appended where the path lacks it; deploy refuses one that is no base URL before it sends anything", { timeout: 60_000 }, async () => {
+  const { CLOUD_URL, toUrl } = await import("../lib/target.mjs");
+  assert.equal(CLOUD_URL, "https://api.agentrun.ai");
+  assert.equal(toUrl("cloud", {}), "https://api.agentrun.ai/v2");
+  assert.equal(toUrl("cloud", { AGENTRUN_CLOUD_URL: "https://staging.example.test/v2/" }), "https://staging.example.test/v2");
+  assert.equal(toUrl("http://127.0.0.1:7340", {}), "http://127.0.0.1:7340/v2");
+  assert.equal(toUrl("https://agents.example.test/", {}), "https://agents.example.test/v2");
+  assert.equal(toUrl("https://agents.example.test/v2/", {}), "https://agents.example.test/v2");
+  assert.equal(toUrl("https://agents.example.test/api", {}), "https://agents.example.test/api/v2");
+  const { dir, env } = scratch();
+  const pkg = folder(dir);
   // A URL with a user and password, made here rather than written out.
   const withUser = Object.assign(new URL("https://example.test"), { username: "user", password: "pw" }).href;
-  for (const bad of ["ftp://example.test", withUser, "https://example.test/v2?x=1", "nope"]) assert.throws(() => toBase(bad, {}), /--to/, bad);
+  for (const bad of ["ftp://example.test", withUser, "https://example.test/v2?x=1", "nope"]) {
+    const refused = await cli(env, ["deploy", pkg, "--to", bad, "--yes"], { AGENTRUN_API_KEY: "not-a-secret" });
+    assert.equal(refused.code, 2, `${bad}: ${refused.err}`);
+    assert.match(refused.err, /--to must be an http or https URL/, bad);
+    assert.doesNotMatch(refused.err, /pw/, "the URL is never echoed");
+  }
 });

@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { refusalExit } from "./login.mjs";
-import { toBase } from "./target.mjs";
+import { toUrl } from "./target.mjs";
 
 /** The folder's own files a package never holds: the lock's folder and git's. */
 const SKIPPED = new Set([".agentrun", ".git"]);
@@ -180,6 +180,8 @@ function remote(cli, values, env, io, base) {
 
 const enc = encodeURIComponent;
 const say = (io, line) => io.stderr.write(`${line}\n`);
+/** `--to` as an API base (target.mjs toUrl), checked as every base URL is (exit 2 naming --to). */
+const toOf = (cli, given, env) => cli.baseOf(toUrl(given, env), "--to");
 
 /** Yes on a terminal, or --yes: false means the command stops (exit 2) with `asked` said. */
 async function confirmed(io, values, question, offTerminal) {
@@ -228,7 +230,10 @@ async function sourceOf({ values, args, env, io, cli }, fail) {
     source,
     lock: installLock(env, cli, source.base, given, fail),
     async files() {
-      const { value } = await source.call("GET", `/agents/${enc(given)}/package`);
+      // No such agent here, or one this install does not export (409 not_exportable: a workflow, an agent with no
+      // revision, one another system owns): refused as given, as `agentrun export` refuses it.
+      const { status, value } = await source.call("GET", `/agents/${enc(given)}/package`, undefined, [404, 409, 422]);
+      if (status !== 200) throw fail(2, `${source.base} does not export ${given}: ${value?.error?.message ?? status}. Nothing was sent.`);
       const blocked = Array.isArray(value?.report?.blocked) ? value.report.blocked : [];
       if (blocked.length) {
         for (const one of blocked) say(io, `  ! ${one.kind} ${one.name}: ${one.reason}`);
@@ -270,14 +275,8 @@ async function deploy(ctx) {
     }
     if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) throw fail(2, `--params ${values.params} is not a JSON object of the package's parameters.`);
   }
-  let base;
-  try {
-    base = values.to !== undefined ? toBase(values.to, env) : undefined;
-  } catch (error) {
-    throw fail(2, error.message);
-  }
   const prior = from.lock.read();
-  base ??= prior?.target;
+  const base = values.to !== undefined ? toOf(cli, values.to, env) : prior?.target;
   if (base === undefined) throw fail(2, `Where to? Pass --to URL (cloud, or an AgentRun's address); a deploy after the first reads it from ${from.lock.file}.`);
   const lock = prior && prior.target === base ? prior : undefined;
   if (prior && !lock) say(io, `The lock names ${prior.target}; this deploy is to ${base}, so it makes the agent there and the lock names it after.`);
@@ -338,12 +337,7 @@ async function locked(ctx) {
   const from = await sourceOf(ctx, cli.fail);
   const lock = from.lock.read();
   if (!lock) throw cli.fail(2, `Nothing deployed here: ${from.lock.file} does not exist.`);
-  let base = lock.target;
-  try {
-    if (values.to !== undefined) base = toBase(values.to, env);
-  } catch (error) {
-    throw cli.fail(2, error.message);
-  }
+  const base = values.to !== undefined ? toOf(cli, values.to, env) : lock.target;
   return { from, lock, to: remote(cli, values, env, ctx.io, base) };
 }
 
