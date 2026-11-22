@@ -38,10 +38,10 @@ export function needsIssues(value: unknown, field: string): InputIssue[] {
 /** Whether the box's python3 has the distribution `sys.argv[1]` installed, by the name pip installs it by (pip's own
  *  normalization: case, dots, dashes and underscores alike). */
 const PYTHON_HAS = "import importlib.metadata, sys; importlib.metadata.distribution(sys.argv[1])";
-/** Whether a script of the box's node requires `process.argv[1]`, from the folder the check runs in: node_modules of
+/** Whether a script of the box's node requires the name it is given (its one argument, the last of process.argv), from the folder the check runs in: node_modules of
  *  that folder and of each folder above it, up to /node_modules (where the documents image links its libraries), and
  *  node's global folders. */
-const NODE_HAS = 'require("module").createRequire(process.cwd() + "/").resolve(process.argv[1])';
+const NODE_HAS = 'require("module").createRequire(process.cwd() + "/").resolve(process.argv.at(-1))';
 
 /** The script the box runs: each argument it finds neither as a program on its PATH, nor as a library its python3 has
  *  installed, nor as a package its node requires, one a line. A box with no python3 or no node lacks the libraries that

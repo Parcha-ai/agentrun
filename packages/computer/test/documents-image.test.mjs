@@ -7,9 +7,9 @@
 // snapshot of it (build-daytona.py --documents) is the box image (box/Dockerfile) with documents.sh run on top, under a
 // name of its own, so the default box recipe and its snapshot are what they were. The package ships it.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -171,6 +171,17 @@ test("build-daytona.py --documents makes the box image with documents.sh run on 
   assert.equal(layer[2], here("") .replace(/\/?$/, "/"));
   assert.deepEqual(made.entrypoint, ["sh", "-c", "[ -z \"${AGENTRUN_ATTACH_URL-}\" ] || exec agentrun-dial; exec sleep infinity"]);
   assert.deepEqual(made.resources, { cpu: 2, memory: 4, disk: 10 });
+});
+
+test("build-daytona.py refuses --documents with --gpu, in words, and makes nothing: the GPU snapshot is the box image's alone", (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "build-daytona-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "daytona.py"), STAND_IN);
+  const out = join(dir, "made.json");
+  const ran = spawnSync("python3", [fileURLToPath(new URL("../box/build-daytona.py", import.meta.url)), "--documents", "--gpu", "H100"], { env: { PATH: process.env.PATH, PYTHONPATH: dir, STAND_IN_OUT: out }, encoding: "utf8" });
+  assert.equal(ran.status, 1);
+  assert.match(ran.stderr, /--documents builds the CPU box's documents snapshot alone; drop --gpu/);
+  assert.equal(existsSync(out), false, "no snapshot made");
 });
 
 test("build-daytona.py with no flag still makes agentrun-box-<the box recipe's hash> from box/Dockerfile alone", (t) => {
