@@ -2,8 +2,8 @@
 // {dry_run: true}). An upload is checked by the one checker, under the GitHub import's limits and in its words, stored under
 // `upload:<name>` with the package's sha256 as its sha, and replaced by the next upload of that name; it asks no publisher
 // trust, as the caller is this server's owner. A plan says what the apply would do (create or revise, the keys and MCP
-// servers this server lacks, each trigger's fate, the computer) and writes nothing. An API-only server takes an upload
-// and refuses a GitHub source.
+// servers this server lacks, each trigger's fate, the computer) and writes nothing. An agent's delete removes the upload
+// it was applied from once no other agent here was. An API-only server takes an upload and refuses a GitHub source.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -248,6 +248,56 @@ test("a plan lists the monid key as missing where a monid grant is pinned when t
   withEnv(t, { MONID_API_KEY: "fake-test-key" });
   const keyed = await serve(t, { runner: false });
   assert.deepEqual((await planOf(keyed.api)).plan.missing_secrets, []);
+});
+
+test("an agent's delete removes the upload it was applied from once no other agent here was, archived ones too, in the same write; a package imported from GitHub stays", { timeout: 120_000 }, async (t) => {
+  // A package imported from GitHub, as its import stores it, served from the next start.
+  const GITHUB = "github:acme/agents/templates/watch";
+  const first = await serve(t, { runner: false });
+  const base64 = (files) => Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")]));
+  await first.store.importedTemplates.put({ id: GITHUB, source: GITHUB, sha: "a".repeat(40), publisher: "acme", files: base64(pkg(agentMd({ name: "watch" }))) });
+  await first.stop();
+  const server = await serve(t, { data: first.data, runner: false });
+  const { api, store } = server;
+  const stored = async () => (await store.importedTemplates.list()).map((row) => row.id).sort();
+  const served = async () => (await api("GET", "/templates")).body.templates.filter((one) => !one.bundled).map((one) => one.id).sort();
+  const apply = async (id) => {
+    const applied = await api("POST", `/templates/${enc(id)}/apply`, { parameters: {} });
+    assert.equal(applied.status, 201, JSON.stringify(applied.body));
+    return applied.body.agent_id;
+  };
+  const archive = async (id) => assert.equal((await api("POST", `/agents/${id}/archive`)).status, 200);
+  const remove = async (id) => assert.equal((await api("DELETE", `/agents/${id}`)).status, 204);
+
+  assert.equal((await api("POST", "/templates/import", { files: filesOf(pkg(agentMd())) })).status, 201);
+  const one = await apply("upload:pr-alert");
+  const two = await apply("upload:pr-alert");
+  const watch = await apply(GITHUB);
+  assert.deepEqual(await stored(), [GITHUB, "upload:pr-alert"]);
+
+  // Another agent applied from it, archived, keeps it.
+  await archive(two);
+  await archive(one);
+  await remove(one);
+  assert.deepEqual(await stored(), [GITHUB, "upload:pr-alert"], "two, archived, was applied from it");
+  assert.deepEqual(await served(), [GITHUB, "upload:pr-alert"]);
+  // The last one's delete removes it, from the store and from what this server serves.
+  await remove(two);
+  assert.deepEqual(await stored(), [GITHUB]);
+  assert.deepEqual(await served(), [GITHUB]);
+  assert.equal((await api("POST", `/templates/${enc("upload:pr-alert")}/apply`, { parameters: {} })).status, 404);
+  // A package imported from GitHub is the owner's to remove: its last agent's delete keeps it.
+  await archive(watch);
+  await remove(watch);
+  assert.deepEqual(await stored(), [GITHUB]);
+  assert.deepEqual(await served(), [GITHUB]);
+  // A package's agents edited after the apply still name it: their delete removes it too.
+  assert.equal((await api("POST", "/templates/import", { files: filesOf(pkg(agentMd())) })).status, 201);
+  const edited = await apply("upload:pr-alert");
+  assert.equal((await api("PUT", `/agents/${edited}/definition`, { definition: { instructions: "Edited after the apply." } })).status, 200);
+  await archive(edited);
+  await remove(edited);
+  assert.deepEqual(await stored(), [GITHUB]);
 });
 
 test("an API-only server takes an upload ({files}) and refuses a GitHub source", { timeout: 60_000 }, async (t) => {
