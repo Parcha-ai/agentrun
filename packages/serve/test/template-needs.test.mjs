@@ -27,7 +27,7 @@ const NONE = { none: "this server has no shell to give an agent now: no box" };
 /** The refusal's words where the shell here is no sandbox: the programs by name, and the image that gives them. */
 /** Why no sandbox answers in Mode 2, as the refusal says it: Archil's exec is none, and the docker box can't mount its workspaces. */
 const MODE2_WHY = /no sandbox answers here: Archil's serverless exec is no sandbox, and the docker box is unavailable here \(Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them/;
-const NO_SANDBOX = /^The film template needs a sandbox that has hyperframes and ffmpeg on its PATH, and .+\. Nothing was created\. .*AGENTRUN_DOCKER_IMAGE/;
+const NO_SANDBOX = /^The film template needs a sandbox that has hyperframes and ffmpeg, and .+\. Nothing was created\. .*AGENTRUN_DOCKER_IMAGE/;
 
 /** A folder holding `name`'s agent.md, `text`. */
 async function packageDir(t, name, text) {
