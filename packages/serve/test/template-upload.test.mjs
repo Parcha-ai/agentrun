@@ -145,7 +145,7 @@ test("an apply's dry run answers its plan and writes nothing: create or revise, 
   const before = await counts();
   const plan = await api("POST", keyed, { dry_run: true, parameters: {} });
   assert.equal(plan.status, 200, JSON.stringify(plan.body));
-  assert.deepEqual(plan.body, { plan: { action: "create", agent_id: null, current_revision_id: null, missing_secrets: ["PARALLEL_API_KEY"], unmatched_mcp: [], triggers: [{ name: "daily", kind: "schedule", action: "create" }], computer: null } });
+  assert.deepEqual(plan.body, { plan: { action: "create", agent_id: null, current_revision_id: null, twins: [], missing_secrets: ["PARALLEL_API_KEY"], unmatched_mcp: [], triggers: [{ name: "daily", kind: "schedule", action: "create" }], computer: null } });
   assert.deepEqual(await counts(), before, "a plan writes nothing");
   const refused = await api("POST", keyed, { parameters: {} });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
@@ -168,7 +168,7 @@ test("an apply's dry run answers its plan and writes nothing: create or revise, 
   await upload(pkg(agentMd({ version: "0.2.0", extra: [...DAILY, ...HOURLY] })));
   const grown = await api("POST", path, { dry_run: true, agent_id: agentId, parameters: {} });
   assert.equal(grown.status, 200, JSON.stringify(grown.body));
-  assert.deepEqual(grown.body.plan, { action: "revise", agent_id: agentId, current_revision_id: current, missing_secrets: [], unmatched_mcp: [], triggers: [{ name: "daily", kind: "schedule", action: "update" }, { name: "hourly", kind: "schedule", action: "create" }], computer: null });
+  assert.deepEqual(grown.body.plan, { action: "revise", agent_id: agentId, current_revision_id: current, twins: [], missing_secrets: [], unmatched_mcp: [], triggers: [{ name: "daily", kind: "schedule", action: "update" }, { name: "hourly", kind: "schedule", action: "create" }], computer: null });
   const check = await documented(api);
   for (const answer of [plan, needs, grown]) check("/templates/{template}/apply", "post", "200", answer.body);
   await upload(pkg(agentMd({ version: "0.3.0", extra: ["triggers:", ...HOURLY] })));

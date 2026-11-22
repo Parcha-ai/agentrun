@@ -749,18 +749,20 @@ test("agentrun deploy AGENT_ID from an install that refuses its trigger routes: 
   assert.match(refused.err, /does not export .*this server serves the run API only \(AGENTRUN_API_ONLY=1\).*Nothing was sent/);
   assert.deepEqual(elsewhere.seen, [], "nothing sent to the target");
 
-  // A source that exports the agent and refuses its trigger routes (the fake's 404), deployed to the API-only install.
+  // A source that exports the agent and refuses its trigger routes (the fake's 404), deployed to another API-only install
+  // (the first holds an agent of the same package, which a deploy with no lock stops at).
+  const target = await apiOnly(t);
   const AGENT_ID = "agt_source";
   const answers = { [`GET /agents/${AGENT_ID}/package`]: [200, exportOf()] };
   const source = await fakeTarget(t, answers);
   const { dir, env } = scratch();
   signedIn(dir, source.base, "not-a-secret");
-  const deploy = (...args) => cli(env, ["deploy", AGENT_ID, "--base-url", source.base, "--to", hosted.baseUrl, "--yes", ...args], { AGENTRUN_API_KEY: hosted.token });
+  const deploy = (...args) => cli(env, ["deploy", AGENT_ID, "--base-url", source.base, "--to", target.baseUrl, "--yes", ...args], { AGENTRUN_API_KEY: target.token });
   for (const pause of [[], ["--pause-source"]]) {
     const result = await deploy(...pause);
     assert.equal(result.code, 0, `${pause}: ${result.err}`);
     assert.equal(result.json().status, "deployed");
-    assert.equal((await hosted.api("GET", `/agents/${result.json().agent_id}`)).status, 200);
+    assert.equal((await target.api("GET", `/agents/${result.json().agent_id}`)).status, 200);
     assert.match(result.err, new RegExp(`the agent's schedules on ${source.base} could not be read ${pause.length ? "or paused " : ""}\\(404: Not found\\.\\)`), `${pause}`);
     assert.doesNotMatch(result.err, /Paused/, `${pause}`);
   }

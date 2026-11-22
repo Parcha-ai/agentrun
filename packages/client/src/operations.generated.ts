@@ -4905,6 +4905,7 @@ export type ApplyTemplateResponse = {
     action: "create" | "revise";
     agent_id: string | null;
     current_revision_id: string | null;
+    twins: Array<string>;
     missing_secrets: Array<string>;
     unmatched_mcp: Array<{
       source: string;

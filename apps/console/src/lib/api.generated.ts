@@ -1493,6 +1493,7 @@ export interface operations {
         action: "create" | "revise";
         agent_id: string | null;
         current_revision_id: string | null;
+        twins: string[];
         missing_secrets: string[];
         unmatched_mcp: {
           source: string;

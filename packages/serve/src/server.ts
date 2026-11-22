@@ -3236,11 +3236,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (error instanceof ApiError && error.code === "not_found") return false;
     throw error;
   };
+  /** A fresh apply's twins: the live agents here made from the package `pkgId` with the parameters `digest` digests. The
+   *  apply still makes another and warns of each (applyWith); its plan names them first (planTemplate). None for an
+   *  apply onto an agent (`onto`). */
+  const twinsOf = async (onto: unknown, pkgId: string, digest: string): Promise<string[]> =>
+    onto ? [] : (await agents.list()).filter((one) => one.template?.id === pkgId && one.template.parameters_digest === digest).map((one) => one.agent.id);
   /** POST /templates/{id}/apply {dry_run: true}: the apply's plan, from the same reads and checks as the apply
    *  (prepareApply), with nothing written: whether it makes an agent or revises the one agent_id names (and its current
-   *  revision), the keys and MCP servers this server lacks (where the apply would refuse with 409, the plan lists them),
-   *  what becomes of each trigger (made, changed in place, removed, or skipped for a connection this server lacks), and
-   *  the computer it picks. Any other refusal is the apply's own. */
+   *  revision), the agents a fresh one would make a twin of, the keys and MCP servers this server lacks (where the apply
+   *  would refuse with 409, the plan lists them), what becomes of each trigger (made, changed in place, removed, or
+   *  skipped for a connection this server lacks), and the computer it picks. Any other refusal is the apply's own. */
   async function planTemplate(template: Package, body: Json) {
     const p = await prepareApply(template, body, { plan: true });
     // A monid grant is pinned to monid's listing when the agent is saved (saveable: monidPinOf), read with the monid key:
@@ -3287,6 +3292,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         action: p.onto ? "revise" : "create",
         agent_id: p.onto?.agent.id ?? null,
         current_revision_id: p.onto?.revision?.id ?? null,
+        twins: await twinsOf(p.onto, p.pkg.id, p.digest),
         missing_secrets: missing,
         unmatched_mcp: p.unsaved.map((need) => ({ source: need.source, toolkit: need.toolkit, required: need.required })),
         triggers: planned,
@@ -3456,9 +3462,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const { pkg, onto, saved, mapped, grants, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
     // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
     // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
-    const twins: InputIssue[] = onto ? [] : (await agents.list())
-      .filter((one) => one.template?.id === pkg.id && one.template.parameters_digest === digest)
-      .map((one) => ({ field: "agent_id", reason: "duplicate", message: `The agent ${one.agent.id} was made from the ${pkg.name} template with these parameters, and this apply made another. To change that one instead, apply with agent_id ${one.agent.id}.` }));
+    const twins: InputIssue[] = (await twinsOf(onto, pkg.id, digest))
+      .map((id) => ({ field: "agent_id", reason: "duplicate", message: `The agent ${id} was made from the ${pkg.name} template with these parameters, and this apply made another. To change that one instead, apply with agent_id ${id}.` }));
     // An update writes the package as a new revision of the agent, as an edit does (its id, name and description are the
     // agent's own: the package's never replace them), but what the package owns and leaves out is gone (fromPackage); only onto the
     // revision it read, else 412 with nothing changed. A fresh apply makes the agent as POST /agents does.

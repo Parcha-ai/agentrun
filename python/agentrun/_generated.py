@@ -8016,6 +8016,7 @@ class ApplyTemplateResponseObject12Plan(TypedDict):
     action: Literal["create", "revise"]
     agent_id: str | None
     current_revision_id: str | None
+    twins: list[str]
     missing_secrets: list[str]
     unmatched_mcp: list[ApplyTemplateResponseObject12PlanUnmatchedMcpItem]
     triggers: list[ApplyTemplateResponseObject12PlanTriggersItem]

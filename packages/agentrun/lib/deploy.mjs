@@ -449,14 +449,24 @@ async function deploy(ctx) {
   const base = targetFor(ctx, from, prior, fail);
   if (base === undefined) throw fail(2, `Where to? Pass --to URL (cloud, or an AgentRun's address); a deploy after the first reads it from ${from.lock.file}.`);
   const lock = prior && prior.target === base ? prior : undefined;
+  // --agent: the target's agent this deploy is for where no lock here names one there, by its id, or `new` for another.
+  // With a lock it may name only the lock's agent: a deploy never moves to another agent on its own.
+  const picked = values.agent;
+  if (picked !== undefined && !picked.trim()) throw fail(2, "--agent takes the id of an agent on the target, or new.");
+  if (picked !== undefined && lock && picked !== lock.agent_id) throw fail(2, `${from.lock.file} names the agent ${lock.agent_id} on ${base}: --agent ${picked} names another. Nothing was sent: leave --agent out to deploy onto ${lock.agent_id}, or remove the lock to deploy to another agent there.`);
   if (prior && !lock) say(io, `The lock names ${prior.target}; this deploy is to ${base}, so it makes the agent there and the lock names it after.`);
   const to = remote(cli, values, env, io, base);
 
   // The lock's agent as the target has it now: gone (deployed anew), edited since (refused unless --force), or the same
   // revision with the same package (up to date: nothing sent that writes, unless --params asks for parameters the lock
-  // can't vouch for; the apply then keeps the revision when they are the same).
+  // can't vouch for; the apply then keeps the revision when they are the same). With no lock, the agent --agent names,
+  // onto its current revision.
   let onto;
-  if (lock) {
+  if (!lock && picked !== undefined && picked !== "new") {
+    const { status, value: agent } = await to.call("GET", `/agents/${enc(picked)}`, undefined, [404, 410]);
+    if (status !== 200) throw fail(2, `--agent ${picked}: ${to.base} has no such agent${status === 410 ? " (it was deleted)" : ""}. Nothing was sent.`);
+    onto = { agent_id: picked, revision: agent.revision };
+  } else if (lock) {
     const { status, value: agent } = await to.call("GET", `/agents/${enc(lock.agent_id)}`, undefined, [404, 410]);
     if (status !== 200) say(io, `The agent ${lock.agent_id} is gone from ${to.base}: deploying it anew.`);
     else {
@@ -481,6 +491,13 @@ async function deploy(ctx) {
   const { value: planned } = await to.call("POST", `/templates/${enc(template.id)}/apply`, { ...body, dry_run: true });
   const plan = planned.plan;
   for (const line of planLines(to.base, template, sha, plan, grants)) say(io, line);
+  // An agent this package already made there with these parameters (the plan's twins), which no lock here names (it is
+  // gone, or this CLI never wrote it): another would run beside it, its schedules firing twice. --agent says which.
+  const twins = !onto && picked !== "new" && Array.isArray(plan.twins) ? plan.twins : [];
+  if (twins.length) {
+    const many = twins.length > 1;
+    throw fail(2, `${many ? `The agents ${twins.join(", ")} on ${to.base} were` : `The agent ${twins[0]} on ${to.base} was`} made from this package with these parameters, and no lock here names ${many ? "one" : "it"}. Nothing was applied: --agent ${many ? "ID (one of them)" : twins[0]} deploys onto it, --agent new makes another.`);
+  }
   if (plan.missing_secrets.length || plan.unmatched_mcp.some((need) => need.required)) {
     const setup = typeof planned.setup_url === "string" ? planned.setup_url : typeof plan.setup_url === "string" ? plan.setup_url : undefined;
     say(io, `Not runnable yet on ${to.base}: add what is marked ! there, then deploy again. Nothing was created.${setup ? ` Finish setup: ${setup}` : ""}`);
@@ -613,10 +630,11 @@ export const DEPLOY = {
     ["--force", "replace an agent edited on the target since the last deploy"],
     ["--params FILE", "the package's parameters, a JSON object"],
     ["--pause-source", "an install agent: turn its schedules off on this install once deployed (else they fire in both places)"],
+    ["--agent ID|new", "with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent"],
     ["", TOKEN],
-    ["", "Exit codes: 0 deployed or up to date, 2 refused (bad input, edited on the target, not confirmed), 3 not runnable yet there (nothing made), 1 the target refused or was not reached."],
+    ["", "Exit codes: 0 deployed or up to date, 2 refused (bad input, edited on the target, an agent there this package made that no lock names, not confirmed), 3 not runnable yet there (nothing made), 1 the target refused or was not reached."],
   ],
-  options: { to: { type: "string" }, yes: { type: "boolean" }, force: { type: "boolean" }, params: { type: "string" }, "pause-source": { type: "boolean" } },
+  options: { to: { type: "string" }, yes: { type: "boolean" }, force: { type: "boolean" }, params: { type: "string" }, "pause-source": { type: "boolean" }, agent: { type: "string" } },
   run: ending(deploy),
 };
 
