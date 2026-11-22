@@ -157,14 +157,15 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
       return `${head}.${body}.${signature}`;
     }
 
-    /** One call: its response, whatever its status. A network failure is the store unavailable. */
+    /** One call: its response, whatever its status. A network failure is the store unavailable, and so is a redirect:
+     *  no call follows one (redirect "error"), so the bearer token never travels to another place. */
     async function call(what: string, method: string, path: string, scopes: readonly Scope[], init: { query?: Record<string, string | undefined>; body?: BodyInit; type?: string } = {}): Promise<Response> {
       const url = new URL(path, base);
       for (const [name, value] of Object.entries(init.query ?? {})) if (value !== undefined) url.searchParams.set(name, value);
       const headers: Record<string, string> = { authorization: `Bearer ${await token(scopes)}`, "code-storage-agent": "agentrun-serve" };
       if (init.type) headers["content-type"] = init.type;
       try {
-        return await doFetch(url, { method, headers, ...(init.body !== undefined ? { body: init.body } : {}), signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
+        return await doFetch(url, { method, headers, ...(init.body !== undefined ? { body: init.body } : {}), redirect: "error", signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
       } catch (error) {
         throw new FolderUnreadable(false, `the agent's learning on code.storage can't be reached right now (${what}): ${(error as Error)?.message ?? error}`);
       }
