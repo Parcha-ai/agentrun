@@ -17,6 +17,7 @@ import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
 import { apiOnlyFrom } from "./api-only.js";
+import { runKeysFrom } from "./run-keys-env.js";
 import { harnessModulesOf } from "./harness-table.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
 import { installEnvProxy } from "./env-proxy.js";
@@ -503,9 +504,12 @@ const signalled = () => {
 process.on("SIGINT", signalled);
 process.on("SIGTERM", signalled);
 // AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
+// AGENTRUN_RUN_KEYS=1: each run brings the tool keys this server does not hold (run-keys.ts), read the same way.
 let apiOnly: boolean;
+let runKeys: boolean;
 try {
   apiOnly = apiOnlyFrom(process.env);
+  runKeys = runKeysFrom(process.env);
 } catch (error) {
   console.error(`${(error as Error).message}\n\n${USAGE}`);
   process.exit(2);
@@ -543,7 +547,7 @@ try {
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
-    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}),
+    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(runKeys ? { runKeys } : {}),
     // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
     ...(trustedProxies.length ? { trustedProxies } : {}),
     // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
