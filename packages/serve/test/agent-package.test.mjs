@@ -303,7 +303,7 @@ test("what cannot travel is named: a local or unsaved MCP server and one with it
   for (const name of ["post", "search"]) slack.tools[name] = { description: `slack's ${name}.`, input: { type: "object", properties: {}, additionalProperties: true }, run: () => ({ content: [{ type: "text", text: "{}" }] }) };
   assert.equal((await api("PUT", "/settings/mcp-servers/slack", { url: slack.url, auth: { type: "none" }, source: "composio", toolkit: "slack" })).status, 200);
   // search's keys pin holds names (the fields a call may give), not values: it is no credential, though `keys` reads as one.
-  const toolSettings = { "mcp:slack/post": { pin: { channel: "C0STATUS", api_key: leak("pin") } }, "mcp:slack/search": { pin: { channel: "C0STATUS", properties: { keys: ["hs_lead_score"] } } } };
+  const toolSettings = { "mcp:slack/post": { pin: { channel: "C0STATUS", api_key: leak("pin"), token: [leak("one"), leak("other")] } }, "mcp:slack/search": { pin: { channel: "C0STATUS", properties: { keys: ["hs_lead_score"] } } } };
   await server.store.agents.create({ id: "leaky", name: "Leaky" }, { id: "leaky-rev", kind: "agentic", body: { instructions: "Say what changed.", tools: ["read", "mcp:slack/post", "mcp:slack/search"], toolSettings, maxCostUsd: 1 } });
   const words = ["token", "key", "secret", "sig", "password"];
   const triggers = [
@@ -319,7 +319,7 @@ test("what cannot travel is named: a local or unsaved MCP server and one with it
   assert.equal(leaky.status, 200, JSON.stringify(leaky.body));
   (await documented(baseUrl))("/agents/{agent_id}/package", "get", "200", leaky.body);
   const fields = leaky.body.report.blocked.map((entry) => `${entry.kind} ${entry.name}`).sort();
-  assert.deepEqual(fields, ["pin slack: pin.post.api_key", "trigger Daily: target.input.api_key", ...words.map((_, i) => `trigger Keyed feeds: source.urls.${i}`)], JSON.stringify(leaky.body.report.blocked));
+  assert.deepEqual(fields, ["pin slack: pin.post.api_key", "pin slack: pin.post.token.0", "pin slack: pin.post.token.1", "trigger Daily: target.input.api_key", ...words.map((_, i) => `trigger Keyed feeds: source.urls.${i}`)], JSON.stringify(leaky.body.report.blocked));
   for (const entry of leaky.body.report.blocked) assert.match(entry.reason, /credential in the clear/, JSON.stringify(entry));
   assert.doesNotMatch(JSON.stringify(leaky.body), /leak-/, "no value in any file or in the report");
   // What holds none still travels: the feed whose query is a page, and the tool whose pin is a channel.

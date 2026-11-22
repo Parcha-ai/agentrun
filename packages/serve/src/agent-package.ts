@@ -10,7 +10,7 @@ import { stringify } from "yaml";
 import { LOOPBACK } from "./mcp-oauth.js";
 import { MANIFEST, memoryFiles, onServerNames, type Package, PackageError, readPackage } from "./templates.js";
 import { isMcpName, isMonidName, mcpToolName, parseToolName } from "./tool-names.js";
-import { permissionKeys, SHELL_FAMILY } from "./tool-gate.js";
+import { isPinKeys, permissionKeys, SHELL_FAMILY } from "./tool-gate.js";
 import { toolOf } from "./tools.js";
 import { configSecrets, SEALED_FIELD, SEALED_MASK } from "./trigger-composio.js";
 import { CATCHUP_WINDOW_S } from "./triggers.js";
@@ -156,11 +156,13 @@ export function agentPackage(input: ExportInput): AgentPackage {
     const toolkit = saved.source.toolkit ?? server;
     toolkits[server] = toolkit;
     const pin: Json = {};
-    // A pin travels as it is, so one that holds a credential in the clear is blocked, and left out.
+    // A pin travels as it is, so one that holds a credential in the clear is blocked, and left out. Its values are read
+    // (a scalar, a one-of list); a keys pin holds the names of the fields a call may give, never a value, so it is not.
     for (const tool of granted) {
       const held = settings[mcpToolName(server, tool)]?.pin;
       if (held === undefined) continue;
-      const clear = clearIn(held, `pin.${tool}`);
+      const values = isObject(held) ? Object.fromEntries(Object.entries(held).filter(([, value]) => !isPinKeys(value))) : held;
+      const clear = clearIn(values, `pin.${tool}`);
       for (const field of clear) blocked.push({ kind: "pin", name: `${server}: ${field}`, reason: IN_THE_CLEAR });
       if (!clear.length) pin[tool] = held;
     }
