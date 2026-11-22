@@ -362,8 +362,9 @@ swap, and deletes the old repository; a build cut short leaves only that next re
 reset deletes first by its exact id. Before the flip it fences the old main (one commit adding `.agentrun/moved`, by
 compare and swap on the head it built from): a save that landed since makes the rewrite stale (the purge starts over
 and keeps it), and a save on the fenced main is stale, so no save is reported saved into a repository then deleted. A
-purge sent again finds its marker and has the store `tidy` (the local folder prunes again; code.storage deletes an old
-repository a flip left, or fails retryable). `forgetRunText` answers each old commit's new one (`moved`), and the
+purge sent again finds its marker and has the store `tidy` (the local folder prunes when a rewrite stopped after moving
+main left its mark, keeping an import another run's commit makes on main, and a commit whose import a rewrite removed
+is stale; code.storage deletes an old repository a flip left, or fails retryable). `forgetRunText` answers each old commit's new one (`moved`), and the
 server moves the agent's promotion records' commits by it, so every champion reads as before. What it costs the
 owner: every commit id changes; on code.storage about 0.3 s a
 commit (the local folder is fast), learning waiting meanwhile; a run in flight merges nothing, as after a reset; every

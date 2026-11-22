@@ -61,6 +61,15 @@ PATCH_CAP=65536
 LOG_FORMAT='%x1e%H%x1f%P%x1f%cI%x1f%B%x1d'
 
 die() {
+  # A commit whose main moved since it read <old> (a rewrite moved it and removed the import it was making) is stale,
+  # whatever failed: exit 3 naming main, so the store's caller reads again.
+  if [ -n "${committing:-}" ]; then
+    cur=$(main_now)
+    if [ "$cur" != "$old" ]; then
+      printf '%s\n' "$cur"
+      exit 3
+    fi
+  fi
   printf 'learning.sh: %s\n' "$*" >&2
   exit 2
 }
@@ -210,6 +219,7 @@ commit() {
     marker ".agentrun/purged/$(printf '%s' "$run" | sed 's/\.r[0-9][0-9]*$//')"
   fi
   preconditions
+  committing=1
   g fast-import --quiet --done < "$tmp/rest" > /dev/null || die "fast-import failed"
   new=$(g rev-parse -q --verify "$ref^{commit}") || die "fast-import made no commit"
   g update-ref -d "$ref" || die "the import ref could not be removed"
@@ -249,15 +259,24 @@ rewrite_ref() {
 }
 
 op=${1:-}
-# Every way back to a history main no longer holds gone: every ref but main (a leftover import's, a rewrite's), the
-# reflogs, and the objects nothing reaches then.
+# Every way back to a history main no longer holds gone: every ref but main (a rewrite's, an old release's, an import
+# a commit on another main was making: that commit is stale), the reflogs, and the objects nothing reaches then. An
+# import on main itself stays: its commit may land, and holds nothing main does not. TIDY marks a rewrite whose main
+# moved and whose old history is not gone yet; it goes last.
+TIDY=$GIT_DIR/agentrun-tidy
 tidy_history() {
+  at_main=$(main_now)
   g for-each-ref --format='%(refname)' > "$tmp/refs" || die "for-each-ref failed"
   while IFS= read -r r; do
-    [ "$r" = refs/heads/main ] || g update-ref -d "$r" || die "ref $r could not be removed"
+    [ "$r" = refs/heads/main ] && continue
+    case $r in
+      refs/agentrun/import-*) [ -n "$at_main" ] && [ "$(g rev-parse -q --verify "$r^1" 2>/dev/null)" = "$at_main" ] && continue ;;
+    esac
+    g update-ref -d "$r" || die "ref $r could not be removed"
   done < "$tmp/refs"
   g reflog expire --expire=now --expire-unreachable=now --all || die "the reflog could not be expired"
   g gc --prune=now --quiet || die "git gc failed"
+  rm -f "$TIDY"
 }
 
 case $op in
@@ -388,7 +407,9 @@ case $op in
     }
     g ls-tree -r --full-tree "$new" | awk -F '\t' '{ split($1, a, " "); print a[1] " " $2 }' > "$tmp/paths" || die "ls-tree failed"
     no_links
+    : > "$TIDY" || die "the tidy mark could not be written"
     if ! g update-ref -m learning refs/heads/main "$new" "$old" 2> "$tmp/cas"; then
+      rm -f "$TIDY"
       g update-ref -d "$ref" 2> /dev/null
       cur=$(main_now)
       if [ "$cur" != "$old" ]; then
@@ -403,8 +424,9 @@ case $op in
     printf '%s\n' "$new"
     ;;
   tidy)
-    # What a rewrite stopped after moving main left of the old history gone (a purge sent again runs it).
-    [ -d "$GIT_DIR" ] || exit 0
+    # What a rewrite stopped after moving main left of the old history gone (a purge sent again runs it); nothing when
+    # no rewrite stopped so (no TIDY), so a purge sent again never disturbs a commit being made.
+    [ -f "$TIDY" ] || exit 0
     tidy_history
     ;;
   *)
