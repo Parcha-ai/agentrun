@@ -354,8 +354,8 @@ commit() {
   [ "${AGENTRUN_LEARNING_FAIL:-}" = before-diff ] && die "failed before the diff, as the test asked"
   # The diff before the working tree: a merge whose files could not be brought in line (exit 5) keeps its diff.
   [ -n "$run" ] && write_diff "$run"
-  test_pause
   lock
+  test_pause
   # A newer commit landed since this one: its writer brings the folder in line with it, under this lock, so an older
   # main's tree and snapshot never replace its.
   if [ "$(main_now)" != "$new" ]; then

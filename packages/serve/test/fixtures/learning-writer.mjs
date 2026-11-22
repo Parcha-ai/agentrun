@@ -5,7 +5,7 @@
 // write that did not land as a caller does later, and prints one JSON line per write: its run, its outcome and every
 // failure it met on the way.
 import { createInterface } from "node:readline";
-import { learningInit } from "../../dist/learn/folder.js";
+import { folderTestHooks, learningInit } from "../../dist/learn/folder.js";
 import { learningCommit } from "../../dist/learn/commit.js";
 import { readmeOf } from "../../dist/learn/workflow-draft.js";
 import { localWorkspace } from "../../dist/workspace/index.js";
@@ -13,6 +13,10 @@ import { localWorkspace } from "../../dist/workspace/index.js";
 const [root, name, op, count = "1"] = process.argv.slice(2);
 const ws = localWorkspace(root);
 const TRIES = 40;
+// A test that stops this writer inside its write (learning.sh test_pause) names the gate file, and the lease it holds the
+// folder's lock for, in AGENTRUN_LEARNING_PAUSE and AGENTRUN_LEARNING_LEASE.
+const hooks = Object.fromEntries(["AGENTRUN_LEARNING_PAUSE", "AGENTRUN_LEARNING_LEASE"].filter((name) => process.env[name]).map((name) => [name, process.env[name]]));
+if (Object.keys(hooks).length) folderTestHooks.env = hooks;
 
 process.stdout.write("ready\n");
 await new Promise((resolve) => createInterface({ input: process.stdin }).once("line", resolve));

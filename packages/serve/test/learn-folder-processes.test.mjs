@@ -2,8 +2,9 @@
 // directory each write the one folder (learning.ts learningFolderOf), and nothing but the learning script orders them
 // (a process's own writes are one at a time, learning.ts withAgentRepo). Each writer here is a process of its own
 // (fixtures/learning-writer.mjs), all started on one line of stdin: two inits of an empty folder racing, and three
-// processes merging runs on one folder from its first commit. Nothing a writer was told landed is lost, nothing lands
-// twice, and git, main, the working tree and snapshot.json agree at the end.
+// processes merging runs on one folder from its first commit; then a writer stopped inside its write while a newer one
+// waits, and one killed there. Nothing a writer was told landed is lost, nothing lands twice, and git, main, the working
+// tree and snapshot.json agree at the end.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -11,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { commitChange, folderTestHooks, learningInit, parseRead, readSnapshot, SCRIPT_FILE, snapshotAt, snapshotOfRead } from "../dist/learn/folder.js";
+import { commitChange, folderTestHooks, learningInit, parseRead, readSnapshot, SCRIPT_FILE, snapshotAt, snapshotOfRead, writeLearning } from "../dist/learn/folder.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 
 const WRITER = fileURLToPath(new URL("./fixtures/learning-writer.mjs", import.meta.url));
@@ -104,32 +105,67 @@ test("three processes merging runs on one agent's learning folder at once, from 
   }
 });
 
-test("a writer whose commit is older never leaves its tree and snapshot over a newer commit's: once both are done the folder is at main", async () => {
+const edited = (text) => ({ by: { person: "edited", file: "corrections.md" }, writes: [{ path: "corrections.md", text }] });
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Waits until `path` is there (a paused writer's "<gate>.at"). */
+async function until(path, what) {
+  for (let waited = 0; !existsSync(path); waited += 20) {
+    assert.ok(waited < 30_000, what);
+    await sleep(20);
+  }
+}
+
+test("a writer whose commit is older never leaves its tree and snapshot over a newer commit's: the newer writer waits for it, and once both are done the folder is at main", async () => {
   const root = folder();
   const ws = localWorkspace(root);
   await learningInit(ws);
-  const edited = (text) => ({ by: { person: "edited", file: "corrections.md" }, writes: [{ path: "corrections.md", text }] });
-  // The older writer stops after its commit, before it brings the folder in line (learning.sh test_pause).
+  const first = git(root, ["rev-parse", "refs/heads/main"]);
+  // The older writer stops inside its write, its commit landed, before it brings the folder in line (test_pause).
   const gate = join(dirname(root), "gate");
   folderTestHooks.env = { AGENTRUN_LEARNING_PAUSE: gate };
   let older;
   try {
     older = commitChange(ws, await readSnapshot(ws), edited("- One.\n"));
-    for (let waited = 0; !existsSync(`${gate}.at`); waited += 20) {
-      assert.ok(waited < 30_000, "the older writer reached its pause");
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    await until(`${gate}.at`, "the older writer reached its pause");
   } finally {
     folderTestHooks.env = undefined;
   }
-  // The newer writer commits on the older one's main and finishes whole, then the older one goes on.
-  const first = git(root, ["rev-parse", "refs/heads/main"]);
-  const newer = await commitChange(ws, await snapshotAt(ws, first), edited("- One.\n- Two.\n"));
-  assert.equal(newer.landed, true, JSON.stringify(newer));
+  const one = git(root, ["rev-parse", "refs/heads/main"]);
+  assert.notEqual(one, first, "the older writer's commit landed");
+  // The newer writer commits on the older one's main while the older one is still inside its write.
+  const newer = commitChange(ws, await snapshotAt(ws, one), edited("- One.\n- Two.\n"));
+  await sleep(500);
+  assert.equal(git(root, ["rev-parse", "refs/heads/main"]), one, "the newer writer waits while the older one is inside its write");
   writeFileSync(gate, "");
   const done = await older;
-  assert.equal(done.main, first, JSON.stringify(done));
+  assert.equal(done.main, one, JSON.stringify(done));
+  const two = await newer;
+  assert.equal(two.landed, true, JSON.stringify(two));
   const snapshot = await whole(root);
-  assert.equal(snapshot.main, newer.main, "the snapshot is the newer commit's, which is main");
+  assert.equal(snapshot.main, two.main, "the snapshot is the newer commit's, which is main");
   assert.equal(readFileSync(join(root, "corrections.md"), "utf8"), "- One.\n- Two.\n", "and so is the working tree");
+});
+
+test("a writer killed inside its write, its commit landed: the next writer lands once the killed one's lease is past, its write and the killed one's both on main, and the folder whole", { timeout: 180_000 }, async () => {
+  const root = folder();
+  const ws = localWorkspace(root);
+  await learningInit(ws);
+  // The first writer, a process of its own, stops inside its write (test_pause) holding a lease of 3 s, and is killed
+  // there with every process it started.
+  const gate = join(dirname(root), "gate");
+  const child = spawn(process.execPath, [WRITER, root, "killed", "commit", "1"], { stdio: ["pipe", "pipe", "pipe"], detached: true, env: { ...process.env, AGENTRUN_TELEMETRY: "0", AGENTRUN_LEARNING_PAUSE: gate, AGENTRUN_LEARNING_LEASE: "3" } });
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.stdin.end("go\n");
+  await until(`${gate}.at`, "the first writer reached its pause");
+  process.kill(-child.pid, "SIGKILL");
+  await exited;
+  assert.match(git(root, ["ls-tree", "-r", "--name-only", "refs/heads/main"]), /^workflows\/killed-0\/workflow\.json$/m, "the killed writer's commit landed");
+  // The next writer, on the snapshot as the killed one left it (its main's parent).
+  const started = Date.now();
+  const { snapshot } = await writeLearning(ws, async () => ({ result: undefined, change: edited("- After the kill.\n") }));
+  assert.ok(Date.now() - started < 30_000, `the next writer landed in ${Date.now() - started} ms`);
+  const now = await whole(root);
+  assert.equal(now.main, snapshot.main);
+  assert.ok(now.workflows.some(({ name }) => name === "killed-0"), "the killed writer's draft is on main");
+  assert.equal(readFileSync(join(root, "corrections.md"), "utf8"), "- After the kill.\n");
 });
