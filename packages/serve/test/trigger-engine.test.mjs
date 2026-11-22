@@ -2,10 +2,12 @@
 // that fails mid-firing strands nothing, and edits that overlap keep each one's change. A restart is a new engine on the
 // same store; what a hand or an earlier build left is written into the store's rows.
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Cron } from "croner";
 import { ApiError } from "../dist/errors.js";
+import { mintSecret } from "../dist/standard-webhooks.js";
 import { firingKey, Triggers } from "../dist/triggers.js";
 import { storeOn } from "./store-helpers.mjs";
 import { fakeClock } from "./trigger-support.mjs";
@@ -540,6 +542,52 @@ async function hookEngine(t, deps = {}, live) {
   const runs = runner(on.store, live);
   return { ...(await engine(t, { statusOf: async () => "completed", start: runs.start, ...deps }, { on })), runs };
 }
+
+test("a host start that lands between the engine's read of the firing's run and its sent write leaves the firing started with that run, counted by max_active_runs", { timeout: 60_000 }, async (t) => {
+  const posts = [];
+  const host = createServer((req, res) => {
+    if (req.method === "POST") posts.push(req.url);
+    req.resume();
+    req.on("end", () => res.writeHead(req.method === "POST" ? 204 : 404).end());
+  });
+  await new Promise((resolve) => host.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => {
+    host.closeAllConnections();
+    host.close(() => resolve());
+  }));
+  const ran = new Map();
+  const at = { id: undefined, reads: 0 };
+  // The first read after the hook's answer finds no run; the host's start (handedStart, its run written, handedRan) lands
+  // before that read returns, so the engine writes sent on what it read.
+  const runOf = async (key) => {
+    const found = ran.get(key) ?? null;
+    if (posts.length === 0) return found;
+    at.reads += 1;
+    if (at.reads === 1) {
+      const handed = await triggers.handedStart({ trigger_id: at.id, firing_id: key }, "a");
+      assert.equal(handed.key, key, JSON.stringify(handed));
+      await store.runs.create({ id: "run-host", agentId: "a", revisionId: "rev-a", origin: { key } });
+      ran.set(key, { run_id: "run-host" });
+      await triggers.handedRan(at.id, key, "run-host");
+    }
+    return found;
+  };
+  const { store, triggers } = await engine(t, { runOf, launchHook: { url: `http://127.0.0.1:${host.address().port}/agentrun/firings`, secret: mintSecret() } });
+  const made = await triggers.create({ ...hookBody, max_active_runs: 1 });
+  at.id = made.id;
+  const key = firingKey("webhook", made.id, "evt-1");
+  await triggers.receive(made.id, "evt-1", "{}");
+  // The second read (after the sent write) is handed()'s last: the firing is as it stays.
+  await until(() => at.reads >= 2, "the engine's read after its sent write");
+  const row = await store.triggers.firing(made.id, key);
+  assert.deepEqual([row.status, row.runId], ["started", "run-host"], JSON.stringify(row));
+  assert.equal(await store.triggers.activeRuns(made.id), 1, "the host's run counts toward max_active_runs");
+  await triggers.receive(made.id, "evt-2", "{}");
+  const second = firingKey("webhook", made.id, "evt-2");
+  await until(async () => /max_active_runs/.test((await store.triggers.firing(made.id, second))?.reason ?? ""), "the next firing waits on the host's run");
+  const next = await store.triggers.firing(made.id, second);
+  assert.deepEqual([next.status, next.waitsOn, posts.length], ["due", "run-host", 1], JSON.stringify(next));
+});
 
 test("the keys kept for the day are capped: past the cap the oldest go first, and the log says so once", { timeout: 120_000 }, async (t) => {
   const said = [];

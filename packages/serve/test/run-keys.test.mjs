@@ -113,6 +113,8 @@ test("keys names only the tool keys the run's revision reads, each a value of 8 
   assert.equal((await api("POST", "/agents", SEARCHER("searcher"))).status, 201);
   const key = newKey();
   const short = randomBytes(4).toString("hex").slice(0, 7);
+  // Mathematical bold A to D: 4 astral characters, 8 UTF-16 units.
+  const astral = String.fromCodePoint(0x1d400, 0x1d401, 0x1d402, 0x1d403);
   const cases = [
     [{ MONID_API_KEY: key }, "keys.MONID_API_KEY", "not_an_option", key],
     [{ NOT_A_TOOL_KEY: key }, "keys.NOT_A_TOOL_KEY", "not_an_option", key],
@@ -122,7 +124,7 @@ test("keys names only the tool keys the run's revision reads, each a value of 8 
     [{ PARALLEL_API_KEY: short }, "keys.PARALLEL_API_KEY", "invalid", short],
     [{ PARALLEL_API_KEY: `${key} x` }, "keys.PARALLEL_API_KEY", "invalid", key],
     [{ PARALLEL_API_KEY: `${key}\n` }, "keys.PARALLEL_API_KEY", "invalid", key],
-    [{ PARALLEL_API_KEY: "𝐀𝐁𝐂𝐃" }, "keys.PARALLEL_API_KEY", "invalid", "𝐀𝐁𝐂𝐃"],
+    [{ PARALLEL_API_KEY: astral }, "keys.PARALLEL_API_KEY", "invalid", astral],
     [{ PARALLEL_API_KEY: "é".repeat(8) }, "keys.PARALLEL_API_KEY", "invalid", "é".repeat(8)],
     [key, "keys", "wrong_type", key],
   ];

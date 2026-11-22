@@ -287,7 +287,7 @@ test("a sent firing whose host's run was written but never linked (a stop betwee
   assert.equal(hook.got.length, 1, "the time its run overlapped was never handed to the host");
 });
 
-test("a sent firing whose host's run was written but never linked (a stop between the two) is started with it at the next server's start, and the overlap check counts it", { timeout: 180_000 }, async (t) => {
+for (const [restart, hooked] of [["the hook still set", true], ["the hook since unset", false]]) test(`a sent firing whose host's run was written but never linked (a stop between the two) is started with it at the next server's start, ${restart}, and the overlap check counts it`, { timeout: 180_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const secret = mintSecret();
@@ -304,7 +304,7 @@ test("a sent firing whose host's run was written but never linked (a stop betwee
   await first.close();
 
   clock.to("2026-06-01T00:12:00Z");
-  const second = await serve(t, { data, triggerClock: clock, runner: false, launchHook: { url: hook.url, secret } });
+  const second = await serve(t, { data, triggerClock: clock, runner: false, ...(hooked ? { launchHook: { url: hook.url, secret } } : {}) });
   const read = async () => (await second.api("GET", `/triggers/${id}/firings`)).body.firings[0];
   assert.ok(await until(async () => (await read()).status === "started"), JSON.stringify(await read()));
   assert.deepEqual([(await read()).run_id, hook.got.length], [runId, 1], "started with the host's run, never handed again");
