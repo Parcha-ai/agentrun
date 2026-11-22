@@ -33,7 +33,7 @@ import { vendorsOver } from "../sign-ins.js";
 import { decisionProvidersIn, fauxFetch } from "../decisions.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { carryTo, cutDeep, heldRedactor, runnerSecrets } from "./redact.js";
+import { cutDeep, heldRedactor, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
@@ -1161,7 +1161,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         }
         const savedGateway = savedGatewayIn(claimEnv);
         // The run's own keys: those its claim opens (claim-secrets.ts), the one list its loop in this process read.
-        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, ...(loopDeps.redact ? { carry: carryTo(heldRedactor(loopDeps.redact), claim.runId) } : {}) }, revisionRow as never, launch, claim.runId);
+        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact ? heldRedactor(loopDeps.redact) : undefined }, revisionRow as never, launch, claim.runId);
         // With them, its revision's own model's (a launch pinned at its start to another model, a --faux start's, is still
         // handed its agent's model's key, as a run's own process was handed it before: run-secrets.ts secretsFor).
         const ofRevision = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}) });
