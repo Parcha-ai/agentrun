@@ -324,6 +324,7 @@ __all__ = [
     "FeaturesMcpClient",
     "FeaturesMessages",
     "FeaturesRuns",
+    "FeaturesSdkRuns",
     "FeaturesSlack",
     "FeaturesTimeline",
     "FeaturesToolKeys",
@@ -7182,6 +7183,9 @@ class StartSdkRunBody(_StartSdkRunBodyRequired, total=False):
     model: str
     workflow_tools: list[StartSdkRunBodyWorkflowToolsItem]
     workflow_adapters: list[Literal["runNode", "runJudge"]]
+    started_at: str
+    title: str
+    labels: dict[str, str]
 
 
 class _StartSdkRunBodyWorkflowToolsItemRequired(TypedDict):
@@ -7205,6 +7209,9 @@ class _StartSdkRunBody2Required(TypedDict):
 
 class StartSdkRunBody2(_StartSdkRunBody2Required, total=False):
     model: str
+    started_at: str
+    title: str
+    labels: dict[str, str]
 
 
 class StartSdkRunResponse(TypedDict):
@@ -7326,6 +7333,7 @@ class Features(_FeaturesRequired, total=False):
     webhooks: FeaturesWebhooks
     slack: FeaturesSlack
     triggers: FeaturesTriggers
+    sdk_runs: FeaturesSdkRuns
 
 
 _FeaturesAgentsRequired = TypedDict("_FeaturesAgentsRequired", {"create": "bool", "update": "bool", "list": "bool"})
@@ -7443,6 +7451,13 @@ class FeaturesTriggersWebhook(TypedDict):
     max_body_bytes: int
     payload_kept_bytes: int
     at_rest: Literal["sealed"]
+
+
+class FeaturesSdkRuns(TypedDict):
+    started_at: bool
+    title: bool
+    labels: bool
+    max_open_s: int
 
 
 class Region(TypedDict):

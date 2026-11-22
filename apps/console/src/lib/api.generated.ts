@@ -649,6 +649,12 @@ export interface components {
       };
       public_url?: boolean;
     };
+    sdk_runs?: {
+      started_at: boolean;
+      title: boolean;
+      labels: boolean;
+      max_open_s: number;
+    };
   };
   File: {
     file_id: components["Id"];
@@ -6347,12 +6353,18 @@ export interface operations {
         price_usd?: number;
       }[];
       workflow_adapters?: ("runNode" | "runJudge")[];
+      started_at?: string;
+      title?: string;
+      labels?: Record<string, string>;
     } | {
       runtime: "external";
       platform: string;
       input: string;
       instructions: string;
       model?: string;
+      started_at?: string;
+      title?: string;
+      labels?: Record<string, string>;
     };
     answer: {
       run_id: string;

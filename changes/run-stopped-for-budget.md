@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve, @parcha/agentrun-client
-kind: feature
----
-A run says when it stopped short for its spend cap. Every run read and list item carries `stopped_for` and `budget_refused_calls`. `stopped_for` is `"budget"` on a `completed` run that wound down to stay under its `max_cost_usd`: its model was told to wrap up near the cap, or its tool calls were refused there. It is null on every other run. `budget_refused_calls` counts the tool calls the cap's wrap-up refused, each call once, and is 0 when none were. Before, such a run read `completed` like any other, and nothing on it said the cap had cut it short. The status stays `completed`, so a reader that sets "budget exhausted" reads `stopped_for`. A run paused at its cap (`pending.kind` `budget`) and one its cap ended (`failed`, `spend_cap_reached`) read as before. The server keeps each refusal on the run's journal as it happens; a run that ended before this server reads `stopped_for: "budget"` when its model was told to wrap up, and 0 refused calls.
