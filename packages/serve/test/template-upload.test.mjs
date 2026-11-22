@@ -323,7 +323,7 @@ test("an upload its agent's purge removed stops being served by the DELETE sent 
   registry.put(upload("pr-alert", "0.1.0"));
   registry.put(upload("gone", "0.1.0"));
   const fresh = upload("pr-alert", "0.2.0");
-  await dropRemovedUploads({ registry, store: { importedTemplates: { list: async () => (registry.put(fresh), []) } } });
+  await dropRemovedUploads({ registry, store: { importedTemplates: { ids: async () => (registry.put(fresh), []) } } });
   assert.deepEqual(registry.list().map((one) => one.id), ["upload:pr-alert"]);
   assert.equal(registry.get("upload:pr-alert"), fresh);
 });

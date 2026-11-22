@@ -98,7 +98,7 @@ export async function loadImported(deps: Pick<TemplateImportDeps, "registry" | "
 export async function dropRemovedUploads(deps: Pick<TemplateImportDeps, "registry" | "store">): Promise<void> {
   const served = deps.registry.list().filter((pkg) => pkg.origin !== null && pkg.id.startsWith(UPLOAD_PREFIX));
   if (!served.length) return;
-  const stored = new Set((await deps.store.importedTemplates.list()).map((row) => row.id));
+  const stored = new Set(await deps.store.importedTemplates.ids());
   for (const pkg of served) if (!stored.has(pkg.id) && deps.registry.get(pkg.id) === pkg) deps.registry.remove(pkg.id);
 }
 

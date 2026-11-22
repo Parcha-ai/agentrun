@@ -1587,6 +1587,8 @@ export interface ImportedTemplateRow {
 export interface ImportedTemplates {
   /** Every imported package, by id. */
   list(): Promise<ImportedTemplateRow[]>;
+  /** Every imported package's id, sorted, with none of its files read. */
+  ids(): Promise<string[]>;
   /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it). */
   put(row: Omit<ImportedTemplateRow, "importedAt">): Promise<void>;
   /** Removes the package: false when none had that id. */

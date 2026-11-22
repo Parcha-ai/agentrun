@@ -168,9 +168,10 @@ test("agents.purge removes an upload once no agent left was applied from it: the
   // Each purge reads the other's agent before either commits, but for the upload's hold: the later one reads the
   // earlier purged.
   await Promise.all([store.agents.purge("agent-1"), store.agents.purge("agent-2")]);
-  assert.deepEqual((await store.importedTemplates.list()).map((row) => row.id), [GITHUB]);
+  assert.deepEqual(await store.importedTemplates.ids(), [GITHUB]);
   await store.agents.purge("agent-3");
-  assert.deepEqual((await store.importedTemplates.list()).map((row) => row.id), [GITHUB]);
+  assert.deepEqual(await store.importedTemplates.ids(), [GITHUB]);
+  assert.deepEqual((await store.importedTemplates.list()).map((row) => row.id), [GITHUB], "ids() names what list() reads");
 });
 
 test("a purged agent takes no write: a revision (an edit's, an upgrade's), its current revision moved, its name or description, its archive, a run, a trigger or a pin of it, each refused (AgentPurged) or a no-op, nothing written", async (t) => {
