@@ -410,6 +410,28 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "package"
+    ],
+    "operationId": "getAgentPackage",
+    "method": "GET",
+    "path": "/agents/{agent_id}/package",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The agent's current revision as a template package"
+  },
+  {
+    "command": [
+      "agents",
       "runs"
     ],
     "operationId": "listRuns",

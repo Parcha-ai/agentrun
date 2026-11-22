@@ -33,7 +33,8 @@ import { rm } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
-import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { agentPackage } from "./agent-package.js";
+import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -615,6 +616,7 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/agents\/([^/]+)$/, name: "deleteAgent" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/package$/, name: "getAgentPackage" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/archive$/, name: "archiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/unarchive$/, name: "unarchiveAgent" },
@@ -4530,6 +4532,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // agentRevisions already carries each row's version and current flag; revisionView builds the v2 shape from it.
         const page = all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row));
         return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
+      }
+      case "getAgentPackage": {
+        const entry = await needAgent(id);
+        const { agent, revision } = entry;
+        // An agent whose source is somewhere else has no package here: its project or application holds it.
+        const body = (revision?.body ?? {}) as Json;
+        const elsewhere = ownedElsewhere(agent) ? "another system's agent, which that system defines" : body.native ? "a native agent, which its project on its own machine defines" : body.cli_learning ? "a CLI learning agent, which its CLI's sessions define" : body.sdk ? "an SDK agent, which its application's code defines" : undefined;
+        if (elsewhere) throw new ApiError("not_exportable", `The agent ${id} is ${elsewhere}: export it from there.`);
+        if (!revision || revision.kind !== "agentic") throw new ApiError("not_exportable", `The agent ${id} ${revision ? "is a workflow, and a template package holds an agent" : "has no revision to export"}.`);
+        // Its triggers: those that start its runs and those that message one of them (each row names the agent it runs as).
+        const own = new Set((await store.triggers.list(id)).map((row) => row.id));
+        const views = (await triggers.list()).triggers.filter((view) => own.has(view.id)) as unknown as Json[];
+        const answer = agentPackage({
+          agent: { id, name: agent.name, description: agent.description ?? null },
+          definition: definitionOf(agent, revision, entry.version),
+          skills: (isObject(revision.skills) ? revision.skills : {}) as Record<string, string>,
+          template: entry.template ? { id: entry.template.id, version: entry.template.version } : null,
+          origin: entry.template ? registry.get(entry.template.id) : undefined,
+          servers: mcpMeta,
+          triggers: views,
+          signIns: await store.signIns.list(id),
+          now: options.triggerClock?.now() ?? Date.now(),
+        });
+        return send(res, 200, answer);
       }
       case "setCurrent": {
         // The body read first, outside the agent's delete turn; the move made in it (agentWrite), as an edit's revision is:
