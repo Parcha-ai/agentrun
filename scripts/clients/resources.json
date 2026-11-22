@@ -35,6 +35,9 @@
     "attachComputer": "A paired computer's driver dials it, a WebSocket upgrade with the computer's own token: no request of the owner's CLI or clients is one.",
     "getComputerDaemon": "A hosted machine fetches it as it boots, with the token its create minted: the owner's token is not one, so the CLI and clients never call it."
   },
+  "handWritten": {
+    "getAgentPackage": "agentrun export AGENT --out DIR writes it as a package folder."
+  },
   "commands": {
     "getCapabilities": ["server", "capabilities"],
     "getHealth": ["server", "health"],

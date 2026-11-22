@@ -287,7 +287,7 @@ test("help: agentrun help lists the commands, a noun lists its verbs, a command'
   assert.match(cli(["--help"]).out, /^Usage: npx @parcha\/agentrun \[--port N\]/);
 });
 
-test("generate-clients --check passes on the committed table, and fails on a hand-edited table, a duplicate command or an operation gone", { timeout: 60_000 }, (t) => {
+test("generate-clients --check passes on the committed table, and fails on a hand-edited table, a duplicate command, an operation gone, or one left to a hand-written command that does not call it", { timeout: 60_000 }, (t) => {
   const { dir } = scratch(t);
   const check = (...args) => spawnSync(process.execPath, [GENERATOR, "--check", ...args], { encoding: "utf8", cwd: ROOT });
   const committed = check();
@@ -311,6 +311,13 @@ test("generate-clients --check passes on the committed table, and fails on a han
   const goneOmit = check("--resources", omitted);
   assert.equal(goneOmit.status, 1);
   assert.match(goneOmit.stderr, /noSuchOperation/);
+
+  // An operation left to a hand-written command must be one a hand-written command calls.
+  const byHand = join(dir, "by-hand.json");
+  writeFileSync(byHand, JSON.stringify({ ...resources, handWritten: { ...resources.handWritten, getRun: "no command calls it" } }));
+  const unwritten = check("--resources", byHand);
+  assert.equal(unwritten.status, 1);
+  assert.match(unwritten.stderr, /getRun written by hand, and no hand-written command names its route GET \/runs\/\{run_id\}/);
 
   const segments = join(dir, "segments.json");
   for (const multiSegment of [{ noSuchOperation: "path" }, { readRunFile: "no_such_parameter" }]) {
@@ -687,14 +694,10 @@ test("no CLI command, the table's or a hand-written one, reaches an operation th
   const routeOf = new Map(Object.entries(doc.paths).flatMap(([path, item]) => Object.entries(item).filter(([, op]) => op?.operationId).map(([method, op]) => [op.operationId, `${method.toUpperCase()} ${path}`])));
   const { COMMANDS, SECRET_ROUTES } = await import(TABLE);
   assert.deepEqual(COMMANDS.filter((entry) => marked.includes(entry.operationId)).map((entry) => entry.command.join(" ")), [], "no table command");
-  const hand = [
-    ...(await import(join(ROOT, "packages", "agentrun", "lib", "login.mjs"))).SECRETS,
-    (await import(join(ROOT, "packages", "agentrun", "lib", "follow.mjs"))).WAIT,
-    (await import(join(ROOT, "packages", "agentrun", "lib", "skill.mjs"))).SKILL_INSTALL,
-    ...Object.values(await import(join(ROOT, "packages", "agentrun", "lib", "template.mjs"))).filter((entry) => entry?.command),
-  ];
+  const hand = [(await import(join(ROOT, "packages", "agentrun", "lib", "follow.mjs"))).WAIT, ...(await import(join(ROOT, "packages", "agentrun", "lib", "local.mjs"))).LOCAL];
   const routes = marked.map((id) => routeOf.get(id));
-  assert.deepEqual(hand.filter((entry) => routes.some((route) => String(entry.route ?? "").startsWith(route))).map((entry) => entry.command.join(" ")), [], "no hand-written command");
+  assert.ok(hand.some((entry) => entry.route), "the hand-written commands that call the API name their routes");
+  assert.deepEqual(hand.filter((entry) => [entry.route ?? []].flat().some((own) => routes.includes(own))).map((entry) => entry.command.join(" ")), [], "no hand-written command");
   // The raw `api` call still guards every secret route's body, a command's or not.
   assert.ok(SECRET_ROUTES.some((entry) => entry.operationId === "saveToolKey"), "a raw call to the tool key route is still guarded");
   // The API and the clients keep them: the routes answer the token in words (secret-writes.ts), and the client has the methods.

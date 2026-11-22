@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { commandsOf, operationsOf } from './generate-clients.mjs';
 import { SDK_PATHS } from '../packages/serve/dist/sdk/schema.js';
 
-const map = { commands: {}, secretBody: [], omit: {}, multiSegment: {} };
+const map = { commands: {}, secretBody: [], omit: {}, handWritten: {}, multiSegment: {} };
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', additionalProperties: false, properties, required });
 const command = schema => commandsOf(operationsOf({ paths: { '/things': { post: {
   operationId: 'createThing', tags: ['things'], requestBody: { required: true, content: { 'application/json': { schema } } }, responses: {},

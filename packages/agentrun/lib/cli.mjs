@@ -15,18 +15,9 @@ import { delimiter, isAbsolute, join, resolve, win32 } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { ALL, FLAGS, MAX_PAGES, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
-import { SECRETS, guarded, refusalExit } from "./login.mjs";
-import { DOCTOR } from "./doctor.mjs";
-import { OPEN, SERVICE, STOP } from "./service.mjs";
-import { SKILL_INSTALL } from "./skill.mjs";
-import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from "./template.mjs";
-import { HARNESS_CHECK, HARNESS_INSTALL, HARNESS_SIGN_IN } from "./harness.mjs";
-import { EXPORT } from "./export.mjs";
-import { DEPLOY, DEPLOY_DELETE, DEPLOY_ROLLBACK } from "./deploy.mjs";
+import { guarded, refusalExit } from "./login.mjs";
+import { LOCAL } from "./local.mjs";
 
-/** The hand-written commands that run as they are given (`run`), beside the table's. A command of one word that has
- *  verbs too (deploy) comes after them: `run` takes the first whose words match. */
-const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, HARNESS_INSTALL, HARNESS_SIGN_IN, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR, DEPLOY_ROLLBACK, DEPLOY_DELETE, DEPLOY];
 export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
 const START = "start it with `npx @parcha/agentrun`, or pass --base-url (or set AGENTRUN_BASE_URL) to the address the server printed";
@@ -46,12 +37,15 @@ class Exit extends Error {
 const usageError = (message) => new Exit(2, message);
 const flag = (name) => name.replace(/_/g, "-").toLowerCase();
 
-/** The words of `argv` that are not flags, past the values of the flags placed before a command (--data, --base-url,
- *  login's --to, and the server's --port) or before a verb (deploy's --to and --params). */
+/** The flags that take the next word as their value: --data, --base-url, the server's --port, and each hand-written
+ *  command's own (login's and deploy's --to, deploy's --params). */
+const VALUED = new Set(["--data", "--base-url", "--port", ...LOCAL.flatMap((entry) => Object.entries(entry.options ?? {}).filter(([, option]) => option.type === "string").map(([name]) => `--${name}`))]);
+
+/** The words of `argv` that are not flags, past the values of the flags placed before a command or a verb. */
 export function words(argv) {
   const found = [];
   for (let i = 0; i < argv.length; i++) {
-    if (["--data", "--base-url", "--port", "--to", "--params"].includes(argv[i])) i++;
+    if (VALUED.has(argv[i])) i++;
     else if (!argv[i].startsWith("-")) found.push(argv[i]);
   }
   return found;
@@ -617,7 +611,8 @@ async function run(argv, env, io) {
   if (noun === undefined || noun === "help") return io.stdout.write(`${HELP()}\n`), 0;
   if (noun === "api") return api(argv, env, io);
   if (noun === WAIT.command[0] && verb === WAIT.command[1]) return wait(argv, env, io);
-  const own = LOCAL.find((e) => e.command[0] === noun && (e.command.length === 1 || e.command[1] === verb));
+  // A command's own verb first (deploy rollback), then the command of one word (deploy, its verb being its argument).
+  const own = LOCAL.find((e) => e.command[0] === noun && e.command[1] === verb) ?? LOCAL.find((e) => e.command[0] === noun && e.command.length === 1);
   if (own) return local(own, argv, env, io);
   const entries = COMMANDS.filter((entry) => entry.command[0] === noun);
   const listed = [...entries, ...LOCAL.filter((e) => e.command[0] === noun), ...(noun === WAIT.command[0] ? [WAIT] : [])];

@@ -616,6 +616,7 @@ export const DEPLOY = {
   pathParams: ["source"],
   argsOptional: true,
   summary: "Deploy an agent's package to another AgentRun: upload, plan, apply, lock (deploy rollback, deploy delete)",
+  route: ["POST /templates/import", "POST /templates/{template}/apply"],
   help: [
     SOURCE,
     TO,
@@ -635,6 +636,7 @@ export const DEPLOY_ROLLBACK = {
   pathParams: ["source"],
   argsOptional: true,
   summary: "Make the deployed agent's previous revision current on its target, and the lock follow",
+  route: ["GET /agents/{agent_id}/revisions", "POST /agents/{agent_id}/current"],
   help: [SOURCE, ["--to URL", "the target, in place of the lock's"], ["", TOKEN]],
   options: { to: { type: "string" } },
   run: ending(rollback),
@@ -645,6 +647,7 @@ export const DEPLOY_DELETE = {
   pathParams: ["source"],
   argsOptional: true,
   summary: "Delete the deployed agent from its target (archived first), and the lock here",
+  route: ["POST /agents/{agent_id}/archive", "DELETE /agents/{agent_id}"],
   help: [SOURCE, ["--to URL", "the target, in place of the lock's"], ["--yes", "delete without asking (needed off a terminal)"], ["", TOKEN]],
   options: { to: { type: "string" }, yes: { type: "boolean" } },
   run: ending(remove),

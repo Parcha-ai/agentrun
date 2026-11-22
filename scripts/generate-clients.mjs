@@ -19,14 +19,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { ALL, FLAGS, WAIT } from '../packages/agentrun/lib/follow.mjs';
-import { SECRETS } from '../packages/agentrun/lib/login.mjs';
-import { DOCTOR } from '../packages/agentrun/lib/doctor.mjs';
-import { OPEN, SERVICE, STOP } from '../packages/agentrun/lib/service.mjs';
-import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
-import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from '../packages/agentrun/lib/template.mjs';
-import { HARNESS_CHECK, HARNESS_INSTALL, HARNESS_SIGN_IN } from '../packages/agentrun/lib/harness.mjs';
-import { DEPLOY, DEPLOY_DELETE, DEPLOY_ROLLBACK } from '../packages/agentrun/lib/deploy.mjs';
-import { EXPORT } from '../packages/agentrun/lib/export.mjs';
+import { LOCAL } from '../packages/agentrun/lib/local.mjs';
 import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
 import { pythonProblems, pythonText } from './clients/python.mjs';
 import { clientProblems, clientText } from './clients/typescript.mjs';
@@ -40,11 +33,11 @@ const SKILL = 'packages/agentrun/skills/agentrun-cli';
 const CLIENT = 'packages/client/src/operations.generated.ts';
 const PYTHON = 'python/agentrun/_generated.py';
 const TYPES = 'apps/console/src/lib/api.generated.ts';
-// Words the launcher keeps for itself or for the server it starts, and the CLI's own commands of one word: no command
-// may begin with one.
-const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill', 'service', 'stop', 'doctor', 'harness-check', 'export', 'deploy'];
+// Words the launcher keeps for itself or for the server it starts, and the CLI's own commands of one word, which take
+// any word after them as their argument: no command may begin with one.
+const RESERVED = ['api', 'help', 'import', 'reset-password', ...LOCAL.filter(({ command }) => command.length === 1).map(({ command }) => command[0])];
 // The CLI's hand-written commands: none may be a generated one too.
-const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, HARNESS_INSTALL, HARNESS_SIGN_IN, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR, DEPLOY_ROLLBACK, DEPLOY_DELETE, DEPLOY] };
+const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: LOCAL };
 const SCALAR = ['string', 'number', 'integer', 'boolean'];
 const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'body-type', 'help'];
 // Headers the CLI sets itself.
@@ -278,8 +271,14 @@ export const commandOf = (op, map) => map.commands[op.operationId] ?? [op.tags[0
 export function problemsOf(ops, map) {
   const ids = new Set(ops.map((op) => op.operationId));
   const problems = [];
-  for (const id of [...Object.keys(map.commands), ...map.secretBody, ...Object.keys(map.omit), ...Object.keys(map.multiSegment)]) {
+  for (const id of [...Object.keys(map.commands), ...map.secretBody, ...Object.keys(map.omit), ...Object.keys(map.handWritten), ...Object.keys(map.multiSegment)]) {
     if (!ids.has(id)) problems.push(`${RESOURCES} names ${id}, which the document has no operation for`);
+  }
+  // An operation the CLI runs through a hand-written command has no table command of its own, and keeps its client
+  // methods: the hand-written command names its route.
+  for (const op of ops.filter((o) => map.handWritten[o.operationId] !== undefined)) {
+    const route = `${op.method} ${op.path}`;
+    if (!HAND.local.some((entry) => [entry.route ?? []].flat().includes(route))) problems.push(`${RESOURCES} has ${op.operationId} written by hand, and no hand-written command names its route ${route}`);
   }
   // An operation that writes a secret is left out of the CLI by its mark, never by hand: omitting it would drop its client
   // method too. Its name in the map stays, as the client's method's.
@@ -319,7 +318,7 @@ export function commandsOf(ops, map) {
   const entries = [];
   for (const op of ops) {
     // An operation that writes a secret has no command: the CLI holds only the token, which the server refuses on it.
-    if (op.unsupported || op.browserOnly || op.writesSecret || map.omit[op.operationId] !== undefined) continue;
+    if (op.unsupported || op.browserOnly || op.writesSecret || map.omit[op.operationId] !== undefined || map.handWritten[op.operationId] !== undefined) continue;
     const flag = (p) => ({ name: p.name, ...(flagType(p) ?? { type: 'string' }), required: p.required, description: p.description });
     const query = op.parameters.filter((p) => p.in === 'query').map(flag);
     const taken = new Set([...GLOBAL_FLAGS, ...query.map((q) => flagOf(q.name))]);
@@ -383,7 +382,7 @@ export function tableText(ops, map) {
 
 async function main() {
   const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, skill: { type: 'string' }, client: { type: 'string' }, python: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' }, types: { type: 'string' } } });
-  const map = { secretBody: [], omit: {}, multiSegment: {}, publicFields: {}, bodyFill: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
+  const map = { secretBody: [], omit: {}, handWritten: {}, multiSegment: {}, publicFields: {}, bodyFill: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
   const doc = values.document ? JSON.parse(await readFile(resolve(values.document), 'utf8')) : await servedDocument();
   const ops = operationsOf(doc);
   const problems = [...problemsOf(ops, map), ...publicFieldProblems(doc, map), ...clientProblems(ops, map, commandOf), ...pythonProblems(ops, map, commandOf)];
