@@ -3805,6 +3805,18 @@ export const COMMANDS = [
         "description": ""
       },
       {
+        "name": "started_at",
+        "type": "string",
+        "required": false,
+        "description": "When the backend began the task, as an RFC 3339 date-time: the run's created_at. At most 60 seconds ahead of the server's clock and at most 7 days behind it. Absent: now. The evidence deadline is still counted from this request."
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "required": false,
+        "description": "The run's title, trimmed and with whitespace collapsed. Absent: the first 80 characters of input."
+      },
+      {
         "name": "platform",
         "type": "string",
         "required": false,
