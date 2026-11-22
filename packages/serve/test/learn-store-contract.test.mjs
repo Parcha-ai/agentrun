@@ -347,6 +347,21 @@ for (const [kind, make] of Object.entries(STORES)) {
     assert.equal((await store.read(tip, ["corrections.md"]))[0].body.toString("utf8"), "- ALPHA line from the owner\n- a hand line\n");
   });
 
+  test(`${kind}: a purge takes out each workflow file the purged run wrote last, file by file: a later run that rewrote only workflow.json keeps its file, and the purged run's README.md leaves every tree (its workflow reads incomplete)`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText, learningCommit, readSnapshot } = await learn();
+    await merged(store, "ALPHA");
+    assert.equal((await learningCommit(store, { runId: "run_bravo", reason: "BRAVO reason words", files: flow("x", "BRAVO") })).ok, true);
+    const charlieFlow = flow("x", "CHARLIE")[1];
+    assert.equal((await learningCommit(store, { runId: "run_charlie", reason: "CHARLIE reason words", files: [charlieFlow] })).ok, true);
+    assert.ok("commit" in (await forgetRunText(store, "run_bravo")));
+    assert.doesNotMatch(await everything(store), /BRAVO/);
+    const tip = await store.head();
+    assert.deepEqual(paths(await store.read(tip)).filter((path) => path.startsWith("workflows/")), ["workflows/x/workflow.json"]);
+    assert.equal((await store.read(tip, ["workflows/x/workflow.json"]))[0].body.toString("utf8"), charlieFlow.text);
+    assert.deepEqual((await readSnapshot(store)).workflows.map(({ name }) => name), [], "x reads incomplete: its README.md was the purged run's");
+  });
+
   test(`${kind}: a purge of a run that learned a workflow and no line takes that workflow out of every tree and leaves the other runs' things`, async (t) => {
     const store = await make(t);
     const { forgetRunText, learningCommit, readSnapshot, runMergeOf } = await learn();
