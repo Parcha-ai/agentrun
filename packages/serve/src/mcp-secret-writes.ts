@@ -56,10 +56,21 @@ export async function mcpSaveDropsSecret(body: unknown, request: SecretRequest):
   return type !== was.auth;
 }
 
+/** A save of the server its path names on an API-only server, which has no owner to save a credential from the console:
+ *  its token saves a per_run server alone (each run hands its own credential; the save keeps none), so any other auth,
+ *  or none named, is the one secret-write refusal. Anywhere else, and for a per_run save there, mcpSaveDropsSecret. */
+export async function mcpSaveWritesSecret(body: unknown, request: SecretRequest): Promise<boolean> {
+  const dropped = await mcpSaveDropsSecret(body, request);
+  if (!request.apiOnly) return dropped;
+  const auth = isObject(body) ? body.auth : undefined;
+  return dropped || !isObject(auth) || auth.type !== "per_run";
+}
+
 /** Whether removing the server its path names is refused to the token: it holds a sealed credential, or the token did not
  *  save it (its source record has no token's mark, mcp-sources.ts savedByToken): an owner's server stays the owner's,
- *  sealed or not. A server the token saved with none (an eval's fake, say) is the token's to remove; the removal lands
- *  only while its credential is still none (request.seen) and it is still the token's (McpServers.remove checks again). */
+ *  sealed or not. A server the token saved with none (an eval's fake, or a per_run server an API-only server's token saved
+ *  at a listed origin) is the token's to remove; the removal lands only while its credential is still none (request.seen)
+ *  and it is still the token's (McpServers.remove checks again). */
 export async function mcpDeleteRefused(_body: unknown, request: SecretRequest): Promise<boolean> {
   const [name] = request.params;
   if (!name) return false;
@@ -72,7 +83,7 @@ export async function mcpDeleteRefused(_body: unknown, request: SecretRequest): 
 
 /** MCP's operations the one gate reads: the predicates above decide each request. */
 export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts", "deleteMcpServer"] as const;
-const STORED: Partial<Record<(typeof MCP_SECRET_OPERATIONS)[number], (body: unknown, request: SecretRequest) => Promise<boolean>>> = { saveMcpServer: mcpSaveDropsSecret, deleteMcpServer: mcpDeleteRefused };
+const STORED: Partial<Record<(typeof MCP_SECRET_OPERATIONS)[number], (body: unknown, request: SecretRequest) => Promise<boolean>>> = { saveMcpServer: mcpSaveWritesSecret, deleteMcpServer: mcpDeleteRefused };
 for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (body) => mcpWritesSecret(operation, body), STORED[operation]);
 // The Composio preset takes the owner's API key and seals it as an MCP header: both routes are the owner's session alone,
 // whatever the body (the listing sends the key too, and only the session may type one).

@@ -1,8 +1,9 @@
 // The API-only profile (AGENTRUN_API_ONLY=1): a server that runs behind its caller's backend serves the run routes and a
 // deploy's routes alone, and refuses every other address before anything else reads the request: the console at "/" and
-// its assets, sign-in and setup, settings but the MCP servers' names, a Composio server's save and the delete of a server
-// the token saved (the secret-write gate refuses the rest, mcp-secret-writes.ts), the
-// MCP endpoint, triggers and their webhook hooks, the rest of agents and templates. Off by default.
+// its assets, sign-in and setup, settings but the MCP servers' names, a Composio server's save, a per_run server's save at
+// a listed origin and the delete of a server the token saved (the secret-write gate refuses the rest,
+// mcp-secret-writes.ts), the MCP endpoint, triggers and their webhook hooks, the rest of agents and templates. Off by
+// default.
 import { API_ONLY_ENV } from "./env-switch.js";
 import { NOT_SET_UP } from "./runnable.js";
 import type { Route } from "./server.js";
@@ -30,10 +31,11 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    its agents need through the preset (saveComposioServer) and deletes a server it saved (mcp-secret-writes.ts
  *    mcpDeleteRefused), and never writes a secret (secret-writes.ts). A Composio server names its key by api_key_env
  *    (COMPOSIO_API_KEY, on the launcher's list of secrets, read at each use through secrets.ts secret, sent to
- *    Composio's origin alone: composio-made.ts composioEnvKey), and its body names no address or headers. There is no list
- *    or read of the servers here (listMcpServerNames above is the listing), and no generic save (saveMcpServer), so the
- *    token saves no server at an address or with headers of its own. Previews, refreshes, sign-ins and Composio's
- *    triggers stay refused. */
+ *    Composio's origin alone: composio-made.ts composioEnvKey), and its body names no address or headers. Its generic save
+ *    (saveMcpServer) takes a per_run server alone, which keeps no credential, at an origin the operator listed exactly in
+ *    AGENTRUN_MCP_TOKEN_ORIGINS (mcp-token-origins.ts; unset, none), checked again at each claim of it; any other auth is
+ *    the secret-write refusal (mcp-secret-writes.ts mcpSaveWritesSecret). There is no list or read of the servers here (listMcpServerNames above is the listing).
+ *    Previews, refreshes, sign-ins and Composio's triggers stay refused. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
@@ -46,7 +48,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames",
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
-  "saveComposioServer", "deleteMcpServer",
+  "saveComposioServer", "saveMcpServer", "deleteMcpServer",
 ]);
 
 /** The trigger sources an apply on an API-only server makes once the server has the launch hook: the ones that fire on

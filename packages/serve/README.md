@@ -3244,8 +3244,9 @@ serves these routes alone:
   the hook, or start those runs through the API). A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
-- a Composio server's save, and the delete of a server the token saved, for a backend that grants its runs Composio
-  tools. The token here never writes a secret, so the save keeps none:
+- a Composio server's save, a `per_run` server's save at an origin the operator listed, and the delete of a server the
+  token saved, for a backend that grants its runs MCP tools. The token here never writes a secret, so the save keeps
+  none:
   - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
     `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
     value, and reads the value it and each runner were started with at each use: the save's calls to Composio, each
@@ -3261,12 +3262,22 @@ serves these routes alone:
     address, and the key read from the variable is only ever sent to Composio's own origin, fixed in code. A server
     whose saved address is anywhere else is refused by name wherever that key would be read (a refresh, a run's start),
     and nothing is sent;
+  - a server at an address (`PUT /settings/mcp-servers/{name}`) is saved with `"auth": {"type": "per_run"}` alone: it
+    keeps no credential, and each run hands its own (`mcp_auth`). Any other `auth.type`, or none, is `403`. Its URL's
+    origin (scheme, host and port) must be exactly one listed in `AGENTRUN_MCP_TOKEN_ORIGINS`, the operator's
+    comma-separated list of `https://host[:port]` origins, plus at most one `http://127.0.0.1:<port>` (or
+    `http://[::1]:<port>`) that counts only with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. An entry with a path, query,
+    fragment, user or wildcard stops the start, in words. Unset, nothing is listed, and every such save is refused.
+    An address at any other origin (a lookalike host, another port, a path or query that names a listed one) is
+    `422 not_an_option` under `url`, and the refusal names no listed origin. The save's `toolkit` is recorded, so a
+    template's need for that toolkit maps onto the server at an apply, and the token may delete the server. The runner
+    checks the origin again at each run's claim, against its own `AGENTRUN_MCP_TOKEN_ORIGINS` (set it on every runner
+    too): a server whose origin is no longer listed is refused by its name, and nothing is sent;
   - a delete (`DELETE /settings/mcp-servers/{name}`) takes only a server the token saved. One saved any other way (by the
     owner, sealing a credential or not) is `403`, it stays, and nothing is sent to Composio.
 
-  The names route above is the listing: there is no list or read of a server's address, auth or tools here, and no
-  generic save (`PUT /settings/mcp-servers/{name}`), so the token saves no server at an address or with headers of its
-  own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
+  The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
+  preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
   server the token's `api_key_env` is `403`, as `api_key` is: the owner's session saves a Composio server there either
   way;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.

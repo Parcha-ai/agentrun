@@ -8,10 +8,12 @@
 // row. One left behind by a removal that raced a save, or by a removal cut short, is never read as what a server saved
 // again under the name is.
 // The record also says who saved the row: `by: "token"` when the API token saved it (a request the secret-write gate read,
-// server.ts), for the gate's check that the token deletes only a server it saved (mcp-secret-writes.ts). A row the owner
-// saved has no mark, and stays the owner's: the token's save over it leaves it unmarked, and the owner's save over the
-// token's row drops the mark before it writes the row.
+// server.ts), for the gate's check that the token deletes only a server it saved (mcp-secret-writes.ts), and, for a per_run
+// server an API-only server's token saved at a listed origin (`listed`), for each claim to check that origin against the
+// operator's list again (mcp-token-origins.ts). A row the owner saved has no mark, and stays the owner's: the token's
+// save over it leaves it unmarked, and the owner's save over the token's row drops the mark before it writes the row.
 import type { InputIssue } from "./errors.js";
+import { tokenOriginGone, tokenOriginListed } from "./mcp-token-origins.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject } from "./validate.js";
 
@@ -40,15 +42,31 @@ const NONE: SourceRecord = { source: "url", toolkit: null };
 export type RecordedRow = { auth: string; createdAt?: number };
 
 /** The settings value a record is stored as, bound to the server row it was written for. `standIn`: an eval's fake
- *  standing in for a need (standInGiven), the one record that may say github. `byToken`: the API token saved the row. */
-export const storedSource = (record: SourceRecord, row: { createdAt: number }, standIn = false, byToken = false): SourceRecord & { of: number; stand_in?: true; by?: "token" } => ({ ...record, of: row.createdAt, ...(standIn ? { stand_in: true as const } : {}), ...(byToken ? { by: "token" as const } : {}) });
+ *  standing in for a need (standInGiven), the one record that may say github. `byToken`: the API token saved the row.
+ *  `listed`: an API-only server's token saved it at an origin its operator listed (with `byToken` alone). */
+export const storedSource = (record: SourceRecord, row: { createdAt: number }, standIn = false, byToken = false, listed = false): SourceRecord & { of: number; stand_in?: true; by?: "token"; listed?: true } => ({ ...record, of: row.createdAt, ...(standIn ? { stand_in: true as const } : {}), ...(byToken ? { by: "token" as const } : {}), ...(byToken && listed ? { listed: true as const } : {}) });
 
 /** Whether the stored record `value`, read for the server row created at `createdAt`, says the API token saved that row.
  *  No record, one written for another row, or one with no mark: the owner's. */
 export const savedByToken = (value: unknown, createdAt: number | undefined): boolean => isObject(value) && createdAt !== undefined && value.of === createdAt && value.by === "token";
 
-/** A stored record as it stands once the owner saves over the token's row: the same, without the token's mark. */
-export const ownersRecord = (value: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(value).filter(([field]) => field !== "by"));
+/** Whether the stored record `value`, read for the server row created at `createdAt`, says an API-only server's token saved
+ *  that row at an origin its operator listed (AGENTRUN_MCP_TOKEN_ORIGINS): the one row each claim checks that origin of
+ *  again. The token's other rows (a Composio server, held to Composio's origin; a full server's non-secret
+ *  save) are not. */
+export const savedAtListedOrigin = (value: unknown, createdAt: number | undefined): boolean => savedByToken(value, createdAt) && isObject(value) && value.listed === true;
+
+/** Why the server `row`, its stored record `value`, is not used where `origins` are listed: the token saved it at a listed
+ *  origin (savedAtListedOrigin) and its origin is none of them now (tokenOriginListed). Undefined for every other row. The
+ *  one check of the server's reads of the row (McpServersOverStore) and a runner's claim. */
+export const tokenOriginRefusal = (value: unknown, row: { name: string; url: string; createdAt: number }, origins: readonly string[]): string | undefined => (savedAtListedOrigin(value, row.createdAt) && !tokenOriginListed(row.url, origins) ? tokenOriginGone(row.name) : undefined);
+
+/** A stored record as it stands once the owner saves over the token's row: the same, without the token's marks. */
+export const ownersRecord = (value: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(value).filter(([field]) => field !== "by" && field !== "listed"));
+
+/** A stored record as it stands once the token saves over its own row other than at a listed origin (a full server's save,
+ *  which no list holds): the same, still the token's, without `listed`. */
+export const unlistedRecord = (value: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(value).filter(([field]) => field !== "listed"));
 
 /** Whether the stored value `value` was written for another server row than the one created at `createdAt`: a record left
  *  behind, which a removal of this row leaves for the row it is. */

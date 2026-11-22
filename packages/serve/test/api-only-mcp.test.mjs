@@ -371,8 +371,11 @@ test("claim: a per_run server the token saved, whose origin the runner no longer
   const sent = listed.log.length;
   const store = server.store;
   const sealKey = Buffer.alloc(32, 7);
+  // Each run as the server starts one: its revision pinned on the saved server, its launch record written (handed no
+  // credential here, so a listed claim opens the server with none).
   const claimOf = async (runId) => {
-    await queued(store, runId, { mcpPin: await registryPin(store) });
+    await store.agents.create({ id: `agent-${runId}`, name: `agent-${runId}` }, { id: `rev-${runId}`, kind: "agentic", body: { instructions: "Answer." }, mcpPin: await registryPin(store) });
+    await store.runs.create({ id: runId, agentId: `agent-${runId}`, revisionId: `rev-${runId}` }, { body: { input: { content: "go" }, title: "go", place: { mode: "runner" } }, sealed: null });
     const claim = await store.claim(runId, "runner-a", { leaseMs: 60_000 });
     return mcpClaim({ store, claim, grants: ["mcp:mail/add"], sealKey, signal: new AbortController().signal, loopback: true });
   };

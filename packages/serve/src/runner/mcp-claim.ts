@@ -31,6 +31,10 @@
 // as the runner was handed it at its start (secrets.ts secret, never its environment), for an address on Composio's origin
 // alone (composioEnvKey), and only for a server the run is granted: the run's process never holds it. Unset, or a row at
 // another address, the claim is refused before the loop starts (pinOf), in words naming it, and nothing is sent.
+// A server an API-only server's token saved at a listed origin (its record marked so, mcp-sources.ts savedAtListedOrigin)
+// is used only while its origin is one this runner's AGENTRUN_MCP_TOKEN_ORIGINS lists, read at each claim and each open
+// (mcp-token-origins.ts, the save's own check): else the claim is refused before the loop starts, naming the server, and
+// nothing is sent.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again
@@ -63,6 +67,8 @@ import { composioRunQuery } from "../composio-preset.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { resourceToolProblem } from "../mcp-resources.js";
 import { credentialInQuery, credentialInQueryWords, shownUrl } from "../mcp-probe.js";
+import { mcpSourceKey, tokenOriginRefusal } from "../mcp-sources.js";
+import { tokenOriginsNow } from "../mcp-token-origins.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
@@ -106,7 +112,8 @@ export interface McpClaimOptions {
   /** The authorization servers' network (mcp-oauth.ts). */
   network?: OAuthNetwork;
   /** Whether this runner may reach a loopback address (McpForClaimOptions.loopback): a refresh's request to a loopback
-   *  authorization server is sent only then. Absent, never. */
+   *  authorization server is sent only then, and a loopback origin of AGENTRUN_MCP_TOKEN_ORIGINS counts only then.
+   *  Absent, never. */
   loopback?: boolean;
   /** The own addresses of the local-install server beside this runner (McpForClaimOptions.own): a loopback authorization
    *  server on one of their ports is refused, as the server refuses it. */
@@ -278,6 +285,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
       const pinned = row.url === pinnedUrl;
       credentials[name] = { url: row.url, ...(extra.unopened ? { unopened: extra.unopened } : { ...(extra.headers && pinned ? { headers: extra.headers } : {}), ...(extra.query && pinned ? { query: extra.query } : {}) }) };
     };
+    // A server the token saved, at an origin this runner's list no longer holds: its calls refused unsent, by its name.
+    const unlisted = await tokenOriginRefused(store, row, options.loopback === true);
+    if (unlisted) return entry({ unopened: unlisted }), { awaited: false };
     // A GitHub App's server keeps no credential: its token is minted for this run (awaited, so the claim is confirmed
     // after it), kept fresh mid-run, and never stored.
     if (row.auth === "github_app") return await github.open(name, entry), { awaited: true };
@@ -496,7 +506,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
 
 /** The run's pin: its revision's, as its save made it, held to the run's grants and checked against the meta tools known
  *  now; undefined when it grants no MCP tool. A granted tool the pin does not hold refuses the claim in words. */
-async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN, composioMcpOrigin, pinListing, signal }: McpClaimOptions): Promise<McpPin | undefined> {
+async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN, composioMcpOrigin, pinListing, signal, loopback }: McpClaimOptions): Promise<McpPin | undefined> {
   // A github_app server anywhere but GitHub's hosted MCP ends the run here, before any token is minted or anything sent:
   // the App's tokens go to GitHub alone (github.ts githubMcpUrl, the one check).
   const offGithub = (server: string, url: string, auth: string | undefined) => {
@@ -540,6 +550,10 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
   }
   for (const [server, { url, tools }] of Object.entries(pinned)) {
     const row = await store.mcp.server(server);
+    // A server the token saved, at an origin this runner's list no longer holds: the run never starts, by its name, and
+    // nothing is sent. (A pin made above for it was refused already: its listing checks the same, registryListing.)
+    const unlisted = row ? await tokenOriginRefused(store, row, loopback === true) : undefined;
+    if (unlisted) throw new McpClaimRefused(unlisted);
     // A server moved to a provider's host since the save: its pinned tool is a meta tool there.
     for (const tool of tools) if (row && metaToolOf(row.url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
     offGithub(server, url, row?.auth);
@@ -551,6 +565,13 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
   }
   // As plain JSON, as the stored pin reads (the harnesses and the run's directory take it as such).
   return JSON.parse(JSON.stringify(pinned)) as McpPin;
+}
+
+/** Why the server `row` an API-only server's token saved at a listed origin (its record marked so) is not used here: its
+ *  origin is none this runner's AGENTRUN_MCP_TOKEN_ORIGINS lists now (a loopback one only with `loopback`), by the save's
+ *  own check (tokenOriginRefusal). Undefined for every other row. */
+async function tokenOriginRefused(store: Pick<Store, "settings">, row: Pick<McpServerRow, "name" | "url" | "createdAt">, loopback: boolean): Promise<string | undefined> {
+  return tokenOriginRefusal(await store.settings.get(mcpSourceKey(row.name)), row, tokenOriginsNow(loopback));
 }
 
 /** The variable a Composio server saved with api_key_env reads its key from (its record's key_env): a headers row that

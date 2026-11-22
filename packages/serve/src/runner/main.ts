@@ -21,6 +21,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { type HostedDial, PROVIDERS } from "@parcha/agentrun-computer";
 import { type RunnerRelay, startRunnerRelay } from "../dial-relay.js";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
+import { mcpTokenOriginsFrom } from "../mcp-token-origins.js";
 import { ArchilSettingsEnvInvalid, archilSettingsFromEnv } from "../archil-settings.js";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { COMPOSIO_KEY_ENV } from "../composio-made.js";
@@ -454,6 +455,13 @@ export function runnerHolds(args: { loops?: number; drainMs?: number }, env: Nod
   // the runner here, never a run at its claim.
   try {
     freeModelRequestsOf(env);
+  } catch (error) {
+    throw new RunnerRefused((error as Error).message);
+  }
+  // The origins an API-only server's token saved MCP servers at (AGENTRUN_MCP_TOKEN_ORIGINS), read again at each claim of
+  // one: a bad entry refuses the runner here, never a run at its claim.
+  try {
+    mcpTokenOriginsFrom(env);
   } catch (error) {
     throw new RunnerRefused((error as Error).message);
   }

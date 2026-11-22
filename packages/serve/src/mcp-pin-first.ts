@@ -13,6 +13,7 @@ import { type McpPin, mcpPinOf } from "./mcp-gateway.js";
 import type { OAuthNetwork } from "./mcp-oauth.js";
 import { boundTool } from "./mcp-probe.js";
 import { type McpServersOverStore, mcpServersOverStore } from "./mcp-servers-store.js";
+import { tokenOriginsNow } from "./mcp-token-origins.js";
 import { SEAL_KEY_ENV } from "./tool-keys.js";
 import { mcpNameOf } from "./tool-names.js";
 import { type GithubAppAccess, GITHUB_UNUSABLE } from "./runner/mcp-github.js";
@@ -89,6 +90,8 @@ export function registryListing(store: Parameters<typeof mcpServersOverStore>[0]
     opened.attach("", "", loopback, own);
     if (appOrigin) opened.appOrigin = appOrigin;
     if (composioOrigin) opened.composioOrigin = composioOrigin;
+    // A server an API-only server's token saved is listed only at an origin this process's list holds now.
+    opened.tokenOrigins = tokenOriginsNow(loopback);
     if (githubApp) opened.appToken = async () => {
       const got = await listingToken(githubApp);
       if ("token" in got) minted.push(got.token);

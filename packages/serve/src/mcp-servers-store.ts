@@ -20,7 +20,8 @@ import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
 import { COMPOSIO_PER_RUN, COMPOSIO_USER, composioListingAddress, composioServerId } from "./composio-preset.js";
-import { mcpSourceKey, ownersRecord, type RecordedRow, recordedForAnother, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
+import { mcpSourceKey, ownersRecord, type RecordedRow, recordedForAnother, savedAtListedOrigin, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, tokenOriginRefusal, toolkitGiven, unlistedRecord } from "./mcp-sources.js";
+import { TOKEN_ORIGIN_UNLISTED, tokenOriginListed } from "./mcp-token-origins.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
@@ -130,6 +131,12 @@ export class McpServersOverStore {
   /** The one origin a key read from the environment is sent to (COMPOSIO_ORIGIN; a test's fake through the server's
    *  seam): a Composio server saved with api_key_env at any other address is refused (composioEnvKey). */
   composioOrigin = COMPOSIO_ORIGIN;
+  /** The origins an API-only server's token may save a per_run server at, as its operator listed them
+   *  (AGENTRUN_MCP_TOKEN_ORIGINS, mcp-token-origins.ts; a loopback one only on a local install): a save by the token at any
+   *  other is refused, and a server the token saved is listed again (pinned, refreshed) only while its origin is here. */
+  tokenOrigins: readonly string[] = [];
+  /** Whether this is an API-only server, which has no owner: its token's ordinary save is held to tokenOrigins (save). */
+  apiOnly = false;
   private readonly sealKey: Buffer;
   private readonly signIns: McpSignIns;
   /** The callbacks under way, which close() waits out before the server lets its data go. */
@@ -255,6 +262,7 @@ export class McpServersOverStore {
   async pinListing(name: string, stop?: AbortSignal): Promise<{ url: string; tools: (McpTool & { grantable?: false; reason?: string })[]; prices: McpPrices; toolkit: string | null } | undefined> {
     const row = await this.store.mcp.server(name);
     if (!row) return undefined;
+    await this.tokenHeld(row);
     const { toolkit } = await this.sourceOf(row);
     const url = new URL(row.url);
     const pinned = (tools: McpTool[]) => {
@@ -296,12 +304,20 @@ export class McpServersOverStore {
    *  the listing is done (never across it), and the check of the triggers that use it, made in that turn before a write
    *  that leaves what they stand on (an ordinary save moving the row off Composio, a preset save as another user or auth
    *  config): refused, nothing written. `byToken`: the API token makes the save (a request the secret-write gate read), so
-   *  a row it makes is recorded as the token's (mcp-sources.ts savedByToken), for its delete. */
+   *  a row it makes is recorded as the token's (mcp-sources.ts savedByToken), for its delete. On an API-only server, which
+   *  has no owner, the token's ordinary save (no `made`) is held to a per_run server at an origin its operator listed
+   *  (tokenOrigins), and recorded as saved there (savedAtListedOrigin): each claim checks that origin again. */
   async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord, stands?: ComposioMade, dropped?: (left: ComposioDropped) => void, guard?: SaveGuard, byToken = false) {
     nameOf(name);
     const was = await this.store.mcp.server(name);
     // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one.
     const { url, auth, prices, toolkit, standIn } = this.admit({ ...body, ...(body.url !== undefined ? { url: savedOrGiven(body.url, was?.url) } : {}) }, true);
+    // The API-only token's ordinary save: a per_run server, which keeps no credential (the secret-write gate refuses any
+    // other auth before this), at an origin listed exactly (tokenOriginListed); else refused before anything is resolved or
+    // sent, in words that name no listed origin.
+    const held = byToken && this.apiOnly && made === undefined;
+    if (held && auth.type !== "per_run") throw invalid([{ field: "auth.type", reason: "not_an_option", message: "An API token saves a per_run MCP server alone, which keeps no credential." }]);
+    if (held && !tokenOriginListed(url.href, this.tokenOrigins)) throw invalid([{ field: "url", reason: "not_an_option", message: TOKEN_ORIGIN_UNLISTED }]);
     // What the server is (its source and toolkit, mcp-sources.ts): from what made it and the owner's toolkit, over what it
     // is now, checked before anything is listed; written once the server is, for the row it wrote.
     const sourceIssues: InputIssue[] = [];
@@ -315,7 +331,10 @@ export class McpServersOverStore {
     // toolkit the same save names, else none.
     const moved = !made && !standIn && was !== undefined && wasSource.source === "composio" && was.url !== url.href;
     const written = sourceToWrite(made ?? standIn, toolkit, moved ? { source: "url", toolkit: null } : wasSource, auth.type, sourceIssues);
-    const source = moved ? (written ?? { source: "url" as const, toolkit: null }) : written;
+    // The API-only token's ordinary save always writes its own record: url, the toolkit it names, else the one recorded.
+    const source = held
+      ? { source: "url" as const, toolkit: toolkit !== undefined ? toolkit : wasSource.source === "url" ? wasSource.toolkit : null }
+      : moved ? (written ?? { source: "url" as const, toolkit: null }) : written;
     if (sourceIssues.length) throw invalid(sourceIssues);
     const send = await this.reached(auth.type, url, stop);
     // The credential this save may write over: the one the secret-write gate let it through against (`checkedAgainst`,
@@ -394,9 +413,13 @@ export class McpServersOverStore {
         ? await this.rewriteKeeping(name, was!, fields, "save", (fresh) => fresh.auth === auth.type && fresh.sealed !== null && fresh.url === was!.url)
         // A new credential, or none: written only while the row's credential is still `against`, in the store's one statement.
         : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin }));
-      if (source) await this.store.settings.put(mcpSourceKey(name), storedSource(source, saved, !made && source === standIn, mark));
+      // The API-only token's ordinary save (`held`) is marked listed too: the one row each run's start and claim check the
+      // origin of again (mcp-sources.ts savedAtListedOrigin). It always writes its record (`source`).
+      if (source) await this.store.settings.put(mcpSourceKey(name), storedSource(source, saved, !made && source === standIn, mark, held));
       // A row the token made with no source given: url with none, as an unrecorded row reads (sourceOf), marked.
       else if (mark && !wasToken) await this.store.settings.put(mcpSourceKey(name), storedSource({ source: "url", toolkit: null }, saved, false, true));
+      // The token's own row saved again other than at a listed origin, with no source given: still the token's, unlisted.
+      else if (mark && savedAtListedOrigin(recorded, was?.createdAt)) await this.store.settings.put(mcpSourceKey(name), unlistedRecord(recorded as Record<string, unknown>));
       // The Composio MCP server the row named before, when the preset made it (the row was a preset server) and the row names
       // it no longer: a preset save over it made a new one, or an ordinary save moved the row off Composio.
       const madeBefore = wasPreset && (made || moved) ? composioServerId(was!.url) : undefined;
@@ -454,6 +477,7 @@ export class McpServersOverStore {
   /** POST refresh: list the saved server's tools again, keep them, and say what was added, removed and changed. */
   async refresh(name: string, stop?: AbortSignal) {
     const was = await this.need(name);
+    await this.tokenHeld(was);
     const send = await this.reached(was.auth, new URL(was.url), stop);
     const open = await this.opened(name, was, "name");
     const listed = await this.listServer(new URL(was.url), await this.withAppToken(was.auth, new URL(was.url), open.headers, stop), send, stop, await this.perRunComposio(name, was));
@@ -744,6 +768,14 @@ export class McpServersOverStore {
    *  tokens, else its record, else url with none. */
   async sourceOf(row: RecordedRow & { name: string }): Promise<SourceRecord> {
     return sourceOf(row, await this.store.settings.get(mcpSourceKey(row.name)));
+  }
+
+  /** A server an API-only server's token saved at a listed origin (savedAtListedOrigin) is reached again only while its
+   *  origin is one listed here (tokenOrigins, the one check tokenOriginListed): else refused by its name before anything is
+   *  resolved or sent. */
+  private async tokenHeld(row: McpServerRow): Promise<void> {
+    const refused = tokenOriginRefusal(await this.store.settings.get(mcpSourceKey(row.name)), row, this.tokenOrigins);
+    if (refused) throw invalid([{ field: "url", reason: "not_an_option", message: refused }]);
   }
 
   private async view(row: McpServerRow) {
