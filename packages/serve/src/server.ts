@@ -3695,8 +3695,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const { trigger_firing: given, ...rest } = body;
       const firing = await triggers.handedStart(given, agentId);
       if ("run_id" in firing) return { status: 202, body: await viewOverStore(store, firing.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${firing.run_id}`, "idempotent-replayed": "true" } };
-      const seal = startSeal(await handed());
-      const run = await startRunOf(entry, rest, { origin: { key: firing.key }, trigger: firing.trigger, from: firing.from, title: firing.title, capped: !nativeOf(entry.revision?.body), ...(seal ? { sealed: seal } : {}) });
+      const secrets = await handed();
+      const seal = startSeal(secrets);
+      const run = await startRunOf(entry, rest, { origin: { key: firing.key }, trigger: firing.trigger, from: firing.from, title: firing.title, capped: !nativeOf(entry.revision?.body), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
       // A host that answered its hook first started this run after: the firing is started with it now.
       await triggers.handedRan(firing.trigger.id, firing.key, run.id);
       return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
