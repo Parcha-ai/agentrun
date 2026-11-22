@@ -7,7 +7,7 @@
 // runs, and B, where it deploys.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -335,6 +335,31 @@ test("deploy delete takes a 404 as gone only when the agent is not there: a targ
     if (one.kept) assert.match(result.err, new RegExp(`did not (archive|delete) ${AGENT_ID}; nothing was deleted`), one.name);
     else assert.match(result.err, /Deleted/, one.name);
   }
+});
+
+test("the CLI's deploy record is changed under its lock: a deploy waits while another holds it, and what the holder saved is kept", { timeout: 60_000 }, async (t) => {
+  const target = await fakeTarget(t, {});
+  const { dir, env } = scratch();
+  // An install with a token and no server record: its base is the default local one, which every command finds.
+  const data = join(dir, "install");
+  mkdirSync(data, { recursive: true });
+  writeFileSync(join(data, ".token"), "not-a-secret\n", { mode: 0o600 });
+  const source = "http://127.0.0.1:7340/v2";
+  const record = join(dir, ".config", "agentrun", "deploy.json");
+  const lockOf = (agent) => ({ target: target.base, workspace: null, agent_id: `${agent}_there`, revision_id: "rev_1", package_sha256: null, deployed_at: new Date().toISOString() });
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
+  const before = { [`${source} agt_x`]: lockOf("agt_x"), [`${source} agt_y`]: lockOf("agt_y") };
+  writeFileSync(record, `${JSON.stringify(before, null, 2)}\n`, { mode: 0o600 });
+  // Another CLI holds the record: it read it, and saves a lock of its own before it lets go.
+  mkdirSync(`${record}.lock`);
+  const deleting = cli(env, ["deploy", "delete", "agt_x", "--yes", "--data", data], { AGENTRUN_API_KEY: "not-a-secret" });
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  writeFileSync(record, `${JSON.stringify({ ...before, [`${source} agt_z`]: lockOf("agt_z") }, null, 2)}\n`, { mode: 0o600 });
+  rmdirSync(`${record}.lock`);
+  const done = await deleting;
+  assert.equal(done.code, 0, done.err);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(record, "utf8"))).sort(), [`${source} agt_y`, `${source} agt_z`], "agt_x removed, and the holder's agt_z kept");
+  assert.equal(existsSync(`${record}.lock`), false, "the deploy let go of the record");
 });
 
 test("a folder's lock that names an address this CLI never deployed to gets no key: deploy, rollback and delete exit 2 with nothing sent, until --to names it; AgentRun cloud is trusted", { timeout: 60_000 }, async (t) => {
