@@ -9,7 +9,7 @@ import { commandData } from "./harness-owned.js";
 import { harnessesOf, installDirOf, shellWord } from "./harness-install.js";
 import { ENV_NAME, KEY_NAME, launchEnv } from "@parcha/agentrun-kernel";
 import { acpPackage } from "./acp-package.js";
-import { keyShaped } from "./secret-name.js";
+import { keyShaped, SECRET_SEGMENTS } from "./secret-name.js";
 import { SECRET_NAMES } from "./secrets.js";
 
 /** The codes a refused recipe carries, one per rule, and one for a file that is not a recipe at all. */
@@ -38,9 +38,10 @@ export type RecipeArchive = ArchiveRelease & { readonly format: ArchiveFormat; r
  *  --gemini-dir DIR`), as T3 Code runs it. `args`: the flags that start that sign-in (`--login`), after the release's
  *  args. `homeArg`: the flag the agent takes the folder it keeps its sign-in in by (`--gemini-dir`), given the owner's
  *  folder (signInHomeOf) on the sign-in and on every run on it. AgentRun never reads, refreshes or sends the sign-in:
- *  the agent alone writes and reads what is in that folder (HARNESS.md#sign-in). Plan billing alone: a proxy-billed agent
- *  runs on the server's key. */
-export type RecipeSignIn = { readonly args: readonly string[]; readonly homeArg: string };
+ *  the agent alone writes and reads what is in that folder (HARNESS.md#sign-in). Plan billing alone, beside its keys: a
+ *  proxy-billed agent runs on the server's key. `terms`: the vendor's terms for it, named in the warning each sign-in
+ *  prints. */
+export type RecipeSignIn = { readonly args: readonly string[]; readonly homeArg: string; readonly terms?: string };
 
 /** The variables a proxy-billed agent may read the proxy's address from: Goose's, and the Anthropic SDKs'. */
 export const PROXY_HOST_ENVS: readonly string[] = Object.freeze(["ANTHROPIC_HOST", "ANTHROPIC_BASE_URL"]);
@@ -173,7 +174,8 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
   const idPattern = new RegExp(HARNESS_ID_PATTERN);
   if (typeof r.id !== "string" || !idPattern.test(r.id)) say(RECIPE_CODES.invalid, `id must match ${HARNESS_ID_PATTERN}`);
   else if (BUILTIN_HARNESS_IDS.includes(r.id) || RESERVED_HARNESS_IDS.includes(r.id)) say(RECIPE_CODES.invalid, `id ${r.id} is a harness AgentRun already has, or a name its runs carry; give yours its own`);
-  if (typeof r.label !== "string" || !r.label.trim() || r.label.length > 80) say(RECIPE_CODES.invalid, "label is the harness's name in a sentence, 1 to 80 characters");
+  // Printed in sentences on a terminal (the sign-in's warning among them), so no control character reaches one.
+  if (typeof r.label !== "string" || !r.label.trim() || r.label.length > 80 || /\p{Cc}/u.test(r.label)) say(RECIPE_CODES.invalid, "label is the harness's name in a sentence, 1 to 80 characters, none a control character");
 
   // Rule 2: the release.
   const release = r.release;
@@ -226,6 +228,9 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
       if (!KEY_NAME.test(name)) say(RECIPE_CODES.keys, `the key ${JSON.stringify(name)} is not a key's name (capitals, digits and _, at most 64)`);
       else if (serverKey(name)) say(RECIPE_CODES.keys, `${name} is a key this server holds for something else; a recipe names only keys saved for its own harness (save it under a name of its own, and hand it as ${name} with { "name", "env" })`);
       else if (SET_BY_ADAPTER.has(name)) say(RECIPE_CODES.env, `${name} is set by the adapter or the proxy, never by a key`);
+      // Shaped as a key's name (a KEY, TOKEN, SECRET... segment), so the one cut every child's environment takes
+      // (secrets.ts withoutSecrets) keeps it out of every run's tools and every other child, wherever it is set.
+      else if (!keyShaped(name)) say(RECIPE_CODES.keys, `the key ${name} is not named as a key: its name needs one of the segments ${SECRET_SEGMENTS.join(", ")} (${name}_KEY, say), so no child of the server is ever handed it by its name`);
       // The variable it reaches the agent as may be a provider's name the server holds a key under (GEMINI_API_KEY): the
       // value is this harness's own, read by its saved name, so the server's never reaches the agent. Never the
       // adapter's, the proxy's, or the server's own (AGENTRUN_, AGENT_MODEL_).
@@ -265,7 +270,7 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
   } else if (model.billing === "plan") {
     if (!Number.isInteger(model.maxTurns) || (model.maxTurns as number) < 1) say(RECIPE_CODES.invalid, "plan billing needs maxTurns, a whole number of turns of at least 1");
     if (!Number.isInteger(model.maxToolCalls) || (model.maxToolCalls as number) < 0) say(RECIPE_CODES.invalid, "plan billing needs maxToolCalls, a whole number of calls");
-    if (!entries?.length && r.signIn === undefined) say(RECIPE_CODES.invalid, "a plan-billed agent runs on its vendor's key or its owner's sign-in: name the key in keys or the sign-in in signIn");
+    if (!entries?.length) say(RECIPE_CODES.invalid, "a plan-billed agent runs on its vendor's key, the one route its check, a schedule and a shared server take: name the key in keys (a signIn is its owner's own sign-in beside it, on their own machine alone)");
     if (model.hosts !== undefined && (!strings(model.hosts) || model.hosts.length > 16 || !model.hosts.every(vendorHost))) say(RECIPE_CODES.invalid, "model.hosts lists at most 16 hosts the vendor's model is on, each a host name with an optional :port from 1 to 65535 (default 443)");
     // A model id as an agent lists one (`gpt-5.4-nano[reasoning=medium]`): the ACP package's MODEL_ID, the one definition.
     // Without that package no recipe runs (harness-table.ts refuses it by name), so its form goes unchecked here.
@@ -280,7 +285,9 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
   if (signIn !== undefined) {
     if (!isPlain(signIn)) say(RECIPE_CODES.invalid, 'signIn is { "args": the flags that start the agent\'s own sign-in (["--login"]), "homeArg": the flag it takes its sign-in folder by ("--gemini-dir") }');
     else {
-      for (const field of Object.keys(signIn)) if (!["args", "homeArg"].includes(field)) say(RECIPE_CODES.invalid, `signIn.${field} is not a sign-in field`);
+      for (const field of Object.keys(signIn)) if (!["args", "homeArg", "terms"].includes(field)) say(RECIPE_CODES.invalid, `signIn.${field} is not a sign-in field`);
+      // Printed as given in the sign-in's warning: printable ASCII with no space, at most 200 characters.
+      if (signIn.terms !== undefined && (typeof signIn.terms !== "string" || !/^https:\/\/[\x21-\x7e]{1,192}$/.test(signIn.terms) || URL.parse(signIn.terms)?.protocol !== "https:")) say(RECIPE_CODES.invalid, "signIn.terms, when given, is the https address of the vendor's terms for a person's own sign-in, said at each sign-in: printable ASCII with no space, at most 200 characters");
       if (!strings(signIn.args) || !signIn.args.length) say(RECIPE_CODES.invalid, 'signIn.args is a list of at least one string: the flags that start the agent\'s own sign-in (["--login"])');
       else if (signIn.args.some((arg) => EXPANDS.test(arg))) say(RECIPE_CODES.env, "signIn.args reads the host's environment ($NAME); write each argument out");
       if (typeof signIn.homeArg !== "string" || !LONG_FLAG.test(signIn.homeArg)) say(RECIPE_CODES.invalid, 'signIn.homeArg is the long flag the agent takes the folder it keeps its sign-in in by ("--gemini-dir"), its value given by AgentRun');
@@ -336,7 +343,7 @@ export function parseRecipe(text: string): Recipe {
     state: (r.state ?? []).map((path) => insideHome(path)!),
     declares: r.declares,
     quirks: r.quirks ?? {},
-    ...(r.signIn ? { signIn: Object.freeze({ args: Object.freeze([...r.signIn.args]), homeArg: r.signIn.homeArg }) } : {}),
+    ...(r.signIn ? { signIn: Object.freeze({ args: Object.freeze([...r.signIn.args]), homeArg: r.signIn.homeArg, ...(r.signIn.terms ? { terms: r.signIn.terms } : {}) }) } : {}),
   });
 }
 
@@ -420,6 +427,31 @@ export const recipeSignInLine = (file: string, data: string, env: NodeJS.Process
 /** Whether the agent's own sign-in ended well on `data` (signedInNoteOf): nothing in its folder is read to say so.
  *  Whether the sign-in still holds is the agent's to say when it runs (an ACP -32000, Authentication required). */
 export const signedIn = (data: string, recipe: Recipe): boolean => recipe.signIn !== undefined && existsSync(signedInNoteOf(data, recipe.id));
+
+/** What a passing harness-check proved, by digest: the recipe file, the binary and every file beside it, on `platform`. A
+ *  server runs the recipe only while all three are still these (harness-recipe-entry.ts). */
+export type RecipeChecked = { readonly recipe: string; readonly binary: string; readonly tree: string; readonly version: string; readonly platform: string };
+
+/** AgentRun's own note of the last harness-check that passed for the recipe `id` on `data`: `<data>/harnesses/<id>.checked`,
+ *  beside the install and never in it. */
+export const checkedNoteOf = (data: string, id: string): string => join(harnessesOf(data), `${id}.checked`);
+
+/** Writes the note of a passing check (checkedNoteOf), over the one before it: open to its owner alone. */
+export function writeChecked(data: string, id: string, checked: RecipeChecked): void {
+  mkdirSync(harnessesOf(data), { recursive: true, mode: 0o700 });
+  writeFileSync(checkedNoteOf(data, id), `${JSON.stringify({ ...checked, at: new Date().toISOString() })}\n`, { mode: 0o600 });
+}
+
+/** The note of the last check that passed for `id` on `data`, or undefined where there is none or it is not one. */
+export function checkedOf(data: string, id: string): RecipeChecked | undefined {
+  try {
+    const note = JSON.parse(readFileSync(checkedNoteOf(data, id), "utf8")) as Partial<Record<keyof RecipeChecked, unknown>>;
+    const fields = ["recipe", "binary", "tree", "version", "platform"] as const;
+    return fields.every((field) => typeof note[field] === "string") ? (Object.fromEntries(fields.map((field) => [field, note[field]])) as RecipeChecked) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Installs the recipe's release into `<data>/harnesses/<id>` (the owner's command, rule 4): its archive downloaded and
  *  checked against the recipe's sha256, unpacked, and its binary checked against the recipe's pin, or recorded as the

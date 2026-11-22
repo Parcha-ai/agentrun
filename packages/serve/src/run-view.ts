@@ -598,6 +598,9 @@ export interface RunMoment {
   readonly id: string;
   readonly agentId: string;
   readonly kind: "agentic" | "workflow";
+  /** The harness its revision names (run.harness): a trigger's message to a run on a plan-billed recipe is refused
+   *  (trigger-targets.ts). Absent only where a caller builds a moment by hand. */
+  readonly harness?: string;
   /** Where an imported run came from (run.imported?.source); absent for a run started here. An imported run takes no act. */
   readonly importedSource?: string;
   /** A cancel is in flight (run.cancel), whether or not its end is written yet. */
@@ -658,6 +661,7 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
     id: run.id,
     agentId: run.agentId,
     kind: run.kind,
+    harness: run.harness,
     ...(run.imported ? { importedSource: run.imported.source } : {}),
     cancelled: run.cancel,
     terminal,

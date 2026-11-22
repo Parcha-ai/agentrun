@@ -16,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const KINDS = [
   { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], settings: [], record: { available: false, why: "with no computer, there is no screen to record" }, providers: [] },
-  { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], settings: ["image", "persistent", "gpu"], record: { available: false, why: "a sandbox has no screen to record (a desktop, a phone or a browser does)" }, providers: [{ id: "faux-sandbox", name: "Faux sandbox", secrets: [], required: [], ready: true }] },
+  { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], settings: ["image", "persistent", "gpu"], record: { available: false, why: "fixture: a sandbox has no screen to record" }, providers: [{ id: "faux-sandbox", name: "Faux sandbox", secrets: [], required: [], ready: true }] },
 ];
 const CAPS = {
   harnesses: [{ id: "pi", available: true }], tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }]), thinking: [],

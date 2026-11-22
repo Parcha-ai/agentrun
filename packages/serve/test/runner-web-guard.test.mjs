@@ -11,6 +11,7 @@
 // its start, and inherited by its runs' processes (runner/main.ts runEnv), where MCP and calendar calls dial.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { createInterface } from "node:readline";
 import { dirname, join } from "node:path";
@@ -47,16 +48,20 @@ function cli(t, args, env) {
   return child;
 }
 
-/** A server on loopback that counts every request it is sent: none may come. */
+/** A server on loopback that counts every request for its own unguessable path: none may come. It listens on a port the
+ *  system picks, which anything else on the machine may also dial (a local port scan or health probe, a client retrying a
+ *  port it once used): such a request names some other path and is answered but not counted, so only a fetch of the URL
+ *  the agent was given counts as reached. */
 async function loopbackTrap(t) {
   let hits = 0;
+  const path = `/trap-${randomUUID()}`;
   const server = createServer((req, res) => {
-    hits += 1;
+    if (req.url?.startsWith(path)) hits += 1;
     res.end("reached");
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { url: `http://127.0.0.1:${server.address().port}/`, hits: () => hits };
+  return { url: `http://127.0.0.1:${server.address().port}${path}`, hits: () => hits };
 }
 
 async function guardOnRunnerApart(t, { postgres }) {

@@ -940,9 +940,11 @@ export interface Runs {
    *  or nothing). A launch made from another run (its body's `replay.of`, `audit.of`) takes that run's row lock and
    *  reads it in the same transaction: made from a purged run, it is refused (RunPurged), nothing written.
    *  `expectedCurrent` checks the agent's current revision under its lock (RevisionMoved on mismatch); this is separate
-   *  from the pinned revisionId. Settings guards are locked before the agent. Refusal writes no run, origin or launch. */
+   *  from the pinned revisionId. Settings guards are locked before the agent. Refusal writes no run, origin or launch.
+   *  `startedAt` (ms) is when the run began, for one reported after it began elsewhere (a backend SDK run's
+   *  `started_at`); absent, now. */
   create(run:{ id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels;
-    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[] }, launch?: RunLaunchInput): Promise<RunRow>;
+    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
