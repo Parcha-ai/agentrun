@@ -477,7 +477,10 @@ agentrun-serve --data <data> --harness-recipe antigravity.json
 ```
 
 `--harness-recipe` can be repeated, and `AGENTRUN_SERVE_HARNESS_RECIPES=a.json,b.json` does the same. A separate
-`agentrun-serve runner` takes the same flag and needs it to run the harness. A recipe the loader refuses, one with no
+`agentrun-serve runner` takes the same flag and needs it to run the harness (its `--check` fails without it). Its runs
+run as the server's own user: the install, the check's note and the sign-in are that user's alone, so on a runner that
+runs each run as a user of its own (the image's default) a run is refused at its claim until `AGENTRUN_RUN_USER=same`
+is set there. A recipe the loader refuses, one with no
 archive for this platform, or one whose id a harness module or another recipe already has refuses the start.
 
 The harness is in the server's table from the start, so a run naming it is refused in words, but `GET /v2/capabilities`

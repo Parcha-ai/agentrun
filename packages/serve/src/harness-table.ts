@@ -659,12 +659,23 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
       const entry = recipeServerEntry(file, recipes!.data);
       if (Object.hasOwn(built, entry.id)) throw new Error(`harness recipe ${file} names ${entry.id}, which a harness module or another recipe already adds`);
       built[entry.id] = entry;
+      madeByRecipe.add(entry);
     }
     table = Object.freeze(built);
     loaded.set(key, table);
   }
   return table;
 }
+
+/** The entries harnessTable made from a recipe (HARNESS_RECIPES_ENV). */
+const madeByRecipe = new WeakSet<HarnessEntry>();
+
+/** Whether `id` on `env`'s table is a recipe's harness: its install, its check's note and its owner's sign-in are the
+ *  server user's alone (0700 and 0600 under `<data>/harnesses`), so its runs run as that user, never a slot's. */
+export const recipeHarness = (env: NodeJS.ProcessEnv, id: string): boolean => {
+  const entry = Object.hasOwn(harnessTable(env), id) ? harnessTable(env)[id] : undefined;
+  return entry !== undefined && madeByRecipe.has(entry);
+};
 
 /** The owner's setting that names harness modules when no option does: package names or paths, comma-separated. */
 export const HARNESS_MODULES_SETTING = "AGENTRUN_SERVE_HARNESS_MODULES";

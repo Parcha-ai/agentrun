@@ -24,7 +24,7 @@ import { putLiveViewer, dropLiveViewer } from "../browser-live.js";
 import { CALENDAR_EVENTS } from "../calendar/names.js";
 import { openCalendar } from "../calendar/address.js";
 import { openAccount } from "../email/account.js";
-import { harnessOf } from "../harness-table.js";
+import { harnessOf, recipeHarness } from "../harness-table.js";
 import { installDirOf, installForClaim, shareInstall } from "../harness-install.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { planOf } from "../chatgpt-plan.js";
@@ -1034,6 +1034,8 @@ export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "n
 
 /** The words a run on Claude Code's login on this machine is refused in where each run is a user of its own. */
 export const LOGIN_NEEDS_SERVER_USER = `A run on Claude Code's login on this machine needs runs under the server's own user, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same, or give the run a model_key.`;
+/** The words a run on a harness recipe is refused in where each run is a user of its own (harness-table.ts recipeHarness). */
+export const RECIPE_NEEDS_SERVER_USER = `A run on a harness recipe needs runs under the server's own user, since its install, its check and its owner's sign-in are that user's alone, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same on this runner.`;
 
 /** Whether run `runId` stays in its runner's process: runsInRunner's, and a workflow run on a server with a documents
  *  directory (launch.documents), whose reads and writes (a pdf_pages call's pages) are rooted in a folder the server's
@@ -1045,6 +1047,9 @@ export const LOGIN_NEEDS_SERVER_USER = `A run on Claude Code's login on this mac
  *  (cli-run-spec.ts), so it is a process of its own like any other. */
 export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<boolean> {
   if (runsInRunner(harness, launch)) return true;
+  // A recipe's harness reads its install, its check's note and its owner's sign-in, each the server user's alone: never
+  // opened to a slot's user (the sign-in least of all), so where each run is a user of its own it is refused here.
+  if (isolation.kind === "uid" && recipeHarness(deps.env ?? {}, harness)) throw new ClaimRefused(RECIPE_NEEDS_SERVER_USER);
   if (launch.documents !== undefined) {
     const run = await deps.store.runs.get(runId);
     const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;

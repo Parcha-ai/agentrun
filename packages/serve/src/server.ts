@@ -61,7 +61,7 @@ import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { HARNESS_MODULES_ENV, HARNESS_RECIPES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessRecipesEnv, harnessTable, tableIds } from "./harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessRecipesEnv, harnessTable, tableIds } from "./harness-table.js";
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, runsThatFit } from "./host.js";
 import { DEFAULT_HOST, elsewhereOf, listenOn, minFreeMibOf, takeOver, urlOf } from "./listen-first.js";
@@ -1281,7 +1281,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // runner/runner-check.ts): this data root's id, and the names (never the values) of the run-facing environment this
   // server holds, each said in the store at every start, replacing the last start's.
   await recordDataRoot(store, data);
-  await recordRunEnv(store, runFacingNames((name) => secret(name) ?? (base as NodeJS.ProcessEnv)[name], Object.keys(base)));
+  // Harness modules and recipes this start was given as options (--harness-module, --harness-recipe) are said under the
+  // setting a runner apart reads them from, as an exported setting is: a runner without them would claim their runs and
+  // have no harness to run them on.
+  const startedWith: Record<string, string | undefined> = {
+    [HARNESS_MODULES_SETTING]: options.harnessModules?.length ? options.harnessModules.join(",") : undefined,
+    [HARNESS_RECIPES_SETTING]: options.harnessRecipes?.length ? options.harnessRecipes.join(",") : undefined,
+  };
+  await recordRunEnv(store, runFacingNames((name) => startedWith[name] ?? secret(name) ?? (base as NodeJS.ProcessEnv)[name], Object.keys(base)));
   // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
   // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled. A hosted machine a runner in a
   // process of its own made is relayed to that runner's attach listener the same way (dial-relay.ts).

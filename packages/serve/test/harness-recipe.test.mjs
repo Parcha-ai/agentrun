@@ -957,6 +957,30 @@ test("a runner takes --harness-recipe as a server does, and the recipes a start 
   assert.throws(() => harnessTable({ [HARNESS_RECIPES_ENV]: "not json" }), new RegExp(HARNESS_RECIPES_ENV));
 });
 
+test("where each run is a user of its own, a run on a recipe's harness is refused at its claim in words naming AGENTRUN_RUN_USER=same; where runs are the server's user it is a process of its own", async (t) => {
+  const [host, { harnessRecipesEnv }] = await Promise.all([import("../dist/runner/run-child-host.js"), import("../dist/harness-table.js")]);
+  const data = join(await scratch(t), "agents");
+  const env = harnessRecipesEnv([await recipeFile(t, recipeOf())], data);
+  const deps = { data, env, sealKey: Buffer.alloc(32), store: { settings: { get: async () => null } } };
+  const launch = { input: {}, place: { mode: "runner" } };
+  await assert.rejects(host.staysInRunner(deps, "model-agent", launch, "run-own", { kind: "uid", helper: "/nonexistent/agentrun-runas", first: 0, slots: 1 }), (error) => {
+    assert.equal(error.name, "ClaimRefused", error.stack);
+    assert.equal(error.message, host.RECIPE_NEEDS_SERVER_USER);
+    assert.match(error.message, /AGENTRUN_RUN_USER=same/);
+    return true;
+  });
+  assert.equal(await host.staysInRunner(deps, "model-agent", launch, "run-own", { kind: "process", why: "AGENTRUN_RUN_USER=same" }), false);
+  // A built-in harness on the same table is never refused by it.
+  assert.equal(await host.staysInRunner(deps, "pi", launch, "run-own", { kind: "uid", helper: "/nonexistent/agentrun-runas", first: 0, slots: 1 }), false);
+});
+
+test("a server started with --harness-recipe says so in the store, so a runner apart without the recipe fails its check", async (t) => {
+  const file = await recipeFile(t, recipeOf());
+  const { store } = await serve(t, { harnessRecipes: [file], runner: false });
+  const { serverRunEnv } = await import("../dist/runner/runner-check.js");
+  assert.ok((await serverRunEnv(store)).includes("AGENTRUN_SERVE_HARNESS_RECIPES"), "the recipe setting is one a runner needs");
+});
+
 test("a server runs a recipe it names on its owner's sign-in: checked first, then each run's agent handed its folder alone, and the vendor hears the sign-in from the agent", { skip: linux, timeout: 180_000 }, async (t) => {
   const { data, file, origin } = await installed(t, (o) => signingIn(o, { keyed: false }));
   assert.equal((await signIn(file, data)).status, 0);
