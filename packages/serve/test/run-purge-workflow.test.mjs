@@ -1,12 +1,14 @@
-// A learned workflow whose text a purged run wrote is refused by every read (purged-workflow.ts): never served or
-// executed. A run of the agent merged two workflows ("answer" and "solo") and their promotion records name its merge;
-// another run revised "answer" after it; "solo" stays on main as the purged run left it. After the purge:
-//   - the learned file read of solo's workflow.json is 410 purged, the run's tombstone, as every route of the run is;
+// A purged run's learned workflows leave main in the purge's own host commit (learn/commit.ts forgetRunText), and a
+// read at a past commit still refuses one whose workflow.json a purged run wrote (purged-workflow.ts). A run of the
+// agent merged two workflows ("answer" and "solo", each README.md with its description) and their promotion records
+// name its merge; another run revised both of answer's files after it. After the purge:
+//   - main no longer holds solo: both its files read 404 and the learning view lists it no more;
 //   - the champion read by digest (GET .../promotions) reads no commit for either;
-//   - the revisions of "answer" leave the purged run's out, and the other run's merge diff serves the file against
-//     nothing (its text as an added file), never the purged text it replaced;
-//   - the agent's next run is not served solo (its seed leaves it out): the agent takes it, as with no champion.
-// And the same once the purged merge is older than the log's newest 200 changes.
+//   - the revisions of "answer" leave the purged run's out, and the other run's merge diff serves each file of the
+//     purged run's workflows against nothing (its text as an added file), never the purged text it replaced;
+//   - the agent's next run is not served solo: the agent takes it, as with no champion.
+// And the same once the purged merge is older than the log's newest 200 changes; a repeat DELETE takes no workflow
+// another run wrote since. A held revision the purged run wrote is never the next run's compile ask.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -40,14 +42,14 @@ const added = (text) => {
 };
 
 const digestOf = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-const readmeOf = (name) => ({ path: `workflows/${name}/README.md`, text: `---\nname: ${name}\ndescription: Answers a question; use when asked\n---\n` });
+const readmeOf = (name, description = "Answers a question; use when asked") => ({ path: `workflows/${name}/README.md`, text: `---\nname: ${name}\ndescription: ${description}\n---\n` });
 /** answerFlow on another input (`topic`), so no run here fits it: only "solo" can serve a run first. */
 const topicFlow = (instructions) => {
   const flow = answerFlow(instructions);
   return { ...flow, schemas: { ...flow.schemas, In: { type: "object", required: ["topic"], properties: { topic: { type: "string" } } } } };
 };
 
-test("every read of a purged run's workflow refuses it: the file read is 410, the champion read reads no commit, a later merge's diff serves the file against nothing, and the agent's next run is not served it; also once its merge is older than the log's 200 changes", { timeout: 300_000 }, async (t) => {
+test("a purge takes the purged run's workflow off main: both its files read 404, the view drops it, the champion read reads no commit, a later merge's diff serves each of its files against nothing, and the agent's next run is not served it; also once its merge is older than the log's 200 changes, and a repeat DELETE takes no later run's workflow", { timeout: 300_000 }, async (t) => {
   const mark = `PURGED-FLOW-${randomBytes(6).toString("hex")}`;
   const { api, data, store } = await serve(t, { learning: "on" });
   const gone = (await startRun(api, "keeper", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
@@ -57,11 +59,17 @@ test("every read of a purged run's workflow refuses it: the file read is 410, th
 
   const answerPath = "workflows/answer/workflow.json";
   const soloPath = "workflows/solo/workflow.json";
+  const answerReadme = "workflows/answer/README.md";
+  const soloReadme = "workflows/solo/README.md";
   const v1 = JSON.stringify(topicFlow(`Answer by topic, ${mark}.`));
   const v2 = JSON.stringify(topicFlow("Answer by topic, in whole numbers."));
   const solo = JSON.stringify(answerFlow(`Answer the question alone, ${mark}.`));
-  const merge = await learned(data, "keeper", (ws) => learningCommit(ws, { runId: gone, round: 7, reason: "It learned two workflows.", files: [{ path: answerPath, text: v1 }, readmeOf("answer"), { path: soloPath, text: solo }, readmeOf("solo")] }));
-  const next = await learned(data, "keeper", (ws) => learningCommit(ws, { runId: other, round: 2, reason: "It answers in whole numbers.", files: [{ path: answerPath, text: v2 }] }));
+  // Each README.md the purged run wrote says the mark in its description; the other run's of answer replaces it, so its
+  // merge diff shows the purged run's README lines it replaced.
+  const said = (name) => readmeOf(name, `Answers a question, ${mark}; use when asked`);
+  const answerSaid = readmeOf("answer", "Answers by topic in whole numbers; use when asked");
+  const merge = await learned(data, "keeper", (ws) => learningCommit(ws, { runId: gone, round: 7, reason: "It learned two workflows.", files: [{ path: answerPath, text: v1 }, said("answer"), { path: soloPath, text: solo }, said("solo")] }));
+  const next = await learned(data, "keeper", (ws) => learningCommit(ws, { runId: other, round: 2, reason: "It answers in whole numbers.", files: [{ path: answerPath, text: v2 }, answerSaid] }));
   // The other run's second look-back kept its merge (as its end keeps it): GET /runs/{id}/learning/diff reads it.
   const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 5_000 });
   try {
@@ -81,33 +89,44 @@ test("every read of a purged run's workflow refuses it: the file read is 410, th
   };
   /** Each read of the two workflows, as a person or the agent's next run reads them. */
   const reads = async (question) => {
-    const file = await api("GET", `/agents/keeper/learning/files/${encodeURIComponent(soloPath)}`);
+    const fileOf = async (path) => {
+      const file = await api("GET", `/agents/keeper/learning/files/${encodeURIComponent(path)}`);
+      return file.status === 200 ? { status: 200, holds: JSON.stringify(file.body).includes(mark) } : { status: file.status, code: file.body?.error?.code };
+    };
+    const view = (await api("GET", "/agents/keeper/learning")).body;
+    const listed = new Set(view.workflows.map(({ name }) => name));
     const promotions = (await api("GET", "/agents/keeper/learning/promotions")).body;
     const championOf = (workflow) => promotions.serving.find((line) => line.workflow === workflow)?.champion?.commit ?? null;
     const revisions = await api("GET", "/agents/keeper/learning/workflows/answer/revisions");
     const diff = (await api("GET", `/runs/${other}/learning/diff`)).body;
     return {
-      file: file.status === 200 ? { status: 200, holds: JSON.stringify(file.body).includes(mark) } : { status: file.status, code: file.body?.error?.code, run: file.body?.error?.details?.run_id },
+      file: await fileOf(soloPath),
+      readme: await fileOf(soloReadme),
+      view: { answer: listed.has("answer"), solo: listed.has("solo"), holds: JSON.stringify(view).includes(mark) },
       champion: { answer: championOf("answer"), solo: championOf("solo") },
       revisions: revisions.status === 200 ? revisions.body.revisions.map(({ commit }) => commit) : revisions.status,
-      diff: { holds: JSON.stringify(diff).includes(mark), answer: diff.files.find(({ path }) => path === answerPath) },
+      diff: { holds: JSON.stringify(diff).includes(mark), answer: diff.files.find(({ path }) => path === answerPath), readme: diff.files.find(({ path }) => path === answerReadme) },
       runner: await nextRun(question),
     };
   };
 
   const before = await reads("What is six times seven?");
-  assert.deepEqual(before.file, { status: 200, holds: true }, "before the purge, the file read serves solo");
+  assert.deepEqual([before.file, before.readme], [{ status: 200, holds: true }, { status: 200, holds: true }], "before the purge, the file read serves both of solo's files");
+  assert.deepEqual(before.view, { answer: true, solo: true, holds: true }, "before the purge, the view lists solo with its description");
   assert.deepEqual(before.champion, { answer: merge, solo: merge }, "each champion is read at the purged run's merge");
   assert.deepEqual(before.revisions, [merge, next]);
   assert.equal(before.diff.holds, true, "the other run's diff shows the text it replaced");
   assert.equal(before.runner, digestOf(solo), "the agent's next run is served solo first");
 
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  const missing = { status: 404, code: "not_found" };
   const refused = {
-    file: { status: 410, code: "purged", run: gone },
+    file: missing,
+    readme: missing,
+    view: { answer: true, solo: false, holds: false },
     champion: { answer: null, solo: null },
     revisions: [next],
-    diff: { holds: false, answer: { path: answerPath, status: "added", patch: added(v2) } },
+    diff: { holds: false, answer: { path: answerPath, status: "added", patch: added(v2) }, readme: { path: answerReadme, status: "added", patch: added(answerSaid.text) } },
     runner: null,
   };
   const purged = await reads("What is seven times six?");
@@ -118,11 +137,55 @@ test("every read of a purged run's workflow refuses it: the file read is 410, th
   }
   const snapshot = JSON.parse(await readFile(join(repoOf(data, "keeper"), ".agentrun", "snapshot.json"), "utf8"));
   assert.deepEqual([snapshot.log.length, snapshot.log_more, snapshot.log.some(({ commit }) => commit === merge || commit === next)], [200, true, false], "the purged merge and the next are out of the log's window");
-  assert.equal(git(repoOf(data, "keeper"), ["show", `main:${soloPath}`]), solo, "main still holds solo as the purged run left it");
   const old = await reads("What is two times twenty-one?");
   // One assertion over both, so each read that serves the text shows: after the purge, and older than the window (where
   // no revision of answer is left in the log: 404).
   assert.deepEqual({ purged, old }, { purged: refused, old: { ...refused, revisions: 404 } }, "every read refuses the purged run's workflow");
+  const soloOnMain = () => git(repoOf(data, "keeper"), ["ls-tree", "-r", "--name-only", "main", "workflows/solo/"]);
+  assert.equal(soloOnMain(), "", "main no longer holds solo: the purge's host commit took both its files off");
+
+  // A later run learns solo again: a repeat DELETE finds nothing of the purged run's left on main and takes none of it.
+  await learned(data, "keeper", (ws) => learningCommit(ws, { runId: "later", reason: "It learned solo again.", files: [{ path: soloPath, text: JSON.stringify(answerFlow("Answer it alone.")) }, readmeOf("solo")] }));
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.equal(soloOnMain(), `${soloReadme}\n${soloPath}`, "a repeat DELETE leaves the later run's solo on main");
+});
+
+// The review's trace: run P's merge revises `answer`, its promotion check holds it, then P is purged; run Q ends and
+// `answer` fits Q's input. The compile ask Q builds (runner/learning-end.ts compileAskOf) revises a held workflow from
+// main's text, so once P's purge takes `answer` off main it never holds P's text. The champion before P is still read
+// at its record's commit.
+test("the next run's compile ask never holds a held revision a purged run wrote: the purge took it off main", { timeout: 300_000 }, async (t) => {
+  const mark = `PURGED-HELD-${randomBytes(6).toString("hex")}`;
+  const { api, data, store } = await serve(t, { learning: "on" });
+  const first = (await startRun(api, "holder", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
+  await ended(api, first);
+  const gone = await started(api, "holder", "What is three?");
+  await ended(api, gone);
+  const q = await started(api, "holder", "What is four?");
+  await ended(api, q);
+
+  const path = "workflows/answer/workflow.json";
+  const v1 = JSON.stringify(answerFlow("Answer the question."));
+  const v2 = JSON.stringify(answerFlow(`Answer the question, ${mark}.`));
+  const champion = await learned(data, "holder", (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: [{ path, text: v1 }, readmeOf("answer")] }));
+  const revised = await learned(data, "holder", (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: [{ path, text: v2 }] }));
+  const at = new Date().toISOString();
+  const check = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, alone: 4, agreed: 2 };
+  await store.settings.put("learning.promotions.holder", { v: 1, items: [
+    { workflow: "answer", digest: digestOf(v1), at, decided: "promote", reason: "checked: promoted", commit: champion },
+    { workflow: "answer", digest: digestOf(v2), at, decided: "hold", reason: "checked: held", commit: revised, check },
+  ] });
+
+  const { compileAskOf } = await import("../dist/runner/learning-end.js");
+  /** The compile ask run Q builds at its end, and the champion the promotions read names for `answer`. */
+  const asked = async () => {
+    const ask = await compileAskOf({ store, data, learningFolder: (agentId) => learningFolderOf(data, agentId) }, { runId: q, agentId: "holder", outcome: "completed", refuse: [], input: { content: "What is four?", question: "What is four?" }, seedWorkflows: 1 });
+    const promotions = (await api("GET", "/agents/holder/learning/promotions")).body;
+    return { revise: ask?.mode === "revise" ? ask.workflow : null, holds: JSON.stringify(ask ?? null).includes(mark), champion: promotions.serving.find((line) => line.workflow === "answer")?.champion?.commit ?? null };
+  };
+  assert.deepEqual(await asked(), { revise: "answer", holds: true, champion }, "before the purge, Q's ask revises answer from the purged run's text");
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.deepEqual(await asked(), { revise: null, holds: false, champion }, "after the purge, Q's ask holds none of the purged run's text, and the champion before it is still read");
 });
 
 // The champion a start delivers is read at its promotion record's commit, older than the start's seed; the receipt reads
