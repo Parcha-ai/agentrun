@@ -629,6 +629,7 @@ export type RunCreateInline = {
   max_cost_usd?: number;
   quote_id?: string;
   model_key?: string;
+  keys?: Record<string, string>;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   } | ComposioRunBinding>;
@@ -888,6 +889,7 @@ export type MessageCreate = {
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   } | ComposioRunBinding>;
+  keys?: Record<string, string>;
 };
 
 export type MessageResult = {
@@ -906,6 +908,7 @@ export type RunCreate = {
   max_cost_usd?: number;
   quote_id?: string;
   model_key?: string;
+  keys?: Record<string, string>;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   } | ComposioRunBinding>;

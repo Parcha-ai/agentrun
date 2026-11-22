@@ -755,6 +755,7 @@ export interface components {
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     } | components["ComposioRunBinding"]>;
+    keys?: Record<string, string>;
   };
   MessageResult: {
     run_id: components["Id"];
@@ -1034,6 +1035,7 @@ export interface components {
     max_cost_usd?: number;
     quote_id?: string;
     model_key?: string;
+    keys?: Record<string, string>;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     } | components["ComposioRunBinding"]>;
@@ -1058,6 +1060,7 @@ export interface components {
     max_cost_usd?: number;
     quote_id?: string;
     model_key?: string;
+    keys?: Record<string, string>;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     } | components["ComposioRunBinding"]>;

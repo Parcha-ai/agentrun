@@ -22,6 +22,7 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { apiOnlyRefusal, servedApiOnly } from "./api-only.js";
+import { declaredKeys, keysOwed, packageKeysOf, RUN_KEYS_ENV, type RunKeys, runKeysOf, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -320,6 +321,9 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
+  /** The run-keys setting (AGENTRUN_RUN_KEYS=1, run-keys.ts): a template's apply makes its agent though a tool key it
+   *  declares is not set here, and a run of it that does not carry that key in `keys` is refused. */
+  runKeys?: boolean;
   /** Another Archil control plane than the key's region's, and its fetch, and another maker of a disk's file API: a
    *  test's fakes, for the server's own Archil calls (a launch's disk read, the settings' test, an agent's disk removed,
    *  a deleted agent's run folder removed from a disk its launch named). */
@@ -919,6 +923,9 @@ export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored
 export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, await needsOf(env), toolSettings, boxes);
 }
+
+/** A run body's launch secrets, checked (handedLaunchSecrets): its MCP credentials, its own model key and tool keys. */
+type Handed = { mcp?: RunMcpAuth; model?: string; keys?: RunKeys };
 
 /** The start-time switches a server takes as options (ServeOptions mcpLoopback, webhookPrivateTargets). */
 type SwitchedOn = { mcpLoopback: boolean; webhookPrivateTargets: boolean };
@@ -2765,8 +2772,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** What keeps `revision` from running here at `place` (its own, else this host's default), checked before anything
    *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). `price`:
-   *  what prices an OpenRouter decision model under that cap; a start's reads OpenRouter's catalog (decisionPrice). */
-  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice }: { capped?: boolean; price?: (model: string) => Promise<unknown> } = {}): Promise<void> {
+   *  what prices an OpenRouter decision model under that cap; a start's reads OpenRouter's catalog (decisionPrice).
+   *  `carried`: the names of the tool keys the run carries (run-keys.ts), each read as one this host holds. */
+  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice, carried = [] }: { capped?: boolean; price?: (model: string) => Promise<unknown>; carried?: readonly string[] } = {}): Promise<void> {
     if (cliLearningOf(revision.body)) throw new ApiError("agent_not_runnable", "Continue in the original CLI session; this connection records learning without launching its tools.");
     if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
     const native = nativeOf(revision.body);
@@ -2809,8 +2817,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       });
     };
     const monid = (revision as { monidPin?: MonidPinBody | null }).monidPin ?? undefined;
+    // Under the run-keys setting, a template's tool key this host does not hold is each run's to carry: one that does not
+    // is refused for it alone, before the checks that read the keys it would bring.
+    const owed = options.runKeys ? keysOwed(revision, env, carried) : [];
+    if (owed.length) throw new ApiError("agent_not_runnable", owed.map((one) => one.message).join(" "), { fields: owed, details: { unbound: [], missing: {} } });
     // Claude Code's login on this machine is a runner place's alone: a sandbox run is checked for a key, as it runs.
-    const blockers = await blockersOf(envAtPlace(env, shape.place), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
+    const blockers = await blockersOf(withCarried(envAtPlace(env, shape.place), carried), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
@@ -3097,8 +3109,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // one is made only while it is still this agent's (TriggerOwn.onAgent), so one a PATCH moves away meanwhile is left.
     const had = onto ? await store.triggers.list(onto.agent.id) : [];
     if (onto && options.templateApplyRead) await options.templateApplyRead(onto.agent.id);
-    // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made.
-    const missing = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])].filter((name) => !secret(name, storedKeys));
+    // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made. Under
+    // the run-keys setting, a tool key is each run's to carry (run-keys.ts): its agent is made, the warning says so, and a
+    // run that does not carry it is refused. A model key is still the server's.
+    const declared = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])];
+    const absent = declared.filter((name) => !secret(name, storedKeys));
+    const brought = options.runKeys ? absent.filter((name) => TOOL_FIELDS.includes(name)) : [];
+    const missing = absent.filter((name) => !brought.includes(name));
+    const keyWarnings: InputIssue[] = brought.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server: it takes it from each run (${RUN_KEYS_ENV}=1), so a run that does not carry it in keys is refused.`, fix: `Send keys.${name} with each run, or add it in Settings → API Keys.` }));
     // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
     // one: several and no pick is a 422); the package's
     // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers).
@@ -3205,9 +3223,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (notOurs.length) throw new ApiError("name_taken", notOurs.length === 1 ? notOurs[0]!.message : `${notOurs.length} of the agent's triggers have the names of the ${pkg.name} template's and are not its own. Nothing was changed: rename or delete each, then apply the template again.`, { fields: notOurs });
     // The agent keeps where it came from (the package on the revision the apply writes): the package's id, version and,
     // imported, its SHA; and a keyed digest of the parameters it was given (never the parameters: one may be a credential).
-    // Which triggers are the package's is on each trigger (its mark), not here.
+    // Which triggers are the package's is on each trigger (its mark), not here. The key names it declared ride with it: a
+    // run may carry its tool keys, and under the run-keys setting one that does not is refused.
     const digest = parametersDigest(sealKey, stable(parameters));
-    const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters_digest: digest };
+    const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters_digest: digest, ...(declared.length ? { secrets: declared } : {}) };
     // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
     // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
     const twins: InputIssue[] = onto ? [] : (await agents.list())
@@ -3341,7 +3360,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // What the apply did to the agent: made it, wrote a new revision, or wrote none (an update whose package and
     // parameters the current revision already holds: commitAgent keeps that revision).
     const agentChange = !onto ? "made" : entry.revision?.id === onto.revision?.id ? "unchanged" : "updated";
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...keyWarnings, ...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
     return { applied, minted, updated: onto !== undefined };
   }
 
@@ -3401,11 +3420,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  bound to its server's origin then and the model key to the gateway's (AGENT_MODEL_BASE_URL). `handed` is called only
    *  for new work, inside the request's idempotent work: there each mcp_auth entry must name a saved per_run server, and
    *  the model key must be text, else 422, nothing written. A retry its key already answered replays that answer even
-   *  when the server has since changed or gone, since it does no new work. */
-  function handedLaunchSecrets(body: Json): { body: Json; handed: () => Promise<{ mcp?: RunMcpAuth; model?: string }> } {
-    if (body.mcp_auth === undefined && body.model_key === undefined) return { body, handed: async () => ({}) };
-    const { mcp_auth, model_key, ...rest } = body;
-    const handed = async () => {
+   *  when the server has since changed or gone, since it does no new work. `keys`, the run's own tool keys (run-keys.ts),
+   *  go the same way: each a tool key name to its value as text, else 422 by name, never with the value; whether the
+   *  run's revision reads each is its start's check (prepareLaunch), by name alone. */
+  function handedLaunchSecrets(body: Json): { body: Json; handed: () => Promise<Handed> } {
+    if (body.mcp_auth === undefined && body.model_key === undefined && body.keys === undefined) return { body, handed: async () => ({}) };
+    const { mcp_auth, model_key, keys: given, ...rest } = body;
+    const handed = async (): Promise<Handed> => {
       const issues: InputIssue[] = [];
       const mcp = mcp_auth === undefined ? undefined : mcpAuthOf(mcp_auth, issues);
       const auth: Record<string, RunMcpAuth[string]> = {};
@@ -3425,11 +3446,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         else issues.push({ field, reason: "not_an_option", message: perRunComposio ? `The MCP server ${server} takes a Composio account from each run, not headers: send {"composio_user_id": "<user>", "connected_account_id": "ca_..."} (the account optional).` : `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` });
       }
       const model = model_key === undefined ? undefined : modelKeyOf(model_key, issues);
+      const keys = given === undefined ? undefined : runKeysOf(given, issues);
       if (issues.length) throw invalid(issues);
-      return { ...(mcp_auth !== undefined ? { mcp: auth } : {}), ...(model !== undefined ? { model } : {}) };
+      return { ...(mcp_auth !== undefined ? { mcp: auth } : {}), ...(model !== undefined ? { model } : {}), ...(keys && Object.keys(keys).length ? { keys } : {}) };
     };
     return { body: rest, handed };
   }
+
+  /** The start option naming the tool keys `handed` carries, by name (runs-over-store StartOptions.keys). */
+  const carriedOf = (handed: Handed): { keys?: readonly string[] } => (handed.keys ? { keys: Object.keys(handed.keys) } : {});
 
   /** The 422 for a model key where the run's model never takes it (run-model-key.ts modelKeyMisfit), at `model_key`. */
   const misfit = (why: string) => invalid([{ field: "model_key", reason: "not_an_option", message: why }]);
@@ -3438,8 +3463,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  where the run's model never takes it is refused (modelKeyMisfit), and a start that hands other secrets but no key
    *  is refused where the server holds no key for the run's route (serverKeyMissing). Undefined when nothing is handed:
    *  the start's own check (runs-over-store keyedOrRefused) refuses that one where it has no key to spend. */
-  function startSeal(handed: { mcp?: RunMcpAuth; model?: string }): StartOptions["sealed"] {
-    if (handed.mcp === undefined && handed.model === undefined) return undefined;
+  function startSeal(handed: Handed): StartOptions["sealed"] {
+    if (handed.mcp === undefined && handed.model === undefined && handed.keys === undefined) return undefined;
     return (runId, launch, kind) => {
       const target = { kind, model: launch.model, native: Boolean(launch.native) };
       if (handed.model !== undefined) {
@@ -3447,7 +3472,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (why) throw misfit(why);
       } else if (serverKeyMissing(env, target)) throw modelKeyRequired(false);
       const origin = runModelOrigin(env);
-      return sealRunLaunch(sealKey, runId, { ...(handed.mcp ? { mcp: handed.mcp } : {}), ...(handed.model !== undefined && origin ? { model: { key: handed.model, origin } } : {}) });
+      return sealRunLaunch(sealKey, runId, { ...(handed.mcp ? { mcp: handed.mcp } : {}), ...(handed.model !== undefined && origin ? { model: { key: handed.model, origin } } : {}), ...(handed.keys ? { keys: handed.keys } : {}) });
     };
   }
 
@@ -3456,23 +3481,36 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  part it does not hand is kept as the run holds it (none after its turn's end erased it). A model key is refused
    *  where the run's model never takes it. One is required where the server holds no key for the run's route and the
    *  run holds none when the message is written (its last turn ended): 422 model_key_required from inside that write,
-   *  which then writes nothing, so a turn never starts with no key to spend. */
-  async function messageSeal(run: { id: string; kind: string }, handed: { mcp?: RunMcpAuth; model?: string }): Promise<LaunchSealed | undefined> {
+   *  which then writes nothing, so a turn never starts with no key to spend. Its `keys` replace the run's whole, each one
+   *  its revision reads (else 422 by name); under the run-keys setting, a message that would leave the run without a tool
+   *  key its template declared and this host does not hold (its last turn's end erased them) is refused, 409, nothing
+   *  written. */
+  async function messageSeal(run: { id: string; kind: string }, handed: Handed): Promise<LaunchSealed | undefined> {
     const launch = readLaunchBody((await store.runs.launch(run.id)).body);
     const target = { kind: run.kind, model: launch?.model, native: Boolean(launch?.native) };
     if (handed.model !== undefined) {
       const why = modelKeyMisfit(env, target);
       if (why) throw misfit(why);
     }
+    const row = handed.keys || options.runKeys ? await store.runs.get(run.id) : undefined;
+    const revision = row ? await store.agents.revision(row.revisionId) : undefined;
+    if (handed.keys) {
+      const undeclared = undeclaredKeys(Object.keys(handed.keys), revision ? await declaredKeys(revision as unknown as Revision) : []);
+      if (undeclared.length) throw invalid(undeclared);
+    }
+    const owed = options.runKeys && revision ? packageKeysOf(revision).filter((name) => !env[name]) : [];
     const needsKey = handed.model === undefined && serverKeyMissing(env, target);
-    if (handed.mcp === undefined && handed.model === undefined && !needsKey) return undefined;
+    if (handed.mcp === undefined && handed.model === undefined && handed.keys === undefined && !needsKey && !owed.length) return undefined;
     const origin = runModelOrigin(env);
     return (current) => {
       const held = current === null ? {} : (openRunLaunch(sealKey, run.id, current) ?? {});
       const mcp = handed.mcp ?? held.mcp;
       const model = handed.model !== undefined && origin ? { key: handed.model, origin } : held.model;
+      const keys = handed.keys ?? held.keys;
       if (!model && needsKey) throw modelKeyRequired(true);
-      return sealRunLaunch(sealKey, run.id, { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}) });
+      const unpaid = revision ? keysOwed(revision, env, Object.keys(keys ?? {})) : [];
+      if (owed.length && unpaid.length) throw new ApiError("agent_not_runnable", unpaid.map((one) => one.message).join(" "), { fields: unpaid });
+      return sealRunLaunch(sealKey, run.id, { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}), ...(keys ? { keys } : {}) });
     };
   }
 
@@ -3487,8 +3525,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const seal = startSeal(await handed());
-      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
+      const secrets = await handed();
+      const seal = startSeal(secrets);
+      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
       // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
       return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
     });
@@ -3541,8 +3580,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const seal = startSeal(await handed());
-      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
+      const secrets = await handed();
+      const seal = startSeal(secrets);
+      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
       return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
     });
   }

@@ -126,6 +126,10 @@ export interface TemplatePackage {
    *  parameters, one of which may be a credential: a later fresh apply of the same package whose parameters give the same
    *  digest warns of this agent. Absent on a revision applied before it was kept. */
   readonly parameters_digest?: string;
+  /** The key names (never values) the package and its applied model choice declared, as the apply checked them: a run of
+   *  the revision may carry its tool keys (run-keys.ts), and under the run-keys setting one that does not is refused.
+   *  Absent on a revision applied before it was kept. */
+  readonly secrets?: readonly string[];
 }
 
 export interface NewRevision {

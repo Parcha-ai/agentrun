@@ -1348,6 +1348,34 @@ Jev and the other decision providers run on their own keys (`TYPESAFE_API_KEY`, 
 `OPENROUTER_API_KEY`), which are not model keys and which a run's key does not replace. On a run that brings its own
 key, no model key is on the env its decision nodes run under, so Jev's route on an openrouter.ai gateway's key is off.
 
+### Per-run tool keys
+
+A caller can hand a run its own tool keys with `keys` on `POST /v2/runs`, `POST /v2/agents/{agent_id}/runs` and
+`POST /v2/runs/{run_id}/messages`: `{"PARALLEL_API_KEY": "..."}`. The run's tools use each one in place of the server's
+key of that name. The names a run can carry are the tool keys: `PARALLEL_API_KEY` (`web_search`, `web_fetch`, Parallel
+decisions), `MONID_API_KEY`, `BROWSERBASE_API_KEY` with `BROWSERBASE_PROJECT_ID` or `KERNEL_API_KEY` (`browser`) and
+`TYPESAFE_API_KEY` (Jev). A model key goes in `model_key`, above.
+
+```sh
+curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer $AGENTRUN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d "{\"input\": {\"content\": \"Find the release notes\"}, \"keys\": {\"PARALLEL_API_KEY\": \"$CUSTOMER_PARALLEL_KEY\"}}"
+```
+
+- A name that is not a tool key, or one no tool of the run's revision reads (its tools, its workflow's nodes and
+  decision providers, and the keys its template declares), is 422 at `keys.<NAME>`, the value never echoed.
+- The keys are taken out of the body before anything reads it, as `model_key` is: never in the run's saved body, its
+  timeline, its view, a log or an `Idempotency-Key`'s fingerprint. They are sealed with the run's launch, opened at
+  each claim for its tools alone, and erased by the write that ends its turn. Since no read after that could cut
+  them, the runner cuts them from everything the run writes, as it writes it.
+- A message's `keys` replace the run's in the message's own write, read from the run's next claim on; a turn still
+  going keeps the keys it opened. A message without them keeps the run's, which are none once its last turn ended.
+
+**A server that holds no tool keys: `AGENTRUN_RUN_KEYS=1`.** Off, a template's apply refuses a tool key the server does
+not hold (409, as before). With the setting on, the apply makes the agent and says, in a warning, which tool keys
+each run must bring. A run of that agent without one of them is 409 `agent_not_runnable` at `keys.<NAME>`, before
+anything is made, and so is a message that would start a turn without it.
+
 ### Direct Particle-1
 
 Save a Particle key in **Settings → Model keys → Particle**, then select `particle/particle-1` with the **Pi** harness.

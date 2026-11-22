@@ -50,6 +50,11 @@ export const processSecretRedactor = (): Redact => secretRedactor(runnerSecrets(
 export interface HeldRedact extends Redact {
   /** Cut `values` too from here on, each in every form; one shorter than MIN_SECRET, whitespace aside, is left out. */
   hold(values: readonly string[]): void;
+  /** Hold `values`, and cut them from every run's journal as it is written too (runner.ts): a run's own tool keys
+   *  (run-keys.ts), erased at its turn's end, so no read after it could cut them. */
+  carry(values: readonly string[]): void;
+  /** The cut of every value carried so far (`carry`), or undefined while there is none. */
+  carried(): Redact | undefined;
 }
 
 const isHeld = (redact: Redact): redact is HeldRedact => typeof (redact as Partial<HeldRedact>).hold === "function";
@@ -58,6 +63,7 @@ const isHeld = (redact: Redact): redact is HeldRedact => typeof (redact as Parti
 export function heldRedactor(base: Redact): HeldRedact {
   if (isHeld(base)) return base;
   const held = new Set<string>();
+  const carried = new Set<string>();
   const cut = ((text: string) => {
     const once = base(text);
     return once && held.size ? redactedAnswer(once, [...held]) : once;
@@ -65,10 +71,28 @@ export function heldRedactor(base: Redact): HeldRedact {
   cut.hold = (values) => {
     for (const value of values) if (value.replace(/\s+/g, "").length >= MIN_SECRET) held.add(value);
   };
+  cut.carry = (values) => {
+    cut.hold(values);
+    for (const value of values) if (held.has(value)) carried.add(value);
+  };
+  cut.carried = () => (carried.size ? secretRedactor([...carried]) : undefined);
   // Its values are the base's and every one held since; a base that does not know its own leaves them unknown.
   const known = base.heldValues;
   if (known) withHeldValues(cut, () => [...new Set([...known(), ...held])]);
   return cut;
+}
+
+/** Every string inside `value` cut by `cut`: what the run's process writes, as the runner's redactor would cut it in a
+ *  loop of its own (rule three: no secret the runner holds is written). */
+export function cutDeep<T>(value: T, cut: (text: string) => string): T {
+  if (typeof value === "string") return cut(value) as T;
+  if (value === null || typeof value !== "object") return value;
+  if (ArrayBuffer.isView(value) || value instanceof Date || value instanceof RegExp || value instanceof ArrayBuffer) return value;
+  if (Array.isArray(value)) return value.map((item) => cutDeep(item, cut)) as T;
+  if (value instanceof Map) return new Map([...value].map(([k, v]) => [k, cutDeep(v, cut)])) as T;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) Object.defineProperty(out, key, { value: cutDeep((value as Record<string, unknown>)[key], cut), enumerable: true, writable: true, configurable: true });
+  return out as T;
 }
 
 /** The secrets a claim opened from the store (`env`, claimSecrets' environment for the run) held by `redact`, the run's
