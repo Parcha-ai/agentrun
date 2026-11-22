@@ -25,12 +25,12 @@ const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 // inbox read, a call that answers the account it runs as.
 const ADD = { slug: "add", name: "Add", description: "Add two numbers." };
 const TOOLKITS = { gmail: { no_auth: false, tools: [ADD] } };
-const USER_A = "grep-user-alice-0001";
+const USER_A = "host-user-alice-0001";
 const ACCOUNT_A = "ca_alice_gmail_0001";
-const USER_B = "grep-user-bob-0002";
+const USER_B = "host-user-bob-0002";
 const ACCOUNT_B = "ca_bob_gmail_0002";
 const OWNER = "owner-0001";
-// A team's connected account, as grep names it: Composio user `team:<tenant>` (agent_connections/registry.py TEAM_SCOPE_PREFIX).
+// A team's connected account, as a host names it: Composio user `team:<tenant>`.
 const TEAM = "team:tenant-0042";
 const ACCOUNT_TEAM = "ca_team_gmail_0042";
 // Each Composio user's connected accounts, as the fake's MCP endpoint checks a call against them.
@@ -253,11 +253,11 @@ test("a binding naming another user's account, or a user with no account, gets C
   assert.deepEqual(crossed.sent.map(asWho), crossed.sent.map(() => [USER_B, ACCOUNT_A]), "sent as bound");
   assert.doesNotMatch(crossed.answer, /The tool said: 5\b/, "the call ran nothing");
   assert.match(crossed.answer, /does not match the provided user ID/, crossed.answer);
-  const stranger = await runOnce(s, bind("grep-user-carol-0003"));
+  const stranger = await runOnce(s, bind("host-user-carol-0003"));
   assert.equal(toolCalls(stranger.sent).length, 1, stranger.answer);
   assert.doesNotMatch(stranger.answer, /The tool said: 5\b/, "the call ran nothing");
   assert.match(stranger.answer, /No connected account found for user ID/, stranger.answer);
-  assert.equal(stranger.answer.includes("grep-user-carol-0003"), false, "the bound user is cut from what the run shows, Composio's words included");
+  assert.equal(stranger.answer.includes("host-user-carol-0003"), false, "the bound user is cut from what the run shows, Composio's words included");
 });
 
 test("the console's edit form previews a per-run server at its saved address ({name, url, auth}): listed as the listing-only user, as a preview by name is", async (t) => {
