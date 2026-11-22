@@ -186,9 +186,11 @@ export function skillText(commands) {
     '',
     '## Commands',
     '',
-    ...[...groups].map(([noun, entries]) => entries.length === 1 && entries[0].command.length === 1
-      ? `- \`${usage(entries[0])}\`: ${entries[0].summary}`
-      : `- \`agentrun ${noun}\`: ${entries.map((entry) => entry.command[1]).join(', ')}`),
+    // A command of one word is its usage and summary, even with verbs of its own (deploy: its summary names them).
+    ...[...groups].map(([noun, entries]) => {
+      const own = entries.find((entry) => entry.command.length === 1);
+      return own ? `- \`${usage(own)}\`: ${own.summary}` : `- \`agentrun ${noun}\`: ${entries.map((entry) => entry.command[1]).join(', ')}`;
+    }),
     '- `agentrun api METHOD PATH [--body JSON|@FILE|-]`: any route, PATH under the base URL',
     '',
   ].join('\n');

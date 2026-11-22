@@ -65,8 +65,8 @@ export type AgentEntry = {
   version: number;
   revisions: number;
   sizes: Map<string, number>;
-  /** The template package it was last applied from, as the newest revision an apply wrote keeps it (its first, until an
-   *  apply with agent_id updates it); absent or null for one made otherwise. */
+  /** The template package its current revision came from (packageOf): as the apply that wrote that revision, or the
+   *  nearest one before it in its line, kept it; absent or null for one made otherwise. */
   template?: TemplatePackage | null;
 };
 
@@ -220,7 +220,19 @@ export async function getAgent(store: AgentsStore, id: string): Promise<AgentEnt
   const revisions = await store.agents.revisions(id); // oldest first (created_at, id)
   const at = agent.currentRevision === null ? -1 : revisions.findIndex((r) => r.id === agent.currentRevision);
   const revision = at < 0 ? null : revisions[at]!;
-  return { agent, revision, version: at < 0 ? 0 : at + 1, revisions: revisions.length, sizes: sizesOf(revision), template: revisions.findLast((r) => r.package)?.package ?? null };
+  return { agent, revision, version: at < 0 ? 0 : at + 1, revisions: revisions.length, sizes: sizesOf(revision), template: packageOf(revision, revisions) };
+}
+
+/** The package `revision` came from: its own, else that of the nearest revision before it in its line (each one's parent,
+ *  the revision current when it was committed) that an apply wrote. An edit carries the package it was made on, and a
+ *  restore of an older revision reads that revision's, never a later apply's. Null for a line no apply wrote. */
+function packageOf(revision: RevisionRow | null, revisions: readonly RevisionRow[]): TemplatePackage | null {
+  const byId = new Map(revisions.map((one) => [one.id, one]));
+  // Bounded by the count: a line is never longer than the revisions there are.
+  for (let at = revision, steps = 0; at && steps < revisions.length; at = at.parent === null ? null : byId.get(at.parent) ?? null, steps++) {
+    if (at.package) return at.package;
+  }
+  return null;
 }
 
 /** Every agent here, newest first (its creation, then its id). Archived agents are left out by default. */

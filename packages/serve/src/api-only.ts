@@ -17,6 +17,8 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
  *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
  *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart;
+ *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
+ *    words, template-import.ts), which an apply then makes into its agent;
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
  *    revision back, and archives it before its delete (or unarchives it, its schedule and feed triggers on again): its
  *    token already makes agents through inline runs, so it gains no new power. A trigger the apply can't make here is
@@ -32,7 +34,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "listRunFiles", "readRunFile",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getUsage", "getCapacity",
-  "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
+  "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
 ]);
 
 /** The trigger sources a template's apply makes on an API-only server: the ones that fire on the server's own clock and
