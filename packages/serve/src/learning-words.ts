@@ -122,6 +122,8 @@ export const said = {
   stopped: (cause: string) => `Not kept: learning stopped (${cause}).`,
   /** A run whose learning seed predates a reset of its agent's learning (runner/learning-end.ts, reason `reset`). */
   reset: "Dropped: its learning seed predates a reset of the agent's learning.",
+  /** A run whose learning seed its agent's learning no longer holds at its end (runner/learning-end.ts, reason `reset`). */
+  seedGone: "Dropped: its learning seed is gone from the agent's learning (a reset removed it, or a run's purge rewrote the history).",
 };
 
 /** A run's learning in words as a read says them, whole: what it learned and what waits for the owner's OK, said again

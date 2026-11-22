@@ -184,9 +184,14 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     if (reset !== undefined && !(start.seededAt !== undefined && start.seededAt > reset)) {
       return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "reset", detail: said.reset } } }] };
     }
-    // The second wall, once the agent's learning was reset: a seed the store holds now is one its merge must still find
-    // (commit.ts mustHold), so a reset after this check refuses the merge whole in the store's save.
-    const mustHold = reset !== undefined && (await holdsCommit(deps.learningStore(input.agentId), start.seed!)) ? start.seed! : undefined;
+    // The second wall: a seed the store no longer holds (a reset removed it, or another run's purge rewrote the history
+    // since this run started, learn/purge.ts) is one the run learns nothing on, whole: its correction would land on a
+    // history its seed is not in. One it holds is one its merge must still find (commit.ts mustHold), so a reset or a
+    // purge after this check refuses the merge whole in the store's save.
+    if (!(await holdsCommit(deps.learningStore(input.agentId), start.seed!))) {
+      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "reset", detail: said.seedGone } } }] };
+    }
+    const mustHold = start.seed!;
     // Which end of the run this is: the round after the newest it kept (a follow-up opened the run again after it), else
     // its first. A replayed end reads the same round: its rows are written only with the end that closes it.
     const prior = await deps.store.learning.proposal(input.runId);

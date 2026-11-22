@@ -272,6 +272,12 @@ tidy_history() {
     cat "$tmp/checkout" >&2
     die "the working tree could not be brought to main, so the old history stays marked for a purge sent again"
   fi
+  # An earlier release kept each merge's diff outside git (.agentrun/diffs/<run>.json, a run's text in each): host
+  # copies no checkout or prune reaches, so they go too (never through a link: a linked .agentrun is left alone, and a
+  # linked diffs folder goes as the link).
+  if [ -d .agentrun ] && [ ! -L .agentrun ]; then
+    rm -rf .agentrun/diffs || die "an earlier release's diff files could not be removed"
+  fi
   g for-each-ref --format='%(refname)' > "$tmp/refs" || die "for-each-ref failed"
   while IFS= read -r r; do
     [ "$r" = refs/heads/main ] && continue
