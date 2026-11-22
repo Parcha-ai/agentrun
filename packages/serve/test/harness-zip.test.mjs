@@ -53,11 +53,15 @@ for (const [label, bytes, refusal] of BEFORE) {
   });
 }
 
-test("an inflate bomb (1 MiB of zeros declared as 100 bytes) stops at its declared size: no more than that reaches the disk", async () => {
-  const { root, error } = await unpack(zipOf([file("agent", "\0".repeat(1024 * 1024), { size: 100 })]), { maxUnpacked: 1000 });
-  assert.match(String(error?.message), /"agent" unpacks past the size its directory says/);
-  assert.ok(statSync(join(root, "agent")).size <= 100, "never past the declared size");
-});
+// An entry that inflates past its declared size stops there, whether or not it also passes the zip's cap: the first case
+// stays under the cap, so the entry's own check is what stops it.
+for (const [label, actual] of [["500 bytes, under the zip's cap", 500], ["1 MiB, past it (an inflate bomb)", 1024 * 1024]]) {
+  test(`an entry declared as 100 bytes that inflates to ${label} stops at its declared size: no more reaches the disk`, async () => {
+    const { root, error } = await unpack(zipOf([file("agent", "\0".repeat(actual), { size: 100 })]), { maxUnpacked: 1000 });
+    assert.match(String(error?.message), /"agent" unpacks past the size its directory says/);
+    assert.ok(statSync(join(root, "agent")).size <= 100, "never past the declared size");
+  });
+}
 
 test("an entry that unpacks short of its declared size, or fails its CRC-32, is refused", async () => {
   const short = await unpack(zipOf([file("agent", "four", { size: 8 })]), { maxUnpacked: 1000 });
