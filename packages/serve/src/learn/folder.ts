@@ -355,10 +355,11 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
  * as `rewritten` maps it (one mapped to null was dropped: its change goes too) with the files it changes now
  * (`changed`, by the old commit: a scrubbed merge may change corrections.md no more), run `runId`'s changes given the reason
  * its scrubbed message gives ("merged"), corrections.md's blob as `corrections` (undefined: the commit holds none), and
- * `parent` its new parent. `text` is the file; `snapshot` what a reader of the new commit reads, its own commit the
+ * `parent` its new parent, `gone` the learned workflows its rebuilt tree holds no more (the purged run's: left out of
+ * `workflows`). `text` is the file; `snapshot` what a reader of the new commit reads, its own commit the
  * placeholder still (`landed` puts it).
  */
-export function rewrittenSnapshot(file: StoreFile | undefined, commit: { sha: string; parent: string | null }, rewritten: ReadonlyMap<string, string | null>, changed: ReadonlyMap<string, string[]>, runId: string, corrections: SnapFile | undefined, parent: string | null): { text: string; landed: (sha: string) => Snapshot } | undefined {
+export function rewrittenSnapshot(file: StoreFile | undefined, commit: { sha: string; parent: string | null }, rewritten: ReadonlyMap<string, string | null>, changed: ReadonlyMap<string, string[]>, runId: string, corrections: SnapFile | undefined, parent: string | null, gone: ReadonlySet<string>): { text: string; landed: (sha: string) => Snapshot } | undefined {
   const kept = keptSnapshot(file, commit.sha, commit.parent);
   if (!kept) return undefined;
   const log = kept.log.flatMap((change) => {
@@ -368,7 +369,7 @@ export function rewrittenSnapshot(file: StoreFile | undefined, commit: { sha: st
     return [{ ...change, commit: sha ?? change.commit, ...(files ? { files } : {}), ...("run" in change.by && change.by.run === runId ? { reason: SCRUBBED_REASON } : {}) }];
   });
   const { corrections: _was, ...rest } = kept;
-  const snapshot: Snapshot = { ...rest, main: PLACEHOLDER, ...(corrections ? { corrections } : {}), log };
+  const snapshot: Snapshot = { ...rest, main: PLACEHOLDER, ...(corrections ? { corrections } : {}), workflows: rest.workflows.filter(({ name }) => !gone.has(name)), log };
   return { text: snapshotText(snapshot, parent), landed: (sha) => withMain(snapshot, sha) };
 }
 
