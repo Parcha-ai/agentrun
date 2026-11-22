@@ -3619,11 +3619,12 @@ stays in every total.
   (`DELETE /v2/agents/{id}/learning`) or the agent's purge, which delete the folder whole. Each merge's feedback line goes in
   one commit by the host (none when nothing is left to remove), a line a person edited since stays, and another
   merge's diff that shows the line as context is written without it. The log and a workflow's revisions leave out its
-  merges, known by the run the log names for each (its newest 200 changes). A purge takes each learned workflow whose
-  `workflow.json` the run changed last (by the commits' run trailers over the whole history, past those 200) off main
-  in one host commit, its whole folder: its file reads are `404`, no run lays it, and a read at an older commit
-  (a champion by its digest, an SDK receipt's pinned commit, a later merge's diff, which shows its files as added)
-  never serves its text. Each merge's scrub lands once, so a `DELETE` sent again
+  merges, known by the run the log names for each (its newest 200 changes). A purge takes off main only what the run
+  put there, in one host commit: each learned workflow whose `workflow.json` it wrote last (over the whole history,
+  past those 200; a host commit that puts a version back names that version's run) goes back, its whole folder, to
+  the version before it that no purged run wrote, so another run's champion keeps serving; one it wrote new leaves
+  main, its file reads `404`. No run lays its text, and a read at an older commit (a champion by its digest, an SDK
+  receipt's pinned commit, a later merge's diff, which shows its files as added) never serves it. Each merge's scrub lands once, so a `DELETE` sent again
   after a stop takes no other run's same line, and a merge of the run made since is scrubbed by it. A second `DELETE`
   does this again. It covers the learning folder on this
   server; a Mode 2 agent's folder on an Archil disk keeps the run's text until a learning reset or the agent's purge.

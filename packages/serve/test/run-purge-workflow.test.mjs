@@ -1,7 +1,8 @@
-// A purged run's learned workflows leave main in the purge's own host commit (learn/commit.ts forgetRunText), and a
-// read at a past commit still refuses one whose workflow.json a purged run wrote (purged-workflow.ts). A run of the
-// agent merged two workflows ("answer" and "solo", each README.md with its description) and their promotion records
-// name its merge; another run revised both of answer's files after it. After the purge:
+// A purged run's learned workflows go back, in the purge's own host commit (learn/commit.ts forgetRunText), to the
+// version before it, or leave main when it wrote them new; a read at a past commit still refuses one whose workflow.json
+// a purged run wrote (purged-workflow.ts purgeGate). A run of the agent merged two workflows ("answer" and "solo", each
+// README.md with its description) and their promotion records name its merge; another run revised both of answer's
+// files after it. After the purge:
 //   - main no longer holds solo: both its files read 404 and the learning view lists it no more;
 //   - the champion read by digest (GET .../promotions) reads no commit for either;
 //   - the revisions of "answer" leave the purged run's out, and the other run's merge diff serves each file of the
@@ -18,8 +19,8 @@ import { test } from "node:test";
 import { learningCommit } from "../dist/learn/commit.js";
 import { learningFolderOf } from "../dist/learning.js";
 import { launchBody } from "../dist/run-launch.js";
-import { ended, git, repoOf, started } from "./learn-support.mjs";
-import { answerFlow, serve, startRun } from "./support.mjs";
+import { ended, git, repoOf, resnap, started } from "./learn-support.mjs";
+import { agent, answerFlow, serve, startRun } from "./support.mjs";
 
 /** `write` over agent `agentId`'s learning folder on this server, as a run's merge writes it: its commit. */
 async function learned(data, agentId, write) {
@@ -168,11 +169,22 @@ test("a purge takes the run's workflow off main when the folder's snapshot is be
   assert.equal(git(repo, ["ls-tree", "-r", "--name-only", "main", "workflows/"]), "workflows/answer/README.md\nworkflows/answer/workflow.json", "main holds the other run's workflow alone");
 });
 
-// The review's trace: run P's merge revises `answer`, its promotion check holds it, then P is purged; run Q ends and
-// `answer` fits Q's input. The compile ask Q builds (runner/learning-end.ts compileAskOf) revises a held workflow from
-// main's text, so once P's purge takes `answer` off main it never holds P's text. The champion before P is still read
-// at its record's commit.
-test("the next run's compile ask never holds a held revision a purged run wrote: the purge took it off main", { timeout: 300_000 }, async (t) => {
+/** Workflow `name`'s files on agent `agentId`'s main, by path, each as git holds it, and main's commit. */
+const onMain = (data, agentId, name = "answer") => {
+  const repo = repoOf(data, agentId);
+  const paths = git(repo, ["ls-tree", "-r", "--name-only", "main", `workflows/${name}/`]).split("\n").filter(Boolean);
+  return { files: Object.fromEntries(paths.map((path) => [path, git(repo, ["show", `main:${path}`])])), main: git(repo, ["rev-parse", "main"]) };
+};
+/** Workflow `answer` as a run writes it: its workflow.json and its README.md, each saying `said`. */
+const answerAt = (said) => ({ "workflows/answer/README.md": readmeOf("answer", `Answers a question, ${said}; use when asked`).text.trim(), "workflows/answer/workflow.json": JSON.stringify(answerFlow(`Answer the question, ${said}.`)) });
+const filesOf = (said) => Object.entries(answerAt(said)).map(([path, text]) => ({ path, text: path.endsWith(".md") ? `${text}\n` : text }));
+
+// A purge takes off main only what the purged run's revisions put there. Run `first` wrote `answer` v1, promoted; run
+// `gone` revised it to v2 (both its files), and the promotion check held v2, so v1 kept serving. The purge of `gone`
+// puts v1 back as `first` wrote it, its writer `first` again: the view lists it with v1's description, a run that fits
+// it is served v1, the promotions read still names v1's commit as champion, and the compile ask the next run builds
+// (runner/learning-end.ts compileAskOf) holds none of `gone`'s text. A repeat DELETE changes nothing.
+test("a purge puts back the version another run wrote before the purged run's held revision: main holds it as that run wrote it, the view lists it, a run that fits it is served it, its champion is still read, no compile ask holds the purged text; a repeat DELETE makes no commit", { timeout: 300_000 }, async (t) => {
   const mark = `PURGED-HELD-${randomBytes(6).toString("hex")}`;
   const { api, data, store } = await serve(t, { learning: "on" });
   const first = (await startRun(api, "holder", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
@@ -181,29 +193,160 @@ test("the next run's compile ask never holds a held revision a purged run wrote:
   await ended(api, gone);
   const q = await started(api, "holder", "What is four?");
   await ended(api, q);
+  const replayed = await started(api, "holder", "What is five?");
+  await ended(api, replayed);
 
   const path = "workflows/answer/workflow.json";
-  const v1 = JSON.stringify(answerFlow("Answer the question."));
-  const v2 = JSON.stringify(answerFlow(`Answer the question, ${mark}.`));
-  const champion = await learned(data, "holder", (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: [{ path, text: v1 }, readmeOf("answer")] }));
-  const revised = await learned(data, "holder", (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: [{ path, text: v2 }] }));
+  const [v1, v2] = [answerAt("in whole numbers"), answerAt(mark)];
+  const champion = await learned(data, "holder", (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: filesOf("in whole numbers") }));
+  const revised = await learned(data, "holder", (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: filesOf(mark) }));
+  // Run `replayed` merged a round on top of `gone`'s that left answer alone, and stopped before its end: its replayed
+  // ask reads main as that merge read it, its parent, where answer is still `gone`'s v2.
+  await learned(data, "holder", (ws) => learningCommit(ws, { runId: replayed, round: 3, reason: "It learned other.", files: [{ path: "workflows/other/workflow.json", text: JSON.stringify(topicFlow("Answer by topic.")) }, readmeOf("other")] }));
   const at = new Date().toISOString();
   const check = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, alone: 4, agreed: 2 };
   await store.settings.put("learning.promotions.holder", { v: 1, items: [
-    { workflow: "answer", digest: digestOf(v1), at, decided: "promote", reason: "checked: promoted", commit: champion },
-    { workflow: "answer", digest: digestOf(v2), at, decided: "hold", reason: "checked: held", commit: revised, check },
+    { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit: champion },
+    { workflow: "answer", digest: digestOf(v2[path]), at, decided: "hold", reason: "checked: held", commit: revised, check },
   ] });
 
   const { compileAskOf } = await import("../dist/runner/learning-end.js");
-  /** The compile ask run Q builds at its end, and the champion the promotions read names for `answer`. */
+  /** The compile ask run Q builds at its end, the one `replayed` builds again for its round, and the champion the
+   *  promotions read names for `answer`. */
   const asked = async () => {
-    const ask = await compileAskOf({ store, data, learningFolder: (agentId) => learningFolderOf(data, agentId) }, { runId: q, agentId: "holder", outcome: "completed", refuse: [], input: { content: "What is four?", question: "What is four?" }, seedWorkflows: 1 });
+    const askOf = (runId, round) => compileAskOf({ store, data, learningFolder: (agentId) => learningFolderOf(data, agentId) }, { runId, agentId: "holder", outcome: "completed", refuse: [], input: { content: "What is four?", question: "What is four?" }, seedWorkflows: 1, ...(round ? { round } : {}) });
+    const ask = await askOf(q);
+    const replay = await askOf(replayed, 3);
     const promotions = (await api("GET", "/agents/holder/learning/promotions")).body;
-    return { revise: ask?.mode === "revise" ? ask.workflow : null, holds: JSON.stringify(ask ?? null).includes(mark), champion: promotions.serving.find((line) => line.workflow === "answer")?.champion?.commit ?? null };
+    return { revise: ask?.mode === "revise" ? ask.workflow : null, holds: JSON.stringify(ask ?? null).includes(mark), replay: JSON.stringify(replay ?? null).includes(mark), champion: promotions.serving.find((line) => line.workflow === "answer")?.champion?.commit ?? null };
   };
-  assert.deepEqual(await asked(), { revise: "answer", holds: true, champion }, "before the purge, Q's ask revises answer from the purged run's text");
+  /** What a person and the agent's next run read of `answer`: the view's line, the file read, and the digest served. */
+  const reads = async (question) => {
+    const view = (await api("GET", "/agents/holder/learning")).body.workflows.find(({ name }) => name === "answer");
+    const file = await api("GET", `/agents/holder/learning/files/${encodeURIComponent(path)}`);
+    const run = await api("POST", "/agents/holder/runs", { input: { content: question, question } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    await ended(api, run.body.run_id);
+    return { description: view?.description ?? null, file: file.status === 200 ? JSON.stringify(file.body) : file.status, served: (await store.runs.get(run.body.run_id)).metrics?.workflow_digest ?? null };
+  };
+  assert.deepEqual(await asked(), { revise: "answer", holds: true, replay: true, champion }, "before the purge, Q's ask and the replayed one revise answer from the purged run's text");
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
-  assert.deepEqual(await asked(), { revise: null, holds: false, champion }, "after the purge, Q's ask holds none of the purged run's text, and the champion before it is still read");
+  assert.deepEqual(onMain(data, "holder").files, v1, "main holds answer v1 again, both files as `first` wrote them");
+  const purged = await asked();
+  assert.equal(purged.holds, false, "after the purge, Q's ask holds none of the purged run's text");
+  assert.equal(purged.replay, false, "after the purge, the replayed ask, read at its merge's parent, holds none of the purged run's text");
+  assert.equal(purged.champion, champion, "the promotions read still names v1's commit as champion");
+  assert.deepEqual(await reads("What is six times seven?"), { description: "Answers a question, in whole numbers; use when asked", file: v1[path], served: digestOf(v1[path]) }, "the view lists answer with v1's description, the file read serves v1, and a run that fits it is served v1");
+
+  // (e) A repeat DELETE finds answer written by `first`: no commit, and v1 still serves.
+  const before = onMain(data, "holder");
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.deepEqual(onMain(data, "holder"), before, "a repeat DELETE makes no commit and never rolls first's v1 back");
+  assert.equal((await reads("What is seven times six?")).served, digestOf(v1[path]), "v1 still serves after the repeat DELETE");
+});
+
+// The purged run's revision was the champion: `first` wrote `answer` v1, promoted; `gone` revised it to v2, promoted
+// after it. The purge puts v1 back on main. The champion record still names v2 at `gone`'s merge, a commit every read
+// refuses (purgeGate): the champion read reads no commit, no run is served v2 and none is served v1 either (it is not
+// the champion), so the agent takes the run, as when a champion can't be read. No byte of `gone`'s text reaches a read, a run or a compile ask.
+test("a purge of the champion's run puts back the version before it and serves none of the purged text: the agent takes the run", { timeout: 300_000 }, async (t) => {
+  const mark = `PURGED-CHAMPION-${randomBytes(6).toString("hex")}`;
+  const { api, data, store } = await serve(t, { learning: "on" });
+  const first = (await startRun(api, "crowned", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
+  await ended(api, first);
+  const gone = await started(api, "crowned", "What is three?");
+  await ended(api, gone);
+  const q = await started(api, "crowned", "What is four?");
+  await ended(api, q);
+
+  const path = "workflows/answer/workflow.json";
+  const [v1, v2] = [answerAt("in whole numbers"), answerAt(mark)];
+  const kept = await learned(data, "crowned", (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: filesOf("in whole numbers") }));
+  const crowned = await learned(data, "crowned", (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: filesOf(mark) }));
+  const at = new Date().toISOString();
+  await store.settings.put("learning.promotions.crowned", { v: 1, items: [
+    { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit: kept },
+    { workflow: "answer", digest: digestOf(v2[path]), at, decided: "promote", reason: "checked: promoted", commit: crowned },
+  ] });
+  const { compileAskOf } = await import("../dist/runner/learning-end.js");
+  const reads = async (question) => {
+    const view = (await api("GET", "/agents/crowned/learning")).body;
+    const files = await Promise.all(Object.keys(v1).map((one) => api("GET", `/agents/crowned/learning/files/${encodeURIComponent(one)}`)));
+    const ask = await compileAskOf({ store, data, learningFolder: (agentId) => learningFolderOf(data, agentId) }, { runId: q, agentId: "crowned", outcome: "completed", refuse: [], input: { content: question, question }, seedWorkflows: 1 });
+    const run = await api("POST", "/agents/crowned/runs", { input: { content: question, question } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    await ended(api, run.body.run_id);
+    const promotions = (await api("GET", "/agents/crowned/learning/promotions")).body;
+    return {
+      holds: [view, files.map(({ body }) => body), ask ?? null].some((one) => JSON.stringify(one).includes(mark)),
+      champion: promotions.serving.find((line) => line.workflow === "answer")?.champion?.commit ?? null,
+      served: (await store.runs.get(run.body.run_id)).metrics?.workflow_digest ?? null,
+    };
+  };
+  assert.deepEqual(await reads("What is six times seven?"), { holds: true, champion: crowned, served: digestOf(v2[path]) }, "before the purge, v2 is the champion and serves");
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.deepEqual(onMain(data, "crowned").files, v1, "main holds answer v1 again, both files as `first` wrote them");
+  assert.deepEqual(await reads("What is seven times six?"), { holds: false, champion: null, served: null }, "no read, run or compile ask holds v2; the champion read reads no commit for v2's record, so the agent takes the run");
+});
+
+// The writer rule follows the bytes over runs that end cheaply (no runner): (c) a workflow the purged run wrote new
+// leaves main whole; (d) a later run's revision on top of the purged run's stays as it is; (f) two purged runs in a row
+// on one workflow leave the version before both, in either order of purge, its writer the run that wrote it in both the
+// snapshot a write leaves and the one a rebuild from main reads.
+test("a purge puts back only what no purged run wrote: a new workflow leaves main, a later run's revision stays, and two purged runs in a row leave the version before both in either order", { timeout: 300_000 }, async (t) => {
+  const { api, data, store } = await serve(t, { runner: false });
+  /** Agent `agentId`, learning, with runs `runIds` ended, so a DELETE purges each. */
+  const agentWith = async (agentId, runIds) => {
+    assert.equal((await api("POST", "/agents", agent(agentId, { learning: true }))).status, 201);
+    const revisionId = (await store.agents.get(agentId)).currentRevision;
+    for (const runId of runIds) {
+      await store.runs.create({ id: runId, agentId, revisionId }, { body: launchBody({ input: { content: "Q" }, title: "t", place: { mode: "runner" } }) });
+      await store.runs.update(await store.claim(runId, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 0.1 });
+    }
+  };
+  const wrote = (agentId, runId, said) => learned(data, agentId, (ws) => learningCommit(ws, { runId, reason: `It wrote ${said}.`, files: filesOf(said) }));
+  const purge = async (runId) => assert.equal((await api("DELETE", `/runs/${runId}`)).status, 204);
+  /** The writer of `answer` in the snapshot on disk, then in one rebuilt from main whole. */
+  const writers = async (agentId) => {
+    const snap = async () => JSON.parse(await readFile(join(repoOf(data, agentId), ".agentrun", "snapshot.json"), "utf8")).workflows.find(({ name }) => name === "answer")?.run ?? null;
+    const written = await snap();
+    await resnap(data, agentId);
+    return [written, await snap()];
+  };
+
+  // (c) Written new by the purged run: the whole folder leaves main.
+  await agentWith("fresh", ["fresh-gone"]);
+  await wrote("fresh", "fresh-gone", "new");
+  await purge("fresh-gone");
+  assert.deepEqual(onMain(data, "fresh").files, {}, "a workflow the purged run wrote new leaves main");
+
+  // (d) A later run revised the purged run's version: it stays, no commit.
+  await agentWith("later", ["later-first", "later-gone", "later-last"]);
+  for (const [runId, said] of [["later-first", "v1"], ["later-gone", "v2"], ["later-last", "v3"]]) await wrote("later", runId, said);
+  const kept = onMain(data, "later");
+  await purge("later-gone");
+  assert.deepEqual(onMain(data, "later"), kept, "a later run's v3 stays untouched");
+  assert.deepEqual(kept.files, answerAt("v3"));
+
+  // (f) Two purged runs in a row, the newest first: v2 back, then v1.
+  await agentWith("twice", ["twice-first", "twice-gone1", "twice-gone2"]);
+  for (const [runId, said] of [["twice-first", "v1"], ["twice-gone1", "v2"], ["twice-gone2", "v3"]]) await wrote("twice", runId, said);
+  await purge("twice-gone2");
+  assert.deepEqual(onMain(data, "twice").files, answerAt("v2"), "the purge of gone2 puts back gone1's v2");
+  assert.deepEqual(await writers("twice"), ["twice-gone1", "twice-gone1"], "v2's writer is gone1 again, in the snapshot written and in one rebuilt from main");
+  await purge("twice-gone1");
+  assert.deepEqual(onMain(data, "twice").files, answerAt("v1"), "then the purge of gone1 puts back first's v1");
+  assert.deepEqual(await writers("twice"), ["twice-first", "twice-first"]);
+
+  // (f) The other order: gone1 first changes nothing (gone2 wrote main's), then gone2 skips gone1's purged v2 for v1.
+  await agentWith("back", ["back-first", "back-gone1", "back-gone2"]);
+  for (const [runId, said] of [["back-first", "v1"], ["back-gone1", "v2"], ["back-gone2", "v3"]]) await wrote("back", runId, said);
+  const v3 = onMain(data, "back");
+  await purge("back-gone1");
+  assert.deepEqual(onMain(data, "back"), v3, "the purge of gone1 leaves gone2's v3");
+  await purge("back-gone2");
+  assert.deepEqual(onMain(data, "back").files, answerAt("v1"), "the purge of gone2 puts back first's v1, never gone1's purged v2");
+  assert.deepEqual(await writers("back"), ["back-first", "back-first"]);
 });
 
 // The champion a start delivers is read at its promotion record's commit, older than the start's seed; the receipt reads

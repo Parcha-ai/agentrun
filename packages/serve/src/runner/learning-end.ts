@@ -46,6 +46,7 @@ import type { SignInReader } from "../run-view.js";
 import { type AlsoRow, FINAL_STATES, type LearningProposal, type McpServerRow, type Store } from "../store/store.js";
 import { shadowRunId } from "../learn/audit.js";
 import { getMcpServer } from "../mcp-store.js";
+import { purgeGate } from "../purged-workflow.js";
 import { readApprovers } from "../server-approvers.js";
 import { isCliRecord, runEntries, runTimeline, withoutFeedbackRounds } from "../store-reads/journal.js";
 import { capNowOf, KINDS } from "./journal-kinds.js";
@@ -608,8 +609,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   // `main`: the commit the snapshot read is main's at, which `current` was read from.
   let read: { workflows: number; current?: string; held?: PromotionRecord; main?: string };
   try {
+    // A workflow a purged run wrote is neither counted nor told (purgeGate), on main or at a replayed round's parent.
     const readFrom = async ({ snapshot, body }: Pick<FolderRead, "snapshot" | "body">) => {
-      const workflows = (snapshot?.workflows ?? []).filter(({ status }) => status === "active" || status === "pending");
+      const purged = (await purgeGate(snapshot, deps.store)).workflows;
+      const workflows = (snapshot?.workflows ?? []).filter(({ name, status }) => (status === "active" || status === "pending") && !purged.has(name));
       const textOf = async (name: string) => {
         const file = workflows.find((one) => one.name === name)?.files.find(({ path }) => path.endsWith("/workflow.json"));
         const text = file ? await body(file.path, file.oid) : undefined;

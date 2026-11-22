@@ -19,7 +19,7 @@ import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
 import { snapshotAt } from "../learn/folder.js";
-import { purgedRun, purgedWorkflows } from "../purged-workflow.js";
+import { purgedRun, purgeGate } from "../purged-workflow.js";
 import type { RunRow } from "../store/index.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
@@ -422,14 +422,14 @@ export class SdkRuns {
       },
     };
   }
-  /** The purged run (purged-workflow.ts) that wrote a workflow of `pinned`, each read at the learning commit a start took
-   *  its text from. One read-only exec per commit. */
+  /** The purged run (purgeGate) that wrote a workflow of `pinned`, each read at the learning commit a start took its
+   *  text from. One read-only exec per commit. */
   private async purgedPinned(agentId: string, pinned: readonly (readonly [LearnedWorkflow, string])[]): Promise<RunRow | undefined> {
     if (pinned.length === 0) return undefined;
     const folder = learningFolderOf(this.data, agentId);
     try {
       const reads = new Map<string, Promise<ReadonlyMap<string, RunRow>>>();
-      const at = (commit: string) => reads.get(commit) ?? reads.set(commit, snapshotAt(folder.workspace, commit).then((snapshot) => purgedWorkflows(snapshot, this.store))).get(commit)!;
+      const at = (commit: string) => reads.get(commit) ?? reads.set(commit, snapshotAt(folder.workspace, commit).then(async (snapshot) => (await purgeGate(snapshot, this.store)).workflows)).get(commit)!;
       for (const [flow, commit] of pinned) {
         const row = (await at(commit)).get(flow.name);
         if (row) return row;
