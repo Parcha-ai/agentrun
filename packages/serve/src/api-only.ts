@@ -18,8 +18,9 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
  *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart;
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
- *    revision back, and archives it before its delete (or unarchives it): its token already makes agents through inline
- *    runs, so it gains no new power. A trigger the apply can't make here is skipped, and said (apiOnlyTriggerSkipped). */
+ *    revision back, and archives it before its delete (or unarchives it, its schedule and feed triggers on again): its
+ *    token already makes agents through inline runs, so it gains no new power. A trigger the apply can't make here is
+ *    skipped, and said (apiOnlyTriggerSkipped). */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",

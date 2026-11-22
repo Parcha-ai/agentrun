@@ -21,7 +21,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
+import { API_ONLY_TRIGGER_KINDS, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -4516,7 +4516,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
         // In the agent's delete turn (agentWrite): an unarchive sent while its purge runs waits for it and is 410, so no
         // run of it starts between the purge's live check and its tombstone.
-        const triggersOff = await agentWrite(id, () => (found.name === "archiveAgent" ? triggers.agentArchived(id) : triggers.agentUnarchived(id)));
+        // On an API-only server, which serves no trigger route, the unarchive turns its schedule and feed triggers on again.
+        const turnOn = options.apiOnly ? (source: { kind: string }) => API_ONLY_TRIGGER_KINDS.has(source.kind) : undefined;
+        const triggersOff = await agentWrite(id, () => (found.name === "archiveAgent" ? triggers.agentArchived(id) : triggers.agentUnarchived(id, turnOn)));
         // An archived agent's own computer is deleted (an unarchived one gets a new one at its next persistent run).
         if (found.name === "archiveAgent") reconcileComputer(id);
         const entry = await needAgent(id);

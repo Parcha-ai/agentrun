@@ -3105,8 +3105,9 @@ serves these routes alone:
 - `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
 - a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
-  (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`), which its
-  delete (`DELETE /agents/{id}`) needs first. The apply makes only the triggers that fire on this server's own clock
+  (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
+  is what its delete (`DELETE /agents/{id}`) needs first; the unarchive turns its schedule and feed triggers on again,
+  since no trigger route is served here to do it. The apply makes only the triggers that fire on this server's own clock
   (a schedule, a feed); a webhook, GitHub, Composio or email trigger needs a hook or a setting this profile refuses, so
   it is not made, and the answer says so under `warnings` (`triggers.<i>`, `not_an_option`). The backend starts those
   runs through the API instead;

@@ -2969,7 +2969,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "approvals/1",
     },
   },
-  ...archiving("agents", "Agent", ref("parameters/AgentId"), "The agent, with archived_at, and `triggers_off: [{id, name}]`: archived, the triggers that run as it, turned off with the archive (`disabled.reason` `agent_archived`); unarchived, those its archive turned off that are off still (unarchiving turns none on: PATCH /triggers/{id} with enabled true does)."),
+  ...archiving("agents", "Agent", ref("parameters/AgentId"), "The agent, with archived_at, and `triggers_off: [{id, name}]`: archived, the triggers that run as it, turned off with the archive (`disabled.reason` `agent_archived`); unarchived, those its archive turned off that are off still (unarchiving turns none on: PATCH /triggers/{id} with enabled true does; on an API-only server, which serves no trigger route, unarchiving turns its schedule and feed triggers on itself)."),
   ...archiving("runs", "Run", ref("parameters/RunId"), "The run, with archived_at."),
   ...LEARNING_EXTENSIONS,
   "/agents/{agent_id}/sign-ins/{key}": {
