@@ -80,11 +80,6 @@ function routeFailure(error: unknown): unknown {
 
 /** Which of `runIds` are purged, by the store's purge mark (its row's purge time). */
 export type PurgedOf = (runIds: readonly string[]) => Promise<ReadonlySet<string>>;
-/** Which of `runIds` are purged, by each one's row (its purge time). */
-export const purgedOfRuns = (store: Store): PurgedOf => async (runIds) => {
-  const rows = await Promise.all(runIds.map((runId) => store.runs.get(runId)));
-  return new Set(runIds.filter((_, i) => rows[i] !== undefined && rows[i]!.purgedAt !== null));
-};
 
 /** Whether a change of `snapshot`'s log is served: none by a purged run (a run's purge, agent-delete.ts purgeRun), so
  *  the learning's history reads serve none of its merges. Asked at each read, so a log the store rebuilds names them
@@ -533,8 +528,8 @@ export async function runDiffOverStore(data: string, store: Store, runId: string
     const learning = learningStoreOf(data, row.agentId);
     const diff = await runMergeOf(learning, runId, kept?.round).catch((error: unknown) => Promise.reject(routeFailure(error)));
     if (!diff || diff.merge !== end.merged) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
-    // A purged run's line shown as this merge's context is left out (learn/commit.ts purgedContextOut), purged by its row.
-    const files = await purgedContextOut(learning, diff.files, purgedOfRuns(store)).catch((error: unknown) => Promise.reject(routeFailure(error)));
+    // A purged run's line shown as this merge's context is left out (learn/commit.ts purgedContextOut).
+    const files = await purgedContextOut(learning, diff.files).catch((error: unknown) => Promise.reject(routeFailure(error)));
     return { base: diff.parent, head: diff.merge, files: files.map((entry) => ("patch" in entry ? file(entry.path, entry.status, entry.patch) : { path: shown.name(entry.path), status: entry.status, withheld: entry.withheld })) };
   }
   return { base: start?.seed ?? null, head: null, files: [] };

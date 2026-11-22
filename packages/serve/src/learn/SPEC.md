@@ -347,8 +347,9 @@ is computed again), and the same commit holds main's snapshot (`.agentrun/snapsh
 run's diff is the store's diff of the commit its marker names (`folder.ts` runMergeOf). A person's replace of
 `corrections.md` is one commit the same way, under the ETag they read. A workflow is never deleted by a run: a retired one stays in the folder and
 serves no run. A run's purge (`commit.ts` forgetRunText) takes each of its merges' `corrections.md` lines off main in
-one host commit marked `.agentrun/purged/<key>` (so each scrub lands once), and the snapshot it writes keeps no reason
-of the run; another merge's diff is served without such a line as context (`purgedContextOut`).
+one host commit marked `.agentrun/purged/<key>` (so each scrub lands once, its marker landing even when a person took
+the line off first), and the snapshot it writes keeps no reason of the run and names it in `purged`; another merge's
+diff is served without any line a purged run's merges added as context (`purgedContextOut`).
 
 ## The reset
 

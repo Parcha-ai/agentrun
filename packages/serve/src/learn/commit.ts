@@ -255,22 +255,19 @@ const mergeLines = new Map<string, string[]>();
 /**
  * A merge's diff `files` as a history read serves it: corrections.md's patch with each context line a purged run's
  * merge added left out, so no read serves a purged run's line as another merge's context, whether its purge's scrub
- * took the line off main or a person had taken it off first. The purged runs are the ones `purgedOf` names among the
- * runs corrections.md's history merged (each merge's Run-Id trailer); their lines are what the store diffs each of
- * those merges as adding. A patch with no context line reads none of it.
+ * took the line off main or a person had taken it off first. The purged runs are the ones main's snapshot names (each
+ * scrub's marker, forgetRunText); their lines are what the store diffs each of their merges on corrections.md's history
+ * (by its Run-Id trailer) as adding. A patch with no context line, or a learning no purge marked, reads none of it.
  */
-export async function purgedContextOut(store: LearningStore, files: readonly StoreDiffFile[], purgedOf: (runIds: readonly string[]) => Promise<ReadonlySet<string>>): Promise<StoreDiffFile[]> {
+export async function purgedContextOut(store: LearningStore, files: readonly StoreDiffFile[]): Promise<StoreDiffFile[]> {
   if (!files.some((file) => file.path === CORRECTIONS_FILE && "patch" in file && /^ /m.test(file.patch))) return [...files];
-  const main = await store.head();
-  if (!main) return [...files];
-  const merges = ((await store.log(main, { path: CORRECTIONS_FILE })) ?? []).flatMap(({ sha, message }) => {
-    const runId = message.split("\n").findLast((line) => line.startsWith(TRAILER))?.slice(TRAILER.length);
-    return runId ? [{ sha, runId }] : [];
-  });
-  const purged = merges.length ? await purgedOf([...new Set(merges.map(({ runId }) => runId))]) : new Set<string>();
+  const snapshot = await readSnapshot(store);
+  const purged = new Set(snapshot?.purged ?? []);
+  if (!snapshot || !purged.size) return [...files];
   const gone = new Set<string>();
-  for (const { sha, runId } of merges) {
-    if (!purged.has(runId)) continue;
+  for (const { sha, message } of (await store.log(snapshot.main, { path: CORRECTIONS_FILE })) ?? []) {
+    const runId = message.split("\n").findLast((line) => line.startsWith(TRAILER))?.slice(TRAILER.length);
+    if (runId === undefined || !purged.has(runId)) continue;
     const at = `${store.id}\0${sha}`;
     let lines = mergeLines.get(at);
     if (!lines) {

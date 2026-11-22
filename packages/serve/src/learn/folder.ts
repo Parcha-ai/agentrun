@@ -67,6 +67,9 @@ export type Snapshot = {
   audits?: { oid: string; bytes: number };
   workflows: SnapLearned[];
   log: SnapChange[]; log_more: boolean;
+  /** The runs a purge's scrub marked on main (`.agentrun/purged/<key>`), by run id, sorted; absent when none: no history
+   *  read serves their lines as another merge's context (learn/commit.ts purgedContextOut). */
+  purged?: string[];
 };
 /** A run's merge (its round), as its commit holds it: its key, its commit, its parent, and each file's patch. */
 export type RunDiff = {
@@ -131,6 +134,10 @@ function changeEntry(commit: CommitInfo, sha: string, files: string[]): SnapChan
 export const purgedRunOf = (key: string): string => key.replace(/\.r\d+$/, "");
 /** `log` with each change by a run of `purged` given no reason: a purged run's words are kept in no snapshot (the
  *  snapshot is a file of main's tree), its change itself kept for the history reads to leave out by its run. */
+const purgedField = (purged: Iterable<string> | undefined): { purged?: string[] } => {
+  const runs = [...new Set(purged ?? [])].sort();
+  return runs.length ? { purged: runs } : {};
+};
 const reasonsOut = (log: SnapChange[], purged: ReadonlySet<string>): SnapChange[] => (purged.size ? log.map((change) => ("run" in change.by && purged.has(change.by.run) ? { ...change, reason: "" } : change)) : log);
 /** Whether a commit's message holds a line git's log of changes greps for: `Run-Id: ` or `Changed-By: user`. */
 const isChange = (commit: CommitInfo) => `${commit.subject}\n${commit.body}`.split("\n").some((line) => line.startsWith("Run-Id: ") || line === "Changed-By: user");
@@ -230,7 +237,7 @@ export function snapshotOfRead(read: WholeRead): Snapshot | undefined {
     if (item) workflows.push(item);
   }
   // A run a scrub marked (`.agentrun/purged/<key>`) has no reason in the log rebuilt, as in the one its scrub wrote.
-  return { v: 1, main, at, ...(corrections ? { corrections: { path: CORRECTIONS_FILE, oid: corrections.oid, bytes: corrections.bytes } } : {}), ...(audits ? { audits: { oid: audits.oid, bytes: audits.bytes } } : {}), workflows: workflows.sort(byName), log: reasonsOut(log, read.purged ?? new Set()), log_more: more };
+  return { v: 1, main, at, ...(corrections ? { corrections: { path: CORRECTIONS_FILE, oid: corrections.oid, bytes: corrections.bytes } } : {}), ...(audits ? { audits: { oid: audits.oid, bytes: audits.bytes } } : {}), workflows: workflows.sort(byName), log: reasonsOut(log, read.purged ?? new Set()), log_more: more, ...purgedField(read.purged) };
 }
 
 /** A draft from its folder's files: listed when its folder is well named and its README.md and workflow.json are there,
@@ -357,6 +364,7 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
     v: 1, main: PLACEHOLDER, at: commit.at, ...(corrections ? { corrections } : {}), ...(audits ? { audits } : {}),
     workflows: workflows.sort(byName),
     log: log.slice(0, LOG_KEEP), log_more: Boolean(before?.log_more) || log.length > LOG_KEEP,
+    ...purgedField([...(before?.purged ?? []), ...(change?.purged !== undefined ? [purgedRunOf(change.purged)] : [])]),
   };
   return { snapshot, changed };
 }
@@ -430,8 +438,8 @@ function keptSnapshot(file: StoreFile | undefined, commit: string, parent: strin
   } catch {
     return undefined;
   }
-  if (value?.v !== 1 || value.parent !== parent || value.main !== commit || !Array.isArray(value.workflows) || !Array.isArray(value.log) || (value.corrections !== undefined && !isOidField(value.corrections?.oid)) || (value.audits !== undefined && !isOidField(value.audits?.oid))) return undefined;
-  return { v: 1, main: value.main, at: value.at, ...(value.corrections ? { corrections: value.corrections } : {}), ...(value.audits ? { audits: value.audits } : {}), workflows: value.workflows, log: value.log, log_more: value.log_more };
+  if (value?.v !== 1 || value.parent !== parent || value.main !== commit || !Array.isArray(value.workflows) || !Array.isArray(value.log) || (value.corrections !== undefined && !isOidField(value.corrections?.oid)) || (value.audits !== undefined && !isOidField(value.audits?.oid)) || (value.purged !== undefined && !(Array.isArray(value.purged) && value.purged.every((run) => typeof run === "string")))) return undefined;
+  return { v: 1, main: value.main, at: value.at, ...(value.corrections ? { corrections: value.corrections } : {}), ...(value.audits ? { audits: value.audits } : {}), workflows: value.workflows, log: value.log, log_more: value.log_more, ...purgedField(value.purged) };
 }
 
 /** Commit `commit` read whole from `store`: its tree and blobs, its history and what each commit changed. */

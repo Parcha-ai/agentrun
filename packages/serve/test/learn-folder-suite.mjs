@@ -46,7 +46,8 @@ function shaped(snapshot) {
     assert.deepEqual(extra, [], `no key the snapshot does not name: ${JSON.stringify(value).slice(0, 200)}`);
     for (const key of required) assert.ok(key in value, `${key} is there: ${JSON.stringify(value).slice(0, 200)}`);
   };
-  keys(snapshot, ["v", "main", "at", "workflows", "log", "log_more"], ["corrections", "audits"]);
+  keys(snapshot, ["v", "main", "at", "workflows", "log", "log_more"], ["corrections", "audits", "purged"]);
+  if (snapshot.purged) assert.ok(snapshot.purged.length && snapshot.purged.every((run, i) => typeof run === "string" && (i === 0 || snapshot.purged[i - 1] < run)), JSON.stringify(snapshot.purged));
   assert.equal(snapshot.v, 1);
   assert.match(snapshot.main, HEX);
   if (snapshot.corrections) keys(snapshot.corrections, ["path", "oid", "bytes"]);
@@ -430,7 +431,7 @@ export function folderSuite(backend, make, { skew = 0 } = {}) {
     forgetBodies();
     assert.ok(!JSON.stringify(await readSnapshot(rebuilt(store))).includes(mark), "nor a snapshot rebuilt from main's history");
     await matchesMain(store);
-    const served = JSON.stringify(await purgedContextOut(store, (await runMergeOf(store, "run-kept")).files, goneOnly("run-gone")));
+    const served = JSON.stringify(await purgedContextOut(store, (await runMergeOf(store, "run-kept")).files));
     assert.ok(!served.includes(mark) && served.includes("Answer in words."), served);
 
     // Again (a DELETE sent again): each scrub landed, so nothing is written, though main holds no line of it to find.
@@ -449,23 +450,21 @@ export function folderSuite(backend, make, { skew = 0 } = {}) {
     const now = await textOn(store, CORRECTIONS);
     const put = await putCorrections(store, { text: "- Answer in words.\n", ifMatch: blobOid(now) });
     assert.equal(put.ok, true, JSON.stringify(put));
+    const files = (await runMergeOf(store, "run-kept")).files;
+    assert.match(JSON.stringify(await purgedContextOut(store, files)), new RegExp(mark), "before its purge, the run's line is the kept merge's context");
 
     const done = await forgetRunText(store, "run-gone");
     assert.match(done.commit, HEX, "the scrub lands with no line to drop");
     assert.deepEqual((await onMain(store)).map(({ path }) => path).filter((path) => path.startsWith(".agentrun/purged/")), [".agentrun/purged/run-gone"]);
     for (const file of await onMain(store)) assert.ok(!text(file.body).includes(mark), `main's ${file.path} keeps no word of the purged run`);
-    const files = (await runMergeOf(store, "run-kept")).files;
-    assert.match(JSON.stringify(files), new RegExp(mark), "the store's diff of the kept merge shows the line as context");
-    const served = JSON.stringify(await purgedContextOut(store, files, goneOnly("run-gone")));
+    assert.deepEqual((await readSnapshot(store)).purged, ["run-gone"], "main's snapshot names the purged run");
+    forgetBodies();
+    assert.deepEqual((await readSnapshot(rebuilt(store))).purged, ["run-gone"], "as one rebuilt from main does");
+    await matchesMain(store);
+    const served = JSON.stringify(await purgedContextOut(store, (await runMergeOf(store, "run-kept")).files));
     assert.ok(!served.includes(mark) && served.includes("Answer in words."), served);
-    assert.match(JSON.stringify(await purgedContextOut(store, files, goneOnly())), new RegExp(mark), "a run not purged keeps its context");
     const head = await store.head();
     assert.deepEqual(await forgetRunText(store, "run-gone"), {});
     assert.equal(await store.head(), head);
   });
-}
-
-/** A purgedOf naming `purged` among the runs it is asked about. */
-function goneOnly(...purged) {
-  return async (runIds) => new Set(runIds.filter((runId) => purged.includes(runId)));
 }

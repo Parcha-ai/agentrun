@@ -26,7 +26,6 @@ import { keepRunDisk, runDiskKey, saveArchilSettings, storeAgentDisk } from "../
 import { shadowRunId } from "../dist/learn/audit.js";
 import { appendCorrection, learningCommit, purgedContextOut } from "../dist/learn/commit.js";
 import { runMergeOf } from "../dist/learn/folder.js";
-import { purgedOfRuns } from "../dist/learning-routes.js";
 import { learningStoreOf } from "../dist/learn/store-of.js";
 import { StoreConstraint } from "../dist/store/index.js";
 import { gradesKey, putGrade } from "../dist/learn/promote.js";
@@ -665,10 +664,10 @@ async function learned(data, agentId, write) {
 
 /** Run `runId`'s merge's diff on agent `agentId`'s learning store as the run's diff route serves its patches (a purged
  *  run's line left out of its context), by path. */
-async function servedDiff(data, store, agentId, runId, round) {
+async function servedDiff(data, agentId, runId, round) {
   const learning = learningStoreOf(data, agentId);
   const diff = await runMergeOf(learning, runId, round);
-  return diff ? (await purgedContextOut(learning, diff.files, purgedOfRuns(store))).map(({ path, patch }) => [path, patch]) : undefined;
+  return diff ? (await purgedContextOut(learning, diff.files)).map(({ path, patch }) => [path, patch]) : undefined;
 }
 
 /** The scrub markers on main (`.agentrun/purged/<key>`), by key. */
@@ -683,7 +682,7 @@ test("a run's purge removes what its agent's learning keeps of it in its current
   await learned(data, "calc", (learning) => appendCorrection(learning, { runId: gone, text: "Say six times seven is 42." }));
   await learned(data, "calc", (learning) => appendCorrection(learning, { runId: kept, text: "Answer in words." }));
   const folder = agentLearningFolder(data, "calc");
-  assert.match(JSON.stringify(await servedDiff(data, store, "calc", kept)), /six times seven/, "the later merge's diff shows the earlier line");
+  assert.match(JSON.stringify(await servedDiff(data, "calc", kept)), /six times seven/, "the later merge's diff shows the earlier line");
   const commits = Number(git(folder, ["rev-list", "--count", "main"]));
 
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
@@ -691,7 +690,7 @@ test("a run's purge removes what its agent's learning keeps of it in its current
   assert.equal(git(folder, ["show", "main:corrections.md"]), "- Answer in words.", "its corrections line leaves main, another run's stays");
   assert.equal(Number(git(folder, ["rev-list", "--count", "main"])), commits + 1, "in one commit");
   assert.equal(git(folder, ["log", "-1", "--format=%an <%ae>%n%s", "main"]), "agentrun-serve <serve@agentrun.invalid>\nhost: a purged run's corrections removed", "the host's");
-  assert.deepEqual(await servedDiff(data, store, "calc", kept), [["corrections.md", "@@ -1,0 +2,1 @@\n+- Answer in words.\n"]], "the later merge's diff keeps its own line, the purged one gone from its context");
+  assert.deepEqual(await servedDiff(data, "calc", kept), [["corrections.md", "@@ -1,0 +2,1 @@\n+- Answer in words.\n"]], "the later merge's diff keeps its own line, the purged one gone from its context");
 
   assert.equal((await api("POST", "/agents/calc/archive")).status, 200);
   assert.equal((await api("DELETE", "/agents/calc")).status, 204);

@@ -57,7 +57,7 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import { LEARNING_LABEL, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf, withAgentRepo } from "./learning.js";
 import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
-import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, forgetRunLearning, learningLog, pendingCount, purgedOfRuns, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
+import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, forgetRunLearning, learningLog, pendingCount, type PurgedOf, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/workflow-draft.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
@@ -1864,7 +1864,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const learningShown = async (agentId: string) => secretsShown(await learningValues(agentId));
   // Which runs a learning store's log names are purged, by each one's row (its purge time): the history reads serve none
   // of their merges.
-  const purgedOf = purgedOfRuns(store);
+  const purgedOf: PurgedOf = async (runIds) => {
+    const rows = await Promise.all(runIds.map((runId) => store.runs.get(runId)));
+    return new Set(runIds.filter((_, i) => rows[i] !== undefined && rows[i]!.purgedAt !== null));
+  };
   // The agent's audit ledger on its learning store's main (learn/audit.ts), oldest first.
   const auditsOfAgent = (agentId: string) => readAudits(learningStoreOf(data, agentId));
   // What a run held for its owner's OK reads as it stands on its agent's learning store's main (statusesOf).
