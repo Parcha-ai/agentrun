@@ -13,15 +13,26 @@ import { fakeClock, firings, made, schedule } from "./trigger-support.mjs";
 const { mintSecret, verify } = await import("../dist/standard-webhooks.js");
 const { LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
 
-/** A host's hook on 127.0.0.1: each request kept (its headers and body), answered by `answer`. */
+/** A host's hook on 127.0.0.1: each request kept (its headers and body), answered by `answer`. One the sender cut short
+ *  (its bound passed mid-body, or the test's end) is answered 400, never left to throw in the test. */
 async function hookServer(t, answer) {
   const got = [];
   const server = createServer(async (req, res) => {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const body = Buffer.concat(chunks);
-    got.push({ method: req.method, headers: req.headers, body });
-    await answer(res, JSON.parse(body.toString("utf8")), got.length);
+    let sent;
+    try {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = Buffer.concat(chunks);
+      got.push({ method: req.method, headers: req.headers, body });
+      sent = JSON.parse(body.toString("utf8"));
+    } catch {
+      if (!res.headersSent && !res.destroyed) res.writeHead(400).end();
+      return;
+    }
+    // An answer that throws (its server stopped under it) fails its test by what it leaves undone, not here.
+    await Promise.resolve(answer(res, sent, got.length)).catch(() => {
+      if (!res.headersSent && !res.destroyed) res.writeHead(500).end();
+    });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => {
