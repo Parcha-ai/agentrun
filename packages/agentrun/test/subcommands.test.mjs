@@ -1,6 +1,4 @@
-// Git-style external commands: `agentrun NAME [args]` runs agentrun-NAME from PATH when NAME is no command of the CLI's
-// own, with the rest of the arguments, no shell, stdio inherited and its exit code passed on. A built-in is never
-// shadowed, and a name that is no plain word, or one found only on a relative PATH entry, is today's unknown command.
+// Any other word: externalOf and external in cli.mjs.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

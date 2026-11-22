@@ -174,11 +174,10 @@ reached, 4 for a missing or refused token and 5 when the server does not offer t
 `runs list` and every other that takes `--cursor`) prints one page; `--all` follows `next_cursor` and prints every page
 as one list.
 
-Any other word runs a program from your `PATH`, as git does: `agentrun NAME [args]` runs `agentrun-NAME` with the rest
-of the arguments, no shell between, on this terminal's input and output, and exits with its exit code. A tool adds a
-command to the CLI by installing `agentrun-NAME`. The CLI's own commands always come first, NAME is one plain word, and
-a relative or empty `PATH` entry, which would mean the working directory, is never searched. A signal sent to `agentrun`
-reaches the command, and `agentrun` exits when it does. On Windows it looks for `agentrun-NAME` with `.com`, `.exe`,
+Any other word runs `agentrun-NAME` from an absolute folder of your `PATH`, as git does, when it comes first:
+`agentrun NAME [args]` passes the rest as given, with no shell, on this terminal, and exits with its code. A tool adds a
+command to the CLI by installing `agentrun-NAME`. The server's and the CLI's own commands come first; NAME is letters,
+digits, `-` and `_`. A signal sent to `agentrun` reaches the command, and `agentrun` exits when it does. On Windows it looks for `agentrun-NAME` with `.com`, `.exe`,
 `.bat` or `.cmd`, in that order; a batch file (`.bat`, `.cmd`) is refused, since Node runs one only through `cmd.exe`,
 which would read the arguments again.
 
