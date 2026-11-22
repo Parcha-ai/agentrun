@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-serve, @parcha/agentrun, @parcha/agentrun-client
+packages: @parcha/agentrun-serve, @parcha/agentrun, @parcha/agentrun-client, @parcha/agentrun-harness-codex
 kind: feature
 ---
 Keep newly connected Codex and Claude Code setups in sync by default, and move a supported complete setup to AgentRun from the existing agent page. Move preserves the agent's identity, history, source capture and unified usage, and checks destination tools, accounts, model, policy and project restoration before switching execution.
@@ -24,3 +24,9 @@ must be renamed before its server can connect. Stdio connections and unsupported
 
 Unknown source storage-write outcomes retain receipts and block deletion until independently resolved; restarting
 or acknowledging a run checkpoint does not clear a source write receipt.
+
+The Codex adapter preserves native rollout ordinals when recording an approved tool's result before resuming. This
+fixes pinned Codex 0.164.0 rejecting the resumed thread after approval. Existing mixed or invalid ordinal histories
+remain retained and fail before another tool dispatch; they are not silently rewritten or retried. Older wholly
+unnumbered journals retain their format. This serialization fix leaves recovery admission, intent and result ordering
+unchanged, so the recovery models do not change.
