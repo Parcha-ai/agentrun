@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { test } from "node:test";
 import { ended } from "./learn-support.mjs";
-import { follow, serve, startRun, withEnv } from "./support.mjs";
+import { follow, serve, startRun, WINDOW, withEnv } from "./support.mjs";
 
 const { API_ONLY_ENV, API_ONLY_ROUTES, apiOnlyFrom, servedApiOnly } = await import("../dist/api-only.js");
 const { ROUTES } = await import("../dist/server.js");
@@ -112,11 +112,17 @@ test("an API-only server serves a run's routes with the token", async (t) => {
   assert.equal((await send(server, "GET", "/v2/runs", { token: false })).status, 401, "and still takes the token");
 });
 
+/** An inline run of the expert `expert` its backend sends (`external`), with `content` its input and `extra` its
+ *  definition's other fields: its answer's body ({agent_id, run_id}). */
+async function inlineRun(server, expert, content, extra = {}) {
+  const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "backend", kind: "expert", id: expert, version: 1 }, definition: { name: `Expert ${expert}`, instructions: "Answer the question.", skills: [], tools: [], harness: "pi", ...extra }, input: { content } } });
+  assert.equal(inline.status, 202, JSON.stringify(inline.body));
+  return inline.body;
+}
+
 test("an API-only server serves a run's usage lines with the token, and still refuses a settings route", { timeout: 120_000 }, async (t) => {
   const server = await serve(t, { apiOnly: true });
-  const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "backend", kind: "expert", id: "usage-1", version: 1 }, definition: { name: "Counter", instructions: "Answer the question.", skills: [], tools: [], harness: "pi" }, input: { content: "What is six times seven." } } });
-  assert.equal(inline.status, 202, JSON.stringify(inline.body));
-  const { run_id: run } = inline.body;
+  const { run_id: run } = await inlineRun(server, "usage-1", "What is six times seven.");
   await ended(server.api, run);
 
   const usage = await send(server, "GET", `/v2/runs/${run}/usage`);
@@ -146,18 +152,8 @@ test("an API-only server serves an agent's Archil disk, read and removed, with t
   assert.equal((await send(server, "GET", `/v2/agents/${agent}/archil`, { token: false })).status, 401, "and takes the token");
 });
 
-/** An inline run of the expert `expert` its backend sends (`external`), with `content` its input and `extra` its
- *  definition's other fields: its answer's body ({agent_id, run_id}). */
-async function inlineRun(server, expert, content, extra = {}) {
-  const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "backend", kind: "expert", id: expert, version: 1 }, definition: { name: `Expert ${expert}`, instructions: "Answer the question.", skills: [], tools: [], harness: "pi", ...extra }, input: { content } } });
-  assert.equal(inline.status, 202, JSON.stringify(inline.body));
-  return inline.body;
-}
-
 /** `answer` is 410 purged, its tombstone the run's. */
 const purged = (answer, run, what) => assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.run_id], [410, "purged", run], `${what}: ${JSON.stringify(answer.body)}`);
-/** The window /usage is read over: every run a test starts. */
-const WINDOW = "from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z";
 
 test("an API-only server purges a run of an agent its backend made (an inline run's, external): 204, every read of it 410 purged, a second DELETE 204, its cost kept in /usage; an unknown run is the route's own 404; it takes the token", { timeout: 120_000 }, async (t) => {
   const server = await serve(t, { apiOnly: true });
@@ -232,9 +228,7 @@ test("an API-only server answers 409 run_not_final to DELETE of a live run of an
 
 test("an API-only server serves an inline-run agent's learning reads with the token (loop, promotions, cost, a run's learning), and refuses its learning's writes and texts", { timeout: 120_000 }, async (t) => {
   const server = await serve(t, { apiOnly: true, learning: "on" });
-  const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "backend", kind: "expert", id: "learner-1", version: 1 }, definition: { name: "Learner", instructions: "Answer the question.", skills: [], tools: [], harness: "pi", learning: true }, input: { content: "What is six times seven." } } });
-  assert.equal(inline.status, 202, JSON.stringify(inline.body));
-  const { agent_id: agent, run_id: run } = inline.body;
+  const { agent_id: agent, run_id: run } = await inlineRun(server, "learner-1", "What is six times seven.", { learning: true });
   // The run ends, then its learning (the look-back the runner beside the server runs): both read by the token.
   await ended(server.api, run);
 

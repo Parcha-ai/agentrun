@@ -46,7 +46,8 @@ import { homedir, hostname } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
 import { agentPackage } from "./agent-package.js";
-import { uuidv7, type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { uuidv7 } from "./ids.js";
+import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -228,7 +229,7 @@ import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceVie
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
-import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgedAgain, purgeRun, purgingKey } from "./agent-delete.js";
+import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgeRun, purgingKey } from "./agent-delete.js";
 import { type LearningResetHost, resetLearning } from "./learning-reset.js";
 import { agentComputerHoldKey } from "./workspace/agent-computer.js";
 import { sdkRunKey } from "./sdk/runs.js";
@@ -2506,7 +2507,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function needRunnableAgent(id: string): Promise<AgentEntry> {
     const entry = await needAgent(id);
     // Another system's agent is archived only by its delete (its archive route is refused).
-    if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
+    if (entry.agent.archivedAt && ownedElsewhere(entry.agent)) throw agentDeleting(id);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${id} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
     return entry;
   }
@@ -2570,7 +2571,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const entry = await needAgent(id);
       // A purged agent's row stays as its tombstone: a write that waited on its purge is 410, never a folder made again.
       if (entry.agent.purgedAt !== null) throw purgedAgent(entry.agent);
-      if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
+      if (entry.agent.archivedAt && ownedElsewhere(entry.agent)) throw agentDeleting(id);
       // A purge stopped part way (its mark still there): nothing of the agent is written, nor is it unarchived, until a
       // DELETE finishes it.
       if (entry.agent.archivedAt && (await store.settings.get(purgingKey(id))) !== undefined) throw agentDeleting(id);
@@ -4757,7 +4758,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // at a time, the agent read in its turn, so a DELETE after one that finished is 404 (deleted) or 204 (purged).
         await deleteInTurn(id, async () => {
           const { agent } = await needAgent(id);
-          if (agent.purgedAt !== null) return purgedAgain(agentDeleteHost, id);
+          if (agent.purgedAt !== null) return;
           if (ownedElsewhere(agent)) return deleteExternalAgent(agentDeleteHost, id);
           if (agent.archivedAt === null) throw new ApiError("agent_not_archived", `The agent ${id} is not archived: archive it first (POST /v2/agents/${id}/archive), which stops new runs and turns its triggers off, then send the DELETE again. Nothing was purged.`);
           await purgeAgent(agentDeleteHost, id);
@@ -4789,7 +4790,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const entry = await needAgent(id);
         const controller = new AbortController();
         req.once("close", () => controller.abort());
-        const agent = { id, archived: entry.agent.archivedAt != null, external: entry.agent.externalRef !== null, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, id, diskId) };
+        const agent = { id, archived: entry.agent.archivedAt != null, external: ownedElsewhere(entry.agent), liveOn: (diskId: string) => liveRunsOnDisk(store.runs, id, diskId) };
         return send(res, 200, await archilRoute(archil, found.name, { agent, signal: controller.signal }), { "cache-control": "no-store" });
       }
       case "forgetSignIn": {
@@ -4868,7 +4869,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteRun": {
         // In its agent's delete turn (an agent's delete or purge, or another purge of one of its runs, finishes first), the
         // run read in that turn, so a DELETE after one that finished is 204 again (purgeRun: a purged run's only work is
-        // its store scrub's marker and its learning folder's scrub, again).
+        // its learning folder's scrub, again).
         const row = ID.test(id) ? await store.runs.get(id) : undefined;
         if (!row) throw new ApiError("not_found", `no run ${id}`);
         // API-only (api-only.ts): a run of an agent another system owns alone, for the backend whose inline runs made it,

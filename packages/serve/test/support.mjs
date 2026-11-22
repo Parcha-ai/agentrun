@@ -110,6 +110,8 @@ export const webhookLookup = async (host) => {
 /** Where a test server posts Slack's messages unless its test runs a fake Slack (ServeOptions.slackTarget): a closed
  *  port on this machine, so no test ever reaches Slack. */
 export const NO_SLACK = "http://127.0.0.1:9";
+/** The window a test reads /usage over (its `from` and `to`): every run a test starts. */
+export const WINDOW = "from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z";
 export const startServe = async (options) => launchFor(await startServeBuilt({ webhookLookup, slackTarget: NO_SLACK, ...options }));
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;

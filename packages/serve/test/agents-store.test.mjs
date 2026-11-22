@@ -8,8 +8,8 @@ import { ApiError } from "../dist/errors.js";
 import {
   agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, getAgent, listAgents,
   setAgentArchived, setCurrentRevision,
-  uuidv7,
 } from "../dist/agents-store.js";
+import { uuidv7 } from "../dist/ids.js";
 import { RevisionMoved } from "../dist/store/index.js";
 import { storeOn } from "./store-helpers.mjs";
 
@@ -182,6 +182,12 @@ test("ids minted in one millisecond, or after the clock steps back, each sort af
   assert.deepEqual([timeOf(ids[0]), countOf(ids[0]), countOf(ids[1])], [base, 0, 1], "the first in a millisecond counts 0, the next 1");
   assert.equal(timeOf(stepped), base + 1, "a clock that stepped back keeps the last millisecond");
   assert.deepEqual([timeOf(later), countOf(later)], [base + 5, 0], "a later millisecond is its own, and its count starts at 0");
+  // One minted as of a past time (eval-previous.ts's seeded runs) carries that time, and leaves the count alone.
+  const past = uuidv7({ at: base - 86_400_000 });
+  const next = uuidv7(base + 5);
+  assert.ok(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(past), "an id as of a past time is a UUIDv7");
+  assert.equal(timeOf(past), base - 86_400_000, "an id as of a past time carries that time");
+  assert.deepEqual([timeOf(next), countOf(next)], [base + 5, 1], "and the next minted counts on from the one before it");
 });
 
 test("tool settings survive a round trip, sorted, and equal settings are one revision; a change is a new revision", async (t) => {
