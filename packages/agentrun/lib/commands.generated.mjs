@@ -2274,6 +2274,26 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "list-mcp-server-names"
+    ],
+    "operationId": "listMcpServerNames",
+    "method": "GET",
+    "path": "/settings/mcp-server-names",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The names of the MCP servers saved here, and nothing else of them"
+  },
+  {
+    "command": [
+      "local",
       "receive-hook-composio"
     ],
     "operationId": "receiveHook_composio",

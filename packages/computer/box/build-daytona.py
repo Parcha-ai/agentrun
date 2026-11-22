@@ -58,11 +58,7 @@ layer = os.path.join(os.path.dirname(here), "documents", "")
 if documents:
     recipe += open(os.path.join(layer, "documents.sh"), "rb").read()
 digest = hashlib.sha256(recipe).hexdigest()[:12]
-family = "agentrun-documents" if documents else None
-if gpu:
-    name = f"agentrun-archil-gpu-{gpu.lower()}-{digest}"
-else:
-    name = f"{family}-{digest}" if family else f"agentrun-box-{digest}"
+name = f"agentrun-archil-gpu-{gpu.lower()}-{digest}" if gpu else f"agentrun-documents-{digest}" if documents else f"agentrun-box-{digest}"
 image = Image.from_dockerfile(os.path.join(here, "Dockerfile"))
 if documents:
     image = image.dockerfile_commands(["COPY documents.sh /tmp/agentrun-documents/documents.sh", "RUN sh /tmp/agentrun-documents/documents.sh && rm -rf /tmp/agentrun-documents"], context_dir=layer)

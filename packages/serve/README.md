@@ -748,12 +748,10 @@ dependencies from the registry as it stood at that instant (by date, not by cont
 the same Debian packages. It is about 2.7 GB on disk. An agent that needs it says so with
 [`computer.needs`](#computers), so a server on another image fails its runs in words instead of running them.
 
-**The documents image.** For an agent that writes decks, documents and sheets, the computer package keeps a third
-recipe, the folder `packages/computer/documents`: the default image's base, by the same digest, and its programs, with
-its Debian packages from snapshot.debian.org at one instant, plus python-pptx, python-docx and openpyxl for `python3`
-(each with every package it needs, pinned by version and sha256, wheels only) and pptxgenjs, docx and exceljs for `node`
-(at exact versions, their dependencies as the registry stood at that same instant, no install script run). The Node
-libraries are linked as `/node_modules`, so a script in any folder requires or imports them. They are the folder's
+**The documents image.** For an agent that writes decks, documents and sheets, `packages/computer/documents` is the
+default image plus the Python and Node libraries that write Office files (python-pptx, python-docx and openpyxl for
+`python3`; pptxgenjs, docx and exceljs for `node`), pinned as its header says. The Node libraries are linked as
+`/node_modules`, so a script in any folder requires or imports them. The libraries are the folder's
 `documents.sh`, the one layer both builds run. Build it and name its tag in `AGENTRUN_DOCKER_IMAGE`:
 
 ```sh
@@ -762,11 +760,11 @@ docker build -t "$tag" packages/computer/documents
 AGENTRUN_DOCKER_IMAGE=$tag AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
-It is about 920 MB on disk. On Daytona, `python3 packages/computer/box/build-daytona.py --documents` builds the box
+On Daytona, `python3 packages/computer/box/build-daytona.py --documents` builds the box
 image with the same layer on top as the snapshot `agentrun-documents-<hash>` (the box recipe's snapshot,
 `agentrun-box-<hash>`, is unchanged); name it in `AGENTRUN_DAYTONA_SNAPSHOT`. An agent that needs them says so in
-`computer.needs` (`["python-pptx", "pptxgenjs"]`), and a box without them ends its runs in words naming this image's
-build, before any model request. Neither is published, and no agent setting picks one: a server's Docker image, or its
+`computer.needs` (`["python-pptx", "pptxgenjs"]`), and a box without them ends its runs before any model request; on
+Docker, the words name this image's build. Neither is published, and no agent setting picks one: a server's Docker image, or its
 Daytona snapshot, is one for every agent.
 
 ### In the published image
@@ -882,7 +880,7 @@ the provider's words.
 32 names (letters, digits, `.`, `_`, `+` and `-`; no path), each once. A name may also be a library the agent's code
 loads: a Python package by the name pip installs it by (`python-pptx`), which the box's `python3` has installed, or a
 Node package (`pptxgenjs`), which a script of the box's `node` requires (from `node_modules` of the folder the check
-runs in or any folder above it, up to `/node_modules`). It says what the box must have, never which
+runs in or any folder above it, up to `/node_modules`). A scoped npm package (`@scope/name`) can't be named. It says what the box must have, never which
 image it is: a Docker box's image is still `AGENTRUN_DOCKER_IMAGE`'s, and another provider's is its own. Each run's
 claim asks the box it started, before the run's first model request: one `sh` with the names as its arguments, which
 prints those that are neither a program `command -v` finds nor such a library, searching the folders the agent's shell searches (`/usr/local/sbin`,
@@ -3079,6 +3077,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
+| `GET /settings/mcp-server-names` | The saved MCP servers' names alone (`mcpservernames/1`), sorted, with the token, also [API-only](#api-only): no URL, auth type, header or tool. |
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh`, `POST .../{name}/oauth/start`, `GET /settings/mcp-servers/oauth/callback` and `GET .../oauth/client.json` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, forget it, or [sign in to it with OAuth](#signing-in-with-oauth) (the callback and the client document take no token). |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
@@ -3215,6 +3214,8 @@ serves these routes alone:
 - a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
   minted;
 - `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
+- the names of the MCP servers saved here (`GET /settings/mcp-server-names`, `{names}`), never a URL or a credential:
+  a backend that builds runs from saved servers holds back a job whose server isn't saved, before its launch is refused;
 - a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
   (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive

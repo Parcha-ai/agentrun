@@ -737,6 +737,12 @@ Settings → Computers: the kinds of computer this server offers, each provider 
 
 Route: `GET /computers`.
 
+### `agentrun local list-mcp-server-names`
+
+The names of the MCP servers saved here, and nothing else of them.
+
+Route: `GET /settings/mcp-server-names`.
+
 ### `agentrun local receive-hook-composio HOOK`
 
 Fire a Composio trigger: a request it checks, no token.
