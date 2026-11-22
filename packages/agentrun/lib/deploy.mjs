@@ -374,12 +374,22 @@ async function remove(ctx) {
     if (io.stdin.isTTY) say(io, "Not deleted.");
     return 2;
   }
+  // A 404 (or 410) means gone only when the agent is not there: a server that does not serve the route (an older
+  // install, a front door without it) answers 404 too, while the agent is still there and running. Then nothing is
+  // deleted and the lock stays.
+  const absent = (status) => status === 404 || status === 410;
+  const mustBeGone = async (step, after) => {
+    const { status } = await to.call("GET", `/agents/${enc(lock.agent_id)}`, undefined, [404, 410]);
+    if (!absent(status)) throw ctx.cli.fail(2, `${to.base} did not ${step} ${lock.agent_id}; nothing was deleted${after}. The lock ${from.lock.file} is kept.`);
+  };
   // An agent is deleted once archived (which turns its triggers off, so no run starts) and once no run of it is live:
-  // each one the DELETE names is cancelled, as the confirmation said, and the DELETE sent again. One already gone is gone.
+  // each one the DELETE names is cancelled, as the confirmation said, and the DELETE sent again.
   const archived = await to.call("POST", `/agents/${enc(lock.agent_id)}/archive`, undefined, [404, 409, 410]);
-  for (let round = 1; archived.status !== 404 && archived.status !== 410; round++) {
+  if (absent(archived.status)) await mustBeGone("archive", "");
+  for (let round = 1; !absent(archived.status); round++) {
     const last = round === 5;
     const { status, value } = await to.call("DELETE", `/agents/${enc(lock.agent_id)}`, undefined, last ? [404, 410] : [404, 409, 410]);
+    if (absent(status)) await mustBeGone("delete", " (it stays archived there)");
     if (status !== 409) break;
     if (value?.error?.code !== "run_not_final") {
       io.stderr.write(`${JSON.stringify(value)}\n`);

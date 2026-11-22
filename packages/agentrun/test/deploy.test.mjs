@@ -253,6 +253,49 @@ test("agentrun deploy refuses a folder holding a link, a missing --to, and --pau
   assert.match(linked.err, /skills\/check\/host\.md is a symbolic link: a package holds files and folders alone/);
 });
 
+test("agentrun deploy AGENT_ID: an agent of this install goes to another by its export, the export's sha256 is what the upload and the lock carry, and --pause-source turns its schedules off here", { timeout: 300_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const a = await server(t, dir, env, "a");
+  const b = await server(t, dir, env, "b");
+  // The agent on A: a package applied there, its daily schedule on.
+  const files = [["agent.md", AGENT({})], ["skills/check/SKILL.md", SKILL()]].map(([path, content]) => ({ path, encoding: "utf8", content }));
+  const imported = await a.api("POST", "/templates/import", { files });
+  assert.equal(imported.status, 201, JSON.stringify(imported.body));
+  const made = await a.api("POST", `/templates/${encodeURIComponent(imported.body.template.id)}/apply`, { parameters: {} });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const agentId = made.body.agent_id;
+  const exported = await a.api("GET", `/agents/${agentId}/package`);
+  assert.equal(exported.status, 200, JSON.stringify(exported.body));
+  const daily = async () => (await a.api("GET", "/triggers")).body.triggers.find((one) => one.name === "daily" && (one.agent_id ?? one.target?.agent_id) === agentId);
+  assert.equal((await daily()).enabled, true);
+  const deploy = (...args) => cli(env, ["deploy", agentId, "--to", b.base, ...args, "--data", a.data], { AGENTRUN_API_KEY: b.token });
+
+  const first = await deploy("--yes");
+  assert.equal(first.code, 0, first.err);
+  const done = first.json();
+  assert.equal(done.status, "deployed");
+  assert.match(first.err, /still run on .*each fires in both places/);
+  // One digest: the export's sha256 is the upload's sha on B and the lock's package_sha256.
+  assert.equal(done.package_sha256, exported.body.sha256);
+  const there = (await b.api("GET", `/agents/${done.agent_id}`)).body;
+  assert.deepEqual([there.template.id, there.template.sha], ["upload:pr-alert", exported.body.sha256]);
+  const locks = JSON.parse(readFileSync(join(dir, ".config", "agentrun", "deploy.json"), "utf8"));
+  assert.deepEqual(Object.values(locks).map((lock) => [lock.target, lock.agent_id, lock.package_sha256]), [[b.base, done.agent_id, exported.body.sha256]]);
+  assert.equal((await daily()).enabled, true, "without --pause-source the schedule stays on here");
+
+  // Up to date, and --pause-source still turns the schedule off here.
+  const paused = await deploy("--yes", "--pause-source");
+  assert.equal(paused.code, 0, paused.err);
+  assert.equal(paused.json().status, "up_to_date");
+  assert.match(paused.err, /Paused daily/);
+  assert.equal((await daily()).enabled, false);
+
+  // An agent this install does not have is refused as given, nothing sent.
+  const missing = await cli(env, ["deploy", "agent_nope", "--to", b.base, "--yes", "--data", a.data], { AGENTRUN_API_KEY: b.token });
+  assert.equal(missing.code, 2, missing.err);
+  assert.match(missing.err, /does not export agent_nope/);
+});
+
 /** A target that answers each "METHOD path" (under /v2) with `answers[key]` ([status, body]), else 404; the requests it saw. */
 async function fakeTarget(t, answers) {
   const seen = [];
