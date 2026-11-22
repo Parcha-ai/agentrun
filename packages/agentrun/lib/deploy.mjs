@@ -23,6 +23,10 @@ const SKIPPED = new Set([".agentrun", ".git"]);
 const MAX_FILES = 256;
 const MAX_BYTES = 8 * 1024 * 1024;
 const LOCK_FIELDS = ["target", "workspace", "agent_id", "revision_id", "package_sha256", "deployed_at"];
+/** The CLI's deploy record's lock (privateRecord): how often a deploy looks, how long it waits, and when one is stale. */
+const LOCK_POLL_MS = 25;
+const LOCK_WAIT_MS = 10_000;
+const LOCK_STALE_MS = 30_000;
 
 /** A request's refusal already said on stderr: the command ends with `code`. */
 class Stopped {
@@ -130,16 +134,41 @@ function privateRecord(env, cli, fail) {
     }
     throw fail(2, `${file} is not the CLI's deploy record (an object of locks by install and agent, and its targets): fix or remove it.`);
   };
-  const save = (record) => writeAtomic(file, `${JSON.stringify(record, null, 2)}\n`, 0o600);
+  // Each change is read and written under `<file>.lock` (a folder, made or refused at once), so two CLIs deploying at
+  // the same time never write back a record the other has changed since. One left by a CLI that died holding it is
+  // taken once it is older than any change takes.
+  const update = (change) => {
+    const held = `${file}.lock`;
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    for (let waited = 0; ; waited += LOCK_POLL_MS) {
+      try {
+        mkdirSync(held);
+        break;
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+      }
+      let age = 0;
+      try {
+        age = Date.now() - statSync(held).mtimeMs;
+      } catch {
+        continue; // let go of meanwhile
+      }
+      if (age > LOCK_STALE_MS) rmSync(held, { recursive: true, force: true });
+      else if (waited >= LOCK_WAIT_MS) throw fail(1, `Another deploy holds ${file} (${held}): try again once it ends, or remove ${held} if none is running.`);
+      else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_POLL_MS);
+    }
+    try {
+      writeAtomic(file, `${JSON.stringify(change(all()), null, 2)}\n`, 0o600);
+    } finally {
+      rmSync(held, { recursive: true, force: true });
+    }
+  };
   return {
     file,
     all,
-    save,
+    update,
     knows: (target) => (all().targets ?? []).includes(target),
-    learn(target) {
-      const record = all();
-      if (!(record.targets ?? []).includes(target)) save({ ...record, targets: [...(record.targets ?? []), target] });
-    },
+    learn: (target) => update((record) => ((record.targets ?? []).includes(target) ? record : { ...record, targets: [...(record.targets ?? []), target] })),
   };
 }
 
@@ -150,11 +179,8 @@ function installLock(env, cli, source, agentId, fail) {
   return {
     file: record.file,
     read: () => lockOf(record.all()[key], record.file, fail),
-    write: (lock) => record.save({ ...record.all(), [key]: lock }),
-    remove() {
-      const { [key]: _, ...rest } = record.all();
-      record.save(rest);
-    },
+    write: (lock) => record.update((all) => ({ ...all, [key]: lock })),
+    remove: () => record.update(({ [key]: _, ...rest }) => rest),
   };
 }
 
