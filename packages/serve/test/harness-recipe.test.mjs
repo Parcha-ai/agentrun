@@ -798,7 +798,7 @@ test("the Antigravity example recipe loads under the five rules: the registry's 
   assert.deepEqual(recipe.args, []);
   assert.equal(recipe.model.billing, "plan");
   assert.deepEqual(recipe.keys, ["ANTIGRAVITY_GEMINI_API_KEY"]);
-  assert.deepEqual(recipe.keyEnv, { ANTIGRAVITY_GEMINI_API_KEY: "GEMINI_API_KEY" });
+  assert.deepEqual(Object.entries(recipe.keyEnv), [["ANTIGRAVITY_GEMINI_API_KEY", "GEMINI_API_KEY"]]);
   assert.equal(recipe.keyMethod, "gemini-api-key");
   assert.deepEqual(recipe.signIn, { method: "oauth-personal", homeEnv: "GEMINI_HOME", runs: "attended" });
   assert.deepEqual(recipe.declares, { load: true, mcp: "http" });
