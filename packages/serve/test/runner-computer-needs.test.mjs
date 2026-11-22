@@ -95,7 +95,7 @@ function box(has) {
   return docker;
 }
 
-async function opened(t, { needs = MEDIA, has = MEDIA } = {}) {
+async function opened(t, { needs = MEDIA, has = MEDIA, computer: given } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-computer-needs-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const stores = [server];
@@ -105,7 +105,7 @@ async function opened(t, { needs = MEDIA, has = MEDIA } = {}) {
     for (const store of stores.reverse()) await store.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  const computer = { kind: "sandbox", provider: "docker", ...(needs ? { needs } : {}) };
+  const computer = given ?? { kind: "sandbox", provider: "docker", ...(needs ? { needs } : {}) };
   await server.agents.create({ id: "agent-1", name: "Film" }, { id: "rev-1", kind: "agentic", body: { instructions: "Render it.", computer, tools: ["read", "write"] } });
   const launch = { input: { content: "Render it." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
@@ -184,3 +184,22 @@ test("an agent that needs nothing asks its box nothing", { timeout: 120_000 }, a
   assert.equal(row.state, "ended");
   assert.deepEqual(run.docker.execs.filter((argv) => checked(argv)), [], "no check ran");
 });
+
+// A setting with needs that is no sandbox: the validator refuses it (computer-setting.ts, needs on a sandbox alone), but a
+// stored body is read as stored and a launch's computer as given, so the claim refuses it too: no run goes on without
+// the programs because its computer was never one that is checked for them.
+for (const [computer, what] of [[{ kind: "none", needs: MEDIA }, "none"], [{ kind: "desktop", provider: "e2b", needs: MEDIA }, "a desktop on E2B"]]) {
+  test(`a setting that needs programs but is ${what}, no sandbox, ends the run failed in words before anything is started; the model is never asked`, { timeout: 120_000 }, async (t) => {
+    const run = await opened(t, { computer });
+    const requests = [];
+    await run.start(scriptedOrigin([WRITE, { say: "done" }], requests));
+    const row = await run.settled(["failed"]);
+    assert.equal(row.state, "failed");
+    assert.equal(requests.length, 0, "no model request was made");
+    const served = await run.served();
+    assert.equal(served.error.code, "run_failed", JSON.stringify(served.error));
+    assert.equal(served.error.message.startsWith(`This agent needs chrome, ffmpeg, ffprobe, and hyperframes in a sandbox (computer.needs), and its computer is ${what}, which is not checked for them, so nothing ran. `), true, served.error.message);
+    assert.match(served.error.message, /AGENTRUN_DOCKER_IMAGE/);
+    assert.deepEqual(run.docker.made, [], "nothing was started");
+  });
+}
