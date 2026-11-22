@@ -79,7 +79,11 @@ const everyTool = (pkg) => pkg.mcp.flatMap((need) => need.tools.map((tool) => `m
  *  triggers (less their ids, times and the agent they name), to compare an agent across servers. */
 async function agentOn(api, id) {
   const agent = (await api("GET", `/agents/${id}`)).body;
-  const { id: _id, version: _version, ...definition } = agent.definition;
+  // Its place is where this server put it (a host stamp a package never carries); the computer it shows is compared.
+  const { id: _id, version: _version, place: _place, ...definition } = agent.definition;
+  // A package's body is read trimmed (readPackage), so the instructions' outer whitespace (a parameter filled with
+  // nothing at their end) does not travel.
+  definition.instructions = definition.instructions?.trim();
   const triggers = (await api("GET", "/triggers")).body.triggers.filter((trigger) => trigger.target?.agent_id === id).map((trigger) => {
     const { agent_id: _agent, ...target } = trigger.target;
     return { name: trigger.name, enabled: trigger.enabled, source: trigger.source, target, catchup_window_s: trigger.catchup_window_s, max_active_runs: trigger.max_active_runs };
@@ -145,16 +149,21 @@ test("every bundled template, applied and exported, is the template's own packag
     assert.deepEqual(pkg.learning, template.learning);
     assert.equal(pkg.checkout, template.checkout);
     assert.deepEqual(pkg.secrets, template.secrets);
-    assert.equal(pkg.instructions, agent.instructions, "the body is the agent's instructions");
+    assert.equal(pkg.instructions, agent.instructions.trim(), "the body is the agent's instructions, read trimmed as any package body is");
     assert.equal(pkg.displayName, agent.name);
     assert.equal(pkg.description, agent.description);
     assert.deepEqual(pkg.tools, agent.tools.filter((tool) => !tool.startsWith("mcp:")), `${template.name}: the agent's own tools`);
     // Its MCP needs: the template's, by source and toolkit, each tool the agent was granted, its pins as the apply filled them.
     assert.deepEqual(pkg.mcp.map((need) => [need.source, need.toolkit, need.tools]), template.mcp.map((need) => [need.source, need.toolkit, need.tools]), template.name);
     for (const need of pkg.mcp) for (const [tool, pin] of Object.entries(need.pin)) assert.deepEqual(pin, agent.tool_settings[`mcp:${need.toolkit}/${tool}`].pin, `${template.name}: ${tool}'s pin`);
-    assert.deepEqual(pkg.triggers.map((trigger) => [trigger.name, trigger.source.kind, trigger.target.agent_id]), template.triggers.map((trigger) => [trigger.name, trigger.source.kind, undefined]), `${template.name}: its triggers, with no agent_id`);
+    // Its triggers, with no agent_id: the ones the apply made here. A github trigger is skipped at apply on a server GitHub
+    // is not connected to (this one), so the agent has none to export.
+    const had = (await api("GET", "/triggers")).body.triggers.filter((trigger) => trigger.target.agent_id === id).map((trigger) => trigger.name);
+    const kept = template.triggers.filter((trigger) => had.includes(trigger.name));
+    assert.deepEqual(kept.map((trigger) => trigger.name), template.triggers.filter((trigger) => trigger.source.kind !== "github").map((trigger) => trigger.name), `${template.name}: every trigger but a github one made here`);
+    assert.deepEqual(pkg.triggers.map((trigger) => [trigger.name, trigger.source.kind, trigger.target.agent_id]), kept.map((trigger) => [trigger.name, trigger.source.kind, undefined]), `${template.name}: its triggers, with no agent_id`);
     // A trigger the target makes anew (its own secret, its GitHub App) is named as remade.
-    for (const trigger of template.triggers.filter((one) => ["webhook", "github", "composio", "email"].includes(one.source.kind))) assert.ok(answer.report.remade.some((entry) => entry.kind === "trigger" && entry.name === trigger.name), `${template.name}: ${trigger.name} remade`);
+    for (const trigger of kept.filter((one) => ["webhook", "github", "composio", "email"].includes(one.source.kind))) assert.ok(answer.report.remade.some((entry) => entry.kind === "trigger" && entry.name === trigger.name), `${template.name}: ${trigger.name} remade`);
     if (template.learning !== undefined && template.learning !== false) assert.ok(answer.report.remade.some((entry) => entry.kind === "learning"), `${template.name}: learning starts fresh on the target`);
   }
 });
@@ -264,7 +273,7 @@ test("what cannot travel is named: a local or unsaved MCP server and one with it
   const hook = await api("POST", "/triggers", { name: "Inbound", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "watcher", input: { content: "A new event." } } });
   assert.equal(hook.status, 201, JSON.stringify(hook.body));
   // A browser sign-in the agent saved: its session is this server's, sealed here.
-  await server.store.signIns.save({ agentId: "watcher", provider: "linkedin", name: "LinkedIn", pointerSealed: new Uint8Array([1, 2, 3]) });
+  await server.store.signIns.save({ agentId: "watcher", provider: "browserbase", name: "Work", pointerSealed: new Uint8Array([1, 2, 3]) });
 
   const exported = await api("GET", "/agents/watcher/package");
   assert.equal(exported.status, 200, JSON.stringify(exported.body));
@@ -276,7 +285,7 @@ test("what cannot travel is named: a local or unsaved MCP server and one with it
   assert.match(named(blocked, "mcp_server", "stdio-tools")?.reason ?? "", /not a saved MCP server/, JSON.stringify(blocked));
   assert.ok(named(remade, "trigger", "Inbound"), JSON.stringify(remade));
   assert.ok(named(remade, "paired_computer", paired), JSON.stringify(remade));
-  assert.ok(named(remade, "sign_in", "linkedin"), JSON.stringify(remade));
+  assert.ok(named(remade, "sign_in", "browserbase"), JSON.stringify(remade));
   for (const entry of [...blocked, ...remade]) assert.ok(typeof entry.reason === "string" && entry.reason.length > 0, JSON.stringify(entry));
   // The package left behind is still one: the blocked servers' tools out of it, the webhook trigger in it with no secret.
   const pkg = asPackage(exported.body);
