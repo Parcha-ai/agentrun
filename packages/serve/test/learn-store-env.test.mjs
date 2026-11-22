@@ -25,18 +25,27 @@ const withBody = (pem, body) => { const lines = pem.trim().split("\n"); return `
 /** The settings an environment gives, its key read by name from `keys`. */
 const fromEnv = (env, keys = {}) => codeStorageFromEnv(env, (name) => keys[name]);
 
-test("no code.storage setting is the local folder; both set is code.storage, its key read by name and never from the environment's values", () => {
-  assert.equal(fromEnv({}), undefined);
+test("no code.storage name is the local folder, a key or URL set alone said and ignored; name and key set is code.storage, its key read by name and never from the environment's values", () => {
+  const said = [];
+  const warn = (message) => said.push(message);
+  assert.equal(codeStorageFromEnv({}, () => undefined, warn), undefined);
+  assert.deepEqual(said, [], "nothing set, nothing said");
+  // A launcher that holds every secret it knows of hands the key over unasked: no name, nothing turns on.
+  assert.equal(codeStorageFromEnv({}, (name) => (name === CODE_STORAGE_ENV.key ? PEM : undefined), warn), undefined);
+  assert.equal(codeStorageFromEnv({ [CODE_STORAGE_ENV.apiUrl]: "https://api.example-org.code.storage.invalid" }, () => undefined, warn), undefined);
+  assert.deepEqual(said, [
+    "AGENTRUN_CODE_STORAGE_KEY is set without AGENTRUN_CODE_STORAGE_NAME, so learning stays in the local folder: set AGENTRUN_CODE_STORAGE_NAME to keep it on code.storage.",
+    "AGENTRUN_CODE_STORAGE_API_URL is set without AGENTRUN_CODE_STORAGE_NAME, so learning stays in the local folder: set AGENTRUN_CODE_STORAGE_NAME to keep it on code.storage.",
+  ]);
+  assert.ok(!said.join("\n").includes("PRIVATE KEY"), "the key is never said");
   assert.deepEqual(fromEnv({ [CODE_STORAGE_ENV.name]: "example-org" }, { [CODE_STORAGE_ENV.key]: PEM }), { name: "example-org", key: PEM.trim() });
   assert.deepEqual(fromEnv({ [CODE_STORAGE_ENV.name]: "example-org", [CODE_STORAGE_ENV.apiUrl]: "https://api.example-org.code.storage.invalid" }, { [CODE_STORAGE_ENV.key]: PEM }), { name: "example-org", key: PEM.trim(), apiUrl: "https://api.example-org.code.storage.invalid" });
   assert.throws(() => fromEnv({ [CODE_STORAGE_ENV.name]: "example-org", [CODE_STORAGE_ENV.key]: PEM }), CodeStorageEnvInvalid, "a key in the environment's values but not read by name is no key");
 });
 
-test("code.storage set wrong stops the start, naming the variable, and never says the key", () => {
-  const refused = (env, keys, words) => assert.throws(() => fromEnv(env, keys), (error) => error instanceof CodeStorageEnvInvalid && words.test(error.message) && !error.message.includes("PRIVATE KEY-----\n"));
+test("code.storage named but set wrong stops the start, naming the variable, and never says the key", () => {
+  const refused = (env, keys, words) => assert.throws(() => fromEnv(env, keys), (error) => error instanceof CodeStorageEnvInvalid && words.test(error.message) && !error.message.includes("PRIVATE KEY"));
   refused({ [CODE_STORAGE_ENV.name]: "example-org" }, {}, /AGENTRUN_CODE_STORAGE_NAME is set without AGENTRUN_CODE_STORAGE_KEY/);
-  refused({}, { [CODE_STORAGE_ENV.key]: PEM }, /AGENTRUN_CODE_STORAGE_KEY is set without AGENTRUN_CODE_STORAGE_NAME/);
-  refused({ [CODE_STORAGE_ENV.apiUrl]: "https://api.example-org.code.storage.invalid" }, {}, /AGENTRUN_CODE_STORAGE_API_URL is set without/);
   refused({ [CODE_STORAGE_ENV.name]: "Example Org" }, { [CODE_STORAGE_ENV.key]: PEM }, /AGENTRUN_CODE_STORAGE_NAME is a code\.storage org name/);
   refused({ [CODE_STORAGE_ENV.name]: "example-org" }, { [CODE_STORAGE_ENV.key]: "not a key" }, /AGENTRUN_CODE_STORAGE_KEY is not a private key in PEM form/);
   refused({ [CODE_STORAGE_ENV.name]: "example-org", [CODE_STORAGE_ENV.apiUrl]: "http://api.example-org.code.storage.invalid" }, { [CODE_STORAGE_ENV.key]: PEM }, /AGENTRUN_CODE_STORAGE_API_URL is an https URL/);

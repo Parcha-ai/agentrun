@@ -1264,7 +1264,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   await recordDataRoot(store, data);
   // Where this server's agents' learning is (learn/store-of.ts): code.storage where its environment keys it, one
   // repository an agent named by this server's id, else the local folder under the data directory.
-  learningStoreFromEnv(data, process.env, () => serverIdOf(store));
+  learningStoreFromEnv(data, process.env, () => serverIdOf(store), { warn: (message) => void process.stderr.write(`agentrun-serve: ${message}\n`) });
   await recordRunEnv(store, runFacingNames((name) => secret(name) ?? (base as NodeJS.ProcessEnv)[name], Object.keys(base)));
   // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
   // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled. A hosted machine a runner in a

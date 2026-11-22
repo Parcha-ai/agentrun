@@ -18,18 +18,20 @@ export class CodeStorageEnvInvalid extends Error {
   override readonly name = "CodeStorageEnvInvalid";
 }
 
-/** code.storage's settings as the environment gives them (its key read by name, `key`), or undefined when it sets
- *  neither the name nor the key: learning stays in the local folder. One without the other, a name that is no org name,
- *  or an API URL that is no https URL stops the start, naming each variable. */
-export function codeStorageFromEnv(env: NodeJS.ProcessEnv, key: (name: string) => string | undefined = secret): Omit<CodeStorageSettings, "serverId"> | undefined {
+/** code.storage's settings as the environment gives them (its key read by name, `key`), or undefined when the org's name
+ *  is not set: learning stays in the local folder. A key or an API URL set without the name turns nothing on (a
+ *  launcher may hold every secret it knows of), and `warn` says so. The name without the key, a name that is no org
+ *  name, a key that is no PEM, or an API URL that is no https URL stops the start, naming each variable. */
+export function codeStorageFromEnv(env: NodeJS.ProcessEnv, key: (name: string) => string | undefined = secret, warn: (message: string) => void = () => undefined): Omit<CodeStorageSettings, "serverId"> | undefined {
   const name = env[CODE_STORAGE_ENV.name]?.trim() || undefined;
   const pem = key(CODE_STORAGE_ENV.key)?.trim() || undefined;
   const apiUrl = env[CODE_STORAGE_ENV.apiUrl]?.trim() || undefined;
-  if (!name && !pem) {
-    if (apiUrl) throw new CodeStorageEnvInvalid(`${CODE_STORAGE_ENV.apiUrl} is set without ${CODE_STORAGE_ENV.name} and ${CODE_STORAGE_ENV.key}: set them to keep learning on code.storage, or unset it.`);
+  if (!name) {
+    const set = [...(pem ? [CODE_STORAGE_ENV.key] : []), ...(apiUrl ? [CODE_STORAGE_ENV.apiUrl] : [])];
+    if (set.length) warn(`${set.join(" and ")} ${set.length === 1 ? "is" : "are"} set without ${CODE_STORAGE_ENV.name}, so learning stays in the local folder: set ${CODE_STORAGE_ENV.name} to keep it on code.storage.`);
     return undefined;
   }
-  if (!name || !pem) throw new CodeStorageEnvInvalid(`${name ? CODE_STORAGE_ENV.name : CODE_STORAGE_ENV.key} is set without ${name ? CODE_STORAGE_ENV.key : CODE_STORAGE_ENV.name}: set both to keep learning on code.storage, or neither to keep it in the local folder.`);
+  if (!pem) throw new CodeStorageEnvInvalid(`${CODE_STORAGE_ENV.name} is set without ${CODE_STORAGE_ENV.key}: set both to keep learning on code.storage, or unset the name to keep it in the local folder.`);
   if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) throw new CodeStorageEnvInvalid(`${CODE_STORAGE_ENV.name} is a code.storage org name: lowercase letters, digits and dashes.`);
   if (!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(pem)) throw new CodeStorageEnvInvalid(`${CODE_STORAGE_ENV.key} is not a private key in PEM form.`);
   if (apiUrl !== undefined) {
@@ -81,9 +83,10 @@ function refusedStore(agentId: string, words: string): LearningStore {
 
 /** Data directory `data`'s learning as a start sets it from `env` (codeStorageFromEnv, its key read by `key`): on
  *  code.storage, its server id read once from `store` when first asked (archil-settings.ts serverIdOf); refused for a
- *  runner `apart` from its server's disk with no code.storage settings (LEARNING_APART); else in the local folder. */
-export function learningStoreFromEnv(data: string, env: NodeJS.ProcessEnv, serverId: () => Promise<string>, { apart = false, key }: { apart?: boolean; key?: (name: string) => string | undefined } = {}): void {
-  const settings = key ? codeStorageFromEnv(env, key) : codeStorageFromEnv(env);
+ *  runner `apart` from its server's disk with no code.storage settings (LEARNING_APART); else in the local folder.
+ *  `warn`: where a key set without the name is said. */
+export function learningStoreFromEnv(data: string, env: NodeJS.ProcessEnv, serverId: () => Promise<string>, { apart = false, key = secret, warn }: { apart?: boolean; key?: (name: string) => string | undefined; warn?: (message: string) => void } = {}): void {
+  const settings = codeStorageFromEnv(env, key, warn);
   let id: Promise<string> | undefined;
   useLearningStore(data, settings ? { ...settings, serverId: () => (id ??= serverId()) } : apart ? { refused: LEARNING_APART } : undefined);
 }

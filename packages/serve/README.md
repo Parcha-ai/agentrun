@@ -3812,9 +3812,10 @@ never gets one. The server and its runners are its only writers. Two stores keep
 - **code.storage**, when the server and each runner are started with `AGENTRUN_CODE_STORAGE_NAME` (the org's name) and
   `AGENTRUN_CODE_STORAGE_KEY` (its signing key, a PEM, held as every secret is: never logged, never in a command line),
   and `AGENTRUN_CODE_STORAGE_API_URL` when the API is not `https://api.<org>.code.storage`: one repository an agent,
-  `agentrun-<server id>-<agent id>`, which runners on other hosts reach as the server does. One of the name and key
-  without the other, or a value it can't take, stops the start, naming each variable. A reset or an erasure deletes the
-  repository, and the next run that learns makes it again.
+  `agentrun-<server id>-<agent id>`, which runners on other hosts reach as the server does. The name turns it on: the
+  key or the URL set without it changes nothing, and the start says so. The name without the key, or a value it can't
+  take, stops the start, naming each variable. A reset or an erasure deletes the repository, and the next run that
+  learns makes it again.
 
   ```sh
   AGENTRUN_CODE_STORAGE_NAME=example-org AGENTRUN_CODE_STORAGE_KEY="$(cat key.pem)" node packages/serve/dist/cli.js

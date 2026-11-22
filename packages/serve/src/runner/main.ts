@@ -304,7 +304,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // it; refused for a runner apart from its server's disk without it (disk-free.ts), whose local folder its server
     // never reads; else the local folder under the data directory, the server's.
     const apart = kind !== "sqlite" && (await sharesServerDisk(store, options.dataDir)) === false;
-    learningStoreFromEnv(options.dataDir, env, () => serverIdOf(store), { apart, key: (key) => handedSecret(key) ?? env[key] });
+    learningStoreFromEnv(options.dataDir, env, () => serverIdOf(store), { apart, key: (key) => handedSecret(key) ?? env[key], warn });
     const name = options.name ?? runnerName();
     // One incarnation for this process: its word in the store that it is there (presence.ts) and its relay's minted
     // tokens and proofs name the same one, so the server's "restarted since" and the runner's row speak of one process.
