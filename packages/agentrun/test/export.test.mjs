@@ -8,6 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { startFakeMcp } from "../../serve/test/fixtures/fake-mcp-server.mjs";
 import { removeAtEnd } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
@@ -27,7 +28,8 @@ async function serve(t, dir, env) {
   const faux = join(dir, "faux.mjs");
   writeFileSync(faux, 'export default (context, faux) => faux.message("Done.");\n');
   const data = join(dir, "data");
-  const child = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", faux], { stdio: ["ignore", "pipe", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
+  // A local install's MCP servers may be on loopback (one test's is).
+  const child = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", faux], { stdio: ["ignore", "pipe", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0", AGENTRUN_MCP_ALLOW_LOOPBACK: "1" } });
   t.after(() => child.exitCode === null && child.kill("SIGKILL"));
   let err = "";
   child.stdout.resume();
@@ -97,14 +99,18 @@ test("agentrun export writes nothing and exits 2 when the report blocks the expo
   const { dir, env } = scratch();
   const { data, api } = await serve(t, dir, env);
   const cli = cliOf(env, data);
-  // `mcp:stdio-tools/run`: a server saved nowhere here, as a local process the agent was given on its own machine is.
-  const made = await api("POST", "/agents", { definition: { id: "local-tools", name: "Local tools", instructions: "Use the local tools.", tools: ["read", "mcp:stdio-tools/run"], skills: [] } });
+  // An MCP server on this machine's loopback: the target can't reach it.
+  const local = await startFakeMcp({ name: "local" });
+  t.after(() => local.close());
+  const saved = await api("PUT", "/settings/mcp-servers/local", { url: local.url, auth: { type: "none" } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const made = await api("POST", "/agents", { definition: { id: "local-tools", name: "Local tools", instructions: "Use the local tools.", tools: ["read", "mcp:local/add"], skills: [] } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const out = join(dir, "local-tools");
   const blocked = cli(["export", "local-tools", "--out", out]);
   assert.equal(blocked.code, 2, blocked.err);
   const printed = JSON.parse(blocked.out);
-  assert.ok(printed.blocked.some((entry) => entry.kind === "mcp_server" && entry.name === "stdio-tools"), blocked.out);
+  assert.ok(printed.blocked.some((entry) => entry.kind === "mcp_server" && entry.name === "local"), blocked.out);
   assert.equal(printed.folder, null);
   assert.match(blocked.err, /[Nn]othing was written/);
   assert.equal(existsSync(out), false, "nothing written");
