@@ -17,7 +17,7 @@ export function pickKind(kind: ComputerKindView, current: Computer | undefined):
 }
 
 /** The settings a switch of kind or provider carries over, beside the kind and the provider. */
-const CARRIED = ["image", "persistent", "gpu", "surface", "exec", "record"] as const;
+const CARRIED = ["image", "persistent", "gpu", "surface", "exec", "record", "needs"] as const;
 export type CarriedField = (typeof CARRIED)[number];
 export type Dropped = Partial<Pick<Computer, CarriedField>>;
 export type Carried = { computer: Computer; dropped: Dropped };
@@ -28,6 +28,7 @@ const isSet = (field: CarriedField, value: unknown): boolean => value !== undefi
 
 const SUBJECT: Record<CarriedField, string> = {
   image: "The image", persistent: "Keeping the computer between runs", gpu: "The GPU", surface: "The way the agent drives it", exec: "The no-shell setting", record: "Recording",
+  needs: "The programs the box must have",
 };
 
 /** Why `field`, set to `value`, can't be taken by `kind` with `provider` picked, in words; undefined when it can. Read
@@ -40,7 +41,8 @@ export function refusal(field: CarriedField, value: unknown, kind: ComputerKindV
   if (field === "record") return kind.record.available ? undefined : off(kind.record.why ?? "this server can't record it");
   if (kind.kind === "none") return off("with no computer, there is nothing to hold it");
   if (!kind.settings.includes(field)) return off(`a ${kind.kind} doesn't take it`);
-  if (field === "surface" || field === "exec") return undefined;
+  // A sandbox's needs are the sandbox's on any provider: its run checks them in the box it starts.
+  if (field === "surface" || field === "exec" || field === "needs") return undefined;
   if (!provider) return off("this kind has no ready provider");
   if (field === "gpu") {
     const gpu = value as { type: string; count: number };
