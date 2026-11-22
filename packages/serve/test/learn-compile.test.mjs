@@ -244,6 +244,19 @@ test("held by its check: the revise ask says the check's numbers and offers no '
   assert.match(plain, /Your learned workflow `answer` does not run first: it was held \(the check could not run\)\. It stays held until a new revision of it\./);
 });
 
+// Batch 28 item 1: a connected agent's hold on give-backs checked no input (n 0). Its revise ask says why it was held and
+// that there are no disagreements to show, and never that nothing compiles again: such a hold never stops.
+test("held on give-backs: the revise ask says nothing was checked, shows no disagreements, and never says nothing compiles again", () => {
+  const check = { n: 0, compile_after: 20, alone: 0, agreed: 0, alone_min: 0.8, agree_min: 0.9, of: [], released: 5 };
+  const held = { workflow: "answer", digest: "0123456789abcdef", reason: "the connected agent gave back 5 reserved native turns in a row with no answer to check it against (the last: no shadow report)", check };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held }));
+  assert.match(prompt, /does not run first: it was held \(the connected agent gave back 5 reserved native turns in a row/);
+  assert.doesNotMatch(prompt, /checked on 0 inputs/);
+  assert.match(prompt, /no disagreements to show/);
+  assert.doesNotMatch(prompt, /nothing compiles again/);
+  assert.doesNotMatch(prompt, /answers these inputs alone/);
+});
+
 // CompiledRecord.promoted is the promotion step's (learn/promote.ts): the kept draft's digest, read against the agent's
 // promotion records when the run's learning is read.
 test("a held revision asks its compile turn for a revision while its champion serves, however often the champion is checked after; a champion's own hold asks too", () => {

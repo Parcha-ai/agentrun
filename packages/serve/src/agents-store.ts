@@ -359,7 +359,7 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals),
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
-        // So does its limit on each run's free-model requests (0 clears it): leaving a field out never removes a limit.
+        // So does its free-model request limit: see DefinitionInput.max_requests (openapi.ts).
         ...(definition.max_requests === undefined && currentBody.maxRequests !== undefined ? { max_requests: currentBody.maxRequests } : {}),
         // Its input's and its structured answer's schemas are the agent's contract with its callers: an edit that leaves
         // one out keeps it.

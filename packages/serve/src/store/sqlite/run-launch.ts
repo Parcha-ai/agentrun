@@ -10,13 +10,10 @@ type RunLaunchRecord = { run_id: string; body: string; sealed: Uint8Array | null
 const RUN_LAUNCH_COLUMNS = "run_id, body, sealed, created_at";
 const runLaunchOf = (r: RunLaunchRecord): RunLaunchRow => ({ runId: r.run_id, body: JSON.parse(r.body), sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), createdAt: r.created_at });
 
-// For the store's other reads of a run's JSON (a launch body, a command's body, a journal record): one id or flag out of
-// a document whose strings may hold an escaped NUL or a lone surrogate.
-export { postgresReadableJson, postgresUnicodeRefusal };
-
-/** JSON text `column` as a read of one id or flag out of it inside a transaction takes it, where a refused statement
- *  aborts the transaction and can't be read again: on Postgres its copy with those escapes blanked (postgresReadableJson),
- *  on SQLite (whose json functions read them) the column itself. */
+/** JSON text `column` (a launch body, a command's body, a journal record) as every read of one id, number or flag out of
+ *  it takes it: on Postgres its copy with escaped NULs and lone surrogates blanked (postgresReadableJson), so a run's text
+ *  never makes the read fail; on SQLite (whose json functions read them) the column itself. Only a read that returns a
+ *  member as written (readUsageMetadata, readLearningStarts) reads the column and retries on postgresUnicodeRefusal. */
 export const readableJson = (dialect: Dialect, column: string): string => (dialect.name === "postgres" ? postgresReadableJson(column) : column);
 
 /** Writes a run's launch row inside `tx` (the same transaction as the queued run it belongs to): the run path and the
@@ -140,16 +137,6 @@ export async function readLearningStarts(executor: Pick<SqliteExecutor, "all"> &
 /** The ids of agent `agentId`'s runs started after `at` whose learning seed was read at or before it (the launch body's
  *  `learning.seededAt`), in one read of that one number a run started after `at`: never a run's section or input. */
 export async function readSeededBefore(executor: Pick<SqliteExecutor, "all"> & { readonly dialect: Dialect }, agentId: string, at: number): Promise<string[]> {
-  const read = (body: string) => executor.all<{ run_id: string; seeded_at: string | number | null }>(`SELECT run_id, ${executor.dialect.jsonText(body, ["learning", "seededAt"])} AS seeded_at FROM run_launch WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ? AND started_at > ?)`, agentId, at);
-  let rows: Awaited<ReturnType<typeof read>>;
-  try {
-    rows = await read("body");
-  } catch (error) {
-    // A body holding an escaped NUL or a lone surrogate anywhere (a run's input) makes Postgres refuse the whole read: the
-    // one number is read again from copies with those escapes blanked (postgresReadableJson), never a run's text. On an
-    // ordinary store connection, as readUsageMetadata's, so the retry is outside a failed transaction.
-    if (executor.dialect.name !== "postgres" || !postgresUnicodeRefusal(error)) throw error;
-    rows = await read(postgresReadableJson("body"));
-  }
+  const rows = await executor.all<{ run_id: string; seeded_at: string | number | null }>(`SELECT run_id, ${executor.dialect.jsonText(readableJson(executor.dialect, "body"), ["learning", "seededAt"])} AS seeded_at FROM run_launch WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ? AND started_at > ?)`, agentId, at);
   return rows.flatMap((row) => (row.seeded_at !== null && Number(row.seeded_at) <= at ? [row.run_id] : []));
 }

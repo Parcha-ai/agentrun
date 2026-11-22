@@ -21,7 +21,7 @@ import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 import type { SdkWorkflowCheckEvent } from "./check.js";
 import { promotionOf, promotionsOf, resetAtOf } from "../learn/promote.js";
 import { championTextOf, releaseSdkCheck, reserveSdkCheck, type SdkWorkflowCheck } from "../runner/promotion.js";
-import { fits, workflowDigest } from "../runner/workflow-first.js";
+import { sdkTakes, workflowDigest } from "../runner/workflow-first.js";
 
 import { SDK_WORKFLOW_RUNTIMES, sdkBindingOf, type SdkBinding } from "./runtimes.js";
 export { SDK_RUNTIMES, isSdkRuntime, type SdkRuntime } from "./runtimes.js";
@@ -300,13 +300,9 @@ export class SdkRuns {
       const cleaned = this.clean({ instructions, ...(model ? { model } : {}) });
       const runId = uuidv7();
       const redacted = cleanedInput !== input || cleaned.instructions !== instructions;
-      let task: unknown;
-      try { task = JSON.parse(input); } catch { /* A prose task: the client resolves the draft's input from the turn. */ }
       // A turn is a check only when it can be one's baseline: no protected value in its task or policy, and an input the
-      // draft takes. A JSON object task is the input, so it must fit (the managed check's own rule); a prose task's input
-      // is resolved by the client from the turn's recorded tool inputs or the host's resolveCheckInput, and a turn it
-      // cannot resolve is given back (releaseSdkCheck), never counted.
-      const takes = (flow: LearnedWorkflow) => !redacted && (!isObject(task) || fits(flow, task, resolveSchemaForWorkflow as never));
+      // draft takes (sdkTakes). A prose turn whose input the client cannot resolve is given back (releaseSdkCheck).
+      const takes = (flow: LearnedWorkflow) => !redacted && sdkTakes(flow, input, resolveSchemaForWorkflow as never);
       const checkDeps = { store: this.store, agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }) };
       const check = learning ? await reserveSdkCheck(checkDeps, { runId, revision: learning.seed, learning: revisionBody.learning, flows: selected.candidates, takes }) : undefined;
       // A shadow check needs the original agent's own answer, not an answer produced by its existing champion.
