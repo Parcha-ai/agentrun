@@ -3177,7 +3177,8 @@ body. The host starts the run with `POST /v2/agents/{agent_id}/runs`, giving the
 `max_cost_usd`, and `"trigger_firing": { "trigger_id": ..., "firing_id": ... }` as it was sent, then answers 2xx within
 10 s. That run is the firing's, as one this server started would be: it names the trigger and the firing, carries the
 trigger's title and input origin, is capped, and the firing reads `started` with it, so the trigger's overlap check
-and `max_active_runs` count it. A second start for the same firing answers the same run; a firing that is not being
+and `max_active_runs` count it. The firing is the run's key, so a second start for the same firing answers the same
+run and the request takes no `Idempotency-Key` (422 with one); a firing that is not being
 handed over (skipped, or one of another agent's triggers) is refused with 422. A 2xx with no such run makes the firing
 `sent` with no run, which the overlap check cannot see. Any other answer, a redirect included (it is not followed), no
 answer in 10 s, or no connection, and the firing reads `skipped` with why, unless the host started its run by then; a

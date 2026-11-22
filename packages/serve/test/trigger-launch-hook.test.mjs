@@ -92,6 +92,9 @@ test("the host starts the firing's run through the API with trigger_firing: the 
   const ref = { trigger_id: created.body.id, firing_id: first.key };
   const again = await api("POST", "/agents/nightly/runs", { input: { content: "Again." }, max_cost_usd: 0.5, trigger_firing: ref });
   assert.deepEqual([again.status, again.body.run_id, again.headers.get("idempotent-replayed")], [202, runId, "true"], "a second start for the firing answers its run");
+  // The firing is the run's key: an Idempotency-Key beside it, whose check across a restart rides on the run's origin, is refused.
+  const keyed = await api("POST", "/agents/nightly/runs", { input: { content: "Again." }, max_cost_usd: 0.5, trigger_firing: ref }, { "idempotency-key": "host-1" });
+  assert.deepEqual([keyed.status, keyed.body.error.fields[0].field], [422, "trigger_firing"], JSON.stringify(keyed.body));
   const elsewhere = await api("POST", "/agents/other/runs", { input: { content: "Hi." }, max_cost_usd: 0.5, trigger_firing: ref });
   assert.equal(elsewhere.status, 422, "another agent's run is never this trigger's");
   assert.equal(elsewhere.body.error.fields[0].field, "trigger_firing.trigger_id", JSON.stringify(elsewhere.body));
