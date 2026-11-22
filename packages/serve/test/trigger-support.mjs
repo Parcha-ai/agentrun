@@ -81,16 +81,17 @@ export async function firings(api, id, n) {
 /** The path a launch-hook fake takes firings at. */
 const HOOK_PATH = "/agentrun/firings";
 
-/** A host's launch hook on 127.0.0.1. Only a POST to its path is the install's: each is kept in `got`, in order (method,
- *  headers, raw body, and `sent`, the body read as JSON), and answered by `answer(res, sent, n)`, `n` the POSTs so far;
- *  by default 202 `{}`. Any other request (another method or path, as the GET / a dev tool on the box sends to each new
- *  listener) is answered 404, never read or kept, so `got` counts the firings handed, which the guards against a paid
- *  run handed twice assert. A POST its sender cut short (its bound passed mid-body, or the test's end) or whose body is
- *  not JSON is answered 400; nothing a request sends throws out of the handler. */
+/** A host's launch hook on 127.0.0.1. Only a POST to its path (with any query the hook URL carries, as `?token=…`) is the
+ *  install's: each is kept in `got`, in order (method, headers, raw body, and `sent`, the body read as JSON), and
+ *  answered by `answer(res, sent, n)`, `n` the POSTs so far; by default 202 `{}`. Any other request (another method or
+ *  path, as the GET / a dev tool on the box sends to each new listener) is answered 404, never read or kept, so `got`
+ *  counts the firings handed, which the guards against a paid run handed twice assert. A POST its sender cut short (its
+ *  bound passed mid-body, or the test's end) or whose body is not JSON is answered 400; nothing a request sends throws
+ *  out of the handler. */
 export async function hookServer(t, answer = (res) => res.writeHead(202, { "content-type": "application/json" }).end("{}")) {
   const got = [];
   const server = createServer(async (req, res) => {
-    if (req.method !== "POST" || req.url !== HOOK_PATH) {
+    if (req.method !== "POST" || new URL(req.url, "http://h").pathname !== HOOK_PATH) {
       req.resume();
       res.writeHead(404).end();
       return;
