@@ -3992,8 +3992,10 @@ A start reserves a check only on a turn that can be its baseline: a JSON object 
 schema (a prose task's input is resolved by the bridge), and a start whose task or instructions held a protected value
 reserves nothing. A reserved turn that still cannot be the baseline (cancelled or failed, incomplete, redacted or
 workflow-assisted evidence, no `workflow_check` report, or a shadow that `failed` or `skipped_write`) gives the
-reservation back: the record stays `replaying` with no `runs`, counts it in `check.released`, and the next turn the
-draft takes is checked. The fifth given-back turn stops the check with nothing checked (no recompile). A turn the
+reservation back: the record stays `replaying` with no `runs`, counts it in `check.released` (a cancel is never
+counted), and the next turn the draft takes is checked. A turn that lands starts the count again; five counted
+give-backs in a row hold the draft, never promoted and never stopped for good: the agent's next compile, after
+`compile_after` more runs, revises it, and the revision is checked afresh. A turn the
 backend never completes within an hour is decided as one failed input through the same check, so its hold asks the
 one recompile and a recompile's check that ends the same way stops. Connected checks' records say `via: "sdk"`;
 `check.fresh_reads` counts the shadow's `shadowReadFallback` reads.
