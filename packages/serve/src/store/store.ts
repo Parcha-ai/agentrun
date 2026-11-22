@@ -128,7 +128,8 @@ export interface TemplatePackage {
    *  digest warns of this agent. Absent on a revision applied before it was kept. */
   readonly parameters_digest?: string;
   /** The names of the keys the package declared (its `secrets`, and those of the model choice the apply took), sorted,
-   *  never their values: what an export of the agent names, whatever version of the package the server holds later.
+   *  never their values: what an export of the agent names, whatever version of the package the server holds later, and
+   *  the tool keys a run of the revision may carry (run-keys.ts; under the run-keys setting one that does not is refused).
    *  Absent on a revision applied before it was kept. */
   readonly secrets?: readonly string[];
 }

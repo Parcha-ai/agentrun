@@ -3,7 +3,7 @@
 // loop's failed end), the runner's events, and the model route's error text that pi records. Each passes through the one
 // function made here, which puts "[redacted]" in place of every secret value the runner holds, in every form a value
 // can take in text (key-refusal.ts redactedAnswer: as written, JSON-escaped, base64, hex and percent-encoded).
-import { redactedAnswer } from "../key-refusal.js";
+import { heldNumber, redactedAnswer } from "../key-refusal.js";
 import { MIN_SECRET } from "../learn/secrets.js";
 import { hostSecrets, SECRET_NAMES } from "../secrets.js";
 import { planOf } from "../chatgpt-plan.js";
@@ -50,6 +50,14 @@ export const processSecretRedactor = (): Redact => secretRedactor(runnerSecrets(
 export interface HeldRedact extends Redact {
   /** Cut `values` too from here on, each in every form; one shorter than MIN_SECRET, whitespace aside, is left out. */
   hold(values: readonly string[]): void;
+  /** Hold `values`, and cut them from run `runId`'s journal as it is written too (runner.ts): the run's own tool keys
+   *  (run-keys.ts), erased at its turn's end, so no read after it could cut them. */
+  carry(runId: string, values: readonly string[]): void;
+  /** The cut of what run `runId` carried (`carry`), or undefined while it carried none. */
+  carried(runId: string): Redact | undefined;
+  /** Forget what run `runId` carried, once the runner lets its claim go: a later run's writes are never cut of it. The
+   *  values stay held (`hold`). */
+  dropCarried(runId: string): void;
 }
 
 const isHeld = (redact: Redact): redact is HeldRedact => typeof (redact as Partial<HeldRedact>).hold === "function";
@@ -58,6 +66,8 @@ const isHeld = (redact: Redact): redact is HeldRedact => typeof (redact as Parti
 export function heldRedactor(base: Redact): HeldRedact {
   if (isHeld(base)) return base;
   const held = new Set<string>();
+  /** Each run's carried values and their cut, made at its first use after a carry. */
+  const carried = new Map<string, { values: Set<string>; cut?: Redact }>();
   const cut = ((text: string) => {
     const once = base(text);
     return once && held.size ? redactedAnswer(once, [...held]) : once;
@@ -65,10 +75,65 @@ export function heldRedactor(base: Redact): HeldRedact {
   cut.hold = (values) => {
     for (const value of values) if (value.replace(/\s+/g, "").length >= MIN_SECRET) held.add(value);
   };
+  cut.carry = (runId, values) => {
+    cut.hold(values);
+    const kept = values.filter((value) => held.has(value));
+    if (!kept.length) return;
+    const run = new Set([...(carried.get(runId)?.values ?? []), ...kept]);
+    carried.set(runId, { values: run });
+  };
+  cut.carried = (runId) => {
+    const run = carried.get(runId);
+    if (!run) return undefined;
+    return (run.cut ??= secretRedactor([...run.values]));
+  };
+  cut.dropCarried = (runId) => void carried.delete(runId);
   // Its values are the base's and every one held since; a base that does not know its own leaves them unknown.
   const known = base.heldValues;
   if (known) withHeldValues(cut, () => [...new Set([...known(), ...held])]);
   return cut;
+}
+
+/** Where a claim of run `runId` hands the run's own keys it lays (claim-secrets.ts ClaimSecretsDeps.carry): `redact`. */
+export const carryTo = (redact: HeldRedact, runId: string) => (values: readonly string[]): void => redact.carry(runId, values);
+
+/** Every string inside `value` cut by `cut`: what the run's process writes, as the runner's redactor would cut it in a
+ *  loop of its own (rule three: no secret the runner holds is written). `names`: each object's and map's names too (a
+ *  model may write a value as a JSON name); two names cut to one are both kept, the later ones numbered. A number that
+ *  shows a value `cut` holds (a key of digits alone, quoted as a JSON number: key-refusal.ts heldNumber) is "[redacted]". */
+export function cutDeep<T>(value: T, cut: Redact, names = false): T {
+  // The values `cut` holds, read once for the whole of `value` at its first number.
+  let held: readonly string[] | null | undefined;
+  const shows = (number: number | bigint): boolean => {
+    const text = String(number);
+    if (held === undefined) held = cut.heldValues?.() ?? null;
+    if (!held) return cut(text) !== text;
+    // Digits shorter than any held value can't hold one, in any form; only the same number written otherwise can.
+    if (text.length < MIN_SECRET) return held.some((secret) => secret.trim() !== "" && Number(secret) === Number(number));
+    return heldNumber(number, held);
+  };
+  const named = (taken: (name: string) => boolean, key: string): string => {
+    const once = names ? cut(key) : key;
+    let name = once;
+    for (let n = 2; taken(name); n++) name = `${once} (${n})`;
+    return name;
+  };
+  const walk = (one: unknown): unknown => {
+    if (typeof one === "string") return cut(one);
+    if (typeof one === "number" || typeof one === "bigint") return shows(one) ? "[redacted]" : one;
+    if (one === null || typeof one !== "object") return one;
+    if (ArrayBuffer.isView(one) || one instanceof Date || one instanceof RegExp || one instanceof ArrayBuffer) return one;
+    if (Array.isArray(one)) return one.map(walk);
+    if (one instanceof Map) {
+      const out = new Map<unknown, unknown>();
+      for (const [k, v] of one) out.set(typeof k === "string" ? named((name) => out.has(name), k) : k, walk(v));
+      return out;
+    }
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(one)) Object.defineProperty(out, named((name) => Object.hasOwn(out, name), key), { value: walk((one as Record<string, unknown>)[key]), enumerable: true, writable: true, configurable: true });
+    return out;
+  };
+  return walk(value) as T;
 }
 
 /** The secrets a claim opened from the store (`env`, claimSecrets' environment for the run) held by `redact`, the run's

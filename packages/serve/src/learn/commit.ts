@@ -6,11 +6,11 @@
 //     it was on the run's seed (or its `bases` commit) is a conflict, never written over;
 //   - one line of an owner's feedback appended to corrections.md (appendCorrection), after the refusals;
 //   - corrections.md replaced whole by a person (putCorrections), under the ETag they read;
-//   - a purged run's feedback lines taken off main by the host (forgetRunText).
+//   - a purged run's learned workflows and feedback lines taken off main by the host (forgetRunText).
 import { isWorkspaceError, type Workspace } from "../workspace/index.js";
 import type { Problem } from "./check.js";
 import { CORRECTIONS_CAP, CORRECTIONS_FILE, correctionLine, correctionsProblems } from "./corrections.js";
-import { blobOid, DIFFS_DIR, type FolderChange, folderFailure, FolderMerged, FolderRefused, FolderTooLarge, FolderUnreadable, forgetBody, readLearning, readRunDiff, readSnapshot, type RunDiff, runDiffKey, runMergeOf, type Snapshot, writeLearning } from "./folder.js";
+import { blobOid, DIFFS_DIR, type FolderChange, folderFailure, FolderMerged, FolderRefused, FolderTooLarge, FolderUnreadable, forgetBody, learningRepair, readLearning, readRunDiff, readSnapshot, type RunDiff, runDiffKey, runMergeOf, type Snapshot, writeLearning } from "./folder.js";
 import { held, isHeld } from "./workflow-draft.js";
 
 /** A run's merge, one a round: its compiled draft's files, already checked, and its owner's correction. */
@@ -197,21 +197,22 @@ export async function putCorrections(ws: Workspace, input: { text: string; ifMat
 }
 
 /**
- * Run `runId`'s text taken off the folder's current files, at its purge (agent-delete.ts purgeRun): the lines each of
- * its merges added to corrections.md, as its diff file keeps them, dropped from main in one host commit per merge (a
- * line a person edited since is theirs and stays); each other merge's diff that shows such a line as context written
- * without it; then the run's diff files deleted, last, so a call stopped part way finds what it has left to do. Its
- * merges stay in the folder's git history until a learning reset or its agent's purge deletes the folder. Idempotent:
- * each merge's scrub lands once, nothing left to drop makes no commit, and a run with no diff file here is no work.
+ * Run `runId`'s text taken off the folder's current files, at its purge (agent-delete.ts purgeRun): first its learned
+ * workflows (forgetRunWorkflows), whether or not it left a diff file; then the lines each of its merges added to
+ * corrections.md, as its diff file keeps them, dropped from main in one host commit per merge (a line a person edited
+ * since is theirs and stays); each other merge's diff that shows such a line as context written without it; then the
+ * run's diff files deleted, last, so a call stopped part way finds what it has left to do. Its merges stay in the
+ * folder's git history until a learning reset or its agent's purge deletes the folder. Idempotent: each merge's scrub
+ * lands once, nothing left to drop makes no commit, and a run with no diff file and no workflow here is no work.
  * `commit`: the host's last commit, when one was made.
  */
 export async function forgetRunText(ws: Workspace, runId: string): Promise<{ commit?: string }> {
+  let commit = await forgetRunWorkflows(ws, runId);
   const names = await diffNames(ws);
   const own = new RegExp(`^${runId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\.r\\d+)?\\.json(\\..+)?$`);
   const mine = names.filter((name) => own.test(name));
-  if (!mine.length) return {};
+  if (!mine.length) return commit ? { commit } : {};
   const lines: string[] = [];
-  let commit: string | undefined;
   for (const name of mine.filter(isDiffFile)) {
     const added = ((await diffOrNone(ws, name))?.files ?? []).flatMap((file) => (file.path === CORRECTIONS_FILE && "patch" in file ? addedLines(file.patch) : []));
     if (!added.length) continue;
@@ -251,6 +252,24 @@ export async function forgetRunText(ws: Workspace, runId: string): Promise<{ com
   }
   for (const name of mine) await ws.remove(`${DIFFS_DIR}/${name}`, { force: true }).catch((error: unknown) => { throw folderFailure(error); });
   return commit ? { commit } : {};
+}
+
+/** Every path of the learned workflows on `snapshot`'s main whose workflow.json run `runId` wrote last (SnapLearned.run,
+ *  the rule purged-workflow.ts reads): each one's whole `workflows/<name>/` folder, its files and links. */
+const runWorkflowPaths = (snapshot: Snapshot | undefined, runId: string): string[] =>
+  (snapshot?.workflows ?? []).filter((item) => item.run === runId).flatMap((item) => [...item.files.map(({ path }) => path), ...(item.links ?? [])]);
+
+/** Run `runId`'s learned workflows taken off main in one host commit, so every read of main finds them gone: the commit,
+ *  or undefined when main holds none (a repeat finds none left, and one another run wrote since names that run). The
+ *  snapshot is rebuilt from main first (one more exec): a merge that moved main and stopped before its snapshot leaves
+ *  one that names none of that merge's workflows, and finding no work commits nothing that would show it stale. */
+async function forgetRunWorkflows(ws: Workspace, runId: string): Promise<string | undefined> {
+  if (await readSnapshot(ws)) await learningRepair(ws);
+  const done = await writeLearning<boolean>(ws, async ({ snapshot }) => {
+    const deletes = runWorkflowPaths(snapshot, runId);
+    return deletes.length ? { result: true, change: { by: { host: "a purged run's workflows removed" }, writes: [], deletes } } : { result: false };
+  });
+  return done.result ? done.main : undefined;
 }
 
 /** The names in the folder's diffs directory; none when it is not there. */
