@@ -370,9 +370,8 @@ test("the backend's hook counts the server's POSTs alone: a port probe's GET / b
   probes.push(await portProbe(hook.url));
 
   clock.to("2026-06-01T09:00:00Z");
-  const [{ sent }] = await until(() => hook.got.length && hook.got, "the schedule's firing never reached the backend");
-  await until(async () => (await server.store.triggers.firing(made.id, sent.firing_id))?.status === "sent", "the firing was never recorded sent");
-  assert.deepEqual(hook.got.map((one) => one.sent.firing_id), [sent.firing_id], "the firing's one POST, and no probe");
+  const firing = await until(async () => (await server.store.triggers.firings(made.id)).find((one) => one.status === "sent"), "the firing was never recorded sent");
+  assert.deepEqual(hook.got.map((one) => [one.method, one.headers["webhook-id"]]), [["POST", firing.key]], "the firing's one POST, and no probe");
   assert.deepEqual(probes, [404, 404], "each probe answered 404");
 });
 
