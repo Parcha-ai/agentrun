@@ -76,3 +76,11 @@ export async function firings(api, id, n) {
   }
 }
 
+/** A port probe at the server behind `url`, as a dev tool on the box sends one to each new listener on 127.0.0.1: GET /,
+ *  no body. Its answer's status. */
+export async function portProbe(url) {
+  const res = await fetch(new URL("/", url));
+  await res.arrayBuffer();
+  return res.status;
+}
+

@@ -16,7 +16,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { feed, posts } from "./feed-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
-import { fakeClock } from "./trigger-support.mjs";
+import { fakeClock, portProbe } from "./trigger-support.mjs";
 
 const { apiOnlyTriggerSkipped } = await import("../dist/api-only.js");
 const { NOT_SET_UP } = await import("../dist/runnable.js");
@@ -376,6 +376,23 @@ test("an API-only server with the launch hook makes the template's schedule, and
   assert.deepEqual(runs.map((run) => run.run_id ?? run.id), [started.body.run_id], "the backend's one run");
   const firing = await server.store.triggers.firing(made.id, sent.firing_id);
   assert.deepEqual([firing.status, firing.runId], ["started", started.body.run_id]);
+});
+
+test("the backend's hook counts the server's POSTs alone: a port probe's GET / before the apply and before the firing is answered 404 and never counted", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T08:00:00Z");
+  const hook = await hookServer(t);
+  const probes = [await portProbe(hook.url)];
+  const server = await deployServer(t, { apiOnly: true, triggerClock: clock, launchHook: { url: hook.url, secret: mintSecret() } }, NO_MAIL);
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const [made] = await server.store.triggers.list(applied.body.agent_id);
+  probes.push(await portProbe(hook.url));
+
+  clock.to("2026-06-01T09:00:00Z");
+  const [{ sent }] = await until(() => hook.got.length && hook.got, "the schedule's firing never reached the backend");
+  await until(async () => (await server.store.triggers.firing(made.id, sent.firing_id))?.status === "sent", "the firing was never recorded sent");
+  assert.deepEqual(hook.got.map((one) => one.sent.firing_id), [sent.firing_id], "the firing's one POST, and no probe");
+  assert.deepEqual(probes, [404, 404], "each probe answered 404");
 });
 
 test("an API-only server with the launch hook makes a feed whose urls are given; one left empty is skipped for want of a feed, as on the whole server", { timeout: 60_000 }, async (t) => {

@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
-import { fakeClock, firings, made, schedule, until } from "./trigger-support.mjs";
+import { fakeClock, firings, made, portProbe, schedule, until } from "./trigger-support.mjs";
 
 const { mintSecret, signatureOf, verify } = await import("../dist/standard-webhooks.js");
 const { LAUNCH_HOOK_LATE_START_MS, LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
@@ -83,6 +83,27 @@ test("a schedule trigger's firing is handed to the host, signed with the setting
   assert.equal(sent.fired_at, "2026-06-01T00:10:00Z");
   assert.match(sent.input.content, /^Say hello\./);
   assert.deepEqual(await runsOf(api, "nightly"), [], "the install started no run for the firing");
+});
+
+// The counts above guard a paid run: a firing handed twice is a second run on the host's money. Each counts the
+// install's POSTs alone; a probe a dev tool on the box sends to a new listener is no hand-off.
+test("the host's hook counts the install's POSTs alone: a port probe's GET / before the firing and while it is handed is answered 404 and never counted", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const during = [];
+  const hook = await hookServer(t, async (res) => {
+    during.push(await portProbe(hook.url));
+    answerJson(res, 200, {});
+  });
+  const before = await portProbe(hook.url);
+  const { api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } });
+  await made(api, "nightly");
+  const created = await api("POST", "/triggers", schedule("nightly", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  clock.to("2026-06-01T00:10:00Z");
+  const [firing] = await firings(api, created.body.id, 1);
+  assert.deepEqual([firing.status, firing.run_id], ["sent", null], JSON.stringify(firing));
+  assert.deepEqual(hook.got.map((one) => [one.method, one.headers["webhook-id"]]), [["POST", firing.key]], "the firing's one POST, and no probe");
+  assert.deepEqual([before, during], [404, [404]], "each probe answered 404");
 });
 
 test("the host starts the firing's run through the API with trigger_firing: the run is the trigger's, the firing started, and the overlap check counts it", { timeout: 120_000 }, async (t) => {
