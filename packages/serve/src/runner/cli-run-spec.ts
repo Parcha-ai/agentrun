@@ -59,7 +59,7 @@ import { isWebHostTool } from "../tool-list.js";
 import { hostToolOf } from "../host-tools.js";
 import { ASK_TOOL, askPerson } from "../tools.js";
 import { fakedPlane } from "../web-fake.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { mcpWhereHeld } from "./mcp-run.js";
 import { held as runnerSeam, heldSignInReads } from "./held.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
@@ -77,7 +77,7 @@ import { AUDIT_PARKED, withAudit } from "./audit.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
-import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
+import { carryTo, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
 import { CLAUDE_LOGIN_PROVIDER, loginBeforeRun, loginCli, loginForRun, withClaudeLogin } from "../claude-login.js";
 import { heldSpecOf } from "./held-run.js";
@@ -447,7 +447,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // store's), held by the runner's one redactor and this spec's log cut before anything can echo one. Its model's key goes
   // to the model choice and the adapter's provider (withModelKeys, never enumerable), so a key saved in
   // Settings → Model keys runs the next run with no restart, as one set where AgentRun starts does.
-  const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env, ...(run.redact ? { carry: heldRedactor(run.redact).carry } : {}) }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch, claim.runId);
+  const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env, ...(run.redact ? { carry: carryTo(heldRedactor(run.redact), claim.runId) } : {}) }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch, claim.runId);
   // The run's own model key, when its caller handed one (model_key): opened at every claim, held by the redactors, read by
   // its model route alone; the CLI's process and its tools never carry it, nor any other model key then.
   // A run that starts on the server's key holds the claim's key holder too: a message's first key reaches its next request.
@@ -629,7 +629,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     if (learns) {
       const learnedKeys = await learnedDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, workflows, (provider) => gate.permissions.policy(provider) !== "deny");
       for (const redact of new Set([held, cut])) holdClaimed(redact, learnedKeys);
-      Object.assign(toolEnv, learnedKeys);
+      underClaimed(toolEnv, learnedKeys);
     }
     handedKeys = runnerSecrets(toolEnv);
     // The run's resolved tool plane (its web tools' providers), as the pi spec hands it its web tools.

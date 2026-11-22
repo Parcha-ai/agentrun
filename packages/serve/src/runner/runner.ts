@@ -358,13 +358,14 @@ export function startRunner(options: RunnerOptions): Runner {
    *  claim. The patch lands exactly when the batch that writes its effect (the record it is staged with) is stored
    *  (RunStorage.commit): a group commit stores its batches in order up to the first it refuses, so the end's batch can
    *  land while a later sibling is refused, and an end whose own batch is refused has not landed. What it writes and
-   *  stages is cut of the runs' own tool keys (redact.ts carry): they are erased at their turn's end, so no read could. */
+   *  stages is cut of the run's own tool keys (redact.ts carry), its names too: they are erased at its turn's end, so no
+   *  read could. */
   const fenced = (journal: Journal, fence: { lost: boolean }, runId: string, ended: () => void): Journal => {
     /** The effect of the final patch staged and not yet landed, as the store keeps it until a commit stores it. */
     let finalEffect: number | undefined;
     const carriedOut = <T>(given: T): T => {
-      const carried = redact.carried();
-      return carried ? cutDeep(given, carried) : given;
+      const carried = redact.carried(runId);
+      return carried ? cutDeep(given, carried, true) : given;
     };
     return new Proxy(journal, {
       get(target, property) {
@@ -776,8 +777,12 @@ export function startRunner(options: RunnerOptions): Runner {
     } catch (error) {
       emit({ type: "error", runId: claim.runId, step: isFenced(error) ? "release (fenced)" : "release", message: message(error) });
     } finally {
-      // Only its own entry: a run this runner lost and claimed again holds a new one under the same id.
-      if (runs.get(claim.runId) === held) runs.delete(claim.runId);
+      // Only its own entry: a run this runner lost and claimed again holds a new one under the same id. Its own keys go
+      // with it: a next claim opens them again.
+      if (runs.get(claim.runId) === held) {
+        runs.delete(claim.runId);
+        redact.dropCarried(claim.runId);
+      }
     }
   };
 

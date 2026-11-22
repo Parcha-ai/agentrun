@@ -113,6 +113,12 @@ async function workingEnv(deps: ClaimSecretsDeps): Promise<NodeJS.ProcessEnv> {
   return working;
 }
 
+/** `keys` (learnedDecisionKeys') laid onto `env`, a claim's environment, where it holds no value of that name: what the
+ *  claim laid stays, a run's own tool key over the server's above all. A name both read holds the same server key. */
+export function underClaimed(env: NodeJS.ProcessEnv, keys: Readonly<Record<string, string>>): void {
+  for (const [name, value] of Object.entries(keys)) if (!env[name]) env[name] = value;
+}
+
 /** The decision keys a run's learned workflows need, beside those claimSecrets scoped to its revision (whose own nodes
  *  are all needsOf reads, so an agentic run gets none there): the keys of the providers the chosen workflows' typed
  *  questions name (decisions.ts providersNamed, Jev for a node that names none), but any provider `allowed` refuses (the

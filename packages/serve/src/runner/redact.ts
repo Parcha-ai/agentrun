@@ -50,11 +50,14 @@ export const processSecretRedactor = (): Redact => secretRedactor(runnerSecrets(
 export interface HeldRedact extends Redact {
   /** Cut `values` too from here on, each in every form; one shorter than MIN_SECRET, whitespace aside, is left out. */
   hold(values: readonly string[]): void;
-  /** Hold `values`, and cut them from every run's journal as it is written too (runner.ts): a run's own tool keys
+  /** Hold `values`, and cut them from run `runId`'s journal as it is written too (runner.ts): the run's own tool keys
    *  (run-keys.ts), erased at its turn's end, so no read after it could cut them. */
-  carry(values: readonly string[]): void;
-  /** The cut of every value carried so far (`carry`), or undefined while there is none. */
-  carried(): Redact | undefined;
+  carry(runId: string, values: readonly string[]): void;
+  /** The cut of what run `runId` carried (`carry`), or undefined while it carried none. */
+  carried(runId: string): Redact | undefined;
+  /** Forget what run `runId` carried, once the runner lets its claim go: a later run's writes are never cut of it. The
+   *  values stay held (`hold`). */
+  dropCarried(runId: string): void;
 }
 
 const isHeld = (redact: Redact): redact is HeldRedact => typeof (redact as Partial<HeldRedact>).hold === "function";
@@ -63,7 +66,8 @@ const isHeld = (redact: Redact): redact is HeldRedact => typeof (redact as Parti
 export function heldRedactor(base: Redact): HeldRedact {
   if (isHeld(base)) return base;
   const held = new Set<string>();
-  const carried = new Set<string>();
+  /** Each run's carried values and their cut, made at its first use after a carry. */
+  const carried = new Map<string, { values: Set<string>; cut?: Redact }>();
   const cut = ((text: string) => {
     const once = base(text);
     return once && held.size ? redactedAnswer(once, [...held]) : once;
@@ -71,27 +75,49 @@ export function heldRedactor(base: Redact): HeldRedact {
   cut.hold = (values) => {
     for (const value of values) if (value.replace(/\s+/g, "").length >= MIN_SECRET) held.add(value);
   };
-  cut.carry = (values) => {
+  cut.carry = (runId, values) => {
     cut.hold(values);
-    for (const value of values) if (held.has(value)) carried.add(value);
+    const kept = values.filter((value) => held.has(value));
+    if (!kept.length) return;
+    const run = new Set([...(carried.get(runId)?.values ?? []), ...kept]);
+    carried.set(runId, { values: run });
   };
-  cut.carried = () => (carried.size ? secretRedactor([...carried]) : undefined);
+  cut.carried = (runId) => {
+    const run = carried.get(runId);
+    if (!run) return undefined;
+    return (run.cut ??= secretRedactor([...run.values]));
+  };
+  cut.dropCarried = (runId) => void carried.delete(runId);
   // Its values are the base's and every one held since; a base that does not know its own leaves them unknown.
   const known = base.heldValues;
   if (known) withHeldValues(cut, () => [...new Set([...known(), ...held])]);
   return cut;
 }
 
+/** Where a claim of run `runId` hands the run's own keys it lays (claim-secrets.ts ClaimSecretsDeps.carry): `redact`. */
+export const carryTo = (redact: HeldRedact, runId: string) => (values: readonly string[]): void => redact.carry(runId, values);
+
 /** Every string inside `value` cut by `cut`: what the run's process writes, as the runner's redactor would cut it in a
- *  loop of its own (rule three: no secret the runner holds is written). */
-export function cutDeep<T>(value: T, cut: (text: string) => string): T {
+ *  loop of its own (rule three: no secret the runner holds is written). `names`: each object's and map's names too (a
+ *  model may write a value as a JSON name); two names cut to one are both kept, the later ones numbered. */
+export function cutDeep<T>(value: T, cut: (text: string) => string, names = false): T {
   if (typeof value === "string") return cut(value) as T;
   if (value === null || typeof value !== "object") return value;
   if (ArrayBuffer.isView(value) || value instanceof Date || value instanceof RegExp || value instanceof ArrayBuffer) return value;
-  if (Array.isArray(value)) return value.map((item) => cutDeep(item, cut)) as T;
-  if (value instanceof Map) return new Map([...value].map(([k, v]) => [k, cutDeep(v, cut)])) as T;
+  if (Array.isArray(value)) return value.map((item) => cutDeep(item, cut, names)) as T;
+  const named = (taken: (name: string) => boolean, key: string): string => {
+    const once = names ? cut(key) : key;
+    let name = once;
+    for (let n = 2; taken(name); n++) name = `${once} (${n})`;
+    return name;
+  };
+  if (value instanceof Map) {
+    const out = new Map<unknown, unknown>();
+    for (const [k, v] of value) out.set(typeof k === "string" ? named((name) => out.has(name), k) : k, cutDeep(v, cut, names));
+    return out as T;
+  }
   const out: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) Object.defineProperty(out, key, { value: cutDeep((value as Record<string, unknown>)[key], cut), enumerable: true, writable: true, configurable: true });
+  for (const key of Object.keys(value)) Object.defineProperty(out, named((name) => Object.hasOwn(out, name), key), { value: cutDeep((value as Record<string, unknown>)[key], cut, names), enumerable: true, writable: true, configurable: true });
   return out as T;
 }
 

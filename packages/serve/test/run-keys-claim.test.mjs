@@ -71,3 +71,52 @@ test("the keys a revision declares: each tool key field its tools read, and its 
   assert.deepEqual(await declaredKeys({ kind: "agentic", body: { tools: ["read"] }, package: { id: "t", version: "1.0.0", sha: null, secrets: ["MONID_API_KEY", "OPENROUTER_API_KEY"] } }), ["MONID_API_KEY"], "a template's tool key, never its model key");
   assert.deepEqual(await declaredKeys({ kind: "agentic", body: { tools: ["web_search"] }, package: null }), ["PARALLEL_API_KEY"]);
 });
+
+const { carryTo, cutDeep, heldRedactor, secretRedactor } = await import("../dist/runner/redact.js");
+const { underClaimed } = await import("../dist/runner/claim-secrets.js");
+const { withCarried } = await import("../dist/run-keys.js");
+
+test("a run's journal cut is of its own keys alone, names included, and goes with its claim", () => {
+  const redact = heldRedactor((text) => text);
+  const mine = newKey("mine");
+  const theirs = newKey("theirs");
+  carryTo(redact, "run_mine")([mine]);
+  carryTo(redact, "run_theirs")([theirs]);
+  assert.equal(redact.carried("run_none"), undefined, "a run that carried nothing writes uncut");
+  const written = JSON.stringify(cutDeep({ [mine]: { said: `the key is ${mine}` }, list: [mine], other: theirs }, redact.carried("run_mine"), true));
+  assert.ok(!written.includes(mine), "the run's key, as a value and as a JSON name, is cut as written");
+  assert.ok(written.includes(theirs), "another run's key is not in this run's cut");
+  redact.dropCarried("run_mine");
+  assert.equal(redact.carried("run_mine"), undefined, "a claim let go takes its keys with it");
+  assert.ok(redact.carried("run_theirs"), "the other run's stay");
+});
+
+test("two names cut to one are both kept, the later numbered", () => {
+  const one = newKey("one");
+  const two = newKey("two");
+  const cut = secretRedactor([one, two]);
+  const out = cutDeep({ [one]: 1, [two]: 2 }, cut, true);
+  assert.deepEqual(Object.values(out).sort(), [1, 2], "no value is lost to a collision");
+  assert.ok(!JSON.stringify(out).includes(one) && !JSON.stringify(out).includes(two));
+  const map = cutDeep(new Map([[one, 1], [two, 2]]), cut, true);
+  assert.equal(map.size, 2);
+  assert.ok(![...map.keys()].some((name) => name.includes(one) || name.includes(two)));
+  assert.deepEqual(Object.keys(cutDeep({ [one]: 1 }, cut)), [one], "without names, names are left as they are");
+});
+
+test("a learned workflow's decision key is laid under the claim's own: the run's key stays", () => {
+  const carried = newKey("carried");
+  const env = { PARALLEL_API_KEY: carried };
+  underClaimed(env, { PARALLEL_API_KEY: newKey("server"), JEV_API_KEY: "jev-key" });
+  assert.equal(env.PARALLEL_API_KEY, carried, "the run's own key, never the server's over it");
+  assert.equal(env.JEV_API_KEY, "jev-key", "a name the claim did not lay is laid");
+});
+
+test("a key the server holds empty counts as carried when the run brings it", () => {
+  const tag = Symbol("kept");
+  const env = Object.defineProperty({ [tag]: 1 }, "PARALLEL_API_KEY", { value: "", enumerable: false, writable: false, configurable: false });
+  const checked = withCarried(env, ["PARALLEL_API_KEY"]);
+  assert.ok(checked.PARALLEL_API_KEY, "an empty fixed key is the run's to fill");
+  assert.equal(checked[tag], 1, "every other property is kept");
+  assert.equal(env.PARALLEL_API_KEY, "", "the server's own is left as it is");
+});

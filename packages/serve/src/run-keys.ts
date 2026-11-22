@@ -74,9 +74,13 @@ const CARRIED = "(carried by the run)";
  *  among them. */
 export function withCarried(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.ProcessEnv {
   if (!names.length) return env;
-  const out = Object.defineProperties({}, Object.getOwnPropertyDescriptors(env)) as NodeJS.ProcessEnv;
-  // A held secret is a fixed property (secrets.ts withSecrets): one set, even empty, is left as it is.
-  for (const name of names) if (!out[name] && Object.getOwnPropertyDescriptor(out, name)?.configurable !== false) Object.defineProperty(out, name, { value: CARRIED, enumerable: false, configurable: true });
+  // A held secret is a fixed property (secrets.ts withSecrets), set even when empty: one the run carries and `env` holds
+  // empty is left out of the copy, then marked carried.
+  const owed = names.filter((name) => !env[name]);
+  const descriptors = Object.getOwnPropertyDescriptors(env) as Record<string | symbol, PropertyDescriptor>;
+  for (const name of owed) delete descriptors[name];
+  const out = Object.defineProperties({}, descriptors) as NodeJS.ProcessEnv;
+  for (const name of owed) Object.defineProperty(out, name, { value: CARRIED, enumerable: false, configurable: true });
   return out;
 }
 
