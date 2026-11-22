@@ -7,7 +7,10 @@ import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { NativeLearningSwitch } from "@/components/NativeAgent";
 import { CostPerRun } from "@/components/CostPerRun";
-import { LearningBill } from "@/components/LearningBill";
+import { LearningBill, useAudits } from "@/components/LearningBill";
+import { CostAgreement } from "@/components/CostAgreement";
+import { LearningGlance } from "@/components/LearningGlance";
+import { agreementOf, revisionsOf } from "@/lib/learningGlance";
 import { WorkflowReplay } from "@/components/WorkflowReplay";
 import { LoopFeed } from "@/components/LoopFeed";
 import { LoopStory } from "@/components/LoopStory";
@@ -143,6 +146,9 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
     return () => { live = false; };
   }, [anyWaiting]); // eslint-disable-line react-hooks/exhaustive-deps
   const byRun = useMemo(() => new Map(runs.map((r) => [r.run_id, r])), [runs]);
+  // The audit ledger, read once for the tab: the glance, the cost against agreement and the bill's audit line share it.
+  const audits = useAudits(v2, agent.agent_id, cost);
+  const revisions = useMemo(() => (cost ? revisionsOf(cost, promotions, serving, audits) : []), [cost, promotions, serving, audits]);
   const lookedBack = runs.filter((r) => r.learning && (r.learning.state === "merged" || r.learning.state === "dropped")).length;
   // The loop at a glance: the corrections, the compile, the takeover, the money, where it is unsure; each says what comes
   // next. Its compile count is the server's (the loop read's completed_runs, what compileDue counts: the agent's own
@@ -173,7 +179,7 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
       {correctionsCard}
       {on && <LoopStory stages={story} />}
       <CostPerRun v2={v2} agentId={agent.agent_id} on={on} quiet promotions={promotions} onCost={setCost} reads={costReads} execution={execution} />
-      <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} />
+      <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} audits={audits} />
       {!cli && <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />}
       {!cli && <NotKept runs={runs} />}
     </div>
@@ -182,14 +188,27 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
   // The drafts a person retired are no longer given to a run: under Earlier workflows.
   const inUse = workflows.filter((x) => x.status !== "retired");
   const gone = workflows.filter((x) => x.status === "retired");
+  const costChart = <CostPerRun v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} reads={costReads} execution={execution} />;
   return frame(
     <div className="space-y-6">
+      {/* What learning did, in one sentence and four figures, once a learned workflow has taken a run over. */}
+      <LearningGlance cost={cost} revisions={revisions} />
       {/* The loop at a glance. */}
       <LoopStory stages={story} />
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} cost={cost} />}
-      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} reads={costReads} execution={execution} />
-      <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} />
-      {!cli && <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} />}
+      {/* The learned workflow stands beside the cost of a run where the tab has room for both, and under it otherwise:
+          the tab's own width decides, since the agent's page keeps a column of its own beside the tab. A CLI agent's
+          tab has no replay, so its cost chart keeps the row. */}
+      {!cli && workflows.some((w) => givenToRuns(w.status)) ? (
+        <div className="[container-type:inline-size]" data-testid="cost-and-workflow">
+          <div className="grid grid-cols-1 gap-6 [@container(min-width:760px)_and_(max-width:1099.98px)]:grid-cols-[minmax(0,1fr)_17.5rem] [@container(min-width:1100px)]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+            {costChart}
+            <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} className="min-w-0" />
+          </div>
+        </div>
+      ) : costChart}
+      <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} audits={audits}
+        beside={revisions.some((p) => p.served && agreementOf(p)) ? <CostAgreement cost={cost} revisions={revisions} /> : undefined} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
           {stale}

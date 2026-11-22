@@ -395,6 +395,15 @@ Route: none, it runs on this machine.
 - `--recipe FILE` (string, this CLI's own): in place of HARNESS: a recipe file (HARNESS.md#a-recipe), checked against its five rules before anything is downloaded
 - `--data DIR` (string, this CLI's own): the data directory of the AgentRun it is for (default ~/.agentrun, where npx @parcha/agentrun keeps it)
 
+### `agentrun harness sign-in`
+
+Sign a recipe's agent in to your own account with the agent's own sign-in, in this terminal (Antigravity's oauth-personal), for runs you start and attend.
+
+Route: none, it runs on this machine.
+
+- `--recipe FILE` (string, this CLI's own): the recipe file, whose signIn names the method; its agent installed first with agentrun harness install --recipe FILE
+- `--data DIR` (string, this CLI's own): the data directory the recipe's agent was installed into (default ~/.agentrun)
+
 ## harness-check
 
 ### `agentrun harness-check`

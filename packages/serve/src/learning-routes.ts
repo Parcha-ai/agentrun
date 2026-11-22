@@ -17,7 +17,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 import { CORRECTIONS_CAP, draftProblems, frontKeys, isHeld, LEARNED_KEYS, learnedPlace, learnedStatus, type Problem, printable, released, restorable, restoredLearned, retiredLearned, UNCLEAR_FRONT, unclearFront, unstorable, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { readmeProblems, type DraftDecisions } from "./learn/workflow-draft.js";
-import { putCorrections, readCorrections } from "./learn/commit.js";
+import { forgetRunText, putCorrections, purgedContextOut, readCorrections } from "./learn/commit.js";
 import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, type PersonKind, readLearning, readSnapshot, runMergeOf, type SnapChange, type SnapHistory, type SnapLearned, type Snapshot, textsAt, writeLearning } from "./learn/folder.js";
 import { FolderUnreadable, type LearningStore, PATCH_CAP } from "./learn/store.js";
 import { learningStoreOf } from "./learn/store-of.js";
@@ -76,6 +76,30 @@ function routeFailure(error: unknown): unknown {
   if (error instanceof FolderBusy) return new ApiError("unavailable", error.message);
   if (error instanceof FolderUnreadable) return error.link ? new Error(error.message) : new ApiError("unavailable", error.message);
   return error;
+}
+
+/** Which of `runIds` are purged, by the store's purge mark (its row's purge time). */
+export type PurgedOf = (runIds: readonly string[]) => Promise<ReadonlySet<string>>;
+
+/** Whether a change of `snapshot`'s log is served: none by a purged run (a run's purge, agent-delete.ts purgeRun), so
+ *  the learning's history reads serve none of its merges. Asked at each read, so a log the store rebuilds names them
+ *  and still serves none. */
+async function servedIn(snapshot: Snapshot, purgedOf: PurgedOf): Promise<(change: SnapChange) => boolean> {
+  const runs = [...new Set(snapshot.log.flatMap(({ by }) => ("run" in by ? [by.run] : [])))];
+  const purged = runs.length ? await purgedOf(runs) : new Set<string>();
+  return ({ by }) => !("run" in by && purged.has(by.run));
+}
+
+/** Run `runId`'s text taken off agent `agentId`'s learning's current files at its purge (learn/commit.ts
+ *  forgetRunText), in the agent's queue, as every write of its learning is. */
+export async function forgetRunLearning(data: string, agentId: string, runId: string): Promise<void> {
+  await withAgentRepo(data, agentId, async () => {
+    try {
+      await forgetRunText(learningStoreOf(data, agentId), runId);
+    } catch (error) {
+      throw routeFailure(error);
+    }
+  });
 }
 
 /** A read of agent `agentId`'s learning: `read` over its snapshot and the bodies it names (learn/folder.ts
@@ -142,7 +166,16 @@ function pageAt(agentId: string, snapshot: Snapshot, at: { sha: string; offset: 
 }
 
 /** A page of the changes on main, newest first, cut of the host's secrets. */
-const logPage = (snapshot: Snapshot, offset: number, limit: number, shown: Shown): Page<Change> => ({ items: snapshot.log.slice(offset, offset + limit).map((change) => changeView(change, shown)), total: snapshot.log.length, next_cursor: offset + limit < snapshot.log.length ? cursorOf(snapshot.main, offset + limit) : null });
+/** `served` changes only: the offset and the cursor count the log as the snapshot keeps it, so a run purged between two
+ *  pages moves no change the next page starts at. */
+function logPage(snapshot: Snapshot, offset: number, limit: number, shown: Shown, served: (change: SnapChange) => boolean): Page<Change> {
+  const { log } = snapshot;
+  const items: Change[] = [];
+  let at = offset;
+  for (; at < log.length && items.length < limit; at++) if (served(log[at]!)) items.push(changeView(log[at]!, shown));
+  const more = log.slice(at).some(served);
+  return { items, total: log.filter(served).length, next_cursor: more ? cursorOf(snapshot.main, at) : null };
+}
 
 /** For tests: how many times a folder's statuses were read (once per commit of its main). */
 export const pendingTestHooks = { reads: 0 };
@@ -178,24 +211,27 @@ export async function pendingCount(data: string, agentId: string): Promise<numbe
 /** GET /agents/{id}/learning: main, its corrections.md, its workflow drafts and the first page of its log, and how the
  *  agent's runs fared and what learning changed for them (`counts`, `impact`); an agent with no folder (its learning
  *  never on) has an empty one. `stateOf`: where each workflow neither pending nor retired stands, by its folder name (the
- *  promotions read's own word: learn/promote.ts servingStateOf over the agent's records). */
+ *  promotions read's own word: learn/promote.ts servingStateOf over the agent's records). Its log serves no purged run's
+ *  merge (`purgedOf`). */
 type AgentView = { agent: string; main: string | null; corrections: string; workflows: WorkflowView[]; log: Page<Change>; counts: Counts; impact: Impact };
-export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts, impact: Impact, stateOf: (workflow: string) => ServingState): Promise<AgentView> {
+export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts, impact: Impact, stateOf: (workflow: string) => ServingState, purgedOf: PurgedOf): Promise<AgentView> {
   return reading<AgentView>(data, agentId, async ({ snapshot, body }) => {
+    const served = await servedIn(snapshot, purgedOf);
     const corrections = (await readCorrections(snapshot, body)).text;
     // A retired draft whose README.md can't be read is said so (unclearFront), read from its file now, as the snapshot's
     // status was: a few retired items, one read each.
     const unread = async (item: SnapLearned) => item.status === "retired" && unclearFront(await body(item.file, item.oid));
-    return { agent: agentId, main: snapshot.main, corrections: shown.text(corrections), workflows: await Promise.all(snapshot.workflows.map(async (item) => workflowView(item, shown, stateOf, await unread(item)))), log: logPage(snapshot, 0, LOG_PAGE, shown), counts, impact };
+    return { agent: agentId, main: snapshot.main, corrections: shown.text(corrections), workflows: await Promise.all(snapshot.workflows.map(async (item) => workflowView(item, shown, stateOf, await unread(item)))), log: logPage(snapshot, 0, LOG_PAGE, shown, served), counts, impact };
   }, () => ({ agent: agentId, main: null, corrections: "", workflows: [], log: EMPTY, counts, impact }));
 }
 
-/** GET /agents/{id}/learning/log?cursor=&limit=: a page of the changes on main, newest first. */
-export async function learningLog(data: string, agentId: string, query: URLSearchParams, shown: Shown): Promise<Page<Change>> {
+/** GET /agents/{id}/learning/log?cursor=&limit=: a page of the changes on main, newest first, a purged run's left out
+ *  (`purgedOf`). */
+export async function learningLog(data: string, agentId: string, query: URLSearchParams, shown: Shown, purgedOf: PurgedOf): Promise<Page<Change>> {
   const { limit, at } = pageRequest(query, LOG_PAGE);
   return reading(data, agentId, async ({ snapshot }) => {
     const page = pageAt(agentId, snapshot, at);
-    return logPage(page.snapshot, page.offset, limit, shown);
+    return logPage(page.snapshot, page.offset, limit, shown, await servedIn(page.snapshot, purgedOf));
   }, () => EMPTY);
 }
 
@@ -239,8 +275,9 @@ type WorkflowRevision = { commit: string; at: string; by: Change["by"]; reason: 
  *  commits on main's log that changed `workflows/<name>/workflow.json`), oldest first, each with the workflow's text at
  *  that commit, so a person can step through how it changed. One store read per revision (textsAt), at most `limit`
  *  of them. `total` counts every such commit the log holds, `truncated` says the log itself is cut (it keeps the latest
- *  LOG_KEEP changes). A workflow no commit of the log changed is not_found. */
-export async function workflowRevisions(data: string, agentId: string, name: string, query: URLSearchParams, shown: Shown): Promise<{ name: string; revisions: WorkflowRevision[]; total: number; truncated: boolean }> {
+ *  LOG_KEEP changes). A purged run's merge is no revision (`purgedOf`). A workflow no commit of the log changed is
+ *  not_found. */
+export async function workflowRevisions(data: string, agentId: string, name: string, query: URLSearchParams, shown: Shown, purgedOf: PurgedOf): Promise<{ name: string; revisions: WorkflowRevision[]; total: number; truncated: boolean }> {
   if (!WORKFLOW_NAME.test(name)) throw new ApiError("bad_request", "A workflow's folder is named with lowercase letters, digits, dashes and underscores.");
   const given = query.get("limit");
   const limit = given === null ? REVISIONS_DEFAULT : Number(given);
@@ -248,7 +285,8 @@ export async function workflowRevisions(data: string, agentId: string, name: str
   const path = `${WORKFLOWS_DIR}/${name}/workflow.json`;
   if (shown.name(path) !== path) throw new ApiError("not_found", "the agent's learning folder has no such workflow");
   const found = await reading(data, agentId, async ({ learning, snapshot }) => {
-    const touched = snapshot.log.filter((change) => change.files.includes(path));
+    const served = await servedIn(snapshot, purgedOf);
+    const touched = snapshot.log.filter((change) => served(change) && change.files.includes(path));
     const latest = touched.slice(0, limit).reverse();
     const revisions: WorkflowRevision[] = [];
     for (const change of latest) {
@@ -267,12 +305,19 @@ export async function workflowRevisions(data: string, agentId: string, name: str
 /** Learned workflow `name`'s text at `digest` (a champion's, as its promotion records name it), read by that digest and
  *  never by paging the workflow's history: at `commits` (the records' learning commits, newest first), then at main, the
  *  first commit whose workflow.json is that digest's text, with the commit it was read at. Undefined when none is (no
- *  main yet, or no commit read holds it). One store read per commit tried (textsAt). */
-export async function workflowAtDigest(data: string, agentId: string, name: string, digest: string, commits: readonly string[]): Promise<{ text: string; commit: string } | undefined> {
+ *  main yet, or no commit read holds it). A purged run's merge is never read (`purgedOf`), known by the run its log names
+ *  for it, and neither is main while the workflow's last change there is a purged run's: a commit after it that left the
+ *  file as it was (the purge's own) reads it no more than the merge. A commit older than the log's newest LOG_KEEP
+ *  changes is not known so. One store read per commit tried (textsAt). */
+export async function workflowAtDigest(data: string, agentId: string, name: string, digest: string, commits: readonly string[], purgedOf: PurgedOf): Promise<{ text: string; commit: string } | undefined> {
   if (!WORKFLOW_NAME.test(name)) return undefined;
   const path = `${WORKFLOWS_DIR}/${name}/workflow.json`;
   return reading(data, agentId, async ({ learning, snapshot }) => {
+    const served = await servedIn(snapshot, purgedOf);
+    const purged = new Set(snapshot.log.filter((change) => !served(change)).map(({ commit }) => commit));
+    const last = snapshot.log.find((change) => change.files.includes(path));
     for (const commit of new Set([...commits, snapshot.main])) {
+      if (purged.has(commit) || (commit === snapshot.main && last && !served(last))) continue;
       const raw = (await textsAt(learning, commit, [path]).catch(() => undefined))?.[path];
       if (raw !== undefined && createHash("sha256").update(raw).digest("hex").slice(0, 16) === digest) return { text: raw, commit };
     }
@@ -463,7 +508,8 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
 
 /** GET /runs/{id}/learning/diff over the one store: once merged (its learning end, store-reads/learning.ts
  *  runLearningEnd), its merge commit against its parent, as its agent's learning store diffs the commit its merge marked
- *  (learn/folder.ts runMergeOf); a run that merged nothing, no file, against the seed its launch's learning start names. A
+ *  (learn/folder.ts runMergeOf), a purged run's line left out of its context (learn/commit.ts purgedContextOut); a run
+ *  that merged nothing, no file, against the seed its launch's learning start names. A
  *  run that does not learn (no learning start and no learning end) is not_found. A file's patch is withheld when too large
  *  (as the store gave it), or when it holds one of the host's secrets now (`shown`); any other is served as every
  *  learning text is (`shown.text`: a loopback address reads "a local address"). */
@@ -479,9 +525,12 @@ export async function runDiffOverStore(data: string, store: Store, runId: string
     return Buffer.byteLength(served) > PATCH_CAP ? { path, status, withheld: "too_large" } : { path, status, patch: served };
   };
   if (end?.merged) {
-    const diff = await runMergeOf(learningStoreOf(data, row.agentId), runId, kept?.round).catch((error: unknown) => Promise.reject(routeFailure(error)));
+    const learning = learningStoreOf(data, row.agentId);
+    const diff = await runMergeOf(learning, runId, kept?.round).catch((error: unknown) => Promise.reject(routeFailure(error)));
     if (!diff || diff.merge !== end.merged) throw new ApiError("not_found", "the run's merge is not in its agent's learning folder");
-    return { base: diff.parent, head: diff.merge, files: diff.files.map((entry) => ("patch" in entry ? file(entry.path, entry.status, entry.patch) : { path: shown.name(entry.path), status: entry.status, withheld: entry.withheld })) };
+    // A purged run's line shown as this merge's context is left out (learn/commit.ts purgedContextOut).
+    const files = await purgedContextOut(learning, diff.files).catch((error: unknown) => Promise.reject(routeFailure(error)));
+    return { base: diff.parent, head: diff.merge, files: files.map((entry) => ("patch" in entry ? file(entry.path, entry.status, entry.patch) : { path: shown.name(entry.path), status: entry.status, withheld: entry.withheld })) };
   }
   return { base: start?.seed ?? null, head: null, files: [] };
 }

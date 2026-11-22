@@ -84,7 +84,7 @@ export default {
         check(/^(Run \d+|Replay run)\$[\d.]+ all-in/.test(said ?? "") && /Workflow revision [0-9a-f]{7}/.test(said ?? ""), `${theme} ${width}px: the hover says ${said}`);
         if (shots) await card.screenshot({ path: join(shots, `cost-per-run-${theme}-${width}-hover.png`) });
         await page.mouse.move(0, 0);
-        // The execution mix: inside the card, and a block's hover names its runs and what each path took.
+        // The execution mix: inside the card, and a column's hover names its runs and what each path took.
         const mix = card.getByTestId("execution-mix");
         const strip = mix.locator("svg");
         await strip.scrollIntoViewIfNeeded();
@@ -94,7 +94,8 @@ export default {
         const block = mix.locator(".shadow-float");
         await block.waitFor({ timeout: 5000 });
         const blockSaid = await block.textContent();
-        check(/^Runs \d+ to \d+(By the agent|Handed back|Learned workflow) \d+ \(\d+%\)/.test(blockSaid ?? ""), `${theme} ${width}px: the mix's hover says ${blockSaid}`);
+        // A column is one run where the plot has room for one each (its hover names the run and its path), else a block.
+        check(/^(Runs \d+ to \d+(By the agent|Handed back|Learned workflow) \d+ \(\d+%\)|Run \d+(By the agent|Handed back|Learned workflow)$)/.test(blockSaid ?? ""), `${theme} ${width}px: the mix's hover says ${blockSaid}`);
         await page.mouse.move(0, 0);
       }
     }

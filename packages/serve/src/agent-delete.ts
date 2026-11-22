@@ -1,54 +1,22 @@
-// DELETE /v2/agents/{agent_id}: an agent another system owns (made by an inline run, POST /runs with `external`) deleted
-// whole, for a host that must delete what it sent (deleteExternalAgent). An agent made here is purged once it is archived
-// (purgeAgent; 409 agent_not_archived before). DELETE /v2/runs/{run_id}: one run purged (purgeRun), with the runs made
-// from it. An owner must be able to delete what a run read; what it cost stays in every total. So a purge keeps each
-// run's row, and an agent's, as a tombstone, and removes everything else of it.
+// DELETE /v2/agents/{agent_id} deletes an agent another system owns whole (deleteExternalAgent), for a host that must
+// delete what it sent, and purges an archived agent made here (purgeAgent). DELETE /v2/runs/{run_id} purges one run with
+// the runs made from it (purgeRun). An owner must be able to delete what a run read, and what it cost stays in every
+// total, so a purge keeps each run's row, and an agent's, as a tombstone and removes everything else of it.
 //
-// A run's purge (purgeRun), only once it is not live (409 run_not_final otherwise, nothing purged: live is not final, or
-// held by a runner; a run that ended and can take a follow-up is not live), nor any run made from it: first each run made
-// from it (the replay runs of its input, its audit's shadow run, a learning run its kept learning names; each one's own
-// such runs before it), then the grades its agent keeps of it and the content its promotion records copied from it (each
-// disagreement's input and answers, learn/promote.ts forgetRunCopies), then the run, each by purgeOne: the figures its spend's
-// readers read from its journal (kept on the tombstone, PurgeKept), its folders (its own folder on the agent's Archil disk
-// it resolved to, and on a disk its launch named), settings and kept answers, then its rows (store runs.purge, which sets
-// its purge time last). A replay of its input or an audit's shadow made by a claim (in a runner, maybe another process)
-// after the DELETE read the runs made from it is found by the store's purge, under the run's row lock: 409 run_not_final
-// naming it, the run kept for the next DELETE, which purges it first (RunsMadeFromLeft); one made once the run is purged
-// is refused at its create, nothing written (RunPurged). A DELETE stopped part way finds the run not purged yet and the
-// next DELETE finishes it; a DELETE of a purged run is 204 again, and every other route of it is 410 purged with its
-// tombstone.
+// Every step is idempotent and ordered so that a DELETE stopped part way leaves the row there, for the next DELETE to
+// finish; a DELETE of a purged run is 204 again. A live run (not final, or held by a runner) refuses its purge with 409
+// run_not_final and nothing purged. The runs made from a run are purged before it: one a claim made after the DELETE read
+// them is found by the store's purge under the run's row lock (RunsMadeFromLeft, 409 naming it), and one made once the run
+// is purged is refused at its create (RunPurged). A run's purge takes its text off its agent's learning's current files
+// (its merges' feedback lines, forgetCopies) and the learning's history reads serve none of its merges, while the
+// learning store's history keeps their bytes until a learning reset or the agent's purge removes the store.
 //
-// An archived agent made here (purgeAgent), by the same rule: 409 run_not_final while a run of it is live. Then its
-// learning, its things (triggers, sign-ins, its own computer, its disk), each of its runs by purgeOne (the runs made from
-// it first, as a run's purge does them), its folders, settings and kept answers, and its rows (store agents.purge: its
-// revisions' content, its name and description blanked, its purge time last). Each step is idempotent, so a DELETE stopped part way is finished by the next. Archived, the agent
-// takes no new run and no trigger fires it; a run that reached it anyway keeps it unpurged (the store refuses), for the
-// next DELETE.
-//
-// Another system's agent (deleteExternalAgent), in order, each step finished before the next:
-//   1. The agent refuses new runs, as a mark in the store that outlives a restart: its archive time, which only this
-//      delete writes on an agent another system owns (its archive route is refused), set by the trigger engine with its
-//      triggers off in the same commit. From that commit a person's run, an inline run, a trigger's firing, an SDK run and
-//      a follow-up that would open one of its runs again are refused (store AgentDeleting / AgentArchived, each read in
-//      the transaction that would start the run). Then each of its runs not yet final, its learning runs included, is
-//      cancelled through the cancel path, and waited for until it is final.
-//   2. Its learning, by the learning module's deleteLearning (learn/delete.ts: its learning store removed whole, then
-//      its promotions and grades; idempotent; it refuses with LearningInFlight while learning work is in flight, which
-//      answers 409 learning_busy with the agent left refusing runs).
-//   3. Its things: its triggers through the trigger engine (each one's registration upstream first, then its adapter
-//      settings, then its row), its saved sign-ins (each vendor object too), its own computer, its Archil disk; then each
-//      run's folders (on a disk its launch named, the caller's, too: the run's own folder there, never the disk), settings
-//      and kept answers, and its rows (store runs.remove); then the agent's folders, settings and kept answers, and its
-//      rows (store agents.remove, which commits last).
-// A DELETE stopped at any step finds the agent still there, marked, and does every step again: each is idempotent, so the
-// next DELETE finishes it. Once the agent's row is gone the agent is unknown: 404. Nothing the agent owns elsewhere (a
-// trigger's registration upstream, a saved sign-in at its vendor, its own computer, its Archil disk, a run's folder on a
-// disk its launch named) is left with the agent's row gone: the record here that names it (for a run's folder, its launch
-// record) is removed only once it is deleted there, and while it is not, the
-// delete stops with 503 unavailable, the agent kept and refusing runs, for the next DELETE to finish. From step 1's mark
-// the agent takes no new trigger, off or on (the trigger engine and the store refuse it), and no write to its home or its
-// learning (the server's, in the delete's turn); a trigger that reached it anyway keeps its row (store TriggersLeft): the
-// same 503, and the next DELETE removes that trigger as it removes the others.
+// Another system's agent is first marked refusing new runs (its archive time, set with its triggers off in one commit, read
+// by every path that would start a run), then its runs are cancelled and waited for, then its learning goes, then its
+// things and rows, the agent's row last. Nothing it owns elsewhere (a trigger's registration upstream, a saved sign-in at
+// its vendor, its own computer, its Archil disk, a run's folder on a disk its launch named) is left with no record here
+// naming it: each record goes only once its thing is deleted there, and until then the DELETE is 503 unavailable, the
+// agent kept and refusing runs. A trigger that reached it anyway keeps its row (store TriggersLeft): the same 503.
 import { ApiError } from "./errors.js";
 import { LearningInFlight } from "./learn/delete.js";
 import { FINAL_STATES, type PurgeKept, type RunState, RunsMadeFromLeft, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
@@ -102,7 +70,8 @@ export interface AgentDeleteHost {
   madeFrom(runId: string): Promise<string[]>;
   /** What agent `agentId`'s learning copied from run `runId`, gone: the grades it keeps of the run dropped, its promotion
    *  records' disagreements naming the run blanked, their decisions, numbers and run ids kept (learn/promote.ts
-   *  forgetRunCopies). */
+   *  forgetRunCopies), and the run's text off its learning's current files (learn/commit.ts forgetRunText).
+   *  Idempotent: a purged run's DELETE runs it again. */
   forgetCopies(agentId: string, runId: string): Promise<void>;
   /** What run `runId`'s spend reads from its journal, read before its purge removes it (store-reads/cap.ts). */
   kept(runId: string): Promise<PurgeKept>;
@@ -197,11 +166,15 @@ export async function purgedAgain(host: AgentDeleteHost, agentId?: string): Prom
 }
 
 /** Purges run `runId` with every run made from it, as the header says. 404 not_found when it is not there; 409
- *  run_not_final, nothing purged, while it or a run made from it is live. A purged run is no work. */
+ *  run_not_final, nothing purged, while it or a run made from it is live. A purged run's only work is purgedAgain and
+ *  forgetCopies again, which find nothing left once a purge finished it. */
 export async function purgeRun(host: AgentDeleteHost, runId: string): Promise<void> {
   const run = await host.store.runs.get(runId);
   if (!run) throw new ApiError("not_found", `no run ${runId}`);
-  if (run.purgedAt !== null) return purgedAgain(host);
+  if (run.purgedAt !== null) {
+    await purgedAgain(host);
+    return host.forgetCopies(run.agentId, runId);
+  }
   const made = await madeFromAll(host, runId);
   const live = await liveOf(host, [run, ...made]);
   if (live.length) throw notFinal(runId, live);

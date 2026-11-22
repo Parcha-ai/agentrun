@@ -346,7 +346,9 @@ only from the commit the change was made on (the store's compare and swap; a los
 is computed again), and the same commit holds main's snapshot (`.agentrun/snapshot.json`, what every read reads). A
 run's diff is the store's diff of the commit its marker names (`folder.ts` runMergeOf). A person's replace of
 `corrections.md` is one commit the same way, under the ETag they read. A workflow is never deleted by a run: a retired one stays in the folder and
-serves no run.
+serves no run. A run's purge (`commit.ts` forgetRunText) takes each of its merges' `corrections.md` lines off main in
+one host commit marked `.agentrun/purged/<key>` (so each scrub lands once), and the snapshot it writes keeps no reason
+of the run; another merge's diff is served without such a line as context (`purgedContextOut`).
 
 ## The reset
 

@@ -197,6 +197,15 @@ export function fits(workflow: LearnedWorkflow, input: unknown, resolve: Paramet
   return schema !== undefined && required.length > 0 && inputIssues(input as Json, schema as Json).length === 0;
 }
 
+/** Whether a connected agent's turn on `task` (the text its start was given) is an input of `workflow`: a JSON object
+ *  task is the input, so it must fit (fits, the managed rule); a prose task's input is resolved by the client from the
+ *  turn's recorded tool inputs or the host's resolveCheckInput, so any workflow may take it. */
+export function sdkTakes(workflow: LearnedWorkflow, task: string, resolve: Parameters<typeof inputSchemaOf>[1]): boolean {
+  let parsed: unknown;
+  try { parsed = JSON.parse(task); } catch { return true; }
+  return !isObject(parsed as Json) || fits(workflow, parsed, resolve);
+}
+
 /** A learned workflow's digest: the first 16 hex of its text's sha256. A new revision of it is a new digest. */
 export const workflowDigest = (workflow: Pick<LearnedWorkflow, "workflow">): string => createHash("sha256").update(workflow.workflow).digest("hex").slice(0, 16);
 

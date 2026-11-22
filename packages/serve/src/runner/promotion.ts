@@ -453,17 +453,23 @@ export const NEVER_WORD_FOR_WORD = "its answers never matched the agent's word f
 /** What a held check the grader compared says of the inputs it disagreed on: k of n, with one of the decisions. */
 export const differentDecisionWords = (k: number, n: number, example: string | undefined): string => `its answers reached a different decision from the agent's on ${k} of ${n}${example ? ` (for example: ${example})` : ""}`;
 
+/** The one writer of a hold with nothing checked (n 0): `name` at `digest` held for `reason`, never promoted, its check
+ *  the bar it was held at (`check`: what else the record keeps of it), `stopped` when nothing compiles again until a hold
+ *  or its owner acts, and `extra` on the record (a connected agent's check: what its reservation carries). Kept only while
+ *  `still` holds of the digest's record (the one write), and logged. */
+async function holdUnchecked(deps: DecideDeps, name: string, digest: string, bar: CheckBar, reason: string, still: Parameters<typeof recordPromotion>[3], { stopped = false, check = {}, extra = {} }: { stopped?: boolean; check?: Partial<CheckRecord>; extra?: Partial<PromotionRecord> } = {}) {
+  const decided = await recordPromotion(deps.store.settings, deps.agentId, { workflow: name, digest, at: iso((deps.now ?? Date.now)()), decided: "hold", reason, check: { ...bar, n: 0, agreed: 0, alone: 0, of: [], ...check, ...(stopped ? { stopped: true } : {}) }, ...seedOf(deps), ...extra }, still);
+  if (decided.won) deps.log(`workflow-first: ${name} at ${digest} ${stopped ? "stopped" : "held"}: ${reason}`);
+  return decided;
+}
+
 /** Stops a draft its check had nothing to run on (`why`: no input of the agent's it takes, or every input skipped at a
  *  write): held, never promoted unchecked, its record `stopped` (nothing compiles again until a hold or its owner acts)
  *  and naming the cause, which the compile's draft errors show (store-reads/loop.ts). It asks no recompile: a revision
  *  would have nothing to be checked on either, and a stop with nothing checked never counts as a compile's first check
- *  (attemptOf). Kept only while `still` holds of the digest's record (the one write). */
-async function stopUnchecked(deps: DecideDeps, name: string, digest: string, bar: CheckBar, why: string, still: Parameters<typeof recordPromotion>[3], check: Partial<CheckRecord> = {}, extra: Partial<PromotionRecord> = {}) {
-  const reason = `${NOTHING_TO_CHECK}: ${why}. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts`;
-  const decided = await recordPromotion(deps.store.settings, deps.agentId, { workflow: name, digest, at: iso((deps.now ?? Date.now)()), decided: "hold", reason, check: { ...bar, n: 0, agreed: 0, alone: 0, of: [], ...check, stopped: true }, ...seedOf(deps), ...extra }, still);
-  if (decided.won) deps.log(`workflow-first: ${name} at ${digest} stopped: ${reason}`);
-  return decided;
-}
+ *  (attemptOf). */
+const stopUnchecked = (deps: DecideDeps, name: string, digest: string, bar: CheckBar, why: string, still: Parameters<typeof recordPromotion>[3], check: Partial<CheckRecord> = {}, extra: Partial<PromotionRecord> = {}) =>
+  holdUnchecked(deps, name, digest, bar, `${NOTHING_TO_CHECK}: ${why}. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts`, still, { stopped: true, check, extra });
 
 /** One input a check ran its draft on: the agent's run (`of`) and its input, the agent's recorded answer, and what the
  *  draft did: its answer when it answered alone, why it handed the input back, or failed (or skipped a write). A
@@ -652,12 +658,14 @@ type ReplayInput = { readonly run: string; readonly launch: RunLaunch };
 
 /** How many of a connected agent's reserved native turns its check gives back in a row (failed, a learned workflow or
  *  nested call in it, redacted evidence, no shadow report, or a shadow that did not answer; never a cancel, and a turn
- *  that lands starts the count again) before it holds the draft, never promoted and never stopped for good, for the next
- *  compile to revise and check afresh: five in a row say the integration cannot give a baseline now, not that it never will. */
+ *  that lands starts the count again) before it holds the draft, never promoted and never stopped for good, for the
+ *  agent's next compile after compile_after more of its runs (runner/learning-end.ts compileAskOf) to revise and check
+ *  afresh: five in a row say the integration cannot give a baseline now, not that it never will. The one list of the
+ *  causes a give-back has: every other mention points here. */
 export const SDK_CHECK_RELEASES = 5;
 /** Whether a hold's check is a connected agent's held on SDK_CHECK_RELEASES give-backs in a row (releaseSdkCheck): only
  *  a connected agent's check counts give-backs. */
-const heldOnGiveBacks = (check: CheckRecord | undefined): boolean => (check?.released ?? 0) >= SDK_CHECK_RELEASES;
+export const heldOnGiveBacks = (check: CheckRecord | undefined): boolean => (check?.released ?? 0) >= SDK_CHECK_RELEASES;
 
 /** Which attempt a revision compile of `held` is when its draft fails its checks (runner/learning-end.ts
  *  recordDraftFailed): 2, the recompile, for any hold but a connected agent's on give-backs, which spends none: its
@@ -756,13 +764,20 @@ export async function sdkCheckTurn(deps: DecideDeps, record: PromotionRecord & {
   const fresh = (before?.fresh_reads ?? 0) + (read.fresh_reads ?? 0);
   const turns: CheckTurns = { ...score, of: [row.of, ...(before?.of ?? [])], outcomes: outcomesAdded(outcomes, before?.outcomes), ...(disagreements.length ? { disagreements } : {}), ...(fresh ? { fresh_reads: fresh } : {}) };
   const check = { ...bar, turns };
-  const { runs: _runs, inputs: _inputs, ...rest } = record;
-  const kept = await recordPromotion(deps.store.settings, deps.agentId, {
-    ...rest, at: iso((deps.now ?? Date.now)()), check,
-    reason: `Waiting for the next native turn of the connected agent that it takes: ${sdkTurnsWords(check)}. Nothing was promoted.`,
-  }, (was, current) => turnStill(was, current) && !overtaken(current, was!));
+  const kept = await waitAgain(deps, record, check, `Waiting for the next native turn of the connected agent that it takes: ${sdkTurnsWords(check)}. Nothing was promoted.`, still);
   if (kept.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest}: ${sdkTurnsWords(check)}`);
   return kept;
+}
+
+/** Puts a connected agent's check back as waiting for the next native turn it takes, nothing decided or promoted: its
+ *  reserved turn taken off (runs, inputs), its `check` and `reason` kept. The turn lands once: kept only while `still`
+ *  holds and the record still reserves that turn (sameReplay, heldTurn), so a second writer that read the same
+ *  reservation finds it gone, and never over a newer revision's record (overtaken). The one writer of a check put back
+ *  as waiting: a turn's row (sdkCheckTurn) and a give-back (releaseSdkCheck). */
+function waitAgain(deps: DecideDeps, record: PromotionRecord, check: CheckRecord, reason: string, still: Parameters<typeof recordPromotion>[3] = () => true) {
+  const { runs: _runs, inputs: _inputs, ...rest } = record;
+  return recordPromotion(deps.store.settings, deps.agentId, { ...rest, at: iso((deps.now ?? Date.now)()), check, reason },
+    (was, current) => still(was, current) && sameReplay(was, record) && heldTurn(was, record) && !overtaken(current, was!));
 }
 
 /** A connected agent's check whose native turn did not settle it by REPLAY_DEADLINE_MS (the backend never completed the
@@ -781,7 +796,8 @@ export async function sdkCheckDeadline(deps: DecideDeps, pending: PromotionRecor
 /** Gives back a connected agent's reserved native turn that cannot be its check's baseline (`cause`): the check waits for
  *  the next turn the draft takes, nothing decided or promoted, the turns it checked kept on the record. A `counted` turn
  *  (not a cancel, not a start that was never admitted) counts toward SDK_CHECK_RELEASES in a row, whose last holds the
- *  draft for the next compile, whose revision is checked afresh. Kept only while the record is still this reservation. */
+ *  draft for a compile after compile_after more runs, whose revision is checked afresh. Kept only while the record is
+ *  still this reservation. */
 export async function releaseSdkCheck(deps: DecideDeps, record: PromotionRecord, cause: string, counted = true) {
   if (!record.check) return;
   if (overtaken(await promotionsOf(deps.store.settings, deps.agentId), record)) {
@@ -793,19 +809,11 @@ export async function releaseSdkCheck(deps: DecideDeps, record: PromotionRecord,
   // Overtaken is read again inside the write: a newer revision's record can land while the cause is being cut.
   const still = (was: PromotionRecord | undefined, current: readonly PromotionRecord[]) => sameReplay(was, record) && heldTurn(was, record) && !overtaken(current, was!);
   const bar = { ...record.check, ...(released ? { released } : {}) };
-  const at = iso((deps.now ?? Date.now)());
-  if (released >= SDK_CHECK_RELEASES) {
-    // A hold, never `stopped`: it asks the next compile for a revision (learn/compile.ts heldNamesOf), checked afresh.
-    const reason = `the connected agent gave back ${plural(released, "reserved native turn")} in a row with no answer to check it against (the last: ${why}). It is not promoted; the agent's next compile revises it, and the revision is checked afresh`;
-    const held = await recordPromotion(deps.store.settings, deps.agentId, { workflow: record.workflow, digest: record.digest, at, decided: "hold", reason, check: { ...bar, n: 0, agreed: 0, alone: 0, of: [] }, ...seedOf(deps), ...sdkExtra(record) }, still);
-    if (held.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest} held: ${reason}`);
-    return held;
-  }
-  const { runs: _runs, inputs: _inputs, ...rest } = record;
-  const kept = await recordPromotion(deps.store.settings, deps.agentId, {
-    ...rest, at, check: bar,
-    reason: `Waiting for a native turn of the connected agent that it takes: ${why}, so that turn was given back${counted ? ` (${released} of ${SDK_CHECK_RELEASES} in a row before it is held for a recompile)` : ""}. Nothing was promoted.`,
-  }, still);
+  // A hold, never `stopped`: it asks a compile for a revision (learn/compile.ts heldNamesOf) after compile_after more runs
+  // (runner/learning-end.ts compileAskOf), checked afresh.
+  if (released >= SDK_CHECK_RELEASES)
+    return holdUnchecked(deps, record.workflow, record.digest, bar, `the connected agent gave back ${plural(released, "reserved native turn")} in a row with no answer to check it against (the last: ${why}). It is not promoted; the agent's next compile after ${plural(bar.compile_after, "more run")} revises it, and the revision is checked afresh`, still, { extra: sdkExtra(record) });
+  const kept = await waitAgain(deps, record, bar, `Waiting for a native turn of the connected agent that it takes: ${why}, so that turn was given back${counted ? ` (${released} of ${SDK_CHECK_RELEASES} in a row before it is held for a recompile)` : ""}. Nothing was promoted.`);
   if (kept.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest} waits for another native turn: ${why}`);
   return kept;
 }
@@ -814,12 +822,10 @@ export async function releaseSdkCheck(deps: DecideDeps, record: PromotionRecord,
  *  with nothing decided, never promoted (the turns it checked kept on the record), and `stopped` as any stop with
  *  nothing checked, so it spends no recompile (attemptOf): the newer revision is the one checked next. */
 async function setAside(deps: DecideDeps, pending: PromotionRecord) {
-  if (!pending.check) return;
-  await recordPromotion(deps.store.settings, deps.agentId, {
-    ...pending, at: iso((deps.now ?? Date.now)()), decided: "hold",
-    reason: `${NOTHING_TO_CHECK}: a newer revision of it landed before the connected agent's native turns finished checking it. It is not promoted; the newer revision is checked instead`,
-    check: { ...pending.check, n: 0, agreed: 0, alone: 0, of: [], stopped: true },
-  }, (was, current) => waitingSdk(was) && was!.replay_id === pending.replay_id && !overtaken(current, was!));
+  const { workflow, digest, at: _at, decided: _decided, reason: _reason, check, ...extra } = pending;
+  if (!check) return;
+  await holdUnchecked(deps, workflow, digest, check, `${NOTHING_TO_CHECK}: a newer revision of it landed before the connected agent's native turns finished checking it. It is not promoted; the newer revision is checked instead`,
+    (was, current) => waitingSdk(was) && was!.replay_id === pending.replay_id && !overtaken(current, was!), { stopped: true, extra });
 }
 
 /** The launch a replay's runs all run with (PromotionRecord.launch), chosen once by the claim or person reserving it:

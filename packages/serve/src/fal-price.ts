@@ -89,15 +89,15 @@ function namedSeconds(input: Record<string, unknown>): { seconds: number; from: 
   return undefined;
 }
 
-/** The audio and video URLs among the input's own fields (audio_url, video_url, video_urls, ...): an image has no length. */
-function mediaOf(input: Record<string, unknown>): string[] {
-  const urls: string[] = [];
-  for (const [field, value] of Object.entries(input)) {
-    if (!/(audio|video)_urls?$/.test(field)) continue;
-    for (const one of Array.isArray(value) ? value : [value]) if (typeof one === "string" && one) urls.push(one);
-  }
-  return urls;
-}
+/** The endpoints fal bills per minute of media whose length the input's media bound (fal's model pages, read 2026-11-21):
+ *  dubbing and voice isolation return the media they are given, re-voiced or cleaned; speech-to-text returns text, so
+ *  its input is the only media to bill; sync-lipsync v2 bills "per minute of video", held at the longest it is given.
+ *  Each settles at the length its output states, if it states one. Another endpoint billed by length
+ *  whose input names none bills its output's (a talking video made from a voice, LatentSync's video, an upscale), which
+ *  no input states: it is unpriceable. */
+const BY_INPUT_MEDIA: ReadonlySet<string> = new Set(["fal-ai/elevenlabs/dubbing", "fal-ai/elevenlabs/audio-isolation", "fal-ai/elevenlabs/speech-to-text", "fal-ai/sync-lipsync/v2"]);
+/** The input's audio_url and video_url. */
+const mediaOf = (input: Record<string, unknown>): string[] => [input.audio_url, input.video_url].filter((url): url is string => typeof url === "string" && url !== "");
 
 /** ffmpeg-api/compose's timeline end in seconds: the last keyframe's end across its tracks (timestamp and duration are
  *  milliseconds, by its OpenAPI). */
@@ -139,7 +139,7 @@ export function unitsBefore(endpoint: string, unit: string, input: unknown): Uni
     const named = namedSeconds(input);
     if (named === "bad") return { unknown: `${bills}, and the length this job's input names is not a number above 0` };
     if (named) return { units: named.seconds / per, from: named.from };
-    const media = mediaOf(input);
+    const media = BY_INPUT_MEDIA.has(endpoint) ? mediaOf(input) : [];
     if (media.length) return { media };
     return { unknown: `${bills}, and this job's input names no length (duration, duration_seconds, seconds_total or music_length_ms)` };
   }

@@ -61,7 +61,7 @@ import { durableWait } from "../workflow/pi-versions.js";
 import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
-import { catalogSessionNames, type ClaimMcp, mcpWhereHeld, mediaForClaim } from "./mcp-run.js";
+import { catalogSessionNames, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
 import { held as runnerSeam, heldOrThrow, heldSignInReads } from "./held.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { RUNNER_HARNESSES, type RunnerHarness } from "./adapters/index.js";
@@ -95,6 +95,7 @@ import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
 import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
+import type { AgenticBody } from "../store/agent-body.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
 import { monidForClaim, type MonidFake, withMonid } from "./monid-run.js";
@@ -300,29 +301,9 @@ export async function graderRouteOf(
   }
 }
 
-/** The revision's body, as the fields the spec reads of it (agentic runs only reach here; a workflow run is dispatched to
- *  the workflow loop). */
-type RevisionBody = {
-  readonly instructions?: string;
-  readonly tools?: readonly string[];
-  readonly toolSettings?: unknown;
-  readonly harness?: string;
-  readonly approvals?: Approvals;
-  readonly skills?: Record<string, unknown>;
-  /** What the server checks out in the run's folder before its first turn (pr-checkout.ts). */
-  readonly checkout?: Checkout;
-  /** The revision's own model ("provider/model-id"), absent for the host's. */
-  readonly model?: string;
-  /** The model of each of its tiers it names (a subagent's: runner/subagent.ts), absent for the host's tier model. */
-  readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>;
-  /** The JSON Schema its final answer's last json block meets (definition.output_schema), absent for none. */
-  readonly outputSchema?: unknown;
-  /** The agent's own limit on the run's requests on free models (definition.max_requests), under the server's. */
-  readonly maxRequests?: number;
-  /** The agent's computer setting, or its place (computer-setting.ts settingOfDefinition): the run's computer kind. */
-  readonly computer?: unknown;
-  readonly place?: unknown;
-};
+/** The revision's body, as the store keeps it (agent-body.ts); agentic runs only reach here, a workflow run is
+ *  dispatched to the workflow loop. */
+type RevisionBody = Readonly<Partial<AgenticBody>>;
 
 /** What the runner routes a claimed run on: the launch's model as its start pinned it, sent as pinned, with the
  *  revision's own ref beside it (main prices a gateway's id by the provider that ref names); the revision's ref alone
@@ -546,7 +527,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach, capped: () => launch.maxCostUsd !== undefined, media: mediaForClaim(deps.env, deps.evalFakes?.(runRow.agentId)?.web, deps.saveSlots) });
+  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach, capped: launch.maxCostUsd !== undefined, media: { env: deps.env, web: deps.evalFakes?.(runRow.agentId)?.web, slots: deps.saveSlots } });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
