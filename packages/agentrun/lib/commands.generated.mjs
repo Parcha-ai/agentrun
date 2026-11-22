@@ -3720,6 +3720,12 @@ export const COMMANDS = [
     ],
     "bodyFlags": [
       {
+        "name": "dry_run",
+        "type": "boolean",
+        "required": false,
+        "description": "True: answer the apply's plan (200 `{plan}`) from the same reads and checks, writing nothing and keeping no Idempotency-Key record. Missing keys and MCP servers are listed in the plan where the apply would be 409; any other refusal is the apply's own."
+      },
+      {
         "name": "agent_id",
         "type": "string",
         "required": false,
@@ -3773,8 +3779,8 @@ export const COMMANDS = [
       {
         "name": "source",
         "type": "string",
-        "required": true,
-        "description": "Where the package is: `github:<owner>/<repo>[/<path>][@<ref>]` (the ref, a branch, tag or commit, defaults to the default branch), or the folder's https://github.com/<owner>/<repo>/tree/<ref>/<path> URL. A public repository on github.com alone."
+        "required": false,
+        "description": "Where the package is: `github:<owner>/<repo>[/<path>][@<ref>]` (the ref, a branch, tag or commit, defaults to the default branch), or the folder's https://github.com/<owner>/<repo>/tree/<ref>/<path> URL. A public repository on github.com alone. Not with `files`; refused on a server that serves the API alone."
       },
       {
         "name": "dry_run",
@@ -3796,7 +3802,7 @@ export const COMMANDS = [
     ],
     "secretBody": false,
     "raw": false,
-    "summary": "Import a template package from a public GitHub repository, or preview it (dry_run)"
+    "summary": "Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run)"
   },
   {
     "command": [

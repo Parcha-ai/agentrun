@@ -193,7 +193,7 @@ test("agentrun deploy DIR --to B: plan, apply and lock; up to date sends nothing
   assert.equal((await b.api("GET", `/agents/${lock.agent_id}`)).body.revision, previous.revision);
   assert.equal(JSON.parse(readFileSync(lockFile, "utf8")).revision_id, previous.revision);
   const run = await b.api("POST", `/agents/${lock.agent_id}/runs`, { input: { content: "What changed?" } });
-  assert.equal(run.status, 201, JSON.stringify(run.body));
+  assert.equal(run.status, 202, JSON.stringify(run.body));
   assert.equal(run.body.revision, previous.revision, "the next run reports the revision rolled back to");
 
   // Delete: the agent gone from B, the lock gone from the folder.

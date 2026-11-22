@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun, @parcha/agentrun-serve
+kind: feature
+---
+`agentrun deploy DIR --to URL` deploys an agent package folder to another AgentRun (`--to cloud` is the hosted one; `AGENTRUN_CLOUD_URL` overrides its address). It uploads the package, prints the apply's plan (create or revise, the keys and MCP servers the target lacks, each trigger made, kept or removed, the computer), asks before it applies (`--yes` off a terminal), and writes a lock to `DIR/.agentrun/deploy.json`. A second deploy of the same files says it is up to date and sends nothing that writes; changed files make the agent's next revision. A target the package needs keys or connections on exits 3 with nothing made, and an agent edited on the target since the last deploy exits 2 unless `--force`. `agentrun deploy rollback` makes the previous revision current, and `agentrun deploy delete` deletes the agent and the lock. `agentrun deploy AGENT_ID` deploys an agent from this install by its package; `--pause-source` turns its schedules off here once it is deployed.
+- `POST /v2/templates/import` takes `{files}`, a package uploaded whole, checked under the GitHub import's limits and in its words, stored as `upload:<name>` with the package's sha256, and replaced by the next upload of that name. An upload asks no publisher trust. A server that serves the API alone takes an upload and refuses a GitHub `source`.
+- `POST /v2/templates/{id}/apply` takes `dry_run: true`: it answers `{plan}` from the apply's own reads and checks and writes nothing.

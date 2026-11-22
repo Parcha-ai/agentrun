@@ -7,9 +7,16 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
+import { schemaProblems } from "./schema-support.mjs";
 import { serve } from "./support.mjs";
 
 const enc = encodeURIComponent;
+
+/** A check of an answer against the served document's schema for it. */
+async function documented(api) {
+  const doc = (await api("GET", "/openapi.json")).body;
+  return (path, method, code, value) => assert.deepEqual(schemaProblems(doc, doc.paths[path][method].responses[code].content["application/json"].schema, value), [], `${method} ${path} ${code}: ${JSON.stringify(value)}`);
+}
 
 const SKILL = `---
 name: check
@@ -63,6 +70,9 @@ test("an upload is checked and stored as an import is, under upload:<name> with 
   const again = await api("POST", "/templates/import", { files: filesOf(second) });
   assert.equal(again.status, 201, JSON.stringify(again.body));
   assert.equal(again.body.replaced, sha256Of(first), "the next upload of the name replaces it");
+  const check = await documented(api);
+  check("/templates/import", "post", "200", preview.body);
+  check("/templates/import", "post", "201", again.body);
   const listed = () => api("GET", "/templates").then((answer) => answer.body.templates.filter((one) => !one.bundled).map((one) => [one.id, one.version, one.sha, one.publisher]));
   assert.deepEqual(await listed(), [["upload:pr-alert", "0.2.0", sha256Of(second), null]]);
 
@@ -71,6 +81,7 @@ test("an upload is checked and stored as an import is, under upload:<name> with 
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   const agent = await api("GET", `/agents/${applied.body.agent_id}`);
   assert.deepEqual([agent.body.template.id, agent.body.template.sha], ["upload:pr-alert", sha256Of(second)]);
+  check("/agents/{agent_id}", "get", "200", agent.body);
 
   await server.stop();
   const restarted = await serve(t, { data: server.data, runner: false });
@@ -95,7 +106,7 @@ test("an upload is refused in the GitHub import's words, storing nothing: a path
   await refused({ files: [...files, ...[1, 2, 3, 4, 5, 6].map((i) => ({ path: `rules/R${i}.md`, encoding: "utf8", content: big }))] }, "package", /the package's files are over 1048576 bytes together/);
   await refused({ files: [...files, ...Array.from({ length: 256 }, (_, i) => ({ path: `rules/r${i}.md`, encoding: "utf8", content: "x" }))] }, "package", /The package holds over 256 files\./);
   await refused({ files: [...files, ...Array.from({ length: 3 }, (_, i) => ({ path: `evals/big/f${i}.txt`, encoding: "utf8", content: "y".repeat(3 << 20) }))] }, "package", /The package's files are over the 8388608 bytes an import keeps\./);
-  await refused({ files: filesOf(pkg(agentMd({ version: "1.0" }))) }, "package", /agent\.md: version is SemVer/);
+  await refused({ files: filesOf(pkg(agentMd({ version: "1.0" }))) }, "package", /agent\.md: version is 1, a number: a package's version is SemVer text/);
   await refused({ files: filesOf(new Map([["skills/check/SKILL.md", Buffer.from(SKILL)]])) }, "package", /agent\.md: missing/);
   await refused({ files: [...files, { path: "extra/x.md", encoding: "utf8", content: "x" }] }, "package", /a package's folders are skills\/, rules\/ and evals\//);
   // The body's own shape.
@@ -134,7 +145,7 @@ test("an apply's dry run answers its plan and writes nothing: create or revise, 
   assert.deepEqual(await counts(), before);
 
   // An optional MCP need with no saved server, and one that is required.
-  const mcp = await upload(pkg(agentMd({ name: "mcp-need", extra: ["mcp:", "  - { source: composio, toolkit: slack, tools: [SLACK_SEND_MESSAGE], required: false, reason: \"Posts the line.\" }", "  - { source: composio, toolkit: gmail, tools: [GMAIL_SEND_EMAIL], reason: \"Mails the line.\" }"] })));
+  const mcp = await upload(pkg(agentMd({ name: "mcp-need", extra: ["mcp:", "  - { source: composio, toolkit: slack, tools: [SLACK_SEND_MESSAGE], required: false, reason: \"Posts the line.\" }", "  - { source: composio, toolkit: gmail, tools: [GMAIL_SEND_EMAIL], required: true, reason: \"Mails the line.\" }"] })));
   const needs = await api("POST", mcp, { dry_run: true });
   assert.equal(needs.status, 200, JSON.stringify(needs.body));
   assert.deepEqual(needs.body.plan.unmatched_mcp, [{ source: "composio", toolkit: "slack", required: false }, { source: "composio", toolkit: "gmail", required: true }]);
@@ -150,6 +161,8 @@ test("an apply's dry run answers its plan and writes nothing: create or revise, 
   const grown = await api("POST", path, { dry_run: true, agent_id: agentId, parameters: {} });
   assert.equal(grown.status, 200, JSON.stringify(grown.body));
   assert.deepEqual(grown.body.plan, { action: "revise", agent_id: agentId, current_revision_id: current, missing_secrets: [], unmatched_mcp: [], triggers: [{ name: "daily", kind: "schedule", action: "update" }, { name: "hourly", kind: "schedule", action: "create" }], computer: null });
+  const check = await documented(api);
+  for (const answer of [plan, needs, grown]) check("/templates/{template}/apply", "post", "200", answer.body);
   await upload(pkg(agentMd({ version: "0.3.0", extra: ["triggers:", ...HOURLY] })));
   const before2 = await counts(agentId);
   const shrunk = await api("POST", path, { dry_run: true, agent_id: agentId });

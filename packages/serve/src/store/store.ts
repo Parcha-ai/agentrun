@@ -1518,7 +1518,8 @@ export interface Runners {
 
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
  *  (`github:<owner>/<repo>[/<path>]`), its source as given, the commit SHA read, its publisher (the GitHub account), and
- *  its files as they were read, by path, base64. The server checks them again (templates.ts readPackage) as it loads them
+ *  its files as they were read, by path, base64. An uploaded one's id and source are `upload:<name>`, its sha the
+ *  package's sha256, its publisher empty. The server checks them again (templates.ts readPackage) as it loads them
  *  at its start, so a package this build no longer takes is never served. */
 export interface ImportedTemplateRow {
   readonly id: string;

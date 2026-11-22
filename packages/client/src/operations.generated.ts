@@ -4474,6 +4474,7 @@ export type GetStatsResponse = {
 
 /** Apply a template package: make its agent, with its skills, then its triggers (POST /templates/{template}/apply). */
 export type ApplyTemplateBody = {
+  dry_run?: boolean;
   parameters?: Record<string, unknown>;
   servers?: Record<string, string>;
   grants?: Array<string>;
@@ -4508,13 +4509,61 @@ export type ApplyTemplateResponse = {
     secret_set?: true;
     note?: string;
   }>;
+} | {
+  plan: {
+    action: "create" | "revise";
+    agent_id: string | null;
+    current_revision_id: string | null;
+    missing_secrets: Array<string>;
+    unmatched_mcp: Array<{
+      source: string;
+      toolkit: string;
+      required: boolean;
+    }>;
+    triggers: Array<{
+      name: string;
+      kind: string;
+      action: "create" | "update" | "remove" | "skip";
+      reason?: string;
+    }>;
+    computer: {
+      kind: string;
+      provider: string | null;
+    } | null;
+  };
+} | {
+  template: string;
+  version: string;
+  agent_id: string;
+  revision_version: number;
+  agent_change: "made" | "updated" | "unchanged";
+  servers: Record<string, string | null>;
+  triggers: Array<{
+    trigger_id: string;
+    name: string;
+    kind: "schedule" | "webhook" | "github" | "composio" | "email" | "feed";
+    enabled: boolean;
+  }>;
+  warnings: Array<InputIssue>;
+  webhook_secrets?: Array<{
+    trigger_id: string;
+    secret: SecretMeta;
+    signing_secret?: string;
+    secret_set?: true;
+    note?: string;
+  }>;
 };
 
 /** Remove an imported template package (DELETE /templates/{template}). */
 
-/** Import a template package from a public GitHub repository, or preview it (dry_run) (POST /templates/import). */
+/** Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run) (POST /templates/import). */
 export type ImportTemplateBody = {
-  source: string;
+  source?: string;
+  files?: Array<{
+    path: string;
+    encoding: "utf8" | "base64";
+    content: string;
+  }>;
   dry_run?: boolean;
   trust_publisher?: boolean;
 };
@@ -6545,7 +6594,7 @@ export function resources(call: Call) {
       apply: (template: string, body: ApplyTemplateBody, params?: ApplyTemplateParams, options?: RequestOptions): Promise<ApplyTemplateResponse> => call("applyTemplate", [template], body, params, options),
       /** Remove an imported template package (DELETE /templates/{template}). */
       delete: (template: string, options?: RequestOptions): Promise<void> => call("deleteTemplate", [template], undefined, undefined, options),
-      /** Import a template package from a public GitHub repository, or preview it (dry_run) (POST /templates/import). */
+      /** Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run) (POST /templates/import). */
       import: (body: ImportTemplateBody, options?: RequestOptions): Promise<ImportTemplateResponse> => call("importTemplate", [], body, undefined, options),
       /** The template packages this server ships, and those imported here: each makes an agent, its skills and its triggers (GET /templates). */
       list: (options?: RequestOptions): Promise<ListTemplatesResponse> => call("listTemplates", [], undefined, undefined, options),
