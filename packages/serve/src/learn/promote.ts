@@ -508,24 +508,33 @@ const blankedRuns = (record: PromotionRecord | undefined): string[] =>
  *  claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). What the one
  *  there now has blanked is blanked in `record` too (forgetRunIn): a record built on a copy read before a run's purge
  *  (a connected agent's next turn, release or decision carries its turns on) never writes that run's text back. The trim
- *  keeps the champion past what the purge gate refuses too (`refused`, purged-workflow.ts refusedIn: asked once before
- *  the guarded write when it would trim; a record it refuses stays refused). */
+ *  keeps the champion past what the purge gate refuses too (`refused`, purged-workflow.ts refusedIn: asked before the
+ *  guarded write when it would trim, over the records that write reads: a write that would trim records other than those
+ *  it asked over, another writer's landing in between, reads and asks again). */
 export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, refused?: (records: readonly PromotionRecord[]) => Promise<Refused>): Promise<Recorded> {
-  let out: Recorded = { record, won: true };
-  const before = refused ? writtenOf(itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId)))) : [];
-  const skip = refused && before.length >= PROMOTIONS_KEPT ? await refused(before) : undefined;
-  await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
-    const items = writtenOf(saved);
-    const now = promotionOf(items, record.workflow, record.digest);
-    if (!still(now, items)) {
-      out = { record: now, won: false };
-      return items;
-    }
-    const kept = blankedRuns(now).reduce(forgetRunIn, record);
-    out = { record: kept, won: true };
-    return trimPromotions([...items, kept], skip);
-  });
-  return out;
+  for (let tries = 0; tries < 20; tries++) {
+    let out: Recorded | undefined;
+    const before = refused ? writtenOf(itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId)))) : [];
+    const skip = refused && before.length >= PROMOTIONS_KEPT ? await refused(before) : undefined;
+    const asked = JSON.stringify(before);
+    await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
+      const items = writtenOf(saved);
+      const now = promotionOf(items, record.workflow, record.digest);
+      if (!still(now, items)) {
+        out = { record: now, won: false };
+        return items;
+      }
+      const kept = blankedRuns(now).reduce(forgetRunIn, record);
+      if (refused && items.length >= PROMOTIONS_KEPT && JSON.stringify(items) !== asked) {
+        out = undefined;
+        return items;
+      }
+      out = { record: kept, won: true };
+      return trimPromotions([...items, kept], skip);
+    });
+    if (out) return out;
+  }
+  throw new Error(`${promotionsKey(agentId)} kept changing under this write; try again`);
 }
 
 /** The newest records, at most PROMOTIONS_KEPT, in order, with each workflow's champion (championOf) the same after as

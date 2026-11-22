@@ -311,6 +311,40 @@ test("a purge of the champion's run puts back the version before it, and the ear
   assert.deepEqual(await reads("What is six times six?"), { holds: false, champion: promoted, served: digestOf(v3[path]) }, "a revision promoted after the purge is the champion and serves, not v1");
 });
 
+// The trim across two writers: a write reads the records one short of the bound, so it asks the purge gate nothing,
+// then another writer lands one before its guarded write. That write would trim records it never asked the gate over:
+// it reads them again and asks, and keeps the champion the gate leaves (v1's, past the purged v2).
+test("a promotion write that another writer pushes past the trim bound asks the purge gate again and keeps the earlier champion", async () => {
+  const { championOf, PROMOTIONS_KEPT, promotionsKey, recordPromotion } = await import("../dist/learn/promote.js");
+  const key = promotionsKey("racing");
+  const rec = (workflow, digest, decided, commit) => ({ workflow, digest, at: "t", decided, reason: "r", ...(commit ? { commit } : {}) });
+  const items = [rec("answer", "v1", "promote", "c1"), rec("answer", "v2", "promote", "c2")];
+  while (items.length < PROMOTIONS_KEPT - 1) items.push(rec("other", `other-${items.length}`, "hold"));
+  const kept = new Map([[key, JSON.stringify({ v: 1, items })]]);
+  let reads = 0;
+  const settings = {
+    get: async (name) => {
+      const was = kept.has(name) ? JSON.parse(kept.get(name)) : undefined;
+      // Another writer lands right after this write's first read.
+      if (++reads === 1) kept.set(name, JSON.stringify({ v: 1, items: [...was.items, rec("other", "landed", "hold")] }));
+      return was;
+    },
+    putIfAbsent: async (name, value) => (kept.has(name) ? JSON.parse(kept.get(name)) : (kept.set(name, JSON.stringify(value)), value)),
+    replaceIf: async (name, was, value) => {
+      if (kept.get(name) !== JSON.stringify(was)) return false;
+      kept.set(name, JSON.stringify(value));
+      return true;
+    },
+  };
+  const skip = (one) => one.commit === "c2";
+  const asked = [];
+  const refused = async (records) => (asked.push(records.length), skip);
+  const done = await recordPromotion(settings, "racing", rec("other", "past", "hold"), (was) => was === undefined, refused);
+  assert.equal(done.won, true);
+  const after = JSON.parse(kept.get(key)).items;
+  assert.deepEqual({ length: after.length, asked, champion: championOf(after, "answer", skip)?.digest ?? null }, { length: PROMOTIONS_KEPT, asked: [PROMOTIONS_KEPT], champion: "v1" }, "the write asks the gate over the records it trims, and v1 is still the champion past the purged v2");
+});
+
 // The writer rule follows the bytes over runs that end cheaply (no runner): (c) a workflow the purged run wrote new
 // leaves main whole; (d) a later run's revision on top of the purged run's stays as it is; (f) two purged runs in a row
 // on one workflow leave the version before both, in either order of purge, its writer the run that wrote it in both the
