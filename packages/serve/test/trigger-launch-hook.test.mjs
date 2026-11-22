@@ -76,6 +76,20 @@ test("the host's hook counts the install's POSTs alone: a port probe's GET / bef
   assert.deepEqual([before, during], [404, [404]], "each probe answered 404");
 });
 
+test("a hook URL with a query (?token=…) is still the hook's path: its POST is the hand-off, and a port probe's GET / is still answered 404 and never counted", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const hook = await hookServer(t, (res) => answerJson(res, 200, {}));
+  const { api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: `${hook.url}?token=x`, secret: mintSecret() } });
+  await made(api, "nightly");
+  const created = await api("POST", "/triggers", schedule("nightly", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  clock.to("2026-06-01T00:10:00Z");
+  const [firing] = await firings(api, created.body.id, 1);
+  assert.deepEqual([firing.status, firing.run_id], ["sent", null], JSON.stringify(firing));
+  assert.equal(await portProbe(hook.url), 404, "a port probe answered 404");
+  assert.deepEqual(hook.got.map((one) => [one.method, one.headers["webhook-id"]]), [["POST", firing.key]], "the firing's one POST, and no probe");
+});
+
 test("the host starts the firing's run through the API with trigger_firing: the run is the trigger's, the firing started, and the overlap check counts it", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const secret = mintSecret();
