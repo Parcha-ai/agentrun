@@ -1,0 +1,168 @@
+// An in-memory code.storage, at its HTTP API, as the learning store's adapter (src/learn/code-storage.ts) calls it: a
+// `fetch` the adapter is given in place of the network. It follows what the spike against the real API observed:
+// - the repo is taken from the bearer JWT's `repo` claim, never from the request; the JWT is ES256, signed with the
+//   org's key, and its `iss` is the org (a token for another org, or a bad signature, is 401);
+// - a commit (POST /repos/commit-pack, ndjson: one metadata line, then base64 blob chunks) moves `target_branch` only
+//   from `expected_head_sha`: a stale head is 409 with result.status "conflict" and writes nothing; a tree the same as
+//   the head's is refused with result.status "precondition_failed", "no changes to commit";
+// - a repo deleted is 404 to every read, and the same id made again starts empty (no main: /repos/files 404).
+// Commit ids are sha1 hex of their own fields, not git's: a store reads them back, never recomputes them.
+import { createHash, createPublicKey, verify } from "node:crypto";
+
+const ZERO = "0".repeat(40);
+
+/** A fake code.storage org `name`, its key's public half `publicKey` (PEM or KeyObject). `fetch` is what the adapter
+ *  is handed; `calls` every request it made ({ method, path, repo }); `repos` the store, by id. */
+export function codeStorageFake({ name = "example-org", publicKey } = {}) {
+  const key = publicKey ? createPublicKey(publicKey) : undefined;
+  /** id -> { commits: Map<sha, commit>, main: sha | null } */
+  const repos = new Map();
+  const calls = [];
+  let counter = 0;
+
+  const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const fail = (status, error) => json(status, { error });
+
+  /** The JWT's claims, checked: its signature, its org; else undefined. */
+  function claims(header) {
+    const token = /^Bearer (.+)$/.exec(header ?? "")?.[1];
+    if (!token) return undefined;
+    const [h, p, s] = token.split(".");
+    if (!h || !p || !s) return undefined;
+    try {
+      const head = JSON.parse(Buffer.from(h, "base64url").toString("utf8"));
+      if (head.alg !== "ES256") return undefined;
+      if (key && !verify("sha256", Buffer.from(`${h}.${p}`), { key, dsaEncoding: "ieee-p1363" }, Buffer.from(s, "base64url"))) return undefined;
+      const body = JSON.parse(Buffer.from(p, "base64url").toString("utf8"));
+      if (body.iss !== name || typeof body.repo !== "string" || !Array.isArray(body.scopes)) return undefined;
+      if (typeof body.exp !== "number" || body.exp * 1000 < Date.now()) return undefined;
+      return body;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const treeOf = (repo, sha) => (sha ? repo.commits.get(sha).tree : new Map());
+  const sameTree = (a, b) => a.size === b.size && [...a].every(([path, bytes]) => b.has(path) && Buffer.compare(b.get(path), bytes) === 0);
+  /** The first-parent history of `from`, newest first. */
+  function history(repo, from) {
+    const out = [];
+    for (let sha = from; sha; sha = repo.commits.get(sha).parent) out.push(repo.commits.get(sha));
+    return out;
+  }
+  const changedPaths = (repo, commit) => {
+    const before = treeOf(repo, commit.parent);
+    const after = commit.tree;
+    return [...new Set([...before.keys(), ...after.keys()])].filter((path) => !before.has(path) || !after.has(path) || Buffer.compare(before.get(path), after.get(path)) !== 0).sort();
+  };
+  const lines = (bytes) => (bytes ? bytes.toString("utf8").replace(/\n$/, "").split("\n") : []);
+  function rawDiff(path, before, after) {
+    const old = lines(before);
+    const now = lines(after);
+    const hunk = `@@ -${old.length ? 1 : 0},${old.length} +${now.length ? 1 : 0},${now.length} @@\n${old.map((line) => `-${line}\n`).join("")}${now.map((line) => `+${line}\n`).join("")}`;
+    return `diff --git a/${path} b/${path}\n--- ${before ? `a/${path}` : "/dev/null"}\n+++ ${after ? `b/${path}` : "/dev/null"}\n${hunk}`;
+  }
+  const commitView = (commit) => ({ sha: commit.sha, parent_shas: commit.parent ? [commit.parent] : [], message: commit.message, author_name: commit.author.name, author_email: commit.author.email, committer_name: commit.author.name, committer_email: commit.author.email, date: commit.date });
+
+  async function commitPack(repo, body) {
+    const text = Buffer.from(await body).toString("utf8");
+    const [first, ...rest] = text.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    const meta = first?.metadata;
+    if (!meta || meta.target_branch !== "main") return fail(400, "commit-pack takes a metadata line naming main");
+    const blobs = new Map();
+    for (const line of rest) {
+      const chunk = line.blob_chunk;
+      blobs.set(chunk.content_id, Buffer.concat([blobs.get(chunk.content_id) ?? Buffer.alloc(0), Buffer.from(chunk.data, "base64")]));
+    }
+    const old = repo.main;
+    const result = (status, message, success = false, extra = {}) => ({ branch: "main", old_sha: old ?? ZERO, new_sha: extra.new_sha ?? ZERO, success, status, ...(message ? { message } : {}) });
+    if (meta.expected_head_sha !== undefined && meta.expected_head_sha !== (old ?? ZERO)) return json(409, { commit: null, result: result("conflict", "expected head does not match") });
+    const tree = new Map(treeOf(repo, old));
+    for (const file of meta.files) {
+      if (file.operation === "delete") tree.delete(file.path);
+      else tree.set(file.path, blobs.get(file.content_id) ?? Buffer.alloc(0));
+    }
+    if (old && sameTree(tree, treeOf(repo, old))) return json(422, { commit: null, result: result("precondition_failed", "no changes to commit") });
+    const sha = createHash("sha1").update(`${++counter}\0${old}\0${meta.commit_message}`).digest("hex");
+    repo.commits.set(sha, { sha, parent: old, tree, message: meta.commit_message, author: meta.author, date: new Date().toISOString() });
+    repo.main = sha;
+    return json(200, { commit: { commit_sha: sha, tree_sha: sha, target_branch: "main", pack_bytes: text.length, blob_count: blobs.size }, result: result("ok", undefined, true, { new_sha: sha }) });
+  }
+
+  async function fetch(input, init = {}) {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    const prefix = "/api/v1/";
+    const path = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : url.pathname;
+    const claim = claims(new Headers(init.headers).get("authorization"));
+    calls.push({ method, path, repo: claim?.repo, search: url.search });
+    if (!claim) return fail(401, "unauthorized");
+    const can = (scope) => claim.scopes.includes(scope);
+    const id = claim.repo;
+    const repo = repos.get(id);
+    const q = url.searchParams;
+    if (method === "POST" && path === "repos") {
+      if (!can("repo:write")) return fail(403, "insufficient permissions");
+      if (repo) return fail(409, "repository already exists");
+      repos.set(id, { commits: new Map(), main: null });
+      return json(201, { repo_id: id, url: `${id}.git` });
+    }
+    if (method === "DELETE" && path === "repos/delete") {
+      if (!can("repo:write")) return fail(403, "insufficient permissions");
+      if (!repo) return fail(404, "repository not found");
+      repos.delete(id);
+      return json(200, { repo_id: id, message: "deleted" });
+    }
+    if (method === "POST" && path === "repos/commit-pack") {
+      if (!can("git:write")) return json(403, { commit: null, result: { status: "forbidden", message: "insufficient permissions" } });
+      if (!repo) return fail(404, "repository not found");
+      return commitPack(repo, new Response(init.body).arrayBuffer());
+    }
+    if (method !== "GET") return fail(405, "method not allowed");
+    if (!can("git:read")) return fail(403, "insufficient permissions");
+    if (!repo) return fail(404, "repository not found");
+    const at = (ref) => (ref === "main" || !ref ? repo.main : repo.commits.has(ref) ? ref : undefined);
+    if (path === "repos/files") {
+      const sha = at(q.get("ref"));
+      if (!sha) return fail(404, "ref not found");
+      const entries = [...treeOf(repo, sha).keys()].sort().map((one) => ({ path: one, type: "blob", mode: "100644" }));
+      return json(200, { paths: entries.map((entry) => entry.path), ref: sha, entries, next_cursor: null, has_more: false });
+    }
+    if (path === "repos/file") {
+      const sha = at(q.get("ref"));
+      const bytes = sha ? treeOf(repo, sha).get(q.get("path")) : undefined;
+      if (!bytes) return fail(404, "file not found");
+      return new Response(bytes, { status: 200, headers: { "content-type": "application/octet-stream" } });
+    }
+    if (path === "repos/commits") {
+      if ((q.get("branch") ?? "main") !== "main") return fail(404, "branch not found");
+      if (!repo.main) return fail(404, "branch not found");
+      let all = history(repo, repo.main);
+      const only = q.get("path");
+      if (only) all = all.filter((commit) => changedPaths(repo, commit).includes(only));
+      const from = Number(q.get("cursor") ?? 0);
+      const limit = Number(q.get("limit") ?? 20);
+      const page = all.slice(from, from + limit);
+      const more = from + limit < all.length;
+      return json(200, { commits: page.map(commitView), next_cursor: more ? String(from + limit) : null, has_more: more });
+    }
+    if (path === "repos/commit") {
+      const commit = repo.commits.get(q.get("sha") ?? "");
+      if (!commit) return fail(404, "commit not found");
+      return json(200, { commit: commitView(commit) });
+    }
+    if (path === "repos/diff") {
+      const commit = repo.commits.get(q.get("sha") ?? "");
+      if (!commit) return fail(404, "commit not found");
+      const before = treeOf(repo, commit.parent);
+      const files = changedPaths(repo, commit).map((one) => {
+        const raw = rawDiff(one, before.get(one), commit.tree.get(one));
+        return { path: one, state: !before.has(one) ? "added" : !commit.tree.has(one) ? "deleted" : "modified", old_path: null, raw, bytes: raw.length, is_eof: true };
+      });
+      return json(200, { sha: commit.sha, base_sha: commit.parent ?? undefined, stats: { files: files.length, additions: 0, deletions: 0, changes: 0 }, files, filtered_files: [] });
+    }
+    return fail(404, `no route ${path}`);
+  }
+
+  return { fetch, calls, repos, name };
+}
