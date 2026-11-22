@@ -39,7 +39,8 @@ const PARALLEL = 16;
 /** The head a commit names for a branch not made yet. */
 const NO_COMMIT = "0".repeat(40);
 
-type Scope = "git:read" | "git:write" | "repo:write";
+/** What a token lets its call do. */
+export type Scope = "git:read" | "git:write" | "repo:write";
 
 /** A repository id this server may create, read, write or delete: `agentrun-`, a server id (12 hex digits, archil-
  *  settings.ts serverIdOf), then letters, digits, dashes and underscores. The org's other repositories are never touched:
@@ -69,6 +70,24 @@ export function repoIdOf(serverId: string, agentId: string, generation = 0): str
   if (!Number.isSafeInteger(generation) || generation < 0) throw new RepoIdRefused(`${JSON.stringify(generation)} is no repository generation: nothing is sent`);
   const part = /^[A-Za-z0-9_-]{1,64}$/.test(agentId) && !/^h-.*-[0-9a-f]{24}$/.test(agentId) ? agentId : `h-${String(agentId).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 21)}-${createHash("sha256").update(String(agentId)).digest("hex").slice(0, 24)}`;
   return agentrunRepo(`agentrun-${serverId}-${part}-g${generation}`);
+}
+
+/** A token for repository `repo` with `scopes`, as server `serverId` signs one with org `org.name`'s key (`org.key()`,
+ *  read only after the id is checked): the one place a repository id is sent (each call names its repository by its
+ *  token alone), so the id is checked here (agentrunRepo) and no request goes out for any other. Signed by the key's own
+ *  kind, as code.storage's SDK chooses: an EC key ES256, an RSA key RS256, an Ed25519 key EdDSA. */
+export function repoToken(org: { name: string; key: () => KeyObject }, serverId: string, repo: string, scopes: readonly Scope[]): string {
+  agentrunRepo(repo);
+  const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const key = org.key();
+  const kind = key.asymmetricKeyType;
+  const alg = kind === "rsa" ? "RS256" : kind === "ed25519" ? "EdDSA" : "ES256";
+  const head = b64({ alg, typ: "JWT" });
+  const body = b64({ iss: org.name, sub: "@agentrun/serve", repo, scopes, iat: now, exp: now + TOKEN_SECONDS });
+  const data = Buffer.from(`${head}.${body}`);
+  const signature = (kind === "ed25519" ? sign(null, data, key) : kind === "rsa" ? sign("sha256", data, key) : sign("sha256", data, { key, dsaEncoding: "ieee-p1363" })).toString("base64url");
+  return `${head}.${body}.${signature}`;
 }
 
 /** Which repository generation an agent's learning is on (`n`), and those a flip left to delete (`drop`). */
@@ -140,22 +159,8 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
 
   /** The ops on one repository, `repo`. */
   function on(repo: string) {
-    const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-    /** Every call's token, the one place a repository id is sent (each call names its repository by its token alone):
-     *  checked again here (agentrunRepo), so no request goes out for any other. Signed by the key's own kind, as
-     *  code.storage's SDK chooses: an EC key ES256, an RSA key RS256, an Ed25519 key EdDSA. */
-    async function token(scopes: readonly Scope[]): Promise<string> {
-      agentrunRepo(repo);
-      const now = Math.floor(Date.now() / 1000);
-      const key = keyOf();
-      const kind = key.asymmetricKeyType;
-      const alg = kind === "rsa" ? "RS256" : kind === "ed25519" ? "EdDSA" : "ES256";
-      const head = b64({ alg, typ: "JWT" });
-      const body = b64({ iss: settings.name, sub: "@agentrun/serve", repo, scopes, iat: now, exp: now + TOKEN_SECONDS });
-      const data = Buffer.from(`${head}.${body}`);
-      const signature = (kind === "ed25519" ? sign(null, data, key) : kind === "rsa" ? sign("sha256", data, key) : sign("sha256", data, { key, dsaEncoding: "ieee-p1363" })).toString("base64url");
-      return `${head}.${body}.${signature}`;
-    }
+    /** Every call's token (repoToken), for this store's own server id. */
+    const token = async (scopes: readonly Scope[]): Promise<string> => repoToken({ name: settings.name, key: keyOf }, await (server ??= settings.serverId()), repo, scopes);
 
     /** One call: its response, whatever its status. A network failure is the store unavailable, and so is a redirect:
      *  no call follows one (redirect "error"), so the bearer token never travels to another place. */

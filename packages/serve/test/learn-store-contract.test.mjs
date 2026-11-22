@@ -735,6 +735,23 @@ test("code.storage: the repository id is agentrun-<12 hex>-<agent id>-g<N> whate
   }
 });
 
+test("code.storage: a token is signed only for a repository of the signing server's own id: server A asked to sign for agentrun-<B>-agent-one-g0 (another server's agent) refuses before its key is read, so no call for it is made; its own agentrun-<A>-... is signed", async () => {
+  const { repoToken, RepoIdRefused } = await import("../dist/learn/code-storage.js");
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const A = SRV;
+  const B = "ba9876543210";
+  const claimsOf = (token) => JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+  const org = { name: "example-org", key: () => privateKey };
+  assert.equal(claimsOf(repoToken(org, A, `agentrun-${A}-agent-one-g0`, ["git:read"])).repo, `agentrun-${A}-agent-one-g0`);
+  assert.equal(claimsOf(repoToken(org, B, `agentrun-${B}-agent-one-g3`, ["repo:write"])).repo, `agentrun-${B}-agent-one-g3`);
+  const unread = { name: "example-org", key: () => assert.fail("the key is read for a repository refused") };
+  for (const repo of [`agentrun-${B}-agent-one-g0`, `agentrun-${B}-agent-one-g1`, `agentrun-${A.slice(0, 11)}0-agent-one-g0`, `agentrun-${B}-${A}-agent-one-g0`]) {
+    assert.throws(() => repoToken(unread, A, repo, ["git:read"]), RepoIdRefused, repo);
+  }
+  // A signing server id that is no server id (not 12 hex digits) signs for none.
+  for (const server of ["", "x", A.toUpperCase(), `${A}-agent-one`]) assert.throws(() => repoToken(unread, server, `agentrun-${A}-agent-one-g0`, ["git:read"]), RepoIdRefused, server);
+});
+
 test("code.storage: each token is signed by its key's kind, as the SDK signs: an RSA key RS256, an Ed25519 key EdDSA (EC is ES256, the suite's)", async () => {
   const { codeStorageLearningStore } = await import("../dist/learn/code-storage.js");
   for (const [kind, options] of [["rsa", { modulusLength: 2048 }], ["ed25519", {}]]) {
