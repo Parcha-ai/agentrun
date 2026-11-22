@@ -223,6 +223,8 @@ export type Package = {
   instructions: string;
   /** Skill files by path under the agent's skills folder (`review/SKILL.md`), each rule beside each SKILL.md. */
   skills: Record<string, string>;
+  /** The names of its rules/ files (each one in `skills` beside every SKILL.md), so an export writes them as rules/ again. */
+  rules?: string[];
   evals: string[];
 };
 
@@ -875,11 +877,13 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   }
   const rules = kind("rules") === "dir" ? src.entries("rules") : [];
   if (rules.length && !skillDirs.length) bad("rules/", "rules ship beside each skill's SKILL.md, and the package has no skill");
+  const ruleNames: string[] = [];
   for (const entry of rules) {
     if (!entry.isFile() || !entry.name.endsWith(".md")) {
       bad(`rules/${entry.name}`, "rules/ holds only .md files");
       continue;
     }
+    ruleNames.push(entry.name);
     for (const skill of skillDirs.filter((d) => d.isDirectory())) {
       const path = `${skill.name}/${entry.name}`;
       if (Object.hasOwn(skills, path)) bad(`rules/${entry.name}`, `skills/${path} has the same name, and a rule ships beside each SKILL.md`);
@@ -936,7 +940,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags,
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: { ...(f.model as NonNullable<Package["model"]>), ...(choices ? { choices } : {}) } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
     ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number, ...(f.budget.max_requests !== undefined ? { max_requests: f.budget.max_requests as number } : {}) } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
-    triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, evals,
+    triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, ...(ruleNames.length ? { rules: ruleNames.sort() } : {}), evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
   // /v2/agents and POST /v2/triggers check their bodies (all but the agent the trigger names, which an apply makes). A

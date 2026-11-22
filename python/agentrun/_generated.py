@@ -338,6 +338,11 @@ __all__ = [
     "GetAgentLearningResponseWorkflowsItem",
     "GetAgentLearningResponseWorkflowsItemLastChange",
     "GetAgentLearningResponseWorkflowsItemRetired",
+    "GetAgentPackageResponse",
+    "GetAgentPackageResponseFilesItem",
+    "GetAgentPackageResponseReport",
+    "GetAgentPackageResponseReportBlockedItem",
+    "GetAgentPackageResponseReportRemadeItem",
     "GetAgentResponse",
     "GetAgentResponseExternal",
     "GetAgentResponseLearning",
@@ -2607,6 +2612,36 @@ class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsIt
     escalated: str
     failed: Literal[True]
     differs_on: str
+
+
+class GetAgentPackageResponse(TypedDict):
+    name: str
+    files: list[GetAgentPackageResponseFilesItem]
+    sha256: str
+    report: GetAgentPackageResponseReport
+
+
+class GetAgentPackageResponseFilesItem(TypedDict):
+    path: str
+    encoding: Literal["utf8", "base64"]
+    content: str
+
+
+class GetAgentPackageResponseReport(TypedDict):
+    blocked: list[GetAgentPackageResponseReportBlockedItem]
+    remade: list[GetAgentPackageResponseReportRemadeItem]
+
+
+class GetAgentPackageResponseReportBlockedItem(TypedDict):
+    kind: str
+    name: str
+    reason: str
+
+
+class GetAgentPackageResponseReportRemadeItem(TypedDict):
+    kind: str
+    name: str
+    reason: str
 
 
 ListRunsResponse: TypeAlias = "RunList"
@@ -9668,6 +9703,7 @@ OPERATIONS: dict[str, Operation] = {
     "listAgents": Operation(method="GET", path="/agents", path_params=(), multi_segment=(), query=("limit", "cursor", "archived"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listLearningAudits": Operation(method="GET", path="/agents/{agent_id}/learning/audits", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listLearningPromotions": Operation(method="GET", path="/agents/{agent_id}/learning/promotions", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getAgentPackage": Operation(method="GET", path="/agents/{agent_id}/package", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status", "label"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "updateDefinition": Operation(method="PUT", path="/agents/{agent_id}/definition", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=True),
@@ -9896,6 +9932,10 @@ class AgentsResource(Group):
     def list_learning_promotions(self, agent_id: str, *, timeout: float | None = None) -> ListLearningPromotionsResponse:
         """Each learned workflow revision's promotion: its replay's numbers and whether it serves (GET /agents/{agent_id}/learning/promotions)."""
         return self._call("listLearningPromotions", (agent_id,), None, None, timeout=timeout)
+
+    def package(self, agent_id: str, *, timeout: float | None = None) -> GetAgentPackageResponse:
+        """The agent's current revision as a template package (GET /agents/{agent_id}/package)."""
+        return self._call("getAgentPackage", (agent_id,), None, None, timeout=timeout)
 
     def runs(self, agent_id: str, *, limit: int | None = None, cursor: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, label: str | None = None, timeout: float | None = None) -> ListRunsResponse:
         """The agent's runs index (GET /agents/{agent_id}/runs)."""

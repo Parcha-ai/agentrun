@@ -1981,6 +1981,11 @@ const RPC_ANSWER = {
 /** GET /files's answer: a page of this server's uploads, newest first. */
 const FILE_LIST = { type: "object", additionalProperties: false, required: ["files", "next_cursor"], properties: { files: { type: "array", items: ref("schemas/File") }, next_cursor: { type: ["string", "null"] } } };
 
+/** A template package's file as GET /agents/{agent_id}/package answers it: text as itself, any other file base64. */
+const AGENT_PACKAGE_FILE = closed({ path: { type: "string", description: "Its path in the package folder, with / between folders." }, encoding: { enum: ["utf8", "base64"] }, content: { type: "string" } });
+/** One thing an export does not carry as it is here: what it is, which one, and why. */
+const EXPORT_NOTE = closed({ kind: { type: "string", description: "mcp_server, trigger, sign_in, paired_computer, computer, learning, tool_setting, pin, input_schema, budget or package." }, name: { type: "string" }, reason: { type: "string" } });
+
 const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}": {
     delete: {
@@ -2102,6 +2107,23 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         }, "One page of the agent's revisions."),
         ...errors(400, 401, 404, 429, 500),
       },
+    },
+  },
+  "/agents/{agent_id}/package": {
+    get: {
+      operationId: "getAgentPackage", tags: ["local"], summary: "The agent's current revision as a template package",
+      description: "The reverse of `POST /templates/{template}/apply`: the files of a package (`agent.md`, `skills/`, `rules/`, an output schema) that applies on any AgentRun as this agent. `agent.md` always names the model and approvals, and carries the harness, typed inputs, budget, learning, the computer it needs (a shell, or none), the secrets it names and its MCP needs; its body is the instructions. Each MCP tool it is granted is written as a need of its saved server's source and toolkit, and its triggers as bodies with no agent and no secret. What names this server is left out: its box, its computer's provider, its pins of this server's tool listings, its place. Every file is read back as an import reads a package before it is answered. `report.blocked` names what would keep the package from working elsewhere (an MCP server saved nowhere here, one on this machine's loopback, one that sends its own auth header, a pin on a tool a package can't pin, an input schema a package can't say): the files leave each out, and `agentrun export` writes none of them. `report.remade` names what the target sets up again (a webhook, GitHub, Composio or email trigger, a browser sign-in, a paired computer, a computer this server gives, what the agent learned here). `sha256` is hex over the files sorted by path, each written as path, a NUL byte, its bytes, a NUL byte. `409 not_exportable` for an agent whose source is elsewhere (a native, CLI learning, SDK or another system's agent), a workflow, or one with no revision.",
+      parameters: [ref("parameters/AgentId")],
+      responses: {
+        "200": json(closed({
+          name: { type: "string", description: "The package's name: the template it was applied from, else the agent's name as a package name." },
+          files: { type: "array", items: AGENT_PACKAGE_FILE, description: "Sorted by path." },
+          sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+          report: closed({ blocked: { type: "array", items: EXPORT_NOTE }, remade: { type: "array", items: EXPORT_NOTE } }),
+        }), "The package, and what of the agent it does not carry as it is here."),
+        ...errors(401, 404, 409, 429, 500),
+      },
+      "x-agentrun-serve": "export/1",
     },
   },
   "/agents/{agent_id}/current": {

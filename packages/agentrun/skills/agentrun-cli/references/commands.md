@@ -116,6 +116,12 @@ Each learned workflow revision's promotion: its replay's numbers and whether it 
 
 Route: `GET /agents/{agent_id}/learning/promotions`.
 
+### `agentrun agents package AGENT_ID`
+
+The agent's current revision as a template package.
+
+Route: `GET /agents/{agent_id}/package`.
+
 ### `agentrun agents runs AGENT_ID`
 
 The agent's runs index.
@@ -336,6 +342,16 @@ Route: none, it runs on this machine.
 
 - `--data DIR` (string, this CLI's own): the data directory whose server it checks (default ~/.agentrun)
 - `--json` (boolean, this CLI's own): print the checks as JSON: {exit, server, checks: [{id, status, summary, fix, docs}]}
+
+## export
+
+### `agentrun export AGENT`
+
+Write an agent's current revision as a template package folder, and say what the target sets up again.
+
+Route: none, it runs on this machine.
+
+- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one
 
 ## files
 
