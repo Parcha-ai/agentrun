@@ -893,6 +893,7 @@ __all__ = [
     "RunCreateInlineArchilDisk",
     "RunCreateInlineMcpAuthValue",
     "RunCreateMcpAuthValue",
+    "RunCreateTriggerFiring",
     "RunError",
     "RunErrorCode",
     "RunErrorDetails",
@@ -5016,6 +5017,7 @@ class ReceiveHookComposioResponseObject11FiringsItem1(_ReceiveHookComposioRespon
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
@@ -5051,6 +5053,7 @@ class ReceiveHookComposioResponseObject2FiringsItem1(_ReceiveHookComposioRespons
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
@@ -6735,6 +6738,7 @@ class RunCreate(_RunCreateRequired, total=False):
     archil_disk: RunCreateArchilDisk
     hold: bool
     hold_minutes: int
+    trigger_firing: RunCreateTriggerFiring
 
 
 class RunCreateMcpAuthValue(TypedDict):
@@ -6743,6 +6747,11 @@ class RunCreateMcpAuthValue(TypedDict):
 
 class RunCreateArchilDisk(TypedDict):
     disk_id: str
+
+
+class RunCreateTriggerFiring(TypedDict):
+    trigger_id: str
+    firing_id: str
 
 
 CreateRunResponse: TypeAlias = "Run"
@@ -9034,6 +9043,7 @@ class CreateTriggerResponseLastFiring(_CreateTriggerResponseLastFiringRequired, 
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
@@ -9073,6 +9083,7 @@ class FireTriggerResponse(_FireTriggerResponseRequired, total=False):
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
@@ -9100,6 +9111,7 @@ class ListTriggerFiringsResponseFiringsItem(_ListTriggerFiringsResponseFiringsIt
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
@@ -9378,6 +9390,7 @@ class GetTriggerResponseLastFiring(_GetTriggerResponseLastFiringRequired, total=
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
@@ -9666,6 +9679,7 @@ class ListTriggersResponseTriggersItemLastFiring(_ListTriggersResponseTriggersIt
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
@@ -10176,6 +10190,7 @@ class UpdateTriggerResponseLastFiring(_UpdateTriggerResponseLastFiringRequired, 
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
