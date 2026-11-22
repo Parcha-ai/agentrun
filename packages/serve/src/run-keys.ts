@@ -1,28 +1,29 @@
 // A run's own tool keys: `keys` on a run's start (POST /agents/{id}/runs, POST /runs) or on a message, by name, for the tool
 // keys its revision declares (declaredKeys). They are taken out of the body before anything reads it, as model_key is
 // (server.ts handedLaunchSecrets), sealed with the run's launch secrets (store/seal.ts sealRunLaunch), opened by its
-// claim for its tools alone (runner/claim-secrets.ts), and erased with the rest when the run's turn ends. Never stored,
-// logged or answered: only their names are read before the seal, for the checks a start makes.
+// claim for its tools alone (runner/claim-secrets.ts), and erased with the rest when the run's turn ends. Stored only
+// sealed with the run's launch, until its turn ends; never logged or answered: only their names are read before the seal,
+// for the checks a start makes.
 //
-// AGENTRUN_RUN_KEYS=1 (runKeysFrom): an install whose runs bring the tool keys it does not hold. A template's apply then
-// makes its agent though a tool key the template declares is not set here, and says so in a warning; a run of that
-// revision that does not carry the key is refused (409 agent_not_runnable, at keys.<NAME>). Off, nothing changes.
-import type { InputIssue } from "./errors.js";
+// AGENTRUN_RUN_KEYS=1 (env-switch.ts): an install whose runs bring the tool keys it does not hold. A template's
+// apply then makes its agent though a tool key the template declares is not set here, and says so in a warning; a run of
+// that revision that does not carry the key is refused (409 agent_not_runnable, at keys.<NAME>), and no trigger is made
+// whose firings could not carry it (firingsOwe). Off, nothing changes.
+import { ApiError, type InputIssue } from "./errors.js";
+import { handedSecretOf } from "./handed-secret.js";
+import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
 import type { Revision } from "./agent-rows.js";
-import { needsOf, type RunNeeds } from "./run-secrets.js";
+import { needsOf, type RunNeeds, unlockedFields } from "./run-secrets.js";
 import type { TemplatePackage } from "./store/store.js";
-import { TOOL_FIELDS, TOOL_KEYS, unlocksTool } from "./tool-keys.js";
+import { TOOL_FIELDS } from "./tool-keys.js";
 import { isObject } from "./validate.js";
-import { RUN_KEYS_ENV } from "./run-keys-env.js";
-
-export { RUN_KEYS_ENV, runKeysFrom } from "./run-keys-env.js";
+import { RUN_KEYS_ENV } from "./env-switch.js";
 
 /** A run's own tool keys, by name. */
 export type RunKeys = Readonly<Record<string, string>>;
 
-/** The tool keys a run of `tools` reads: each field of a tool key row (tool-keys.ts TOOL_KEYS) that unlocks one of them. */
-export const keysOfTools = (tools: readonly string[]): string[] =>
-  [...new Set(TOOL_KEYS.filter((row) => row.kind === "tool" && row.unlocks.some((unlock) => tools.some((name) => unlocksTool(unlock, name)))).flatMap((row) => row.fields as readonly string[]))];
+/** The tool keys a run of `tools` reads (run-secrets.ts unlockedFields, over tool-keys.ts TOOL_KEYS). */
+export const keysOfTools = (tools: readonly string[]): string[] => unlockedFields(tools);
 
 /** The tool keys a template's apply made `revision` with (its package's `secrets`, kept on the revision): the ones a run
  *  can carry. A model key is not one. */
@@ -42,8 +43,8 @@ export async function declaredKeys(revision: Pick<Revision, "kind" | "body"> & o
 /** The longest key value taken. */
 export const MAX_KEY = 8192;
 
-/** `keys` as a body gives it, checked: tool key names (TOOL_FIELDS) to their values, each text of 1 to 8192 characters. Each
- *  problem goes to `issues` by name, never with its value. */
+/** `keys` as a body gives it, checked: tool key names (TOOL_FIELDS) to their values, each checked as every handed key is
+ *  (handed-secret.ts), up to MAX_KEY. Each problem goes to `issues` by name, never with its value. */
 export function runKeysOf(value: unknown, issues: InputIssue[]): RunKeys {
   if (!isObject(value)) {
     issues.push({ field: "keys", reason: "wrong_type", message: 'keys is an object of tool key names to their values, such as {"PARALLEL_API_KEY": "..."}.' });
@@ -54,8 +55,11 @@ export function runKeysOf(value: unknown, issues: InputIssue[]): RunKeys {
     const field = `keys.${name}`;
     if (!TOOL_FIELDS.includes(name)) issues.push({ field, reason: "not_an_option", message: `${name} is not a tool key a run can carry: one of ${TOOL_FIELDS.join(", ")}.` });
     else if (typeof given !== "string") issues.push({ field, reason: "wrong_type", message: `${field} is the key's value, as text.` });
-    else if (!given.trim() || given.length > MAX_KEY) issues.push({ field, reason: "bad_format", message: `${field} is the key's value: text of 1 to ${MAX_KEY} characters.` });
-    else out[name] = given;
+    else {
+      const wrong = handedSecretOf(given, field, MAX_KEY);
+      if (wrong) issues.push(wrong);
+      else out[name] = given;
+    }
   }
   return out;
 }
@@ -93,4 +97,26 @@ export function keysOwed(revision: object, env: NodeJS.ProcessEnv, carried: read
     message: `This agent's template needs ${name}, which this server does not hold: it takes it from each run (${RUN_KEYS_ENV}=1).`,
     fix: `Send keys.${name} with the run.`,
   }));
+}
+
+/** The 409 a run that owes `owed` (keysOwed) gets at its start, and a trigger that could only start or message such runs
+ *  gets when it is made or moved (firingsOwe). */
+export const keysOwedRefusal = (owed: readonly InputIssue[]): ApiError =>
+  new ApiError("agent_not_runnable", owed.map((one) => one.message).join(" "), { fields: [...owed], details: { unbound: [], missing: {} } });
+
+/** Under the run-keys setting, whether a trigger's firings could never bring the keys runs of its agent owe (`owed`,
+ *  keysOwed with nothing carried): a message_run's never do, hook or not; a start_run's do only through the launch hook,
+ *  which hands each firing to the backend in front of this server to start the run with its keys (trigger-launch-hook.ts). */
+export const firingsOwe = (owed: readonly unknown[], target: "start_run" | "message_run", hooked: boolean): boolean =>
+  owed.length > 0 && (target === "message_run" || !hooked);
+
+/** Why an apply under the run-keys setting does not make `trigger` of the `packageName` template (a start_run's) for an
+ *  agent whose runs owe `owed`, or undefined when it makes it (firingsOwe). */
+export function runKeysTriggerSkipped(packageName: string, trigger: { name?: unknown; source?: unknown }, owed: readonly string[], hooked: boolean): { reason: "not_set_up_here"; message: string } | undefined {
+  if (!firingsOwe(owed, "start_run", hooked)) return undefined;
+  const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
+  return {
+    reason: "not_set_up_here",
+    message: `The ${packageName} template's trigger ${String(trigger.name).trim()} (${kind}) was not made: each run of its agent must carry ${owed.join(" and ")} in keys (${RUN_KEYS_ENV}=1), and its firings would start runs without them. Start its runs through the API with keys, or set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}) and apply again: each firing then goes to the backend in front of this server, which starts the run with its keys.`,
+  };
 }

@@ -26,7 +26,7 @@ test("needs that are not a list of program names are refused at their field, in 
   for (const needs of [[], "ffmpeg", [3], new Array(33).fill(0).map((_, i) => `p${i}`)]) {
     assert.deepEqual(issues({ kind: "sandbox", provider: "docker", needs }), [["definition.computer.needs", "wrong_type"]], JSON.stringify(needs));
   }
-  for (const name of ["/usr/bin/ffmpeg", "ff mpeg", "$(id)", "-rf", "", "a;b", "é"]) {
+  for (const name of ["/usr/bin/ffmpeg", "ff mpeg", "$(id)", "-rf", "", "a;b", "é", "@scope/name"]) {
     assert.deepEqual(issues({ kind: "sandbox", provider: "docker", needs: [name] }), [["definition.computer.needs", "bad_format"]], JSON.stringify(name));
   }
   assert.deepEqual(issues({ kind: "sandbox", provider: "docker", needs: ["ffmpeg", "ffmpeg"] }), [["definition.computer.needs", "duplicate"]]);
@@ -68,7 +68,7 @@ test("the words name what the box lacks and the fix in the provider's own settin
   const other = needsWords({ missing: ["ffprobe"] }, MEDIA, { label: "Modal" });
   assert.match(other, /on the Docker box, set AGENTRUN_DOCKER_IMAGE to such an image/);
   const unasked = needsWords({ unchecked: "the connection to c1 ended." }, MEDIA, { label: "Docker", local: true });
-  assert.equal(unasked, "This agent's sandbox on Docker could not be checked for the programs it needs (chrome, ffmpeg, ffprobe, hyperframes): the connection to c1 ended. Nothing ran.");
+  assert.equal(unasked, "This agent's sandbox on Docker could not be checked for what it needs (chrome, ffmpeg, ffprobe, hyperframes): the connection to c1 ended. Nothing ran.");
 });
 
 // The check as the box runs it: the claim's one `sh`, run here by a stand-in client whose exec.run starts it on this
@@ -113,17 +113,9 @@ test("a box with no python3 or no node lacks the libraries that would need it, a
   assert.deepEqual(await missingNeeds(hostClient(t, { node: false }), ["python-pptx", "pptxgenjs"]), { missing: ["pptxgenjs"] });
 });
 
-test("a box that lacks only what the documents image has is told to build that image: Docker's command, or Daytona's documents snapshot", async () => {
+test("a Docker box that lacks a library is told how to build the documents image, in the same words as the media image's", async () => {
   const { needsWords } = await import("../dist/computer-needs.js");
-  const DOCS = ["python-pptx", "pptxgenjs"];
-  const docker = needsWords({ missing: DOCS }, DOCS, { label: "Docker", local: true });
-  assert.match(docker, /^This agent's sandbox on Docker lacks python-pptx and pptxgenjs, which the agent needs \(computer\.needs\), so nothing ran\./);
-  assert.match(docker, /so nothing ran\. Build the documents image: docker build -t agentrun-documents:<first 12 hex of the sha256 of its Dockerfile and documents\.sh> packages\/computer\/documents, name that tag in AGENTRUN_DOCKER_IMAGE and restart the server\.$/);
-  assert.doesNotMatch(docker, /media/, "only the image that has them");
-  const daytona = needsWords({ missing: ["openpyxl"] }, DOCS, { label: "Daytona", imageEnv: "AGENTRUN_DAYTONA_SNAPSHOT" });
-  assert.match(daytona, /python3 packages\/computer\/box\/build-daytona\.py --documents/);
-  assert.match(daytona, /set AGENTRUN_DAYTONA_SNAPSHOT to the agentrun-documents-<hash> snapshot it prints/);
-  // Programs of both images, or of neither, keep the general words.
-  const mixed = needsWords({ missing: ["ffmpeg", "python-pptx"] }, ["ffmpeg", "python-pptx"], { label: "Docker", local: true });
-  assert.match(mixed, /Set AGENTRUN_DOCKER_IMAGE to an image that has them/);
+  const docker = needsWords({ missing: ["python-pptx", "pptxgenjs"] }, ["python-pptx", "pptxgenjs"], { label: "Docker", local: true });
+  assert.match(docker, /^This agent's sandbox on Docker lacks python-pptx and pptxgenjs, which the agent needs \(computer\.needs\), so nothing ran\. Set AGENTRUN_DOCKER_IMAGE to an image that has them and restart the server\./);
+  assert.match(docker, /For decks, documents and sheets \(python-pptx, python-docx, openpyxl, pptxgenjs, docx, exceljs\), build the documents image: docker build -t agentrun-documents:<first 12 hex of the sha256 of its Dockerfile and documents\.sh> packages\/computer\/documents, and name that tag\.$/);
 });

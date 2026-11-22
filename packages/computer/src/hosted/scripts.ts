@@ -261,6 +261,20 @@ export function hostedCommands({
 	};
 }
 
+/**
+ * The shell line a provider that starts agentrun-dial itself runs, as root. On dial the adapter runs nothing in the
+ * machine, so the line runs the steps the exec path runs before init first: rootOnly made root's alone when it names
+ * paths (HostFacts.rootOnly), then the session buses in /tmp closed (SESSION_BUSES). Joined by &&, so a step that fails
+ * starts nothing, and the machine never dials. attach, when given, is AGENTRUN_ATTACH_URL's quoted assignment on the line.
+ */
+export function dialLaunch({ rootOnly = [], attach }: { rootOnly?: readonly string[] | undefined; attach?: string } = {}): string {
+	return [
+		...(rootOnly.length > 0 ? [shellLine(hostedCommands({ rootOnly }).rootOnly)] : []),
+		shellLine(hostedCommands().sockets),
+		`${attach === undefined ? "" : `AGENTRUN_ATTACH_URL=${quote(attach)} `}exec ${AGENTRUN_DIAL}`,
+	].join(" && ");
+}
+
 export interface ChildCommandOptions {
 	/** Where the vendor's upload left the daemon. */
 	staging?: string;

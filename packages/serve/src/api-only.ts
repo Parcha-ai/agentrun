@@ -2,14 +2,10 @@
 // deploy's routes alone, and refuses every other address before anything else reads the request: the console at "/" and
 // its assets, sign-in and setup, settings, MCP, triggers and their webhook hooks, the rest of agents and templates.
 // Off by default.
+import { API_ONLY_ENV } from "./env-switch.js";
+import { NOT_SET_UP } from "./runnable.js";
 import type { Route } from "./server.js";
 import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
-
-/** runnable.ts NOT_SET_UP, spelled here: the CLI reads this module before the server loads, so it imports no more. */
-const NOT_SET_UP = "not_set_up_here";
-
-/** The variable that turns the profile on. */
-export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
 
 /** The routes (server.ts ROUTES, by name) an API-only server serves. Past a run's own, why each group is here:
  *  - a run's hosted machine fetches computerd with the token its create minted, not the server's;
@@ -21,6 +17,8 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
  *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
  *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart;
+ *  - a backend that builds runs from the MCP servers saved here reads their names (listMcpServerNames), never a URL or a
+ *    credential, to hold back a job whose server isn't saved before its launch is refused for it;
  *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
  *    words, template-import.ts), which an apply then makes into its agent;
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
@@ -37,7 +35,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
   "listRunFiles", "readRunFile",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
-  "getCapabilities", "getHealth", "getUsage", "getCapacity",
+  "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames",
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
 ]);
 
@@ -57,15 +55,6 @@ export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unk
   if (!API_ONLY_HOOKED_KINDS.has(kind)) return { reason: "not_an_option", message: `${named}, which serves no route or setting a ${kind} trigger needs. Start its runs through the API instead.` };
   if (hooked) return undefined;
   return { reason: NOT_SET_UP, message: `${named} and has no launch hook, so its firings have nowhere to go. Start its runs through the API, or set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}) and apply again: each firing then goes to your backend, which starts its run.` };
-}
-
-/** Whether `env` turns the profile on: `1` or `true` on; unset, empty, `0` or `false` off. Any other value is refused in
- *  words (a TypeError), so a typo never leaves the console open on a server meant to be API-only. */
-export function apiOnlyFrom(env: NodeJS.ProcessEnv = process.env): boolean {
-  const given = env[API_ONLY_ENV]?.trim().toLowerCase() ?? "";
-  if (given === "1" || given === "true") return true;
-  if (given === "" || given === "0" || given === "false") return false;
-  throw new TypeError(`${API_ONLY_ENV} is 1 (serve the run API only) or 0 (the whole server), not ${JSON.stringify(env[API_ONLY_ENV])}`);
 }
 
 /** A run's computer live view: its page, files and socket, which take the viewer credential alone here (server.ts). */

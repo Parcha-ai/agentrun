@@ -748,12 +748,10 @@ dependencies from the registry as it stood at that instant (by date, not by cont
 the same Debian packages. It is about 2.7 GB on disk. An agent that needs it says so with
 [`computer.needs`](#computers), so a server on another image fails its runs in words instead of running them.
 
-**The documents image.** For an agent that writes decks, documents and sheets, the computer package keeps a third
-recipe, the folder `packages/computer/documents`: the default image's base, by the same digest, and its programs, with
-its Debian packages from snapshot.debian.org at one instant, plus python-pptx, python-docx and openpyxl for `python3`
-(each with every package it needs, pinned by version and sha256, wheels only) and pptxgenjs, docx and exceljs for `node`
-(at exact versions, their dependencies as the registry stood at that same instant, no install script run). The Node
-libraries are linked as `/node_modules`, so a script in any folder requires or imports them. They are the folder's
+**The documents image.** For an agent that writes decks, documents and sheets, `packages/computer/documents` is the
+default image plus the Python and Node libraries that write Office files (python-pptx, python-docx and openpyxl for
+`python3`; pptxgenjs, docx and exceljs for `node`), pinned as its header says. The Node libraries are linked as
+`/node_modules`, so a script in any folder requires or imports them. The libraries are the folder's
 `documents.sh`, the one layer both builds run. Build it and name its tag in `AGENTRUN_DOCKER_IMAGE`:
 
 ```sh
@@ -762,11 +760,11 @@ docker build -t "$tag" packages/computer/documents
 AGENTRUN_DOCKER_IMAGE=$tag AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 ```
 
-It is about 920 MB on disk. On Daytona, `python3 packages/computer/box/build-daytona.py --documents` builds the box
+On Daytona, `python3 packages/computer/box/build-daytona.py --documents` builds the box
 image with the same layer on top as the snapshot `agentrun-documents-<hash>` (the box recipe's snapshot,
 `agentrun-box-<hash>`, is unchanged); name it in `AGENTRUN_DAYTONA_SNAPSHOT`. An agent that needs them says so in
-`computer.needs` (`["python-pptx", "pptxgenjs"]`), and a box without them ends its runs in words naming this image's
-build, before any model request. Neither is published, and no agent setting picks one: a server's Docker image, or its
+`computer.needs` (`["python-pptx", "pptxgenjs"]`), and a box without them ends its runs before any model request; on
+Docker, the words name this image's build. Neither is published, and no agent setting picks one: a server's Docker image, or its
 Daytona snapshot, is one for every agent.
 
 ### In the published image
@@ -882,7 +880,7 @@ the provider's words.
 32 names (letters, digits, `.`, `_`, `+` and `-`; no path), each once. A name may also be a library the agent's code
 loads: a Python package by the name pip installs it by (`python-pptx`), which the box's `python3` has installed, or a
 Node package (`pptxgenjs`), which a script of the box's `node` requires (from `node_modules` of the folder the check
-runs in or any folder above it, up to `/node_modules`). It says what the box must have, never which
+runs in or any folder above it, up to `/node_modules`). A scoped npm package (`@scope/name`) can't be named. It says what the box must have, never which
 image it is: a Docker box's image is still `AGENTRUN_DOCKER_IMAGE`'s, and another provider's is its own. Each run's
 claim asks the box it started, before the run's first model request: one `sh` with the names as its arguments, which
 prints those that are neither a program `command -v` finds nor such a library, searching the folders the agent's shell searches (`/usr/local/sbin`,
@@ -1362,7 +1360,8 @@ Custody, as for a per_run MCP server's `mcp_auth`:
   keeps failing, the message waits untaken and is delivered again, never run on the key held before it or the
   server's. A stop or cancel sent after it still reaches the run. A message without one keeps the key the run holds.
 
-**The revoke-at-turn-end contract.** The write that ends a run's turn erases its key, and the run reports the turn
+**The revoke-at-turn-end contract.** The write that ends a run's turn erases its key from the store (the runner's
+redactor keeps the value in memory to cut it), and the run reports the turn
 ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request
 tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run compile
 turn. So a caller may revoke the key as soon as it sees the turn end, and no request of that run will
@@ -1394,19 +1393,28 @@ curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer 
 ```
 
 - A name that is not a tool key, or one no tool of the run's revision reads (its tools, its workflow's nodes and
-  decision providers, and the keys its template declares), is 422 at `keys.<NAME>`, the value never echoed.
+  decision providers, and the keys its template declares), is 422 at `keys.<NAME>`, the value never echoed. So is a
+  value that is not text of 8 or more characters with no space or control character (`invalid`): the runner could
+  not cut a shorter one from what the run writes.
 - The keys are taken out of the body before anything reads it, as `model_key` is: never in the run's saved body, its
   timeline, its view, a log or an `Idempotency-Key`'s fingerprint. They are sealed with the run's launch, opened at
-  each claim for its tools alone, and erased by the write that ends its turn. Since no read after that could cut
-  them, the runner cuts them from everything the run writes, as it writes it.
+  each claim for its tools alone, and erased from the store by the write that ends its turn; the runner's redactor
+  keeps each value in memory to cut it. Since no read after that could cut them, the runner cuts them from everything
+  the run writes, as it writes it.
 - A message's `keys` replace the run's in the message's own write, read from the run's next claim on; a turn still
   going keeps the keys it opened. `keys: {}` leaves the run none. A message without them keeps the run's, which are
   none once its last turn ended.
 
-**A server that holds no tool keys: `AGENTRUN_RUN_KEYS=1`.** Off, a template's apply refuses a tool key the server does
-not hold (409, as before). With the setting on, the apply makes the agent and says, in a warning, which tool keys
-each run must bring. A run of that agent without one of them is 409 `agent_not_runnable` at `keys.<NAME>`, before
-anything is made, and so is a message that would start a turn without it. `MONID_API_KEY` stays the server's even with
+**Tool keys each run brings: `AGENTRUN_RUN_KEYS=1`.** Off, a template's apply refuses a tool key the server does not
+hold (409, as before). With `1`, a template's apply makes its agent though a tool key it declares is not set here, with
+a warning, and each run of that agent must bring the key in `keys`: without it, the run is 409 `agent_not_runnable` at
+`keys.<NAME>` before anything is made, and so is a message that would start a turn. Keys the server holds are still
+used by runs that bring none. A trigger's firing brings no keys, so no trigger is made whose firings would start or
+message such runs without them: the apply skips the template's triggers with a warning at `triggers.<N>`
+(`not_set_up_here`, the apply still 201), unless the [launch hook](#launch-hook) is set, which hands each firing to
+your backend to start the run with its keys; `POST /v2/triggers`, or a `PATCH` that moves a trigger, is 409
+`agent_not_runnable` naming the keys for a trigger that would start runs of the agent with no hook, or message one of
+its runs, hook or not. `MONID_API_KEY` stays the server's even with
 the setting on: an agent's monid tools are checked with it when the agent is saved, before any run, so a template that
 grants them is still refused at its apply (409 at `secrets.MONID_API_KEY`) where the server has none. A run can still
 bring its own monid key to use in place of the server's.
@@ -2241,8 +2249,9 @@ curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 
 `composio_user_id` is a Composio user id; `connected_account_id`, optional, is one of that user's connected accounts
 (`ca_...`), and without it Composio picks the user's account for the toolkit. Each request to the server carries that
 user and account, the Composio key staying the server's own. The binding is kept as a `per_run` server's headers are:
-sealed into the run's launch, erased by the write that ends the run, never on the server's row, the run's view, its
-timeline, its trace or a log line, and its values are cut from whatever the run shows. A message's binding replaces the
+sealed into the run's launch, erased from the store by the write that ends the run, never on the server's row, the
+run's view, its timeline, its trace or a log line, and its values are cut from whatever the run shows (the runner's
+redactor keeps them in memory to cut them). A message's binding replaces the
 run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
 handed none, so a per-run server never calls as a default account. A malformed user or account is `422 input_invalid` at
 `mcp_auth.<server>.composio_user_id` or `.connected_account_id`, and so is a binding to the preset's default user
@@ -2314,9 +2323,10 @@ A per_run save keeps no secret, so the API token may make it, as it may preview 
 credentials such a server receives are the ones each run's own caller hands it. The run's calls of that server carry
 those headers, and only to the origin the server had when the run was started. The
 credential is sealed into the run's launch record under `AGENTRUN_SEAL_KEY` (bound to the run's id), read at each claim, so
-a resume, a restart or a lost lease uses it again, and erased by the write that ends the run. It is never in the run's
-saved body, its timeline, its view, a log line or an `Idempotency-Key`'s fingerprint (a retry with a new credential
-answers the first request's run), and its values are cut from whatever the run shows. `POST /v2/runs/{run_id}/messages`
+a resume, a restart or a lost lease uses it again, and erased from the store by the write that ends the run. It is never
+in the run's saved body, its timeline, its view, a log line or an `Idempotency-Key`'s fingerprint (a retry with a new
+credential answers the first request's run), and its values are cut from whatever the run shows (the runner's redactor
+keeps them in memory to cut them). `POST /v2/runs/{run_id}/messages`
 takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
 steer into a working run from its next model request, or a follow-up that opens an ended run again) calls with them. A
 name that is not a saved per_run server is `422` at `mcp_auth.<server>`, and no run starts. A run handed no credential
@@ -3020,8 +3030,9 @@ approve, such a send is refused in those words.
 ## Templates
 
 A template package makes a working agent in one call: its definition, its skills and rules, and its triggers, from a
-folder the server ships. `GET /v2/templates` lists them; `POST /v2/templates/{name}/apply` with `{parameters,
-overrides?: {model}}` makes one, or nothing when a check fails (a trigger refused archives the agent it made). A
+folder the server ships. `GET /v2/templates` lists them; `GET /v2/templates/{name}` reads one whole (its instructions and
+every skill file, as an import shows them); `POST /v2/templates/{name}/apply` with `{parameters, overrides?: {model}}`
+makes one, or nothing when a check fails (a trigger refused archives the agent it made). A
 package's `version` is SemVer and never `definition.version`, the agent's revision number. A package's `composio` trigger names its
 need's toolkit as its `server` (`server: github` for a required `{source: composio, toolkit: github}` need), and apply makes it
 on the saved Composio server that need maps to, its `config` filled from the parameters it names
@@ -3079,6 +3090,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
+| `GET /settings/mcp-server-names` | The saved MCP servers' names alone (`mcpservernames/1`), sorted, with the token, also [API-only](#api-only): no URL, auth type, header or tool. |
 | `GET /settings/mcp-servers`, `POST /settings/mcp-servers/preview`, `GET`, `PUT` and `DELETE /settings/mcp-servers/{name}`, `POST .../{name}/refresh`, `POST .../{name}/oauth/start`, `GET /settings/mcp-servers/oauth/callback` and `GET .../oauth/client.json` | [MCP servers](#mcp-servers), this server's own routes (`x-agentrun-serve: "mcpservers/1"`): preview a remote MCP server's tools, save it with its credential sealed, read it back without the credential, refresh its tools, forget it, or [sign in to it with OAuth](#signing-in-with-oauth) (the callback and the client document take no token). |
 | `GET /settings/tools`, `PUT /settings/tools` | This server's own: the providers of `web_search`, `web_fetch` and `browser` ([search and fetch](#search-and-fetch)). |
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
@@ -3215,6 +3227,8 @@ serves these routes alone:
 - a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
   minted;
 - `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
+- the names of the MCP servers saved here (`GET /settings/mcp-server-names`, `{names}`), never a URL or a credential:
+  a backend that builds runs from saved servers holds back a job whose server isn't saved, before its launch is refused;
 - a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
   (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive

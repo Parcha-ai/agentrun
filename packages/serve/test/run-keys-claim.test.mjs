@@ -14,6 +14,7 @@ const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
 const { openRunLaunch, sealRunLaunch, sealRunMcpAuth } = await import("../dist/store/seal.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { declaredKeys, keysOfTools } = await import("../dist/run-keys.js");
+const { cutDeep, heldRedactor, secretRedactor } = await import("../dist/runner/redact.js");
 
 const KEY = randomBytes(32);
 const RUN = "run_keys_claim";
@@ -30,27 +31,43 @@ async function storeWith(t, saved = {}, launches = {}) {
   return { sealedKeys: store.sealedKeys, runs: { launch: async (runId) => ({ body: "{}", sealed: launches[runId] ?? null }) } };
 }
 
-test("the claim lays the run's own key over the environment its tools run under: the key its revision reads, over the server's by the same name", async (t) => {
+test("the claim lays the run's own key over the environment its tools run under, the key its revision reads over the server's by the same name, and carries it into the runner's redactor first", async (t) => {
   const carried = newKey("carried");
   const store = await storeWith(t, { PARALLEL_API_KEY: newKey("saved") }, { [RUN]: sealRunLaunch(KEY, RUN, { keys: { PARALLEL_API_KEY: carried } }) });
-  const env = await claimSecrets({ store, sealKey: KEY, env: { MONID_API_KEY: newKey("env") } }, rev(["web_search"]), WEB_ON_PARALLEL, RUN);
+  const redact = heldRedactor(secretRedactor([]));
+  const env = await claimSecrets({ store, sealKey: KEY, env: { MONID_API_KEY: newKey("env") }, redact }, rev(["web_search"]), WEB_ON_PARALLEL, RUN);
   assert.equal(env.PARALLEL_API_KEY, carried, "the run's key, over the one saved here");
   assert.equal(env.MONID_API_KEY, undefined, "a key the run's tools do not read is in neither");
+  const cut = redact.carried(RUN);
+  assert.ok(cut && !cut(`the key is ${carried}`).includes(carried), "the run's journal cut holds it");
 });
 
 test("a run key its revision's tools do not read is never laid; a claim given no run id lays none", async (t) => {
   const carried = newKey("carried");
   const store = await storeWith(t, {}, { [RUN]: sealRunLaunch(KEY, RUN, { keys: { MONID_API_KEY: carried, PARALLEL_API_KEY: carried } }) });
-  const web = await claimSecrets({ store, sealKey: KEY, env: {} }, rev(["web_search"]), WEB_ON_PARALLEL, RUN);
+  const web = await claimSecrets({ store, sealKey: KEY, env: {}, redact: heldRedactor(secretRedactor([])) }, rev(["web_search"]), WEB_ON_PARALLEL, RUN);
   assert.equal(web.MONID_API_KEY, undefined, "a web run never gets the monid key it carried");
   assert.equal(web.PARALLEL_API_KEY, carried);
   const none = await claimSecrets({ store, sealKey: KEY, env: {} }, rev(["web_search"]), WEB_ON_PARALLEL);
   assert.equal(none.PARALLEL_API_KEY, undefined, "no run id, no run keys");
 });
 
+test("a claim with run keys to lay and no redactor to cut them lays none and throws in words; one with none to lay needs none", async (t) => {
+  const carried = newKey("carried");
+  const store = await storeWith(t, {}, { [RUN]: sealRunLaunch(KEY, RUN, { keys: { PARALLEL_API_KEY: carried } }) });
+  let laid;
+  await assert.rejects(
+    claimSecrets({ store, sealKey: KEY, env: {}, redact: undefined }, rev(["web_search"]), WEB_ON_PARALLEL, RUN).then((env) => (laid = env)),
+    (error) => /carries its own tool keys \(PARALLEL_API_KEY\), and this claim has no redactor to cut them from what the run writes: none is laid\./.test(error.message) && !error.message.includes(carried),
+  );
+  assert.equal(laid, undefined, "no environment holding the key is handed back");
+  const bare = await claimSecrets({ store, sealKey: KEY, env: {}, redact: undefined }, rev(["web_search"]), WEB_ON_PARALLEL, "run_bare");
+  assert.equal(bare.PARALLEL_API_KEY, undefined, "a run carrying no keys is claimed as before");
+});
+
 test("a launch sealed under another key refuses the claim in words", async (t) => {
   const store = await storeWith(t, {}, { [RUN]: sealRunLaunch(randomBytes(32), RUN, { keys: { PARALLEL_API_KEY: newKey("other") } }) });
-  await assert.rejects(claimSecrets({ store, sealKey: KEY, env: {} }, rev(["web_search"]), WEB_ON_PARALLEL, RUN), /This run's launch secrets do not open with this runner's seal key: its keys are not sent\./);
+  await assert.rejects(claimSecrets({ store, sealKey: KEY, env: {}, redact: heldRedactor(secretRedactor([])) }, rev(["web_search"]), WEB_ON_PARALLEL, RUN), /This run's launch secrets do not open with this runner's seal key: its keys are not sent\./);
 });
 
 test("run keys are sealed with the launch secrets and opened back; a replay's MCP credentials never carry them", () => {
@@ -72,7 +89,6 @@ test("the keys a revision declares: each tool key field its tools read, and its 
   assert.deepEqual(await declaredKeys({ kind: "agentic", body: { tools: ["web_search"] }, package: null }), ["PARALLEL_API_KEY"]);
 });
 
-const { carryTo, cutDeep, heldRedactor, secretRedactor } = await import("../dist/runner/redact.js");
 const { underClaimed } = await import("../dist/runner/claim-secrets.js");
 const { withCarried } = await import("../dist/run-keys.js");
 
@@ -80,8 +96,8 @@ test("a run's journal cut is of its own keys alone, names included, and goes wit
   const redact = heldRedactor((text) => text);
   const mine = newKey("mine");
   const theirs = newKey("theirs");
-  carryTo(redact, "run_mine")([mine]);
-  carryTo(redact, "run_theirs")([theirs]);
+  redact.carry("run_mine", [mine]);
+  redact.carry("run_theirs", [theirs]);
   assert.equal(redact.carried("run_none"), undefined, "a run that carried nothing writes uncut");
   const written = JSON.stringify(cutDeep({ [mine]: { said: `the key is ${mine}` }, list: [mine], other: theirs }, redact.carried("run_mine"), true));
   assert.ok(!written.includes(mine), "the run's key, as a value and as a JSON name, is cut as written");
@@ -96,7 +112,7 @@ test("a carried key all of digits, written as a JSON number, is cut too: its dig
   // Two keys of digits alone: one the number shows as written, one whose leading zero a number drops.
   const plain = "4111111111111111";
   const padded = "0522222222222222";
-  carryTo(redact, "run_digits")([plain, padded]);
+  redact.carry("run_digits", [plain, padded]);
   const cut = redact.carried("run_digits");
   const out = cutDeep({ args: { pin: Number(plain), big: BigInt(plain), list: [Number(plain)], zero: Number(padded) }, count: 3 }, cut, true);
   assert.deepEqual(out, { args: { pin: "[redacted]", big: "[redacted]", list: ["[redacted]"], zero: "[redacted]" }, count: 3 }, "each number showing a carried key is cut, another number kept");

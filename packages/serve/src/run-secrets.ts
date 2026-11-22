@@ -34,6 +34,9 @@ type KeyRow = { kind: string; fields: readonly string[]; unlocks: readonly strin
 /** The fields a run gets only when its revision names what they unlock: a `tool` key's. Any other kind's (a model key's)
  *  is the model's to need, as every model key is. */
 const scopedOf = (rows: readonly KeyRow[]): readonly string[] => rows.filter((row) => row.kind === "tool").flatMap((row) => row.fields);
+/** Each field of a `tool` row of `rows` that unlocks one of `tools`: the tool keys a run of them reads. */
+export const unlockedFields = (tools: readonly string[], rows: readonly KeyRow[] = TOOL_KEYS): string[] =>
+  [...new Set(rows.filter((row) => row.kind === "tool" && row.unlocks.some((unlock) => tools.some((name) => unlocksTool(unlock, name)))).flatMap((row) => row.fields))];
 /** The model keys: every key of pi-ai's providers (model.ts' PROVIDER_KEYS) and the gateway's. A run gets those its model
  *  needs and no other (keysFor). A workflow's decision keys, OpenRouter's among them, go apart (decisions.ts), whatever
  *  its model. */
@@ -68,7 +71,7 @@ export async function needsOf(revision: Revision): Promise<RunNeeds> {
  *  (HarnessEntry.ownKeys: Cursor's CURSOR_API_KEY) on a run of any other harness. Read at each claim, so a key saved with no restart counts at
  *  the next. */
 export function keysFor(needs: RunNeeds, env: NodeJS.ProcessEnv, rows: readonly KeyRow[] = TOOL_KEYS): string[] {
-  const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((unlock) => needs.tools.some((name) => unlocksTool(unlock, name)))).flatMap((row) => row.fields));
+  const unlocked = new Set(unlockedFields(needs.tools, rows));
   const scoped = scopedOf(rows);
   const entry = harnessOf(env, needs.harness);
   const model = new Set(!entry || entry.facts ? harnessModelKeys(needs.harness, env, needs.model) : needs.tiers ? modelKeys(env, undefined, needs.tiers) : modelKeys(env, needs.model));
