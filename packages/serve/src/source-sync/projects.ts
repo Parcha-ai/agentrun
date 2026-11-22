@@ -24,6 +24,9 @@ export interface ProjectPlacementOptions {
   /** Existing-only readonly cache: opening/closing it must never allocate storage or dispatch a write. */
   snapshots(agentId: string): Promise<{ workspace: Workspace; end(): Promise<void> }>;
   destination(input: { agentId: string; runId: string; launch: RunLaunch }): Promise<ProjectDestination>;
+  /** Copy already held local uploads before project seeding. Await every copy and hold cleanup; a failure has an
+   * unknown write outcome and keeps ownership. Runs whose uploads were placed earlier do not call this capability. */
+  placeUploads?(input: { runId: string; launch: RunLaunch; workspace: Workspace }): Promise<void>;
 }
 const hash = (data: Uint8Array): string => createHash("sha256").update(data).digest("hex");
 
@@ -76,7 +79,7 @@ export function projectPlacement(options: ProjectPlacementOptions) {
         await ownership.settled();
         throw error;
       });
-      let destination: ProjectDestination | undefined, destinationStarted = false, refusedBeforeWrites = false;
+      let destination: ProjectDestination | undefined, destinationStarted = false, uploadUncertain = false, seedStarted = false, preparationRolledBack = false;
       try {
         // Validate the whole source before destination allocation. seed reads it again while initializing; a corrupt
         // immutable store is refused rather than producing an admitted run with only some content.
@@ -88,29 +91,43 @@ export function projectPlacement(options: ProjectPlacementOptions) {
           throw new SnapshotError("conflict", "The source project includes a path reserved for run inputs or shell scratch; move that content before starting this project.");
         destinationStarted = true;
         destination = await options.destination({ agentId, runId, launch });
+        let prepared = launch;
+        if (!launch.filesPlaced && launch.files?.length) {
+          if (!options.placeUploads) throw new SnapshotError("prerequisite", "This moved project's uploads must be placed before project admission.");
+          uploadUncertain = true;
+          await options.placeUploads({ runId, launch, workspace: destination.workspace });
+          uploadUncertain = false;
+          prepared = { ...launch, filesPlaced: true };
+        }
         const inputs = await placedInputs(destination.workspace);
         if (snapshot.entries.some(entry => entry.role === "project" && inputs.some(input => entry.path === `project/${input}`)))
           throw new SnapshotError("conflict", "A placed upload would replace an authored project file.");
+        seedStarted = true;
         await seedSourceSnapshot({ snapshots: stored.workspace, destination: destination.workspace, control: destination.control,
           digest: source.project, beforeDispatch: true, exclusiveInitialization: true, preparation: destination.preparation });
         if (inputs.length) await destination.control.write("source-seed.json", JSON.stringify({ version: 1, digest: source.project, phase: "complete", inputs }));
         const receipt = await completeReceipt(destination.control, source.project, inputs.length ? inputs : undefined);
         const placed: SourceProjectLaunch = { version: 1, sourceId: source.id, baselineRevision: revision.id, digest: source.project, receipt, ...(inputs.length ? { inputs } : {}) };
         const own = destination;
-        return { launch: { ...launch, ...(own.launchDisk ? { archilDisk: own.launchDisk } : {}), sourceProject: placed }, admitted: () => ownership.settled(), undo: async () => {
+        return { launch: { ...prepared, ...(own.launchDisk ? { archilDisk: own.launchDisk } : {}), sourceProject: placed }, admitted: () => ownership.settled(), undo: async () => {
           await own.undo();
           await ownership.settled();
         } };
       } catch (error) {
-        refusedBeforeWrites = !destinationStarted;
+        preparationRolledBack = !destinationStarted;
         // Admission has not even been attempted. This preparation owns its rollback and waits for writes to settle.
-        await destination?.undo().catch(() => undefined);
+        // A completed destination open can still be refused by read-only upload checks. Only confirmed rollback of
+        // that pre-seed preparation is safe to release; an unanswered open or dispatched seed keeps its receipt.
+        if (destination) try {
+          await destination.undo();
+          preparationRolledBack = !seedStarted && !uploadUncertain;
+        } catch { /* an unknown rollback keeps the writer recorded */ }
         throw error;
       } finally {
         const closed = await Promise.allSettled([destination?.end(), stored.end()]);
         const failed = closed.find(result => result.status === "rejected");
         if (failed?.status === "rejected") throw failed.reason;
-        if (refusedBeforeWrites) await ownership.settled();
+        if (preparationRolledBack) await ownership.settled();
       }
     },
   };

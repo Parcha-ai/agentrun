@@ -31,10 +31,13 @@ export async function movedSkillFiles(work: Workspace, authored: Readonly<Record
   if (stat.kind !== "dir") throw new SnapshotError("conflict", "The moved project's skills directory is not a directory.");
   const entries = await work.list(root);
   if (entries.length > 10_000) throw new SnapshotError("limit", "The moved project has too many skill entries.");
+  // Ordinary owner-authored skill paths may be nested. Keep those exact paths discoverable as well as current
+  // top-level skills, without recreating any missing file from the revision text.
+  const candidates = new Set([...Object.keys(authored).filter(path => path.endsWith("/SKILL.md")), ...entries.map(entry => `${entry.name}/SKILL.md`)]);
+  if (candidates.size > 10_000) throw new SnapshotError("limit", "The moved project has too many skill entries.");
   const paths: string[] = [];
-  for (const entry of entries) {
-    const file = `${entry.name}/SKILL.md`, there = await work.stat(`${root}/${file}`);
-    if (there?.kind === "file") paths.push(file);
+  for (const file of candidates) {
+    if ((await work.stat(`${root}/${file}`))?.kind === "file") paths.push(file);
   }
   return paths.sort();
 }

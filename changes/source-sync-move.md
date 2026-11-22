@@ -9,6 +9,13 @@ uncertain saves require review before another run. Existing connections require 
 credentials stay at the source, and unsupported capabilities remain named prerequisites. See
 [source sync](../docs/source-sync.md) for compatibility and recovery behavior. Automatic notes and learned skills
 remain retired; authored source skills retain their files and modes.
+Owner skill edits after Move produce a new immutable project for future runs while preserving existing runs and
+unchanged companion assets. Git checkpoints exclude ignored dependency trees before applying project limits and
+file checks. An upload refused before project seeding releases its write receipt only after destination and upload
+cleanup have both settled; unknown or dispatched writes continue to block deletion.
+Moved projects on local storage now place attachments before restoring project files, pin their exact input paths,
+and refuse collisions before admission. Claims and follow-ups reuse the placed files; checkpoints exclude those
+attachments while retaining authored files in the same inputs directory.
 
 Moved agents can learn checked workflows on the server using their existing learning settings. Replay and eligible
 shadow-audit runs receive isolated copies of the reserved project; their results remain learning evidence, while

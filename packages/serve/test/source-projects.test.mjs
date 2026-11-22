@@ -8,6 +8,9 @@ import { localWorkspace, archilWorkspace } from "../dist/workspace/index.js";
 import { sourceSnapshotDigest } from "../dist/native/source-snapshot-types.js";
 import { commitSourceSnapshot } from "../dist/source-sync/snapshots.js";
 import { projectPlacement, verifySourceProject } from "../dist/source-sync/projects.js";
+import { beginSourceIO, requireSourceIOIdle } from "../dist/source-sync/io.js";
+import { openSqliteStore } from "../dist/store/index.js";
+import { withHeldFiles } from "../dist/runs-over-store.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -110,4 +113,98 @@ test('a readonly snapshot opener failure releases ownership without dispatching 
   f.options.snapshots = async () => { throw failure; };
   await assert.rejects(projectPlacement(f.options).place(f.given), actual => actual === failure);
   assert.equal(f.state.opened, 0); assert.equal(f.state.settled, 1);
+});
+
+async function collidingUpload(f) {
+  const source = snapshot();
+  source.entries.push({ ...source.entries[1], path: 'project/inputs/upload.csv' });
+  source.digest = sourceSnapshotDigest(source);
+  await commitSourceSnapshot(f.snapshots, source);
+  f.given.revision.body.sourceSync.project = source.digest;
+  await f.workspace.write('inputs/upload.csv', 'uploaded content');
+}
+
+for (const kind of ['local', 'archil']) test(`${kind}: a rejected upload collision releases ownership only after destination rollback and close`, async t => {
+  const f = await setup(t, kind); await collidingUpload(f);
+  const rollbackEntered = Promise.withResolvers(), rollbackFinish = Promise.withResolvers(), closeEntered = Promise.withResolvers(), closeFinish = Promise.withResolvers();
+  f.destination.undo = async () => { f.state.undone++; rollbackEntered.resolve(); await rollbackFinish.promise; };
+  f.destination.end = async () => { f.state.ended++; closeEntered.resolve(); await closeFinish.promise; };
+  const result = assert.rejects(projectPlacement(f.options).place(f.given), error => error.code === 'conflict');
+  try {
+    await rollbackEntered.promise;
+    assert.equal(f.state.settled, 0, 'rollback is still running');
+    assert.equal(await f.control.stat('source-seed.json'), undefined, 'seeding was never dispatched');
+    rollbackFinish.resolve(); await closeEntered.promise;
+    assert.equal(f.state.settled, 0, 'destination cleanup is still running');
+  } finally { rollbackFinish.resolve(); closeFinish.resolve(); }
+  await result;
+  assert.equal(f.state.settled, 1, 'a completely cleaned pre-seed refusal must not leave an unresolved writer');
+  assert.equal(f.state.undone, 1); assert.equal(f.state.ended, 1);
+});
+
+for (const failureAt of ['open', 'rollback', 'destination-close', 'source-close']) test(`a rejected placement with unknown ${failureAt} retains its ownership`, async t => {
+  const f = await setup(t, 'local'); await collidingUpload(f);
+  const failure = new Error(`fixture ${failureAt} outcome unknown`);
+  if (failureAt === 'open') f.options.destination = async () => { throw failure; };
+  if (failureAt === 'rollback') f.destination.undo = async () => { throw failure; };
+  if (failureAt === 'destination-close') f.destination.end = async () => { throw failure; };
+  if (failureAt === 'source-close') f.options.snapshots = async () => ({ workspace: f.snapshots, end: async () => { throw failure; } });
+  await assert.rejects(projectPlacement(f.options).place(f.given));
+  assert.equal(f.state.settled, 0);
+});
+
+for (const cleanupFails of [false, true]) test(`actual upload collision ${cleanupFails ? 'retains the writer on upload cleanup failure' : 'unblocks deletion only after all upload cleanup'}`, async t => {
+  const f = await setup(t, 'local'); await collidingUpload(f);
+  const dir = await mkdtemp(join(tmpdir(), 'project-upload-refusal-'));
+  const store = await openSqliteStore({ file: join(dir, 'store.sqlite'), role: 'server' });
+  t.after(async () => { await store.close(); await rm(dir, { recursive: true, force: true }); });
+  await store.agents.create({ id: f.given.agentId, name: 'Fixture' }, f.given.revision);
+  f.options.hold = ({ agentId }) => beginSourceIO(store, agentId, 'placement');
+  f.destination.undo = async () => { f.state.undone++; };
+  const uploadCleanup = Promise.withResolvers(), finishUploadCleanup = Promise.withResolvers();
+  let admitted = false;
+  const attempt = withHeldFiles(store, {
+    project: projectPlacement(f.options),
+    files: { hold: async () => assert.fail('fixture preplaces uploads'), release: async () => assert.fail('fixture preplaces uploads'),
+      place: async (_run, _agent, launch) => ({ launch: { ...launch, filesPlaced: true }, undo: async () => {
+        uploadCleanup.resolve(); await finishUploadCleanup.promise;
+        if (cleanupFails) throw new Error('fixture upload cleanup unknown');
+        await f.workspace.remove('inputs/upload.csv');
+      } }) },
+  }, f.given.runId, f.given.agentId, f.given.revision, { ...f.given.launch, files: ['fixture-upload'] }, async () => { admitted = true; assert.fail('a collision cannot be admitted'); });
+  const result = assert.rejects(attempt, error => error.code === 'conflict');
+  try {
+    await uploadCleanup.promise;
+    await requireSourceIOIdle(store, f.given.agentId).then(() => assert.fail('pending upload cleanup must protect deletion'), error => assert.equal(error.code, 'agent_not_runnable'));
+    assert.equal(admitted, false); assert.equal(f.state.undone, 1);
+    assert.equal(await f.control.stat('source-seed.json'), undefined);
+  } finally { finishUploadCleanup.resolve(); }
+  await result;
+  assert.equal(await store.runs.get(f.given.runId), undefined);
+  if (cleanupFails) await assert.rejects(requireSourceIOIdle(store, f.given.agentId), error => error.code === 'agent_not_runnable');
+  else { await requireSourceIOIdle(store, f.given.agentId); assert.equal(await f.workspace.stat('inputs/upload.csv'), undefined); }
+});
+
+test('a failed upload write retains project ownership even after successful destination cleanup', async t => {
+  const f = await setup(t, 'local'), failure = new Error('fixture upload outcome unknown');
+  f.given.launch.files = ['fixture-upload'];
+  f.options.placeUploads = async ({ workspace }) => { await workspace.write('inputs/partial.csv', 'possibly copied'); throw failure; };
+  await assert.rejects(projectPlacement(f.options).place(f.given), actual => actual === failure);
+  assert.equal(f.state.undone, 1); assert.equal(f.state.ended, 1); assert.equal(f.state.settled, 0);
+  assert.equal(await f.control.stat('source-seed.json'), undefined);
+});
+
+test('a moved project missing its upload placement capability refuses before seeding', async t => {
+  const f = await setup(t, 'local'); f.given.launch.files = ['fixture-upload'];
+  await assert.rejects(projectPlacement(f.options).place(f.given), error => error.code === 'prerequisite');
+  assert.equal(f.state.undone, 1); assert.equal(f.state.settled, 1);
+  assert.equal(await f.control.stat('source-seed.json'), undefined);
+});
+
+test('already placed uploads never dispatch another local copy', async t => {
+  const f = await setup(t, 'local'); f.given.launch.files = ['fixture-upload']; f.given.launch.filesPlaced = true;
+  await f.workspace.write('inputs/upload.csv', 'already placed');
+  f.options.placeUploads = async () => assert.fail('an upload is copied only once');
+  const placed = await projectPlacement(f.options).place(f.given);
+  assert.deepEqual(placed.launch.sourceProject.inputs, ['inputs/upload.csv']);
 });

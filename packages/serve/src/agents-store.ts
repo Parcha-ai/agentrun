@@ -197,6 +197,8 @@ export type SaveStamp = Pick<NewRevision, "mcpPin" | "monidPin">;
  *  to stamp on it. `on`: the revision this save is built on (an edit's: the agent's current one as this try read it, so a
  *  retry on a newer one sees that one; null for a new agent), whose pins carry what the save's grants did not change. */
 export type SaveCheck = (revision: NewRevision, on: RevisionRow | null) => Promise<SaveStamp | void>;
+/** Immutable assets prepared inside the delete turn; keep their I/O ownership until the revision CAS settles. */
+export type SavePrepare = (revision: NewRevision, on: RevisionRow | null) => Promise<{ revision: NewRevision; settled(): Promise<void> }>;
 /** `revision` with what its check stamped. */
 const stamped = <T extends NewRevision>(revision: T, stamp: SaveStamp | void): T => ({ ...revision, ...(stamp?.mcpPin === undefined ? {} : { mcpPin: stamp.mcpPin }), ...(stamp?.monidPin === undefined ? {} : { monidPin: stamp.monidPin }) });
 
@@ -313,7 +315,7 @@ export async function commitAgent(
   store: AgentsStore,
   read: AgentEntry,
   { definition, skills, note }: DefinitionBody,
-  { ifCurrent, settingsGuards, check, contract = false, template, fromPackage = false, inTurn }: { ifCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {},
+  { ifCurrent, settingsGuards, check, prepare, contract = false, template, fromPackage = false, inTurn }: { ifCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; check?: SaveCheck; prepare?: SavePrepare; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {},
 ): Promise<AgentEntry> {
   const stale = () => new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   const held = (entry: AgentEntry): AgentEntry => {
@@ -357,13 +359,14 @@ export async function commitAgent(
       // server's own form names the next revision's number, or none.
       if (contract) checkPast(definition, now.version);
       else checkVersion(definition, now.revisions + 1);
+      const prepared = await prepare?.(revision, now.revision);
       try {
-        await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...(settingsGuards ? { settingsGuards } : {}), ...revision, ...(described ? { description } : {}) });
+        await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...(settingsGuards ? { settingsGuards } : {}), ...(prepared?.revision ?? revision), ...(described ? { description } : {}) });
         return (await getAgent(store, agent.id))!;
       } catch (error) {
         if (!(error instanceof RevisionMoved)) storeError(error);
         return undefined;
-      }
+      } finally { await prepared?.settled(); }
     });
     if (landed) return landed;
     // Moved while it was checked or written: with If-Match that is stale; without, built and checked again on it.

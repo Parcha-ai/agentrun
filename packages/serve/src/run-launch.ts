@@ -55,7 +55,7 @@ export interface RunLaunch {
    *  runner copies them into the run's work/inputs/ at its claim, as the old start copied them before the process ran. */
   readonly files?: readonly string[];
   /** The server copied `files` into the run's folder (work/inputs/) when it started the run, before its row was written:
-   *  a run on an Archil disk (Mode 2, uploads-archil.ts placeRunFiles). Its claim reads no upload (uploads.ts
+   *  a run on an Archil disk (Mode 2, uploads-archil.ts placeRunFiles), or a moved project's local placement. Its claim reads no upload (uploads.ts
    *  filesToCopy). Absent: the claim copies them from the server's data directory, as before. */
   readonly filesPlaced?: true;
   /** A moved project's completed, private pre-admission placement. Claims verify this receipt; they never seed again.

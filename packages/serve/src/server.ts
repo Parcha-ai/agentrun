@@ -1,3 +1,4 @@
+import { prepareProjectSkillEdit } from "./source-sync/skill-edits.js";
 import { sourceSyncOf } from "./source-sync/types.js";
 import { sourceService, SOURCE_BODY_BYTES } from "./source-sync/service.js";
 import { destinationPreparation, bindSourceTool } from "./source-sync/destination.js";
@@ -45,7 +46,7 @@ import { homedir, hostname } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
 import { agentPackage } from "./agent-package.js";
-import { uuidv7, type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { uuidv7, type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -1647,7 +1648,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     list: (options: { archived?: boolean } = {}) => listAgents(store, options),
     create: (body: DefinitionBody, check?: SaveCheck, fresh?: { place: RevisionPlace; tools: readonly string[] }, template?: TemplatePackage) =>
       createAgent(store, body, { ...(check ? { check } : {}), ...(fresh ? { fresh } : {}), ...(template ? { template } : {}) }),
-    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {}) => commitAgent(store, entry, body, options),
+    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: SaveCheck; prepare?: SavePrepare; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {}) => commitAgent(store, entry, body, options),
     revisions: (id: string) => agentRevisions(store, id),
     revision: (agentId: string, revisionId: string) => agentRevision(store, agentId, revisionId),
     setCurrent: (entry: AgentEntry, revisionId: string) => setCurrentRevision(store, entry, revisionId),
@@ -1846,7 +1847,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }, agentId => localSources.authorize(agentId));
   const sourceProjects = projectPlacement({ snapshots: agentId => sourceSnapshotReader(store, agentId, sourceWorkspaces),
     hold: ({ agentId }) => beginSourceIO(store, agentId, "placement"),
-    destination: target => openRunPlacement(store, target, sourceWorkspaces) });
+    destination: target => openRunPlacement(store, target, sourceWorkspaces),
+    placeUploads: async ({ runId, launch, workspace }) => {
+      const { files, bytesOf } = await uploads.heldFiles(runId, launch.files ?? []);
+      await uploads.copyInto(workspace, files, bytesOf);
+      await uploads.release(runId);
+    } });
   const localSourcePublisher = localSources.publisher(sources.sync, { agentWrite: (id, call) => agentWrite(id, call) });
   let localSourceSweep: Promise<void> = Promise.resolve(), localSourceBusy = false;
   const sweepLocalSources = () => {
@@ -1860,7 +1866,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const localSourceTimer = setInterval(() => void sweepLocalSources(), 30_000);
   localSourceTimer.unref();
   const startDeps: StartDeps = {
-    project: sourceProjects,
+    project: { ...sourceProjects, place: async given => {
+      try { return await sourceProjects.place(given); }
+      catch (error) { if (error instanceof SnapshotError) throw new ApiError("agent_not_runnable", error.message); throw error; }
+    } },
     // A start while every runner here refused to claim is refused in their words (runner/presence.ts).
     runnersRefused: refusedNow,
     runBodyIssues,
@@ -3083,7 +3092,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Its last read and its commit in the agent's delete turn (agentWrite), the check outside it: an edit or a template
     // update whose commit comes once the agent is purged is 410, and one after a purge stopped part way is 409, nothing
     // written (the store refuses a purged agent's revision too, AgentPurged).
-    const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false, harnesses }), { check, ...options, inTurn: (work) => agentWrite(entry.agent.id, work) });
+    const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false, harnesses }), { check, prepare: prepareProjectSkillEdit(store, entry.agent.id, sourceWorkspaces), ...options, inTurn: (work) => agentWrite(entry.agent.id, work) });
     reconcileComputer(entry.agent.id);
     return { entry: edited, warnings };
   }

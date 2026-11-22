@@ -37,6 +37,68 @@ async function repository(work) {
 const exclude = [{ path: "inputs/message.md", recursive: false }];
 const capture = (p, extra = {}) => captureProject({ workspace: p.work, baseline: baseline(), exclude, git: (work, options) => captureGit(work, p.scratch, options), ...extra });
 
+for (const kind of ["large dependency tree", "link", "nested repository"]) test(`ignored ${kind} does not block a durable Git checkpoint`, async t => {
+  const p = await fixture(t, "local"), head = await repository(p.work);
+  const command = kind === "large dependency tree"
+    ? "i=0; while [ $i -lt 10010 ]; do : > ignored/dependency-$i; i=$((i+1)); done"
+    : kind === "link" ? "ln -s /unavailable-private-content ignored/link" : "mkdir -p ignored/vendor/.git; printf unrelated > ignored/vendor/.git/config";
+  assert.equal((await p.work.exec(["sh", "-c", command], { env, timeoutMs: 10_000 })).code, 0);
+  const snapshot = await capture(p);
+  assert.equal(snapshot.project.git.head, head);
+  assert.ok(snapshot.entries.some(entry => entry.path === "project/new.bin"));
+  assert.ok(!snapshot.entries.some(entry => entry.path === "project/ignored" || entry.path.startsWith("project/ignored/")));
+});
+
+test("tracked files inside an ignored directory remain checked and retained", async t => {
+  const p = await fixture(t, "local"); await repository(p.work);
+  await p.work.write("ignored/retained.txt", "tracked fixture\n");
+  await git(p.work, "add", "-f", "ignored/retained.txt"); await git(p.work, "commit", "--quiet", "-m", "Track selected ignored file");
+  assert.equal((await p.work.exec(["sh", "-c", "ln -s /unavailable-private-content ignored/untracked-link"], { env, timeoutMs: 3000 })).code, 0);
+  const snapshot = await capture(p), entry = snapshot.entries.find(entry => entry.path === "project/ignored/retained.txt");
+  assert.equal(Buffer.from(snapshot.blobs[entry.sha256], "base64").toString(), "tracked fixture\n");
+  assert.ok(!snapshot.entries.some(entry => entry.path.endsWith("untracked-link")));
+});
+
+test("an unignored link or nested repository still refuses a Git checkpoint", async t => {
+  for (const command of ["ln -s tracked.txt linked", "mkdir -p vendor/.git"]) {
+    const p = await fixture(t, "local"); await repository(p.work);
+    assert.equal((await p.work.exec(["sh", "-c", command], { env, timeoutMs: 3000 })).code, 0);
+    await assert.rejects(capture(p), error => error.code === "prerequisite");
+  }
+});
+
+test("nested ignore negation and private Git excludes select only portable project files", async t => {
+  const p = await fixture(t, "local"); await repository(p.work);
+  await p.work.write("package/.gitignore", "*\n!.gitignore\n!keep.txt\n");
+  await p.work.write("package/keep.txt", "keep nested fixture\n");
+  await p.work.write("package/dependencies/bulk.bin", Buffer.alloc(9000));
+  await p.work.write(".git/info/exclude", "local-cache/\n");
+  await p.work.write("local-cache/bulk.bin", Buffer.alloc(9000));
+  const snapshot = await capture(p, { limits: { fileBytes: 8192 } });
+  assert.ok(snapshot.entries.some(entry => entry.path === "project/package/keep.txt"));
+  assert.ok(!snapshot.entries.some(entry => entry.path.includes("dependencies") || entry.path.includes("local-cache")));
+});
+
+test("changing ignore rules after selection refuses the checkpoint", async t => {
+  const p = await fixture(t, "local"); await repository(p.work);
+  const read = p.work.read.bind(p.work); let changed = false;
+  p.work.read = async (path, options) => {
+    const bytes = await read(path, options);
+    if (path === ".gitignore" && !changed) { changed = true; await p.work.write(path, "different/\n"); }
+    return bytes;
+  };
+  await assert.rejects(capture(p), error => error.code === "conflict");
+});
+
+test("an ignored directory replaced by a nonignored file cannot hide behind stale private metadata", async t => {
+  const p = await fixture(t, "local"); await repository(p.work);
+  await assert.rejects(capture(p, { git: async (work, options) => {
+    const captured = await captureGit(work, p.scratch, options);
+    await work.remove("ignored", { recursive: true }); await work.write("ignored", "new nonignored file\n");
+    return captured;
+  } }), error => error.code === "conflict");
+});
+
 for (const backend of ["local", "archil"]) test(`${backend}: isolated Git capture retains history, branch, dirty bytes and deletion without reading ignored bodies`, async t => {
   const p = await fixture(t, backend), head = await repository(p.work); let ignoredRead = false;
   const read = p.work.read.bind(p.work); p.work.read = async (path, options) => { if (path.startsWith("ignored/")) ignoredRead = true; return read(path, options); };

@@ -14,13 +14,18 @@ export interface ProjectGitCapture {
   readonly bundle: Uint8Array;
   /** Git's tracked and untracked nonignored files, obtained without running source config/hooks/filters. */
   readonly files: readonly string[];
+  readonly inventory: readonly ProjectInventoryEntry[];
   /** Recheck the isolated view's original bytes after project capture, while the same strict drain remains held. */
   readonly verify?: () => Promise<void>;
 }
 export interface ProjectInventoryEntry { readonly path: string; readonly type: "file" | "directory"; readonly mode: number; readonly bytes: number }
+export interface ProjectInventoryCandidate { readonly path: string; readonly type: "file" | "directory" | "unsupported"; readonly mode: number; readonly bytes: number }
+export type ProjectInventorySelector = (entries: readonly ProjectInventoryCandidate[]) => Promise<ReadonlySet<string>>;
 export interface ProjectGitOptions {
   readonly signal?: AbortSignal; readonly secretValues?: readonly string[];
-  readonly inventory: readonly ProjectInventoryEntry[];
+  /** Select names before validating or descending into them; ignored dependency trees are not project content. */
+  readonly inventory: (select: ProjectInventorySelector) => Promise<readonly ProjectInventoryEntry[]>;
+  readonly retain: readonly string[];
   readonly exclude: readonly ProjectExclusion[];
   readonly limits: SnapshotLimits;
 }
@@ -51,33 +56,44 @@ const credentialPath = (path: string): boolean => path.split("/").some(part => /
 /** Workspace.stat intentionally carries no modes, and Archil's file API cannot identify links. A bounded trusted
  * metadata command checks the real destination filesystem instead. Failure or truncation is a prerequisite, never
  * invented 0644/0755 metadata. It executes no project program and never traverses a link or Git control tree. */
-async function inventory(work: Workspace, exclusions: readonly ProjectExclusion[], signal?: AbortSignal): Promise<InventoryEntry[]> {
+async function inventory(work: Workspace, exclusions: readonly ProjectExclusion[], limits: SnapshotLimits, signal?: AbortSignal, select?: ProjectInventorySelector): Promise<InventoryEntry[]> {
   const format = String.raw`%y\0%m\0%s\0%p\0`;
   const prune = [".git", ...exclusions.map(item => item.path)];
-  const args = ["find", ".", "(", ...prune.flatMap((path, index) => [...(index ? ["-o"] : []), "-path", `./${path.replace(/[\\*?\[\]]/g, "\\$&")}`]), ")", "-prune", "-printf", format, "-o", "-printf", format];
-  const result = await work.exec(args, { env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, timeoutMs: 30_000, maxOutput: 4 * 1024 * 1024, ...(signal ? { signal } : {}) });
-  signal?.throwIfAborted();
-  if (result.code !== 0 || result.signal || result.timedOut || result.truncated) throw new SnapshotError("prerequisite", "The destination could not read a complete project inventory with file modes.");
-  let text: string;
-  try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(result.stdout); }
-  catch { throw new SnapshotError("prerequisite", "The project contains a filename that is not portable UTF-8."); }
-  const columns = text.split("\0");
-  if (columns.pop() !== "" || columns.length % 4 !== 0) throw new SnapshotError("prerequisite", "The destination returned incomplete filesystem metadata.");
-  const entries: InventoryEntry[] = [];
-  for (let at = 0; at < columns.length; at += 4) {
-    const [kind, rawMode, rawBytes, rawPath] = columns.slice(at, at + 4) as [string, string, string, string];
-    const path = rawPath === "." ? "" : rawPath.startsWith("./") ? rawPath.slice(2) : rawPath;
-    portable(path, true);
-    if (path !== ".git" && path.split("/").includes(".git")) throw new SnapshotError("prerequisite", "Nested Git repositories need their own complete project representation.");
-    if (excluded(path, exclusions)) {
-      if (kind === "d" && exclusions.some(item => item.path === path && !item.recursive)) throw new SnapshotError("conflict", "A host-owned input file became a directory; its children were preserved.");
-      continue;
+  const entries: InventoryEntry[] = [], pending = [""];
+  while (pending.length) {
+    const directory = pending.shift()!;
+    const args = ["find", directory ? `./${directory}` : ".", ...(select ? ["-maxdepth", "1", ...(directory ? ["-mindepth", "1"] : [])] : []), "(", ...prune.flatMap((path, index) => [...(index ? ["-o"] : []), "-path", `./${path.replace(/[\\*?\[\]]/g, "\\$&")}`]), ")", "-prune", "-printf", format, "-o", "-printf", format];
+    const result = await work.exec(args, { env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, timeoutMs: 30_000, maxOutput: limits.manifestBytes, ...(signal ? { signal } : {}) });
+    signal?.throwIfAborted();
+    if (result.code !== 0 || result.signal || result.timedOut || result.truncated) throw new SnapshotError("prerequisite", "The destination could not read a complete project inventory with file modes.");
+    let text: string;
+    try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(result.stdout); }
+    catch { throw new SnapshotError("prerequisite", "The project contains a filename that is not portable UTF-8."); }
+    const columns = text.split("\0");
+    if (columns.pop() !== "" || columns.length % 4 !== 0) throw new SnapshotError("prerequisite", "The destination returned incomplete filesystem metadata.");
+    const candidates: ProjectInventoryCandidate[] = [];
+    for (let at = 0; at < columns.length; at += 4) {
+      const [kind, rawMode, rawBytes, rawPath] = columns.slice(at, at + 4) as [string, string, string, string];
+      const path = rawPath === "." ? "" : rawPath.startsWith("./") ? rawPath.slice(2) : rawPath;
+      portable(path, true);
+      if (excluded(path, exclusions)) {
+        if (kind === "d" && exclusions.some(item => item.path === path && !item.recursive)) throw new SnapshotError("conflict", "A host-owned input file became a directory; its children were preserved.");
+        continue;
+      }
+      if (!/^[0-7]{1,4}$/.test(rawMode) || !/^\d+$/.test(rawBytes) || !Number.isSafeInteger(Number(rawBytes))) {
+        throw new SnapshotError("prerequisite", "Links, special files or privileged modes require an explicit project representation.");
+      }
+      candidates.push({ path, type: kind === "d" ? "directory" : kind === "f" ? "file" : "unsupported", mode: parseInt(rawMode, 8), bytes: kind === "d" ? 0 : Number(rawBytes) });
     }
-    if (!["f", "d"].includes(kind) || !/^[0-7]{1,4}$/.test(rawMode) || parseInt(rawMode, 8) > 0o777 || !/^\d+$/.test(rawBytes) || !Number.isSafeInteger(Number(rawBytes))) {
-      throw new SnapshotError("prerequisite", "Links, special files or privileged modes require an explicit project representation.");
+    const selected = select ? await select(candidates) : undefined;
+    for (const entry of candidates) {
+      if (selected && !selected.has(entry.path)) continue;
+      if (entry.path !== ".git" && entry.path.split("/").includes(".git")) throw new SnapshotError("prerequisite", "Nested Git repositories need their own complete project representation.");
+      if (entry.type === "unsupported" || entry.mode > 0o777) throw new SnapshotError("prerequisite", "Links, special files or privileged modes require an explicit project representation.");
+      entries.push({ ...entry, type: entry.type });
+      if (entries.length > limits.files) throw new SnapshotError("limit", "The complete project inventory exceeds its file limit.");
+      if (select && entry.path && entry.path !== ".git" && entry.type === "directory") pending.push(entry.path);
     }
-    entries.push({ path, type: kind === "d" ? "directory" : "file", mode: parseInt(rawMode, 8), bytes: kind === "d" ? 0 : Number(rawBytes) });
-    if (entries.length > MAX.files) throw new SnapshotError("limit", "The complete project inventory exceeds its file limit.");
   }
   return entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 }
@@ -105,17 +121,25 @@ export async function captureProject(options: ProjectCaptureOptions): Promise<So
     const path = sourcePath(baseline, entry);
     if (path !== undefined && excluded(path, options.exclude)) throw new SnapshotError("conflict", "A host-owned exclusion collides with original project content.");
   }
-  const cap = { ...MAX, ...options.limits }, before = await inventory(work, options.exclude, signal);
-  const gitEntry = before.find(entry => entry.path === ".git");
+  const cap = { ...MAX, ...options.limits };
+  const probe = await inventory(work, options.exclude, cap, signal, async rows => new Set(rows.filter(row => row.path === "" || row.path === ".git").map(row => row.path)));
+  const gitEntry = probe.find(entry => entry.path === ".git");
+  // Imported skills and explicit owner-authored skill files remain required even when Git ignores .agents/.
+  // Named skills keep their whole asset directory; standalone owned companions keep only their exact paths.
+  const ownedSkillFiles = baseline.entries.filter(entry => entry.role === "project" && entry.type === "file" && entry.path.startsWith("project/.agents/skills/"))
+    .map(entry => entry.path.slice("project/".length));
+  const retainedSkills = [...new Set([...baseline.skills.map(skill => `.agents/skills/${skill.name}`), ...ownedSkillFiles,
+    ...ownedSkillFiles.filter(path => path.endsWith("/SKILL.md") && path !== ".agents/skills/SKILL.md").map(path => path.slice(0, -9))])];
   let git: ProjectGitCapture | undefined;
   if (gitEntry || baseline.project.git) {
     if (gitEntry?.type !== "directory" || !options.git) throw new SnapshotError("prerequisite", "Git project capture requires a complete safe isolated Git metadata capability.");
-    git = await options.git(work, { inventory: before, exclude: options.exclude, limits: cap, ...(signal ? { signal } : {}), ...(options.secretValues ? { secretValues: options.secretValues } : {}) });
+    git = await options.git(work, { inventory: select => inventory(work, options.exclude, cap, signal, select), retain: retainedSkills, exclude: options.exclude, limits: cap, ...(signal ? { signal } : {}), ...(options.secretValues ? { secretValues: options.secretValues } : {}) });
     for (const path of git.files) portable(path);
     if (git.bundle.length > cap.gitBytes) throw new SnapshotError("limit", "Git history exceeds the project checkpoint limit.");
   }
+  const before = git?.inventory ?? await inventory(work, options.exclude, cap, signal);
   const selected = (entry: InventoryEntry): boolean => entry.path !== ".git" && (!git || entry.path === "" || git.files.some(path => entry.path === path || entry.type === "directory" && contains(entry.path, path))
-    || baseline.skills.some(skill => contains(`.agents/skills/${skill.name}`, entry.path)));
+    || retainedSkills.some(path => contains(path, entry.path)));
   const entries = baseline.entries.filter(entry => entry.role === "instruction").map(entry => ({ ...entry }));
   const blobs: Record<string, string> = Object.create(null), observed = new Map<string, string>(); let expanded = 0;
   const keep = (bytes: Uint8Array): string => { const sha = hash(bytes); blobs[sha] = Buffer.from(bytes).toString("base64"); return sha; };
@@ -139,7 +163,7 @@ export async function captureProject(options: ProjectCaptureOptions): Promise<So
     entries.push(target);
   }
   for (const skill of baseline.skills) if (!entries.some(entry => entry.path === `${skill.path}/SKILL.md` && entry.type === "file")) throw new SnapshotError("incomplete", "A required authored skill is missing from the current project.");
-  if (!same(before, await inventory(work, options.exclude, signal))) throw new SnapshotError("conflict", "Project metadata changed during checkpoint capture.");
+  if (!git && !same(before, await inventory(work, options.exclude, cap, signal))) throw new SnapshotError("conflict", "Project metadata changed during checkpoint capture.");
   // Backend mount inode/timestamp identities can change between execs. Verify actual bytes instead of treating a
   // fresh mount's inode as a source mutation, or trusting unchanged sizes as proof of unchanged content.
   for (const entry of before.filter(entry => entry.type === "file" && selected(entry))) {

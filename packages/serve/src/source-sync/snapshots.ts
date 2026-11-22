@@ -248,7 +248,7 @@ export interface SeedPreparation {
   restoreGit?(work: Workspace, git: NonNullable<SourceSnapshot["project"]["git"]>, bundle: Uint8Array): Promise<void>;
 }
 
-function seedEntries(snapshot: SourceSnapshot): SeedEntry[] {
+export function seedEntries(snapshot: SourceSnapshot): SeedEntry[] {
   const entries = new Map<string, SeedEntry>();
   for (const source of snapshot.entries) {
     let target: string | undefined;

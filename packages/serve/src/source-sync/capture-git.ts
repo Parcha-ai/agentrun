@@ -5,7 +5,7 @@ import { secretsIn } from "../secret-cut.js";
 import { secretShapes } from "../learn/secrets.js";
 import { relativeSegments } from "../workspace/paths.js";
 import type { Workspace } from "../workspace/workspace.js";
-import type { ProjectGitCapture, ProjectGitOptions } from "./capture-project.js";
+import type { ProjectGitCapture, ProjectGitOptions, ProjectInventorySelector } from "./capture-project.js";
 import { SnapshotError } from "./snapshots.js";
 
 const ENV = { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" };
@@ -22,11 +22,11 @@ function text(bytes: Uint8Array): string {
 }
 const credentialPath = (path: string): boolean => path.split("/").some(part => /^(?:\.env(?:\..*)?|auth\.json|credentials(?:\.json)?|\.credentials\.json|\.claude\.json|id_(?:rsa|ed25519)|\.netrc|\.npmrc|\.pypirc|\.ssh|\.aws|\.gnupg)$/i.test(part)) || /\.(?:pem|p12|pfx|key)$/i.test(path);
 type Row = { path: string; kind: string; bytes: number; mode: number };
-async function execute(work: Workspace, argv: readonly string[], options: ProjectGitOptions, max: number): Promise<Buffer> {
+async function execute(work: Workspace, argv: readonly string[], options: ProjectGitOptions, max: number, stdin?: Uint8Array, noMatches = false): Promise<Buffer> {
   options.signal?.throwIfAborted();
-  const result = await work.exec([...argv], { env: ENV, timeoutMs: 30_000, maxOutput: max, ...(options.signal ? { signal: options.signal } : {}) });
+  const result = await work.exec([...argv], { env: ENV, timeoutMs: 30_000, maxOutput: max, ...(stdin ? { stdin } : {}), ...(options.signal ? { signal: options.signal } : {}) });
   options.signal?.throwIfAborted();
-  if (result.code !== 0 || result.signal || result.timedOut || result.truncated) refuse("Git capture could not finish within its safe bounds.");
+  if (result.code !== 0 && !(noMatches && result.code === 1) || result.signal || result.timedOut || result.truncated) refuse("Git capture could not finish within its safe bounds.");
   return Buffer.from(result.stdout);
 }
 async function databaseInventory(work: Workspace, options: ProjectGitOptions): Promise<Row[]> {
@@ -91,17 +91,46 @@ export async function captureGit(work: Workspace, scratch: Workspace, options: P
     const match = /^(100644|100755) ([a-f0-9]{40}) 0\t(.+)$/.exec(row); if (!match) refuse();
     index.set(pathOf(match[3]!), { mode: match[1]!, oid: match[2]! });
   }
-  // Git evaluates ignore rules over names and bounded .gitignore bytes. Ignored file bodies are never read.
-  for (const row of options.inventory) {
+  // Evaluate each directory's rules in the isolated database before descending. Neither the ignored tree's
+  // contents nor its links/nested repositories consume the durable project's limits. Tracked descendants and
+  // authored skills remain selected even under an ignored parent.
+  const trackedParents = new Set<string>();
+  for (const path of index.keys()) {
+    const parts = path.split("/");
+    for (let n = 1; n <= parts.length; n++) trackedParents.add(parts.slice(0, n).join("/"));
+  }
+  const select: ProjectInventorySelector = async rows => {
+    // Each traversal evaluates the current names/rules afresh. Otherwise a deleted ignore file or a directory
+    // replaced by a regular file could retain its old ignored status in this private verification view.
+    if (rows.some(row => row.path === "")) { await scratch.remove("work", { recursive: true }); await scratch.mkdir("work"); }
+    // Git must know which candidates are directories, but a trailing slash would apply that directory's own
+    // rules to an empty child on the verification pass. Empty placeholders preserve Git's normal path semantics.
+    for (const row of rows) if (row.path && row.path !== ".git" && row.type === "directory") await scratch.mkdir(`work/${row.path}`);
+    for (const row of rows.filter(row => row.path.split("/").at(-1) === ".gitignore")) {
+      if (row.type !== "file" || row.bytes > options.limits.fileBytes) refuse("Git ignore rules need a bounded regular file.");
+      const bytes = await work.read(row.path, { length: row.bytes + 1 }), sha = digest(bytes), previous = working.get(row.path);
+      if (bytes.length !== row.bytes || previous && (previous.bytes !== row.bytes || previous.sha !== sha)) throw new SnapshotError("conflict", "Git ignore rules changed during checkpoint capture.");
+      working.set(row.path, { bytes: row.bytes, sha });
+      await scratch.write(`work/${row.path}`, bytes);
+    }
+    const names = rows.filter(row => row.path && row.path !== ".git").map(row => row.path);
+    const ignored = new Set<string>();
+    if (names.length) {
+      const output = text(await execute(scratch, [...GIT, "check-ignore", "--no-index", "--stdin", "-z"], options, options.limits.manifestBytes, Buffer.from(`${names.join("\0")}\0`), true));
+      const found = output.split("\0");
+      if (found.pop() !== "") refuse("Git returned incomplete ignore selection.");
+      const requested = new Set(names);
+      for (const name of found) { if (!requested.has(name)) refuse(); ignored.add(name); }
+    }
+    return new Set(rows.filter(row => row.path === "" || row.path === ".git" || !ignored.has(row.path) || trackedParents.has(row.path)
+      || options.retain.some(path => row.path === path || row.path.startsWith(`${path}/`) || path.startsWith(`${row.path}/`))).map(row => row.path));
+  };
+  const inventory = await options.inventory(select);
+  // Only selected placeholders and ignore rules enter the private work tree; no project program is executed.
+  for (const row of inventory) {
     if (!row.path || row.path === ".git") continue;
     if (row.type === "directory") await scratch.mkdir(`work/${row.path}`);
-    else if (row.path.split("/").at(-1) === ".gitignore") {
-      if (row.bytes > options.limits.fileBytes) throw new SnapshotError("limit", "Git ignore rules exceed the checkpoint limit.");
-      const bytes = await work.read(row.path, { length: row.bytes + 1 });
-      if (bytes.length !== row.bytes) throw new SnapshotError("conflict", "Git ignore rules changed during checkpoint capture.");
-      working.set(row.path, { bytes: row.bytes, sha: digest(bytes) });
-      await scratch.write(`work/${row.path}`, bytes);
-    } else await scratch.write(`work/${row.path}`, new Uint8Array());
+    else if (row.path.split("/").at(-1) !== ".gitignore") await scratch.write(`work/${row.path}`, new Uint8Array());
   }
   const files = [...new Set([...index.keys(), ...text(await git(["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean).map(pathOf)])].sort();
   const unsafePath = (path: string): boolean => credentialPath(path) || options.secretValues?.some(value => value && path.includes(value)) === true
@@ -115,7 +144,7 @@ export async function captureGit(work: Workspace, scratch: Workspace, options: P
   const deleted: string[] = []; let dirty = false;
   for (const path of files) {
     if (unsafePath(path)) refuse("Git history or tracked paths contain credentials or host-owned runtime input.");
-    const row = options.inventory.find(row => row.path === path), tracked = index.get(path);
+    const row = inventory.find(row => row.path === path), tracked = index.get(path);
     if (!row) { if (tracked) { deleted.push(path); dirty = true; } continue; }
     if (row.type !== "file" || row.bytes > options.limits.fileBytes) refuse();
     const body = Buffer.from(await work.read(path, { length: row.bytes + 1 })); options.signal?.throwIfAborted();
@@ -143,6 +172,7 @@ export async function captureGit(work: Workspace, scratch: Workspace, options: P
   }
   const bundle = await git(["bundle", "create", "-", "HEAD"], options.limits.gitBytes);
   const verify = async (): Promise<void> => {
+    if (JSON.stringify(inventory) !== JSON.stringify(await options.inventory(select))) throw new SnapshotError("conflict", "Project metadata changed during checkpoint capture.");
     if (JSON.stringify(before) !== JSON.stringify(await databaseInventory(work, options))) throw new SnapshotError("conflict", "Git metadata changed during checkpoint capture.");
     for (const row of before.filter(row => held.has(row.path))) {
       const bytes = await work.read(`.git/${row.path}`, { length: row.bytes + 1 }); options.signal?.throwIfAborted();
@@ -154,5 +184,5 @@ export async function captureGit(work: Workspace, scratch: Workspace, options: P
     }
   };
   await verify();
-  return { files, bundle, verify, metadata: { head, branch, dirty, deleted, history: "complete" } };
+  return { files, inventory, bundle, verify, metadata: { head, branch, dirty, deleted, history: "complete" } };
 }
