@@ -118,7 +118,9 @@ for (const [runtime, mismatch] of [['claude', false], ['codex', false], ['codex-
       // #3411 a connected agent's run never found its held workflow (its launch input is the task text), so none was asked.
       assert.equal(revises.length, 1, 'the hold asks one revise');
       assert.match(revises[0], /checked on 1 input of your last 1 completed runs/);
-      assert.equal((await server.api('GET', `/agents/${id}/learning`)).body.workflows[0].status, 'checking', 'the revision waits for its own check');
+      const revised = (await server.store.learning.proposals(id, { limit: 10 })).find(one => one.runId === receipts[1].run_id);
+      assert.deepEqual([revised?.proposal?.state, revised?.proposal?.compiled?.workflow], ['merged', 'release-status'], 'its revision is on main, for its own check');
+      assert.equal((await server.api('GET', `/agents/${id}/learning`)).body.workflows[0].status, 'held');
       assert.equal(calls.length, 2, 'A mismatch is recorded, not retried to seek agreement.');
       return;
     }

@@ -588,8 +588,9 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === agentId && since(run));
   const done = earlier.filter(completedRun);
   const own = await lastOwnRuns(deps.store, agentId, compileAfter, input.runId);
-  // Due on the agent's own completed runs (`own`, or those of them since a hold), the ending one counted.
-  const dueWith = (workflows: number, runs = own) => compileDue({ completed: input.outcome === "completed", runs: runs.length + (input.outcome === "completed" ? 1 : 0), workflows, compileAfter });
+  // Due on the agent's own completed runs, the ending one counted (`runs`: by default all of them).
+  const ending = input.outcome === "completed" ? 1 : 0;
+  const dueWith = (workflows: number, runs = own.length + ending) => compileDue({ completed: ending === 1, runs, workflows, compileAfter });
   const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown } } | null | undefined)?.compiled;
   // Compile once: a recompile whose drafts failed their checks stopped the agent's new compiles (recordDraftFailed).
   const stopped = compileStoppedOf(records);
@@ -653,9 +654,12 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   if (read.held) {
     // A connected agent's hold on give-backs checked nothing, so it has no disagreements to revise from: its revise waits
     // for a first compile's cadence, compile_after completed runs of the agent's own since the hold, the ending one counted.
-    // A client that never sends a shadow check then costs one compile per compile_after runs, never one per hold.
+    // A client that never sends a shadow check then costs one compile per compile_after runs, never one per hold. Only a run
+    // started after the hold counts: the turn whose give-back wrote it (a completed turn with no shadow report writes it
+    // before its run ends) is no run since it, nor is one that was already under way.
     const heldAt = Date.parse(read.held.at);
-    if (heldOnGiveBacks(read.held.check) && !dueWith(0, own.filter((run) => run.endedAt !== null && run.endedAt > heldAt))) return sayLeftOut(), undefined;
+    const after = (run: { readonly startedAt: number } | undefined) => run !== undefined && run.startedAt > heldAt;
+    if (heldOnGiveBacks(read.held.check) && !dueWith(0, own.filter(after).length + (after(listed[at]) ? ending : 0))) return sayLeftOut(), undefined;
     // Once per hold: a run since it that compiled this workflow asked already, whatever came of it (its revision is on its
     // way to a replay, or its draft failed its checks), however many runs ago. Read from the agent's kept learning since
     // the hold, never a window of its last runs; one that can't be read asks nothing. A draft that failed since, not stopped
