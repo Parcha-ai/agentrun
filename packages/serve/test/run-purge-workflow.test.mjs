@@ -381,8 +381,9 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
 // The champion a start delivers is read at its promotion record's commit, older than the start's seed; the start keeps
 // the run that wrote it, so a record dropped since (as the kept records' cap drops one) never lets it through, nor a
 // purge through DELETE /runs/{id}, which rewrites the history the start read it from (learn/purge.ts).
-for (const via of ["the store's purge", "DELETE /runs/{id}, the history rewritten"]) test(`an SDK start sent again never answers a workflow a purged run wrote (${via}): its receipt is 410 purged, its champion record gone or not, and a new start pins none`, async (t) => {
+for (const [kind, settingsOf] of Object.entries(STORES)) for (const via of ["the store's purge", "DELETE /runs/{id}, the history rewritten"]) test(`${kind}: an SDK start sent again never answers a workflow a purged run wrote (${via}): its receipt is 410 purged, its champion record gone or not, and a new start pins none`, async (t) => {
   const { api, data, store } = await serve(t, { runner: false });
+  onStore(t, data, settingsOf());
   const id = "sdk-purged";
   const tool = { name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 };
   const body = { runtime: "claude-agent-sdk", input: "Check release status.", instructions: "Use the backend tools.", workflow_tools: [tool] };
@@ -411,7 +412,8 @@ for (const via of ["the store's purge", "DELETE /runs/{id}, the history rewritte
   assert.deepEqual(await start("pinned"), { status: 201, workflows: [digestOf(v1)] }, "before the purge, a start pins the champion, read at its record's commit");
   if (via.startsWith("DELETE")) {
     assert.equal((await api("DELETE", `/runs/${writer}`)).status, 204);
-    assert.equal(git(repoOf(data, id), ["log", "--format=%H", "main"]).split("\n").includes(merge), false, "the purge rewrote the commit the start read");
+    const learning = learningStoreOf(data, id);
+    assert.equal(((await learning.log(await learning.head())) ?? []).some(({ sha }) => sha === merge), false, "the purge rewrote the commit the start read");
   } else await store.runs.purge(writer, { meters: null, spend: { usd: 0.1, basis: "list" }, learning: null });
   const again = await start("pinned");
   await store.settings.put(`learning.promotions.${id}`, { v: 1, items: [record(digestOf(v2), "hold", next)] });
