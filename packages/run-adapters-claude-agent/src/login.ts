@@ -5,10 +5,11 @@
 // never reads, copies, stores or relays it: a session only tells the CLI where its login is (two directories, by
 // environment), and the host asks the CLI whether it is signed in (`claude auth status`), reading nothing but that answer.
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { accessSync, constants, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type { ModelPort, ModelUsage } from "@parcha/agentrun-kernel";
+import { parentWatched, type ParentWatch } from "@parcha/agentrun-kernel/host";
 
 /** Where the pinned CLI keeps a login: its credentials file's directory (`CLAUDE_SECURESTORAGE_CONFIG_DIR`) and its
  *  Anthropic profiles (`ANTHROPIC_CONFIG_DIR`). The CLI reads and writes both; nothing else does. */
@@ -171,11 +172,32 @@ export interface ClaudeSignIn {
   stop(): void;
 }
 
+/** Throws, in the spawn's words, when `cli` is no program this host can start: the parent watch starts a program of its
+ *  own first (setpriv, or node with its shim), which would tell a missing CLI only as its own exit code. A bare name is
+ *  looked up on `path` (not on Windows, whose names take an extension; the watch's exit says it there). */
+function startable(cli: string, path: string): void {
+  if (/[\\/]/.test(cli)) return accessSync(cli, constants.X_OK);
+  if (process.platform === "win32") return;
+  for (const dir of path.split(delimiter)) {
+    if (!dir) continue;
+    try {
+      return accessSync(join(dir, cli), constants.X_OK);
+    } catch {
+      // Not here.
+    }
+  }
+  throw Object.assign(new Error(`spawn ${cli} ENOENT`), { code: "ENOENT" });
+}
+
 /** Start the CLI's own sign-in at `login` (`auth login`), with the line's own variables (signInEnv) in the person's home
  *  (`home`) and desktop (`display`): it opens a browser on this machine and keeps what it gets in the login's folder.
  *  Nothing of it is read here: its output goes nowhere. It is ended after `timeoutMs` (SIGN_IN_MS by default), which
- *  `ended` says apart from any other end. */
-export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; home?: string; display?: Readonly<Record<string, string | undefined>> } = {}): ClaudeSignIn {
+ *  `ended` says apart from any other end.
+ *  It dies with this process, as a session's CLI does: started under the kernel's parent watch (parentWatched; `watch`,
+ *  by default what this machine supports), so a server that is SIGKILLed, and runs no stop or limit timer, leaves no CLI
+ *  waiting on the browser's port. It is not detached: it stays in this process's group, so a terminal's Ctrl-C ends it
+ *  with the server as before, and nothing here kills a group, which would take a browser the CLI started with it. */
+export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; home?: string; display?: Readonly<Record<string, string | undefined>>; watch?: ParentWatch } = {}): ClaudeSignIn {
   // What a browser needs to open on this desktop, when the server has it.
   const display = Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "BROWSER"].flatMap((name) => {
     const value = options.display?.[name];
@@ -184,10 +206,13 @@ export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: 
   let settle!: (end: ClaudeSignInEnd) => void;
   const ended = new Promise<ClaudeSignInEnd>((resolve) => { settle = resolve; });
   const failed = (error: unknown): ClaudeSignInEnd => ({ end: "failed", message: String((error as Error)?.message ?? error).slice(0, 200) });
+  const path = options.path ?? process.env.PATH ?? "/usr/bin:/bin";
   let child: ReturnType<typeof spawn>;
   try {
-    child = spawn(cli, ["auth", "login", "--claudeai"], {
-      env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: options.home ?? homedir(), ...display, ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
+    startable(cli, path);
+    const run = parentWatched({ command: cli, args: ["auth", "login", "--claudeai"] }, options.watch);
+    child = spawn(run.command, run.args, {
+      env: { PATH: path, HOME: options.home ?? homedir(), ...display, ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
       stdio: "ignore",
     });
   } catch (error) {

@@ -1577,6 +1577,8 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   finish), `failed` (the CLI ended without signing in, with its `exit_code`), or `not_started`. A second start ends a
   sign-in that still waits, and so do turning the mode off, a `PUT` that moves the login to the other `place`, and
   stopping the server, which waits for that CLI to exit. A `PUT` at the same `place` leaves it waiting.
+  The CLI dies with the server, as a session's CLI does, so a server that is killed outright (SIGKILL, the OOM killer)
+  leaves no sign-in waiting on the browser's port.
 - `DELETE /v2/settings/claude-login` turns it off. The login stays as the CLI keeps it.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
