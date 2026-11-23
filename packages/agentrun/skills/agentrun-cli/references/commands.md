@@ -1555,6 +1555,16 @@ The triggers: schedules and signed webhooks that start an agent's capped runs or
 
 Route: `GET /triggers`.
 
+### `agentrun triggers release-firing TRIGGER_ID FIRING_ID`
+
+The launch hook's host releases a firing it took and will start no run for.
+
+Route: `POST /triggers/{trigger_id}/firings/{firing_id}/release`.
+
+- `--error STRING` (string, required): Why the host starts no run for the firing, in plain words: a failure's code or reason, never a person's data or a key.
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun triggers update TRIGGER_ID`
 
 Change a trigger, or turn it off and on.

@@ -112,6 +112,7 @@
     "fireTrigger": ["triggers", "fire"],
     "listTriggerFirings": ["triggers", "firings"],
     "rotateTriggerSecret": ["triggers", "rotate-secret"],
+    "releaseTriggerFiring": ["triggers", "release-firing"],
     "listTemplates": ["template", "list"],
     "getTemplate": ["template", "get"],
     "applyTemplate": ["template", "apply"],

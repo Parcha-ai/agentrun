@@ -6001,6 +6001,29 @@ export interface operations {
       };
     };
   };
+  releaseTriggerFiring: {
+    body: {
+      error: string;
+    };
+    answer: {
+      key: string;
+      by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
+      nominal_at: string;
+      status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+      at: string;
+      run_id: string | null;
+      reason: string | null;
+      error: {
+        code: string;
+        message: string;
+      } | null;
+      count?: number;
+      attempts?: number;
+      retry_at?: string;
+      start_by?: string;
+      catch_up?: true;
+    };
+  };
   remoteCommandEvents: {
     body: {
       lease_token: string;

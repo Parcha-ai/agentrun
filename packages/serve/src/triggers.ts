@@ -25,13 +25,15 @@
 // now. A failed firing queues a trigger.failed webhook message.
 // With the launch hook set (trigger-launch-hook.ts), a firing that would start a run goes the same way up to the start,
 // then is handed to the host instead: sent when the host takes it, a failed try (hook_failed and why) when it does not.
+// A host that took a firing and then starts no run for it (its own job failed at launch) releases it: failed at once,
+// host_released, so its trigger's room is free for the next firing without waiting out start_by.
 import { createHash, randomBytes } from "node:crypto";
 import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "./timeline/index.js";
 import { agentDeleting, purgedAgent } from "./agents.js";
 import { ownedElsewhere } from "./agents-store.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
-import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
+import { AgentArchived, type FiringChange, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
 import { carriesPrevious, type Clock, PAYLOAD_KEPT_BYTES, type PollResult, second, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { type Handed, handToHost, HookFailed, type HookFiring, LAUNCH_HOOK_LATE_START_MS, type LaunchHook } from "./trigger-launch-hook.js";
@@ -55,6 +57,13 @@ export const FIRING_STATUSES = ["due", "started", "sent", "skipped", "failed", "
 /** The reason of a firing the launch hook's host took (a 2xx) without starting its run here under the firing (RunCreate
  *  trigger_firing). */
 export const HANDED_NO_RUN = "Handed to the host by the launch hook, which started no run here for it.";
+/** The error code of a firing its launch hook's host released (Triggers.release): it took the firing (a 2xx) and said it
+ *  will start no run for it. */
+export const HOST_RELEASED = "host_released";
+/** The reason of such a firing; its error's message is the host's own words. */
+export const HOST_RELEASED_REASON = "Released by the launch hook's host, which took it and will start no run for it.";
+/** The most characters of the host's words a release keeps. */
+export const RELEASE_WORDS_MAX = 500;
 /** The most of a webhook's payload a firing passes on: the rest is cut, at a character's start (trigger-adapter.ts). */
 /** How late a missed time may be and still fire once, by default: an hour. */
 export const CATCHUP_WINDOW_S = 3600;
@@ -1419,6 +1428,64 @@ export class Triggers {
     if (firing && (firing.status === "due" ? firing.runId === null : tookWithNoRun(firing))) await this.started(triggerId, key, runId);
   }
 
+  /** Firing `key` of trigger `triggerId` released by the host the launch hook handed it to: the host answered it 2xx and
+   *  says it will start no run for it (its job failed before any run started). `body` is `{ error }`, the host's words
+   *  (1 to RELEASE_WORDS_MAX characters), which `cut` takes the server's secrets out of before they are kept. A firing
+   *  sent with no run, before or after its start_by, fails at once: host_released with those words, one failure in its
+   *  trigger's streak and a trigger.failed, as any failed firing. Its trigger's room is free from that write, so a firing
+   *  waiting on it is driven on the next tick. The same call on a firing it released already answers that firing as it
+   *  is. Refused in words: 422 not_allowed on a server with no launch hook, not_due for a firing whose run started, one
+   *  still due (not handed yet) or any other; 404 for a trigger or firing this server does not have. A host start of the
+   *  firing being written on this server is waited for first: a run it writes makes the firing started, and refused. */
+  async release(triggerId: string, key: string, body: Json, cut: (text: string) => string) {
+    if (!this.deps.launchHook) throw invalid([{ field: "firing_id", reason: "not_allowed", message: "This server has no launch hook: only a firing the hook handed to its host is released by that host." }]);
+    await this.need(triggerId);
+    const issues = unknownFields(body, ["error"]);
+    const words = typeof body.error === "string" ? body.error.trim() : "";
+    if (!words || words.length > RELEASE_WORDS_MAX) issues.unshift({ field: "error", reason: typeof body.error === "string" ? "invalid" : "wrong_type", message: `error is why the host starts no run for the firing, in plain words: 1 to ${RELEASE_WORDS_MAX} characters.` });
+    if (issues.length) throw invalid(issues);
+    const message = cut(words);
+    for (;;) {
+      const starting = this.starting.get(key);
+      if (starting) {
+        const run = await starting;
+        if (run) throw this.notDue(key, `its run ${run.run_id} started`);
+        continue;
+      }
+      const firing = await this.checked(triggerId, () => this.releaseOnce(triggerId, key, message));
+      // Moved under the release (a host start pushed its start_by, or wrote its run): read again from the top.
+      if (firing) return firingView(firing);
+    }
+  }
+
+  /** One read and write of a release (release), within its trigger's room checks: the firing failed host_released, only
+   *  while it is still sent with no run and its start_by is the one read here, so a start that moved it meanwhile (on any
+   *  server) leaves it as it is, and undefined is answered. */
+  private async releaseOnce(triggerId: string, key: string, message: string): Promise<FiringRow | undefined> {
+    const firing = await this.store.triggers.firing(triggerId, key);
+    if (!firing) throw new ApiError("not_found", `Trigger ${triggerId} has no firing ${key}.`);
+    if (firing.status === "failed" && firing.error?.code === HOST_RELEASED) return firing;
+    // A run already under its key is its run, linked or not (a stop between its write and handedRan).
+    const ran = firing.status === "started" ? firing.runId : firing.status === "due" || tookWithNoRun(firing) ? (await this.deps.runOf(key))?.run_id : undefined;
+    if (ran) {
+      await this.handedRan(triggerId, key, ran);
+      throw this.notDue(key, `its run ${ran} started`);
+    }
+    if (firing.status === "due") throw this.notDue(key, "it has not been handed to the launch hook's host yet");
+    if (!tookWithNoRun(firing)) throw this.notDue(key, `it is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}, not a firing the launch hook's host took with no run`);
+    const failed = await this.failed(triggerId, key, { code: HOST_RELEASED, message }, undefined, HOST_RELEASED_REASON, { from: "sent", startByWas: firing.startBy! });
+    if (!failed) return undefined;
+    this.deps.say({ condition: "trigger_firing_released", trigger: triggerId, firing: key });
+    // Its room is free now: a firing waiting on it is driven on the next tick, not at start_by.
+    void this.arm();
+    return failed;
+  }
+
+  /** A release refused for firing `key`, `why` saying what it is. */
+  private notDue(key: string, why: string) {
+    return invalid([{ field: "firing_id", reason: "not_due", message: `Firing ${key} is not released: ${why}.` }]);
+  }
+
   /** Each sent firing whose host's run is in the store under its key, though the server stopped before the firing was
    *  started with it (a late start writes the run, then handedRan): started with that run, so the overlap check and
    *  max_active_runs count it. */
@@ -1441,15 +1508,18 @@ export class Triggers {
 
   /** A failed firing: one more in its trigger's streak, the trigger turned off at FAILURES_TO_PAUSE, and trigger.failed
    *  queued (after the firing is written: a start finds one not yet queued and queues it, under the same webhook-id).
-   *  Failed only while it is due: one its host's run started meanwhile is left started, with no failure and no message. */
-  private async failed(triggerId: string, key: string, error: { code: string; message: string }, runId?: string, reason?: string): Promise<void> {
-    const settled = await this.store.triggers.settle(triggerId, key, { status: "failed", error, ...(runId ? { runId } : {}), ...(reason ? { reason } : {}), from: "due" }, { failure: true, pauseAt: FAILURES_TO_PAUSE });
-    if (!settled) return;
+   *  Failed only while it is due (or as `only` says: a release's, while it is sent with no run and its start_by unmoved):
+   *  one its host's run started meanwhile is left started, with no failure and no message. The firing as written, or
+   *  undefined when nothing was. */
+  private async failed(triggerId: string, key: string, error: { code: string; message: string }, runId?: string, reason?: string, only: Pick<FiringChange, "from" | "startByWas"> = { from: "due" }): Promise<FiringRow | undefined> {
+    const settled = await this.store.triggers.settle(triggerId, key, { status: "failed", error, ...(runId ? { runId } : {}), ...(reason ? { reason } : {}), ...only }, { failure: true, pauseAt: FAILURES_TO_PAUSE });
+    if (!settled) return undefined;
     await this.notifyFailed(triggerId, key);
     if (settled.paused) {
       this.deps.say({ condition: "trigger_auto_paused", trigger: triggerId, firing: key });
       await this.pausedThere(triggerId);
     }
+    return settled.firing;
   }
 
   /** Trigger `triggerId`, turned off by its failure streak: off at its sender too (offThere). */

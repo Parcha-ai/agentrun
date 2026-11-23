@@ -920,6 +920,9 @@ __all__ = [
     "ReleaseRunComputerBody",
     "ReleaseRunComputerResponse",
     "ReleaseRunComputerResponseHeld",
+    "ReleaseTriggerFiringBody",
+    "ReleaseTriggerFiringResponse",
+    "ReleaseTriggerFiringResponseError",
     "RemoteCommandEventsBody",
     "RemoteCommandEventsResponse",
     "RequestAction",
@@ -10492,6 +10495,34 @@ class ListTriggersResponseTriggersItemLastCheck(TypedDict):
     message: str
 
 
+class ReleaseTriggerFiringBody(TypedDict):
+    error: str
+
+
+class _ReleaseTriggerFiringResponseRequired(TypedDict):
+    key: str
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
+    nominal_at: str
+    status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
+    at: str
+    run_id: str | None
+    reason: str | None
+    error: ReleaseTriggerFiringResponseError | None
+
+
+class ReleaseTriggerFiringResponse(_ReleaseTriggerFiringResponseRequired, total=False):
+    count: int
+    attempts: int
+    retry_at: str
+    start_by: str
+    catch_up: Literal[True]
+
+
+class ReleaseTriggerFiringResponseError(TypedDict):
+    code: str
+    message: str
+
+
 class _RotateTriggerSecretResponseRequired(TypedDict):
     secret: SecretMeta
 
@@ -11375,6 +11406,7 @@ OPERATIONS: dict[str, Operation] = {
     "listTriggerFirings": Operation(method="GET", path="/triggers/{trigger_id}/firings", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getTrigger": Operation(method="GET", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listTriggers": Operation(method="GET", path="/triggers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "releaseTriggerFiring": Operation(method="POST", path="/triggers/{trigger_id}/firings/{firing_id}/release", path_params=("trigger_id", "firing_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "rotateTriggerSecret": Operation(method="POST", path="/triggers/{trigger_id}/secret", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=True, public_fields=(), tagged=False),
     "updateTrigger": Operation(method="PATCH", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getUsage": Operation(method="GET", path="/usage", path_params=(), multi_segment=(), query=("from", "to", "group_by"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -12211,6 +12243,10 @@ class TriggersResource(Group):
     def list(self, *, timeout: float | None = None) -> ListTriggersResponse:
         """The triggers: schedules and signed webhooks that start an agent's capped runs or message a run (GET /triggers)."""
         return self._call("listTriggers", (), None, None, timeout=timeout)
+
+    def release_firing(self, trigger_id: str, firing_id: str, body: ReleaseTriggerFiringBody, *, timeout: float | None = None) -> ReleaseTriggerFiringResponse:
+        """The launch hook's host releases a firing it took and will start no run for (POST /triggers/{trigger_id}/firings/{firing_id}/release)."""
+        return self._call("releaseTriggerFiring", (trigger_id, firing_id), body, None, timeout=timeout)
 
     def rotate_secret(self, trigger_id: str, *, timeout: float | None = None) -> RotateTriggerSecretResponse:
         """A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
