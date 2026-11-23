@@ -15,6 +15,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import { asksByDefault, hostToolNames } from "../dist/tool-list.js";
 import { BOX_WORK } from "../dist/place.js";
 import { deniedText } from "../dist/tool-gate.js";
@@ -332,7 +333,24 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
   // then the call's answer. A run on the in-process runner notes its requests as the runner's process, so they are
   // counted over this test's runs, all of them pi's.
   if (harnesses.every((harness) => harness === "pi")) assert.equal(notedRequests(requests).length, 2 * runs.length, `two requests a run: ${rolesOf(notedRequests(requests))}`);
-  assert.deepEqual(await dialled(), harnesses.map(() => PAGE), "each allowed call ran once, no denied one ran");
+  // A read the runner lost mid-call runs again on its next claim (a lapse on a starved machine): a second dial says so
+  // in each run's attempts (run_attempts' cut and cause), shown when the count is off.
+  const dials = await dialled();
+  const once = harnesses.map(() => PAGE);
+  assert.deepEqual(dials, once, `each allowed call ran once, no denied one ran${isDeepStrictEqual(dials, once) ? "" : `; the runs' attempts: ${await attemptsOf(server, runs)}`}`);
+}
+
+/** Each run's claims as run_attempts keeps them (epoch, from, cause, cut), for a failure's message. */
+async function attemptsOf(server, runs) {
+  const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
+  try {
+    const each = await Promise.all(runs.map(async (run) => [`${run.decision} on ${run.harness}`, (await store.runAttempts.forRun(run.runId)).map(({ epoch, from, cause, cut }) => ({ epoch, from, cause, cut }))]));
+    return JSON.stringify(Object.fromEntries(each));
+  } catch (error) {
+    return `unread (${error.message})`;
+  } finally {
+    await store.close();
+  }
 }
 
 test("web_fetch set to ask on pi: the run parks with its pending approval, its claim let go, and is answered by the owner's session; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, (t) => askedOn(t, ["pi"], { resumes: false }));
