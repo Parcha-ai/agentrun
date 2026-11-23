@@ -1286,6 +1286,10 @@ export class Triggers {
     const room = await this.checked(triggerId, () => this.startRoom(trigger, key));
     // Its start_by moved under the check (its run started meanwhile, by another start of it): read again from the top.
     if (!room) return this.handedStart(given, agentId, start);
+    if ("ran" in room) {
+      await this.handedRan(triggerId, key, room.ran);
+      return { run_id: room.ran, replayed: true };
+    }
     try {
       const attrs = room.firing.attrs as Record<string, string> | null | undefined;
       const run = await start({
@@ -1305,23 +1309,30 @@ export class Triggers {
    *  until its run starts; or is one its host took with no run, up to its startBy (the host may answer first and start
    *  the run after), then held mid-hand the same way, however long its run takes to write. Its startBy is pushed out to
    *  at least START_WINDOW_MS from now if it is sooner, so the store holds its room too, for another server's checks.
-   *  Undefined when the push was not written: the firing moved meanwhile. */
-  private async startRoom(trigger: Trigger, key: string): Promise<{ firing: FiringRow; release: () => void } | undefined> {
+   *  Undefined when the push was not written: the firing moved meanwhile. A start that would be refused once its run is
+   *  under its key (`ran`) answers that run: another start of the firing (the host's repeat) wrote it since handedStart
+   *  read none. */
+  private async startRoom(trigger: Trigger, key: string): Promise<{ firing: FiringRow; release: () => void } | { ran: string } | undefined> {
     const refused = (reason: string, message: string) => invalid([{ field: "trigger_firing.firing_id", reason, message }]);
+    const notDue = async (message: string): Promise<{ ran: string }> => {
+      const ran = await this.deps.runOf(key);
+      if (ran) return { ran: ran.run_id };
+      throw refused("not_due", message);
+    };
     const firing = await this.store.triggers.firing(trigger.id, key);
     if (!firing) throw refused("not_found", `Trigger ${trigger.id} has no firing ${key}.`);
     const now = this.clock.now();
     const minutes = LAUNCH_HOOK_LATE_START_MS / 60_000;
     if (tookWithNoRun(firing)) {
-      if (now > firing.startBy!) throw refused("not_due", `Firing ${key}'s host answered without starting its run, and the ${minutes} minutes after its host answered in which it may still start it have passed (start_by ${iso(firing.startBy!)}).`);
+      if (now > firing.startBy!) return notDue(`Firing ${key}'s host answered without starting its run, and the ${minutes} minutes after its host answered in which it may still start it have passed (start_by ${iso(firing.startBy!)}).`);
       if (firing.startBy! >= now + START_WINDOW_MS) return { firing, release: this.hold(trigger.id, key) };
       const pushed = await this.store.triggers.settle(trigger.id, key, { status: "sent", reason: firing.reason, keepAttrs: true, startBy: now + START_WINDOW_MS, from: "sent", holdsAt: now });
       return pushed && { firing: pushed.firing, release: this.hold(trigger.id, key) };
     }
-    if (firing.status !== "due") throw refused("not_due", `Firing ${key} is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}: a run starts only for a firing the launch hook is handing over, or one its host took within ${minutes} minutes of its answer.`);
+    if (firing.status !== "due") return notDue(`Firing ${key} is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}: a run starts only for a firing the launch hook is handing over, or one its host took within ${minutes} minutes of its answer.`);
     // Another firing's run, or another hand or start on this server, may have taken its trigger's room since it was handed.
     const busy = await this.busy(trigger, firing);
-    if (busy) throw refused("not_due", `Firing ${key} does not start now. ${"skipped" in busy ? busy.skipped : busy.reason}`);
+    if (busy) return notDue(`Firing ${key} does not start now. ${"skipped" in busy ? busy.skipped : busy.reason}`);
     return { firing, release: this.hold(trigger.id, key) };
   }
 
