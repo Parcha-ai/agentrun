@@ -107,23 +107,18 @@ const STARTED_SKEW_MS = 60_000,
  *  could hold every loop for a day while every other start queued. A cap, not a park: the loop's wait stays as it is. */
 export const SDK_OPEN_PER_AGENT = 8;
 /** Each agent's SDK starts, admitted one at a time: the open count is read and the run made in one turn, so starts sent at
- *  once never pass the cap together. One process holds a store (its owner lock), so this queue is every start's. */
+ *  once never pass the cap together. The queue is this process's: two servers on one shared Postgres store each admit up
+ *  to SDK_OPEN_PER_AGENT, so the cap holds per process. */
 const sdkStarts = new Map<string, Promise<unknown>>();
 const overCap = () => new ApiError("rate_limited", `This agent has ${SDK_OPEN_PER_AGENT} SDK runs open, the most it holds at once: complete or cancel one, or let its inbox close, then start again.`);
 /** Whether agent `agentId` holds SDK_OPEN_PER_AGENT open SDK runs: runs still going whose inbox has no completion and is
  *  not closed. A run whose task completed holds no slot while its runner has yet to end it or it still learns
- *  (learningEndOfRun), as the refusal's words promise. The live count answers alone below the cap; at it, each live run's
- *  inbox is read (a run with no inbox yet counts as open). */
-async function capFull(store: Pick<Store, "runs" | "settings">, agentId: string): Promise<boolean> {
+ *  (learningEndOfRun), as the refusal's words promise. The live count answers alone below the cap; at it, the store counts
+ *  the open runs in one read that stops at the cap (Runs.openSdk; a run with no inbox yet counts as open), however many
+ *  completed runs still go. */
+export async function capFull(store: Pick<Store, "runs">, agentId: string): Promise<boolean> {
   if ((await store.runs.counts(agentId)).live < SDK_OPEN_PER_AGENT) return false;
-  let open = 0;
-  for (const state of ["queued", "running", "parked"] as const)
-    for (const run of await store.runs.list({ agentId, state })) {
-      const inbox = await store.settings.get(keyOf(run.id));
-      if (!isObject(inbox) || (!inbox.completion && !inbox.closed)) open++;
-      if (open >= SDK_OPEN_PER_AGENT) return true;
-    }
-  return false;
+  return (await store.runs.openSdk(agentId, SDK_OPEN_PER_AGENT)) >= SDK_OPEN_PER_AGENT;
 }
 const TEXT_LIMIT = 128_000,
   BATCH_LIMIT = 256_000,

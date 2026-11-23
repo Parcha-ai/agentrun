@@ -1014,6 +1014,10 @@ export interface Runs {
    *  (`live`: queued, running or parked, or an agentic run a person stopped, which a message continues). A built-in learning
    *  run and an audit's shadow run are none of them. */
   counts(agentId: string): Promise<{ readonly count: number; readonly live: number }>;
+  /** How many of agent `agentId`'s runs hold an SDK slot (sdk/runs.ts capFull), counted in one read that stops at `limit`:
+   *  runs queued, running or parked (as `list` takes them) whose SDK inbox (the `sdk-run:<id>` setting) is missing, or
+   *  holds neither a completion nor a close. A run whose task completed holds none while it still goes. */
+  openSdk(agentId: string, limit: number): Promise<number>;
   /** Up to `limit` runs whose listing is behind, the runs no runner holds first, then newest first: built never, or before
    *  the latest write that moved what the run's view shows (listing_mark < list_mark), or built while a runner held it and
    *  that claim has run out on the store's clock, or past the time it goes stale by the clock (listing_until). `mark`:

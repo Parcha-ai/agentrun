@@ -204,6 +204,41 @@ test("a run whose backend task completed holds no slot, though its run still goe
   assert.equal((await start()).status, 429, "and the cap holds again");
 });
 
+test("the cap's read past the live count is one bounded read, however many runs that hold no slot still go", async (t) => {
+  const { start, store, data } = await fixture(t);
+  const { SDK_OPEN_PER_AGENT, capFull } = await import("../dist/sdk/runs.js");
+  const sdk = new SdkRuns(store, data, "fake-test-key");
+  // Three caps' worth of runs that hold no slot and still go: their task completed (learning, or not yet ended by its
+  // runner), or, for one, their inbox closed.
+  let closed;
+  for (let i = 0; i < 3 * SDK_OPEN_PER_AGENT; i++) {
+    const made = await start();
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const id = made.body.run_id;
+    if (i) assert.deepEqual(await sdk.complete(id, { status: "completed", answer: "done" }), { accepted: true });
+    else assert.equal((await closeSdkInbox(store, await store.claim((closed = id), "runner-test", { leaseMs: 60_000 }), "failed")).closed, "failed");
+  }
+  for (let i = 1; i < SDK_OPEN_PER_AGENT; i++) assert.equal((await start()).status, 201);
+  const agentId = (await store.runs.get(closed)).agentId;
+  assert.equal((await store.runs.counts(agentId)).live, 4 * SDK_OPEN_PER_AGENT - 1, "every one still goes");
+  // The store as the cap reads it, each read of a run's inbox or of a page of runs counted.
+  let reads = 0;
+  const counted = (target, names) => new Proxy(target, {
+    get(object, key) {
+      const value = Reflect.get(object, key, object);
+      if (typeof value !== "function") return value;
+      return (...args) => ((names.includes(key) && reads++), value.apply(object, args));
+    },
+  });
+  const capStore = { runs: counted(store.runs, ["list", "get"]), settings: counted(store.settings, ["get", "all"]) };
+  assert.equal(await capFull(capStore, agentId), false, "one slot left");
+  assert.equal(reads, 0, `past the live count, the cap read ${reads} rows one at a time`);
+  assert.equal((await start()).status, 201, "the last slot is taken");
+  assert.equal(await capFull(capStore, agentId), true, "full");
+  assert.equal(reads, 0, `past the live count, the cap read ${reads} rows one at a time`);
+  assert.equal((await start()).status, 429, "and a start is refused");
+});
+
 test("labels are kept on the run and found by GET /runs?label=", async (t) => {
   const { start, api } = await fixture(t);
   const labels = { tenant: "acme", "job/id": "nightly-7" };

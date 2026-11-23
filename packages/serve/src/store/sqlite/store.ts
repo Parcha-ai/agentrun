@@ -1420,6 +1420,20 @@ class SqliteStore implements Store {
         );
         return { count: Number(row?.count ?? 0), live: Number(row?.live ?? 0) };
       },
+      openSdk: async (agentId, limit) => {
+        if (!Number.isSafeInteger(limit) || limit < 1) throw new TypeError("openSdk requires a positive safe integer limit");
+        // One read whatever the number of live runs, each inbox found by its key and two members of it read, never decoded
+        // here (megabytes of replay): on Postgres through its readable copy, so an escaped NUL in a replay never fails it.
+        const inbox = readableJson(d, "inbox.value");
+        const [row] = await db.all<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM (SELECT 1 FROM runs LEFT JOIN settings inbox ON inbox.key = 'sdk-run:' || runs.id
+             WHERE runs.agent_id = ? AND runs.state IN ('queued', 'running', 'parked') AND runs.${NOT_A_LEARNING_RUN} AND runs.purged_at IS NULL
+               AND (inbox.value IS NULL OR (${d.jsonText(inbox, ["completion"])} IS NULL AND ${d.jsonText(inbox, ["closed"])} IS NULL))
+             LIMIT ?) holding`,
+          agentId, limit,
+        );
+        return Number(row?.n ?? 0);
+      },
       // The rows whose listing is behind, by the three ways one falls behind, each over its own partial index.
       behind: async ({ limit, offset = 0 }) => {
         const n = clock();
