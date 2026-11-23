@@ -19,7 +19,8 @@ const CAPS = { models: { source: "providers", ready: true }, harnesses: [], tool
 const KEYS = { keys: [servedKey({ id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null }], unlocks: [], harnesses: ["pi", "claude-agent"], check: null })], reenter: null };
 const OFF = { state: "off", place: "agentrun", command: "claude auth login", can_start: false };
 
-async function open(capabilities: () => Response) {
+// `shown` is what the page shows once capabilities are read and applied; the test waits for it, then looks.
+async function open(capabilities: () => Response, shown: (host: HTMLElement) => boolean) {
   const asked: string[] = [];
   vi.stubGlobal("fetch", async (url: string) => {
     const path = new URL(url, "http://serve.test").pathname;
@@ -35,25 +36,28 @@ async function open(capabilities: () => Response) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(App)));
-  for (let i = 0; i < 40; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+  await vi.waitFor(async () => { await act(async () => {}); expect(shown(host)).toBe(true); });
   return { host, logins: () => asked.filter((path) => path === "/v2/settings/claude-login").length, row: () => host.querySelector(`[aria-label="${LOGIN_ROW}"]`) };
 }
 
+const loginRow = (host: HTMLElement) => host.querySelector(`[aria-label="${LOGIN_ROW}"]`) !== null;
+
 describe("Settings → API Keys asks capabilities before Claude Code's login", () => {
   it("claude_login false: no request and no row", async () => {
-    const page = await open(() => json(200, { ...CAPS, features: { ...CAPS.features, claude_login: false } }));
+    // Read capabilities offer the Keys page in Settings' list: the row has had them by then, and asked nothing.
+    const page = await open(() => json(200, { ...CAPS, features: { ...CAPS.features, claude_login: false } }), (host) => host.querySelector('a[href="#/settings/keys"]') !== null);
     expect(page.logins()).toBe(0);
     expect(page.row()).toBeNull();
   });
 
   it("claude_login true: the row reads the login", async () => {
-    const page = await open(() => json(200, { ...CAPS, features: { ...CAPS.features, claude_login: true } }));
+    const page = await open(() => json(200, { ...CAPS, features: { ...CAPS.features, claude_login: true } }), loginRow);
     expect(page.logins()).toBeGreaterThan(0);
     expect(page.row()).not.toBeNull();
   });
 
   it("capabilities that can't be read hide nothing: the row asks as before", async () => {
-    const page = await open(() => json(500, { error: { code: "internal", message: "fixture: a passing failure", retryable: true } }));
+    const page = await open(() => json(500, { error: { code: "internal", message: "fixture: a passing failure", retryable: true } }), loginRow);
     expect(page.logins()).toBeGreaterThan(0);
     expect(page.row()).not.toBeNull();
   });
