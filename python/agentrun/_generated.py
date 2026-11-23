@@ -11212,6 +11212,7 @@ class GetWrappedResponse(TypedDict):
     models: list[GetWrappedResponseModelsItem]
     sources: list[GetWrappedResponseSourcesItem]
     imported: list[GetWrappedResponseImportedItem]
+    unread_files: int
 
 
 class GetWrappedResponseTokens(TypedDict):
