@@ -12,7 +12,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { enabledBoxes, placeOffers, withNetworks } from "../dist/place-offers.js";
+import { askDockerDaemon, enabledBoxes, placeOffers, withNetworks } from "../dist/place-offers.js";
 import { dockerHost } from "./docker-host-fake.mjs";
 import { client, follow, jsonLines, printed, scratch, serve, withEnv } from "./support.mjs";
 
@@ -152,6 +152,35 @@ test("a docker socket that refuses this process: the group file lists the user, 
     // A process whose uid has no name (no passwd entry) cannot be looked up: the guidance stays, never a failed probe.
     assert.deepEqual(await reasonOf({ file: await groupFile(t, ["", "manuel"]), user: "", ids: [100] }), { id: "docker", available: false, reason: JOIN_GROUP }, "no user name");
   }
+});
+
+/** Why docker is unavailable to a server in a container: with no Docker socket (the one-container `docker run`, the
+ *  deploy/ compose file), and with one it may not use (compose.yaml without DOCKER_GID). Never "start Docker" or usermod. */
+const NO_SOCKET = "This server runs in a container with no Docker socket, so its agents get file tools and web_fetch but no shell: for a shell in Docker sandboxes, start AgentRun with `docker compose up -d` from compose.yaml at the repository's root, which gives it the socket";
+const SOCKET_GROUP = "This server's container may not use the Docker socket: set DOCKER_GID in .env to the socket's group, as compose.yaml says, then run `docker compose up -d` again";
+
+test("a server in a container: no Docker socket says how to get one (compose.yaml), a socket it may not use says DOCKER_GID; never start Docker or usermod", async (t) => {
+  const failing = join(await scratch(t), "bin");
+  await mkdir(failing);
+  await writeFile(join(failing, "docker"), "#!/bin/sh\necho 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2\nexit 1\n", { mode: 0o755 });
+  const dockerOfOffers = async (env, options) => (await placeOffers(env, options)).find((offer) => offer.id === "docker");
+  const inside = { inside: true, socket: false };
+  assert.deepEqual(await dockerOfOffers({ PATH: failing }, { container: inside }), { id: "docker", available: false, reason: NO_SOCKET }, "the image's docker CLI, no socket");
+  assert.deepEqual(await dockerOfOffers({ PATH: join(await scratch(t), "empty") }, { container: inside }), { id: "docker", available: false, reason: NO_SOCKET }, "no docker command, no socket");
+  const denied = await deniedDocker(t, CLI_DENIED);
+  const groups = { file: await groupFile(t, ["someone"]), user: "node", ids: [1000] };
+  assert.deepEqual(await dockerOfOffers({ PATH: denied }, { container: { inside: true, socket: true }, groups }), { id: "docker", available: false, reason: SOCKET_GROUP });
+  // A socket that is there and a daemon that does not answer it: the host's Docker is down, and starting it is the fix.
+  assert.deepEqual(await dockerOfOffers({ PATH: failing }, { container: { inside: true, socket: true } }), { id: "docker", available: false, reason: NO_DAEMON });
+  // On a host, the words are as they were.
+  assert.deepEqual(await dockerOfOffers({ PATH: failing }, { container: { inside: false, socket: false } }), { id: "docker", available: false, reason: NO_DAEMON });
+  assert.deepEqual(await dockerOfOffers({ PATH: denied }, { container: { inside: false, socket: true }, groups }), { id: "docker", available: false, reason: JOIN_GROUP });
+  // Settings → Computers asks the same (askDockerDaemon): a refused socket in a container says DOCKER_GID; no socket is no
+  // daemon at all, which that page words as none (docker-daemon.ts noDockerWords).
+  const ask = (env, container) => askDockerDaemon(env, AbortSignal.timeout(10_000), groups, container);
+  assert.deepEqual(await ask({ PATH: denied }, { inside: true, socket: true }), { up: false, absent: false, reason: SOCKET_GROUP });
+  assert.deepEqual(await ask({ PATH: failing }, inside), { up: false, absent: true, reason: NO_SOCKET });
+  assert.deepEqual(await ask({ PATH: denied }, { inside: false, socket: true }), { up: false, absent: false, reason: JOIN_GROUP });
 });
 
 test("a refused docker socket's reason is the one capabilities, the default reason and the banner say, default or listed", { timeout: 60_000 }, async (t) => {

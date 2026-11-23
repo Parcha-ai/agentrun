@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A server in a container says why it has no Docker box in words that fit a container. With no Docker socket (the one-container `docker run`, or deploy/'s compose file), the docker box's reason was "start Docker, or add this user to the docker group", which no one in that container can act on: it now says the container has no Docker socket, that its agents get file tools and `web_fetch` but no shell, and that `docker compose up -d` from `compose.yaml` at the repository's root gives it the socket. With a socket the container may not use, it says to set `DOCKER_GID` in `.env` to the socket's group, as `compose.yaml` says, in place of `usermod`, which would not outlast the container. The reason is the one capabilities (`places.boxes`, `default_reason`), the agent editor and the start's `Boxes:` line show. A socket that is there and whose daemon does not answer still says to start Docker, and a server on a host reads as before.

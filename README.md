@@ -607,8 +607,9 @@ your first agent. Or add a model key in the console, or in `.env` before `docker
 
 The port is published on this machine's loopback only; put a TLS proxy in front before you open it to anyone else.
 This compose file has no Docker socket, so its agents get file tools and `web_fetch` but no shell. For a Docker
-sandbox, use the single-server `compose.yaml` at the repository's root (Docker Engine 26 or later), run the server on
-the host.
+sandbox, use the single-server `compose.yaml` at the repository's root (Docker Engine 26 or later), which gives the
+server the host's Docker socket, or run the server on the host with `npx @parcha/agentrun`. The start's `Boxes:` line
+and the agent editor's place say which one a container lacks: the socket, or its group (`DOCKER_GID`).
 
 </details>
 
