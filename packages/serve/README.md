@@ -4647,7 +4647,8 @@ fal's unit price for its endpoint (the server's own `get_pricing`, read with the
 minutes) times the units the job's input states: its images, their megapixels, its text's characters, the seconds it
 names (only on an endpoint whose input sets the length fal bills, such as Kling's or Veo's `duration`, and only in
 that field), or, for dubbing, lip-sync, voice isolation and speech-to-text, which fal bills by the length of the media they
-are given, that length, read from the file first. That price is held under the cap, a
+are given, that length, read from the file first. A length fal rounds up is rounded up the same way: a talking head's
+voice to whole seconds, ElevenLabs Music and dubbing to whole minutes. That price is held under the cap, a
 job the cap can't take is refused before it is submitted, and the job is booked as the run's tool cost, charged by the
 server, with the price and the count it came from. It is an estimate at fal's list price, not fal's invoice: fal
 reports no cost for a job, and a minimum charge or a discount `get_pricing` does not list is not in it. Where fal's rate

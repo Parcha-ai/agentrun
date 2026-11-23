@@ -9,3 +9,4 @@ Veo 3.1 (`fal-ai/veo3.1`, its `fast` and `image-to-video`) is priced at 720p, th
 `fal-ai/sync-lipsync/v2` is priced for `lipsync-2`, the default, not `lipsync-2-pro`.
 `fal-ai/nano-banana-pro` is priced at 1K, the default, or 2K, and without `enable_web_search`: 4K costs double, and a search costs more.
 Fabric's resolution check (480p only) is the same rule and reads the same way.
+ElevenLabs Music and dubbing are held, and booked, at their length rounded up to a whole minute, as fal bills them ("rounded up to the closest minute"): a 30 s track or a 4 s clip is a whole minute. Before, a 30 s track was held at half what fal bills.

@@ -286,8 +286,14 @@ export const publicMedia = (guard: () => Promise<Omit<PublicFetchOptions, "maxBy
   }
 };
 
-/** `whole`: billed in whole seconds (a talking head), its stated length rounded up too. */
-type Priced = { job: FalJob; holdUsd: number; unitPrice: number; unit: string; words: string; at: number; whole?: true };
+/** The endpoints fal bills by a length rounded up to a whole step, in seconds: the talking heads in whole seconds
+ *  (TALKING_HEADS), ElevenLabs Music and dubbing in whole minutes (fal's model pages, read 2026-11-23: music "will be
+ *  rounded up to the closest minute", dubbing "based on the closest minute after rounding upwards"). A job of one is
+ *  held, and settled, at its length rounded up to that step. */
+const BILLING_STEP: ReadonlyMap<string, number> = new Map([...[...TALKING_HEADS].map((endpoint) => [endpoint, 1] as const), ["fal-ai/elevenlabs/music", 60], ["fal-ai/elevenlabs/dubbing", 60]]);
+
+/** `step`: billed by a length rounded up to that many seconds (BILLING_STEP), its stated length rounded up too. */
+type Priced = { job: FalJob; holdUsd: number; unitPrice: number; unit: string; words: string; at: number; step?: number };
 type Unpriced = { job: FalJob; why: string };
 
 /** A reply in which fal says it refused the job's input: status "rejected", or an error of type validation_error or
@@ -310,14 +316,15 @@ function chargeOfJob(quote: Priced | Unpriced, item: unknown): number | null {
   if (!("holdUsd" in quote)) return null;
   const after = item.status === "completed" ? unitsAfter(quote.unit, item.result) : undefined;
   if (after === undefined) return quote.holdUsd;
-  return usd(quote.unitPrice * (quote.whole ? wholeSeconds(after, quote.unit) : after));
+  return usd(quote.unitPrice * (quote.step ? roundedUp(after, quote.unit, quote.step) : after));
 }
 
-/** `units` of `unit` (seconds or minutes) rounded up to whole seconds, in `unit`. Rounded to the microsecond first, so a
- *  length a float sum or a conversion leaves a hair over a whole second (125 frames of 0.024 s) is that second. */
-const wholeSeconds = (units: number, unit: string): number => {
+/** `units` of `unit` (seconds or minutes) rounded up to a whole `step` of seconds, in `unit`. Rounded to the
+ *  microsecond first, so a length a float sum or a conversion leaves a hair over a whole step (125 frames of 0.024 s)
+ *  is that step. */
+const roundedUp = (units: number, unit: string, step: number): number => {
   const per = unit === "minutes" ? 60 : 1;
-  return Math.ceil(Math.round(units * per * 1e6) / 1e6) / per;
+  return (Math.ceil(Math.round(units * per * 1e6) / 1e6 / step) * step) / per;
 };
 
 /** fal's tools that take a submission_key: the three that submit jobs, and get_submission, which reads one back. */
@@ -398,16 +405,16 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
       if (typeof seconds !== "number") return { job, why: `fal bills ${job.endpoint} per ${oneOf(price.unit)} of its input media, and the length of ${seconds.unread.slice(0, 200)} could not be read` };
       units = { units: seconds / (price.unit === "minutes" ? 60 : 1), from: units.media.length > 1 ? "the longest of its input media, read before the call" : "its input media's length, read before the call" };
     }
-    let whole: { whole?: true } = {};
     if ("voice" in units) {
       // The length the voice plays (voiceSeconds), never one its header states: whoever sends the job made the file.
       const seconds = await longest([units.voice], signal, VOICE_READ, voiceSeconds);
       if (typeof seconds !== "number") return { job, why: `fal bills ${job.endpoint} per ${oneOf(price.unit)} of the voice at its audio_url, and the length of ${seconds.unread.slice(0, 200)} could not be read` };
-      units = { units: wholeSeconds(seconds, "seconds") / (price.unit === "minutes" ? 60 : 1), from: "its voice at audio_url, read before the call, in whole seconds" };
-      whole = { whole: true };
+      units = { units: seconds / (price.unit === "minutes" ? 60 : 1), from: "its voice at audio_url, read before the call" };
     }
     if ("unknown" in units) return { job, why: units.unknown };
-    return { job, holdUsd: usd(price.unitPrice * units.units), unitPrice: price.unitPrice, unit: price.unit, at: price.at, words: `fal's price for ${job.endpoint}: $${price.unitPrice} per ${oneOf(price.unit)} × ${shown(units.units)} (${units.from})`, ...whole };
+    const step = price.unit === "seconds" || price.unit === "minutes" ? BILLING_STEP.get(job.endpoint) : undefined;
+    if (step) units = { units: roundedUp(units.units, price.unit, step), from: `${units.from}, in whole ${step === 60 ? "minutes" : "seconds"}` };
+    return { job, holdUsd: usd(price.unitPrice * units.units), unitPrice: price.unitPrice, unit: price.unit, at: price.at, words: `fal's price for ${job.endpoint}: $${price.unitPrice} per ${oneOf(price.unit)} × ${shown(units.units)} (${units.from})`, ...(step ? { step } : {}) };
   };
   return {
     bills: falBills,

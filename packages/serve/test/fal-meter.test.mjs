@@ -30,6 +30,7 @@ const PRICES = {
   "fal-ai/elevenlabs/speech-to-text": [0.03, "minutes"],
   "fal-ai/whisper": [0.001111111, "compute seconds"],
   "fal-ai/elevenlabs/dubbing": [0.6, "minutes"],
+  "fal-ai/elevenlabs/music": [0.6, "minutes"],
   "veed/fabric-1.0": [0.08, "seconds"],
   "fal-ai/bytedance/omnihuman/v1.5": [0.16, "seconds"],
   "fal-ai/infinitalk": [0.2, "seconds"],
@@ -151,6 +152,19 @@ test("a job at a setting that costs more than get_pricing's one rate is refused 
   assert.equal(capped.received("run_model"), 0, "fal never received the job");
   await capped.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo", rendering_speed: "TURBO" } });
   near(capped.spent(), 0.03, "TURBO: get_pricing's rate");
+});
+
+test("a job fal bills in whole minutes is held and booked at its length rounded up to the minute", async (t) => {
+  // fal's model page (read 2026-11-23): ElevenLabs Music "will be rounded up to the closest minute", so 30 s is billed
+  // as 1 minute.
+  const run = await setup(t, { capUsd: 5, run: (args) => reply(args, { result: { audio: { url: "https://v3.fal.media/m.mp3", duration: 30 } } }) });
+  await run.call("run_model", { endpoint_id: "fal-ai/elevenlabs/music", input: { prompt: "a bed", music_length_ms: 90_000 } });
+  near(run.admits[0].holdUsd, 2 * 0.6, "90 s held as 2 whole minutes");
+  assert.equal(run.admits[0].basis, "fal's price for fal-ai/elevenlabs/music: $0.6 per minute × 2 (music_length_ms, in whole minutes), from get_pricing at 2026-11-20T12:00:00.000Z");
+  near(run.spent(), 0.6, "settled at the 30 s its reply states, billed as 1 whole minute");
+  // A length a hair over a whole minute from a float conversion is that minute.
+  await run.call("run_model", { endpoint_id: "fal-ai/elevenlabs/music", input: { prompt: "a bed", music_length_ms: 60_000 } });
+  near(run.admits[1].holdUsd, 0.6, "60 s is 1 minute");
 });
 
 test("a video job is held at its input's duration; still processing, it is booked at that hold", async (t) => {
@@ -287,7 +301,9 @@ test("only an endpoint fal bills by the length of the media it is given is price
   const media = { "https://media.example/clip.mp4": SAMPLES.mp4.bytes, "https://media.example/voice.mp3": SAMPLES.mp3Info.bytes };
   const dub = await setup(t, { media, run: (args) => reply(args, { status: "processing" }) });
   await dub.call("submit_job", { endpoint_id: "fal-ai/elevenlabs/dubbing", input: { video_url: "https://media.example/clip.mp4", target_lang: "es" } });
-  near(dub.admits[0].holdUsd, (4 / 60) * 0.6, "dubbing: the 4 s clip at $0.60 a minute");
+  // fal bills dubbing by the minute, rounded up (its model page, read 2026-11-23): the 4 s clip is a whole minute.
+  near(dub.admits[0].holdUsd, 0.6, "dubbing: the 4 s clip, billed as 1 whole minute, at $0.60 a minute");
+  assert.equal(dub.admits[0].basis, "fal's price for fal-ai/elevenlabs/dubbing: $0.6 per minute × 1 (its input media's length, read before the call, in whole minutes), from get_pricing at 2026-11-20T12:00:00.000Z");
   // LatentSync bills per second of its output video, with a minimum up to 40 s that get_pricing does not state;
   // infinitalk and merge-audio-video bill an output no input states either.
   const capped = await setup(t, { media });
