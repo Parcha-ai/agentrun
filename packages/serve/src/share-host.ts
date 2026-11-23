@@ -10,8 +10,11 @@
 //
 // An upload, in order: the token (api-token.ts; its id owns the share), the token's quota, the body within its cap, a
 // canonical `agentrun.share/1` document of the export's closed shape and caps whose sha256 and file digests hold
-// (checkShareBundle), then the scrubber over the whole body in cut mode with this host's held values. Any cut, or a scrub
-// that fails, refuses it: 422 with counts by rule, never a value, nothing stored. The host never repairs a bundle: what
+// (checkShareBundle), then the scrubber in cut mode with this host's held values over the whole body and every string
+// (screenShare). A value it finds refuses it unless the bundle declares it restored, exactly where the host's own scrub
+// finds it and of a kind that restores (label, personal, jev; never a key format, a held value or a dump); a restored
+// record that names no such value refuses it too, and so does a scrub that fails: 422 with counts by rule, never a
+// value, nothing stored. The host never repairs a bundle: what
 // it stores, and later serves, is the posted bytes it scanned. A share's URL is on AGENTRUN_PUBLIC_URL (else, on loopback,
 // the server's own address), never a Host header.
 import { createHash, randomBytes } from "node:crypto";
@@ -23,7 +26,7 @@ import { ApiError } from "./errors.js";
 import { sendHostedAsset, sendHostedSharePage } from "./page.js";
 import { readCapped } from "./push-handler.js";
 import { type CutScrub, EXPORT_CAPS, SHARE_FORMAT, SHARE_RUN_FIELDS } from "./run-export.js";
-import { scrub } from "./secret-cut.js";
+import { RESTORABLE, SCRUB_RULES, scrub } from "./secret-cut.js";
 import { isObject, stable } from "./validate.js";
 
 export { SHARE_HOST_CSP } from "./page.js";
@@ -163,22 +166,151 @@ export function checkShareBundle(text: string): { sha256: string } {
   return { sha256: named };
 }
 
-/** The scrubber over the stored body, in cut mode with `held`: nothing found, or a 422 that counts what was by rule (and
- *  never says a value or where), or says the scrub failed. The cut text is never used: the host stores what was sent or
- *  nothing. */
+/** Where a restored value may stand: a string of the run the export cut (run-export.ts), never the bundle's own words
+ *  (its format, source, cuts, restored or sha256). */
+const RESTORED_AT = /^\/(?:agent|run|rows|graph|omitted)\/|^\/files\/\d+\/(?:path|content)$/;
+/** A rule id a refusal may name: the scrubber's own; anything else a record says is "unknown". */
+const RULE_IDS: ReadonlySet<string> = new Set(SCRUB_RULES.map((rule) => rule.id));
+/** Whether a cut of `kind` may be restored: the scrubber's table for the kind alone, never a record's or a cut's word. */
+const restorable = (kind: unknown): boolean => typeof kind === "string" && Object.hasOwn(RESTORABLE, kind) && RESTORABLE[kind as keyof typeof RESTORABLE];
+const pointer = (key: string): string => key.replaceAll("~", "~0").replaceAll("/", "~1");
+const bump = (counts: Record<string, number>, rule: string): void => void (counts[rule] = (counts[rule] ?? 0) + 1);
+
+/** A string value of the bundle: its RFC 6901 pointer, its text, and where its content (inside the quotes) sits in the
+ *  canonical body. */
+type Place = { at: string; value: string; from: number; to: number };
+/** A hit of the host's own scrub of one string: where (the string's pointer, its span) and whether its kind restores. */
+type StringHit = { at: string; rule: string; restorable: boolean; start: number; end: number };
+
+/** `doc` written as stable() writes it, and every string value's place in that text, in the order of the text. */
+function placesOf(doc: unknown): { text: string; places: Place[] } {
+  const parts: string[] = [];
+  const places: Place[] = [];
+  let length = 0;
+  const put = (text: string) => void (parts.push(text), (length += text.length));
+  const walk = (value: unknown, at: string): void => {
+    if (typeof value === "string") {
+      const encoded = JSON.stringify(value);
+      places.push({ at, value, from: length + 1, to: length + encoded.length - 1 });
+      put(encoded);
+    } else if (Array.isArray(value)) {
+      put("[");
+      value.forEach((item, index) => (index && put(","), walk(item, `${at}/${index}`)));
+      put("]");
+    } else if (isObject(value)) {
+      put("{");
+      Object.keys(value).sort().forEach((key, index) => (index && put(","), put(`${JSON.stringify(key)}:`), walk(value[key], `${at}/${pointer(key)}`)));
+      put("}");
+    } else put(JSON.stringify(value));
+  };
+  walk(doc, "");
+  return { text: parts.join(""), places };
+}
+
+/** For each index 0..value.length of `value`, its offset in JSON.stringify(value) less the opening quote. */
+function encodedOffsets(value: string): number[] {
+  const offsets = [0];
+  let at = 0;
+  for (let index = 0; index < value.length; ) {
+    const code = value.charCodeAt(index);
+    const pair = code >= 0xd800 && code <= 0xdbff && (value.charCodeAt(index + 1) & 0xfc00) === 0xdc00;
+    if (pair) offsets.push(at + 1); // a valid pair is written as itself, two units
+    at += JSON.stringify(value.slice(index, index + (pair ? 2 : 1))).length - 2;
+    offsets.push(at);
+    index += pair ? 2 : 1;
+  }
+  return offsets;
+}
+
+/** The scrubber over a bundle as a host reads it, refusing (422, counts by rule id, never a value or where) unless every
+ *  value it finds is a declared restore.
+ *
+ *  Strict at its core: the scrubber in cut mode with `held` over the whole body, and again over every string value alone
+ *  (as the export cut them: each at its pointer, so a value a string's own context gives away is found though its JSON
+ *  escaping hides it from the whole-body read). A scrub that fails or throws is `scrub_failed`. The one exception is a
+ *  filter over those hits: a hit of one string is excused when the scrubber's table says its kind restores (label,
+ *  personal, jev; never format, held or dump) AND one `restored` record names it exactly (at, rule, start, end); a hit of
+ *  the whole body is excused when it lies in one string and overlaps an excused hit there of its rule. Any hit left is
+ *  `scrub_found`; a `restored` record that excuses no hit (a stale or edited bundle) is `restored_unmatched`. The kind a
+ *  record says is never read. The cut text is never used: the host stores what was sent or nothing. */
 export async function screenShare(text: string, held: readonly string[], cutPass: CutScrub = (body, opts) => scrub(body, opts)): Promise<void> {
-  let result: Awaited<ReturnType<CutScrub>>;
-  try {
-    result = await cutPass(text, { mode: "cut", held });
-  } catch {
-    result = { ok: false, counts: {} };
+  const failed = () => new ApiError("input_invalid", "The share host's scrub of this bundle failed, so it is refused (the scrub fails closed). Nothing was stored.", { details: { reason: "scrub_failed" } });
+  const pass = async (body: string) => {
+    let result: Awaited<ReturnType<CutScrub>>;
+    try {
+      result = await cutPass(body, { mode: "cut", held });
+    } catch {
+      throw failed();
+    }
+    if (!result.ok) throw failed();
+    return result.cuts;
+  };
+  const whole = await pass(text);
+  const doc = JSON.parse(text) as Record<string, unknown>;
+  const { text: rebuilt, places } = placesOf(doc);
+
+  // Every string value alone (a value seen twice is read once: the scrub of a text is the same each time).
+  const byValue = new Map<string, Awaited<ReturnType<typeof pass>>>();
+  const hits = new Map<string, StringHit>();
+  const hitsAt = new Map<string, StringHit[]>();
+  const key = (at: unknown, rule: unknown, start: unknown, end: unknown) => JSON.stringify([at, rule, start, end]);
+  for (const place of places) {
+    if (!place.value) continue;
+    let cuts = byValue.get(place.value);
+    if (!cuts) byValue.set(place.value, (cuts = await pass(place.value)));
+    for (const cut of cuts) {
+      const hit: StringHit = { at: place.at, rule: cut.rule, restorable: restorable(cut.kind), start: cut.start, end: cut.end };
+      hits.set(key(hit.at, hit.rule, hit.start, hit.end), hit);
+      hitsAt.set(place.at, [...(hitsAt.get(place.at) ?? []), hit]);
+    }
   }
-  if (!result.ok) throw new ApiError("input_invalid", "The share host's scrub of this bundle failed, so it is refused (the scrub fails closed). Nothing was stored.", { details: { reason: "scrub_failed" } });
-  if (result.cuts.length > 0) {
-    const counts: Record<string, number> = {};
-    for (const cut of result.cuts) counts[cut.rule] = (counts[cut.rule] ?? 0) + 1;
-    throw new ApiError("input_invalid", `The share host's scrub found ${result.cuts.length} value${result.cuts.length === 1 ? "" : "s"} in this bundle (by rule: ${Object.entries(counts).map(([rule, n]) => `${rule} ${n}`).join(", ")}), so it is refused. Nothing was stored; export the run again with the cuts in place.`, { details: { reason: "scrub_found", counts } });
+
+  // The exception: each restored record excuses the one restorable hit it names exactly, once.
+  const excused = new Set<StringHit>();
+  const unmatched: Record<string, number> = {};
+  for (const entry of Array.isArray(doc.restored) ? doc.restored : []) {
+    const record = isObject(entry) ? entry : {};
+    const hit = typeof record.at === "string" && RESTORED_AT.test(record.at) ? hits.get(key(record.at, record.rule, record.start, record.end)) : undefined;
+    if (hit && hit.restorable && !excused.has(hit)) excused.add(hit);
+    else bump(unmatched, typeof record.rule === "string" && RULE_IDS.has(record.rule) ? record.rule : "unknown");
   }
+
+  const found: Record<string, number> = {};
+  for (const hit of hits.values()) if (!excused.has(hit)) bump(found, hit.rule);
+  const wholeFound: Record<string, number> = {};
+  const starts = places.map((place) => place.from);
+  for (const cut of whole) {
+    const place = rebuilt === text ? places[upperBound(starts, cut.start) - 1] : undefined;
+    const inside = place !== undefined && cut.start >= place.from && cut.end <= place.to;
+    const offsets = inside && restorable(cut.kind) ? encodedOffsets(place.value) : undefined;
+    const covered = offsets !== undefined && (hitsAt.get(place!.at) ?? []).some((hit) => excused.has(hit) && hit.rule === cut.rule && place!.from + offsets[hit.start]! < cut.end && cut.start < place!.from + offsets[hit.end]!);
+    if (!covered) bump(wholeFound, cut.rule);
+  }
+  // A value both reads find is one value: each rule's count is the larger read's.
+  for (const [rule, n] of Object.entries(wholeFound)) found[rule] = Math.max(found[rule] ?? 0, n);
+
+  const words = (counts: Record<string, number>) => Object.entries(counts).map(([rule, n]) => `${rule} ${n}`).join(", ");
+  const total = (counts: Record<string, number>) => Object.values(counts).reduce((sum, n) => sum + n, 0);
+  if (total(found) > 0) {
+    const n = total(found);
+    throw new ApiError("input_invalid", `The share host's scrub found ${n} value${n === 1 ? "" : "s"} in this bundle that no restore declares (by rule: ${words(found)}), so it is refused. A restore keeps a label, personal or jev cut, never a known key format, a held value or a dump. Nothing was stored; export the run again with the cuts in place.`, { details: { reason: "scrub_found", counts: found, ...(total(unmatched) ? { unmatched } : {}) } });
+  }
+  if (total(unmatched) > 0) {
+    const n = total(unmatched);
+    throw new ApiError("input_invalid", `${n} restored record${n === 1 ? "" : "s"} of this bundle name${n === 1 ? "s" : ""} no value the share host's scrub finds there (by rule: ${words(unmatched)}): a stale or edited bundle, so it is refused. Nothing was stored; export the run again.`, { details: { reason: "restored_unmatched", counts: unmatched } });
+  }
+}
+
+/** The number of sorted `values` at or below `at`. */
+function upperBound(values: readonly number[], at: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (values[mid]! <= at) low = mid + 1;
+    else high = mid;
+  }
+  return low;
 }
 
 // ---------- the store: <data>/shares/<id>/{bundle.json, meta.json}

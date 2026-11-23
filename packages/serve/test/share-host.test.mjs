@@ -3,8 +3,10 @@
 // /r/v2/shares (a POST that stores a bundle, a GET of the caller's own, a DELETE of one) and /r/v2/health; every other
 // address is a 404, the console, the run, agent, key, computer and trigger routes among them. An upload is a canonical
 // `agentrun.share/1` document whose sha256 and file digests hold, re-scrubbed by the scrubber in cut mode with this
-// host's held values: any cut, or a scrub that fails, refuses it (422) and nothing is stored. A token keeps at most 100
-// shares; its owner deletes one, and its page is then 410. A share's URL is on AGENTRUN_PUBLIC_URL, never a Host header.
+// host's held values, over the whole body and each string: a value it finds that the bundle does not declare restored
+// (exactly where, and of a kind that restores), a restored record naming no such value, or a scrub that fails refuses it
+// (422) and nothing is stored. A token keeps at most 100 shares; its owner deletes one, and its page is then 410. A
+// share's URL is on AGENTRUN_PUBLIC_URL, never a Host header.
 //
 // Every bundle is synthetic, made by run-export.ts's own builder from made-up run data, and every planted value is made
 // fresh for its case. No test counts requests: a hook on this machine GETs / on every new loopback listener, and each
@@ -250,17 +252,136 @@ test("a scrub that fails closed, or throws, refuses the upload: 422 scrub_failed
   }
 });
 
-test("the host scrubs the whole stored body in cut mode with its held values, and never repairs it", async (t) => {
+test("the host scrubs the whole stored body and each of its strings in cut mode with its held values, and never repairs it", async (t) => {
   const seen = [];
   const s = await shareHost(t, { shareScrub: async (text, opts) => (seen.push({ text, opts }), { ok: true, text: text.replace("42", "[redacted:x]"), cuts: [{ rule: "x", kind: "label", restorable: true, start: 0, end: 2, outStart: 0, outEnd: 12, shape: "…[2]" }], counts: { x: 1 } }) });
   const body = await bundleOf();
   const res = await upload(s, body);
-  assert.equal(res.status, 422, "a restorable cut refuses it too: the host never stores a cut text in place of the sent one");
-  assert.equal(seen.length, 1);
-  assert.equal(seen[0].text, body, "the whole body, as sent");
-  assert.equal(seen[0].opts.mode, "cut");
-  assert.ok(seen[0].opts.held.includes(s.alice.token) && seen[0].opts.held.includes(s.bob.token), "its own tokens are held values");
+  assert.equal(res.status, 422, "an undeclared restorable cut refuses it too: the host never stores a cut text in place of the sent one");
+  assert.equal(res.json.error.details.reason, "scrub_found");
+  assert.equal(seen[0].text, body, "the whole body first, as sent");
+  const doc = JSON.parse(body);
+  assert.ok(seen.some((call) => call.text === doc.run.title) && seen.some((call) => call.text === doc.files[0].content), "then each string alone");
+  for (const call of seen) {
+    assert.equal(call.opts.mode, "cut");
+    assert.ok(call.opts.held.includes(s.alice.token) && call.opts.held.includes(s.bob.token), "its own tokens are held values");
+    assert.equal(call.opts.keep, undefined, "the host keeps nothing");
+  }
   assert.deepEqual(sharesIn(s.shares), []);
+});
+
+const { scrub } = await import("../dist/secret-cut.js");
+/** A synthetic home folder and a synthetic password assignment: a personal and a label value the real scrubber finds. */
+const plantedRestorable = () => {
+  const user = `qa${randomBytes(3).toString("hex").replace(/[0-9]/g, "x")}`;
+  const password = `Synthetic-${randomBytes(6).toString("hex")}`;
+  return { user, password, content: `# Notes\n\nSee /home/${user}/proj/a.txt\nPASSWORD=${password}\n` };
+};
+/** A bundle whose file holds `content`, exported twice by run-export.ts: once to read its cuts, then restoring every
+ *  restorable one of them (the owner's preview restore). */
+async function restoredBundleOf(content, held = []) {
+  const bytes = Buffer.from(content);
+  const input = (restore) => ({
+    runId: "run_share_restore",
+    agent: { name: "share-test-agent" },
+    view: { kind: "agentic", status: "succeeded", state: "succeeded", title: `Restore ${nonce()}`, created_at: "2026-11-23T00:00:00.000Z", ended_at: "2026-11-23T00:01:00.000Z", result: { final_answer: "done", output: null, output_error: null } },
+    rows: [{ type: "message", role: "assistant", text: "done" }],
+    graph: null,
+    files: [{ path: "out/notes.md", size: bytes.length, read: async () => bytes }],
+    filesTruncated: false,
+    held,
+    restore,
+    version: "0.0.0-share-test",
+  });
+  const first = JSON.parse((await exportBundle(input([]))).body);
+  return (await exportBundle(input(first.cuts.filter((cut) => cut.restorable).map((cut) => cut.id)))).body;
+}
+/** `doc` with one more restored record, naming the span the real scrubber finds in the string at `at` for `rule`. */
+async function declare(doc, at, rule, kind, held = []) {
+  const value = at.split("/").slice(1).reduce((node, key) => node[key.replaceAll("~1", "/").replaceAll("~0", "~")], doc);
+  const cut = (await scrub(value, { mode: "cut", held })).cuts.find((each) => each.rule === rule);
+  assert.ok(cut, `the scrubber finds ${rule} at ${at}`);
+  doc.restored.push({ id: `c_${nonce()}`, at, start: cut.start, end: cut.end, rule, kind });
+  return doc;
+}
+
+test("a declared restore of a label or personal cut is taken: the host's own scrub finds each value exactly where the bundle says", async (t) => {
+  const s = await shareHost(t);
+  const planted = plantedRestorable();
+  const body = await restoredBundleOf(planted.content);
+  const doc = JSON.parse(body);
+  assert.deepEqual(doc.restored.map((record) => record.rule).sort(), ["home-path", "secret-assign"], "the export restored both");
+  assert.ok(doc.files[0].content.includes(planted.password) && doc.files[0].content.includes(planted.user));
+  const res = await upload(s, body);
+  assert.equal(res.status, 201, res.text);
+  assert.equal((await send(s.port, { path: `/r/${res.json.id}/bundle.json` })).text, body, "stored as sent");
+});
+
+test("an undeclared value, a record off by one, or a declared restore of a key format, a held value or a dump refuses the upload: 422, rule ids and counts, never a value", async (t) => {
+  const s = await shareHost(t);
+  const planted = plantedRestorable();
+  const doc = JSON.parse(await restoredBundleOf(planted.content));
+  const without = (rule) => ({ ...doc, restored: doc.restored.filter((record) => record.rule !== rule) });
+  const shifted = { ...doc, restored: doc.restored.map((record) => (record.rule === "secret-assign" ? { ...record, start: record.start + 1 } : record)) };
+
+  const key = `sk-proj-${randomBytes(24).toString("hex")}`;
+  const formatKey = structuredClone(doc);
+  formatKey.files[0].content += `OPENAI_KEY_NOTE ${key}\n`;
+  formatKey.files[0].bytes = Buffer.byteLength(formatKey.files[0].content);
+  formatKey.files[0].sha256 = fileSha(formatKey.files[0].path, formatKey.files[0].content);
+  const formatRule = (await scrub(formatKey.files[0].content, { mode: "cut" })).cuts.find((cut) => !cut.restorable && cut.kind === "format")?.rule;
+  assert.ok(formatRule, "the scrubber reads the planted key as a format");
+  await declare(formatKey, "/files/0/content", formatRule, "label"); // the record lies about its kind
+
+  const heldValue = structuredClone(doc);
+  heldValue.rows[0].text = `token ${s.alice.token} here`;
+  await declare(heldValue, "/rows/0/text", "held-value", "personal", [s.alice.token]);
+
+  const dump = structuredClone(doc);
+  dump.rows[0].text = `$ env\nHOME=/srv\nAPI_KEY=${nonce()}\nDB_PASSWORD=${nonce()}\nPATH=/usr/bin\n`;
+  const dumpRule = (await scrub(dump.rows[0].text, { mode: "cut" })).cuts.find((cut) => cut.kind === "dump")?.rule;
+  if (dumpRule) await declare(dump, "/rows/0/text", dumpRule, "label");
+
+  for (const [name, changed, rule] of [["no record for the label", without("secret-assign"), "secret-assign"], ["no record for the personal value", without("home-path"), "home-path"], ["a record off by one", shifted, "secret-assign"], ["a declared key format", formatKey, formatRule], ["a declared held value", heldValue, "held-value"], ...(dumpRule ? [["a declared dump", dump, dumpRule]] : [])]) {
+    const res = await upload(s, resigned(changed));
+    assert.equal(res.status, 422, `${name}: ${res.text}`);
+    assert.equal(res.json.error.details.reason, "scrub_found", name);
+    assert.ok(res.json.error.details.counts[rule] >= 1, `${name}: ${JSON.stringify(res.json.error.details)}`);
+    for (const value of [planted.password, planted.user, key, s.alice.token]) assert.ok(!res.text.includes(value), `${name}: no value in the answer`);
+  }
+  assert.ok(dumpRule, "the scrubber reads an env listing as a dump");
+  assert.deepEqual(sharesIn(s.shares), []);
+});
+
+test("a restored record that names no value the host finds is a stale or edited bundle: 422 restored_unmatched", async (t) => {
+  const s = await shareHost(t);
+  const clean = JSON.parse(await bundleOf());
+  const forged = { ...clean, restored: [{ id: "c_0000000000000000", at: "/run/title", start: 0, end: 3, rule: "home-path", kind: "personal" }] };
+  const planted = plantedRestorable();
+  const doc = JSON.parse(await restoredBundleOf(planted.content));
+  const twice = { ...doc, restored: [...doc.restored, doc.restored[0]] };
+  // A restorable value where no restore may stand (the bundle's own words): found, and its record excuses nothing.
+  const ownWords = structuredClone(clean);
+  ownWords.source.agentrun = `/home/${planted.user}/agentrun`;
+  await declare(ownWords, "/source/agentrun", "home-path", "personal");
+  for (const [name, changed, reason, rule] of [["a forged record", forged, "restored_unmatched", "home-path"], ["one record twice", twice, "restored_unmatched", doc.restored[0].rule], ["a record in the bundle's own words", ownWords, "scrub_found", "home-path"]]) {
+    const res = await upload(s, resigned(changed));
+    assert.equal(res.status, 422, `${name}: ${res.text}`);
+    assert.equal(res.json.error.details.reason, reason, name);
+    assert.equal(res.json.error.details.counts[rule], 1, `${name}: ${JSON.stringify(res.json.error.details)}`);
+  }
+  assert.deepEqual(sharesIn(s.shares), []);
+});
+
+test("each string is read alone too: a label its JSON escaping hides from the whole-body read still refuses", async (t) => {
+  const planted = plantedRestorable();
+  const doc = JSON.parse(await restoredBundleOf(planted.content));
+  const body = resigned({ ...doc, restored: doc.restored.filter((record) => record.rule !== "secret-assign") });
+  assert.equal((await scrub(body, { mode: "count" })).counts["secret-assign"] ?? 0, 0, "the whole-body read misses it here");
+  const s = await shareHost(t);
+  const res = await upload(s, body);
+  assert.equal(res.status, 422, res.text);
+  assert.equal(res.json.error.details.counts["secret-assign"], 1);
 });
 
 test("the sha256 is checked: a tampered digest, a file whose digest or size is wrong, or a body that is not canonical is 400 and stores nothing", async (t) => {

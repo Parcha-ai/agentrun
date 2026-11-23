@@ -3275,14 +3275,21 @@ shares it uploads.
 An upload is checked in this order, and refused with nothing stored at the first failure: the token; its quota (100
 shares a token, `403 forbidden` with `details.reason: share_quota`; shares never expire, and a delete makes room); the
 body, at most 8 MiB of canonical JSON (`413` over it); the bundle's closed fields and the export's caps, each file's size
-and digest, and the document's sha256 (`400`); then the scrubber, over the whole body in cut mode, with the values this
-host holds (its keys and tokens). Any value the scrubber finds, or a scrub that fails, is `422 input_invalid` with
-`details.reason` (`scrub_found` with counts by rule, never a value, or `scrub_failed`). The host never repairs a bundle:
+and digest, and the document's sha256 (`400`); then the scrubber in cut mode, with the values this host holds (its keys and
+tokens), over the whole body and over each of its strings alone. A value the scrubber finds is refused unless the bundle
+declares it restored: a `restored` record naming it exactly (its string's pointer, rule, start and end) and a kind the
+host's own scrub says may be restored (label, personal, jev; never a key format, a held value or a dump, whatever the
+record says). Each refusal is `422 input_invalid` with `details.reason` and counts by rule id, never a value:
+`scrub_found` (a value no restore declares), `restored_unmatched` (a restored record naming no value the host finds: a
+stale or edited bundle) or `scrub_failed` (the scrub failed or threw). The host never repairs a bundle:
 what it serves is what was uploaded and scanned. Shares are kept in `DIR/shares/<id>/` (`bundle.json` and `meta.json`,
 `0600`). Only the token that made a share deletes it (`204`); its bytes go, and its page and bundle then answer `410`.
 
 A share's URL is on `AGENTRUN_PUBLIC_URL`, never a request's Host header. A share host on an address other than
 loopback refuses to start without it.
+
+Run one replica, with `DIR` on a persistent volume. The quota and the share index are kept by the one process (a
+second replica would neither see the other's shares nor hold the quota), and a share lives only in `DIR`.
 
 ### Launch hook
 
