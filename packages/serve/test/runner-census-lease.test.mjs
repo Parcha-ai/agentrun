@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sendCommand } from "../dist/runner/commands.js";
 import { startRunner } from "../dist/runner/runner.js";
-import { queue, sleep, stores } from "./runner-support.mjs";
+import { fauxLoops, queue, sleep, stores } from "./runner-support.mjs";
 
 // A lease of 400 ms renewed every 100 ms, lost 100 ms before it runs out; a census of 1,200 ms is three leases.
 const SHORT_LEASE = { leaseMs: 400, renewEveryMs: 100, stopMarginMs: 100, pollMs: 20, commandPollMs: 50 };
@@ -26,8 +26,9 @@ const failingLoop = () => ({
 /** Runs `run-1` to its end under a census that takes CENSUS_MS (it counts nothing), with the runner's store's renewMany
  *  watched (when each renew of run-1 was asked) and its release held back RELEASE_HELD_MS. `landedAt` is the first time
  *  the server's store read the run final (polled every 10 ms, so at or after the end landed). With `stopFirst`, a stop is
- *  sent before the runner starts: its claim only ends the run (endRetried), stopped, with no loop. */
-async function slowCensusEnd(t, { stopFirst = false } = {}) {
+ *  sent before the runner starts: its claim only ends the run (endRetried), stopped, with no loop. `createLoop` is the
+ *  run's loop: by default one that throws at its start, so the runner ends the run itself. */
+async function slowCensusEnd(t, { stopFirst = false, createLoop = failingLoop } = {}) {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   if (stopFirst) await sendCommand(opened.server, "run-1", { kind: "stop" });
@@ -45,7 +46,7 @@ async function slowCensusEnd(t, { stopFirst = false } = {}) {
   };
   const events = [];
   const census = () => new Promise((resolve) => setTimeout(() => resolve(undefined), CENSUS_MS));
-  const runner = startRunner({ store, createLoop: failingLoop, name: "runner-a", census, censusMs: 5_000, onEvent: (event) => events.push({ ...event, at: Date.now() }), ...SHORT_LEASE });
+  const runner = startRunner({ store, createLoop, name: "runner-a", census, censusMs: 5_000, onEvent: (event) => events.push({ ...event, at: Date.now() }), ...SHORT_LEASE });
   t.after(() => runner.close());
   let landedAt;
   const until = Date.now() + 10_000;
@@ -66,9 +67,16 @@ for (const [name, stopFirst, state] of [["a failed run's end", false, "failed"],
   });
 }
 
-for (const [name, stopFirst] of [["a failed run's end", false], ["the end of a run stopped before it started", true]]) {
+// The loop's own end (its end commit, which waits for the census beside it while the loop still holds its claim), the
+// runner's end of a failed run, and the end of a claim that only ends its run.
+const ENDS = [
+  ["a run's own end (its loop's end commit)", { createLoop: () => fauxLoops({ turns: 1, turnMs: 10 }).createLoop }],
+  ["a failed run's end", {}],
+  ["the end of a run stopped before it started", { stopFirst: true }],
+];
+for (const [name, options] of ENDS) {
   test(`once ${name} lands, its claim is renewed no more`, { timeout: 20_000 }, async (t) => {
-    const { events, renews, landedAt } = await slowCensusEnd(t, { stopFirst });
+    const { events, renews, landedAt } = await slowCensusEnd(t, { ...options, ...(options.createLoop ? { createLoop: options.createLoop() } : {}) });
     assert.ok(landedAt !== undefined, "the run's end landed");
     assert.ok(events.some((event) => event.runId === "run-1" && event.type === "released"), "and the run was released");
     // Any renew timer still armed fires a few more times.
