@@ -182,7 +182,8 @@ function unspent(error: unknown): boolean {
 /** The renewals in flight in this process, by the refresh token they spend: two readers of one sign-in share one. */
 const flights = new Map<string, Promise<string>>();
 
-type Pending = { abort: AbortController; state: string; authorizeUrl: string; expiresAt: number; paste: (url: string) => void; result: Promise<void>; timer: NodeJS.Timeout };
+/** `answered`: OpenAI answered the code with a credential, which is being kept: past the wait, so its end is no timeout. */
+type Pending = { abort: AbortController; state: string; authorizeUrl: string; expiresAt: number; paste: (url: string) => void; result: Promise<void>; timer: NodeJS.Timeout; answered?: boolean };
 
 export interface ChatGPTPlanDeps {
   /** `settings`: where a server keeps its host id, for a sign-in; a runner, which never signs in, has none. */
@@ -325,9 +326,10 @@ export class ChatGPTPlan implements PlanReader {
     pending.abort.abort();
   }
 
-  /** Ends the sign-in waiting past its 10 minutes: a cancel, which says nothing by itself, that says it timed out. */
+  /** Ends the sign-in waiting past its 10 minutes: a cancel, which says nothing by itself, that says it timed out. One
+   *  whose code OpenAI answered is past waiting (it is being kept) and never times out. */
   private expire(): void {
-    if (!this.#pending) return;
+    if (!this.#pending || this.#pending.answered) return;
     this.cancel();
     this.#problem = TIMED_OUT;
     this.#deps.log?.({ chatgpt: "sign_in_failed", reason: "timed_out" });
@@ -362,9 +364,12 @@ export class ChatGPTPlan implements PlanReader {
       this.#pending = undefined;
     };
     // Pending until the credential is kept or dropped, so a sign-out meanwhile cancels it (keep's epoch).
-    const result = login.then((credential) => this.keep(credential as Credential, epoch).catch((error: unknown) => {
-      throw new NotKept("not kept", { cause: error });
-    })).finally(settle);
+    const result = login.then((credential) => {
+      if (this.#pending?.abort === abort) this.#pending.answered = true;
+      return this.keep(credential as Credential, epoch).catch((error: unknown) => {
+        throw new NotKept("not kept", { cause: error });
+      });
+    }).finally(settle);
     // Past the browser step, the tab already says it completed: an end that is not a cancel (a newer start, a sign-out,
     // the wait's end, the server's close) says why in the view and the log, whichever way the address came back.
     let waiting = false;

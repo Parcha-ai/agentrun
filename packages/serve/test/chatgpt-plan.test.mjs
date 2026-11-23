@@ -915,6 +915,27 @@ test("a sign-in saved whose change callback then fails reads signed in, with no 
 
 const TIMED_OUT = "The sign-in timed out before OpenAI sent the code back: start it again.";
 
+test("a sign-in whose code OpenAI answered never times out: saved, with the server's change still out at the 10 minutes, it reads signed in with no problem", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  const clock = { now: Date.now() };
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let asked = false;
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields), now: () => clock.now, changed: async () => { asked = true; await held; } });
+  t.after(() => { release(); plan.close(); });
+  const { authorize_url } = await plan.startSignIn();
+  assert.equal((await browserReturns(authorize_url)).status, 200);
+  await until(() => asked, "the sign-in is saved and the server's change is out");
+  clock.now += 10 * 60_000 + 1;
+  assert.equal(plan.view().problem, undefined, "no timeout once OpenAI answered");
+  release();
+  await until(() => plan.view().state === "signed_in", "the sign-in ends signed in");
+  assert.equal(plan.view().problem, undefined);
+  assert.deepEqual(logged.map((fields) => fields.chatgpt), ["signed_in"]);
+});
+
 test("a sign-in that waits out its 10 minutes says it timed out, in the view and the log, whether a read or its timer ends it, its code's exchange cut off included; a cancel says nothing", { timeout: 30_000 }, async (t) => {
   const openai = fakeOpenAI(t);
   const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
