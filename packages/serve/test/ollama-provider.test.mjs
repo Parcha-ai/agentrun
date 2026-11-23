@@ -358,3 +358,75 @@ test("OLLAMA_HOST plain http to another machine is refused, and a refused Ollama
     assert.equal(asked, 0, `${refused}: nothing sent`);
   }
 });
+
+/** Sends this process's requests to Ollama's default address (127.0.0.1:11434, localhost or [::1] on that port) to
+ *  `ollama` in its place, so a test of the default never reaches an Ollama on the machine: the URLs so asked, by path. */
+function defaultAddressTo(t, ollama) {
+  const real = globalThis.fetch;
+  const asked = [];
+  globalThis.fetch = (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const own = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):11434(\/.*)?$/.exec(url);
+    if (!own) return real(input, init);
+    asked.push(own[1] ?? "/");
+    return real(`http://${ollama.host}${own[1] ?? "/"}`, init);
+  };
+  t.after(() => void (globalThis.fetch = real));
+  return asked;
+}
+
+/** What makes a test's server one owner's own (server.ts whyNotOwnMachine) unset, and every model key with them. */
+const OWNER = [...KEYS, "OLLAMA_HOST", "AGENTRUN_RUN_USER", "AGENTRUN_STORE_URL"];
+const ollamaIds = (caps) => caps.harnesses.find((harness) => harness.id === "pi").models.filter((id) => id.startsWith("ollama/"));
+
+test("a shared server (here one with no runner beside it) never asks the default address: with Ollama up there and no OLLAMA_HOST, none is listed", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  const ollama = await fakeOllama(t);
+  const asked = defaultAddressTo(t, ollama);
+  const { api, ollamaHost } = await serve(t, { faux: undefined, runner: false, runnerApart: true });
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.deepEqual(ollamaIds(caps), [], JSON.stringify(caps.models));
+  assert.notEqual(caps.models.default, `ollama/${TOOLS}`);
+  assert.equal(ollamaHost, undefined, "its runner is told no address either");
+  assert.deepEqual(asked, [], "the default address never asked");
+  assert.equal(ollama.got.tags, 0);
+});
+
+test("a shared server lists the Ollama OLLAMA_HOST names", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  const ollama = await fakeOllama(t);
+  withEnv(t, { OLLAMA_HOST: ollama.host });
+  const { api, ollamaHost } = await serve(t, { faux: undefined, runner: false, runnerApart: true });
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.deepEqual(ollamaIds(caps).sort(), [`ollama/${PLAIN}`, `ollama/${TOOLS}`]);
+  assert.equal(caps.models.default, `ollama/${TOOLS}`);
+  assert.equal(ollamaHost, ollama.host);
+});
+
+test("one owner's own server lists the Ollama at the default address with no OLLAMA_HOST, and tells its runner that address", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  const ollama = await fakeOllama(t);
+  const asked = defaultAddressTo(t, ollama);
+  const { api, ollamaHost } = await serve(t, { faux: undefined, runner: false });
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.deepEqual(ollamaIds(caps).sort(), [`ollama/${PLAIN}`, `ollama/${TOOLS}`]);
+  assert.equal(caps.models.default, `ollama/${TOOLS}`);
+  assert.equal(ollamaHost, "127.0.0.1:11434");
+  assert.ok(asked.includes("/api/tags"), JSON.stringify(asked));
+});
+
+test("a refused OLLAMA_HOST is said in one log line at the start, never with its user or password", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  const refused = new URL("http://10.0.0.5:11434");
+  refused.username = "synthuser";
+  refused.password = `not-a-secret-${"ollama-host"}`;
+  withEnv(t, { OLLAMA_HOST: refused.href });
+  const lines = [];
+  const { api } = await serve(t, { faux: undefined, runner: false, log: (line) => lines.push(line) });
+  await api("GET", "/capabilities");
+  await api("GET", "/capabilities");
+  const said = lines.filter((line) => line.includes("event=ollama_host_refused"));
+  assert.equal(said.length, 1, lines.join("\n"));
+  assert.match(said[0], /OLLAMA_HOST/);
+  assert.ok(!said[0].includes("synthuser") && !said[0].includes("not-a-secret"), said[0]);
+});

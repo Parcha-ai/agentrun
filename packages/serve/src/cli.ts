@@ -610,7 +610,7 @@ if (!values["no-runner"] && askedAt === undefined) {
     // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
     // install (Serve.localInstall).
     // Each run a process of its own, as a user of its own where the image's helper can switch (run-child-host.ts).
-    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, onRunEnded: telemetry.runEnded });
+    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, onRunEnded: telemetry.runEnded });
   } catch (error) {
     // A run isolation the runner cannot give (run-child-host.ts runIsolationOf) is said, and the server serves on with no
     // runner, as the runner subcommand stays up claiming nothing (runner/main.ts): a platform that restarts a stopped

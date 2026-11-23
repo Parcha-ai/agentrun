@@ -133,7 +133,7 @@ import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, ty
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
-import { ollamaListing, ollamaModels } from "./ollama-provider.js";
+import { ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels } from "./ollama-provider.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -556,6 +556,9 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
    *  it is this process's finding, never a store's, so another runner on a shared store never inherits it. A runner in
    *  its own process takes its own operator's opt-in from its own environment (runner/main.ts runnerLoopback). */
   localInstall: boolean;
+  /** The OLLAMA_HOST its runner beside it asks (ollama-provider.ts ollamaHostOf): this server's own, else the default
+   *  address where this is one owner's own machine; none on a shared one that names none (runner/beside.ts ollamaHost). */
+  ollamaHost: string | undefined;
   /** This server's own addresses (McpServersOverStore.own): where it listens, and its public address when that is on
    *  loopback. The runner beside it is told them with localInstall (runner/beside.ts mcpOwn), so its runs' loopback reads
    *  never reach this server, as its own reads never do. */
@@ -1131,17 +1134,18 @@ function integerParam(value: string | null, name: string, max: number): number {
 /** A start with --harness-sign-in on a server that is not one owner's own, on their own machine. */
 export const HARNESS_SIGN_IN_NOT_LOCAL = "HARNESS_SIGN_IN_NOT_LOCAL";
 
-/** Why `options` on `data` may not run a recipe on its owner's own sign-in (--harness-sign-in), in words; undefined when
- *  it may. One owner's own server on their own machine: it listens on loopback alone, with no public address; its store
- *  is the SQLite one in its data directory (no AGENTRUN_STORE_URL, which servers elsewhere share); its runs run beside
- *  it as its own user (`ownUser`: runIsolationOf's `process`), never under --no-runner or a user of their own; and one
- *  person starts them, as Claude Code's login on this machine asks (claude-login.ts whyNotOneOwner): an owner, and one
- *  API token. A check, a schedule and a shared server run on a key (HARNESS.md#sign-in). */
-export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string | undefined {
+/** Why `options` on `data` is not one owner's own server on their own machine, each reason in words; none when it is. One
+ *  owner's own: it listens on loopback alone, with no public address; its store is the SQLite one in its data directory (no
+ *  AGENTRUN_STORE_URL, which servers elsewhere share); its runs run beside it as its own user (`ownUser`:
+ *  runIsolationOf's `process`), never under --no-runner or a user of their own; and one person starts them, as Claude
+ *  Code's login on this machine asks (claude-login.ts whyNotOneOwner): an owner, and one API token. What --harness-sign-in
+ *  starts under (harnessSignInRefusal), and where the Ollama at this machine's default address is a model of the person
+ *  who starts runs (ollama-provider.ts ollamaHostOf). */
+export function whyNotOwnMachine(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string[] {
   const host = options.host ?? DEFAULT_HOST;
   // Every token the server takes (acceptedTokens): AGENTRUN_TOKEN's as `default` beside the list's, or else DIR/.token's alone.
   const tokens = (options.token === undefined ? 0 : 1) + (options.tokens?.length ?? 0);
-  const why = [
+  return [
     ...(loopback(host) ? [] : [`listens on ${host}, past loopback`]),
     ...(options.publicUrl ? [`has a public address (${options.publicUrl})`] : []),
     ...(options.apiOnly ? ["has no owner (the API-only profile), so anyone with its token starts runs"] : []),
@@ -1150,6 +1154,13 @@ export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publi
     ...(options.runnerApart ? ["runs no runner beside it (--no-runner)"] : []),
     ...(ownUser ? [] : ["runs each run as a user of its own (unset AGENTRUN_RUN_USER=slot, or set AGENTRUN_RUN_USER=same)"]),
   ];
+}
+
+/** Why `options` on `data` may not run a recipe on its owner's own sign-in (--harness-sign-in), in words; undefined when
+ *  it may: one owner's own server on their own machine alone (whyNotOwnMachine). A check, a schedule and a shared server
+ *  run on a key (HARNESS.md#sign-in). */
+export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string | undefined {
+  const why = whyNotOwnMachine(options, data, ownUser);
   return why.length ? `${HARNESS_SIGN_IN_NOT_LOCAL}: --harness-sign-in runs a recipe on its owner's own sign-in on one owner's own machine alone, and this server ${why.join("; ")}. Start it without --harness-sign-in: its plan-billed recipes run on keys.` : undefined;
 }
 
@@ -1170,11 +1181,15 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a computer's mount source below it must then be its own canonical path, through no link.
   const data = await realpath(resolve(options.data));
+  const { runsAsOwnUser } = await import("./runner/run-child-host.js");
+  const ownUser = runsAsOwnUser(process.env);
   if (options.harnessSignIn) {
-    const { runsAsOwnUser } = await import("./runner/run-child-host.js");
-    const refused = harnessSignInRefusal(options, data, runsAsOwnUser(process.env));
+    const refused = harnessSignInRefusal(options, data, ownUser);
     if (refused) throw new Error(refused);
   }
+  // The Ollama this server asks, and its runner beside it: OLLAMA_HOST, else the default address on one owner's own machine
+  // alone (ollamaHostOf). Read once, at the start: a refused one is said once, here, in the base rule's words.
+  const ollamaHost = ollamaHostOf(process.env, whyNotOwnMachine(options, data, ownUser).length === 0);
   const tokenRefused = options.token === undefined ? undefined : tokenProblem(options.token);
   if (tokenRefused) throw new Error(tokenRefused);
   for (const entry of options.tokens ?? []) {
@@ -1210,7 +1225,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // store handle it opened.
   const stops: Array<() => Promise<void>> = [];
   try {
-    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates }, stops);
+    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     throw error;
@@ -1237,8 +1252,8 @@ async function whileReplaced<T>(take: () => Promise<T> | T, held: (error: unknow
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; boxAllow: readonly string[] | "none"; templates: Package[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
-  const { maxRuns, minFreeBytes, learning, boxAllow, templates } = checked;
+async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; boxAllow: readonly string[] | "none"; templates: Package[]; ollamaHost: string | undefined }, stops: Array<() => Promise<void>>): Promise<Serve> {
+  const { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost } = checked;
   /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
    *  read (the view never fails for it). */
@@ -1259,7 +1274,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // shown nowhere.
   let secretStores: ServerSecrets | undefined;
   let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
-  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data), ...harnessRecipesEnv(options.harnessRecipes ?? [], data, { signIn: options.harnessSignIn === true }) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data), ...harnessRecipesEnv(options.harnessRecipes ?? [], data, { signIn: options.harnessSignIn === true }) , ...(ollamaHost ? { OLLAMA_HOST: ollamaHost } : {}) };
+  // A refused OLLAMA_HOST lists nothing (ollama-provider.ts baseOf): said once, at the start, in the base rule's words,
+  // which never hold the value (a user or password in it stays unsaid).
+  const ollamaRefused = ollamaHostRefused(base);
+  if (ollamaRefused) log ? log(logLine("ollama_host_refused", { line: ollamaRefused })) : void process.stderr.write(`agentrun-serve: ${ollamaRefused}\n`);
   // The table, loaded once here: a harness module that is missing, names a built-in harness or gives half an entry refuses
   // the start, in words, before anything else opens.
   // The harness ids a definition may name here: the table's, the built-in ones and those the modules add, and one the
@@ -6522,6 +6541,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     attachHub,
     dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
     localInstall,
+    ollamaHost,
     own: mcpServers.own,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).

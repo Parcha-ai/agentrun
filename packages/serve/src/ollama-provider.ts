@@ -1,7 +1,8 @@
 // Ollama as a model provider: the models the Ollama on this machine (or the one OLLAMA_HOST names) has pulled, listed live
 // from its own API, run by pi alone, at $0, on Ollama's native chat API. No key: Ollama has none.
 //   Where: OLLAMA_HOST, Ollama's own variable, read as the ollama CLI reads it (ollamaBase), from the server's environment,
-//     never from a provider's auth context, so it is never a held secret. Plain http only to this machine (provider.ts
+//     never from a provider's auth context, so it is never a held secret. Unset, the server names the default address
+//     itself only on one owner's own machine (ollamaHostOf); unset anywhere else, no Ollama is asked. Plain http only to this machine (provider.ts
 //     gatewayBase, the one base rule); anything else needs https.
 //   Which models: GET /api/tags, then POST /api/show for each, whose `capabilities` say whether it chats (`completion`),
 //     takes tools (`tools`) and thinks (`thinking`), and whose model_info's `<family>.context_length` is the context it was
@@ -101,9 +102,35 @@ const remote = (entry: Remote | null | undefined): boolean => entry?.remote_host
  *  so a server never hands it on to its runs. The test suites set it (test/support.mjs); a test of Ollama clears it. */
 export const OLLAMA_OFF_ENV = "AGENTRUN_SERVE_FAUX_NO_OLLAMA";
 
-/** The base OLLAMA_HOST names, or undefined where it is refused (ollamaBase) or the test switch is on (OLLAMA_OFF_ENV). */
+/** Ollama's own default address (ollamaBase of an unset OLLAMA_HOST). */
+export const OLLAMA_DEFAULT_HOST = `127.0.0.1:${OLLAMA_PORT}`;
+
+/**
+ * The OLLAMA_HOST a server asks, and hands the runner beside it: the one its environment sets, else Ollama's default
+ * address on one owner's own server on their own machine (`ownMachine`: server.ts whyNotOwnMachine, the rule
+ * --harness-sign-in starts under), else none. On a shared server, whatever answers on this machine's 11434 is no model of
+ * the people who start runs there, so it is asked only where its operator names it.
+ */
+export function ollamaHostOf(env: NodeJS.ProcessEnv, ownMachine: boolean): string | undefined {
+  const given = env.OLLAMA_HOST?.trim();
+  return given ? given : ownMachine ? OLLAMA_DEFAULT_HOST : undefined;
+}
+
+/** Why the OLLAMA_HOST `env` names is refused (ollamaBase's words, which never hold its value), or undefined. */
+export function ollamaHostRefused(env: NodeJS.ProcessEnv): string | undefined {
+  if (!env.OLLAMA_HOST?.trim()) return undefined;
+  try {
+    ollamaBase(env);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/** The base OLLAMA_HOST names, or undefined where it names none (a server names the default where it may: ollamaHostOf),
+ *  is refused (ollamaBase) or the test switch is on (OLLAMA_OFF_ENV). */
 const baseOf = (env: NodeJS.ProcessEnv): string | undefined => {
-  if (process.env[OLLAMA_OFF_ENV]) return undefined;
+  if (process.env[OLLAMA_OFF_ENV] || !env.OLLAMA_HOST?.trim()) return undefined;
   try {
     return ollamaBase(env);
   } catch {

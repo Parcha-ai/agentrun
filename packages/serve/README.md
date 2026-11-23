@@ -1560,8 +1560,8 @@ saved earlier is dropped when the server starts, and claude-agent runs on the mo
 
 ### On this machine's Ollama
 
-Start Ollama (`ollama serve`, or its app) and the server lists its models itself, with no key, no gateway and no
-restart: `GET /api/tags` for the tags, `POST /api/show` for each one's capabilities and trained context. Each chat model
+Start Ollama (`ollama serve`, or its app) beside your own server and it lists Ollama's models itself, with no key, no
+gateway and no restart: `GET /api/tags` for the tags, `POST /api/show` for each one's capabilities and trained context. Each chat model
 is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi, and the console names it
 `<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
 tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled or an Ollama started after the server shows in capabilities
@@ -1570,11 +1570,16 @@ lists no models and slows nothing: the listing has 2 seconds in all, follows no 
 before its deadline. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
 seconds), and a run on any other model, a key's default included, never asks Ollama.
 
-- Where: `OLLAMA_HOST`, read as the ollama CLI reads it. Unset, 127.0.0.1:11434. A host alone, or `host:port`, with no
+- Where: `OLLAMA_HOST`, read as the ollama CLI reads it. Unset, 127.0.0.1:11434, but only on one owner's own server
+  on their own machine, the one `--harness-sign-in` starts on: it listens on loopback with no public address, keeps the
+  SQLite store, runs its runs beside it as its own user, and takes one owner and one API token. On any other server
+  (shared, `--no-runner`, Postgres, API-only, more than one token), whatever answers on that machine's 11434 is no model
+  of the people who start runs there, so unset means no Ollama: name it in `OLLAMA_HOST`. A host alone, or `host:port`, with no
   scheme is plain http, port 11434 when none is given; `http://` and `https://` take their own default ports. `0.0.0.0`
   and `::`, where `ollama serve` listens on every address, mean this machine (127.0.0.1 and `[::1]`). A path is kept.
   Plain http goes only to this machine (loopback); another machine takes `https://`. A refused `OLLAMA_HOST` lists no
-  models. `agentrun service install --env OLLAMA_HOST=<host:port>` gives it to the service.
+  models, and the server's log says why once, at its start (`event=ollama_host_refused`, never the value: a user or
+  password in it stays unsaid). `agentrun service install --env OLLAMA_HOST=<host:port>` gives it to the service.
 - Context: each request is Ollama's own `/api/chat`, streamed, with `options.num_ctx` the least of 65,536, the model's
   trained context (where `/api/show` names one) and `OLLAMA_CONTEXT_LENGTH` (where the server's environment sets it to a
   whole number above 0, as a person short of memory does for Ollama itself). The model's context window here is the same
