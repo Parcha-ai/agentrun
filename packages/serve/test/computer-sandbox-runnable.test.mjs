@@ -277,7 +277,8 @@ test("Mode 1: a daemon that answers only after the server started is not taken: 
   for (const kind of ["sandbox", "desktop"]) {
     const docker = view.body.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === "docker");
     assert.equal(docker.ready, false, `${kind}: ${JSON.stringify(docker)}`);
-    assert.match(docker.why, /^Docker isn't running on this machine.*then restart AgentRun$/, `${kind}: ${JSON.stringify(docker)}`);
+    // In the start probe's words: a host's, or a container's with no socket where the suite runs in one (place-offers.ts).
+    assert.match(docker.why, /^(Docker isn't running on this machine.*then restart AgentRun|This server runs in a container with no Docker socket.*)$/, `${kind}: ${JSON.stringify(docker)}`);
   }
 });
 
