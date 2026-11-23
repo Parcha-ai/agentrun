@@ -789,6 +789,19 @@ test("a browser's return whose code OpenAI refuses says why, in the view and the
   assert.equal(plan.view().problem, undefined);
 });
 
+test("a sign-in saved whose change callback then fails reads signed in, with no problem and no sign_in_failed", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields), changed: async () => { throw Object.assign(new Error("relist failed"), { code: "SQLITE_BUSY" }); } });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  assert.equal((await plan.finishSignIn(callbackFor(authorize_url))).state, "signed_in");
+  assert.equal(plan.view().problem, undefined);
+  assert.deepEqual(logged.map((fields) => fields.chatgpt), ["signed_in", "changed_failed"]);
+  assert.equal(logged[1].reason, "SQLITE_BUSY");
+});
+
 test("a sign-in waiting listens for its loopback callback on this test process's own loopback address (pi-ai's PI_OAUTH_CALLBACK_HOST), port 1455", { timeout: 30_000 }, async (t) => {
   fakeOpenAI(t);
   const { createConnection } = await import("node:net");

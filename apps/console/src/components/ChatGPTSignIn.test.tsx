@@ -141,6 +141,18 @@ describe("ChatGPTSignIn", () => {
     expect(page.button(/^Continue with ChatGPT$/)).toBeTruthy();
   });
 
+  it("a refused paste, then a browser's return the server could not finish: the server's final word replaces the paste's", async () => {
+    const refused = "That address is from another sign-in: paste the one from the sign-in you started last, or start again.";
+    let state: ChatGPTView = { state: "pending", authorize_url: AUTHORIZE };
+    const { v2 } = server(() => state, () => json(400, { error: { code: "bad_request", message: refused, retryable: false } }));
+    const page = await mount(v2, state);
+    await page.paste(PASTED);
+    await page.click(/^Finish sign-in$/);
+    expect(page.host.querySelector('[role="alert"]')?.textContent).toBe(refused);
+    state = { state: "signed_out", problem: "OpenAI refused the sign-in (invalid_grant): start it again." };
+    await page.wait(() => page.host.querySelector('[role="alert"]')?.textContent === state.problem, "the server's problem is shown, not the paste's refusal");
+  });
+
   it("a page opened after such a sign-in says why from the server's view", async () => {
     const { v2 } = server(() => ({ state: "signed_out" }), () => json(500, {}));
     const page = await mount(v2, { state: "signed_out", problem: "This server could not reach OpenAI to finish the sign-in: check its connection, then start again." });

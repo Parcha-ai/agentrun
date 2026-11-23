@@ -413,7 +413,13 @@ export class ChatGPTPlan implements PlanReader {
     this.#snapshot = row;
     this.#problem = undefined;
     this.#deps.log?.({ chatgpt: "signed_in", ...(previousRevoked === undefined ? {} : { previous_revoked: String(previousRevoked) }) });
-    await this.#deps.changed?.();
+    // Saved: what the server does with the change after it is not the sign-in's to fail.
+    try {
+      await this.#deps.changed?.();
+    } catch (error) {
+      const code = (error as { code?: unknown })?.code;
+      this.#deps.log?.({ chatgpt: "changed_failed", reason: String(typeof code === "string" ? code : (error as Error)?.name ?? "error").replace(/[^A-Za-z0-9_]/g, "").slice(0, 40) || "error" });
+    }
   }
 
   /** The plan's models from OpenAI's list (GET /v1/models with the token), those of the current families; the fallback
