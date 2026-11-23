@@ -446,3 +446,21 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
   t.diagnostic(`the most characters visited per character of a text: ${most.toFixed(1)}`);
   assert.deepEqual(over, []);
 });
+
+// A text of very many shape finds, read whole (no byte bound, as learning's compile reads a previous answer): its finds
+// are gathered one by one, never as one call's arguments, so it is cut and never throws for its count of finds.
+test("a text of very many shape finds read whole is cut, never thrown on: \"AKIA\" x 131072, no byte bound", () => {
+  const text = "AKIA".repeat(131072);
+  const problems = [];
+  for (const redact of [redactSecrets, redactLearned]) {
+    let out;
+    try {
+      out = redact(text, [CUT_KEY], Number.POSITIVE_INFINITY);
+    } catch (error) {
+      problems.push(`${redact.name} threw ${error?.name}: ${String(error?.message).slice(0, 80)}`);
+      continue;
+    }
+    if (/AKIA[0-9A-Z]{16}/.test(String(out))) problems.push(`${redact.name} shows a key shape`);
+  }
+  assert.deepEqual(problems, []);
+});
