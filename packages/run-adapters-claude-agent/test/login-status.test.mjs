@@ -53,10 +53,11 @@ function defaultLogin() {
   return { home, bytes, login: { dir: join(home, '.claude'), profiles: join(home, '.config', 'anthropic'), home } };
 }
 
-/** A stand-in CLI that notes, per process, its environment, what its config dir held and the bytes of the account file
- *  there, then answers `answer`. With `gate` (a port on loopback) it connects there first and answers only once the
- *  gate writes to it. */
-function fakeCli({ answer = SIGNED_OUT, gate } = {}) {
+/** A stand-in CLI that notes, per process, its environment, what its config dir held, the bytes of the account file
+ *  there and the permission bits of the check's folder, the config dir and that file, then answers `answer`. With
+ *  `gate` (a port on loopback) it connects there first and answers only once the gate writes to it. With `hang` it
+ *  never answers. */
+function fakeCli({ answer = SIGNED_OUT, gate, hang = false } = {}) {
   const dir = scratch();
   const cli = join(dir, 'claude');
   writeFileSync(cli, [
@@ -65,16 +66,42 @@ function fakeCli({ answer = SIGNED_OUT, gate } = {}) {
     `const path = require('node:path');`,
     `const config = process.env.CLAUDE_CONFIG_DIR;`,
     `const copy = config ? path.join(config, '.claude.json') : undefined;`,
-    `const seen = { env: process.env, folder: config && fs.existsSync(config) ? fs.readdirSync(config) : null, copy: copy && fs.existsSync(copy) ? fs.readFileSync(copy).toString('base64') : null };`,
+    `const bits = (p) => (p && fs.existsSync(p) ? fs.statSync(p).mode & 0o777 : null);`,
+    `const seen = { env: process.env, folder: config && fs.existsSync(config) ? fs.readdirSync(config) : null, copy: copy && fs.existsSync(copy) ? fs.readFileSync(copy).toString('base64') : null, modes: config ? { check: bits(path.dirname(config)), config: bits(config), copy: bits(copy) } : null };`,
     `fs.writeFileSync(path.join(${JSON.stringify(dir)}, 'seen-' + process.pid + '.json'), JSON.stringify(seen));`,
     `const answer = () => { process.stdout.write(${JSON.stringify(answer)}); process.exit(1); };`,
-    gate === undefined
-      ? `answer();`
-      : `const socket = require('node:net').connect(${gate}, '127.0.0.1', () => socket.write('r')); socket.once('data', answer); socket.on('error', () => process.exit(2));`,
+    hang
+      ? `setInterval(() => {}, 60_000);`
+      : gate === undefined
+        ? `answer();`
+        : `const socket = require('node:net').connect(${gate}, '127.0.0.1', () => socket.write('r')); socket.once('data', answer); socket.on('error', () => process.exit(2));`,
     '',
   ].join('\n'), { mode: 0o755 });
   const seen = () => readdirSync(dir).filter((name) => name.startsWith('seen-')).map((name) => JSON.parse(readFileSync(join(dir, name), 'utf8')));
   return { cli, seen };
+}
+
+/** The account file a stand-in CLI found in its config dir, as text, or null when there was none. */
+const copyText = (seen) => (seen.copy === null ? null : Buffer.from(seen.copy, 'base64').toString('utf8'));
+
+/** Runs one status check (`check()`) with the temporary folder (TMPDIR, and TMP and TEMP for Windows) at a new empty
+ *  folder, set only while the check starts, which is when it makes its own folder; returns that folder and how the check
+ *  ended. */
+async function inOwnTmp(check) {
+  const tmp = scratch();
+  const saved = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
+  Object.assign(process.env, { TMPDIR: tmp, TMP: tmp, TEMP: tmp });
+  let pending;
+  try {
+    pending = check();
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  const outcome = await pending.then((value) => ({ value }), (error) => ({ error }));
+  return { tmp, outcome };
 }
 
 /** A gate on loopback: `arrived` settles once `count` CLIs connected; `release()` lets them all answer. */
@@ -128,7 +155,7 @@ test("the status check on the CLI's default folder runs in the person's home wit
     const config = seen.env.CLAUDE_CONFIG_DIR;
     assert.ok(config, `${platform}: the status check names a config dir of its own`);
     assert.ok(outside(home, config), `${platform}: ${config} is outside the home ${home}`);
-    assert.equal(seen.copy, bytes.toString('base64'), `${platform}: the config dir holds a byte-identical copy of the account file`);
+    assert.deepEqual(JSON.parse(copyText(seen)), JSON.parse(bytes.toString('utf8')), `${platform}: the config dir holds a copy of the account file`);
     assert.deepEqual(seen.folder, ['.claude.json'], `${platform}: and nothing else`);
     assert.equal(seen.env.HOME, home, platform);
     assert.equal(seen.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, platform === 'darwin' ? '' : login.dir, platform);
@@ -156,27 +183,110 @@ test("this machine's login in a CLAUDE_CONFIG_DIR folder, which the person's own
     const config = seen.env.CLAUDE_CONFIG_DIR;
     assert.notEqual(config, folder, `${platform}: the status check never runs the CLI on the folder's own account file`);
     assert.ok(config && outside(folder, config), `${platform}: ${config} is outside the folder`);
-    assert.equal(seen.copy, bytes.toString('base64'), `${platform}: the config dir holds a byte-identical copy of the folder's account file`);
+    assert.deepEqual(JSON.parse(copyText(seen)), JSON.parse(bytes.toString('utf8')), `${platform}: the config dir holds a copy of the folder's account file`);
     // The person's CLI with CLAUDE_CONFIG_DIR=<folder> keeps its tokens there (Linux) or in the item hashed from it (macOS).
     assert.equal(seen.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, folder, platform);
     assert.ok(seen.env.HOME && seen.env.HOME !== folder, platform);
   }
 });
 
-test("the status check's folder is gone once the CLI answered, and once the status threw because the CLI gave no answer", async () => {
+test("the status check's folder is gone on every way the check ends: the CLI answered, gave no answer that reads as one, could not start, or ran past the check's time", async () => {
   const { login } = defaultLogin();
   const answered = fakeCli();
-  assert.deepEqual(await claude.claudeLoginStatus(answered.cli, login), OUT);
-  const [one] = answered.seen();
-  assert.ok(one.env.CLAUDE_CONFIG_DIR, 'the status check had a folder of its own');
-  assert.notEqual(one.folder, null, 'its folder was there while the CLI ran');
-  assert.equal(existsSync(one.env.CLAUDE_CONFIG_DIR), false, 'the folder is gone after the answer');
+  const one = await inOwnTmp(() => claude.claudeLoginStatus(answered.cli, login));
+  assert.deepEqual(one.outcome.value, OUT);
+  const [first] = answered.seen();
+  assert.ok(first.env.CLAUDE_CONFIG_DIR, 'the status check had a folder of its own');
+  assert.ok(!outside(one.tmp, first.env.CLAUDE_CONFIG_DIR), `its folder ${first.env.CLAUDE_CONFIG_DIR} is under the temporary folder ${one.tmp}`);
+  assert.notEqual(first.folder, null, 'its folder was there while the CLI ran');
+  assert.equal(existsSync(first.env.CLAUDE_CONFIG_DIR), false, 'the folder is gone after the answer');
+  assert.deepEqual(readdirSync(one.tmp), [], 'nothing of the check is left after the answer');
+
   const garbled = fakeCli({ answer: 'Not logged in' });
-  await assert.rejects(claude.claudeLoginStatus(garbled.cli, login), /gave no login status/);
-  const [two] = garbled.seen();
-  assert.ok(two.env.CLAUDE_CONFIG_DIR, 'the status check had a folder of its own');
-  assert.notEqual(two.folder, null, 'its folder was there while the CLI ran');
-  assert.equal(existsSync(two.env.CLAUDE_CONFIG_DIR), false, 'the folder is gone after the throw');
+  const two = await inOwnTmp(() => claude.claudeLoginStatus(garbled.cli, login));
+  assert.match(String(two.outcome.error?.message), /gave no login status/);
+  const [second] = garbled.seen();
+  assert.ok(second.env.CLAUDE_CONFIG_DIR, 'the status check had a folder of its own');
+  assert.notEqual(second.folder, null, 'its folder was there while the CLI ran');
+  assert.equal(existsSync(second.env.CLAUDE_CONFIG_DIR), false, 'the folder is gone after the throw');
+  assert.deepEqual(readdirSync(two.tmp), [], 'nothing of the check is left after the throw');
+
+  // No CLI at that path: the spawn fails (ENOENT).
+  const missing = await inOwnTmp(() => claude.claudeLoginStatus(join(scratch(), 'no-such-claude'), login));
+  assert.equal(missing.outcome.error?.code, 'ENOENT', `the check fails as the spawn did: ${missing.outcome.error}`);
+  assert.deepEqual(readdirSync(missing.tmp), [], 'nothing of the check is left after a spawn that failed');
+
+  // A CLI that never answers, ended at the check's limit.
+  const silent = fakeCli({ hang: true });
+  const late = await inOwnTmp(() => claude.claudeLoginStatus(silent.cli, login, { timeoutMs: 500 }));
+  assert.match(String(late.outcome.error?.message), /gave no login status/, 'a CLI ended at the limit gave no answer');
+  assert.deepEqual(readdirSync(late.tmp), [], 'nothing of the check is left after the limit');
+});
+
+test("while the CLI runs, the status check's folder and its config dir are the server user's alone (0700) and the copy of the account file too (0600)", { skip: process.platform === 'win32' ? 'POSIX permission bits' : false }, async () => {
+  const { login } = defaultLogin();
+  const fake = fakeCli();
+  assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login), OUT);
+  const [seen] = fake.seen();
+  assert.deepEqual(seen.modes, { check: 0o700, config: 0o700, copy: 0o600 }, `modes ${JSON.stringify(seen.modes)}`);
+});
+
+const FAKE_KEY = 'sk-ant-test-fake';
+const FAKE_TOKEN = 'fake-token-for-a-test';
+
+test("the status check's copy of the account file holds no secret: not the API key an older CLI signed in with (primaryApiKey), the variables the CLI exports on start (env), or the MCP servers whose env and headers hold tokens (mcpServers, the user's and each project's); every other field is kept", async () => {
+  const account = {
+    numStartups: 3,
+    hasCompletedOnboarding: true,
+    migrationVersion: 15,
+    oauthAccount: { emailAddress: 'person@example.com', organizationName: 'Example' },
+    // The CLI keeps the last 20 characters of a key it was asked about, never the key.
+    customApiKeyResponses: { approved: ['test-fake-tail'], rejected: [] },
+    primaryApiKey: FAKE_KEY,
+    env: { ANTHROPIC_API_KEY: FAKE_KEY, ANTHROPIC_AUTH_TOKEN: FAKE_TOKEN },
+    mcpServers: { tools: { type: 'http', url: 'https://mcp.example.com', headers: { Authorization: `Bearer ${FAKE_TOKEN}` } } },
+    projects: { '/p': { allowedTools: ['Read'], hasTrustDialogAccepted: true, mcpServers: { local: { command: 'tool', env: { TOOL_KEY: FAKE_TOKEN } } } } },
+  };
+  const kept = {
+    numStartups: 3,
+    hasCompletedOnboarding: true,
+    migrationVersion: 15,
+    oauthAccount: account.oauthAccount,
+    customApiKeyResponses: account.customApiKeyResponses,
+    projects: { '/p': { allowedTools: ['Read'], hasTrustDialogAccepted: true } },
+  };
+  const home = scratch();
+  const folder = scratch();
+  for (const [where, file, login] of [
+    ['default folder', join(home, '.claude.json'), { dir: join(home, '.claude'), profiles: join(home, '.config', 'anthropic'), home }],
+    ['CLAUDE_CONFIG_DIR folder', join(folder, '.claude.json'), { dir: folder, profiles: join(folder, 'anthropic'), shared: true }],
+  ]) {
+    const bytes = Buffer.from(`${JSON.stringify(account, null, 2)}\n`);
+    writeFileSync(file, bytes, { mode: 0o600 });
+    const fake = fakeCli();
+    assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login), OUT);
+    const [seen] = fake.seen();
+    const copy = copyText(seen);
+    assert.ok(copy !== null, `${where}: the config dir holds a copy`);
+    assert.ok(!copy.includes(FAKE_KEY), `${where}: the API key is nowhere in the copy`);
+    assert.ok(!copy.includes(FAKE_TOKEN), `${where}: no token is anywhere in the copy`);
+    assert.deepEqual(JSON.parse(copy), kept, `${where}: every other field is kept`);
+    assert.ok(readFileSync(file).equals(bytes), `${where}: the person's file keeps its bytes`);
+  }
+});
+
+test("an account file that doesn't parse as a JSON object is copied as nothing, as if it were missing, so nothing in it reaches the copy; the person's file keeps its bytes", async () => {
+  for (const body of [`{"primaryApiKey": "${FAKE_KEY}", "numStartups": `, '[]', 'null', `"${FAKE_KEY}"`]) {
+    const { home, login } = defaultLogin();
+    const file = join(home, '.claude.json');
+    writeFileSync(file, body, { mode: 0o600 });
+    const fake = fakeCli();
+    assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login), OUT);
+    const [seen] = fake.seen();
+    assert.ok(seen.env.CLAUDE_CONFIG_DIR, 'the status check names a config dir of its own');
+    assert.deepEqual([seen.folder, seen.copy], [[], null], `${JSON.stringify(body)}: nothing is copied`);
+    assert.equal(readFileSync(file, 'utf8'), body, "the person's file keeps its bytes");
+  }
 });
 
 test('two status checks at once (two tabs) each get a folder of their own, and both are gone afterwards', { timeout: 30_000 }, async () => {
@@ -199,6 +309,6 @@ test('two status checks at once (two tabs) each get a folder of their own, and b
   const folders = seen.map((s) => s.env.CLAUDE_CONFIG_DIR);
   assert.ok(folders.every(Boolean), `each status check names a config dir of its own: ${JSON.stringify(folders)}`);
   assert.notEqual(folders[0], folders[1], 'two checks never share a folder');
-  for (const s of seen) assert.equal(s.copy, bytes.toString('base64'));
+  for (const s of seen) assert.deepEqual(JSON.parse(copyText(s)), JSON.parse(bytes.toString('utf8')));
   for (const folder of folders) assert.equal(existsSync(folder), false, `${folder} is gone`);
 });
