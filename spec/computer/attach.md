@@ -318,16 +318,15 @@ provider's, made and deleted by runs; only the transport is this binding's.
   bytes in base64url, for the computer's name, kind, os and arch. The store keeps only its SHA-256. It expires at the
   computer's `backstopAt` (its deadline cap plus the backstop margin), so a machine the janitor never reaches stops
   dialing then at the latest.
-- **Boot env.** The vendor's create puts five names in the machine's env, a sixth for a desktop and another where the
-  provider has an attach egress, and nothing else is run in it: `AGENTRUN_ATTACH_URL`
+- **Boot env.** The vendor's create gives the machine the boot env: these names, in the machine's env or, for a
+  provider that starts `agentrun-dial` itself, the URL on its start; nothing else is run in it: `AGENTRUN_ATTACH_URL`
   (`wss://<public host>/v2/computers/attach`; `ws://127.0.0.1` only in tests),
   `AGENTRUN_ATTACH_TOKEN`, `AGENTRUN_DAEMON_URL` (`https://<public host>/v2/computers/daemon?arch=<amd64|arm64>`),
   `AGENTRUN_DAEMON_SHA256` (the build the server serves for that arch), `AGENTRUN_INIT_ARGS` (init's arguments, as
   a start passes them, space-separated), for a desktop, `DISPLAY` (`:0`), and, with an attach egress,
   `AGENTRUN_ATTACH_EGRESS` (`<IPv4 relay>:<port>`, the operator's relay for machines that reach listed addresses
-  alone). A provider that starts `agentrun-dial` itself may hand it `AGENTRUN_ATTACH_URL` on its start instead of in
-  the machine's env (Daytona does, so a snapshot entrypoint that dials while the env holds it sleeps instead); the
-  token is always the env's, never on a command line. The image's `agentrun-dial` fetches the daemon, refuses it unless its SHA-256 is that one, starts
+  alone). Daytona hands `AGENTRUN_ATTACH_URL` to its start; the token is always the env's, never on a command line.
+  The image's `agentrun-dial` fetches the daemon, refuses it unless its SHA-256 is that one, starts
   `computerd init` with an env that holds no token (and `DISPLAY`, when given), and runs `computerd attach` with the
   URL and token alone, and the egress when given. With an egress, the fetch and every dial open TCP to the relay and
   speak TLS and HTTP to the public host through it: the SNI, the certificate checked and `Host` are the public host's,

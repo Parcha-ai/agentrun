@@ -21,8 +21,7 @@ export const COMPOSIO_USER = "agentrun";
 /** A Composio toolkit's slug, as a save takes it once trimmed and lower-cased. */
 export const COMPOSIO_TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const TOOLKIT = COMPOSIO_TOOLKIT;
-/** A Composio user id, as a save's `user_id` and a run's binding (mcp_auth's composio_user_id) take it. A `:` is taken:
- *  a host names a team's connected accounts by a user such as `team:<tenant>`. */
+/** A Composio user id, as a save's `user_id` and a run's binding take it. */
 export const COMPOSIO_USER_ID = /^[A-Za-z0-9._@:-]{1,128}$/;
 /** COMPOSIO_USER_ID in words, for the messages that refuse a user id. */
 export const COMPOSIO_USER_ID_WORDS = "letters, digits and . _ @ : - (1 to 128)";

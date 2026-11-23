@@ -958,9 +958,13 @@ function setupFixture(t, commands) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-skill-"));
   mkdirSync(join(dir, "fake"));
   for (const [name, body] of Object.entries(commands)) writeFileSync(join(dir, "fake", name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  // A fake writes child.pid with `echo $$ >`, so the file can exist and still be empty, and Number("") is 0: a kill of pid 0
+  // is a SIGKILL to this test's whole process group (node --test, npm, a CI shard's suite), which ends with nothing printed.
+  // Only a whole pid past 1 is signalled.
   t.after(() => {
-    if (existsSync(join(dir, "child.pid"))) {
-      try { process.kill(Number(readFileSync(join(dir, "child.pid"), "utf8")), "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+    const text = existsSync(join(dir, "child.pid")) ? readFileSync(join(dir, "child.pid"), "utf8").trim() : "";
+    if (/^\d+$/.test(text) && Number(text) > 1) {
+      try { process.kill(Number(text), "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
     }
     rmSync(dir, { recursive: true, force: true });
   });
