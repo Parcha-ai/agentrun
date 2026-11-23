@@ -59,8 +59,9 @@ const repo = (name, files, stallScript = "node --test 'test/*.test.mjs'") => {
 // (SIGKILL to what is left after its grace); then SIGKILL to ci-shard's group, and this file lets go of the pipes, so a suite
 // that outlived all that cannot hold this file's process.
 const start = (t, root, name, env) => {
-  // A run of its own, not one nested in this file's (node --test skips a run it finds inside another).
-  const { NODE_TEST_CONTEXT: _nested, ...outer } = process.env;
+  // A run of its own, not one nested in this file's (node --test skips a run it finds inside another). CI_AFFECTED_BASE comes
+  // from `env` alone: a pull request's CI sets it for the shard that runs this file, and a test that passes none means none.
+  const { NODE_TEST_CONTEXT: _nested, CI_AFFECTED_BASE: _base, ...outer } = process.env;
   const run = spawn(process.execPath, [script, name], { cwd: root, env: { ...outer, npm_config_update_notifier: 'false', ...env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   let output = '';
   run.stdout.on('data', (chunk) => { output += chunk; });
