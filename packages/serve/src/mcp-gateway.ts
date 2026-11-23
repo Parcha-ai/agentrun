@@ -218,7 +218,7 @@ export interface McpGatewayOptions {
    *  the runner's MCP claim step passes it: a github_app token whose App was disconnected or replaced. */
   beforeCall?: (server: string, signal: AbortSignal) => Promise<void>;
   /** Whether the run has a spend cap: under one, a metered call that cannot be priced is refused unsent. None: it has. */
-  capped?: () => boolean;
+  capped?: boolean;
   /** Reads a metered job's input media, for one priced by its length. None: such a job cannot be priced. */
   media?: MediaReader;
   /** For tests: the clock a meter's prices are kept by. */
@@ -499,7 +499,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       return outcome.raw;
     };
     const quote = await meter!.quote(tool, args, ask, signal);
-    if (quote.unpriceable && (options.capped?.() ?? true)) return said(`${name} was not sent: ${quote.unpriceable}, so a run with a spend cap can't send it. Nothing was sent.`, true);
+    if (quote.unpriceable && (options.capped ?? true)) return said(`${name} was not sent: ${quote.unpriceable}, so a run with a spend cap can't send it. Nothing was sent.`, true);
     // Settled by the server's reply; one that left and brought none back, at the meter's word for it (fal: its hold).
     const stepped = await paidStep(onLedger, callId ?? name, { name, holdUsd: quote.holdUsd, basis: quote.basis, by: label.charged_by }, () => call(), () => (went ? quote.chargeOf(raw) : 0));
     return "refused" in stepped ? said(stepped.refused, true) : stepped.result;

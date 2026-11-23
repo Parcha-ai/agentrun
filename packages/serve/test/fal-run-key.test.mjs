@@ -81,7 +81,7 @@ async function runOn(t, account, { run, url = FAL, entry = { meter: "fal" }, ser
     credentials: { [server]: { url: pinned, headers: { authorization: `Bearer ${TOKEN}` } } },
     work: () => work,
     commit: () => async (change) => change({ appendEntry: async () => undefined }),
-    capped: () => true,
+    capped: true,
     now: () => T0,
     ...(run ? { run } : {}),
     ...(url && url !== fake.url ? { fetch: (input, init) => fetch(String(input instanceof Request ? input.url : input).replace(url, fake.url), init) } : {}),

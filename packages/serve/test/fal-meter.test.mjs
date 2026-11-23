@@ -73,7 +73,7 @@ async function setup(t, { capUsd = 1, entry = { meter: "fal" }, run, pricing, ga
     credentials: { fal: { url: pinned, headers: { authorization: `Bearer ${TOKEN}` } } },
     work: () => work,
     commit: () => async (change) => change({ appendEntry: async (_conversation, value) => void root.push(value) }),
-    capped: () => capUsd !== null,
+    capped: capUsd !== null,
     now,
     // A pin at fal's own address is sent to the fake.
     ...(url ? { fetch: (input, init) => fetch(String(input instanceof Request ? input.url : input).replace(url, fake.url), init) } : {}),
