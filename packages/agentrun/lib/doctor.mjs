@@ -11,9 +11,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
+import { OWN_NODE, OWN_VERSION } from "./own.mjs";
 import { INSTALL_COMMAND, managerOf } from "./service.mjs";
 
-const OWN = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const REPO = "https://github.com/Parcha-ai/agentrun/blob/main/packages";
 export const DOCS = {
   launcher: `${REPO}/agentrun/README.md`,
@@ -87,7 +87,7 @@ export async function doctorOf({
   exec = (command, args) => spawnSync(command, args, { encoding: "utf8", timeout: 10_000, env }),
   get = fetch,
   nodeVersion = process.versions.node,
-  engines = OWN.engines.node,
+  engines = OWN_NODE,
   readRecord = plainText,
   alive = isAlive,
   readToken = () => undefined,
@@ -342,7 +342,7 @@ export async function doctorOf({
   }
 
   const exit = refused !== undefined ? 1 : !answering ? 3 : checks.some((c) => c.status === "fail") ? 1 : 0;
-  return { data, launcher: OWN.version, server: answering ? { url: health.url, version: version ?? null } : null, exit, checks };
+  return { data, launcher: OWN_VERSION, server: answering ? { url: health.url, version: version ?? null } : null, exit, checks };
 }
 
 /** The checks as a person reads them: one line each, then its fix and docs when it is not ok. */

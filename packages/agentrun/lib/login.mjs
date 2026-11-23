@@ -181,28 +181,14 @@ export const LOGIN = {
     const given = named ? toUrl(values.to, env) : flagged ? values["base-url"] : env.AGENTRUN_BASE_URL;
     if (given === undefined) throw cli.fail(2, "agentrun login needs the server: --to URL, --base-url URL or AGENTRUN_BASE_URL.");
     const base = cli.baseOf(given, named ? "--to" : flagged ? "--base-url" : "AGENTRUN_BASE_URL");
-    // The device sign-in, when the server offers one: for --to, and for a server named otherwise when stdin is a
-    // terminal, which can hold no token (off one, stdin holds the token, as a script gives it). A SignInError's words
-    // are this CLI's own and say nothing was written. The token it ends with is the server's own answer from its own
-    // origin, so it is kept as it is.
+    // The device sign-in for --to, or when stdin is a terminal, which can hold no token.
     if (named || io.stdin.isTTY) {
-      let offer;
       try {
-        offer = deviceOffer(await capabilitiesOf(base), base);
+        const offer = deviceOffer(await capabilitiesOf(base), base);
+        if (offer) return keep(base, await deviceSignIn(base, offer, io), env, io, cli);
       } catch (error) {
-        if (!(error instanceof SignInError)) throw error;
-        if (named) throw cli.fail(error.code, error.message);
-        // A server named otherwise that offers a sign-in this CLI does not take, or is not reached: why, then the
-        // refusal below of a token typed on a terminal, exit 2 as for a server that offers none.
-        io.stderr.write(`${error.message}\n`);
-      }
-      if (offer) {
-        try {
-          return keep(base, await deviceSignIn(base, offer, io), env, io, cli);
-        } catch (error) {
-          if (error instanceof SignInError) throw cli.fail(error.code, error.message);
-          throw error;
-        }
+        if (error instanceof SignInError) throw cli.fail(error.code, error.message);
+        throw error;
       }
     }
     const token = (await readSecret(io, cli.fail, "The token", "agentrun login --base-url URL < FILE")).trim();
