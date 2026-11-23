@@ -6,13 +6,14 @@
 // AGENTRUN_CLAUDE_CODE_LOGIN=off, where claude-agent runs on the model keys as it does without it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { constants, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { constants, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_ENV, claudeLoginSwitchedOff, envAtPlace, LOGIN_SIGNED_OUT, loginAt, loginForRun, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, claudeLoginSwitchedOff, envAtPlace, LOGIN_SIGNED_OUT, loginAt, loginForRun, settingFor, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
 import { agent, follow, secretWritePath, serve, withEnv } from "./support.mjs";
@@ -189,11 +190,15 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
   assert.equal(provider.login, undefined);
   assert.equal(await provider.credential(), "not-a-secret");
   assert.equal(hostModel(env, "default", "claude-agent"), hostModel({ ANTHROPIC_API_KEY: "not-a-secret" }, "default", "claude-agent"));
-  const saved = { get: async () => ({ v: 1, place: "agentrun", host: hostname(), only_me: true }) };
-  assert.equal(await loginForRun(saved, "/data", env, "claude-agent", { mode: "runner" }), undefined);
+  // Turned on over a data folder of the test's own, as the owner's turn-on saves it.
+  const own = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-saved-"));
+  t.after(() => rmSync(own, { recursive: true, force: true }));
+  const row = settingFor("agentrun", own);
+  const saved = { get: async () => row };
+  assert.equal(await loginForRun(saved, own, env, "claude-agent", { mode: "runner" }), undefined);
   // On, a runner place goes on the login and a sandbox place on the keys.
-  assert.deepEqual(await loginForRun(saved, "/data", {}, "claude-agent", { mode: "runner" }), { dir: "/data/claude-login", profiles: "/data/claude-login/anthropic" });
-  assert.equal(await loginForRun(saved, "/data", {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
+  assert.deepEqual(await loginForRun(saved, own, {}, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic") });
+  assert.equal(await loginForRun(saved, own, {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
 });
 
 test("Claude Code's login on this machine on: claude-agent's Anthropic models go on it with no key and no port; other harnesses and named gateway or OpenRouter models keep their keys", () => {
@@ -541,4 +546,66 @@ test("this machine's login honours CLAUDE_SECURESTORAGE_CONFIG_DIR in the server
     assert.deepEqual([call.configSet, call.secure, call.home], [status ? "set" : "", secure, home], JSON.stringify(call));
     if (status) assert.ok(call.config && relative(home, call.config).startsWith(".."), JSON.stringify(call));
   }
+});
+
+// Which machine a login was turned on for. A laptop's hostname moves with its network (one name at home, another at the
+// office), so a name never says it; the data folder stays where it is.
+
+/** `os.hostname()` answers `name` for the rest of test `t`, in the server this process runs too: its import of node:os is
+ *  a live binding, which syncBuiltinESMExports moves to the stub, and back after the test. */
+function hostnameAs(t, name) {
+  const os = createRequire(import.meta.url)("node:os");
+  const real = os.hostname;
+  os.hostname = () => name;
+  syncBuiltinESMExports();
+  t.after(() => {
+    os.hostname = real;
+    syncBuiltinESMExports();
+  });
+}
+
+test("a login turned on here still reads as this machine's after the machine's hostname changes, as a laptop's does with its network: runs here go on it, never on a key that is not there", { timeout: 120_000 }, async (t) => {
+  const fake = await fakeCli(t);
+  withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}` }, MODEL_VARS);
+  const { api, data, store } = await serve(t, { faux: undefined, harnesses: false, runner: false });
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_out");
+  hostnameAs(t, `not-${hostname()}`);
+  const view = (await api("GET", "/settings/claude-login")).body;
+  assert.equal(view.state, "signed_out", `the login turned on here reads as another machine's under a new hostname: ${JSON.stringify(view)}`);
+  assert.deepEqual(await loginForRun(store.settings, data, {}, "claude-agent", { mode: "runner" }), loginAt("agentrun", data), "a run here goes on the login under a new hostname");
+});
+
+test("two data folders are two machines: each gets an id of its own, and a login turned on over one reads as another machine's from the other", async (t) => {
+  const [one, two] = await Promise.all(["one", "two"].map((name) => mkdtemp(join(process.env.TMPDIR ?? tmpdir(), `claude-login-machine-${name}-`))));
+  t.after(() => {
+    for (const data of [one, two]) rmSync(data, { recursive: true, force: true });
+  });
+  const row = settingFor("agentrun", one);
+  const saved = { get: async () => row };
+  assert.deepEqual(await loginForRun(saved, one, {}, "claude-agent", { mode: "runner" }), loginAt("agentrun", one), "the data folder it was turned on over runs on it");
+  assert.equal(await loginForRun(saved, two, {}, "claude-agent", { mode: "runner" }), undefined, "a login turned on over another data folder reads as another machine's");
+  const ids = [one, two].map((data) => readFileSync(join(data, "machine-id"), "utf8").trim());
+  for (const id of ids) assert.match(id, /^[0-9a-f]{32}$/);
+  assert.notEqual(ids[0], ids[1]);
+});
+
+test("the machine's id is a file of the owner's alone (0600) in the data folder, kept across a restart, so the login stays this machine's; a setting saved with a hostname and no id reads as another machine's until turned on again", { timeout: 180_000 }, async (t) => {
+  const fake = await fakeCli(t);
+  withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}` }, MODEL_VARS);
+  const first = await serve(t, { faux: undefined, harnesses: false, runner: false });
+  assert.equal((await first.api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_out");
+  const file = join(first.data, "machine-id");
+  const id = readFileSync(file, "utf8");
+  assert.match(id.trim(), /^[0-9a-f]{32}$/);
+  if (process.platform !== "win32") assert.equal((statSync(file).mode & 0o777).toString(8), "600", "the id file is the owner's alone");
+  await first.stop();
+
+  const second = await serve(t, { faux: undefined, harnesses: false, runner: false, data: first.data });
+  assert.equal((await second.api("GET", "/settings/claude-login")).body.state, "signed_out", "the next start on the same data reads the login as this machine's");
+  assert.equal(readFileSync(file, "utf8"), id, "the next start keeps the id it finds");
+  // A row a server before the id saved names its machine by hostname alone: another machine's, until turned on again.
+  await second.store.settings.put("claude_login", { v: 1, place: "agentrun", host: hostname(), only_me: true });
+  assert.equal((await second.api("GET", "/settings/claude-login")).body.state, "other_machine");
+  assert.equal((await second.api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_out", "turned on again, it is this machine's");
+  assert.equal(readFileSync(file, "utf8"), id);
 });
