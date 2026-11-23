@@ -80,7 +80,14 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
 /** The recommended preset's rules, but its comment filter: a `secretlint-disable` line in what an import reads (a
  *  repository's own config a tool printed, a web page) would switch every rule off for the rest of it. */
 const FILTER_COMMENTS = "@secretlint/secretlint-rule-filter-comments";
-const SECRETLINT = { rules: recommended.filter((rule) => rule.meta.id !== FILTER_COMMENTS).map((rule) => ({ id: rule.meta.id, rule })) };
+/** The scan's config from `rules`, the comment filter left out. None left is refused here, when the module loads: a
+ *  scan with no rules would find nothing in everything an import reads and never say so. */
+export function secretlintConfig<R extends { meta: { id: string } }>(rules: readonly R[]): { rules: { id: string; rule: R }[] } {
+  const kept = rules.filter((rule) => rule.meta.id !== FILTER_COMMENTS).map((rule) => ({ id: rule.meta.id, rule }));
+  if (kept.length === 0) throw new Error("no secretlint rule to scan with: @secretlint/core/builtin's recommendedRules left none");
+  return { rules: kept };
+}
+export const SECRETLINT = secretlintConfig(recommended);
 /** How many passes `secretsIn` has made in this process: for a test that a path makes none. */
 export const secretlintCalls = { count: 0 };
 

@@ -33,7 +33,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { API_ONLY_HOOKED_KINDS, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
+import { API_ONLY_HOOKED_KINDS, API_ONLY_ROUTES, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
 import { RUN_KEYS_ENV } from "./env-switch.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, packageKeysOf, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
@@ -147,7 +147,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { recordDataRoot } from "./runner/disk-free.js";
@@ -1435,6 +1435,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // claude-agent's model checks see a model without a key. Unset, its switch follows the listen address: there on
   // loopback, off past it. A setting kept where the mode is now off or refused goes first.
   const loginOff = claudeLoginSwitchedOff(base, options.host ?? DEFAULT_HOST);
+  // The routes' gate and capabilities' features.claude_login, from one rule (claude-login.ts claudeLoginServed).
+  const loginServed = claudeLoginServed(loginOff, options.apiOnly ? API_ONLY_ROUTES : undefined);
   const loginRefused = whyNotOneOwner({ apiOnly: options.apiOnly === true, tokens: tokens.length });
   await dropRefusedLogin(store.settings, loginOff ?? loginRefused, (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
   let claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
@@ -4414,7 +4416,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!matching.length) throw new ApiError("not_found", path.startsWith("/v2/") ? `no route /v2${path}: /v2 is in it twice. A path an answer gives (upload.url, a Location) starts at the server's root: send it to the server's address, not after the /v2 base.` : `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
-    if (CLAUDE_LOGIN_ROUTES.has(found.name) && loginOff) throw new ApiError("not_found", claudeLoginRouteOff(found.name, loginOff));
+    if (CLAUDE_LOGIN_ROUTES.has(found.name) && !loginServed) throw new ApiError("not_found", loginOff ? claudeLoginRouteOff(found.name, loginOff) : apiOnlyRefusal(`/v2${path}`));
     if (found.name === "getCapabilities") {
       // features.computers: the computer kinds this server offers now (computers.ts), read at each answer, since turning
       // Archil on or off, or saving a key, changes them. So does a shell on the runner (bash on Archil's serverless exec
@@ -4430,7 +4432,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // skew check; left out when the store cannot say (a read that failed).
       const state = await store.schemaState?.().catch(() => undefined);
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
-      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly } });
+      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
