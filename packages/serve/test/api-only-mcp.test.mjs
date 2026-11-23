@@ -611,6 +611,76 @@ test("store: the API-only token's held save over a row the token did not save, w
   assert.equal(await store.settings.get(mcpSourceKey("gw")), undefined, "no record written");
 });
 
+/** A registry over a fresh store, as an API-only server (or, `apiOnly` false, a full one) holds it, its token's origins
+ *  `origins`, and its store's clock. */
+async function registryOn(t, origins, apiOnly = true) {
+  const { McpServersOverStore } = await import("../dist/mcp-servers-store.js");
+  // The store's clock, a test's own to move: a row written later is created later.
+  const clock = { now: Date.UTC(2026, 10, 23) };
+  const { store } = await storeOn(t, { clock });
+  const seal = Buffer.alloc(32, 9);
+  const registry = new McpServersOverStore(store, { AGENTRUN_SEAL_KEY: seal.toString("base64").replace(/=+$/, "") }, "test");
+  registry.attach("http://127.0.0.1:1", "http://127.0.0.1:1", true);
+  registry.apiOnly = apiOnly;
+  registry.tokenOrigins = origins;
+  return { store, seal, registry, clock };
+}
+
+test("store: the API-only token's held save that read a row the token did not save is 412 by its own check, even once the token's own row stands under the name with the credential the gate read: the row and its record stay the token's", async (t) => {
+  const listed = await startFakeMcp();
+  t.after(() => listed.close());
+  const elsewhere = await startFakeMcp();
+  t.after(() => elsewhere.close());
+  const { saveMcpServer } = await import("../dist/mcp-store.js");
+  const { storedSource } = await import("../dist/mcp-sources.js");
+  const { credentialMark } = await import("../dist/mcp-secret-writes.js");
+  const { store, seal, registry, clock } = await registryOn(t, [originOf(listed.url)]);
+  // The row the save reads first: one written by hand (no record), per_run, none sealed.
+  const hand = await saveMcpServer(store, seal, { name: "gw", url: elsewhere.url, auth: "per_run", tools: [] });
+  // Right after that read, the name is the token's own row, at a listed origin, with the same credential (per_run, none
+  // sealed). The store's statement compares the credential and the token's mark on the row it writes, and both hold, so
+  // it would let the write through: the save's own check of the row it read is all that refuses it.
+  const real = store.mcp.server;
+  let mine;
+  store.mcp.server = async (...args) => {
+    store.mcp.server = real;
+    const read = await real.apply(store.mcp, args);
+    await store.mcp.remove("gw");
+    clock.now += 1_000;
+    mine = await saveMcpServer(store, seal, { name: "gw", url: listed.url, auth: "per_run", tools: [] });
+    await store.settings.put(mcpSourceKey("gw"), storedSource({ source: "url", toolkit: "notes" }, mine, false, true, true));
+    return read;
+  };
+  await assert.rejects(registry.save("gw", { url: listed.url, auth: { type: "per_run" } }, undefined, credentialMark(hand), undefined, undefined, undefined, undefined, true), (error) => {
+    assert.equal(error.code, "precondition_failed", error.message);
+    return true;
+  });
+  assert.ok(mine && mine.createdAt !== hand.createdAt, "the token's row took the name between");
+  assert.deepEqual(credentialMark(mine), credentialMark(hand), "with the credential the gate read");
+  const record = await store.settings.get(mcpSourceKey("gw"));
+  assert.deepEqual([record?.by, record?.listed, record?.toolkit, record?.of], ["token", true, "notes", mine.createdAt], "the record stays the token's, listed, as it was written");
+});
+
+test("store: the token's save over its own row saved at a listed origin, on a full server (no list holds it), keeps the row the token's and drops `listed`: no run's start or claim checks its origin from then on", async (t) => {
+  const listed = await startFakeMcp();
+  t.after(() => listed.close());
+  const { saveMcpServer } = await import("../dist/mcp-store.js");
+  const { storedSource, savedAtListedOrigin, savedByToken, tokenOriginRefusal } = await import("../dist/mcp-sources.js");
+  const { credentialMark } = await import("../dist/mcp-secret-writes.js");
+  const { store, seal, registry } = await registryOn(t, [], false);
+  const row = await saveMcpServer(store, seal, { name: "gw", url: listed.url, auth: "per_run", tools: [] });
+  await store.settings.put(mcpSourceKey("gw"), storedSource({ source: "url", toolkit: "notes" }, row, false, true, true));
+  assert.ok(savedAtListedOrigin(await store.settings.get(mcpSourceKey("gw")), row.createdAt));
+  // The token's ordinary save over it on the full server, naming no toolkit: no source of its own to write.
+  await registry.save("gw", { url: listed.url, auth: { type: "per_run" } }, undefined, credentialMark(row), undefined, undefined, undefined, undefined, true);
+  const saved = await store.mcp.server("gw");
+  const record = await store.settings.get(mcpSourceKey("gw"));
+  assert.ok(savedByToken(record, saved.createdAt), "still the token's");
+  assert.equal(savedAtListedOrigin(record, saved.createdAt), false, "no longer marked saved at a listed origin");
+  assert.deepEqual([record.source, record.toolkit, record.listed], ["url", "notes", undefined], "its source and toolkit kept");
+  assert.equal(tokenOriginRefusal(record, { name: "gw", url: saved.url, createdAt: saved.createdAt }, ["https://elsewhere.example"]), undefined, "a list without its origin no longer refuses it");
+});
+
 test("API-only: a Composio save takes no url or headers from its body: each is 422 not_allowed, nothing is sent to Composio or the address", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const elsewhere = await startFakeMcp();
