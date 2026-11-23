@@ -16,6 +16,7 @@ import { parseArgs } from "node:util";
 import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { ALL, FLAGS, MAX_PAGES, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
 import { SECRETS, guarded, refusalExit } from "./login.mjs";
+import { apiBase } from "./target.mjs";
 import { DOCTOR } from "./doctor.mjs";
 import { OPEN, SERVICE, STOP } from "./service.mjs";
 import { SKILL_INSTALL } from "./skill.mjs";
@@ -72,8 +73,9 @@ const HELP = () => {
     "the arguments and passes on its exit code, as git runs git-NAME; a tool adds a command by installing agentrun-NAME.",
     "",
     "The server: --base-url, else AGENTRUN_BASE_URL, else base_url in $XDG_CONFIG_HOME/agentrun/config.json, else the",
-    "server started on this machine with the data directory (--data, default ~/.agentrun). The token: AGENTRUN_API_KEY,",
-    "else api_key in the config file, else that server's own; it is never a flag and never printed. agentrun login",
+    "server started on this machine with the data directory (--data, default ~/.agentrun); /v2 is added to an address",
+    "whose path holds none, its path prefix kept. The token: AGENTRUN_API_KEY, else api_key in the config file (for",
+    "the same address, with or without /v2), else that server's own; it is never a flag and never printed. agentrun login",
     "--base-url URL checks a token read from stdin and writes the config file (0600), or on a terminal signs in with a",
     "device code when the server offers one; agentrun login --to URL (or cloud) signs in with a device code when the",
     "server offers one, else reads the token from stdin; agentrun logout removes it.",
@@ -156,17 +158,16 @@ const alive = (pid) => {
   }
 };
 
-const trim = (url) => url.replace(/\/+$/, "");
-
 /** A base URL as every command takes it: http or https, with no query, fragment, user or password, which would carry
- *  the token elsewhere or swallow the path appended to it. `where` names it in the refusal; the URL itself is never
- *  echoed, as it may hold a password. */
+ *  the token elsewhere or swallow the path appended to it; then its API base (target.mjs apiBase: /v2 added when its
+ *  path holds no v2 segment, the origin unchanged). `where` names it in the refusal; the URL itself is never echoed, as
+ *  it may hold a password. */
 function baseOf(given, where) {
   const url = URL.canParse(given) ? new URL(given) : undefined;
   if (!url || !/^https?:$/.test(url.protocol) || /[?#]/.test(given) || url.username || url.password) {
-    throw usageError(`${where} must be an http or https URL with no query, fragment, user or password: the API's base, ending /v2.`);
+    throw usageError(`${where} must be an http or https URL with no query, fragment, user or password: the server's address, or its API's base ending /v2.`);
   }
-  return trim(given);
+  return apiBase(given);
 }
 
 const isBase = (url) => {
@@ -198,7 +199,9 @@ function targetOf(values, env) {
     : env.AGENTRUN_BASE_URL !== undefined ? baseOf(env.AGENTRUN_BASE_URL, "AGENTRUN_BASE_URL")
     : config.base_url !== undefined ? baseOf(config.base_url, `base_url in ${configFile}`)
     : local;
-  let token = env.AGENTRUN_API_KEY || (config.base_url && base === trim(config.base_url) ? config.api_key : undefined);
+  // The config's token goes only to the API base its address names, by the same rule: kept with or without /v2, the
+  // same server. apiBase changes no origin, so a token never reaches another one.
+  let token = env.AGENTRUN_API_KEY || (config.base_url && base === apiBase(config.base_url) ? config.api_key : undefined);
   const isLocal = base === local;
   if (isLocal && record && !alive(record.pid)) throw new Exit(3, stale);
   if (!token && isLocal) {

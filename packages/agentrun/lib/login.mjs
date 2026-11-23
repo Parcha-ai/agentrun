@@ -169,8 +169,8 @@ export const LOGIN = {
   summary: "Sign in to a server, with a device code when it offers one, else a token read from stdin, and keep the token with the server's address in the config file",
   route: "GET /capabilities, then its device sign-in; else GET /agents?limit=1, to check a token from stdin",
   help: [
-    ["--to URL|cloud", `the server, /v2 added when its address lacks it; cloud is AgentRun cloud (AGENTRUN_CLOUD_URL, else ${CLOUD_URL}). When its capabilities offer a device sign-in, prints an address and a code to approve there, else reads the token from stdin`],
-    ["--base-url URL", "the server's API, ending /v2 (default AGENTRUN_BASE_URL); the token from stdin, or on a terminal a device sign-in when the server offers one"],
+    ["--to URL|cloud", `the server, /v2 added when its address's path holds none; cloud is AgentRun cloud (AGENTRUN_CLOUD_URL, else ${CLOUD_URL}). When its capabilities offer a device sign-in, prints an address and a code to approve there, else reads the token from stdin`],
+    ["--base-url URL", "the server, /v2 added as for --to (default AGENTRUN_BASE_URL); the token from stdin, or on a terminal a device sign-in when the server offers one"],
     ["(stdin)", "the token: agentrun login --base-url URL < FILE"],
   ],
   options: { to: { type: "string" } },
@@ -179,7 +179,7 @@ export const LOGIN = {
     const named = values.to !== undefined;
     const flagged = values["base-url"] !== undefined;
     const given = named ? toUrl(values.to, env) : flagged ? values["base-url"] : env.AGENTRUN_BASE_URL;
-    if (given === undefined) throw cli.fail(2, "agentrun login needs the server: --to URL, --base-url URL (its API, ending /v2) or AGENTRUN_BASE_URL.");
+    if (given === undefined) throw cli.fail(2, "agentrun login needs the server: --to URL, --base-url URL or AGENTRUN_BASE_URL.");
     const base = cli.baseOf(given, named ? "--to" : flagged ? "--base-url" : "AGENTRUN_BASE_URL");
     // The device sign-in, when the server offers one: for --to, and for a server named otherwise when stdin is a
     // terminal, which can hold no token (off one, stdin holds the token, as a script gives it). A SignInError's words
