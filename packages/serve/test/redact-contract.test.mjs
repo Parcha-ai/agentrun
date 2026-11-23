@@ -317,6 +317,63 @@ const CASES = [
     hides: [CUT_KEY.slice(0, 12), CUT_KEY.slice(12, 24)],
     check: Object.fromEntries(["redactedAnswer", "redactedCall"].map((name) => [name, (out) => out.startsWith("alpha words ".repeat(600)) && out.endsWith("omega words ".repeat(600)) && out.includes("[redacted]")])),
   },
+  // What an answer or a call's result shows is read whole for a held value: pieces each cut as they should be can still
+  // show one together. Here a held value holds the cut marker, and its parts stand on either side of a cut made at the
+  // head of the next piece (a held value's, a JWT's), or of an unread run's "[redacted]". The text as it came never holds
+  // it, so only the text returned does. "y " x 4085 and "ab12 " put a piece's edge at 8,175, where a long run starts.
+  ...(() => {
+    const MARK = ["[", "redacted", "]"].join("");
+    const b64url = (text) => Buffer.from(text).toString("base64url");
+    const jwt = [b64url('{"alg":"HS256","typ":"JWT"}'), b64url('{"sub":"1234567890","name":"probe","iat":1516239022}'), "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"].join(".");
+    const lead = "y ".repeat(4085);
+    const tail = "z ".repeat(50);
+    const both = (shown) => ({ redactedAnswer: shown, redactedCall: shown });
+    const run = `${"y ".repeat(100)}Qx${"a".repeat(9000)} next ${tail}`;
+    return [
+      {
+        name: "a held value holding the cut marker, its parts on either side of another held value cut at the next piece's head, withholds the text",
+        text: `${lead}ab12 ${CUT_KEY} cd34 ${tail}`,
+        values: [`ab12${MARK}cd34`, CUT_KEY],
+        hides: [CUT_KEY],
+        exact: both("[redacted]"),
+      },
+      {
+        name: "a held value holding the cut marker, made in one piece, is withheld (control)",
+        text: `see ab12 ${CUT_KEY} cd34 end`,
+        values: [`ab12${MARK}cd34`, CUT_KEY],
+        hides: [CUT_KEY, "ab12"],
+        exact: { ...both("[redacted]"), redactSecrets: "[redacted]", runFile: "[redacted]" },
+      },
+      {
+        name: "a held value holding the cut marker, its parts on either side of a JWT cut at the next piece's head, withholds the text",
+        text: `${lead}ab12 ${jwt} cd34 ${tail}`,
+        values: [`ab12${MARK}cd34`],
+        hides: [jwt.slice(0, 24)],
+        exact: both("[redacted]"),
+      },
+      {
+        name: "a held value around a JWT, split by a space at a piece's edge, the JWT cut as a shape, withholds the text",
+        text: `${lead}ab12 ${jwt} cd34 ${tail}`,
+        values: [`ab12${jwt}cd34`],
+        hides: [jwt.slice(0, 24)],
+        exact: both("[redacted]"),
+      },
+      {
+        name: "a held value holding the cut marker, from the piece before an unread run, its \"[redacted]\" and the next piece, withholds the text",
+        text: run,
+        values: [`yy${MARK}next`],
+        hides: [],
+        exact: both("[redacted]"),
+      },
+      {
+        name: "a held value holding the cut marker whose head is only in an unread run is no held value shown: the text shows with the run as \"[redacted]\"",
+        text: run,
+        values: [`aaaa${MARK}next`],
+        hides: [],
+        exact: both(`${"y ".repeat(100)}[redacted] next ${tail}`),
+      },
+    ];
+  })(),
   // Adversarial texts of the cut read's cap: each is read once, so each comes back as its shape says.
   { name: "adversarial: eyJ x n, no dot", text: fill("eyJ"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ") } },
   { name: "adversarial: eyJ- x n, no dot", text: fill("eyJ-"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ-") } },
