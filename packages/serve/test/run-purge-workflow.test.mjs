@@ -298,6 +298,47 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     assert.equal((await reads("What is seven times six?")).served, digestOf(v1[path]), "v1 still serves after the repeat DELETE");
   });
 
+  // A purge never undoes a later commit by another writer. `first` wrote `answer` v1, promoted; `gone` revised it to v2,
+  // promoted, so v2 served; then a person retired answer (the retire route, on its README.md), so nothing serves it. The
+  // purge of `gone` puts v1's workflow.json back, and answer stays retired: main's README.md reads retired, the view lists
+  // it retired, and a run that fits it is served nothing (no champion lays it again).
+  test(`${kind}: a purge keeps a person's retire made after the purged run's merge: the workflow stays retired on main and in the view, and no run is served it`, { timeout: 300_000 }, async (t) => {
+    const mark = `PURGED-RETIRED-${randomBytes(6).toString("hex")}`;
+    const { api, data, store } = await serve(t, { learning: "on" });
+    onStore(t, data, settingsOf());
+    const first = (await startRun(api, "revoked", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
+    await ended(api, first);
+    const gone = await started(api, "revoked", "What is three?");
+    await ended(api, gone);
+    const path = "workflows/answer/workflow.json";
+    const readme = "workflows/answer/README.md";
+    const [v1, v2] = [answerAt("in whole numbers"), answerAt(mark)];
+    const kept = await learned(data, "revoked", (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: filesOf("in whole numbers") }));
+    const crowned = await learned(data, "revoked", (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: filesOf(mark) }));
+    const at = new Date().toISOString();
+    await store.settings.put("learning.promotions.revoked", { v: 1, items: [
+      { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit: kept },
+      { workflow: "answer", digest: digestOf(v2[path]), at, decided: "promote", reason: "checked: promoted", commit: crowned },
+    ] });
+    const { learnedStatus } = await import("../dist/learn/workflow-draft.js");
+    /** Where answer stands: main's README.md status, the view's status, and the digest a run that fits it is served. */
+    const stands = async (question) => {
+      const text = (await onMain(data, "revoked")).files[readme];
+      const view = (await api("GET", "/agents/revoked/learning")).body.workflows.find(({ name }) => name === "answer");
+      return { readme: text === undefined ? null : learnedStatus(`${text}\n`), view: view?.status ?? null, served: (await servedNow(api, store, "revoked", question)).served };
+    };
+    assert.equal((await servedNow(api, store, "revoked", "What is six?")).served, digestOf(v2[path]), "before the retire, v2 serves");
+    const etag = (await api("GET", `/agents/revoked/learning/files/${encodeURIComponent(readme)}`)).headers.get("etag");
+    const retired = await api("POST", `/agents/revoked/learning/files/${encodeURIComponent(readme)}/retire`, undefined, { "if-match": etag });
+    assert.equal(retired.status, 200, JSON.stringify(retired.body));
+    const want = { readme: "retired", view: "retired", served: null };
+    assert.deepEqual(await stands("What is six times seven?"), want, "after the person's retire, answer reads retired and no run is served it");
+    assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+    const after = (await onMain(data, "revoked")).files;
+    assert.deepEqual({ file: after[path], holds: JSON.stringify(after).includes(mark) }, { file: v1[path], holds: false }, "the purge puts answer's workflow.json back as `first` wrote it, and no file of answer on main holds the purged run's text");
+    assert.deepEqual(await stands("What is seven times six?"), want, "after the purge, answer is still retired: main's README.md and the view read retired, and no run is served it");
+  });
+
   // #3458 (f5567cd095): a purged run that revised a workflow and put its earlier bytes back in a later round: the
   // put-back finds main's files as `first` wrote them, so no byte changes, and the writer still moves to `first`, on the
   // snapshot as written and as rebuilt from main: the file reads 200, a run that fits it is served v1, and a repeat
@@ -616,6 +657,63 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     const write = await decideCheck(deps, "answer", digestOf(v2[path]), bar, { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, (was) => was?.decided === "replaying", replay).then(() => "written", () => "refused");
     const decided = promotionOf((await store.settings.get("learning.promotions.torn")).items, "answer", digestOf(v2[path]))?.decided;
     assert.deepEqual({ run: run.status, write, decided }, { run: 200, write: "refused", decided: "replaying" }, "a gate whose store read fails leaves the run read 200, and the promote write is still refused");
+  });
+
+  // A check whose folder read fails at its decision records no promote. `first` wrote `answer` v1, promoted; `gone`
+  // revised it to v2, and v2's check was at work when `gone` was purged (its replaying record now names the commit the
+  // purge rewrote `gone`'s merge to). The check lands with every input answered alone and agreed, while the agent's
+  // learning store cannot read a file: the decision records no promote of the purged run's revision (it fails and
+  // records nothing, or records a hold). Once the store reads again, the same decision lands a hold and v1 serves.
+  test(`${kind}: a check of a purged run's revision whose folder read fails at its decision records no promote`, { timeout: 120_000 }, async (t) => {
+    const { api, data, store } = await serve(t, { runner: false });
+    onStore(t, data, settingsOf());
+    assert.equal((await api("POST", "/agents", agent("unread", { learning: true }))).status, 201);
+    const revisionId = (await store.agents.get("unread")).currentRevision;
+    for (const runId of ["unread-first", "unread-gone"]) {
+      await store.runs.create({ id: runId, agentId: "unread", revisionId }, { body: launchBody({ input: { content: "Q" }, title: "t", place: { mode: "runner" } }) });
+      await store.runs.update(await store.claim(runId, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 0.1 });
+    }
+    const path = "workflows/answer/workflow.json";
+    const [v1, v2] = [answerAt("in whole numbers"), answerAt("in words")];
+    const kept = await learned(data, "unread", (ws) => learningCommit(ws, { runId: "unread-first", reason: "It learned answer.", files: filesOf("in whole numbers") }));
+    const revised = await learned(data, "unread", (ws) => learningCommit(ws, { runId: "unread-gone", reason: "It revised answer.", files: filesOf("in words") }));
+    const at = new Date().toISOString();
+    const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+    await store.settings.put("learning.promotions.unread", { v: 1, items: [
+      { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit: kept },
+      { workflow: "answer", digest: digestOf(v2[path]), at, decided: "replaying", reason: "checking", check: bar, commit: revised, runs: ["unread-replay-1"], replay_id: "unread-replay" },
+    ] });
+    assert.equal((await api("DELETE", "/runs/unread-gone")).status, 204);
+    assert.deepEqual((await onMain(data, "unread")).files, v1, "main holds answer v1 again");
+
+    const { promotionOf } = await import("../dist/learn/promote.js");
+    const { FolderUnreadable } = await import("../dist/learn/store.js");
+    const { decideCheck } = await import("../dist/runner/promotion.js");
+    const { secretsShown } = await import("../dist/learning.js");
+    const v2Of = async () => promotionOf((await store.settings.get("learning.promotions.unread")).items, "answer", digestOf(v2[path]));
+    // The check's record as its settle reads it after the purge: the commit it names, the one the purge moved it to.
+    const record = await v2Of();
+    assert.equal(record?.decided, "replaying");
+    const extra = { runs: record.runs, replay_id: record.replay_id, commit: record.commit };
+    const learning = learningStoreOf(data, "unread");
+    // The agent's learning store at the decision: its history reads, every file read fails (the store cannot answer).
+    const unreadable = new Proxy(learning, {
+      get(target, key) {
+        if (key === "read") return async () => { throw new FolderUnreadable(false, "the learning store could not be read"); };
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const rows = ["a", "b", "c", "d", "e"].map((one) => ({ of: `unread-input-${one}`, input: "What is six?", agent: "6", outcome: "answered", answer: "6" }));
+    const read = { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 };
+    const decide = (over) => decideCheck({ store, agentId: "unread", log: () => {}, shown: async () => secretsShown([]), learning: over },"answer", digestOf(v2[path]), bar, read, (was) => was?.decided === "replaying", extra).then(() => "written", () => "refused");
+    const write = await decide(unreadable);
+    const decided = (await v2Of())?.decided;
+    assert.ok(decided === "replaying" || decided === "hold", `a check whose folder read fails records no promote of the purged run's revision: the decision was ${write}, and v2's record reads ${decided}`);
+
+    await decide(learning);
+    const promotions = (await api("GET", "/agents/unread/learning/promotions")).body;
+    assert.deepEqual({ decided: (await v2Of())?.decided, champion: promotions.serving.find((line) => line.workflow === "answer")?.champion?.commit ?? null }, { decided: "hold", champion: await mergeAt(data, "unread", "unread-first") }, "once the store reads again, the decision lands a hold for v2, and v1 is still the champion");
   });
 
   // #3458 (0695220cf9), on both stores. A check that outlives its revision's run, with the inputs it did not agree on:
