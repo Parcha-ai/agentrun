@@ -356,6 +356,64 @@ func TestOnTheFakeWaitingForTheDisplayEndsWithTheContext(t *testing.T) {
 	}
 }
 
+// A screen.shot cancelled while the server sits on its GetImage (the fake reads nothing more meanwhile) answers aborted
+// while the server still sits on it, not once the read's own 30 s bound runs out, and lets the display go. Once the
+// server answers again, the next screen.shot on the display reads its own image (the cancelled one's late reply is read
+// past) and the next input.actions runs.
+func TestOnTheFakeACancelledShotAnswersAbortedAndTheNextCallsRun(t *testing.T) {
+	reached, resume := make(chan struct{}), make(chan struct{})
+	images := 0
+	d, act, shot := onFakeDisplay(t, func(f *x11fake.Server) {
+		f.Hold = func(r x11fake.Request) {
+			if r.Opcode == 73 { // GetImage
+				if images++; images == 1 {
+					close(reached)
+					<-resume
+				}
+			}
+		}
+	})
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(resume) }) })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := shot(ctx)
+		done <- err
+	}()
+	select {
+	case <-reached:
+	case err := <-done:
+		t.Fatalf("the shot ended before the fake held its GetImage: %v", err)
+	case <-time.After(patience):
+		t.Fatal("the fake never got the shot's GetImage")
+	}
+	cancel()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(patience):
+		t.Fatal("the cancelled shot did not end")
+	}
+	var e *rpc.Error
+	if !errors.As(err, &e) || e.Kind != rpc.KindAborted {
+		t.Fatalf("the cancelled shot answered %v; want aborted", err)
+	}
+	release.Do(func() { close(resume) })
+	// A shot that answers keeps its PNG in its rpc session, so the next one goes through a server.
+	var next desktop.ShotResult
+	serve(t, d).ok("screen.shot", map[string]any{}, &next)
+	if next.Width != x11fake.Width || next.Height != x11fake.Height || next.Size == 0 {
+		t.Fatalf("the next screen.shot: %+v; want the whole %dx%d screen", next, x11fake.Width, x11fake.Height)
+	}
+	var got any
+	within(t, patience, "the next input.actions", func() { got, err = act(context.Background(), map[string]any{"type": "move", "at": []int{5, 5}}) })
+	if r, ok := got.(desktop.ActionsResult); err != nil || !ok || r.Done != 1 || r.Failed != nil {
+		t.Fatalf("the next input.actions: %+v, %v; want done 1", got, err)
+	}
+}
+
 // fifo makes a FIFO in a fresh directory. Its cleanup opens the FIFO's other end and closes it, so a reader still
 // blocked opening it is let go when the test ends.
 func fifo(t *testing.T) string {
