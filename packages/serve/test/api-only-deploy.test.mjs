@@ -10,13 +10,12 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { feed, posts } from "./feed-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
-import { fakeClock } from "./trigger-support.mjs";
+import { fakeClock, hookServer, portProbe } from "./trigger-support.mjs";
 
 const { apiOnlyTriggerSkipped } = await import("../dist/api-only.js");
 const { NOT_SET_UP } = await import("../dist/runnable.js");
@@ -87,24 +86,6 @@ const SKIPPED = [
   ["triggers.1", "not_an_option", notHere("lead-form", "webhook")],
   ["triggers.2", "not_an_option", notHere("new-mail", "email")],
 ];
-
-/** A backend's launch hook on 127.0.0.1: each firing it is handed kept (headers, body), answered 202. */
-async function hookServer(t) {
-  const got = [];
-  const server = createServer(async (req, res) => {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const body = Buffer.concat(chunks);
-    got.push({ headers: req.headers, body, sent: JSON.parse(body.toString("utf8")) });
-    res.writeHead(202, { "content-type": "application/json" }).end("{}");
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => {
-    server.closeAllConnections();
-    server.close(() => resolve());
-  }));
-  return { url: `http://127.0.0.1:${server.address().port}/agentrun/firings`, got };
-}
 
 /** `check`'s answer once truthy, read every 50 ms for up to 20 s. */
 async function until(check, what) {
@@ -194,7 +175,7 @@ test("an API-only server applies a template, reads its agent and revisions, move
   assert.deepEqual([gone.status, gone.body.error?.code], [410, "purged"], JSON.stringify(gone.body));
 });
 
-test("on an API-only server a template's schedule starts no run when its time passes, on the triggers' own clock; on the whole server it does", { timeout: 60_000 }, async (t) => {
+test("on an API-only server a template's schedule is never armed on the triggers' own clock, so its time passing starts no run; the whole server arms it", { timeout: 60_000 }, async (t) => {
   const apiOnlyClock = fakeClock("2026-06-01T08:00:00Z");
   const wholeClock = fakeClock("2026-06-01T08:00:00Z");
   const apiOnly = await deployServer(t, { apiOnly: true, triggerClock: apiOnlyClock }, NO_MAIL);
@@ -202,17 +183,17 @@ test("on an API-only server a template's schedule starts no run when its time pa
   const hosted = await send(apiOnly, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
   assert.equal(hosted.status, 201, JSON.stringify(hosted.body));
   assert.deepEqual(hosted.body.triggers, [], JSON.stringify(hosted.body.triggers));
-  assert.deepEqual(skippedOf(hosted.body).map(([field]) => field), ["triggers.0", "triggers.1"], "the schedule and the webhook both said");
+  assert.deepEqual(skippedOf(hosted.body).map(([field, reason]) => [field, reason]), [["triggers.0", NOT_SET_UP], ["triggers.1", "not_an_option"]], "the schedule and the webhook both said");
   const own = await send(whole, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
   assert.equal(own.status, 201, JSON.stringify(own.body));
 
+  // The whole server's schedule is armed for its 09:00; a due schedule's run is the trigger tests' (on the same clock).
+  await until(() => wholeClock.timer?.at === Date.parse("2026-06-01T09:00:00Z"), "the whole server never armed its schedule for 09:00");
+  // The API-only server holds no trigger, so its clock holds nothing to fire, and passing 09:00 fires nothing.
+  assert.deepEqual(await apiOnly.store.triggers.list(hosted.body.agent_id), [], "it holds no trigger");
+  assert.equal(apiOnlyClock.timer, null, "nothing armed on its clock");
   apiOnlyClock.to("2026-06-01T09:00:00Z");
-  wholeClock.to("2026-06-01T09:00:00Z");
-  // The whole server's schedule starts its run: the clock reaches it, so this server's would too had it made one.
-  for (const end = Date.now() + 20_000; (await runsOf(whole, own.body.agent_id)).length === 0; await sleep(100)) assert.ok(Date.now() < end, "the whole server's schedule never started its run");
-  await sleep(500);
   assert.deepEqual(await runsOf(apiOnly, hosted.body.agent_id), [], "no run started on the API-only server");
-  assert.deepEqual(await apiOnly.store.triggers.list(hosted.body.agent_id), [], "and it holds no trigger");
 });
 
 test("an API-only dry run plans each trigger as skipped, in the words its apply says them", { timeout: 60_000 }, async (t) => {
@@ -317,17 +298,10 @@ test("off by default: the whole server's apply makes the webhook trigger too, an
 });
 
 test("the profile's apply makes a schedule and a feed with the launch hook alone, and no other source, hook or not, one added later included", () => {
+  // Each kind's reason, without the hook and with it (undefined: made). The words are SKIPPED's, through an apply.
+  const reasons = (kind) => [false, true].map((hooked) => apiOnlyTriggerSkipped("pkg", { name: "one", source: { kind } }, hooked)?.reason);
   for (const kind of [...SOURCE_KINDS, "a-source-added-later"]) {
-    const trigger = { name: "one", source: { kind } };
-    const bare = apiOnlyTriggerSkipped("pkg", trigger, false);
-    const hooked = apiOnlyTriggerSkipped("pkg", trigger, true);
-    if (kind === "schedule" || kind === "feed") {
-      assert.deepEqual(bare, { reason: NOT_SET_UP, message: needsHook("one", kind, "pkg") }, kind);
-      assert.equal(hooked, undefined, `${kind}: made with the hook`);
-    } else {
-      assert.deepEqual(bare, { reason: "not_an_option", message: notHere("one", kind, "pkg") }, kind);
-      assert.deepEqual(hooked, bare, `${kind}: the hook makes it no more`);
-    }
+    assert.deepEqual(reasons(kind), kind === "schedule" || kind === "feed" ? [NOT_SET_UP, undefined] : ["not_an_option", "not_an_option"], kind);
   }
 });
 
@@ -363,7 +337,7 @@ test("an API-only server with the launch hook makes the template's schedule, and
 
   clock.to("2026-06-01T09:00:00Z");
   const [{ headers, body, sent }] = await until(() => hook.got.length && hook.got, "the schedule's firing never reached the backend");
-  assert.equal(verify(secret, headers, body, Date.now()), undefined, "signed with the hook's secret");
+  assert.equal(verify(secret, headers, body, clock.now()), undefined, "signed with the hook's secret, stamped on the triggers' clock");
   assert.deepEqual([sent.agent_id, sent.trigger_id, sent.fired_at], [agent, made.id, "2026-06-01T09:00:00Z"]);
   assert.match(sent.input.content, /^Today's note on tides\./);
   await until(async () => (await server.store.triggers.firing(made.id, sent.firing_id))?.status === "sent", "the firing was never recorded sent");
@@ -376,6 +350,22 @@ test("an API-only server with the launch hook makes the template's schedule, and
   assert.deepEqual(runs.map((run) => run.run_id ?? run.id), [started.body.run_id], "the backend's one run");
   const firing = await server.store.triggers.firing(made.id, sent.firing_id);
   assert.deepEqual([firing.status, firing.runId], ["started", started.body.run_id]);
+});
+
+test("the backend's hook counts the server's POSTs alone: a port probe's GET / before the apply and before the firing is answered 404 and never counted", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T08:00:00Z");
+  const hook = await hookServer(t);
+  const probes = [await portProbe(hook.url)];
+  const server = await deployServer(t, { apiOnly: true, triggerClock: clock, launchHook: { url: hook.url, secret: mintSecret() } }, NO_MAIL);
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const [made] = await server.store.triggers.list(applied.body.agent_id);
+  probes.push(await portProbe(hook.url));
+
+  clock.to("2026-06-01T09:00:00Z");
+  const firing = await until(async () => (await server.store.triggers.firings(made.id)).find((one) => one.status === "sent"), "the firing was never recorded sent");
+  assert.deepEqual(hook.got.map((one) => [one.method, one.headers["webhook-id"]]), [["POST", firing.key]], "the firing's one POST, and no probe");
+  assert.deepEqual(probes, [404, 404], "each probe answered 404");
 });
 
 test("an API-only server with the launch hook makes a feed whose urls are given; one left empty is skipped for want of a feed, as on the whole server", { timeout: 60_000 }, async (t) => {
@@ -392,7 +382,11 @@ test("an API-only server with the launch hook makes a feed whose urls are given;
 });
 
 test("an API-only server with the launch hook unarchives an agent: the schedule its archive turned off is on again, as no trigger route is served to turn it on", { timeout: 60_000 }, async (t) => {
-  const server = await deployServer(t, { apiOnly: true, launchHook: { url: (await hookServer(t)).url, secret: mintSecret() } }, NO_MAIL);
+  // The triggers' own clock: no time of the schedule comes due on the wall clock while the test runs, and the one it
+  // drives is settled before the test ends, so the teardown never closes the hook under a firing.
+  const clock = fakeClock("2026-06-01T08:00:00Z");
+  const hook = await hookServer(t);
+  const server = await deployServer(t, { apiOnly: true, triggerClock: clock, launchHook: { url: hook.url, secret: mintSecret() } }, NO_MAIL);
   const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   const agent = applied.body.agent_id;
@@ -404,6 +398,12 @@ test("an API-only server with the launch hook unarchives an agent: the schedule 
   assert.deepEqual(back.body.triggers_off, [], JSON.stringify(back.body));
   const [schedule] = await server.store.triggers.list(agent);
   assert.deepEqual([schedule.name, schedule.enabled, schedule.disabled ?? null, typeof schedule.nextAt], ["morning", true, null, "number"], JSON.stringify(schedule));
+
+  // On again: its next time is handed to the backend, and the firing is settled before the test ends.
+  clock.to("2026-06-01T09:00:00Z");
+  const [{ sent }] = await until(() => hook.got.length && hook.got, "the schedule's firing never reached the backend");
+  await until(async () => (await server.store.triggers.firing(schedule.id, sent.firing_id))?.status === "sent", "the firing was never recorded sent");
+  assert.deepEqual([hook.got.length, sent.trigger_id, sent.fired_at], [1, schedule.id, "2026-06-01T09:00:00Z"]);
 });
 
 test("an API-only unarchive names a feed trigger that its first check turned off again: what is off is read after each turn-on, never assumed", { timeout: 60_000 }, async (t) => {

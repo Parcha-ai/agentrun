@@ -30,6 +30,7 @@ import {
 import { Agent37Provider } from "../dist/agent37.js";
 import { MorphProvider } from "../dist/morph.js";
 import { BoxdProvider } from "../dist/boxd.js";
+import { GroundboxProvider } from "../dist/groundbox.js";
 import { keyPair } from "./fake-agent37.mjs";
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
@@ -144,9 +145,11 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual([extra.fly.prepareImage, extra.fly.local], [true, undefined]);
 	// smol cloud machines start from the same tag, which smol cloud pulls at each create.
 	assert.deepEqual([extra.smolcloud.prepareImage, extra.smolcloud.local], [true, undefined]);
+	// Groundbox sandboxes start from the same tag, which Groundbox turns into a disk at the first create.
+	assert.deepEqual([extra.groundbox.prepareImage, extra.groundbox.local], [true, undefined]);
 	for (const [id, fields] of Object.entries(extra)) {
 		if (!["modal", "e2b", "daytona"].includes(id)) assert.equal(fields.settings, undefined, id);
-		if (!["docker", "agent37", "modal", "e2b", "boxd", "morph", "cloudflare", "fly", "smolcloud"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
+		if (!["docker", "agent37", "modal", "e2b", "boxd", "morph", "cloudflare", "fly", "smolcloud", "groundbox"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
 		if (!["local-chrome", "browserbase", "kernel", "phone-harness"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
@@ -158,7 +161,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(PROVIDERS.find((entry) => entry.id === "docker").kinds, ["sandbox", "desktop"]);
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["morph", "boxd"]) assert.deepEqual(mounts[id], ["sync"], id);
+	for (const id of ["morph", "boxd", "groundbox"]) assert.deepEqual(mounts[id], ["sync"], id);
 	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome", "smolcloud"]) assert.deepEqual(mounts[id], [], id);
 });
 
@@ -189,6 +192,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		"local-chrome": { browser: browser.BROWSER_IMAGE },
 		// A desktop has none: it starts from the snapshot prepareImage() builds.
 		boxd: { sandbox: all.BOXD_DEFAULT_IMAGE },
+		groundbox: undefined,
 	};
 	for (const [id, images] of Object.entries(expected)) {
 		assert.deepEqual(PROVIDERS.find((entry) => entry.id === id)?.defaultImage, images, `${id}: its default images are its modules' constants`);
@@ -199,9 +203,10 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		["default", "agent37-base", "linux", "android", "chromium"],
 	);
 	assert.equal(all.BOXD_DEFAULT_IMAGE, "default");
-	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE). Agent37, Modal, E2B and Morph have none: each
-	// prepares the box image (prepareImage).
-	for (const id of ["docker", "agent37", "modal", "e2b", "morph"]) assert.equal(PROVIDERS.find((entry) => entry.id === id).defaultImage, undefined, id);
+	assert.equal(all.GROUNDBOX_OWN_IMAGE, "default");
+	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE). Agent37, Modal, E2B, Morph and Groundbox have
+	// none: each prepares the box image (prepareImage).
+	for (const id of ["docker", "agent37", "modal", "e2b", "morph", "groundbox"]) assert.equal(PROVIDERS.find((entry) => entry.id === id).defaultImage, undefined, id);
 	assert.equal("MODAL_DEFAULT_IMAGE" in all, false, "no Modal default image: its prepareImage() answers the box image");
 	for (const name of ["E2B_BASE_TEMPLATE", "E2B_DESKTOP_TEMPLATE"]) assert.equal(name in all, false, `no ${name}: E2B's prepareImage() answers the box template`);
 });
@@ -341,6 +346,7 @@ const BUILT = {
 	// Each configuration built by its own create() options, as serve builds the one a setting's image selects.
 	morph: [() => new MorphProvider({ apiKey: "fake-test-key", ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })],
 	boxd: PROVIDERS.find((one) => one.id === "boxd").capabilities.map(({ options }) => () => new BoxdProvider({ ...options, apiKey: "fake-test-key", Boxd: BOXD_SDK })),
+	groundbox: PROVIDERS.find((one) => one.id === "groundbox").capabilities.map(({ options }) => () => new GroundboxProvider({ ...options, apiKey: "fake-test-key", fetch: async () => new Response(null, { status: 500 }), webSocket: () => assert.fail("a command stream was opened") })),
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 

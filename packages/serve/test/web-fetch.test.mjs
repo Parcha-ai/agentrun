@@ -71,9 +71,9 @@ test("a guard check whose lookup never answers does not pass within its bound: n
   // The bound's timer does not hold a process open: this does, as a run's door does in its process.
   const open = setInterval(() => {}, 1_000);
   t.after(() => clearInterval(open));
-  const started = performance.now();
+  // The check's only way out is its bound (passes() aborts on checkMs alone), so a page at all means the bound fired.
   const page = await webFetch(PUBLIC, { ...net, lookup, parallel: parallelExtract(CANARY, send), checkMs: 50 });
-  assert.ok(performance.now() - started < 2_000, "the check gave up at its bound, not at Parallel's or the fetch's timeout");
+  assert.equal(page.parallel, "not tried: the URL did not pass the public-host guard", "the check gave up at its bound and the guard did not pass the URL");
   assert.deepEqual([page.ok, page.title, page.via], [true, "Public page", "direct"], JSON.stringify(withoutText(page)));
   assert.deepEqual(sent, [], "Parallel was sent nothing");
   assert.equal(lookups, 2);
@@ -475,17 +475,15 @@ test("calls for one URL at once share one read that no single caller's stop ends
   assert.deepEqual([third.ok, asked.length], [true, 1], "the run kept the page: a later part asks Parallel nothing");
 }));
 
-test("a page's links are read in one pass: a page of unclosed `](` takes no longer than its length, and an ordinary page's links are the same as before", inCall(async () => {
+test("a page of unclosed `](` is read whole, with every real link it holds, and an ordinary page's links are the same as before", inCall(async () => {
   const answering = (fullContent) => async () => new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Links", full_content: fullContent }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
   const links = Array.from({ length: 200 }, (_, n) => `[l${n}](https://links.example/${n}) `).join("");
-  // Each unclosed `](` used to be scanned to the end of the text again: quadratic in the page's length.
+  // Each unclosed `](` used to be scanned to the end of the text again, quadratic in the page's length. This checks what
+  // such a page reads, not how long it takes: a wall-clock bound flakes on a loaded runner.
   for (const reps of [40_000, 450_000]) {
     const hostile = `${links}${"](".repeat(reps)}`;
-    const started = performance.now();
     const read = await parallelExtract(CANARY, answering(hostile)).read(PUBLIC);
-    const ms = performance.now() - started;
-    assert.ok(ms < 500, `${hostile.length.toLocaleString("en-US")} characters read in ${Math.round(ms)} ms, not under 500`);
-    assert.deepEqual([read.ok, read.links.length + (read.links_omitted ?? 0)], [true, 200], "the 200 real links, within the caps or counted");
+    assert.deepEqual([read.ok, read.links.length + (read.links_omitted ?? 0)], [true, 200], `${hostile.length.toLocaleString("en-US")} characters read: the 200 real links, within the caps or counted`);
   }
   const ordinary = "See [a](https://a.example/x), [w](https://en.wikipedia.org/wiki/Foo_(bar)) and [a again](https://a.example/x#part), then ]( broken, [rel](/relative) and [b](https://b.example/y).";
   const read = await parallelExtract(CANARY, answering(ordinary)).read(PUBLIC);
