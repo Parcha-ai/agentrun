@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { stringify } from "yaml";
 import { LOOPBACK } from "./mcp-oauth.js";
-import { MANIFEST, memoryFiles, onServerNames, type Package, PackageError, readPackage } from "./templates.js";
+import { INPUT_KEYS, ITEM_KEYS, MANIFEST, memoryFiles, onServerNames, type Package, PackageError, readPackage } from "./templates.js";
 import { isMcpName, isMonidName, mcpToolName, parseToolName } from "./tool-names.js";
 import { isPinKeys, permissionKeys, SHELL_FAMILY } from "./tool-gate.js";
 import { toolOf } from "./tools.js";
@@ -21,7 +21,7 @@ import { PAIRED_ID_PREFIX } from "./workspace/attached-computers.js";
 export type PackageFile = { path: string; encoding: "utf8" | "base64"; content: string };
 /** What an export's note can be about: the document's enum of them (openapi.ts), so a note of a kind not here fails the
  *  build, and an answer the document does not list fails its schema check. */
-export const EXPORT_NOTE_KINDS = ["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "secrets", "input_schema", "budget", "package"] as const;
+export const EXPORT_NOTE_KINDS = ["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"] as const;
 /** One thing an export could not carry as it is here: what it is, which one, and why, in words. */
 export type ExportNote = { kind: (typeof EXPORT_NOTE_KINDS)[number]; name: string; reason: string };
 export type AgentPackage = { name: string; files: PackageFile[]; sha256: string; report: { blocked: ExportNote[]; remade: ExportNote[] } };
@@ -33,8 +33,8 @@ export type ExportInput = {
   definition: Json;
   /** The revision's skill files, by path under the agent's skills folder. */
   skills: Readonly<Record<string, string>>;
-  /** The package the agent was applied from (agentView's `template`) with the key names its apply kept (absent on a
-   *  revision applied before they were kept), and that package as this server holds it now. */
+  /** The package the agent was applied from (agentView's `template`) with the key names its apply kept, and that package
+   *  as this server holds it now. */
   template: { id: string; version: string; secrets?: readonly string[] } | null;
   origin: Package | undefined;
   servers: ReadonlyMap<string, SavedServer>;
@@ -67,9 +67,8 @@ const REMADE_TRIGGERS: Record<string, string> = {
   email: "An email trigger receives at an address the target gives it: point the sender at the new one.",
 };
 
-/** The input fields' keys in the order a package writes them (templates.ts INPUT_KEYS), and a list's items'. */
-const FIELD_KEYS = ["type", "title", "description", "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "enum", "examples", "default"];
-const ITEM_KEYS = ["type", "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "enum"];
+/** An input field's own keys, in the order a package writes them: `required` and `items` are written after them. */
+const FIELD_KEYS = INPUT_KEYS.filter((key) => key !== "required" && key !== "items");
 const pick = (from: Json, keys: readonly string[]): Json => Object.fromEntries(keys.flatMap((key) => (from[key] !== undefined ? [[key, from[key]]] : [])));
 
 /** Each field of `value`, a part of the agent an export copies as it is, that holds a credential in the clear, as its
@@ -102,7 +101,6 @@ export function agentPackage(input: ExportInput): AgentPackage {
   const remade: ExportNote[] = [];
   // Its name: the template's it was applied from, else the agent's own as a package name.
   const pkgName = origin?.name || (template ? slug(template.id.split(/[/:]/).at(-1) ?? "") : "") || slug(agent.name) || slug(agent.id) || "agent";
-  const sameVersion = !!origin && !!template && origin.version === template.version;
   const settings = (isObject(definition.tool_settings) ? definition.tool_settings : {}) as Record<string, Json>;
   // Denied as the gate reads the agent's own settings: a shell tool by bash's, then the most specific key set (the tool's
   // own, else its MCP server's or monid provider's wildcard).
@@ -289,12 +287,8 @@ export function agentPackage(input: ExportInput): AgentPackage {
   const inputSchema = isObject(definition.input_schema) ? definition.input_schema : undefined;
   const inputs = inputSchema && inputsOf(inputSchema);
   if (inputSchema && !inputs) blocked.push({ kind: "input_schema", name: "inputs", reason: "Its input schema is not a closed object of fields, which is what a package's inputs are." });
-  // The keys its package declared, as its apply kept them; for a revision applied before they were kept, the package as
-  // this server holds it, which names them only while it is the same version.
-  const declared = template?.secrets ?? (sameVersion ? origin!.secrets : []);
-  const secrets = [...new Set([...declared, ...((plain ?? []).some(isMonidName) ? ["MONID_API_KEY"] : [])])].sort();
-  // Such a revision of a package updated or removed since its apply: the keys it was applied with are unknown here.
-  if (template && !template.secrets && !sameVersion) remade.push({ kind: "secrets", name: template.id, reason: `The keys version ${template.version} of ${template.id} names are not known here: ${origin ? `this server holds version ${origin.version}` : "this server no longer holds it"}. Save the keys the agent uses on the target, and name them under secrets in ${MANIFEST}.` });
+  // The keys its package declared, as its apply kept them.
+  const secrets = [...new Set([...(template?.secrets ?? []), ...((plain ?? []).some(isMonidName) ? ["MONID_API_KEY"] : [])])].sort();
   const bash = settings.bash?.policy;
   // Bash's policy holds every shell tool, and a package writes it only beside bash: a shell tool kept without bash would
   // run there what the policy refuses here.

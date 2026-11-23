@@ -3026,13 +3026,13 @@ class GetAgentPackageResponseReport(TypedDict):
 
 
 class GetAgentPackageResponseReportBlockedItem(TypedDict):
-    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "secrets", "input_schema", "budget", "package"]
+    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"]
     name: str
     reason: str
 
 
 class GetAgentPackageResponseReportRemadeItem(TypedDict):
-    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "secrets", "input_schema", "budget", "package"]
+    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"]
     name: str
     reason: str
 
@@ -8612,6 +8612,7 @@ class ApplyTemplateResponseObject12Plan(TypedDict):
     action: Literal["create", "revise"]
     agent_id: str | None
     current_revision_id: str | None
+    twins: list[str]
     missing_secrets: list[str]
     unmatched_mcp: list[ApplyTemplateResponseObject12PlanUnmatchedMcpItem]
     triggers: list[ApplyTemplateResponseObject12PlanTriggersItem]
@@ -8631,6 +8632,7 @@ class _ApplyTemplateResponseObject12PlanTriggersItemRequired(TypedDict):
 
 
 class ApplyTemplateResponseObject12PlanTriggersItem(_ApplyTemplateResponseObject12PlanTriggersItemRequired, total=False):
+    code: Literal["not_set_up_here", "not_an_option"]
     reason: str
 
 

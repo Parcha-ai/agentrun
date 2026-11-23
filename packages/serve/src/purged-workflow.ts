@@ -1,16 +1,12 @@
 // What a purged run (DELETE /v2/runs/{id}, agent-delete.ts purgeRun) answers, and the one rule for a learned workflow
-// whose text it wrote: its purge takes it off main (learn/commit.ts forgetRunText), and every read at a past commit
-// refuses it, so it is never served or executed.
-//   - The learned file read (GET .../learning/files/workflows/<name>/workflow.json) of one still on main (its run
-//     purged before purges took it off) is 410 purged with the run's tombstone, as every route of the run is (purgedRun).
-//   - The champion read by digest (GET .../learning/promotions) reads no commit for it.
-//   - A later merge's diff (GET /runs/{id}/learning/diff) serves that file against nothing: never the purged text.
-//   - An SDK start sent again (sdk/runs.ts receipt) whose receipt pinned it is 410 purged, as the file read.
-//   - A run's seed (learning.ts seedAt) leaves it out, so no claim lays, checks, replays or serves it, and a champion
-//     read at its commit finds none: the run goes on as it does when no champion serves.
+// whose text it wrote: its purge puts back the version before it, or takes it off main when it wrote it new
+// (learn/commit.ts forgetRunText), and every read of the folder at a commit asks purgeGate, so a purged run's text is
+// never served or executed and none of its merges is shown.
 import { ApiError } from "./errors.js";
-import type { Snapshot } from "./learn/folder.js";
+import { type LearningFolder, type SnapChange, type Snapshot, snapshotAt } from "./learn/folder.js";
+import type { PromotionRecord, Refused } from "./learn/promote.js";
 import type { RunRow, Store } from "./store/index.js";
+import type { Workspace } from "./workspace/index.js";
 
 const isoOrNull = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
 /** 410 purged for a route of a purged run (Runs.purge): its tombstone, what is kept of it. `tools_usd`: its paid tools'
@@ -26,19 +22,75 @@ export function purgedRun(row: RunRow): ApiError {
   });
 }
 
-/** The learned workflows of `snapshot` (main's, or a commit's: learn/folder.ts snapshotAt, folderAt) whose
- *  workflow.json a purged run wrote, by name, each with that run's row. Its writer is the snapshot's own
- *  (SnapLearned.run): the run of the newest commit that changed the file, read from the commits' Run-Id trailers over
- *  main's whole history, never only the log's newest LOG_KEEP changes; purged by its row's purge time. The one answer
- *  every read of a learned workflow's text asks. */
-export async function purgedWorkflows(snapshot: Snapshot | undefined, store: Pick<Store, "runs">): Promise<ReadonlyMap<string, RunRow>> {
-  const writers = new Map<string, string>();
-  for (const item of snapshot?.workflows ?? []) if (item.run) writers.set(item.name, item.run);
-  const rows = new Map(await Promise.all([...new Set(writers.values())].map(async (run) => [run, await store.runs.get(run)] as const)));
-  const purged = new Map<string, RunRow>();
-  for (const [name, run] of writers) {
-    const row = rows.get(run);
-    if (row && row.purgedAt !== null) purged.set(name, row);
-  }
-  return purged;
+/** Which of `runIds` are purged, each with its row: by its row's purge time. One store read per run. */
+export async function purgedRows(store: Pick<Store, "runs">, runIds: Iterable<string>): Promise<ReadonlyMap<string, RunRow>> {
+  const rows = await Promise.all([...new Set(runIds)].map((run) => store.runs.get(run)));
+  return new Map(rows.flatMap((row) => (row && row.purgedAt !== null ? [[row.id, row] as const] : [])));
 }
+
+/** The one gate every read of the learning folder at a commit goes through, main's or a past commit's (learn/folder.ts
+ *  snapshotAt, folderAt): the view, the log and a workflow's revisions, a merge's diff, a run's seed (learning.ts seedAt)
+ *  and the champion read by digest, an SDK start's receipt, and a compile ask (runner/learning-end.ts compileAskOf).
+ *  `workflows`: each learned workflow of `snapshot` whose workflow.json a purged run wrote (SnapLearned.run: the run of
+ *  the newest commit that changed the file, over main's whole history, which a purge's put-back hands to the run that
+ *  wrote those bytes), by name, with that run's row; no read lays, checks, replays, serves or shows it. `served`, read
+ *  only when `log` is asked: whether a change of the snapshot's log is served (no purged run's merge is), so a log the
+ *  folder rebuilds names one and still serves none. */
+export async function purgeGate(snapshot: Snapshot | undefined, store: Pick<Store, "runs">, log = false): Promise<{ workflows: ReadonlyMap<string, RunRow>; served: (change: SnapChange) => boolean }> {
+  const writers = new Map((snapshot?.workflows ?? []).flatMap((item) => (item.run ? [[item.name, item.run] as const] : [])));
+  const logged = log ? (snapshot?.log ?? []).flatMap(({ by }) => ("run" in by ? [by.run] : [])) : [];
+  const purged = await purgedRows(store, [...writers.values(), ...logged]);
+  const workflows = new Map([...writers].flatMap(([name, run]) => (purged.has(run) ? [[name, purged.get(run)!] as const] : [])));
+  return {
+    workflows,
+    served: ({ by }) => {
+      if (!log) throw new Error("the purge gate was not asked for the log");
+      return !("run" in by && purged.has(by.run));
+    },
+  };
+}
+
+/** The promotion records of `workflows` that championOf skips (learn/promote.ts Refused), read through purgeGate at
+ *  each record's commit of the learning folder at `ws`: newest promotion first, whatever its digest's newest decision
+ *  (a champion held since included: skipping it may leave an earlier one serving), one the gate refuses at its commit (a
+ *  purged run wrote its workflow there) is skipped with every record of its workflow at that commit (by workflow and
+ *  commit, so a copy of the records read later is skipped alike, a hold of it included), until the newest promotion left
+ *  is one the gate lets through, or none is left. The holds are walked the same way, newest first: a hold at a commit the
+ *  gate refuses (a check that ended after its revision's run was purged holds it there) is skipped with its commit's
+ *  records, until the newest hold left is one the gate lets through, so the compile's held names (learn/compile.ts
+ *  heldNamesOf) never ask a revision of a purged run's text. A record with no commit is let through, and so is a commit
+ *  the folder no longer has (reading its text fails on its own). A commit whose read throws refuses none here and is said
+ *  (Refused.unread), so the promotions trim trims nothing on it (recordPromotion); a store read of the gate's that throws
+ *  throws, so every write that asks fails closed. One read-only exec per commit asked. */
+export async function refusedOf(records: readonly PromotionRecord[], workflows: Iterable<string>, ws: Workspace, store: Pick<Store, "runs">): Promise<Refused> {
+  const refused = new Set<string>();
+  const skip = (one: PromotionRecord) => one.commit !== undefined && refused.has(`${one.workflow}\0${one.commit}`);
+  let unread = false;
+  const reads = new Map<string, Promise<ReadonlyMap<string, RunRow>>>();
+  const gated = (commit: string) => reads.get(commit) ?? reads.set(commit, snapshotAt(ws, commit).then(async (at) => (await purgeGate(at, store)).workflows, () => {
+    unread = true;
+    return new Map<string, RunRow>();
+  })).get(commit)!;
+  const newestOf = (workflow: string, decided: PromotionRecord["decided"]) => records.findLast((one) => one.workflow === workflow && one.decided === decided && !skip(one));
+  for (const workflow of new Set(workflows)) {
+    for (const decided of ["promote", "hold"] as const) {
+      for (let last = newestOf(workflow, decided); last?.commit && (await gated(last.commit)).has(workflow); last = newestOf(workflow, decided)) {
+        refused.add(`${workflow}\0${last.commit}`);
+      }
+    }
+  }
+  return Object.assign(skip, { unread });
+}
+
+/** refusedOf in the learning folder `folder` opens for each ask (ended after it), over `workflows` (every workflow of
+ *  the records when absent): the port a champion's readers and the promotions trim ask (runner/promotion.ts
+ *  PromotionDeps refused, learn/promote.ts recordPromotion). An end() that throws is said to `log` (when given) and never
+ *  fails the ask: the answer was read. */
+export const refusedIn = (folder: () => Pick<LearningFolder, "workspace" | "end">, store: Pick<Store, "runs">, log?: (line: string) => void) => async (records: readonly PromotionRecord[], workflows?: Iterable<string>): Promise<Refused> => {
+  const { workspace, end } = folder();
+  try {
+    return await refusedOf(records, workflows ?? records.map((one) => one.workflow), workspace, store);
+  } finally {
+    await end().catch((error: unknown) => log?.(`learning: the learning folder did not end after the purge gate's ask: ${error instanceof Error ? error.message : String(error)}`));
+  }
+};
