@@ -15,7 +15,8 @@ const HTTP_LOOPBACK = new Set(["127.0.0.1", "[::1]"]);
 /** Whether `hostname` (as URL writes it) is this machine's loopback, for an entry's switch. */
 const onLoopback = (hostname: string): boolean => hostname === "localhost" || hostname.endsWith(".localhost") || /^127\./.test(hostname) || hostname === "[::1]";
 
-const SHAPE = "each https://host[:port], or one http://127.0.0.1:<port> or http://[::1]:<port>, comma-separated, with no path, query, fragment, user or wildcard";
+// Each form in words, never as a loopback URL: this text ships in the package, whose check refuses one.
+const SHAPE = "each https://host[:port], or one loopback origin (http on 127.0.0.1 or [::1], with its port), comma-separated, with no path, query, fragment, user or wildcard";
 
 /** One entry's origin (URL's own normalising: scheme and host lowercased, a default port dropped), or why it is none. */
 function entryOrigin(entry: string): { origin: string; loopback: boolean } | { why: string } {
@@ -30,7 +31,7 @@ function entryOrigin(entry: string): { origin: string; loopback: boolean } | { w
   if (!url) return { why: "is not a URL" };
   if (url.protocol === "https:") return { origin: url.origin, loopback: onLoopback(url.hostname) };
   if (!HTTP_LOOPBACK.has(url.hostname)) return { why: "is http to a host other than 127.0.0.1 or [::1]: use https" };
-  if (!/:\d+$/.test(authority)) return { why: "is http on loopback without its port: name it (http://127.0.0.1:<port>)" };
+  if (!/:\d+$/.test(authority)) return { why: "is http on loopback without its port: name its port" };
   return { origin: url.origin, loopback: true };
 }
 

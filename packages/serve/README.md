@@ -438,7 +438,7 @@ AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use`
 | `AGENTRUN_PRIVATE_HOSTS` | Bounds the private-network hosts an owner may allow an MCP server or a calendar on (Settings → MCP servers): `none` allows none (and only an empty list can be saved), or a comma list of address ranges (`10.20.0.0/16,fd12:3456::/32`) every listed host's address must also fall in. Loopback, link-local (cloud metadata) and this machine's addresses stay refused whatever it says. A value that is neither reads as `none` | unset: the owner's list holds | On a server or runner many customers share, an owner's list would reach the operator's own private network: set `none` there, on the server and on each runner (each process holds to its own) |
 | `AGENTRUN_BOX_ALLOW` | The hosts a run's computer may reach: a comma list, or `none` ([A run in a Docker box](#a-run-in-a-docker-box)) | the package registries and GitHub | A run's network is the operator's policy, not a caller's |
 | `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS` | A Docker computer's size ([Computers](#computers)) | 2 CPUs, 4 GiB, 1,024 processes | The machine's capacity is the operator's |
-| `AGENTRUN_MCP_TOKEN_ORIGINS` | The exact origins an [API-only](#api-only) server's token may save a `per_run` MCP server at: `https://host[:port]` entries, plus one `http://127.0.0.1:<port>` that counts only with `AGENTRUN_MCP_ALLOW_LOOPBACK=1` | none | Where the token's saved servers may be reached is the operator's, never the token's: each run's start checks it again, and each runner checks its own at each claim, so set the same list there |
+| `AGENTRUN_MCP_TOKEN_ORIGINS` | The exact origins an [API-only](#api-only) server's token may save a `per_run` MCP server at: `https://host[:port]` entries, plus one loopback origin (http on `127.0.0.1` or `[::1]`, with its port) that counts only with `AGENTRUN_MCP_ALLOW_LOOPBACK=1` | none | Where the token's saved servers may be reached is the operator's, never the token's: each run's start checks it again, and each runner checks its own at each claim, so set the same list there |
 
 On a server the installer runs as a service, `agentrun service install --env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env
 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` saves the two yes-or-no switches in the service and restarts it; `--env KEY=` takes
@@ -3379,8 +3379,8 @@ serves these routes alone:
   - a server at an address (`PUT /settings/mcp-servers/{name}`) is saved with `"auth": {"type": "per_run"}` alone: it
     keeps no credential, and each run hands its own (`mcp_auth`). Any other `auth.type`, or none, is `403`. Its URL's
     origin (scheme, host and port) must be exactly one listed in `AGENTRUN_MCP_TOKEN_ORIGINS`, the operator's
-    comma-separated list of `https://host[:port]` origins, plus at most one `http://127.0.0.1:<port>` (or
-    `http://[::1]:<port>`) that counts only with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. An entry with a path, query,
+    comma-separated list of `https://host[:port]` origins, plus at most one loopback origin (http on `127.0.0.1` or
+    `[::1]`, with its port) that counts only with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. An entry with a path, query,
     fragment, user or wildcard stops the start, in words. Unset, nothing is listed, and every such save is refused.
     An address at any other origin (a lookalike host, another port, a path or query that names a listed one) is
     `422 not_an_option` under `url`, and the refusal names no listed origin. The save's `toolkit` is recorded, so a
