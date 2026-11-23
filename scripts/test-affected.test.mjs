@@ -130,7 +130,7 @@ test('a fixture read by a built path is picked by the tests that name it, as a f
 
 test("the folders written before a file's name are its own, computed or impossible to place; a folder of another name is another file's", () => {
   const folders = ['packages', 'a', 'test', 'fixtures'];
-  for (const before of ['', "join(here, '", 'see fixtures/', 'a/test/fixtures/', '/home/x/repo/packages/a/test/fixtures/', './', '../', '../fixtures/', '`${dir}/', 'test/${kind}/', "dir + '/"]) {
+  for (const before of ['', "join(here, '", 'see fixtures/', 'a/test/fixtures/', '/work/repo/packages/a/test/fixtures/', './', '../', '../fixtures/', '`${dir}/', 'test/${kind}/', "dir + '/"]) {
     assert.equal(ownFolders(before, folders), true, JSON.stringify(before));
   }
   for (const before of ['other/', '../other/', 'upstream/fixtures/', 'vendor/${name}/', 'b/test/fixtures/', '(spec/fixtures/']) {
