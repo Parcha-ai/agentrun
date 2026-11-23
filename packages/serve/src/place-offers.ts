@@ -10,6 +10,7 @@
 // provider requires are set (the server's environment, else saved in Settings → Computers), and are not asked anything
 // at the start: a key the vendor refuses fails the run's computer start, in the vendor's words.
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { PROVIDERS } from "@parcha/agentrun-computer";
@@ -93,6 +94,41 @@ const ownGroups = () => {
   } catch {}
   return { file: "/etc/group", user, ids: process.getgroups?.() ?? [] };
 };
+/** Why docker is unavailable to a server in a container that has no Docker socket: the one-container `docker run` and
+ *  deploy/'s compose file give it none, so it asks a daemon that is not there. Starting Docker or joining its group
+ *  would not help: compose.yaml at the repository's root mounts the host's socket. */
+export const DOCKER_NO_SOCKET = "This server runs in a container with no Docker socket, so its agents get file tools and web_fetch but no shell: for a shell in Docker sandboxes, start AgentRun with `docker compose up -d` from compose.yaml at the repository's root, which gives it the socket";
+/** The same, for a container given the socket and refused it: the group compose.yaml adds (DOCKER_GID) is not the
+ *  socket's. usermod in the container would not last past its restart. */
+export const DOCKER_SOCKET_GROUP = "This server's container may not use the Docker socket: set DOCKER_GID in .env to the socket's group, as compose.yaml says, then run `docker compose up -d` again";
+
+/** Whether this server runs in a container (/.dockerenv, Podman's /run/.containerenv), and how it tells whether a path
+ *  is there (`exists`: the socket a failed probe names). What a failed probe says to do. */
+export type ContainerFacts = { inside: boolean; exists?: (path: string) => boolean };
+const ownContainer = (): ContainerFacts => ({ inside: existsSync("/.dockerenv") || existsSync("/run/.containerenv") });
+/** The daemon address docker names when it cannot connect ("Cannot connect to the Docker daemon at unix:///….sock."):
+ *  the one its DOCKER_HOST or current context resolved to. Matched, never shown. */
+const DAEMON_AT = /docker daemon at ([a-z]+:\/\/\S+?)\.?(?:\s|$)/i;
+/** Whether the socket a failed probe asked is there: the unix socket docker named (DAEMON_AT); any other address (tcp,
+ *  ssh) is one; with none named, DOCKER_HOST or DOCKER_CONTEXT is one, else the default /var/run/docker.sock. */
+function socketThere(endpoint: string | undefined, env: NodeJS.ProcessEnv, exists: (path: string) => boolean): boolean {
+  if (endpoint !== undefined) return endpoint.startsWith("unix://") ? exists(endpoint.slice("unix://".length)) : true;
+  return Boolean(env.DOCKER_HOST || env.DOCKER_CONTEXT) || exists("/var/run/docker.sock");
+}
+/** A failed probe's reason in a container, where the host's words (start Docker, usermod) are the wrong fix: a socket
+ *  that refused this process (wherever it is) is its group's; a socket that is not there is compose.yaml's. Undefined on
+ *  a host, and for a socket that is there and whose daemon does not answer (the host's Docker is down). */
+const containerReason = (answer: { failed?: string; denied?: true; endpoint?: string }, env: NodeJS.ProcessEnv, container: ContainerFacts): string | undefined => {
+  if (!container.inside || answer.failed === undefined) return undefined;
+  if (answer.denied) return DOCKER_SOCKET_GROUP;
+  return socketThere(answer.endpoint, env, container.exists ?? existsSync) ? undefined : DOCKER_NO_SOCKET;
+};
+/** The daemon address in docker's stderr, when it names one (DAEMON_AT). */
+const endpointIn = (stderr: unknown): { endpoint?: string } => {
+  const named = DAEMON_AT.exec(String(stderr))?.[1];
+  return named !== undefined ? { endpoint: named } : {};
+};
+
 /** docker's own words for a socket that refused this process (the CLI's, or the connect's EACCES). Matched, never shown. */
 const SOCKET_DENIED = /permission denied while trying to connect to the docker daemon socket|docker\.sock: connect: permission denied/i;
 
@@ -113,19 +149,22 @@ export type DockerDaemon = { readonly up: true } | { readonly up: false; readonl
 
 /** Asks this machine's Docker daemon its version (`docker version`), as the Docker computer's check (docker-daemon.ts)
  *  does: the CLI is on PATH and its daemon answers this user. `signal` bounds it. */
-export async function askDockerDaemon(env: NodeJS.ProcessEnv, signal: AbortSignal, groups: { file: string; user: string; ids: readonly number[] } = ownGroups()): Promise<DockerDaemon> {
+export async function askDockerDaemon(env: NodeJS.ProcessEnv, signal: AbortSignal, groups: { file: string; user: string; ids: readonly number[] } = ownGroups(), container: ContainerFacts = ownContainer()): Promise<DockerDaemon> {
   // Its environment is the server's through the cut a run's takes (withoutSecrets): no box key, no other secret, no
   // name shaped like a key.
   const dockerEnv = withoutSecrets(env);
-  const answer = await new Promise<{ failed?: string; denied?: true; out: string }>((resolve) =>
+  const answer = await new Promise<{ failed?: string; denied?: true; endpoint?: string; out: string }>((resolve) =>
     execFile("docker", ["version", "--format", "{{.Server.Version}}"], { env: dockerEnv, signal, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
       const code = (error as { code?: unknown } | null)?.code;
-      resolve({ ...(error ? { failed: typeof code === "number" ? `exit ${code}` : errorName(error), ...(SOCKET_DENIED.test(String(stderr)) ? { denied: true as const } : {}) } : {}), out: String(stdout) });
+      resolve({ ...(error ? { failed: typeof code === "number" ? `exit ${code}` : errorName(error), ...(SOCKET_DENIED.test(String(stderr)) ? { denied: true as const } : {}), ...endpointIn(stderr) } : {}), out: String(stdout) });
     }),
   );
   const absent = (reason: string): DockerDaemon => ({ up: false, absent: true, reason });
   // The box's probe runs once, at the start: each fix takes a restart. Docker is on by default, so its reason is often a
   // first-time user's first read: what is wrong in plain words, what the probe saw, then what to do.
+  // In a container, the fix is its socket or that socket's group (containerReason), never the host's.
+  const inside = containerReason(answer, env, container);
+  if (inside !== undefined) return { up: false, absent: !answer.denied, reason: inside };
   if (answer.failed === "ENOENT") return absent("Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun");
   // Its socket refused this process: the group it lacks, and how to get it without a reboot (the words, never docker's):
   // a restart alone where the group file already lists this user, else joining it first.
@@ -137,21 +176,23 @@ export async function askDockerDaemon(env: NodeJS.ProcessEnv, signal: AbortSigna
 
 /** Docker's offer: `docker version` names the daemon's version, so the CLI is on PATH and its daemon answers this user.
  *  Bounded by `timeoutMs`; never rejects. */
-async function probeDocker(env: NodeJS.ProcessEnv, timeoutMs: number, groups: { file: string; user: string; ids: readonly number[] }): Promise<BoxOffer> {
+async function probeDocker(env: NodeJS.ProcessEnv, timeoutMs: number, groups: { file: string; user: string; ids: readonly number[] }, container: ContainerFacts): Promise<BoxOffer> {
   const no = (reason: string): BoxOffer => ({ id: "docker", available: false, reason });
   // Its environment is the server's through the cut a run's takes (withoutSecrets): no box key, no other secret, no
   // name shaped like a key.
   const dockerEnv = withoutSecrets(env);
-  const answer = await new Promise<{ failed?: string; denied?: true; late?: true; out: string }>((resolve) =>
+  const answer = await new Promise<{ failed?: string; denied?: true; late?: true; endpoint?: string; out: string }>((resolve) =>
     execFile("docker", ["version", "--format", "{{.Server.Version}}"], { env: dockerEnv, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
       const failed = error as (NodeJS.ErrnoException & { killed?: boolean }) | null;
       const code = failed?.code;
-      resolve({ ...(failed ? { failed: typeof code === "number" ? `exit ${code}` : errorName(failed), ...(failed.killed ? { late: true as const } : {}), ...(SOCKET_DENIED.test(String(stderr)) ? { denied: true as const } : {}) } : {}), out: String(stdout) });
+      resolve({ ...(failed ? { failed: typeof code === "number" ? `exit ${code}` : errorName(failed), ...(failed.killed ? { late: true as const } : {}), ...(SOCKET_DENIED.test(String(stderr)) ? { denied: true as const } : {}), ...endpointIn(stderr) } : {}), out: String(stdout) });
     }),
   );
   // Docker is on by default, so its reason is often a first-time user's first read: what is wrong in plain words, what
   // the probe saw, then what to do.
   if (answer.late) return no(`Docker isn't answering on this machine (docker version took over ${timeoutMs} ms): start Docker, then restart AgentRun`);
+  const inside = containerReason(answer, env, container);
+  if (inside !== undefined) return no(inside);
   if (answer.failed === "ENOENT") return no("Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun");
   // Its socket refused this process: the group it lacks, and how to get it without a reboot (the words, never docker's):
   // a restart alone where the group file already lists this user, else joining it first.
@@ -180,6 +221,9 @@ export type PlaceOffersOptions = {
   /** The group file and this process's user and groups, which say whether a refused docker socket is a membership
    *  granted since this process started; default the system's. */
   groups?: { file: string; user: string; ids: readonly number[] };
+  /** Whether this server runs in a container, and how a path is checked, which say a failed probe's fix (containerReason);
+   *  default this process's. */
+  container?: ContainerFacts;
   /** Under --faux only: Docker answers, whatever AGENTRUN_BOXES lists, and nothing asks it. */
   fauxDocker?: boolean;
 };
@@ -194,7 +238,7 @@ export async function placeOffers(env: NodeJS.ProcessEnv, options: PlaceOffersOp
       // The tests' faux docker stands in whatever AGENTRUN_BOXES lists, as the old faux box did.
       if (id === "docker" && options.fauxDocker) return { id, available: true, reason: "a faux docker (tests)" };
       if (!enabled.has(id)) return { id, available: false, reason: notEnabled(id, enabled) };
-      if (id === "docker") return probeDocker(env, options.timeoutMs ?? PROBE_TIMEOUT_MS, options.groups ?? ownGroups());
+      if (id === "docker") return probeDocker(env, options.timeoutMs ?? PROBE_TIMEOUT_MS, options.groups ?? ownGroups(), options.container ?? ownContainer());
       return remoteOffer(id, keyOf);
     }),
   );
