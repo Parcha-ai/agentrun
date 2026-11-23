@@ -30,7 +30,7 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
-  "listComputers", "getWorkspaceArchil",
+  "listComputers", "listRunningComputers", "getWorkspaceArchil",
   "getAgentArchil", "deleteAgentArchil", "deleteAgent", "deleteAgentLearning", "deleteRun",
   "getLearningLoop", "listLearningPromotions", "getLearningCost", "getRunLearning",
   "getRun", "getRunUsage", "listRuns", "listAllRuns", "getTimeline",

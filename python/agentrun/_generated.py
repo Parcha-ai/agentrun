@@ -736,6 +736,10 @@ __all__ = [
     "ListRevisionsResponseRevisionsItemMcpPinValue",
     "ListRevisionsResponseRevisionsItemMcpPinValueToolsItem",
     "ListRunFilesResponse",
+    "ListRunningComputersResponse",
+    "ListRunningComputersResponseComputersItem",
+    "ListRunningComputersResponseComputersItemComputer",
+    "ListRunningComputersResponseComputersItemComputerHeld",
     "ListRunsResponse",
     "ListSlackDeliveriesResponse",
     "ListSlackDeliveriesResponseAttemptsItem",
@@ -5350,6 +5354,41 @@ class ListGitHubRepositoriesResponseUnreadItem(TypedDict):
 
 class ListMcpServerNamesResponse(TypedDict):
     names: list[str]
+
+
+class ListRunningComputersResponse(TypedDict):
+    computers: list[ListRunningComputersResponseComputersItem]
+
+
+class ListRunningComputersResponseComputersItem(TypedDict):
+    run_id: Id
+    agent_id: Id
+    title: str
+    status: RunStatus
+    state: RunState
+    created_at: Timestamp
+    computer: ListRunningComputersResponseComputersItemComputer
+
+
+class _ListRunningComputersResponseComputersItemComputerRequired(TypedDict):
+    kind: Literal["sandbox", "desktop", "phone", "browser"]
+    provider: str
+    state: Literal["starting", "ready", "taken_over", "ended", "failed"]
+
+
+class ListRunningComputersResponseComputersItemComputer(_ListRunningComputersResponseComputersItemComputerRequired, total=False):
+    why: str
+    held: ListRunningComputersResponseComputersItemComputerHeld
+
+
+class _ListRunningComputersResponseComputersItemComputerHeldRequired(TypedDict):
+    state: Literal["starting", "waiting", "started", "ended", "released"]
+    minutes: int
+
+
+class ListRunningComputersResponseComputersItemComputerHeld(_ListRunningComputersResponseComputersItemComputerHeldRequired, total=False):
+    until: str
+    why: Literal["timeout", "lost"]
 
 
 class ListSuggestionsResponse(TypedDict):
@@ -11245,6 +11284,7 @@ OPERATIONS: dict[str, Operation] = {
     "listComputers": Operation(method="GET", path="/computers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listGitHubRepositories": Operation(method="GET", path="/integrations/github/repositories", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listMcpServerNames": Operation(method="GET", path="/settings/mcp-server-names", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listRunningComputers": Operation(method="GET", path="/computers/running", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listSuggestions": Operation(method="GET", path="/suggestions", path_params=(), multi_segment=(), query=("repo", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "receiveHook_composio": Operation(method="POST", path="/hooks/composio/{hook}", path_params=("hook",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("*/*",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -11749,6 +11789,10 @@ class LocalResource(Group):
     def list_mcp_server_names(self, *, timeout: float | None = None) -> ListMcpServerNamesResponse:
         """The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names)."""
         return self._call("listMcpServerNames", (), None, None, timeout=timeout)
+
+    def list_running_computers(self, *, timeout: float | None = None) -> ListRunningComputersResponse:
+        """The computers up now: every run still going that has a computer (GET /computers/running)."""
+        return self._call("listRunningComputers", (), None, None, timeout=timeout)
 
     def list_suggestions(self, *, repo: str | None = None, status: Literal["open", "created", "discarded", "all"] | None = None, timeout: float | None = None) -> ListSuggestionsResponse:
         """Suggested agents: each repository's scan and the agents it suggests (GET /suggestions)."""

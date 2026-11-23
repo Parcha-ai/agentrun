@@ -1186,6 +1186,22 @@ const RUN_COMPUTER = {
   description: "The run's computer, its agent's `computer` setting: absent for a run with none.",
   "x-agentrun-serve": "computer/1",
 };
+/** GET /computers/running (computers-running.ts runningComputers): each run still going that has a computer. */
+const RUNNING_COMPUTERS = closed({
+  computers: {
+    type: "array",
+    items: closed({
+      run_id: ref("schemas/Id"),
+      agent_id: ref("schemas/Id"),
+      title: { type: "string", description: "The run's title, as its read shows it." },
+      status: ref("schemas/RunStatus"),
+      state: ref("schemas/RunState"),
+      created_at: ref("schemas/Timestamp"),
+      computer: RUN_COMPUTER,
+    }),
+    description: "The runs still going whose agent has a computer, newest first. A run with no computer, and one that has ended, is not here.",
+  },
+});
 /** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
 const ARCHIL_VIEW = closedWith({
   on: { type: "boolean", description: "Whether Mode 2 is on: run folders on Archil disks, each agent's own (made on its first run that needs one) unless a run's launch names another. Off, they are on this server's own disk (Mode 1)." },
@@ -2447,6 +2463,14 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "listComputers", tags: ["local"], summary: "Settings → Computers: the kinds of computer this server offers, each provider and whether its keys are saved",
       description: "Each kind an agent's `computer` may name (none, sandbox, desktop, phone, browser): whether this server offers it now and why not, the capability groups and model tools it brings, and each provider that serves it, with its key names and whether each is saved (never a value), whether it is metered, and whether a run could have it here now. A sandbox holds the run's folder: on this server's own disk (Mode 1) only a provider that binds a local folder serves it; on the owner's Archil disk (Mode 2, PUT /workspace/archil) only one that mounts the disk.",
       responses: { "200": json(COMPUTERS_VIEW, "The kinds, each with its providers."), ...errors(401, 429, 500) },
+      ...COMPUTER_MARK,
+    },
+  },
+  "/computers/running": {
+    get: {
+      operationId: "listRunningComputers", tags: ["local"], summary: "The computers up now: every run still going that has a computer",
+      description: "One row for each run that is queued, working, paused or waiting on its person and whose agent has a computer (a sandbox, a desktop, a phone or a browser): the run's id, agent, title, status and state as GET /runs/{run_id} says them, and its `computer` as that read carries it (its kind and provider, `starting`, `ready` or `taken_over`, and a held run's hold). The runs list carries no computer, so this is the one read for a list of the computers up across runs and agents. It costs a run read for each such run and nothing for a run with no computer. An agent's own computer kept between runs is on the agent's read (`own_computer`), and a paired computer on GET /computers (`paired`); neither is a row here.",
+      responses: { "200": json(RUNNING_COMPUTERS, "The runs still going that have a computer, newest first."), ...errors(401, 429, 500) },
       ...COMPUTER_MARK,
     },
   },

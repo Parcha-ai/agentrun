@@ -857,7 +857,13 @@ paths and addresses) ran without it.
 whether this server offers it now, the tools it brings, and each provider with its key names and whether each is saved
 (never a value). `PUT /v2/computers/{provider}/keys` saves a provider's keys, sealed under the server's seal key, from
 the owner's signed-in session only (the API token is 403), and `POST /v2/computers/{provider}/test` makes one read at
-the provider with them and starts nothing. A key set in the server's environment wins over the saved one. The keys are
+the provider with them and starts nothing. A key set in the server's environment wins over the saved one.
+`GET /v2/computers/running` lists the computers up now: one row for each run still going (queued, working, paused or
+waiting on its person) whose agent has a computer, with the run's id, agent, title, status and state and its `computer`
+as `GET /v2/runs/{run_id}` carries it (`starting`, `ready`, or `taken_over` while its owner drives it, and a held
+run's hold), newest first. The runs list carries no computer, so this is the one read for every running computer
+across runs and agents; the console's Settings → Computers shows it as Running now. An agent's own computer kept
+between runs is on the agent's read (`own_computer`), and a paired computer under `paired` in `GET /v2/computers`. The keys are
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
 `E2B_API_KEY`, `AGENT37_API_KEY` and `AGENT37_SSH_KEY`, `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and

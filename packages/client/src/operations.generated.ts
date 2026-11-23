@@ -3513,6 +3513,30 @@ export type ListMcpServerNamesResponse = {
   names: Array<string>;
 };
 
+/** The computers up now: every run still going that has a computer (GET /computers/running). */
+export type ListRunningComputersResponse = {
+  computers: Array<{
+    run_id: Id;
+    agent_id: Id;
+    title: string;
+    status: RunStatus;
+    state: RunState;
+    created_at: Timestamp;
+    computer: {
+      kind: "sandbox" | "desktop" | "phone" | "browser";
+      provider: string;
+      state: "starting" | "ready" | "taken_over" | "ended" | "failed";
+      why?: string;
+      held?: {
+        state: "starting" | "waiting" | "started" | "ended" | "released";
+        minutes: number;
+        until?: string;
+        why?: "timeout" | "lost";
+      };
+    };
+  }>;
+};
+
 /** Suggested agents: each repository's scan and the agents it suggests (GET /suggestions). */
 export interface ListSuggestionsParams {
   repo?: string;
@@ -7069,6 +7093,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listComputers: {"method":"GET","path":"/computers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listGitHubRepositories: {"method":"GET","path":"/integrations/github/repositories","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listMcpServerNames: {"method":"GET","path":"/settings/mcp-server-names","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listRunningComputers: {"method":"GET","path":"/computers/running","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listSuggestions: {"method":"GET","path":"/suggestions","pathParams":[],"multiSegment":[],"query":["repo","status"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   putWorkspaceArchil: {"method":"PUT","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   receiveHook_composio: {"method":"POST","path":"/hooks/composio/{hook}","pathParams":["hook"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7374,6 +7399,8 @@ export function resources(call: Call) {
       listGitHubRepositories: (options?: RequestOptions): Promise<ListGitHubRepositoriesResponse> => call("listGitHubRepositories", [], undefined, undefined, options),
       /** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
       listMcpServerNames: (options?: RequestOptions): Promise<ListMcpServerNamesResponse> => call("listMcpServerNames", [], undefined, undefined, options),
+      /** The computers up now: every run still going that has a computer (GET /computers/running). */
+      listRunningComputers: (options?: RequestOptions): Promise<ListRunningComputersResponse> => call("listRunningComputers", [], undefined, undefined, options),
       /** Suggested agents: each repository's scan and the agents it suggests (GET /suggestions). */
       listSuggestions: (params?: ListSuggestionsParams, options?: RequestOptions): Promise<ListSuggestionsResponse> => call("listSuggestions", [], undefined, params, options),
       /** Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil). */
