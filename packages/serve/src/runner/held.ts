@@ -38,6 +38,8 @@ export interface HeldMcpTool {
 /** The claim's MCP as the runner holds it: its tools, and its credentials' refresh and release. */
 export interface HeldMcp {
   readonly tools: readonly HeldMcpTool[];
+  /** The servers left out of `tools` for want of the run's credential (mcp-run.ts ClaimMcp.unconnected). */
+  readonly unconnected?: readonly string[];
   fresh(): Promise<void>;
   release(): Promise<void>;
 }

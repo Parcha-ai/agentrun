@@ -36,6 +36,10 @@ export const UNUSABLE = {
   /** A per_run server's run that was handed no credential for it (mcp_auth), or whose credential was erased at its end. */
   perRunMissing: "this server takes its credential from each run, and this run was handed none: its caller sends one as mcp_auth when it starts the run or sends it a message",
 } as const;
+/** What a run's timeline says of a server whose credential comes from each run when the run was handed none: its tools
+ *  were left out of the run's (mcp-run.ts mcpForClaim), so the model is never offered a tool every call of which is
+ *  refused. */
+export const unconnectedWords = (server: string): string => `The MCP server ${server}'s tools were left out of this run: ${UNUSABLE.perRunMissing}.`;
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** How long an access token given with no expiry is taken to last: it is refreshed within the margin of then. */
 export const UNKNOWN_EXPIRY_MS = 60 * 60_000;

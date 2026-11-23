@@ -30,7 +30,6 @@ const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
-const { UNUSABLE } = await import("../dist/mcp-probe.js");
 
 test.after(() => closeOpenSessions());
 
@@ -538,11 +537,14 @@ test("R16: a per_run server is called with the credential the run was handed, wh
   await assertNowhere(RUN_TOKEN, run, lines);
 });
 
-test("R17: a per_run server's call in a run handed no credential for it is refused unsent, in UNUSABLE.perRunMissing's words", async (t) => {
+test("R17: a per_run server a run was handed no credential for is left out of the run's tools (ClaimMcp.unconnected): the model is offered none of them, and a call that names one anyway sends nothing", async (t) => {
   const script = [{ call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
-  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "per_run", fakeToken: RUN_TOKEN, launchSealed: (url) => sealRunMcpAuth(KEY, "run-1", { other: { headers: { authorization: "Bearer x" }, origin: new URL(url).origin } }) });
+  const opened = [];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "per_run", fakeToken: RUN_TOKEN, opened, launchSealed: (url) => sealRunMcpAuth(KEY, "run-1", { other: { headers: { authorization: "Bearer x" }, origin: new URL(url).origin } }) });
   assert.equal(run.row.state, "ended", JSON.stringify(run.row));
-  assert.equal(lastResult(run.sent), `The MCP server fake's credential can't be used right now: ${UNUSABLE.perRunMissing}.`);
+  assert.deepEqual(opened.map((mcp) => [mcp.unconnected, mcp.tools.map((tool) => tool.name)]), [[["fake"], []]], "left out, by name");
+  const offered = new Set(run.sent.flatMap((body) => (body.tools ?? []).map((tool) => tool.name)));
+  assert.equal(offered.has("mcp__fake__add"), false, `the model is offered no tool of it: ${JSON.stringify([...offered])}`);
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
 });
 

@@ -179,6 +179,7 @@ export function withMonid(mcp: ClaimMcp | undefined, monid: ClaimMonid | undefin
   if (!monid) return mcp;
   return {
     tools: [...(mcp?.tools ?? []), ...monid.tools],
+    unconnected: mcp?.unconnected ?? [],
     catalogOf: (tool) => mcp?.catalogOf(tool) ?? monid.catalogOf(tool),
     argumentsOf: (name) => mcp?.argumentsOf(name),
     effectOf: (name) => mcp?.effectOf(name),
