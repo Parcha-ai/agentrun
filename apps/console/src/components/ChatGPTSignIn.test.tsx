@@ -135,9 +135,9 @@ describe("ChatGPTSignIn", () => {
     const { v2 } = server(() => state, () => json(500, {}));
     const page = await mount(v2, state);
     // OpenAI's tab said the sign-in completed; the server then could not exchange the code.
-    state = { state: "signed_out", problem: "OpenAI refused the sign-in (invalid_grant): start it again." };
+    state = { state: "signed_out", problem: "OpenAI refused the sign-in: a Free ChatGPT plan may be the reason; with a paid plan, start it again." };
     await page.wait(() => !!page.host.querySelector('[role="alert"]'), "the problem is shown");
-    expect(page.host.querySelector('[role="alert"]')!.textContent).toBe("OpenAI refused the sign-in (invalid_grant): start it again.");
+    expect(page.host.querySelector('[role="alert"]')!.textContent).toBe("OpenAI refused the sign-in: a Free ChatGPT plan may be the reason; with a paid plan, start it again.");
     expect(page.button(/^Continue with ChatGPT$/)).toBeTruthy();
   });
 
@@ -149,7 +149,7 @@ describe("ChatGPTSignIn", () => {
     await page.paste(PASTED);
     await page.click(/^Finish sign-in$/);
     expect(page.host.querySelector('[role="alert"]')?.textContent).toBe(refused);
-    state = { state: "signed_out", problem: "OpenAI refused the sign-in (invalid_grant): start it again." };
+    state = { state: "signed_out", problem: "OpenAI refused the sign-in: a Free ChatGPT plan may be the reason; with a paid plan, start it again." };
     await page.wait(() => page.host.querySelector('[role="alert"]')?.textContent === state.problem, "the server's problem is shown, not the paste's refusal");
   });
 
@@ -157,6 +157,14 @@ describe("ChatGPTSignIn", () => {
     const { v2 } = server(() => ({ state: "signed_out" }), () => json(500, {}));
     const page = await mount(v2, { state: "signed_out", problem: "This server could not reach OpenAI to finish the sign-in: check its connection, then start again." });
     expect(page.host.querySelector('[role="alert"]')?.textContent).toContain("could not reach OpenAI");
+  });
+
+  it("signed in, a later sign-in that failed says why under who is signed in", async () => {
+    const problem = "OpenAI refused the sign-in: a Free ChatGPT plan may be the reason; with a paid plan, start it again.";
+    const { v2 } = server(() => ({ ...SIGNED_IN, problem }), () => json(500, {}));
+    const page = await mount(v2, { ...SIGNED_IN, problem });
+    expect(page.host.textContent).toContain("person@example.com");
+    expect(page.host.querySelector('[role="alert"]')?.textContent).toBe(problem);
   });
 
   it("a read slower than the 2 s poll still lands: one read at a time, so the next doesn't make it stale", async () => {

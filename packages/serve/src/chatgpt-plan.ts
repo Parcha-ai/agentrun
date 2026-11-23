@@ -139,9 +139,10 @@ const PLAN_NOT_USABLE = "This ChatGPT plan can't be used here: OpenAI's sign-in 
 /** What a refusal whose reason OpenAI doesn't name ends with: a Free plan's sign-in has ended in one, and nothing tells it
  *  apart. It never says Free can't be used: OpenAI changes which plans can. */
 const FREE_OR_AGAIN = "a Free ChatGPT plan may be the reason; with a paid plan, start it again.";
-const TIMED_OUT = "The sign-in timed out: start it again.";
-/** The words for OpenAI's refusal `code` at its sign-in page. */
-const deniedWords = (code: string): string => (tag(code) === WORKSPACE_DENIED ? ADMIN_OFF : `ChatGPT did not sign you in (${tag(code) || "no reason given"}): ${FREE_OR_AGAIN}`);
+const TIMED_OUT = "The sign-in timed out before OpenAI sent the code back: start it again.";
+/** The words for OpenAI's refusal `code` at its sign-in page: fixed words, never the code. Anything on this machine can
+ *  send the loopback callback an `error` while a sign-in waits, so the code goes to the log alone. */
+const deniedWords = (code: string): string => (tag(code) === WORKSPACE_DENIED ? ADMIN_OFF : `ChatGPT did not sign you in: ${FREE_OR_AGAIN}`);
 
 /** Why a sign-in past its browser step ended without signing in, from what pi-ai's flow or keep threw: `reason` for the
  *  log (OpenAI's status and error code, a missing field's name, a network error's code; never a token or a code) and
@@ -151,16 +152,18 @@ export function signInFailure(error: unknown): { reason: string; words: string }
   const notKept = error instanceof NotKept;
   const cause = notKept ? error.cause : error;
   const message = String((cause as Error)?.message ?? "");
+  // OpenAI's refusal at its sign-in page, sent back to the loopback in place of a code (pi-ai's words for it), or of the
+  // code's exchange. Its code goes to the log; the words are fixed.
+  const denied = notKept ? null : /ChatGPT authorization failed: (\S+)/.exec(message);
+  const refused = notKept ? null : /token request failed \((\d{3})\)/.exec(message);
+  const code = denied ? tag(denied[1]) : refused ? tag(/"error"\s*:\s*"([^"]*)"/.exec(message)?.[1]) : "";
+  const reason = denied ? `authorize_${code || "error"}` : refused ? `token_${refused[1]}${code ? `_${code}` : ""}` : "";
+  // The workspace's refusal first: OpenAI's description of it may name the plan's scope.
+  if (code === WORKSPACE_DENIED) return { reason, words: ADMIN_OFF };
   if (message.includes(DIRECT_SCOPE)) return { reason: "no_direct_scope", words: PLAN_NOT_USABLE };
   if (notKept) return { reason: `not_saved${tag((cause as { code?: unknown })?.code) ? `_${tag((cause as { code?: unknown }).code)}` : ""}`, words: "OpenAI signed you in, but this server could not save the sign-in: start it again. The server's log says why." };
-  // OpenAI's refusal at its sign-in page, sent back to the loopback in place of a code (pi-ai's words for it).
-  const denied = /ChatGPT authorization failed: (\S+)/.exec(message);
-  if (denied) return { reason: `authorize_${tag(denied[1]) || "error"}`, words: deniedWords(denied[1]) };
-  const refused = /token request failed \((\d{3})\)/.exec(message);
-  if (refused) {
-    const code = tag(/"error"\s*:\s*"([^"]*)"/.exec(message)?.[1]);
-    return { reason: `token_${refused[1]}${code ? `_${code}` : ""}`, words: code === WORKSPACE_DENIED ? ADMIN_OFF : `OpenAI refused the sign-in (${code || refused[1]}): ${FREE_OR_AGAIN}` };
-  }
+  if (denied) return { reason, words: deniedWords(code) };
+  if (refused) return { reason, words: `OpenAI refused the sign-in: ${FREE_OR_AGAIN}` };
   const unread = /token response (?:has invalid (\w+)|did not contain an (ID token)|must be an object)/.exec(message);
   if (unread) return { reason: `token_answer_${tag((unread[1] ?? unread[2] ?? "shape").replace(" ", "_"))}`, words: "OpenAI's answer to the sign-in was not one AgentRun can read: start it again. The server's log says what was missing." };
   const network = tag((cause as { cause?: { code?: unknown } })?.cause?.code);
@@ -208,6 +211,8 @@ export class ChatGPTPlan implements PlanReader {
   /** Why the last sign-in ended without signing in (signInFailure's words past its browser step, or its timeout), until a
    *  sign-in starts, finishes or a sign-out. A cancelled one leaves none. */
   #problem: string | undefined;
+  /** Set when the server's change callback failed after a sign-in was saved; cleared once it takes (changeAgain). */
+  #changeOwed = false;
   readonly #watchers = new Set<(tokens: string[]) => void>();
   readonly #deps: ChatGPTPlanDeps;
   constructor(deps: ChatGPTPlanDeps) {
@@ -437,12 +442,27 @@ export class ChatGPTPlan implements PlanReader {
     this.#snapshot = row;
     this.#problem = undefined;
     this.#deps.log?.({ chatgpt: "signed_in", ...(previousRevoked === undefined ? {} : { previous_revoked: String(previousRevoked) }) });
-    // Saved: what the server does with the change after it is not the sign-in's to fail.
+    // Saved: what the server does with the change after it is not the sign-in's to fail. One it failed to take is owed,
+    // and taken again at its next read (changeAgain).
     try {
       await this.#deps.changed?.();
+      this.#changeOwed = false;
     } catch (error) {
+      this.#changeOwed = true;
       const code = (error as { code?: unknown })?.code;
       this.#deps.log?.({ chatgpt: "changed_failed", reason: String(typeof code === "string" ? code : (error as Error)?.name ?? "error").replace(/[^A-Za-z0-9_]/g, "").slice(0, 40) || "error" });
+    }
+  }
+
+  /** Takes again a sign-in's change the server failed to take (changed_failed), at the server's read of the sign-in, so
+   *  what it offers does not wait for a restart. Nothing when none is owed; a failure again stays owed, said once. */
+  async changeAgain(): Promise<void> {
+    if (!this.#changeOwed) return;
+    try {
+      await this.#deps.changed?.();
+      this.#changeOwed = false;
+    } catch {
+      // Owed still: the next read takes it again.
     }
   }
 

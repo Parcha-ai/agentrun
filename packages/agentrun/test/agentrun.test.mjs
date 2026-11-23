@@ -1251,6 +1251,8 @@ test("a ChatGPT sign-in that did not finish reaches the person, each time, with 
   // Under a flood of refusals, a sign-in that fails is still said.
   for (let i = 0; i <= start.TOLD_MAX; i++) told(`at=x event=auth_failed route=/v2/runs/r${i} reason=wrong_token`);
   assert.equal(told(failed), words);
+  // A sign-in saved whose change the server failed to take is said too: what it offers lags until it takes.
+  assert.equal(told("at=2026-11-23T18:00:02.000Z event=chatgpt chatgpt=changed_failed reason=SQLITE_BUSY"), "AgentRun saved the ChatGPT sign-in but has not taken it into what it offers yet (SQLITE_BUSY): it tries again as Settings reads it; if codex and pi still ask for a key, restart AgentRun.");
 });
 
 test("started, the bin says a refused request on stderr; stdout stays the one running line", { timeout: 120_000 }, async (t) => {

@@ -117,6 +117,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
     <div className="space-y-2">
       <p className="text-body font-semibold">{signedInAs(v)}</p>
       <PlanDisclosure />
+      {alert}
     </div>
   );
   if (!writable) return <p className="text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>;
