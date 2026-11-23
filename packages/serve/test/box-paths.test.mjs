@@ -10,6 +10,8 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { release } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { setImmediate as macrotask } from "node:timers/promises";
+import { takeServerLock } from "../dist/server-lock.js";
 import { jsonLines, scratch, serve, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -304,9 +306,11 @@ test("compose's layout, the read failing at the start: a close while the retry's
 });
 
 // The close cuts the retry's read where it stalls (its client killed, not left to READ_MS's 60 s, which outlives a
-// stop's deadline: stop-signals.ts, compose's 15 s grace) and answers once its container is removed. No clock: the case's
-// timeout, under READ_MS, bounds a close that waited out the read.
-test("compose's layout, the read failing at the start: a close while the retry's read stalls cuts that read at once and answers once its container is removed", { timeout: 30_000 }, async (t) => {
+// stop's deadline: stop-signals.ts, compose's 15 s grace) and answers once its container is removed. The store closes
+// first: with the removal held at `rm-gate`, the data root's lock (released right after the store closes) is free, so a
+// stop cut at its deadline cuts only the cleanup. No clock: the case's timeout, under READ_MS, bounds a close that waited
+// out the read or held the store until the removal.
+test("compose's layout, the read failing at the start: a close while the retry's read stalls kills that read at once, closes the store, then answers once its container is removed by name", { timeout: 30_000 }, async (t) => {
   const data = await dataDir(t);
   const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
   withEnv(t, {}, ["AGENTRUN_DOCKER_HOST_ADDRESSES"]);
@@ -317,13 +321,30 @@ test("compose's layout, the read failing at the start: a close while the retry's
   await rm(join(fake.state, "host-addresses-fail"));
   await writeFile(join(fake.state, "host-addresses-hold"), "");
   const held = join(fake.state, "host-addresses-held");
-  execFileSync("mkfifo", [held]);
+  const gate = join(fake.state, "rm-gate");
+  execFileSync("mkfifo", [held, gate]);
   waits[0].go();
-  await readFile(held, "utf8");
+  const pid = Number(await readFile(held, "utf8"));
   const name = nameIn(hostReads(fake).at(-1));
   assert.equal(hasContainer(fake, name), true, "the stalled read's container is made");
   const from = jsonLines(join(fake.state, "argv.jsonl")).length;
-  await close();
+  let answered = false;
+  const closed = close().then(() => (answered = true));
+  // The removal waits at the gate; the store's close, ahead of it, frees the data root's lock.
+  let lock;
+  while (lock === undefined) {
+    try {
+      lock = takeServerLock(data);
+    } catch (error) {
+      if (error?.code !== "SERVER_LOCK_HELD") throw error;
+      await macrotask();
+    }
+  }
+  lock.release();
+  assert.equal(answered, false, "the store closed while the removal was still held, and the close waits for the removal");
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "the stalled read's client is killed");
+  await writeFile(gate, "go");
+  await closed;
   assert.deepEqual([hasContainer(fake, name), callsFrom(fake, from)], [false, [["rm", name], ["inspect", name]]]);
 });
 
