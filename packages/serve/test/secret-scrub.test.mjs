@@ -1513,9 +1513,14 @@ test("LIII: a bare name written to the environment or an object's member is a va
       assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind]), [["secret-assign", "label"]], wrapped);
     }
   }
-  // Declined for beta 1: the spaced `=` alone is no code's evidence (INI and my.cnf space it too). A restorable cut.
-  const out = await gone("PGPASSWORD = password", ["password"]);
-  assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["secret-assign", "label", true]]);
+  // Declined for beta 1: the spaced `=` alone is no code's evidence (INI and my.cnf space it too). A restorable cut,
+  // raw and in JSON (round 5's other repros).
+  for (const [text, secret] of [["PGPASSWORD = password", "password"], ["PGPASSWORD = db_password", "db_password"], ["DB_PASSWORD = password", "password"]]) {
+    for (const wrapped of [text, JSON.stringify({ type: "tool_result", content: text })]) {
+      const out = await gone(wrapped, [secret]);
+      assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["secret-assign", "label", true]], wrapped);
+    }
+  }
 });
 
 test("LIV: a slot reads what follows its value on its own line or in its own string; every wrapper cuts as raw does", async () => {
