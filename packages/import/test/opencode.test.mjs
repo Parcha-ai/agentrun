@@ -2,7 +2,7 @@
 // storage OpenCode kept before SQLite), each read into the one Session shape. A locator with no id reads every session
 // of its database.
 import assert from "node:assert/strict";
-import { readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -189,7 +189,7 @@ test("a session's OpenCode version says how its output reads where no total does
   assert.deepEqual(now.turns[0].usage, { input: 10, output: 25, cacheRead: 0, cacheWrite: 0, reasoning: 5 });
 });
 
-test("no time past now: a row written by a clock set ahead is not live for ever, and one past what a Date holds reads as now", async (t) => {
+test("no time past now: a row written by a clock set ahead reads as its database's last write, the same at each look, so it ages out; one past what a Date holds too", async (t) => {
   const db = join(await tempHome(t), "opencode.db");
   const ahead = Date.now() + 365 * 24 * 60 * 60_000;
   const tokens = { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } };
@@ -200,13 +200,18 @@ test("no time past now: a row written by a clock set ahead is not live for ever,
       { info: { id: `${id}_m`, role: "assistant", providerID: "openai", modelID: "gpt-5", path: { cwd: "/fixture/t", root: "/fixture/t" }, time: { created: at, completed: at }, cost: 0, tokens }, parts: [] },
     ],
   });
-  await buildV1(db, [session("ses_ahead", ahead), session("ses_far", 9e15)]);
-  const before = Date.now();
-  const size = await locatorSize({ file: db, id: "ses_ahead" }, "opencode");
-  assert.ok(size.mtimeMs <= Date.now() && size.mtimeMs >= before, "its last write is now at the latest");
+  await buildV1(db, [session("ses_ahead", ahead), session("ses_far", 9e15), session("ses_past", T0)]);
+  // The database untouched for 20 minutes, twice the 10 a caller's "still being written" check allows.
+  const written = new Date(Math.floor((Date.now() - 20 * 60_000) / 1000) * 1000);
+  await utimes(db, written, written);
+  for (const look of [1, 2]) {
+    const size = await locatorSize({ file: db, id: "ses_ahead" }, "opencode");
+    assert.equal(size.mtimeMs, written.getTime(), `look ${look}: its last write is the database's, not now`);
+  }
+  assert.equal((await locatorSize({ file: db, id: "ses_past" }, "opencode")).mtimeMs, T0, "a time before now is as written");
   const { ses_ahead: a, ses_far: far } = byId(await read({ file: db }));
-  for (const s of [a, far]) assert.ok(Date.parse(s.endedAt) <= Date.now() && Date.parse(s.startedAt) <= Date.parse(s.endedAt), s.id);
-  assert.ok(far.turns.every((turn) => turn.at <= Date.now()));
+  for (const s of [a, far]) assert.equal(Date.parse(s.endedAt), written.getTime(), s.id);
+  assert.ok(far.turns.every((turn) => turn.at === written.getTime()));
 });
 
 test("a session two databases hold (a channel's stale copy beside opencode.db's): the one written last is listed", async (t) => {

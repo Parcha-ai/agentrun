@@ -78,8 +78,15 @@ export const FAILED = "failed";
 
 /** One read's sessions' share of the import: the records `seen` before (each a copy), those this read's locator added
  *  before (`before`: its own, read again), those it adds, and the time it is read at (no time is later). */
-type Context = { seen: Set<string>; before: ReadonlySet<string>; owned: Set<string>; now: number };
-const contextOf = (seen: Set<string> | undefined, before: readonly string[] = []): Context => ({ seen: seen ?? new Set(), before: new Set(before), owned: new Set(), now: Date.now() });
+type Context = { seen: Set<string>; before: ReadonlySet<string>; owned: Set<string>; now: number; latest: number };
+const contextOf = (seen: Set<string> | undefined, before: readonly string[], latest: number): Context => ({ seen: seen ?? new Set(), before: new Set(before), owned: new Set(), now: Date.now(), latest });
+
+/** What a time past now, which a clock set ahead wrote, reads as: when `file` (or its write-ahead log) was last written,
+ *  never past now. The same at each look, so the session ages out as its file does: never live for ever. */
+async function latestOf(file: string): Promise<number> {
+  const times = await Promise.all([file, `${file}-wal`].map((path) => stat(path).then((stats) => stats.mtimeMs, () => 0)));
+  return Math.min(Math.max(...times), Date.now());
+}
 // The title OpenCode gives a session until it writes one (a subagent's keeps it): no title.
 const DEFAULT_TITLE = /^(?:New|Child) session - \d{4}-\d\d-\d\dT/;
 
@@ -105,10 +112,11 @@ class Reading {
     if (head.parent) Object.assign(this.session, { child: true, parent: head.parent });
     if (head.title && !DEFAULT_TITLE.test(head.title)) this.session.sourceTitle = head.title;
   }
-  /** A time read off a row: none past now (a clock set ahead would keep the session live, and past 8.64e15 is no Date). */
+  /** A time read off a row; one past now (a clock set ahead would keep the session live, and past 8.64e15 is no Date)
+   *  reads as its file's last write (latestOf). */
   when(value: unknown): number | undefined {
     const at = num(value);
-    return at === undefined ? undefined : Math.min(at, this.context.now);
+    return at === undefined ? undefined : at > this.context.now ? this.context.latest : at;
   }
   at(...times: unknown[]): void {
     for (const at of times) {
@@ -639,15 +647,16 @@ export async function openCodeFiles(home: string, env: Env = {}): Promise<{ dbs:
 
 /** A database session's own size, last write and parent: the bytes of its messages' and parts' data (the 2.x tables' when the
  *  session is there, else 1.x's: the rows a read of it takes) and the latest time_updated of its rows. */
-function dbSize(db: Db, tables: ReturnType<typeof tablesOf>, id: string): LocatorSize | null {
+function dbSize(db: Db, tables: ReturnType<typeof tablesOf>, id: string, latest: number): LocatorSize | null {
   const [v2] = tables.v2 ? db.all("SELECT parent_id, time_created FROM session_v2 WHERE id = ?", id) : [];
   const [row] = v2 ? [v2] : tables.v1 ? db.all("SELECT parent_id, time_created FROM session WHERE id = ?", id) : [];
   if (!row) return null;
   const data = (v2 ? ["session_message", "session_part"] : ["message", "part"]).filter((table) => tables.all.has(table));
   const bytes = data.reduce((n, table) => n + Number(db.all(`SELECT coalesce(sum(length(CAST(data AS BLOB))), 0) AS n FROM ${table} WHERE session_id = ?`, id)[0]?.n ?? 0), 0);
   const times = SESSION_TABLES.filter(([table]) => tables.all.has(table)).map(([table, column]) => num(db.all(`SELECT max(time_updated) AS t FROM ${table} WHERE ${column} = ?`, id)[0]?.t) ?? 0);
-  // No later than now: a row written by a clock set ahead is not live for ever.
-  return { bytes, mtimeMs: Math.min(Math.max(0, ...times), Date.now()), ...(str(row.parent_id) ? { parent: row.parent_id as string } : {}), ...(num(row.time_created) !== undefined ? { created: row.time_created as number } : {}) };
+  // A row written by a clock set ahead is as old as its database's last write (latestOf): not live for ever.
+  const last = Math.max(0, ...times);
+  return { bytes, mtimeMs: last > Date.now() ? latest : last, ...(str(row.parent_id) ? { parent: row.parent_id as string } : {}), ...(num(row.time_created) !== undefined ? { created: row.time_created as number } : {}) };
 }
 
 /** A storage session's size and last write: its session file's, its messages' and their parts' together; its parent, its
@@ -726,7 +735,7 @@ export const opencode: Reader<"opencode", OpenCodeCursor> = {
     const stats = await stat(file);
     const resumed = cursor !== undefined && cursor.source === "opencode" && cursor.keep === keep && cursor.dev === stats.dev && cursor.ino === stats.ino;
     // A changed session read again whole: the fingerprints its last read added are its own, no copies.
-    const context = contextOf(seen, resumed ? cursor.owned : []);
+    const context = contextOf(seen, resumed ? cursor.owned : [], await latestOf(file));
     const result = (stamp: string, sessions: Found[], read: number): ReadResult<"opencode", OpenCodeCursor> => {
       if (resumed && cursor.stamp === stamp) return { sessions: structuredClone(cursor.sessions), cursor, read: 0, resumed };
       return { sessions, cursor: { source: "opencode", dev: stats.dev, ino: stats.ino, keep, stamp, sessions: keep ? structuredClone(sessions) : sessions.map(withoutText), owned: [...context.owned] }, read, resumed };
@@ -757,9 +766,10 @@ export const opencode: Reader<"opencode", OpenCodeCursor> = {
       const stats = await stat(file);
       return { bytes: stats.size, mtimeMs: stats.mtimeMs };
     }
+    const latest = await latestOf(file);
     const db = await openDb(file);
     try {
-      return dbSize(db, tablesOf(db), id);
+      return dbSize(db, tablesOf(db), id, latest);
     } finally {
       db.close();
     }

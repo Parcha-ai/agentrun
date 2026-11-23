@@ -244,11 +244,10 @@ export type ProjectPlan = {
 };
 /** `already`: the session files an earlier import took whole, left unread; `held`, the runs an import would not take
  *  again: theirs, and (when measuring) those of planned sessions the store holds already. `children`: the locators of each
- *  session's subagents, whose usage is its run's: Claude Code's by the locator (locatorKey) of the session file beside them, Codex's by `source:thread`; `mirrorsBelow`, the runs (`source:id`) a subagent of
- *  which leaves a request to another source's session (`mirrors`): runImport writes them after the rest. `untied`, those
+ *  session's subagents, whose usage is its run's: Claude Code's by the locator (locatorKey) of the session file beside them, Codex's by `source:thread`. `untied`, those
  *  of subagents whose file names no parent, counted in a summary's totals alone. `found`: each other planned session measured,
  *  when the plan was made to (`measure`). `stopped`: `signal` ended the listing with session files still unlisted. */
-export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, Locator[]>; mirrorsBelow?: Set<string>; untied: { locator: Locator; source: Source }[]; found?: Found[]; secretsFound?: number; stopped?: true };
+export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, Locator[]>; untied: { locator: Locator; source: Source }[]; found?: Found[]; secretsFound?: number; stopped?: true };
 export type ImportReport = {
   agents: {
     id: string;
@@ -449,10 +448,9 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   const rank = new Map<Session, number>();
   // Each subagent read here, by locatorKey, as its own subagents name it (`source:id`): what holdBack walks down.
   const childIds = new Map<string, string>();
-  // Each subagent read here whose requests name another source's session (`mirrors`), with those sessions: its run is
-  // written after the rest, and waits for a Claude Code session it names that is on disk but not imported now.
+  // Each subagent read here whose requests name another source's session (`mirrors`), with those sessions: its run
+  // waits for a Claude Code session it names that is on disk but not imported now.
   const mirroring = new Map<string, NonNullable<Session["mirrors"]>>();
-  const mirrorsBelow = new Set<string>();
   const tie = async (locator: Locator, source: Source, size: LocatorSize): Promise<void> => {
     const listed = size.bytes > MAX_SESSION_BYTES ? undefined : await readSession(locator, source, { turns: false }).catch(() => undefined);
     // One over the cap is not read: its parent is what its reader tells without reading it (an OpenCode row's, a Codex
@@ -558,7 +556,6 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       if (!holds.has(key)) holds.set(key, await holdBack(children, parts, childIds, now));
       const why = holds.get(key);
       if (why) leave({ what: locatorKey(locatorOf(parts[0]!)), ...why, session: key }, parts[0]!.source, project.cwd);
-      else if (subagentsOf(children, parts, childIds).some((locator) => mirroring.has(locatorKey(locator)))) mirrorsBelow.add(key);
     }
     project.sessions = project.sessions.filter((session) => !holds.get(`${session.source}:${session.id}`));
     if (!project.sessions.length) projects.delete(project.cwd);
@@ -590,7 +587,6 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       if (target === undefined) continue;
       leave({ what: locatorKey(locatorOf(parts[0]!)), why: `a request of it ran through Claude Code session ${target}, on disk but not imported now: it comes in with that session`, kind: "mirror", session: key }, parts[0]!.source, project.cwd);
       project.sessions = project.sessions.filter((session) => `${session.source}:${session.id}` !== key);
-      mirrorsBelow.delete(key);
       if (!project.sessions.length) projects.delete(project.cwd);
     }
   }
@@ -607,7 +603,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
     }
     skipped.splice(0, skipped.length, ...ofChosen);
   }
-  const plan: Plan = { projects: [...projects.values()].filter((project) => !chosen || chosen.has(project.agentId)).sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, mirrorsBelow, untied, ...(stopped ? { stopped: true } : {}) };
+  const plan: Plan = { projects: [...projects.values()].filter((project) => !chosen || chosen.has(project.agentId)).sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, untied, ...(stopped ? { stopped: true } : {}) };
   if (!measure) return plan;
   const counting = secretCut(env, SECRET_NAMES);
   // Every key the import would cut, found first, as the import finds it before it writes anything: then the counts.
@@ -1393,7 +1389,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     saved.add(`${listed.source}:${listed.id}`);
     return undefined;
   };
-  const later: { place: Place; files: Session[] }[] = [];
+  const runs: { place: Place; files: Session[] }[] = [];
   for (const project of plan.projects) {
     if (options.signal?.aborted) {
       report.stopped = true;
@@ -1435,15 +1431,17 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     // A record or response counted once across the import's files, those its runs here hold already included.
     const seen = await seenIn(store, project.agentId);
     const place: Place = { project, line, revisions, seen };
-    for (const files of byRun(project.sessions)) {
-      // A run that may leave a request to another session (`mirrors`), itself or a subagent of it (the plan's
-      // mirrorsBelow), is written after every other run: the request is that session's only once it is saved.
-      if (files.some((part) => part.mirrors?.length) || plan.mirrorsBelow?.has(`${files[0]!.source}:${files[0]!.id}`)) later.push({ place, files });
-      else if ((await writeRun(place, files)) === "stopped") break;
-    }
+    for (const files of byRun(project.sessions)) runs.push({ place, files });
     report.agents.push(line);
   }
-  for (const { place, files } of later) if (report.stopped || (await writeRun(place, files)) === "stopped") break;
+  // Claude Code's runs first: a request another run leaves to one of its sessions (`mirrors`, an OpenCode session's own
+  // or a subagent's at any depth) is that session's only once it is saved. Then the rest, each source's in its own
+  // order: an OpenCode session before its later forks, whose copies of its records are its, its subagents read with it.
+  for (const first of [true, false])
+    for (const { place, files } of runs) {
+      if ((files[0]!.source === "claude-code") !== first) continue;
+      if (report.stopped || (await writeRun(place, files)) === "stopped") break;
+    }
   report.secretsRemoved = text.removed;
   return report;
 }

@@ -66,7 +66,7 @@ test("OpenCode: turns false keeps no request's error message (a path, a provider
   const { DatabaseSync } = await import("node:sqlite");
   const { buildV1, buildV2, T0 } = await import("./fixtures/opencode/fixture.mjs");
   const dir = await tempHome(t);
-  const message = "rate limited at /home/someone/private/notes.md by the provider";
+  const message = "rate limited at /fixture/private/notes.md by the provider";
   const v1 = join(dir, "v1.db");
   await buildV1(v1, [
     {
@@ -84,7 +84,7 @@ test("OpenCode: turns false keeps no request's error message (a path, a provider
     const result = await READERS.opencode.read(locator, undefined, { turns: false });
     assert.deepEqual(result.sessions[0].requests.map((request) => request.error), [FAILED]);
     assert.equal(result.sessions[0].session.state, "failed");
-    for (const words of [message, "/home/someone"]) {
+    for (const words of [message, "/fixture/private"]) {
       assert.equal(serialize(result.cursor).includes(Buffer.from(words)), false, `the cursor holds no "${words}"`);
       assert.equal(serialize(result.sessions).includes(Buffer.from(words)), false, `the sessions hold no "${words}"`);
     }

@@ -489,9 +489,10 @@ export function openCodeDb(home, sessions, { file = join(home, ".local", "share"
   const message = db.prepare("INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)");
   const SONNET = { id: "claude-sonnet-5", providerID: "anthropic" };
   const AGENT = { id: "opus", providerID: "claude-agent" };
-  for (const { id, parent = null, pad = 0, cwd, title = "Tidy the notes", prompt = "Tidy the notes.", updated = Date.now() - 60 * 60_000, answers = [{ input: 10, output: 5, cost: 0.01 }] } of sessions) {
+  for (const { id, parent = null, pad = 0, cwd, title = "Tidy the notes", prompt = "Tidy the notes.", updated = Date.now() - 60 * 60_000, created, answers = [{ input: 10, output: 5, cost: 0.01 }] } of sessions) {
     const start = updated - 60_000;
-    session.run(id, parent, cwd, title, JSON.stringify(SONNET), start, updated);
+    // `created`: the session's own start, when its rows are older (a fork's, copied with their times).
+    session.run(id, parent, cwd, title, JSON.stringify(SONNET), created ?? start, updated);
     message.run(`${id}_m0`, id, "user", 0, start, updated, JSON.stringify({ text: prompt, files: [], agents: [], time: { created: start } }));
     if (pad) db.prepare("INSERT INTO session_part VALUES (?, ?, 0, 'text', NULL, ?, ?, zeroblob(?))").run(`${id}_m0`, id, start, updated, pad);
     answers.forEach(({ input, output, cost, mirrors, text = `Done ${input}.`, key }, i) => {

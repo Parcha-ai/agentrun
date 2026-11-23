@@ -2814,6 +2814,49 @@ test("an OpenCode 1.x fork imported after its source holds its own prompt alone:
   assert.match(forked[0], /Now tag them\./);
 });
 
+test("an OpenCode session's later fork, copying all of it, does not take its requests: the Claude Code session its subagent's request ran through is saved first, then OpenCode's oldest first, so its subagent is read", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  claudeSession(h.at, project, 1);
+  const updated = Date.now() - 60 * 60_000;
+  const own = { cwd: project, updated, answers: [{ input: 10, output: 5, cost: 0.25 }] };
+  openCodeDb(h.at, [
+    { id: "ses_S", ...own },
+    // Its subagent: one request through Claude Code session 1, one of its own.
+    { id: "ses_C", parent: "ses_S", cwd: project, updated: updated + 5_000, prompt: "Check the tags.", answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] },
+    // A fork made an hour on that marks nothing (a 1.x one moved to 2.x): every row of it a copy, with its time.
+    { id: "ses_F", ...own, created: updated + 60 * 60_000 },
+  ]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h), store), options(h));
+  const run = await runOf(store, "ses_S");
+  assert.ok(run, "the source has its run");
+  // Its metrics hold its subagent's, which its own transcript does not: read as stored.
+  const metrics = await storedMetrics(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output, (await store.runs.get(run.id)).costUsd], [2, 16, 6, 0.3125], "its own request and its subagent's own; the mirrored one is Claude Code's");
+  assert.equal(await runOf(store, "ses_F"), undefined, "the fork holds only copies");
+});
+
+test("an OpenCode session a clock set ahead wrote, in a database untouched for longer than the live window, is not live: it imports", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const ahead = Date.now() + 365 * 24 * 60 * 60_000;
+  const { source } = v1Fork(project);
+  const file = openCodeV1Db(h.at, [{ ...source, created: ahead, messages: source.messages.map((m, i) => ({ ...m, at: ahead + i * 1000 })) }]);
+  const written = new Date(Date.now() - 20 * 60_000);
+  utimesSync(file, written, written);
+  for (const look of [1, 2]) {
+    const plan = await planImport(options(h));
+    assert.deepEqual(plan.skipped.map((s) => s.kind), [], `look ${look}: nothing left out as live`);
+    assert.deepEqual(plan.projects.flatMap((p) => p.sessions.map((s) => s.id)), ["ses_1src"], `look ${look}`);
+  }
+});
+
 test("an OpenCode run whose request ran through a Claude Code session waits, said, while that session is on disk and not imported: --from opencode, then claude-code, then opencode counts the request once", async (t) => {
   const root = await scratch(t);
   const h = { at: join(root, "home"), temp: join(root, "tmp") };

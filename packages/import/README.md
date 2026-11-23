@@ -108,7 +108,7 @@ session count nothing. A 2.x fork marks them. A 1.x fork (OpenCode's `fork()` co
 time, tokens and cost as they were) and a 2.x row with no mark are told by a fingerprint: a request's time, step, model,
 tokens and cost as written, a prompt's time and text. `order` reads a home's sessions oldest first, so a source comes
 before its forks, and the cursor keeps the fingerprints its read took, so a session read again is no copy of itself.
-A row time past now reads as now. A `turns: false` read keeps a request's error as `failed`, never its text. A database session's `stat` is the bytes of its messages' and parts' `data` and the latest
+A row time past now reads as its database's last write (its file's or its `-wal`'s, never past now): the same at each look, so the session ages out as its file does. A `turns: false` read keeps a request's error as `failed`, never its text. A database session's `stat` is the bytes of its messages' and parts' `data` and the latest
 `time_updated` of its rows; a storage session's, its files' together. It reads SQLite with `node:sqlite` under Node and `bun:sqlite` under Bun, read-only, waiting up to 5 s on a write lock.
 
 `readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` (each locator with its
