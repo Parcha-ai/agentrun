@@ -69,10 +69,9 @@ function recipes() {
   }, []);
 }
 
-// SKIP: waits on a decision about the skill's size. SKILL.md is 170 lines: its written part is about 130, and the
-// generated Commands index (one line per command group, the same groups references/commands.md lists in full) has grown
-// with the API. Either generate-clients.mjs leaves the index to references/commands.md, or a new cap is chosen.
-test.skip("SKILL.md stays under 150 lines", () => {
+// The index of commands is references/commands.md's alone (scripts/clients/skill.mjs), so the API's growth never grows
+// SKILL.md.
+test("SKILL.md stays under 150 lines", () => {
   assert.ok(readFileSync(join(SKILL, "SKILL.md"), "utf8").split("\n").length < 150, "under 150 lines");
 });
 

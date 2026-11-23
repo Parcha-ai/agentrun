@@ -225,7 +225,7 @@ const groupAlive = (group) => {
   }
 };
 
-// SKIP: waits on a rewrite onto the runner. It waits for run A's pid file in the server's run directory
+// SKIP (#3551): waits on a rewrite onto the runner. It waits for run A's pid file in the server's run directory
 // (<run>/work/background/1/pid) and reads run B's tool answers from <run>/store/run.sqlite, both from before the one
 // store: on the runner the kernel's bash_background writes output.log and answers the pid, with no pid file, the process
 // lives in run A's computer, and the answers are in the one store. So it fails at "run A's process started" before run B

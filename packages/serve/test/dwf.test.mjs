@@ -110,7 +110,7 @@ const docsFlow = () => ({
 /** The smoke's faux decision providers: each call waits AGENTRUN_SMOKE_DECISION_MS and is filed in AGENTRUN_SMOKE_DECISION_CALLS. */
 const FAUX_DECISIONS = new URL("../scripts/dwf-smoke/faux-decisions.mjs", import.meta.url).pathname;
 
-// SKIP: waits on a pause mid-map that holds on the runner. Run alone it passes some of the time; it has also failed at
+// SKIP (#3550): waits on a pause mid-map that holds on the runner. Run alone it passes some of the time; it has also failed at
 // "the judges in flight finish within a minute" (after the pause, the graph's decisions never matched the requests the
 // faux decisions filed: a request sent with no receipt, or a receipt never read), and in CI, after the resume, its items
 // ended escalated, needs_review and not_run. The pause is applied at the run's next decision (workflow-loop.ts, the
