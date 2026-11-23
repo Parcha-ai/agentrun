@@ -1,0 +1,17 @@
+{
+  "apiRow": {
+    "run_id": "01a2068a-f070-7000-9339-84edd172345f",
+    "agent_id": "desk",
+    "title": "Look at the desktop.",
+    "status": "working",
+    "state": "working",
+    "created_at": "2026-11-23T03:54:58.545Z",
+    "computer": {
+      "kind": "desktop",
+      "provider": "faux-desktop",
+      "state": "taken_over"
+    }
+  },
+  "pageRow": "Look at the desktop. desk · Desktop · Faux desktop · started Nov 23, 3:54 AM YOU DRIVE WATCH",
+  "screenshot": "U2-you-drive-1440.png"
+}
