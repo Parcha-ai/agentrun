@@ -13,17 +13,23 @@ const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const card = "border bg-card p-4";
 const heading = "caps text-small font-semibold text-muted-foreground";
 
-/** Bars for a row of counts: each as tall as its share of the largest, its label under it. */
+/** Bars for a row of counts: each as tall as its share of the largest, its label under it. The bars are for the eye;
+ *  the same counts are a list for a screen reader (and the hover text is no one's only way to a figure). */
 function Bars({ values, labels, label }: { values: readonly number[]; labels: readonly string[]; label: string }) {
   const top = Math.max(1, ...values);
   return (
-    <div className="flex h-24 items-end gap-1" role="img" aria-label={label}>
-      {values.map((n, i) => (
-        <div key={labels[i]} className="flex h-full min-w-0 flex-1 flex-col justify-end gap-1" title={`${labels[i]}: ${n.toLocaleString("en-US")}`}>
-          <div className={cn("w-full", n > 0 ? "bg-primary" : "bg-muted")} style={{ height: `${n > 0 ? Math.max(4, (n / top) * 100) : 2}%` }} />
-        </div>
-      ))}
-    </div>
+    <>
+      <div className="flex h-24 items-end gap-1" aria-hidden="true">
+        {values.map((n, i) => (
+          <div key={labels[i]} className="flex h-full min-w-0 flex-1 flex-col justify-end gap-1" title={`${labels[i]}: ${n.toLocaleString("en-US")}`}>
+            <div className={cn("w-full", n > 0 ? "bg-primary" : "bg-muted")} style={{ height: `${n > 0 ? Math.max(4, (n / top) * 100) : 2}%` }} />
+          </div>
+        ))}
+      </div>
+      <ul className="sr-only" aria-label={label}>
+        {values.map((n, i) => <li key={labels[i]}>{labels[i]}: {n.toLocaleString("en-US")}</li>)}
+      </ul>
+    </>
   );
 }
 
@@ -65,6 +71,29 @@ export function WrappedPage({ v2, year, go }: { v2: Client; year?: number; go: (
   const modelTokens = data ? data.models.reduce((n, m) => n + m.tokens, 0) : 0;
   const harnessTokens = data ? data.harnesses.reduce((n, h) => n + h.tokens, 0) : 0;
 
+  // Every source seen on either side: a session file moved or deleted after its import leaves runs with no session read.
+  const sources = data ? [...new Set([...data.sources.map((s) => s.source), ...data.imported.map((i) => i.source)])] : [];
+  const importedSection = data && sources.length > 0 && (
+    <section className={card} aria-labelledby="w-imported">
+      <h2 id="w-imported" className={heading}>Imported</h2>
+      <ul className="mt-3 grid gap-2">
+        {sources.map((source) => {
+          const read = data.sources.find((s) => s.source === source);
+          const runs = data.imported.find((i) => i.source === source)?.runs ?? 0;
+          return (
+            <li key={source} className="flex flex-wrap items-baseline justify-between gap-2 font-mono text-body">
+              <span>{source}: {read ? `${read.sessions.toLocaleString("en-US")} sessions read` : "no session files read in this year"}</span>
+              {runs > 0
+                ? <a className="underline underline-offset-2 hover:text-foreground" href={`#/runs?source=${encodeURIComponent(source)}`}>{runs.toLocaleString("en-US")} imported as runs</a>
+                : <span className="text-muted-foreground">none imported as runs yet</span>}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-3 font-sans text-small text-muted-foreground">To open sessions here as runs, import them with <span className="font-mono">agentrun-serve import</span> or from Setup.</p>
+    </section>
+  );
+
   return (
     <section className="flex h-full min-h-0 flex-col">
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-2 px-5 md:px-6")}>
@@ -77,7 +106,12 @@ export function WrappedPage({ v2, year, go }: { v2: Client; year?: number; go: (
       <div className="min-h-0 flex-1 overflow-auto">
         {error ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} />
           : !data ? <ListSkeleton label="Reading your year" rows={5} />
-          : data.requests === 0 ? <p className="p-6 font-sans text-body text-muted-foreground" role="status">No coding agent sessions under this machine's home in {shown}.</p>
+          : data.requests === 0 ? (
+            <div className="mx-auto grid max-w-4xl gap-4 p-5 md:p-6">
+              <p className="font-sans text-body text-muted-foreground" role="status">No coding agent sessions under this machine's home in {shown}.</p>
+              {importedSection}
+            </div>
+          )
           : (
             <div className="mx-auto grid max-w-4xl gap-4 p-5 md:p-6">
               <p className="font-sans text-small text-muted-foreground">Read on this machine from its own session files. Nothing leaves it: no prompt, title, path or project is in what the page shows.</p>
@@ -102,7 +136,7 @@ export function WrappedPage({ v2, year, go }: { v2: Client; year?: number; go: (
                     {data.harnesses.map((h) => <Share key={h.harness} name={h.harness} figure={`${compact(h.tokens)} · ${h.sessions} sessions`} part={h.tokens} of={harnessTokens} />)}
                   </ul>
                   <ul className="grid content-start gap-3" aria-label="Models">
-                    {data.models.map((m) => <Share key={m.model} name={m.model} figure={`${compact(m.tokens)} · ${dollars(m.cost_usd)}`} part={m.tokens} of={modelTokens} />)}
+                    {data.models.map((m) => <Share key={m.model} name={m.model} figure={`${compact(m.tokens)} · ${dollars(m.cost_usd)}${data.unpriced_requests > 0 ? " priced only" : ""}`} part={m.tokens} of={modelTokens} />)}
                   </ul>
                 </div>
               </section>
@@ -120,23 +154,7 @@ export function WrappedPage({ v2, year, go }: { v2: Client; year?: number; go: (
                   </div>
                 </div>
               </section>
-              <section className={card} aria-labelledby="w-imported">
-                <h2 id="w-imported" className={heading}>Imported</h2>
-                <ul className="mt-3 grid gap-2">
-                  {data.sources.map((s) => {
-                    const runs = data.imported.find((i) => i.source === s.source)?.runs ?? 0;
-                    return (
-                      <li key={s.source} className="flex flex-wrap items-baseline justify-between gap-2 font-mono text-body">
-                        <span>{s.source}: {s.sessions.toLocaleString("en-US")} sessions read</span>
-                        {runs > 0
-                          ? <a className="underline underline-offset-2 hover:text-foreground" href={`#/runs?source=${encodeURIComponent(s.source)}`}>{runs.toLocaleString("en-US")} imported as runs</a>
-                          : <span className="text-muted-foreground">none imported as runs yet</span>}
-                      </li>
-                    );
-                  })}
-                </ul>
-                <p className="mt-3 font-sans text-small text-muted-foreground">To open sessions here as runs, import them with <span className="font-mono">agentrun-serve import</span> or from Setup.</p>
-              </section>
+              {importedSection}
             </div>
           )}
       </div>

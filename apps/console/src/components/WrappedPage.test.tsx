@@ -44,8 +44,35 @@ describe("WrappedPage", () => {
     expect(text).toContain("claude-agent");
     expect(text).toContain("anthropic/claude-sonnet");
     expect(text).toContain("2.0 h at work");
-    expect(document.querySelectorAll('[aria-label="Requests by hour of the day"] > div')).toHaveLength(24);
-    expect(document.querySelectorAll('[aria-label="Requests by day of the week"] > div')).toHaveLength(7);
+    expect(document.querySelectorAll('[aria-label="Requests by hour of the day"] > li')).toHaveLength(24);
+    expect(document.querySelectorAll('[aria-label="Requests by day of the week"] > li')).toHaveLength(7);
+  });
+
+  it("gives each chart's counts as text a screen reader reads, and hides the bars from it", async () => {
+    await mount(async () => YEAR, vi.fn(), 2025);
+    const hours = document.querySelector('ul.sr-only[aria-label="Requests by hour of the day"]');
+    expect(hours?.children[14]?.textContent).toBe("14:00: 120");
+    expect(document.querySelector('ul.sr-only[aria-label="Tokens by month"]')?.children[2]?.textContent).toBe("Mar: 6,300,000");
+    expect(document.querySelector('[role="img"]')).toBeNull();
+    expect(document.querySelectorAll('[aria-hidden="true"][class*="items-end"]').length).toBe(3);
+  });
+
+  it("says a model's cost counts priced requests only when some requests have no known price", async () => {
+    await mount(async () => YEAR, vi.fn(), 2025);
+    expect(document.body.textContent).toContain("$40.00 priced only");
+    document.body.innerHTML = "";
+    await mount(async () => ({ ...YEAR, unpriced_requests: 0 }), vi.fn(), 2025);
+    expect(document.body.textContent).not.toContain("priced only");
+  });
+
+  it("lists a source that is only imported (its session files are gone), also in a year with no requests", async () => {
+    await mount(async () => ({ ...YEAR, sources: [], imported: [{ source: "codex", runs: 3 }] }), vi.fn(), 2025);
+    expect(document.body.textContent).toContain("codex: no session files read in this year");
+    expect(document.querySelector('a[href="#/runs?source=codex"]')?.textContent).toBe("3 imported as runs");
+    document.body.innerHTML = "";
+    await mount(async () => ({ ...YEAR, requests: 0, sources: [], imported: [{ source: "codex", runs: 3 }] }), vi.fn(), 2024);
+    expect(document.body.textContent).toContain("No coding agent sessions under this machine's home in 2024.");
+    expect(document.querySelector('a[href="#/runs?source=codex"]')).not.toBeNull();
   });
 
   it("links a source's imported runs to the runs list of that source, and says when none are imported", async () => {

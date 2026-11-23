@@ -21,13 +21,13 @@ import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 /** The range and agent the page's analytics are asked for, and how to change them. */
 export type AnalyticsScope = { range: StatsRange; onRange: (range: StatsRange) => void; agent: string | null; onAgent?: (agent: string | null) => void; refreshing?: boolean };
 
-function MissionFrame({ actions, children }: { actions?: React.ReactNode; children: React.ReactNode }) {
+function MissionFrame({ actions, yearLink = true, children }: { actions?: React.ReactNode; yearLink?: boolean; children: React.ReactNode }) {
   return <div className="flex h-full min-h-0 flex-col">
     <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-2 px-5 md:px-6")}>
       <h1 className={pageTitleClass}><LayoutGrid className="size-4" aria-hidden />Mission Control</h1>
       <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
         {actions}
-        <a href="#/wrapped" className={buttonVariants({ variant: "ghost", size: "sm" })}>Your year</a>
+        {yearLink && <a href="#/wrapped" className={buttonVariants({ variant: "ghost", size: "sm" })}>Your year</a>}
       </div>
     </header>
     <div className="min-h-0 flex-1 overflow-auto">{children}</div>
@@ -39,7 +39,7 @@ function MissionFrame({ actions, children }: { actions?: React.ReactNode; childr
  *  or failed (each count a link to its list), what they cost (said with its basis, never $0 for a cost not known), runs
  *  a connected-agent inventory, and the latest runs with their agent, duration and cost, with combined tokens and run time, success and tools
  *  over the range picked (MissionAnalytics). Before the owner's first run, `startHere` sits above the data; it never replaces it. */
-export function MissionControl({ view, error, onRetry, scope, needsYou, asking, failed, live, startHere, actions, observed, agents, agentsError }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; asking?: number | null; failed?: number | null; live?: number | null; startHere?: React.ReactNode; actions?: React.ReactNode; observed?: ObservationRead; agents?: Agent[] | null; agentsError?: string | null }) {
+export function MissionControl({ view, error, onRetry, scope, needsYou, asking, failed, live, startHere, actions, observed, agents, agentsError, yearLink }: { yearLink?: boolean; view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; asking?: number | null; failed?: number | null; live?: number | null; startHere?: React.ReactNode; actions?: React.ReactNode; observed?: ObservationRead; agents?: Agent[] | null; agentsError?: string | null }) {
   const inventory = agentInventory(agents ?? [], observed?.data?.sessions ?? []);
   const managed = agents === undefined ? (view?.perAgent ?? []).map(a => ({ id: a.agentId, name: a.name, href: agentHash(a.agentId, "runs"), detail: `${a.runs} runs` }))
     : inventory.agents.map(a => ({ id: a.agent_id, name: a.definition.name ?? a.agent_id, href: agentHash(a.agent_id, "runs"), detail: `${view?.perAgent.find(row => row.agentId === a.agent_id)?.runs ?? a.runs?.count ?? 0} runs` }));
@@ -63,7 +63,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
     </li>)}</ul> : <p className="px-4 py-6 text-center font-mono text-body text-muted-foreground">{inventoryMissing ? "Connected agents are unavailable." : "No connected agents yet."}</p>}
   </section>;
   // An unavailable run-statistics read must not hide independently loaded connected agents.
-  if (!view) return <MissionFrame actions={actions}>
+  if (!view) return <MissionFrame actions={actions} yearLink={yearLink}>
     <div className="mx-auto w-full max-w-page-wide space-y-8 px-5 pb-16 pt-8 md:px-8 md:pt-10">
       {error ? <ProblemCard problem={error} onRetry={onRetry} /> : <MissionSkeleton />}
       {connectedAgents}
@@ -90,7 +90,7 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
       : ["Failed · last 24 h", failed === null ? "–" : String(failed), "#/runs?status=failed", failed ? "text-destructive-text" : undefined, [`See all ${view.runs.failed}`, review(view.runs.needsReview) ?? ""].filter(Boolean).join(" · ")],
   ];
   return (
-    <MissionFrame actions={actions}>
+    <MissionFrame actions={actions} yearLink={yearLink}>
       <div className="mx-auto w-full max-w-page-wide space-y-8 px-5 pb-16 pt-8 md:px-8 md:pt-10">
         {error && <ProblemCard problem={error} onRetry={onRetry} className="" />}
         {startHere}
