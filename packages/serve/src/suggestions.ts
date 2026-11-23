@@ -23,6 +23,7 @@ import type { GitHubConnectionView, RepoInstallation } from "./github-connection
 import { githubCall } from "./github.js";
 import { deleteBranch, GithubWriteRefused, type NewFile, openPull, pushFiles } from "./github-pull-request.js";
 import type { Settings } from "./store/index.js";
+import type { UsageEventName } from "./telemetry.js";
 import { memoryFiles, PackageError, readPackage } from "./templates.js";
 import { isObject, type Json, unknownFields } from "./validate.js";
 
@@ -135,6 +136,9 @@ export type SuggestionsDeps = {
   agentFrom(id: string, sha: string): Promise<string | undefined>;
   /** This server's public URL, which the pull request names as AGENTRUN_URL. */
   readonly publicUrl?: string;
+  /** Told each time a scan starts, a suggestion is discarded and a suggested agent's pull request opens: the anonymous
+   *  counts' `used` (telemetry.ts), which hears the event's name and nothing else. It never fails the request. */
+  readonly used?: (event: UsageEventName) => void;
   readonly now?: () => number;
 };
 
@@ -577,6 +581,15 @@ export class Suggestions {
     return isObject(claim) && typeof claim.at === "number" && this.now() - claim.at < ms;
   }
 
+  /** The anonymous counts told what was done: a hook that throws is the counts' problem, never the request's. */
+  private used(event: UsageEventName): void {
+    try {
+      this.deps.used?.(event);
+    } catch {
+      // Dropped, as a send that fails is (telemetry.ts).
+    }
+  }
+
   private async item(id: string): Promise<Item | undefined> {
     if (!/^sg_[0-9a-f]{20}$/.test(id)) return undefined;
     const value = await this.deps.settings.get(`${ITEM}${id}`);
@@ -745,6 +758,7 @@ export class Suggestions {
         await (isObject(was) ? this.deps.settings.replaceIf(key, claim, was) : this.deps.settings.removeIf(key, claim)).catch(() => false);
         throw error;
       }
+      this.used("suggestions_scanned");
       return { status: 202, body: { repo, run_id: scan.run_id, agent_id: scan.agent_id, status: "running", already_running: false } };
     }
     throw new ApiError("home_busy", `The scan of ${repo} kept changing while it started: send it again.`);
@@ -795,7 +809,11 @@ export class Suggestions {
       if (this.held(item.creating, CREATE_CLAIM_MS)) throw new ApiError("home_busy", "This suggestion is being created: wait for it to finish.");
       const next: Item = { ...item, status: to, decided_at: this.now() };
       if (to === "open") delete next.decided_at;
-      if (await this.write(next, item)) return itemView(next);
+      if (await this.write(next, item)) {
+        // A discard is counted when it changes the row: one sent again is not, and an undo is not counted at all.
+        if (to === "discarded") this.used("suggestion_discarded");
+        return itemView(next);
+      }
     }
     throw new ApiError("home_busy", "The suggestion kept changing while it was decided: send it again.");
   }
@@ -916,6 +934,8 @@ export class Suggestions {
         throw new ApiError("github_failed", `The agent ${made.agent_id} was made, and its pull request was not opened: ${words} Create again to open it.`, { details: { agent_id: made.agent_id } });
       }
       await this.deps.settings.put(`${ITEM}${item.id}`, item);
+      // Counted when its pull request opens: once a suggestion, since a create sent after that answers as it is.
+      this.used("suggested_agent_created");
       return { status: 201, body: { ...itemView(item), warnings } };
     } finally {
       await this.deps.github.revokeToken(token);

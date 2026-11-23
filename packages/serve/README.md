@@ -211,9 +211,10 @@ names no run, and a store with no such run says nothing; quiet keeps it too.
 
 ## Anonymous usage counts
 
-The server sends three anonymous events: `server_started`, a daily `heartbeat` and `first_run_completed`. Each holds
-a random id kept in the data directory (`.telemetry.json`), the version, the platform and how many runs ended as a
-range; never a prompt, a file, a key or a name.
+The server sends six anonymous events: `server_started`, a daily `heartbeat`, `first_run_completed`, and, for
+suggested agents, `suggestions_scanned`, `suggestion_discarded` and `suggested_agent_created`. Each holds a random id
+kept in the data directory (`.telemetry.json`), the version, the platform and how many runs ended as a range; never a
+prompt, a file, a key, a name or a repository.
 `AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns it off, as do `CI`, a test runner (`node --test`) and `--faux`; `AGENTRUN_TELEMETRY=debug` prints each
 event on stderr and sends none. The start that first could send prints one notice and sends nothing at that start.
 [docs/telemetry.md](../../docs/telemetry.md) lists every field.

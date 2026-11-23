@@ -186,6 +186,7 @@ import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { GitHubConnect, GitHubConnection, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
 import { SCOUT_TEMPLATE, Suggestions } from "./suggestions.js";
+import type { UsageEventName } from "./telemetry.js";
 import { FAUX_GITHUB, FAUX_GITHUB_FILE, startFauxGitHub } from "./github-faux.js";
 import { GITHUB_API } from "./github.js";
 import { bindingOf, REPO_NAME } from "./run-repo.js";
@@ -287,6 +288,9 @@ export type ServeOptions = {
   /** On Postgres: told when this server's owner lock is lost for good (another server took the schema, or the lock could
    *  not be taken back): every store call is refused from then. The CLI exits 1 on it, so the platform restarts the server. */
   onStoreLost?: (error: Error) => void;
+  /** Told when someone uses a feature the anonymous counts name (telemetry.ts UsageEventName: a suggestions scan, a
+   *  discard, a suggested agent created). The CLI hands it the counts' `used`; it hears the event's name and nothing else. */
+  onUsage?: (event: UsageEventName) => void;
   /** The owner, signed in with a password (owner.ts): the page asks for it, and the token stays for scripts and the CLI. */
   accounts?: boolean;
   /** With accounts: the first visit sets the password with no setup code (a server with no public address). Honored only
@@ -2238,6 +2242,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return { agentId: made.applied.agent_id, warnings: made.applied.warnings };
     },
     ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
+    ...(options.onUsage ? { used: options.onUsage } : {}),
   });
   // A github_app MCP server's tools are listed with an installation token of the App, narrowed to one repository it covers
   // with metadata read (tokenForListing); a run's own is minted in the runner (runner/github-app.ts). Every token minted
