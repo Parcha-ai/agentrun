@@ -40,10 +40,18 @@ test("a private key block with no END line (cut short) is cut through the base64
 });
 
 test("a private key body is bounded: an END line past 16 KiB is not reached, and the base64 lines after the header are cut all the same", () => {
+  // 300 lines of 65 bytes: about 19 KiB, past the bound. The END line is never reached, so it stays, after the cut lines.
   const text = `${line("BEGIN", "")}\n${body(300)}\n${line("END", "")}\nafter\n`;
-  const cut = redactSecrets(text, [], Buffer.byteLength(text));
-  assert.ok(!/[A-Za-z0-9+/]{64}/.test(cut), "no body line survives");
-  assert.ok(cut.endsWith("\nafter\n"), cut.slice(-80));
+  assert.equal(redactSecrets(text, [], Buffer.byteLength(text)), `[redacted]\n${line("END", "")}\nafter\n`);
+  // Within the bound, the END line is reached and cut with the block.
+  const within = `${line("BEGIN", "")}\n${body(240)}\n${line("END", "")}\nafter\n`;
+  assert.equal(redactSecrets(within, [], Buffer.byteLength(within)), "[redacted]\nafter\n");
+});
+
+test("a private key block with no END line is cut through at most 1,024 base64 lines after its header", () => {
+  const lines = body(1100).split("\n");
+  const text = `${line("BEGIN", "")}\n${lines.join("\n")}\n`;
+  assert.equal(redactSecrets(text, [], Buffer.byteLength(text)), `[redacted]\n${lines.slice(1024).join("\n")}\n`);
 });
 
 // The block's adversarial inputs of 256 KiB (a cut read's cap): headers repeated with a body line and no END, a header
