@@ -767,9 +767,9 @@ test("every way to name the server takes its address with or without /v2 and a t
   await sent([], { AGENTRUN_BASE_URL: prefix, AGENTRUN_API_KEY: "fake-test-key" }, "AGENTRUN_BASE_URL");
   const config = join(dir, ".config", "agentrun", "config.json");
   mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
-  writeFileSync(config, JSON.stringify({ base_url: `${prefix}/`, api_key: "saved-key" }), { mode: 0o600 });
+  writeFileSync(config, JSON.stringify({ base_url: `${prefix}/`, api_key: "not-a-secret" }), { mode: 0o600 });
   const fromConfig = await sent([], {}, "base_url in the config");
-  assert.equal(fromConfig.headers.authorization, "Bearer saved-key");
+  assert.equal(fromConfig.headers.authorization, "Bearer not-a-secret");
   // A template command, as every command: POST /v2/templates/import.
   const before = server.requests.length;
   await run(env, ["template", "install", "github:example/package", "--dry-run", ...nowhere], { extra: { AGENTRUN_BASE_URL: prefix, AGENTRUN_API_KEY: "fake-test-key" } });
@@ -783,7 +783,7 @@ test("the token kept with an address is found with or without /v2, and is never 
   const other = await listener(t, () => [200, "application/json", '{"agents":[],"next_cursor":null}']);
   const config = join(dir, ".config", "agentrun", "config.json");
   mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
-  const keep = (base_url) => writeFileSync(config, JSON.stringify({ base_url, api_key: "saved-key" }), { mode: 0o600 });
+  const keep = (base_url) => writeFileSync(config, JSON.stringify({ base_url, api_key: "not-a-secret" }), { mode: 0o600 });
   const prefix = home.base.replace(/\/v2$/, "");
   const nowhere = ["--data", join(dir, "nowhere")];
   // Kept without /v2 (as login wrote a --base-url before this rule), asked with it, and the other way round.
@@ -791,7 +791,7 @@ test("the token kept with an address is found with or without /v2, and is never 
     keep(kept);
     const found = await run(env, ["agents", "list", "--base-url", asked, ...nowhere]);
     assert.equal(found.code, 0, `kept ${kept}, asked ${asked}: ${found.err}`);
-    assert.equal(home.requests.at(-1).headers.authorization, "Bearer saved-key");
+    assert.equal(home.requests.at(-1).headers.authorization, "Bearer not-a-secret");
   }
   // Another port, another host name for the same address, another scheme, another path prefix: no token, nothing sent.
   keep(prefix);
@@ -808,7 +808,7 @@ test("the token kept with an address is found with or without /v2, and is never 
     const refused = await run(env, ["agents", "list", "--base-url", asked, ...nowhere]);
     assert.equal(refused.code, 4, `${asked}: ${refused.err}`);
     assert.match(refused.err, /No token for/);
-    assert.ok(!`${refused.out}${refused.err}`.includes("saved-key"));
+    assert.ok(!`${refused.out}${refused.err}`.includes("not-a-secret"));
   }
   assert.equal(home.requests.length + other.requests.length, seen, "nothing was sent");
 });
