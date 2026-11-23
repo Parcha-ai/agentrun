@@ -75,9 +75,13 @@ describe("receiptFacts", () => {
 });
 
 describe("showsReceipt", () => {
-  it("shows for a finished run that cost $0 on free models", () => {
+  it("shows for a completed run that cost $0 on free models", () => {
     expect(showsReceipt(run())).toBe(true);
-    expect(showsReceipt(run({ status: "failed" }))).toBe(true);
+  });
+  it("never for a failed or cancelled run, though it cost $0: a receipt is shared, and only a completed run's is", () => {
+    expect(showsReceipt(run({ status: "failed" }))).toBe(false);
+    expect(showsReceipt(run({ status: "cancelled" }))).toBe(false);
+    expect(receiptFacts(run({ status: "failed" }), "A", usage, trace)).toBeNull();
   });
   it("never for a run whose cost is unknown", () => {
     expect(showsReceipt(run({ cost: cost({ usd: null, free: undefined }) }))).toBe(false);

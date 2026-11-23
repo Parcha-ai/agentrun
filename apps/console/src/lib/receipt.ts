@@ -1,8 +1,7 @@
 import { isLocalModel, runModel } from "./models";
-import { runEnded } from "./format";
 import type { Run, RunTrace, RunUsage } from "./v2";
 
-// A finished free run's receipt: the one place the run's reads (GET /v2/runs/{id}, /usage, /trace) become the facts a
+// A completed free run's receipt: the one place the run's reads (GET /v2/runs/{id}, /usage, /trace) become the facts a
 // receipt card shows, and the rule for when there is one. components/Receipt.tsx renders them; any renderer that takes
 // ReceiptFacts can replace it.
 
@@ -26,10 +25,11 @@ export type ReceiptFacts = {
   tools: { name: string; calls: number; via?: string }[];
 };
 
-/** Whether a run has a receipt: it has ended, its cost is known to be $0, and the server says that is because every
- *  model request went to a free model (`cost.free`). Never for an unknown cost (`usd: null`) or a paid one. */
+/** Whether a run has a receipt: it completed, its cost is known to be $0, and the server says that is because every
+ *  model request went to a free model (`cost.free`). A receipt is shared, so a failed or cancelled run has none, nor
+ *  does an unknown cost (`usd: null`) or a paid one. */
 export function showsReceipt(run: Pick<Run, "status" | "cost">): boolean {
-  return runEnded(run.status) && run.cost?.usd === 0 && run.cost.free === true;
+  return run.status === "completed" && run.cost?.usd === 0 && run.cost.free === true;
 }
 
 /** What a tool call went through, read from its result's head (the trace's `result_preview`): its top-level `via`

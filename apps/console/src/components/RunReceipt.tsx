@@ -3,7 +3,7 @@ import { renderReceipt } from "@/components/Receipt";
 import { receiptFacts, showsReceipt } from "@/lib/receipt";
 import type { Run, RunTrace, RunUsage } from "@/lib/v2";
 
-/** A finished free run's receipt on its page (lib/receipt.ts showsReceipt): its usage and trace are read once it shows,
+/** A completed free run's receipt on its page (lib/receipt.ts showsReceipt): its usage and trace are read once it shows,
  *  and the card is drawn by renderReceipt once both reads have answered or failed (a failed one adds nothing; with no
  *  usage there is no model to name, and no card). Nothing for any other run, which reads nothing for it. `freeRequests`:
  *  the server's free-model request limit a run (capabilities' `limits.free_model_requests`), in the receipt's words. */

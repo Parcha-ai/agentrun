@@ -63,6 +63,12 @@ describe("a run's $0 receipt", () => {
     expect((await open(run({ usd: 0.0123, basis: "estimate", charge_state: null, cap_usd: 0.25 }))).card()).toBeNull();
   });
 
+  it("never on a failed or cancelled run, though it cost $0", async () => {
+    expect((await open(run(FREE, { status: "failed" }))).card()).toBeNull();
+    act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    expect((await open(run(FREE, { status: "cancelled" }))).card()).toBeNull();
+  });
+
   it("never while the run works", async () => {
     expect((await open(run(FREE, { status: "working", state: "working", ended_at: null }))).card()).toBeNull();
   });
