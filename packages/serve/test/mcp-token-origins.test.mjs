@@ -3,6 +3,7 @@
 // http://[::1]:<port>) with its port, which counts only when AGENTRUN_MCP_ALLOW_LOOPBACK is on; anything else is refused
 // in words at the start, never skipped. The one exact check (tokenOriginListed) is the save's and the claim's.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 
 const { MCP_TOKEN_ORIGINS_ENV, mcpTokenOriginsFrom, tokenOriginListed } = await import("../dist/mcp-token-origins.js");
@@ -38,6 +39,35 @@ test("an entry that is not an exact origin is refused in words naming the variab
   // An entry with a user and password, put together here so no line of the source reads as a credential URL.
   const withPassword = ["https://user", "hunter2-not-a-secret@tools.example"].join(":");
   assert.throws(() => at(withPassword, true), (error) => error instanceof TypeError && !error.message.includes("hunter2"));
+});
+
+test("a bad entry is named by its place alone, never echoed: a key in its query or path reaches neither the start's error nor the CLI's stderr", () => {
+  // A key an operator put in an entry's query or path, put together here so no line of the source reads as one.
+  const key = ["not-a-secret", "origins-entry-key-0006"].join("-");
+  const bad = [
+    [`https://tools.example/mcp?key=${key}`, "entry 1"],
+    [`https://edge.example,https://tools.example/mcp?key=${key}`, "entry 2"],
+    [`https://tools.example/${key}`, "entry 1"],
+    [`https://tools.example#${key}`, "entry 1"],
+    [`https://edge.example,ftp://${key}.example`, "entry 2"],
+    [`http://127.0.0.1:4001,http://127.0.0.1:4002?k=${key}`, "entry 2"],
+  ];
+  for (const [value, place] of bad) {
+    assert.throws(() => at(value, true), (error) => {
+      assert.ok(error instanceof TypeError, value);
+      assert.ok(!error.message.includes(key), `the error holds the key: ${error.message}`);
+      assert.ok(!error.message.includes("tools.example") && !error.message.includes("edge.example"), `the error echoes an entry: ${error.message}`);
+      assert.ok(error.message.includes(` ${place} `), `${place} named: ${error.message}`);
+      return true;
+    });
+  }
+  // A second http loopback entry is named by its place too.
+  assert.throws(() => at("http://127.0.0.1:4001,http://[::1]:4002", true), (error) => /entry 2 is a second/.test(error.message) && !error.message.includes("[::1]:4002"));
+  // The CLI's start: refused in words on stderr (exit 2), and the key is not among them.
+  const cli = spawnSync(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname], { env: { PATH: process.env.PATH, HOME: process.env.HOME, AGENTRUN_MCP_TOKEN_ORIGINS: bad[0][0] }, encoding: "utf8", timeout: 60_000 });
+  assert.equal(cli.status, 2, cli.stderr);
+  assert.match(cli.stderr, /AGENTRUN_MCP_TOKEN_ORIGINS lists origins .*: entry 1 /);
+  assert.ok(!cli.stderr.includes(key) && !cli.stdout.includes(key), "the CLI printed the key");
 });
 
 test("tokenOriginListed: the URL's origin exactly one listed; no prefix, suffix, other port, other scheme or user", () => {

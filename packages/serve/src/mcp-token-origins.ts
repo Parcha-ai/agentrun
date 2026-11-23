@@ -37,7 +37,8 @@ function entryOrigin(entry: string): { origin: string; loopback: boolean } | { w
 
 /** The origins `env` lists that count here: every entry checked, then a loopback one kept only when `loopback` (this
  *  process's AGENTRUN_MCP_ALLOW_LOOPBACK). Unset or blank: none. A bad entry, or a second http loopback one, is refused
- *  in words naming the variable (a TypeError); an entry with a user in it is named by its place, never echoed. */
+ *  in words naming the variable (a TypeError), and named by its place in the list alone: no entry's text is ever echoed,
+ *  since an operator may have pasted a key in one (a user, a path, a query), and the start prints the refusal. */
 export function mcpTokenOriginsFrom(env: NodeJS.ProcessEnv = process.env, loopback = false): readonly string[] {
   const given = env[MCP_TOKEN_ORIGINS_ENV]?.trim() ?? "";
   if (given === "") return [];
@@ -46,7 +47,7 @@ export function mcpTokenOriginsFrom(env: NodeJS.ProcessEnv = process.env, loopba
   let httpLoopback = 0;
   entries.forEach((entry, at) => {
     const read = entryOrigin(entry);
-    const named = entry.includes("@") || entry === "" ? `entry ${at + 1}` : JSON.stringify(entry);
+    const named = `entry ${at + 1}`;
     if ("why" in read) throw new TypeError(`${MCP_TOKEN_ORIGINS_ENV} lists origins (${SHAPE}): ${named} ${read.why}.`);
     if (read.origin.startsWith("http:") && ++httpLoopback > 1) throw new TypeError(`${MCP_TOKEN_ORIGINS_ENV} lists one http loopback origin at most (${SHAPE}): ${named} is a second.`);
     if (loopback || !read.loopback) origins.push(read.origin);
