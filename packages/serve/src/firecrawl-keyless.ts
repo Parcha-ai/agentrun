@@ -16,7 +16,7 @@
 // rate limit, with the wait it names (retry_after_seconds, Retry-After), which the breaker holds Firecrawl for. Firecrawl's
 // own words (a link to sign up) are never passed on: a call answers ours. A call is not retried here (the backend behind
 // Firecrawl answers it in its place), and ends at 60 s.
-import { callTool, type Called, RATE_LIMITED, textBlocks } from "./keyless-mcp.js";
+import { type Bounded, callTool, MAX_BYTES, RATE_LIMITED, textBlocks } from "./keyless-mcp.js";
 import { clip, markdownRead, type Read, TITLE_CAP } from "./web-fetch-direct.js";
 import { type Hit, type Limit, type Search, snippetOf, waitOf } from "./web-search.js";
 
@@ -66,7 +66,7 @@ const limitWords = (limit: Limit, what: "search" | "fetch"): string => (limit.ki
 
 /** One call's outcome as Firecrawl's answer to `what`: its refusals and failures in our words, else `read` of the result's
  *  JSON text. */
-function readCalled<T>(called: Called, what: "search" | "fetch", read: (json: Record<string, unknown>) => T | FirecrawlFailed): T | FirecrawlFailed {
+function readCalled<T>(called: Bounded, what: "search" | "fetch", read: (json: Record<string, unknown>) => T | FirecrawlFailed): T | FirecrawlFailed {
   if ("status" in called) {
     if (called.status === 429) {
       const limit: Limit = { kind: "rate", ...(called.retryAfterS === undefined ? {} : { retryAfter: called.retryAfterS }) };
@@ -74,6 +74,7 @@ function readCalled<T>(called: Called, what: "search" | "fetch", read: (json: Re
     }
     return { error: `Firecrawl's MCP endpoint answered ${called.status} to ${called.step === "initialize" ? "initialize" : `the ${what}`}` };
   }
+  if ("over" in called) return { error: `Firecrawl's ${what} answered more than ${called.over / MAX_BYTES} MiB: not read` };
   if ("error" in called) return { error: called.rpc ? `Firecrawl's ${what} failed: its MCP endpoint answered an error` : "Firecrawl's MCP endpoint did not answer initialize" };
   const { result } = called;
   if (result?.isError === true) {
@@ -89,20 +90,20 @@ function readCalled<T>(called: Called, what: "search" | "fetch", read: (json: Re
   return { error: `Firecrawl's ${what} answered no result this server reads` };
 }
 
-/** The tool `name` with `args` on Firecrawl's keyless endpoint, read by `read`: once. */
-async function firecrawlCall<T>(name: string, args: Record<string, unknown>, what: "search" | "fetch", read: (json: Record<string, unknown>) => T | FirecrawlFailed, { endpoint = FIRECRAWL_MCP_URL, send = fetch, signal }: FirecrawlOptions): Promise<T | FirecrawlFailed> {
+/** The tool `name` with `args` on Firecrawl's keyless endpoint, its answer bounded at `maxBytes`, read by `read`: once. */
+async function firecrawlCall<T>(name: string, args: Record<string, unknown>, what: "search" | "fetch", maxBytes: number, read: (json: Record<string, unknown>) => T | FirecrawlFailed, { endpoint = FIRECRAWL_MCP_URL, send = fetch, signal }: FirecrawlOptions): Promise<T | FirecrawlFailed> {
   const deadline = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(signal ? [signal] : [])]);
   try {
-    return readCalled(await callTool(endpoint, send, deadline, name, args), what, read);
+    return readCalled(await callTool(endpoint, send, deadline, name, args, maxBytes), what, read);
   } catch (error) {
     const reason = (error as Error)?.name;
     return { error: reason === "TimeoutError" ? `Firecrawl's ${what} did not answer within 60 s` : reason === "AbortError" ? `the ${what} was stopped` : `Firecrawl's ${what} failed: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
   }
 }
 
-/** `query` searched on Firecrawl's keyless endpoint, at most `n` results. */
+/** `query` searched on Firecrawl's keyless endpoint, at most `n` results, its answer at most MAX_BYTES. */
 export async function firecrawlSearch(query: string, n: number, options: FirecrawlOptions = {}): Promise<Search | FirecrawlFailed> {
-  return firecrawlCall<Search>(FIRECRAWL_SEARCH_TOOL, { query, limit: n }, "search", (json) => {
+  return firecrawlCall<Search>(FIRECRAWL_SEARCH_TOOL, { query, limit: n }, "search", MAX_BYTES, (json) => {
     const data = json.data as { web?: unknown } | unknown[] | undefined;
     const rows = Array.isArray(data) ? data : Array.isArray(data?.web) ? data.web : undefined;
     if (!rows) return { error: "Firecrawl's search answered no results this server reads" };
@@ -111,14 +112,17 @@ export async function firecrawlSearch(query: string, n: number, options: Firecra
   }, options);
 }
 
-/** The page at `url` scraped by Firecrawl's keyless endpoint, as markdown. Firecrawl names no cut, so the text is read
- *  as the whole page's. */
+/** The page at `url` scraped by Firecrawl's keyless endpoint, as markdown, its answer at most the direct fetch's bound
+ *  (pi-browser's PUBLIC_MAX_BYTES). Firecrawl names no cut, so the text is read as the whole page's. A page whose status
+ *  is not 2xx is no read: the caller fetches directly, as for a refusal. */
 export async function firecrawlScrape(url: string, options: FirecrawlOptions = {}): Promise<Read | FirecrawlFailed> {
-  return firecrawlCall<Read>(FIRECRAWL_SCRAPE_TOOL, { url, formats: ["markdown"] }, "fetch", (json) => {
+  const { PUBLIC_MAX_BYTES } = await import("@parcha/pi-browser");
+  return firecrawlCall<Read>(FIRECRAWL_SCRAPE_TOOL, { url, formats: ["markdown"] }, "fetch", PUBLIC_MAX_BYTES, (json) => {
     if (typeof json.markdown !== "string" || json.markdown.trim() === "") return { error: "Firecrawl's fetch answered no page text" };
     const meta = (typeof json.metadata === "object" && json.metadata !== null ? json.metadata : {}) as { title?: unknown; sourceURL?: unknown; url?: unknown; statusCode?: unknown };
     const final = [meta.url, meta.sourceURL].find((one): one is string => typeof one === "string" && URL.canParse(one)) ?? url;
     const status = typeof meta.statusCode === "number" && Number.isInteger(meta.statusCode) ? meta.statusCode : 200;
+    if (status < 200 || status > 299) return { error: `Firecrawl's fetch: the page answered ${status}` };
     return markdownRead(final, typeof meta.title === "string" ? meta.title : "", json.markdown, true, status);
   }, options);
 }
