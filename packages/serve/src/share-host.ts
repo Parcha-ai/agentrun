@@ -1,0 +1,380 @@
+// The share host (`agentrun-serve --share-host`, AGENTRUN_SHARE_HOST=1): the serve install behind agentrun.ai/r/<id>,
+// with a store of its own. It answers under /r/ alone, so the site it sits behind routes one path to it:
+//   /r/<id>               a share's page (the console's share.html, its asset URLs moved under /r/_assets/)
+//   /r/<id>/bundle.json   the stored bytes, exactly as they were posted and scanned
+//   /r/_assets/*          the page's assets (the console's build)
+//   /r/v2/shares          POST stores a bundle, GET lists the caller's own; DELETE /r/v2/shares/<id> deletes one
+//   /r/v2/health          public
+// Every other address is a 404, answered before anything else reads the request (server.ts): the console, /v2 and with
+// it every run, agent, key, computer, sign-in, MCP and trigger route. The host runs no runner and holds no model key.
+//
+// An upload, in order: the token (api-token.ts; its id owns the share), the token's quota, the body within its cap, a
+// canonical `agentrun.share/1` document of the export's closed shape and caps whose sha256 and file digests hold
+// (checkShareBundle), then the scrubber over the whole body in cut mode with this host's held values. Any cut, or a scrub
+// that fails, refuses it: 422 with counts by rule, never a value, nothing stored. The host never repairs a bundle: what
+// it stores, and later serves, is the posted bytes it scanned. A share's URL is on AGENTRUN_PUBLIC_URL (else, on loopback,
+// the server's own address), never a Host header.
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { join } from "node:path";
+import { packageSha256 } from "./agent-package.js";
+import { ApiError } from "./errors.js";
+import { sendHostedAsset, sendHostedSharePage } from "./page.js";
+import { readCapped } from "./push-handler.js";
+import { type CutScrub, EXPORT_CAPS, SHARE_FORMAT, SHARE_RUN_FIELDS } from "./run-export.js";
+import { scrub } from "./secret-cut.js";
+import { isObject, stable } from "./validate.js";
+
+export { SHARE_HOST_CSP } from "./page.js";
+
+/** Where everything a share host serves lives. */
+export const SHARE_ROOT = "/r/";
+/** The share host's API. */
+export const SHARE_API = "/r/v2/";
+/** The most shares one token keeps (Miguel, 11-23): a delete makes room. No share expires. */
+export const SHARE_QUOTA = 100;
+/** The most bytes an upload's body may hold: the export's document cap, and room for nothing else. */
+export const SHARE_BODY_BYTES = EXPORT_CAPS.documentBytes;
+/** A share's id: 128 bits of randomness in base32 (lowercase, no padding). The URL is the capability. */
+export const SHARE_ID = /^[a-z2-7]{26}$/;
+
+/** The share host's API, by method, path and name. Nothing else under /r/v2/ is served. */
+export const SHARE_HOST_ROUTES: readonly { method: string; path: string; pattern: RegExp; name: string }[] = [
+  { method: "GET", path: "/r/v2/health", pattern: /^\/r\/v2\/health$/, name: "getShareHealth" },
+  { method: "POST", path: "/r/v2/shares", pattern: /^\/r\/v2\/shares$/, name: "createShare" },
+  { method: "GET", path: "/r/v2/shares", pattern: /^\/r\/v2\/shares$/, name: "listShares" },
+  { method: "DELETE", path: "/r/v2/shares/{id}", pattern: /^\/r\/v2\/shares\/([^/]+)$/, name: "deleteShare" },
+];
+
+const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
+/** A new share id: 16 random bytes as 26 base32 letters. */
+export function newShareId(): string {
+  const bytes = randomBytes(16);
+  let bits = 0;
+  let value = 0;
+  let out = "";
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      out += BASE32[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) out += BASE32[(value << (5 - bits)) & 31];
+  return out;
+}
+
+// ---------- the bundle's shape
+
+/** The bundle's keys, each one there (run-export.ts exportBundle writes every one). */
+const TOP = ["agent", "cuts", "files", "format", "graph", "omitted", "restored", "rows", "run", "sha256", "source"] as const;
+const RUN_FIELDS: ReadonlySet<string> = new Set([...SHARE_RUN_FIELDS, "imported_from"]);
+const CUT_KINDS: ReadonlySet<string> = new Set(["format", "held", "dump", "label", "personal", "jev"]);
+const HEX64 = /^[0-9a-f]{64}$/;
+
+const refuse = (why: string): never => {
+  throw new ApiError("bad_request", `This is not a share bundle the host takes: ${why}.`);
+};
+/** `value` is an object whose keys are `required` and those of `optional`, no other. */
+function closed(value: unknown, at: string, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
+  if (!isObject(value)) return refuse(`${at} is not an object`);
+  const allowed = new Set([...required, ...optional]);
+  for (const key of Object.keys(value)) if (!allowed.has(key)) refuse(`${at} has a field ${JSON.stringify(key.slice(0, 64))} the format does not name`);
+  for (const key of required) if (!Object.hasOwn(value, key)) refuse(`${at} has no ${key}`);
+  return value;
+}
+const string = (value: unknown, at: string): string => (typeof value === "string" ? value : refuse(`${at} is not a string`));
+const count = (value: unknown, at: string): number => (Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : refuse(`${at} is not a whole number`));
+const array = (value: unknown, at: string): unknown[] => (Array.isArray(value) ? value : refuse(`${at} is not an array`));
+
+/** The sha256 a bundle names: over the canonical JSON of the document without its sha256 (run-export.ts). */
+const digestOf = (doc: Record<string, unknown>): string => {
+  const { sha256: _named, ...rest } = doc;
+  return createHash("sha256").update(stable(rest)).digest("hex");
+};
+
+/** `text` read as a share bundle the host takes, or a 400 that says why (never quoting a value of it): canonical JSON (the
+ *  bytes the export writes: what is hashed, scanned and stored is one text), `agentrun.share/1`, the export's closed keys
+ *  at every level it fixes (the run's allowlist, agent, source, files, omitted, cuts, restored; rows and the graph are
+ *  the served shapes, read by the scrubber whole), its caps on files, each file's size and digest, and the document's
+ *  sha256. */
+export function checkShareBundle(text: string): { sha256: string } {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return refuse("the body is not JSON");
+  }
+  const top = closed(doc, "the bundle", TOP);
+  if (top.format !== SHARE_FORMAT) refuse(`its format is not ${SHARE_FORMAT}`);
+  if (stable(doc) !== text) refuse("the body is not canonical JSON (keys sorted, no whitespace), as the export writes it");
+  const source = closed(top.source, "source", ["agentrun", "scrubber"]);
+  string(source.agentrun, "source.agentrun");
+  const scrubber = closed(source.scrubber, "source.scrubber", ["version", "rules"]);
+  count(scrubber.version, "source.scrubber.version");
+  string(scrubber.rules, "source.scrubber.rules");
+  const agent = closed(top.agent, "agent", ["name", "kind"]);
+  string(agent.name, "agent.name");
+  string(agent.kind, "agent.kind");
+  const run = closed(top.run, "run", [], [...RUN_FIELDS]);
+  if (run.imported_from !== undefined && run.imported_from !== null) string(closed(run.imported_from, "run.imported_from", ["source"]).source, "run.imported_from.source");
+  array(top.rows, "rows");
+  if (top.graph !== null && !isObject(top.graph)) refuse("graph is neither null nor an object");
+  const files = array(top.files, "files");
+  if (files.length > EXPORT_CAPS.files) refuse(`it carries more than ${EXPORT_CAPS.files} files`);
+  let total = 0;
+  for (const [index, entry] of files.entries()) {
+    const at = `files/${index}`;
+    const file = closed(entry, at, ["path", "bytes", "sha256", "encoding", "content"]);
+    const path = string(file.path, `${at}.path`);
+    const content = string(file.content, `${at}.content`);
+    if (file.encoding !== "utf8") refuse(`${at} is not utf8 text`);
+    const bytes = Buffer.byteLength(content);
+    if (bytes > EXPORT_CAPS.fileBytes) refuse(`${at} is over ${EXPORT_CAPS.fileBytes} bytes`);
+    total += bytes;
+    if (count(file.bytes, `${at}.bytes`) !== bytes) refuse(`${at}.bytes is not its content's size`);
+    if (file.sha256 !== packageSha256([{ path, encoding: "utf8", content }])) refuse(`${at}.sha256 is not its digest`);
+  }
+  if (total > EXPORT_CAPS.filesBytes) refuse(`its files are over ${EXPORT_CAPS.filesBytes} bytes in all`);
+  for (const [index, entry] of array(top.omitted, "omitted").entries()) {
+    const item = closed(entry, `omitted/${index}`, ["what", "why"], ["path"]);
+    string(item.what, `omitted/${index}.what`);
+    string(item.why, `omitted/${index}.why`);
+    if (item.path !== undefined) string(item.path, `omitted/${index}.path`);
+  }
+  const record = (entry: unknown, at: string, extra: readonly string[]) => {
+    const cut = closed(entry, at, ["id", "at", "start", "end", "rule", "kind", ...extra]);
+    for (const field of ["id", "at", "rule"]) string(cut[field], `${at}.${field}`);
+    count(cut.start, `${at}.start`);
+    count(cut.end, `${at}.end`);
+    if (!CUT_KINDS.has(String(cut.kind))) refuse(`${at}.kind is not a cut's kind`);
+    return cut;
+  };
+  for (const [index, entry] of array(top.cuts, "cuts").entries()) {
+    const cut = record(entry, `cuts/${index}`, ["restorable", "shape"]);
+    if (typeof cut.restorable !== "boolean") refuse(`cuts/${index}.restorable is not a boolean`);
+    string(cut.shape, `cuts/${index}.shape`);
+  }
+  for (const [index, entry] of array(top.restored, "restored").entries()) record(entry, `restored/${index}`, []);
+  const named = string(top.sha256, "sha256");
+  if (!HEX64.test(named) || named !== digestOf(top)) refuse("its sha256 is not the digest of its content");
+  return { sha256: named };
+}
+
+/** The scrubber over the stored body, in cut mode with `held`: nothing found, or a 422 that counts what was by rule (and
+ *  never says a value or where), or says the scrub failed. The cut text is never used: the host stores what was sent or
+ *  nothing. */
+export async function screenShare(text: string, held: readonly string[], cutPass: CutScrub = (body, opts) => scrub(body, opts)): Promise<void> {
+  let result: Awaited<ReturnType<CutScrub>>;
+  try {
+    result = await cutPass(text, { mode: "cut", held });
+  } catch {
+    result = { ok: false, counts: {} };
+  }
+  if (!result.ok) throw new ApiError("input_invalid", "The share host's scrub of this bundle failed, so it is refused (the scrub fails closed). Nothing was stored.", { details: { reason: "scrub_failed" } });
+  if (result.cuts.length > 0) {
+    const counts: Record<string, number> = {};
+    for (const cut of result.cuts) counts[cut.rule] = (counts[cut.rule] ?? 0) + 1;
+    throw new ApiError("input_invalid", `The share host's scrub found ${result.cuts.length} value${result.cuts.length === 1 ? "" : "s"} in this bundle (by rule: ${Object.entries(counts).map(([rule, n]) => `${rule} ${n}`).join(", ")}), so it is refused. Nothing was stored; export the run again with the cuts in place.`, { details: { reason: "scrub_found", counts } });
+  }
+}
+
+// ---------- the store: <data>/shares/<id>/{bundle.json, meta.json}
+
+/** What the host keeps of a share beside its bytes. `deleted_at` marks one its owner deleted: its bytes are gone, and its
+ *  page answers 410. */
+export type ShareMeta = { id: string; sha256: string; token_id: string; created_at: string; bytes: number; deleted_at?: string };
+
+/** The shares of one host, in files under `dir`, written to a temp file and renamed, 0600 in 0700 folders. Kept in
+ *  memory once read: this process is the folder's one writer. */
+export class ShareStore {
+  private index: Promise<Map<string, ShareMeta>> | undefined;
+  private queue: Promise<unknown> = Promise.resolve();
+  constructor(readonly dir: string) {}
+
+  private all(): Promise<Map<string, ShareMeta>> {
+    return (this.index ??= (async () => {
+      const found = new Map<string, ShareMeta>();
+      const names = await readdir(this.dir).catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? [] : Promise.reject(error)));
+      for (const name of names) {
+        if (!SHARE_ID.test(name)) continue;
+        const meta = await readFile(join(this.dir, name, "meta.json"), "utf8").then((text) => JSON.parse(text) as ShareMeta, () => undefined);
+        if (meta && meta.id === name) found.set(name, meta);
+      }
+      return found;
+    })().catch((error: unknown) => {
+      this.index = undefined;
+      throw error;
+    }));
+  }
+
+  /** One write at a time: a quota is read and a share made in one step. */
+  private serial<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.queue.then(work, work);
+    this.queue = next.catch(() => undefined);
+    return next;
+  }
+
+  async get(id: string): Promise<ShareMeta | undefined> {
+    return SHARE_ID.test(id) ? (await this.all()).get(id) : undefined;
+  }
+
+  /** The live shares `tokenId` made, oldest first. */
+  async list(tokenId: string): Promise<ShareMeta[]> {
+    return [...(await this.all()).values()].filter((meta) => meta.token_id === tokenId && !meta.deleted_at).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  }
+
+  /** A 403 when `tokenId` keeps its quota of shares already. */
+  async roomFor(tokenId: string, quota: number): Promise<void> {
+    const used = (await this.list(tokenId)).length;
+    if (used >= quota) throw new ApiError("forbidden", `This token keeps ${used} shares, its most (${quota}). Delete one (DELETE /r/v2/shares/<id>) to make room.`, { details: { reason: "share_quota", limit: quota, used } });
+  }
+
+  /** Stores `body` as a new share of `tokenId`, the quota checked again inside the write. */
+  create(tokenId: string, body: string, sha256: string, quota: number): Promise<ShareMeta> {
+    return this.serial(async () => {
+      await this.roomFor(tokenId, quota);
+      const index = await this.all();
+      let id = newShareId();
+      while (index.has(id)) id = newShareId();
+      const folder = join(this.dir, id);
+      await mkdir(this.dir, { recursive: true, mode: 0o700 });
+      await mkdir(folder, { mode: 0o700 });
+      const meta: ShareMeta = { id, sha256, token_id: tokenId, created_at: new Date().toISOString(), bytes: Buffer.byteLength(body) };
+      try {
+        await writeAtomic(join(folder, "bundle.json"), body);
+        await writeAtomic(join(folder, "meta.json"), `${JSON.stringify(meta)}\n`);
+      } catch (error) {
+        await rm(folder, { recursive: true, force: true }).catch(() => undefined);
+        throw error;
+      }
+      index.set(id, meta);
+      return meta;
+    });
+  }
+
+  /** The stored bytes of live share `id`. */
+  bytes(id: string): Promise<Buffer> {
+    return readFile(join(this.dir, id, "bundle.json"));
+  }
+
+  /** Deletes share `id` of `tokenId`: its bytes go, its meta stays as the tombstone its page's 410 reads. */
+  delete(id: string, tokenId: string): Promise<void> {
+    return this.serial(async () => {
+      const meta = await this.get(id);
+      if (!meta) throw new ApiError("not_found", `There is no share ${id} on this host.`);
+      if (meta.token_id !== tokenId) throw new ApiError("forbidden", `The share ${id} was made with another token; only that token deletes it.`);
+      if (meta.deleted_at) return;
+      const gone: ShareMeta = { ...meta, deleted_at: new Date().toISOString() };
+      await writeAtomic(join(this.dir, id, "meta.json"), `${JSON.stringify(gone)}\n`);
+      (await this.all()).set(id, gone);
+      await rm(join(this.dir, id, "bundle.json"), { force: true });
+    });
+  }
+}
+
+async function writeAtomic(file: string, text: string): Promise<void> {
+  const temp = `${file}.${randomBytes(6).toString("hex")}.tmp`;
+  await writeFile(temp, text, { mode: 0o600, flag: "wx" });
+  await rename(temp, file);
+}
+
+// ---------- the routes
+
+export interface ShareHostDeps {
+  /** The server's data folder: shares live in its `shares/`. */
+  readonly data: string;
+  /** The id of the token an Authorization header carries (api-token.ts bearerCheck), else undefined. */
+  who(req: IncomingMessage): string | undefined;
+  /** A refused credential, for the server's log line. */
+  authFailed?(route: string, reason: string): void;
+  /** The values this host holds (its own keys and tokens): a bundle that holds one is refused. */
+  held(): readonly string[];
+  /** The origin a share's URL is on: AGENTRUN_PUBLIC_URL, else the server's own address. Never a request's Host. */
+  origin(): string;
+  /** The console's build (share.html and its assets); the one beside the server when undefined. */
+  console: string | undefined;
+  version: string;
+  /** The scrubber in cut mode, or a test's stand-in. */
+  scrub?: CutScrub;
+  quota?: number;
+}
+
+const json = (res: ServerResponse, status: number, body: unknown) => {
+  const bytes = Buffer.from(JSON.stringify(body));
+  res.writeHead(status, { "content-type": "application/json", "content-length": bytes.length, "cache-control": "no-store", "x-content-type-options": "nosniff" });
+  res.end(res.req?.method === "HEAD" ? undefined : bytes);
+};
+const notFound = (raw: string) => new ApiError("not_found", `${raw} is not served here: a share host serves /r/<id>, /r/<id>/bundle.json, /r/_assets/ and /r/v2/ alone.`);
+const allow = (methods: string) => new ApiError("method_not_allowed", `this address answers ${methods}`, {}, { allow: methods });
+
+/** The share host's answer to every request, under /r/ or not: `fail` renders a refusal (server.ts's envelope). */
+export function shareHost(deps: ShareHostDeps): (req: IncomingMessage, res: ServerResponse, raw: string) => Promise<void> {
+  const store = new ShareStore(join(deps.data, "shares"));
+  const quota = deps.quota ?? SHARE_QUOTA;
+  const urlOf = (id: string) => `${deps.origin().replace(/\/+$/, "")}${SHARE_ROOT}${id}`;
+  const view = (meta: ShareMeta) => ({ id: meta.id, url: urlOf(meta.id), sha256: meta.sha256, created_at: meta.created_at, bytes: meta.bytes });
+  const tokenOf = (req: IncomingMessage, route: string): string => {
+    const id = deps.who(req);
+    if (id !== undefined) return id;
+    deps.authFailed?.(route, req.headers.authorization === undefined ? "no_token" : "wrong_token");
+    throw new ApiError("unauthenticated", "the share host's API takes one of its tokens as a Bearer header");
+  };
+  /** A share for its page or bytes: live, else 410 for a deleted one, 404 for none. */
+  const live = async (id: string, raw: string): Promise<ShareMeta> => {
+    const meta = await store.get(id);
+    if (!meta) throw notFound(raw);
+    if (meta.deleted_at) throw new ApiError("purged", `The share ${id} was deleted by its owner.`, { details: { deleted_at: meta.deleted_at } });
+    return meta;
+  };
+
+  return async (req, res, raw) => {
+    if (!raw.startsWith(SHARE_ROOT)) throw notFound(raw);
+    const method = req.method === "HEAD" ? "GET" : req.method;
+    if (raw.startsWith(SHARE_API)) {
+      const route = SHARE_HOST_ROUTES.filter((entry) => entry.pattern.test(raw));
+      if (route.length === 0) throw notFound(raw);
+      const found = route.find((entry) => entry.method === method);
+      if (!found) throw allow(route.map((entry) => entry.method).join(", "));
+      if (found.name === "getShareHealth") return json(res, 200, { status: "ok", share_host: true, version: deps.version });
+      const tokenId = tokenOf(req, raw);
+      if (found.name === "listShares") {
+        const mine = await store.list(tokenId);
+        return json(res, 200, { shares: mine.map(view), quota: { limit: quota, used: mine.length } });
+      }
+      if (found.name === "deleteShare") {
+        const id = found.pattern.exec(raw)![1]!;
+        if (!SHARE_ID.test(id)) throw new ApiError("not_found", "There is no such share on this host.");
+        await store.delete(id, tokenId);
+        res.writeHead(204, { "cache-control": "no-store" });
+        return void res.end();
+      }
+      // createShare: the quota before the body is read, and again as the share is made.
+      await store.roomFor(tokenId, quota);
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) throw new ApiError("unsupported_media_type", "a share's body is its bundle, application/json");
+      const text = (await readCapped(req, SHARE_BODY_BYTES)).toString("utf8");
+      const { sha256 } = checkShareBundle(text);
+      await screenShare(text, deps.held(), deps.scrub);
+      const meta = await store.create(tokenId, text, sha256, quota);
+      return json(res, 201, { id: meta.id, url: urlOf(meta.id), sha256: meta.sha256 });
+    }
+    const rest = raw.slice(SHARE_ROOT.length);
+    if (method !== "GET") throw allow("GET, HEAD");
+    if (rest.startsWith("_assets/")) return sendHostedAsset(req, res, raw, deps.console, rest.slice("_assets/".length));
+    const page = /^([^/]+)\/?$/.exec(rest);
+    const bytes = /^([^/]+)\/bundle\.json$/.exec(rest);
+    const id = (page ?? bytes)?.[1];
+    if (id === undefined || !SHARE_ID.test(id)) throw notFound(raw);
+    await live(id, raw);
+    if (page) return sendHostedSharePage(req, res, deps.console);
+    const body = await store.bytes(id).catch(() => undefined);
+    if (body === undefined) throw notFound(raw);
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8", "content-length": body.length, "x-content-type-options": "nosniff", "x-robots-tag": "noindex",
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'; sandbox", "referrer-policy": "no-referrer", "cache-control": "no-store",
+    });
+    res.end(req.method === "HEAD" ? undefined : body);
+  };
+}

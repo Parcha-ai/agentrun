@@ -3254,6 +3254,36 @@ whole server, as before; any value other than these and `1` or `true` stops the 
 So on an API-only server a run is launched inline (`POST /runs` with its definition), on an agent a template's apply
 made, or on an agent made before the profile was turned on.
 
+### Share host
+
+`agentrun-serve --share-host` (or `AGENTRUN_SHARE_HOST=1`) is the server behind a public share link such as
+`https://agentrun.ai/r/<id>`. It answers under `/r/` alone, so a site in front of it routes one path to it:
+
+- `/r/<id>`: the share's page, the console's `share.html`, with its asset URLs under `/r/_assets/` and a CSP that loads
+  nothing from another origin;
+- `/r/<id>/bundle.json`: the bytes that were uploaded, exactly (`nosniff`, `X-Robots-Tag: noindex`);
+- `POST /r/v2/shares`: stores a run's `agentrun.share/1` bundle (`GET /v2/runs/{id}/export`'s body) and answers
+  `201 {id, url, sha256}`;
+- `GET /r/v2/shares`: the caller's own shares and its quota; `DELETE /r/v2/shares/<id>`: deletes one;
+- `GET /r/v2/health`: without a credential.
+
+Every other address is `404 not_found`, answered before the request is read further: the console, `/v2`, MCP and
+every run, agent, key, computer and trigger route. It starts no runner and has no owner, accounts or console session.
+Its API takes one of its tokens (`AGENTRUN_TOKENS`, `id:secret` entries) as a Bearer header: the token's id owns the
+shares it uploads.
+
+An upload is checked in this order, and refused with nothing stored at the first failure: the token; its quota (100
+shares a token, `403 forbidden` with `details.reason: share_quota`; shares never expire, and a delete makes room); the
+body, at most 8 MiB of canonical JSON (`413` over it); the bundle's closed fields and the export's caps, each file's size
+and digest, and the document's sha256 (`400`); then the scrubber, over the whole body in cut mode, with the values this
+host holds (its keys and tokens). Any value the scrubber finds, or a scrub that fails, is `422 input_invalid` with
+`details.reason` (`scrub_found` with counts by rule, never a value, or `scrub_failed`). The host never repairs a bundle:
+what it serves is what was uploaded and scanned. Shares are kept in `DIR/shares/<id>/` (`bundle.json` and `meta.json`,
+`0600`). Only the token that made a share deletes it (`204`); its bytes go, and its page and bundle then answer `410`.
+
+A share's URL is on `AGENTRUN_PUBLIC_URL`, never a request's Host header. A share host on an address other than
+loopback refuses to start without it.
+
 ### Launch hook
 
 For an install that hosts agents for other people, where the host decides who pays for each run and with which keys,
