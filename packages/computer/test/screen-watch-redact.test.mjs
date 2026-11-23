@@ -1,7 +1,7 @@
-// redactWords on long word runs and on every form its login and secret-named parameter shapes take. A long run of
-// word characters must not hold the event loop: the two shapes are hand-written scans that read each character a
-// bounded number of times, counted by redactWordsReads. Their matches stay those of the one-regex forms they replace,
-// kept below as the oracle. No timing assertions.
+// redactWords on long word runs and on every form its URL, login, secret-named parameter and endpoint shapes take. A
+// long run of word characters must not hold the event loop: the four shapes are hand-written scans that read each
+// character a bounded number of times, counted by redactWordsReads. Their matches stay those of the one-regex forms
+// they replace, kept below as the oracle. No timing assertions.
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as screenWatch from "../dist/screen-watch.js";
@@ -26,8 +26,8 @@ function regexRedactWords(words) {
 		.replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/g, "[an endpoint]");
 }
 
-/** The most reads per character the two scans may take: a quadratic scan of a 40,000-character run takes thousands. */
-const READS_PER_CHARACTER = 8;
+/** The most reads per character the four scans may take: a quadratic scan of a 40,000-character run takes thousands. */
+const READS_PER_CHARACTER = 12;
 
 function assertLinear(words, label) {
 	assert.equal(typeof screenWatch.redactWordsReads, "number", "redactWords counts its scans' reads");
@@ -39,31 +39,119 @@ function assertLinear(words, label) {
 	return redacted;
 }
 
-test("redactWords' login and secret-parameter scans read each character of a long run a bounded number of times", () => {
-	// Each of these made the login regex, the parameter regex or both read to the end of the run from every start in it.
-	// The URL, JWT and endpoint regexes take no start inside these runs, so each call is quick.
+test("redactWords' URL, login, secret-parameter and endpoint scans read each character of a long run a bounded number of times", () => {
+	// Each of these made one or more of the four regexes read to the end of the run from every start in it.
 	for (const [unit, n] of [
 		["a", 40_000],
+		["a-", 40_000],
+		// It also starts the JWT regex at every eyJ, which stays quadratic in such a run until its start is anchored
+		// too, so this case takes seconds; the reads counted are the four scans'.
+		["eyJ-", 40_000],
 		["a:", 40_000],
 		["token", 40_000],
 		["token_", 40_000],
 		["u:p", 40_000],
 		["x=", 40_000],
+		["a.", 40_000],
+		["a.b:", 40_000],
+		["a:1", 40_000],
+		["a..", 40_000],
+		["_a:/", 40_000],
 	]) {
 		const words = unit.repeat(n);
 		assert.equal(assertLinear(words, `${JSON.stringify(unit)} x ${n}`), words, "nothing in it is a secret");
+		// Nothing is cut, so each of the four scans read the whole run: none of the four shapes is left a regex.
+		assert.ok(screenWatch.redactWordsReads >= 4 * words.length, `${JSON.stringify(unit)}: ${screenWatch.redactWordsReads} reads`);
 	}
-	// "eyJ-" x n also starts the URL, JWT and endpoint regexes at every eyJ, which stay quadratic in such a run, so it
-	// is kept short here: the scans' reads are counted all the same.
-	const jwtish = "eyJ-".repeat(2_000);
-	assert.equal(assertLinear(jwtish, '"eyJ-" x 2000'), jwtish);
 	// A run that ends in a match is cut whole, once.
+	assert.equal(assertLinear(`${"a-".repeat(40_000)}://x`, "a long scheme"), "[a URL]");
 	assert.equal(assertLinear(`${"a".repeat(40_000)}:pw@host`, "a long login"), "[a login]");
 	assert.equal(assertLinear(`${"token".repeat(40_000)}=v`, "a long parameter name"), "[a secret]");
+	assert.equal(assertLinear(`${"a-.".repeat(40_000)}io:80`, "a long endpoint name"), "[an endpoint]");
+	// An empty label just before the top-level name leaves no start in the run.
+	const emptyLabels = `${"a..".repeat(40_000)}io:80`;
+	assert.equal(assertLinear(emptyLabels, "a long name with empty labels"), emptyLabels);
+});
+
+/** Each case is cut as the oracle cuts it, and as written. */
+function assertCuts(cases) {
+	for (const [words, redacted] of cases) {
+		assert.equal(regexRedactWords(words), redacted, `the oracle: ${JSON.stringify(words)}`);
+		assert.equal(redactWords(words), redacted, JSON.stringify(words));
+	}
+}
+
+test("redactWords cuts every URL form it cut before, and only those", () => {
+	assertCuts([
+		["GET https://api.vendor.example/v1/x?k=1 failed", "GET [a URL] failed"],
+		["see HTTP://X.IO/a", "see [a URL]"],
+		["git+ssh://git@host/repo.git", "[a URL]"],
+		["a.b-c+d9://x", "[a URL]"],
+		["adb://emulator-5554", "[a URL]"],
+		// The cut starts at the run's first letter that follows no word character.
+		["x-https://h", "[a URL]"],
+		["-https://h", "-[a URL]"],
+		["1.http://x", "1.[a URL]"],
+		[`${E_ACUTE}http://x`, `${E_ACUTE}[a URL]`],
+		["9http://x", "9http://x"],
+		["_http://x", "_http://x"],
+		["x_http://y", "x_http://y"],
+		// The rest stops at each of its excluded characters.
+		['"https://x" said', '"[a URL]" said'],
+		["<https://x>", "<[a URL]>"],
+		["'https://x'", "'[a URL]'"],
+		["https://x y", "[a URL] y"],
+		["https://x\ty", "[a URL]\ty"],
+		[`https://x${NBSP}y`, `[a URL]${NBSP}y`],
+		["https://a https://b", "[a URL] [a URL]"],
+		["1://http://x", "1://[a URL]"],
+		// Near-misses: no scheme, no rest, or not :// at once.
+		["https://", "https://"],
+		["https:// x", "https:// x"],
+		["https:/x", "https:/x"],
+		["://x", "://x"],
+		["https ://x", "https ://x"],
+	]);
+});
+
+test("redactWords cuts every endpoint form it cut before, and only those", () => {
+	assertCuts([
+		["failed to connect to 'live.phone-harness.com:22220'", "failed to connect to '[an endpoint]'"],
+		["adb connect emulator-5554.local:5555 ok", "adb connect [an endpoint] ok"],
+		["a.b.co:1", "[an endpoint]"],
+		["X.IO:65535", "[an endpoint]"],
+		["a-.io:80", "[an endpoint]"],
+		["x-a.io:80", "[an endpoint]"],
+		["a.io:80:90", "[an endpoint]:90"],
+		["a.io:80.b.io:90", "[an endpoint].[an endpoint]"],
+		// The name starts where \b holds, at no dot, after the last empty label.
+		[".a.io:80", ".[an endpoint]"],
+		["-a.io:80", "-[an endpoint]"],
+		["x..a.io:80", "x..[an endpoint]"],
+		["x_a.io:80", "x_a.io:80"],
+		["a..io:80", "a..io:80"],
+		// The port: one to five digits, and no word character after them.
+		["a.io:12345", "[an endpoint]"],
+		["a.io:123456", "a.io:123456"],
+		["a.io:12a", "a.io:12a"],
+		["a.io:12_", "a.io:12_"],
+		["a.io:12-x", "[an endpoint]-x"],
+		["a.io:12.5", "[an endpoint].5"],
+		[`a.io:12${E_ACUTE}`, `[an endpoint]${E_ACUTE}`],
+		// Near-misses: a top-level name that is short or not all letters, no dot, or no port.
+		["a.b:80", "a.b:80"],
+		["a.b1:80", "a.b1:80"],
+		["a.1b:80", "a.1b:80"],
+		["host:80", "host:80"],
+		["a.io:", "a.io:"],
+		["a.io: 80", "a.io: 80"],
+		// An IPv4 address is still the last shape's.
+		["no route to 10.1.2.3:5555", "no route to [an endpoint]"],
+	]);
 });
 
 test("redactWords cuts every login form it cut before, and only those", () => {
-	for (const [words, redacted] of [
+	assertCuts([
 		["fetch of user:hunter2@db.internal failed", "fetch of [a login] failed"],
 		["first.last+tag-x:pw@mail.example.org said no", "[a login] said no"],
 		["a URL's own login goes with it: ftp://ana:s3cret@files.example/x", "a URL's own login goes with it: [a URL]"],
@@ -90,10 +178,7 @@ test("redactWords cuts every login form it cut before, and only those", () => {
 		["mail ana@example.org", "mail ana@example.org"],
 		["key: value@x", "key: value@x"],
 		["time 12:30 @ noon", "time 12:30 @ noon"],
-	]) {
-		assert.equal(regexRedactWords(words), redacted, `the oracle: ${JSON.stringify(words)}`);
-		assert.equal(redactWords(words), redacted, JSON.stringify(words));
-	}
+	]);
 });
 
 test("redactWords cuts every secret-named parameter it cut before, and only those", () => {
@@ -135,10 +220,7 @@ test("redactWords cuts every secret-named parameter it cut before, and only thos
 		["=token", "=token"],
 		["the keyboard and the password", "the keyboard and the password"],
 	);
-	for (const [words, redacted] of cases) {
-		assert.equal(regexRedactWords(words), redacted, `the oracle: ${JSON.stringify(words)}`);
-		assert.equal(redactWords(words), redacted, JSON.stringify(words));
-	}
+	assertCuts(cases);
 });
 
 /** A seeded generator (mulberry32): the same strings on every run. */
@@ -155,7 +237,9 @@ function randomOf(seed) {
 
 /** Few pieces, so a login's or a parameter's parts often line up. */
 const FEW = ["a", "b", "-", ":", "@", "/", "=", ".", "+", " ", "token", "Key", "eyJ"];
-/** Every character class either shape names, and pieces of the other shapes around them. */
+/** Few pieces, so a URL's or an endpoint's parts often line up. */
+const HOSTS = ["a", "Z", "9", "_", "-", ".", ":", "/", " ", "123456", "io", "x.io", ":80", "://", "http"];
+/** Every character class the four shapes name, and pieces of the other shapes around them. */
 const MANY = [
 	"a", "b", "Z", "9", "_", ":", "@", "/", "-", "=", ".", "+", " ", "&", ";", ",", '"', "'", "\t", NBSP, E_ACUTE,
 	"token", "TOKEN", "key", "Key", "auth", "pass", "wd", "code", "eyJ", "Bearer ", "://", "x.io", ":80", "1.2.3.4", "sk_",
@@ -164,12 +248,13 @@ const MANY = [
 test("redactWords gives what the regex form gave, on seeded random strings", (t) => {
 	const random = randomOf(0x5eed);
 	let cases = 0;
-	let logins = 0;
-	let secrets = 0;
+	const cut = { "[a URL]": 0, "[a login]": 0, "[a secret]": 0, "[an endpoint]": 0 };
 	for (const [pieces, count, longest] of [
 		[FEW, 20_000, 24],
+		[HOSTS, 10_000, 24],
 		[MANY, 10_000, 24],
 		[FEW, 2_000, 80],
+		[HOSTS, 2_000, 80],
 		[MANY, 2_000, 80],
 	]) {
 		for (let i = 0; i < count; i++) {
@@ -179,13 +264,14 @@ test("redactWords gives what the regex form gave, on seeded random strings", (t)
 			const expected = regexRedactWords(words);
 			assert.equal(redactWords(words), expected, JSON.stringify(words));
 			cases++;
-			if (expected.includes("[a login]")) logins++;
-			if (expected.includes("[a secret]")) secrets++;
+			for (const mark of Object.keys(cut)) if (expected.includes(mark)) cut[mark]++;
 		}
 	}
-	t.diagnostic(`${cases} strings, ${logins} with a login cut, ${secrets} with a secret cut`);
-	assert.equal(cases, 34_000);
-	// The pieces are chosen so both shapes are cut in a good share of the strings, not left untried.
-	assert.ok(logins > 500, `${logins} strings had a login cut`);
-	assert.ok(secrets > 1_000, `${secrets} strings had a secret cut`);
+	t.diagnostic(`${cases} strings; strings with each cut: ${JSON.stringify(cut)}`);
+	assert.equal(cases, 46_000);
+	// The pieces are chosen so each shape is cut in a good share of the strings, not left untried.
+	assert.ok(cut["[a URL]"] > 1_000, `${cut["[a URL]"]} strings had a URL cut`);
+	assert.ok(cut["[a login]"] > 500, `${cut["[a login]"]} strings had a login cut`);
+	assert.ok(cut["[a secret]"] > 1_000, `${cut["[a secret]"]} strings had a secret cut`);
+	assert.ok(cut["[an endpoint]"] > 300, `${cut["[an endpoint]"]} strings had an endpoint cut`);
 });
