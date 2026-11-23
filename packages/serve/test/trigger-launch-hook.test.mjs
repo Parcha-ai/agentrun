@@ -17,7 +17,7 @@ import { follow, scratch, serve, withEnv } from "./support.mjs";
 import { fakeClock, firings, hookServer, made, schedule, until } from "./trigger-support.mjs";
 
 const { mintSecret, signatureOf, verify } = await import("../dist/standard-webhooks.js");
-const { LAUNCH_HOOK_LATE_START_MS, LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
+const { handToHost, HookFailed, LAUNCH_HOOK_LATE_START_MS, LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
 const { previousResultWords } = await import("../dist/trigger-targets.js");
 const { uuidv7 } = await import("../dist/ids.js");
 const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
@@ -978,6 +978,32 @@ test("a hook that is not reached is a failed try too: hook_failed (unreachable) 
   const firing = await tried(api, created.body.id, 1);
   assert.deepEqual([firing.status, firing.attempts, firing.error?.code], ["due", 1, "hook_failed"], JSON.stringify(firing));
   assert.match(firing.reason, /^hook_failed \(unreachable\): the launch hook was not reached \(ECONNREFUSED\)/);
+});
+
+test("a caller's bound never raises the hook's 10 s: a POST handed a bound that never ends is still cut at LAUNCH_HOOK_TIMEOUT_MS, a timeout", { timeout: 30_000 }, async (t) => {
+  // The 10 s timer is a signal this test holds (AbortSignal.timeout stood in for), cut by hand once the silent host has
+  // the POST: no wait on the wall clock.
+  const timers = [];
+  const real = AbortSignal.timeout;
+  AbortSignal.timeout = (ms) => {
+    const cut = new AbortController();
+    timers.push({ ms, cut });
+    return cut.signal;
+  };
+  t.after(() => {
+    AbortSignal.timeout = real;
+  });
+  const hook = await hookServer(t, () => new Promise(() => undefined));
+  const stop = new AbortController();
+  t.after(() => stop.abort());
+  const firing = { firing_id: uuidv7(), trigger_id: "trg_bound", agent_id: "agent-bound", revision_id: null, input: { content: "x" }, fired_at: new Date().toISOString() };
+  // A library caller's bound that would hold the POST open for good.
+  const handed = handToHost({ url: hook.url, secret: mintSecret(), bound: () => new AbortController().signal }, firing, stop.signal);
+  handed.catch(() => undefined);
+  await until(() => hook.got.length === 1, 10_000, "the host has the POST");
+  assert.deepEqual(timers.map((one) => one.ms), [LAUNCH_HOOK_TIMEOUT_MS], "the 10 s timer is set however the caller bounds it");
+  timers[0].cut.abort(new DOMException("timed out", "TimeoutError"));
+  await assert.rejects(handed, (error) => error instanceof HookFailed && /did not answer in 10 s/.test(error.message));
 });
 
 test("the hook setting: off unless both are set, refused in words when half set or malformed, and a 10 s bound", () => {
