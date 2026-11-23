@@ -370,6 +370,8 @@ export function cutAnswer<T>(value: T, cut: (text: string) => string): T {
 /** `tool` whose answer, and a throw's message, pass `cut` inside its execute: before pi stores the result or the model
  *  reads it. */
 function answersCutInside(tool: ToolRegistration, cut: (text: string) => string): ToolRegistration {
+  // Fail closed and loud: a host with no redactor would only throw inside each call, an error a model may read past.
+  if (typeof cut !== "function") throw new TypeError(`${tool.name}: the run's redactor (host.redact) is required to cut its answers`);
   return {
     ...tool,
     execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {

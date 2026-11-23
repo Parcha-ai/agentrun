@@ -3541,11 +3541,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (!skip) return [];
       const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
       // An API-only server serves no trigger route: its archive is what turns the agent's triggers off. Under the run-keys
-      // setting the kept one's firings bring no keys, so each is refused for the keys its runs owe and starts no run: the
-      // warning says so, so that nobody reads "still fires" as spending.
+      // setting the kept one's firings bring no keys. One that starts a run of this revision is refused for the keys it
+      // owes, but the kept trigger's target is not checked here: a message_run trigger whose run is pinned to an earlier
+      // revision that owes no keys still messages it, and that run may spend. So the warning promises no refusal.
       const kept = options.apiOnly
         ? "is kept as it was, and still fires: archiving the agent turns it off"
-        : `is kept as it was: it still fires, and each firing is refused 409 until you turn it off (PATCH /v2/triggers/${keptOn?.id} with {"enabled": false}); a refused firing starts no run`;
+        : `is kept as it was and still fires until you turn it off (PATCH /v2/triggers/${keptOn?.id} with {"enabled": false}): a firing that would start a run of this revision is refused 409 for the keys it owes, but one aimed at a run of an earlier revision that owes none still reaches that run, which may spend`;
       return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name ${kept}.` } : skip] as const];
     }));
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);

@@ -205,7 +205,7 @@ test("AGENTRUN_RUN_KEYS=1 with no launch hook: an update apply that skips a trig
     assert.equal(planned.body.plan.triggers[0].reason, words, "the plan says it in the apply's words");
     if (enabled) {
       assert.ok(words.startsWith(`${made} `), words);
-      for (const said of [/trg_morning/, /still fires, and each firing is refused 409 until you turn it off/, /PATCH \/v2\/triggers\/trg_morning/, /"enabled": false/]) assert.match(words.slice(made.length), said);
+      for (const said of [/trg_morning/, /still fires until you turn it off/, /refused 409 for the keys it owes/, /an earlier revision that owes none still reaches that run, which may spend/, /PATCH \/v2\/triggers\/trg_morning/, /"enabled": false/]) assert.match(words.slice(made.length), said);
       // What the warning says of it: it fires, its firing is refused for the key it can't bring, and no run starts.
       const fired = await api("POST", "/triggers/trg_morning/fire", {}, { "idempotency-key": "kept-fires" });
       assert.deepEqual([fired.status, fired.body.status, fired.body.error?.code, fired.body.run_id], [202, "failed", "agent_not_runnable", null], JSON.stringify(fired.body));
