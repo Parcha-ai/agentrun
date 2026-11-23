@@ -21,6 +21,8 @@ const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGE
 const TOKEN = "device-issued-token-0123456789";
 const DEVICE_CODE = "device-code-never-shown-abcdef";
 const VERIFY = "https://console.agentrun.example/device";
+/** A device server at 127.0.0.2 is one off this machine to the CLI, which takes only localhost, 127.0.0.1 and [::1]. */
+const LINUX_ONLY = process.platform === "linux" ? false : "127.0.0.2 answers as loopback on Linux alone";
 
 function scratch() {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-signin-"));
@@ -51,8 +53,8 @@ const GRANT = { device_code: DEVICE_CODE, user_code: "KQ7-4MZ", verification_uri
  *  reads neither), the authorization endpoint and the token endpoint, which answers `tokens` in turn (the last one again
  *  once they run out; each may be a function of the request). `routes` replaces any answer by "METHOD /path", given the
  *  origin. It answers and records its own routes alone: anything else (a local tool may GET / on any new loopback
- *  listener) is a bare 404, never recorded. */
-async function deviceServer(t, { tokens = [issued], routes = () => ({}) } = {}) {
+ *  listener) is a bare 404, never recorded. `host` is the address it listens on. */
+async function deviceServer(t, { tokens = [issued], routes = () => ({}), host = "127.0.0.1" } = {}) {
   const requests = [];
   let polls = 0;
   const server = createServer((req, res) => {
@@ -81,11 +83,20 @@ async function deviceServer(t, { tokens = [issued], routes = () => ({}) } = {}) 
     },
     "GET /v2/agents/notes": () => json(200, { agent_id: "notes" }),
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  await new Promise((resolve) => server.listen(0, host, resolve));
+  const origin = `http://${host}:${server.address().port}`;
   t.after(() => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))));
   const of = (method, path) => requests.filter((r) => r.method === method && r.url.split("?")[0] === path);
   return { origin, base: `${origin}/v2`, requests, of, polls: () => of("POST", "/auth/device/token") };
+}
+
+/** A port nothing listens on. */
+async function closedPort() {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
 }
 
 /** A clock whose `wait` settles at once and moves `now` on by what it waited: each wait is recorded, none is real. */
@@ -399,3 +410,20 @@ test("an address to open on another origin than the server's is said on a line o
   assert.ok(quiet.said.includes(`Open ${home.origin}/device and enter the code KQ7-4MZ`), quiet.said);
   assert.doesNotMatch(quiet.said, /approved at/);
 });
+
+// A server named by --base-url, from a terminal, whose device sign-in the CLI does not take: the reason, then the
+// refusal of a typed token, exit 2 as for a server that offers none.
+for (const [name, targetOf, why, skip = false] of [
+  ["a server not reached (the sign-in's exit 3)", async () => `http://127.0.0.1:${await closedPort()}/v2`, /^Cannot reach the server at http:\/\/127\.0\.0\.1:\d+\/v2 \(ECONNREFUSED\); nothing was written\.$/m],
+  ["a server offering it over http off this machine (exit 2)", async (t) => (await deviceServer(t, { host: "127.0.0.2" })).base, /^The server at http:\/\/127\.0\.0\.2:\d+\/v2 offers a device sign-in over http, which would carry the token in the clear: use its https address; nothing was written\.$/m, LINUX_ONLY],
+  ["a server whose offer is malformed (exit 1)", async (t) => (await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => json(200, { sign_in: { device: "yes" } }) }) })).base, /^The server's device sign-in offer \(sign_in\.device\) is not one this CLI takes: .+; nothing was written\.$/m],
+]) {
+  test(`login --base-url on a terminal, to ${name}: the device sign-in's reason, then the refusal of a typed token, exit 2`, { skip }, async (t) => {
+    const refused = await onTerminal(["login", "--base-url", await targetOf(t)]);
+    assert.equal(refused.code, 2, refused.err);
+    const reason = refused.err.search(why);
+    assert.ok(reason >= 0, refused.err);
+    assert.ok(reason < refused.err.search(/read from stdin, never typed on a terminal/), refused.err);
+    assert.equal(existsSync(refused.config), false);
+  });
+}
