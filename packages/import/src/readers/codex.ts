@@ -1,6 +1,6 @@
 // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl. A subagent's thread names its parent in its session_meta.
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { type FileCursor, type LineSource, lineReader, type ReadContext } from "../lines.js";
@@ -14,10 +14,10 @@ import { normalizeUsage } from "../usage.js";
  *  latest request whose usage has not come (written after its calls' results at times); `records`, whether the file has
  *  token_usage_records, with the responses they counted, and `total`, the last token_count's total; `items`, whether
  *  each completed item failed, and `results`, each tool result by call id, with whether its output said; `provider`, the
- *  model provider its session_meta names; `meta`, whether the rollout's own session_meta (its first) was read; `replay`,
- *  the parent's history a fork copied in (forkReplay), null when there is none. */
+ *  model provider its session_meta names; `forkedFrom`, the threads its session_meta says it forked or was spawned from;
+ *  `replay`, the parent's history a fork copied in (forkReplay), null when there is none. */
 type Own = {
-  meta?: boolean;
+  forkedFrom?: Set<string>;
   replay?: Replay | null;
   events: boolean;
   held: { index: number; turn: Turn }[];
@@ -90,16 +90,17 @@ function readRecord(value: Record<string, unknown>, at: number, { state, keep, a
     codex.open = codex.unpaid = undefined;
   };
   if (value.type === "session_meta") {
-    // The rollout's own session_meta is its first: a fork writes its parent's after it (Codex 0.154), which names
-    // neither this thread nor its parent.
-    if (codex.meta) return;
-    codex.meta = true;
-    if (str(payload.id)) session.id = payload.id as string;
+    // A fork writes its parent's session_meta after its own (Codex 0.154): one whose id is the thread this rollout forked
+    // from is that copy, and says nothing of this rollout. Any other later session_meta still counts, as Codex writes it.
+    const id = str(payload.id);
+    if (id && codex.forkedFrom?.has(id)) return;
+    const spawn = isObject(payload.source) && isObject(payload.source.subagent) && isObject(payload.source.subagent.thread_spawn) ? payload.source.subagent.thread_spawn : undefined;
+    const parent = str(payload.parent_thread_id) ?? str(spawn?.parent_thread_id);
+    for (const from of [str(payload.forked_from_id), parent]) if (from && from !== id) (codex.forkedFrom ??= new Set()).add(from);
+    if (id) session.id = id;
     if (str(payload.cwd)) session.cwd = payload.cwd as string;
     if (str(payload.model_provider)) codex.provider = payload.model_provider as string;
     if (str(payload.parent_thread_id) || (isObject(payload.source) && isObject(payload.source.subagent))) session.child = true;
-    const spawn = isObject(payload.source) && isObject(payload.source.subagent) && isObject(payload.source.subagent.thread_spawn) ? payload.source.subagent.thread_spawn : undefined;
-    const parent = str(payload.parent_thread_id) ?? str(spawn?.parent_thread_id);
     if (parent) session.parent = parent;
     return;
   }
@@ -202,9 +203,10 @@ function readRecord(value: Record<string, unknown>, at: number, { state, keep, a
 // - A parent whose rollout is not under the home has nothing to match: the usages count (ccusage warns and counts).
 // A usage is a token_count whose total moved, by its last_token_usage; records with a response id are never copies here.
 
-/** A fork's copied usages, by ordinal among its usages (usageOf): the ranges [from, to) copied, `until` the last of
- *  them; `seen`, the usages read so far, `total` the last one's total. */
-type Replay = { skip: [number, number][]; until: number; seen: number; total?: string };
+/** A fork's copy (forkReplay): the usages to skip, by ordinal, the last of them, the usages read so far, and the total
+ *  the last skipped one left; `open`, whether the file ended before its copy's end could be known, so a read of more of it
+ *  finds the copy again (codex.read). */
+type Replay = { skip: [number, number][]; until: number; seen: number; total?: string; open: boolean };
 
 const usageFields = ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens"] as const;
 
@@ -249,9 +251,10 @@ function copiedLength(parent: string[], child: string[]): number {
   return Math.max(prefix, matched);
 }
 
-/** A rollout's lines, parsed, each record that is a JSON object. */
+/** A rollout's lines, parsed, each record that is a JSON object. Its file is closed however the reading stops. */
 async function* recordsOf(file: string): AsyncGenerator<Record<string, unknown>> {
-  const lines = createInterface({ input: createReadStream(file, { highWaterMark: 1 << 20 }), crlfDelay: Number.POSITIVE_INFINITY });
+  const input = createReadStream(file, { highWaterMark: 1 << 20 });
+  const lines = createInterface({ input, crlfDelay: Number.POSITIVE_INFINITY });
   try {
     for await (const line of lines) {
       let value: unknown;
@@ -264,6 +267,31 @@ async function* recordsOf(file: string): AsyncGenerator<Record<string, unknown>>
     }
   } finally {
     lines.close();
+    input.destroy();
+  }
+}
+
+/** A rollout's first line as a JSON object, read alone (up to 16 MiB), so a rollout that is no fork is not streamed for
+ *  it. */
+async function firstRecord(file: string): Promise<Record<string, unknown> | undefined> {
+  const handle = await open(file, "r");
+  try {
+    const chunks: Buffer[] = [];
+    for (let position = 0; position < 16 * 1024 * 1024; ) {
+      const chunk = Buffer.alloc(64 * 1024);
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
+      if (bytesRead === 0) break;
+      const end = chunk.subarray(0, bytesRead).indexOf(10);
+      chunks.push(chunk.subarray(0, end === -1 ? bytesRead : end));
+      if (end !== -1) break;
+      position += bytesRead;
+    }
+    const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return isObject(value) ? value : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    await handle.close();
   }
 }
 
@@ -290,7 +318,8 @@ async function usagesOf(file: string): Promise<{ uses: string[]; ats: (number | 
 }
 
 /** The parent's rollout: in the sessions directory `file` is under, named by the parent's id, on its UUIDv7 date (a
- *  day either side, as the directories are local dates) else anywhere there; then archived_sessions. */
+ *  day either side, as the directories are local dates) else anywhere there. Not archived_sessions: the import reads no
+ *  rollout there, and a copy of a parent it does not read is the only count of that history. */
 async function parentFile(file: string, parent: string): Promise<string | undefined> {
   const sessions = dirname(dirname(dirname(dirname(file))));
   const named = (dir: string) => async () => (await entries(dir)).find((entry) => entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(`-${parent}.jsonl`) && join(dir, entry.name) !== file)?.name;
@@ -313,28 +342,27 @@ async function parentFile(file: string, parent: string): Promise<string | undefi
       }
     }
   }
-  const archived = join(dirname(sessions), "archived_sessions");
-  const name = await named(archived)();
-  return name ? join(archived, name) : undefined;
+  return undefined;
 }
 
 /** The parent's history `file` copied in, when it is a fork that did: read before the fork's own lines, so its records
  *  read as copies (record). */
 async function forkReplay(file: string): Promise<Replay | null> {
+  const first = await firstRecord(file);
+  const payload = isObject(first?.payload) ? first.payload : undefined;
+  if (first?.type !== "session_meta" || !payload) return null;
+  const own = str(payload.id)?.trim() || undefined;
+  const spawn = isObject(payload.source) && isObject(payload.source.subagent) && isObject(payload.source.subagent.thread_spawn) ? payload.source.subagent.thread_spawn : undefined;
+  const spawnedBy = str(spawn?.parent_thread_id);
+  const parent = str(payload.forked_from_id) ?? spawnedBy;
+  // A rollout that names its history's base reads it by reference, copying none; one named <thread>_<rollout> whose
+  // id is the thread goes on with that thread, as no fork.
+  if (!parent || payload.history_base !== undefined) return null;
+  const named = /-([0-9a-f-]{36})_([0-9a-f-]{36})\.jsonl$/i.exec(basename(file));
+  if (named && named[1] !== named[2] && own === named[1]) return null;
   const records = recordsOf(file);
   try {
-    const first = (await records.next()).value as Record<string, unknown> | undefined;
-    const payload = isObject(first?.payload) ? first.payload : undefined;
-    if (first?.type !== "session_meta" || !payload) return null;
-    const own = str(payload.id)?.trim() || undefined;
-    const spawn = isObject(payload.source) && isObject(payload.source.subagent) && isObject(payload.source.subagent.thread_spawn) ? payload.source.subagent.thread_spawn : undefined;
-    const spawnedBy = str(spawn?.parent_thread_id);
-    const parent = str(payload.forked_from_id) ?? spawnedBy;
-    // A rollout that names its history's base reads it by reference, copying none; one named <thread>_<rollout> whose
-    // id is the thread goes on with that thread, as no fork.
-    if (!parent || payload.history_base !== undefined) return null;
-    const named = /-([0-9a-f-]{36})_([0-9a-f-]{36})\.jsonl$/i.exec(basename(file));
-    if (named && named[1] !== named[2] && own === named[1]) return null;
+    await records.next();
     const forkedAt = timeOf(first.timestamp);
     let stream: string[] | undefined;
     const parentStream = async () => {
@@ -350,6 +378,8 @@ async function forkReplay(file: string): Promise<Replay | null> {
     let foreign: number | undefined;
     let boundary: number | undefined;
     let marked = false;
+    // Whether the read reached the file's end with the copy's end unknown: no own marker, and the run could still grow.
+    let ended = true;
     // Whether the usages so far are the parent's first ones, and where in the parent's they could start a run that ends
     // at its end: while either holds the copied run can grow, so the read goes on.
     let prefix = true;
@@ -368,9 +398,13 @@ async function forkReplay(file: string): Promise<Replay | null> {
         if (thread) marked = true;
         if (thread && thread === own) {
           boundary = uses.length;
+          ended = false;
           break;
         }
-        if (marker === "record" && !thread && spawnedBy) break;
+        if (marker === "record" && !thread && spawnedBy) {
+          ended = false;
+          break;
+        }
         if (thread && own) foreign ??= uses.length;
         continue;
       }
@@ -378,7 +412,10 @@ async function forkReplay(file: string): Promise<Replay | null> {
       if (use === undefined) continue;
       uses.push(use);
       // Read on only while the copied run can still grow, or while a thread's marker may yet bound one.
-      if (!grows(await parentStream(), use) && !marked) break;
+      if (!grows(await parentStream(), use) && !marked) {
+        ended = false;
+        break;
+      }
     }
     const window = uses.slice(0, boundary ?? uses.length);
     const skip: [number, number][] = [];
@@ -387,8 +424,8 @@ async function forkReplay(file: string): Promise<Replay | null> {
       if (copied) skip.push([0, copied]);
     }
     if (foreign !== undefined && boundary !== undefined && boundary > foreign) skip.push([foreign, boundary]);
-    if (!skip.length) return null;
-    return { skip, until: Math.max(...skip.map(([, to]) => to)) - 1, seen: 0 };
+    if (!skip.length && !ended) return null;
+    return { skip, until: skip.length ? Math.max(...skip.map(([, to]) => to)) - 1 : -1, seen: 0, open: ended };
   } finally {
     await records.return(undefined);
   }
@@ -460,14 +497,19 @@ const spec: LineSource<"codex", Own> = {
 const lines = lineReader(spec);
 
 /** Codex's reader: a read from a rollout's start first finds the parent's history a fork copied in (forkReplay); a read
- *  going on from a cursor has it in the cursor's state. (A rollout rewritten in place, which Codex does not do, is read
- *  again from its start without it.) */
+ *  going on from a cursor has it in the cursor's state. A fork whose copy was still open where the last read ended, and
+ *  that has grown since, is read again from its start, as is a rollout the line reader starts over (rewritten in place). */
 export const codex: Reader<"codex", FileCursor> = {
   ...lines,
   async read(locator, cursor, options) {
-    if (cursor) return lines.read(locator, cursor, options);
-    const replay = await forkReplay(locator.file);
-    if (!replay) return lines.read(locator, cursor, options);
-    return lineReader({ ...spec, start: () => ({ ...spec.start(), replay }) }).read(locator, cursor, options);
+    const fresh = async () => {
+      const replay = await forkReplay(locator.file);
+      return replay ? lineReader({ ...spec, start: () => ({ ...spec.start(), replay }) }).read(locator, undefined, options) : undefined;
+    };
+    if (!cursor) return (await fresh()) ?? lines.read(locator, undefined, options);
+    const copyOpen = (cursor.state as { own?: Own }).own?.replay?.open === true;
+    if (copyOpen && (await stat(locator.file)).size > cursor.offset) return (await fresh()) ?? lines.read(locator, undefined, options);
+    const result = await lines.read(locator, cursor, options);
+    return result.resumed ? result : ((await fresh()) ?? result);
   },
 };

@@ -3,8 +3,9 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
-import { parseHome, readSession } from "../dist/index.js";
-import { at, codexAnswer, codexContext, codexUser, openaiUsage, tempHome, writeJsonl } from "./fixtures.mjs";
+import { appendFile } from "node:fs/promises";
+import { parseHome, READERS, readSession } from "../dist/index.js";
+import { at, codexAnswer, codexContext, codexUser, jsonl, openaiUsage, tempHome, writeJsonl } from "./fixtures.mjs";
 
 // UUIDv7 ids dated 2026-01-01, as Codex names its threads.
 const PARENT = "019b76da-a800-7000-8000-00000000000a";
@@ -109,4 +110,27 @@ test("a fork that copies its parent's session_meta after its own keeps its own i
   // So a user fork is a session of its own, not a part of its parent's.
   const ids = (await parseHome(home, { sources: ["codex"] })).map((line) => line.id).sort();
   assert.deepEqual(ids, [PARENT, FORK]);
+});
+
+test("a fork whose parent is in archived_sessions counts its usage: the import reads no rollout there, so nothing else counts it", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(join(home, ".codex", "archived_sessions", `rollout-2026-01-01T00-00-00-${PARENT}.jsonl`), parentLines());
+  await writeJsonl(rollout(home, FORK), [meta(FORK, 20, { forked_from_id: PARENT }), ...replayed(), ...ownTurn()]);
+  const [fork] = await parseHome(home, { sources: ["codex"] });
+  assert.equal(fork.id, FORK);
+  assert.equal(fork.calls, 4);
+});
+
+test("a fork read while its copy is still being written: the next read finds the whole copy, as a read of the whole file does", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(rollout(home, PARENT), parentLines());
+  const lines = [meta(FORK, 20, { forked_from_id: PARENT }), ...replayed(), ...ownTurn()];
+  const file = await writeJsonl(rollout(home, FORK), lines.slice(0, 5));
+  const first = await READERS.codex.read({ file });
+  await appendFile(file, jsonl(lines.slice(5)));
+  const next = await READERS.codex.read({ file }, first.cursor);
+  const whole = await READERS.codex.read({ file });
+  assert.equal(whole.sessions[0].requests.length, 1, "the fork's own request alone");
+  assert.equal(next.sessions[0].requests.length, whole.sessions[0].requests.length);
+  assert.deepEqual(next.sessions[0].session.tokens ?? null, whole.sessions[0].session.tokens ?? null);
 });
