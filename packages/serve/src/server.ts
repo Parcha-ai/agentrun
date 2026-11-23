@@ -1590,10 +1590,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     savedGateway = await readSavedGateway(store, seal.key);
     await keysChanged();
   };
-  /** The sign-in as the store holds it now: a runner may have renewed it, or found it expired. A change reads env again. */
+  /** The sign-in as the store holds it now: a runner may have renewed it, or found it expired. A change reads env again;
+   *  so does a sign-in's change this server failed to take (changed_failed), until it takes. */
   const planNow = async () => {
     const was = plan.state;
     if ((await plan.load()).state !== was) await keysChanged();
+    else await plan.changeAgain();
   };
   /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
    *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here. */

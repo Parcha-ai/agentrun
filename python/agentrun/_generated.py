@@ -4911,6 +4911,7 @@ class FinishChatGPTSignInResponse(_FinishChatGPTSignInResponseRequired, total=Fa
     authorize_url: str
     expires_at: str
     models: list[str]
+    problem: str
 
 
 class GetCalendarResponse(TypedDict):
@@ -4930,6 +4931,7 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
     authorize_url: str
     expires_at: str
     models: list[str]
+    problem: str
 
 
 class _GetClaudeLoginResponseRequired(TypedDict):

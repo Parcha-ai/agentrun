@@ -2535,6 +2535,7 @@ export interface operations {
       authorize_url?: string;
       expires_at?: string;
       models?: string[];
+      problem?: string;
     };
   };
   fireTrigger: {
@@ -2743,6 +2744,7 @@ export interface operations {
       authorize_url?: string;
       expires_at?: string;
       models?: string[];
+      problem?: string;
     };
   };
   getClaudeLogin: {
