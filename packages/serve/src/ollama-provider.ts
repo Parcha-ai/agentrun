@@ -187,13 +187,16 @@ export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalT
  *  run cannot start without it and Ollama may be loading another model. */
 export const OLLAMA_SHOW_TIMEOUT_MS = 10_000;
 
-/** Model `tag` of the Ollama `env` names, for a run that names it (`ollama/<tag>`): from its address's kept listing, else
- *  its own /api/show within `timeoutMs`, never /api/tags, so a run never waits on a whole listing. Undefined where it is
- *  not there, does not answer, is a cloud model or OLLAMA_HOST is refused. Nothing kept: the listing is the kept one. */
+/** Model `tag` of the Ollama `env` names, for a run that names it (`ollama/<tag>`): from its address's kept listing while
+ *  that is fresh (OLLAMA_TTL_MS), else its own /api/show within `timeoutMs`, never /api/tags, so a run never waits on a
+ *  whole listing and never runs on a model's context from before it was pulled again. Undefined where it is not there,
+ *  does not answer, is a cloud model or OLLAMA_HOST is refused. Nothing kept: the listing is the kept one. */
 export async function ollamaShown(env: NodeJS.ProcessEnv, tag: string, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_SHOW_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<OllamaListed | undefined> {
   const base = baseOf(env);
   if (base === undefined) return undefined;
-  return kept.get(base)?.models.find((model) => model.name === tag) ?? shownOf(askerOf(base, send, AbortSignal.timeout(timeoutMs)), tag);
+  const known = kept.get(base);
+  const fresh = known && now() - known.at < OLLAMA_TTL_MS ? known.models.find((model) => model.name === tag) : undefined;
+  return fresh ?? shownOf(askerOf(base, send, AbortSignal.timeout(timeoutMs)), tag);
 }
 
 /** The models the Ollama `env` names has: its address's kept listing while fresh; a stale one at once, asked again behind

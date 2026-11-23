@@ -12,7 +12,7 @@ import { agent, follow, journalOf, serve, withEnv } from "./support.mjs";
 
 const { chooseModel, hostModel, providerModels, runModels } = await import("../dist/model.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
-const { listOllama, ollamaAsking, ollamaBase, ollamaClock, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
+const { listOllama, ollamaAsking, ollamaBase, ollamaClock, ollamaModels, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
 
 // The suites turn every Ollama off (support.mjs, OLLAMA_OFF_ENV); this file asks its own fakes alone.
 delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
@@ -77,6 +77,29 @@ test("a run pinned to an Ollama model resolves it with its /api/show alone: a hu
   assert.equal(pinned.models.getModel("ollama", TOOLS)?.contextWindow, 65_536);
   assert.equal(ollama.got.tags, 0, "the listing never asked");
   assert.ok(ollama.got.show.length > 0 && ollama.got.show.every((name) => name === TOOLS), JSON.stringify(ollama.got.show));
+});
+
+test("a pinned tag's kept entry is reused only while fresh: past OLLAMA_TTL_MS its /api/show is asked again, and num_ctx follows the new context", async (t) => {
+  let at = 1_000_000;
+  ollamaClock(() => at);
+  t.after(() => ollamaClock());
+  const models = [{ name: "synth-resized:1b", capabilities: ["completion", "tools"], family: "synthresized", context_length: 16_384 }];
+  const ollama = await fakeOllama(t, { models, reply: () => ({ text: "Fine." }) });
+  const env = { OLLAMA_HOST: ollama.host };
+  const sent = async () => {
+    await eventsOf(await routeOf("ollama/synth-resized:1b", env));
+    return ollama.got.chat.at(-1).options.num_ctx;
+  };
+  await ollamaModels(env);
+  assert.equal(await sent(), 16_384, "context A, from the kept listing");
+  // The model is now one with another context (pulled again, or a Modelfile's num_ctx changed).
+  models[0].context_length = 8_192;
+  const shown = ollama.got.show.length;
+  assert.equal(await sent(), 16_384, "still fresh: the kept entry, no /api/show");
+  assert.equal(ollama.got.show.length, shown);
+  at += OLLAMA_TTL_MS + 1;
+  assert.equal(await sent(), 8_192, "past the TTL: its /api/show asked again, context B sent");
+  assert.ok(ollama.got.show.length > shown);
 });
 
 test("a start on another provider's model never asks Ollama: an OpenRouter key, the host default or a named model, with an Ollama that never answers", async (t) => {
