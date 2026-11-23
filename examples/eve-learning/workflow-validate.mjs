@@ -271,7 +271,7 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
 
 if (import.meta.main) {
   const args = process.argv.slice(2); let output, resumePath;
-  if (!args.includes('--live')) throw new Error('This starts up to thirteen native model tasks and server compilation. Configure the example and pass --live.');
+  if (!args.includes('--live')) throw new Error(`This starts up to ${8 + DEMO_LEARNING.compile_after} native model tasks and server compilation. Configure the example and pass --live.`);
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--live') continue;
     if (!['--output', '--resume'].includes(args[i]) || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error('Usage: node workflow-validate.mjs --live --output new-proof.json [--resume saved-proof.json]');

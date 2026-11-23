@@ -107,7 +107,7 @@ npm run validate:workflows -- --live --output /tmp/eve-workflow-proof.json
 
 Use a new agent id that does not already exist. The validator creates that dedicated agent with learning Off and refuses to overwrite an existing agent or settings changed outside the proof.
 
-This performs at most thirteen native model tasks, plus the server's compiler calls:
+This performs at most 8 + `compile_after` native model tasks (thirteen at the example's `compile_after` of 5), plus the server's compiler calls:
 
 1. Run the original two-tool procedure with learning Off.
 2. Enable `learning: { compile_after: 5 }`, teach the repeatable procedure, then run up to four ordinary practice tasks. The server counts completed native traces, including the connected Off baseline; compilation can therefore happen after the third practice task. The default cadence is 20 completed runs. Practice stops as soon as a committed workflow exists.

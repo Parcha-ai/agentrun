@@ -269,6 +269,8 @@ test("held on give-backs after landed turns: the revise ask shows their disagree
   assert.match(prompt, /3 of your inputs were checked before it was held/);
   assert.doesNotMatch(prompt, /checked on no input|no disagreements to show/);
   assert.doesNotMatch(prompt, /nothing compiles again/);
+  const single = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { ...held, check: { ...check, turns: { ...check.turns, n: 1 } } } }));
+  assert.match(single, /1 of your inputs was checked before it was held/);
 });
 
 // CompiledRecord.promoted is the promotion step's (learn/promote.ts): the kept draft's digest, read against the agent's
