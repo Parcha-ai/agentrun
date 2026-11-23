@@ -18,10 +18,11 @@ import type { RunTrigger, Target } from "./triggers.js";
 /** Why a trigger may not message a run with no cap (server.ts NO_CAP). */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
 
-/** Why a trigger may not message a run on a harness recipe billed to its vendor's plan: the turn would run as that run
- *  does, on its owner's own sign-in, which runs only what a person starts (HARNESS.md#run-it), and a scheduled turn runs
- *  on keys saved for the harness, which no server saves yet (the claim's RECIPE_SIGN_IN_PERSON_ONLY, for a new run). */
-export const RECIPE_MESSAGE_PERSON_ONLY = "The run is on a harness recipe billed to its vendor's plan, which runs on its owner's own sign-in only for what a person starts: a trigger's turn runs on keys saved for that harness, and this server saves no harness's keys yet. Message the run yourself, or target a run on a harness billed through this server's model proxy.";
+/** Why a trigger may not message a run on a harness recipe billed to its vendor's plan while not every key it runs on is
+ *  saved for that harness (harness-keys.ts): the turn would run as that run does, on its owner's own sign-in, which runs
+ *  only what a person starts (HARNESS.md#run-it); a trigger's turn runs on the saved keys alone (the claim's
+ *  RECIPE_SIGN_IN_PERSON_ONLY, for a new run). */
+export const RECIPE_MESSAGE_PERSON_ONLY = "The run is on a harness recipe billed to its vendor's plan, which runs on its owner's own sign-in only for what a person starts: a trigger's turn runs on keys saved for that harness, and not every one is saved. Save them in Settings → Harness keys, message the run yourself, or target a run on a harness billed through this server's model proxy.";
 
 /** What the trigger target policy needs that lives elsewhere: the run-start leaves (StartDeps, shared with the create
  *  route), the agent reads, and the run view that gives a run's live moment and its v2 status. */
@@ -38,7 +39,7 @@ export interface TriggerTargetDeps {
    *  for an unknown run. */
   momentOf(runId: string): Promise<RunMoment | undefined>;
   /** Whether `harness` is a harness recipe billed to its vendor's plan in this server's table (harness-table.ts
-   *  recipeHarness): a trigger never messages a run on one. Absent: none is. */
+   *  recipeHarness) whose keys are not all saved (harness-keys.ts): a trigger never messages a run on one. Absent: none is. */
   planRecipe?(harness: string): boolean;
   /** `work`, a write that may open run `runId` of agent `agentId` again, done in the agent's delete turn (server.ts
    *  runWrite): never under a purge of the run, and 410 purged after one. */

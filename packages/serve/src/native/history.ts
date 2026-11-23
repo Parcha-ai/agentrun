@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { ApiError } from '../errors.js';
 import { transcriptOf, LIVE_MS } from '../import.js';
-import type { Session, Turn } from '../import-sources.js';
+import type { Session, Turn } from '@parcha/agentrun-import';
 import { launchBody } from '../run-launch.js';
 import { runMetricsOf } from '../timeline/index.js';
 import type { Store, ImportRunInput } from '../store/store.js';
@@ -45,7 +45,7 @@ function turnOf(value:unknown,now:number):Turn{
  if(!Array.isArray(t.calls)||t.calls.length>100)fail();
  const calls=t.calls.map((value:unknown)=>{const c=record(value);keys(c,['type','id','name','arguments']);if(c.type!=='toolCall')fail();record(c.arguments);return {type:'toolCall' as const,id:text(c.id,1024),name:text(c.name,1024),arguments:argumentsOf(c.arguments) as Record<string,unknown>};});
  let usage:Extract<Turn,{role:'assistant'}>['usage'];
- if(t.usage!==undefined){const u=record(t.usage);keys(u,['input','output','cacheRead','cacheWrite','cacheWrite1h']);usage={input:count(u.input),output:count(u.output),cacheRead:count(u.cacheRead),cacheWrite:count(u.cacheWrite),...(u.cacheWrite1h===undefined?{}:{cacheWrite1h:count(u.cacheWrite1h)})};}
+ if(t.usage!==undefined){const u=record(t.usage);keys(u,['input','output','cacheRead','cacheWrite','cacheWrite1h','reasoning']);usage={input:count(u.input),output:count(u.output),cacheRead:count(u.cacheRead),cacheWrite:count(u.cacheWrite),...(u.cacheWrite1h===undefined?{}:{cacheWrite1h:count(u.cacheWrite1h)}),...(u.reasoning===undefined?{}:{reasoning:count(u.reasoning)})};}
  const rest=Object.fromEntries(['key','model','effort','error'].flatMap(key=>t[key]===undefined?[]:[[key,text(t[key],key==='error'?4096:1024)]]));
  return {...base,role,calls,...rest,...(usage?{usage}:{}),...(t.costUsd===undefined?{}:{costUsd:number(t.costUsd,1e9)})};
 }

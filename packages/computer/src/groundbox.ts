@@ -20,7 +20,7 @@ import { type HostCall, HostError, type HostFacts, type Machine, type MachineHos
 import { type FramedEvent, framedExec } from "./hosted/framed-exec.js";
 import { boundOf, orThrow, pause, seconds } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
-import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
+import { allPages, httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { PID_KILL } from "./hosted/scripts.js";
 import { dateOf, isWhole } from "./hosted/values.js";
 import type { ComputerSpec, Refusal } from "./provider.js";
@@ -65,9 +65,8 @@ export async function create(options: GroundboxProviderOptions): Promise<Groundb
 /** The conformance CLI's module for Groundbox: its live switch, the run's 30-minute cap and its image. */
 export const conformance = () => import("./conformance/groundbox.js");
 
-const DEFAULT_API_URL = "https://api.groundbox.dev/v1";
-/** A loopback host as URL writes it (an IPv4 address in its four numbers, IPv6 in brackets): the one place http may go. */
-const LOOPBACK = /^(127(\.\d{1,3}){3}|\[::1\]|localhost)$/;
+/** Groundbox's REST API: the provider's default, and the conformance module's. */
+export const DEFAULT_API_URL = "https://api.groundbox.dev/v1";
 /** The longest a resumable command may run, in seconds: 30 days (EXEC_STREAM_MAX_TIMEOUT_S in Groundbox's contracts). The sandbox's own timer ends it first. */
 const EXEC_STREAM_MAX_S = 30 * 24 * 3_600;
 /** The most timeout_minutes takes: 30 days (SANDBOX_MAX_TIMEOUT_MINUTES). */
@@ -130,14 +129,17 @@ const DIR_PREFIX = "/tmp/.agentrun-exec-";
  * The sh every command starts under ($1 its directory, then the argv). It makes the directory with mode 0700, as
  * mktemp -d does, and a path already there is never its own: the command does not start (exit 126). In it, the fifo
  * and the record of its own pid and start time (as PID_WRAPPER's line, for the kill; written whole and then renamed,
- * so the kill never reads half of it). It runs the argv with the fifo as its stdin, opened to read and write, so the
- * fifo never reads end of file between two writers; then it removes the directory and exits as the argv did.
+ * so the kill never reads half of it). Once both are there it puts MARK on stderr, before any byte of the argv's: a
+ * write and the kill wait for it (Groundbox says `started` before the sh has run), so neither polls. It runs the argv
+ * with the fifo as its stdin, opened to read and write, so the fifo never reads end of file between two writers; then it
+ * removes the directory and exits as the argv did.
  */
 const START_SCRIPT = [
 	"d=$1; shift",
 	'mkdir -m 700 "$d" 2>/dev/null || { echo "agentrun: $d is already there, so it is not one this command made: the command did not start" >&2; exit 126; }',
 	'mkfifo -m 600 "$d/in" || exit 126',
-	'echo "$$ $(s=$(cat /proc/$$/stat 2>/dev/null) && set -- ${s##*") "} && echo "${20}")" >"$d/pid.new" && mv -f "$d/pid.new" "$d/pid"',
+	'echo "$$ $(s=$(cat /proc/$$/stat 2>/dev/null) && set -- ${s##*") "} && echo "${20}")" >"$d/pid.new" && mv -f "$d/pid.new" "$d/pid" || exit 126',
+	"echo >&2",
 	'"$@" 0<>"$d/in"; c=$?',
 	'rm -rf "$d"; exit $c',
 ].join("\n");
@@ -149,27 +151,33 @@ const START_SCRIPT = [
 const OWN_DIR = `cd -P "$d" 2>/dev/null && [ "$(pwd -P)" = "$(cd -P "\${d%/*}" && pwd -P)/\${d##*/}" ] && [ "$(stat -c %u:%a .)" = "$(id -u):700" ] || { echo "$d is not the command's own directory" >&2; exit 4; }`;
 /** The check of one file in it ($1 its name): not a link, and this user's. */
 const ownFile = (name: string) => `[ ! -L ${name} ] && [ "$(stat -c %u ${name})" = "$(id -u)" ] || { echo "$d/${name} is not the command's own" >&2; exit 4; }`;
+/** START_SCRIPT's mark, the first byte on stderr once the command's directory, fifo and pid record are made: a newline (`echo >&2`), which no refusal of the sh starts with. */
+const MARK = 0x0a;
 /**
- * One write ($1 the command's directory): its stdin into the fifo there. A command Groundbox has just started may not
- * have made its fifo yet, so the write waits up to 5 s for it; with none by then the command has ended (its sh removed
- * it): exit 3. A fifo that went between the check and the write leaves a file of the write's own, removed: exit 3.
+ * One write ($1 the command's directory), sent once START_SCRIPT's mark came: its stdin into the fifo there. With no
+ * fifo the command has ended (its sh removed it): exit 3. The write opens `in`, then checks it is still the fifo before
+ * cat writes a byte: a fifo that went between the checks and the open leaves a file of the write's own, removed with
+ * nothing in it, and a command that ends while cat writes leaves it no reader; exit 3 for both. Once cat has put every
+ * byte in the fifo the write is made, though the command may read them, end, and its sh remove the directory before the
+ * write answers.
  */
 const WRITE_SCRIPT = [
-	'd=$1; i=0; until [ -p "$d/in" ]; do [ "$i" -lt 50 ] || exit 3; i=$((i + 1)); sleep 0.1; done',
+	'd=$1; [ -p "$d/in" ] || exit 3',
 	OWN_DIR,
 	ownFile("in"),
-	"cat >in",
+	"{",
 	'[ -p in ] || { rm -f in; cd / && rmdir "$d" 2>/dev/null; exit 3; }',
+	"cat >&3 || exit 3",
+	"} 3>in || exit 3",
 ].join("\n");
 /**
  * The kill ($1 the command's directory, $2 PID_KILL): the shared pid kill of the recorded pid, as root, since a command
- * that became root through sudo is past its starter's signals, and Groundbox's own kill of a command is that user's. A
- * command Groundbox has just started may not have recorded its pid yet, so the kill waits up to 5 s for the record, as
- * a write waits for the fifo; with none by then the command has ended (its sh removed it). Then the directory is
- * removed, as the killed sh could not.
+ * that became root through sudo is past its starter's signals, and Groundbox's own kill of a command is that user's.
+ * Sent once START_SCRIPT's mark came, as a write is; with no record the command has ended (its sh removed it). Then the
+ * directory is removed, as the killed sh could not.
  */
 const KILL_SCRIPT = [
-	'd=$1; i=0; until [ -s "$d/pid" ]; do [ "$i" -lt 50 ] || exit 0; i=$((i + 1)); sleep 0.1; done',
+	'd=$1; [ -s "$d/pid" ] || exit 0',
 	OWN_DIR,
 	ownFile("pid"),
 	"read -r pid start 2>/dev/null <pid || exit 0",
@@ -243,6 +251,12 @@ interface Command {
 	execId?: string;
 	/** The position in the command's output just after the last chunk read. */
 	seq: number;
+	/** stderr's first byte was read: START_SCRIPT's mark, or the first of the words of a start its sh refused. */
+	marked: boolean;
+	/** Answers once stderr's first byte came or the stream ended: what a write and the kill wait for. */
+	begun: Promise<void>;
+	/** Settles begun. */
+	begin: () => void;
 	socket?: GroundboxSocket;
 	/** The stream's events not read yet, and their output's bytes. */
 	events: FramedEvent[];
@@ -308,7 +322,7 @@ class GroundboxHost implements MachineHost {
 
 	constructor(options: { apiKey: string; apiUrl: string; fetch?: typeof fetch; webSocket: GroundboxSocketFactory; diskGb?: number; kind: "desktop" | "linux"; streamBounds?: Partial<StreamBounds> }) {
 		this.#apiKey = options.apiKey;
-		this.#apiUrl = options.apiUrl.replace(/\/+$/, "");
+		this.#apiUrl = options.apiUrl;
 		this.#fetch = options.fetch;
 		this.#webSocket = options.webSocket;
 		this.#diskGb = options.diskGb;
@@ -434,8 +448,8 @@ class GroundboxHost implements MachineHost {
 	 * in its own process group, with the longest timeout Groundbox takes (the sandbox's own timer ends it first), its
 	 * output as base64, so every byte comes as it was and a position in it is exact. A write is one call per WRITE_BYTES
 	 * that writes the command's fifo and answers once it has; there is no end of stdin (a fifo held open has none), which
-	 * nothing the adapter runs waits for. kill is KILL_SCRIPT's. A write or a kill whose directory, fifo or pid record is
-	 * not the command's own is refused.
+	 * nothing the adapter runs waits for. kill is KILL_SCRIPT's. Both wait for START_SCRIPT's mark first. A write or a kill
+	 * whose directory, fifo or pid record is not the command's own is refused.
 	 */
 	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		return framedExec<Command>(
@@ -443,6 +457,7 @@ class GroundboxHost implements MachineHost {
 				start: (argv, ctx) => this.#start(id, argv, ctx),
 				events: (command) => this.#events(command),
 				write: async (command, text) => {
+					await this.#begun(command);
 					const bytes = Buffer.from(text, "utf8");
 					for (let at = 0; at < bytes.length; at += WRITE_BYTES) {
 						const code = await this.#step(command, [WRITE_SCRIPT, "sh", command.dir], bytes.subarray(at, at + WRITE_BYTES));
@@ -453,6 +468,7 @@ class GroundboxHost implements MachineHost {
 					}
 				},
 				kill: async (command) => {
+					await this.#begun(command);
 					const code = await this.#step(command, [KILL_SCRIPT, "sh", command.dir, PID_KILL]);
 					if (code === 4) throw new Error(`the command's pid record at ${command.dir} is not the command's own: the kill was refused`);
 				},
@@ -460,6 +476,16 @@ class GroundboxHost implements MachineHost {
 			argv,
 			ctx,
 		);
+	}
+
+	/**
+	 * Answers once START_SCRIPT's mark came (or the first of a refusal's words, or the stream ended), or STEP_MS passed:
+	 * before it, the command's directory may not be made yet. The script that follows checks what is there either way.
+	 */
+	async #begun(command: Command): Promise<void> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		await Promise.race([command.begun, new Promise<void>((done) => (timer = setTimeout(done, STEP_MS)))]);
+		clearTimeout(timer);
 	}
 
 	/** One short command beside a running one (POST .../exec), its stdin given whole: its exit code, -1 past its bound. Never sent twice. */
@@ -471,7 +497,9 @@ class GroundboxHost implements MachineHost {
 
 	/** Starts the command on a new socket and answers once Groundbox says it has started, within the call's bound. */
 	async #start(id: string, argv: readonly string[], ctx: HostCall): Promise<Command> {
-		const command: Command = { sandbox: id, dir: `${DIR_PREFIX}${randomBytes(8).toString("hex")}`, seq: 0, events: [], queued: 0, paused: false, resuming: false, ended: false, wake: () => {}, quiet: () => {} };
+		let begin!: () => void;
+		const begun = new Promise<void>((done) => (begin = done));
+		const command: Command = { sandbox: id, dir: `${DIR_PREFIX}${randomBytes(8).toString("hex")}`, seq: 0, marked: false, begun, begin, events: [], queued: 0, paused: false, resuming: false, ended: false, wake: () => {}, quiet: () => {} };
 		const first = { type: "start", args: ["sh", "-c", START_SCRIPT, "sh", command.dir, ...argv], resumable: true, encoding: "base64", timeout_s: EXEC_STREAM_MAX_S };
 		try {
 			await this.#connect(command, first, ctx);
@@ -484,13 +512,14 @@ class GroundboxHost implements MachineHost {
 
 	/**
 	 * The stream is over: nothing more is read, its socket's watchdog stops, and the socket is closed (1000, which also
-	 * ends a command still running).
+	 * ends a command still running). A write or a kill still waiting for the mark goes on to its script.
 	 */
 	#end(command: Command, failure?: Error): void {
 		if (!command.ended) command.failure ??= failure;
 		command.ended = true;
 		command.quiet();
 		command.socket?.close(END);
+		command.begin();
 		command.wake();
 	}
 
@@ -569,8 +598,19 @@ class GroundboxHost implements MachineHost {
 				heard();
 				ready();
 			} else if ((message.type === "stdout" || message.type === "stderr") && typeof message.data === "string") {
-				command.events.push({ stream: message.type, base64: message.data });
-				command.queued += bytesOf(message.data);
+				let base64 = message.data;
+				// stderr's first byte lets the writes and the kill go as it comes, read or not: START_SCRIPT's mark, taken off,
+				// or the first of the words of a start its sh refused, kept.
+				if (message.type === "stderr" && !command.marked && base64 !== "") {
+					const bytes = Buffer.from(base64, "base64");
+					command.marked = true;
+					command.begin();
+					if (bytes[0] === MARK) base64 = bytes.subarray(1).toString("base64");
+				}
+				if (base64 !== "") {
+					command.events.push({ stream: message.type, base64 });
+					command.queued += bytesOf(base64);
+				}
 				if (typeof message.seq === "number") command.seq = message.seq;
 				// Everything up to seq is queued: a socket opened later attaches from there, and nothing is lost or read twice.
 				if (command.queued > this.#bounds.queueHighBytes) letGo("full");
@@ -707,22 +747,14 @@ export class GroundboxProvider extends HostedProvider {
 	constructor(options: GroundboxProviderOptions) {
 		const { apiKey, apiUrl = DEFAULT_API_URL, diskGb, fetch, webSocket, streamBounds, maxLifetimeMs = DEFAULT_LIFETIME_MS, ...rest } = options ?? ({} as GroundboxProviderOptions);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Groundbox API key, is required: the provider reads no environment, so the caller passes it");
-		let url: URL | undefined;
-		try {
-			url = new URL(apiUrl);
-		} catch {
-			// Refused below, in words.
-		}
-		// The key rides every call and the stream's upgrade: never in cleartext past this machine.
-		if (url === undefined || !(url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.test(url.hostname)))) {
-			throw new Error(`the Groundbox API URL must be https, or http to a loopback host (127.0.0.0/8, ::1 or localhost), such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
-		}
+		// The key rides every call and the stream's upgrade (wss).
+		const base = httpsBase(apiUrl, "the Groundbox API URL");
 		if (diskGb !== undefined && !(isWhole(diskGb) && diskGb >= 1 && diskGb <= MAX_DISK_GB)) throw new Error(`diskGb is a whole number of GB, 1 to ${MAX_DISK_GB}, not ${String(diskGb)}`);
 		if (Number(rest.daemonUser?.split(":")[0]) === IMAGE_UID) throw new Error(`the daemon user ${rest.daemonUser} is the uid of the sandbox's own user, whose processes init refuses to run beside; choose another, such as 2510:2510`);
 		super(
 			new GroundboxHost({
 				apiKey,
-				apiUrl,
+				apiUrl: base,
 				...(fetch ? { fetch } : {}),
 				webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as GroundboxSocket),
 				...(diskGb === undefined ? {} : { diskGb }),
