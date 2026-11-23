@@ -174,7 +174,8 @@ function settingsModel(env: NodeJS.ProcessEnv, tier: Tier, harness: string): str
 /** The default with no key held: the first model of the Ollama here that calls tools (ollama-provider.ts
  *  ollamaToolsModel, from its last listing, which chooseModel asks for first), where `harness` runs it (harnessRuns, its
  *  entry's: pi any model, an adapter its wire's vendor's and the models the route translates onto its wire); none behind a gateway or under the faux model. A
- *  model that takes no tools is never a default: a run on it would have none. */
+ *  model that takes no tools is never a default: a run on it gets its tools as text, and text tools are unreliable on
+ *  small models. */
 function localDefault(env: NodeJS.ProcessEnv, harness: string): string | undefined {
   if (!asksOllama(env)) return undefined;
   const model = ollamaToolsModel(env);
