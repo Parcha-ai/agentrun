@@ -5,7 +5,7 @@
 import { type Catalog, builtinCatalog, priceRequests } from "./price.js";
 import { type ParseOptions, parseHome, type SessionRequest } from "./home.js";
 import { READERS } from "./readers/index.js";
-import { ACTIVE_GAP_MS } from "./types.js";
+import { ACTIVE_GAP_MS, type Usage } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
 
 export type Wrapped = {
@@ -38,13 +38,15 @@ const day = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart
 const by = <T>(map: Map<string, T>, key: string, make: () => T): T => map.get(key) ?? map.set(key, make()).get(key)!;
 
 /** `year` under `home`, from parseHome's reads: its options (`state` and `requests` aside). */
-export async function wrappedHome(home: string, year: number, options: Omit<ParseOptions, "state" | "requests"> = {}): Promise<Wrapped> {
+export async function wrappedHome(home: string, year: number, options: Omit<ParseOptions, "state" | "requests"> & { price?: (model: string | undefined, usage: Usage) => Promise<number | undefined> | number | undefined } = {}): Promise<Wrapped> {
   const prices: Catalog | undefined = options.catalog === false ? undefined : (options.catalog ?? (await builtinCatalog()));
   const out: Wrapped = { year, sessions: 0, turns: 0, requests: 0, tokens: noTokens(), cost: 0, unpricedRequests: 0, days: [], hours: new Array<number>(24).fill(0), weekdays: new Array<number>(7).fill(0), activeMs: 0, harnesses: [], models: [], sources: [] };
   const days = new Map<string, { requests: number; tokens: number }>();
   const harnesses = new Map<string, { sessions: number; requests: number; tokens: number }>();
   const models = new Map<string, { requests: number; tokens: Tokens; cost: number }>();
   const sources = new Map<string, { sessions: number; requests: number }>();
+  // One request's list price in USD, undefined when it cannot be priced: the catalog's unless the caller prices it.
+  const price = options.price ?? ((model: string | undefined, usage: Usage) => (prices ? priceRequests([{ ...(model ? { model } : {}), usage }], prices) : undefined));
   const pending: Promise<void>[] = [];
   const harnessOf = (source: string) => (READERS as Record<string, { harness: string } | undefined>)[source]?.harness ?? source;
   await parseHome(home, {
@@ -78,7 +80,7 @@ export async function wrappedHome(home: string, year: number, options: Omit<Pars
         if (r.usage) addTokens(m.tokens, r.usage);
         if (i > 0 && r.at - mine[i - 1]!.at < ACTIVE_GAP_MS) out.activeMs += r.at - mine[i - 1]!.at;
         // Priced after the read, one request at a time: a model the catalog does not list leaves only its own out.
-        if (held > 0 && prices) pending.push(priceRequests([{ model: r.model, usage: r.usage }], prices, options.calculateCost).then((usd) => void (usd === undefined ? (out.unpricedRequests += 1) : ((out.cost += usd), (m.cost += usd)))));
+        if (held > 0 && (prices || options.price)) pending.push(Promise.resolve(price(r.model, r.usage!)).then((usd) => void (usd === undefined ? (out.unpricedRequests += 1) : ((out.cost += usd), (m.cost += usd)))));
         else if (held > 0) out.unpricedRequests += 1;
       }
     },

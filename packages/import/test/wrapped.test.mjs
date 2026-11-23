@@ -56,12 +56,11 @@ test("models, harnesses and sources: tokens by the request's model, sessions by 
   assert.equal(wrapped.harnesses.reduce((n, h) => n + h.tokens, 0), 165 + 2 + 10);
 });
 
-test("cost is the catalog's list price of the requests it can price; the rest are counted, not dropped", async (t) => {
+test("cost is the list price of the requests it can price; the rest are counted, not dropped", async (t) => {
   const home = await tempHome(t);
   await writeJsonl(claudeFile(home), [claudeUser({ uuid: "u1", text: WORDS, i: 0 }), answer(1, 10), answer(2, 20, anthropicUsage(1, 1), "claude-unlisted")]);
-  const catalog = new Map([["claude-fixture-1", [{ provider: "anthropic", cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 } }]]]);
-  const calculateCost = (_model, usage) => ({ total: usage.input / 100 });
-  const wrapped = await wrappedHome(home, 2026, { catalog, calculateCost });
+  const price = (model, usage) => (model === "anthropic/claude-fixture-1" ? usage.input / 100 : undefined);
+  const wrapped = await wrappedHome(home, 2026, { catalog: false, price });
   assert.equal(wrapped.cost, 1);
   assert.equal(wrapped.unpricedRequests, 1);
   assert.deepEqual(wrapped.models.map((m) => [m.model, m.cost]), [["anthropic/claude-fixture-1", 1], ["anthropic/claude-unlisted", 0]]);
