@@ -7,5 +7,5 @@ export { type Env, type Locator, locatorKey, type Reader, type ReadOptions, type
 export { type FileCursor, type LineSource, lineReader, type ReadContext, type ReadState } from "./lines.js";
 export { HARNESS_OF, READERS, SOURCE_NAMES, SOURCES, type Source } from "./readers/index.js";
 export { childrenOf, inOrder, locatorOf, type Readers, readerOf, readSession, type Session, sessionLocators } from "./read.js";
-export { builtinCatalog, type Catalog, type Listed, type ModelCost, type Priced, priceRequests } from "./price.js";
+export { builtinCatalog, type CalculateCost, type Catalog, catalogOf, type Listed, type ModelCost, type Priced, priceRequests } from "./price.js";
 export { type HomeState, type ParseOptions, parseHome, type SessionTotals } from "./home.js";

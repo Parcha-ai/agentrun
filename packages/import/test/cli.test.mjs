@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { HARNESS_OF, READERS, SOURCE_NAMES, SOURCES } from "../dist/index.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, piAnswer, piFile, piMeta, piUser, SESSION, tempHome, writeJsonl } from "./fixtures.mjs";
 
@@ -53,6 +53,32 @@ test("--sources picks the sources; an unknown one, or no --known-answer, is a us
   assert.equal(run(dir, "--sources", "nope", "--known-answer").status, 2);
   assert.equal(run(dir).status, 2);
   assert.equal(run("--known-answer").status, 2);
+});
+
+test("--help and -h print the usage to stdout and exit 0; a bad argument is still exit 2", () => {
+  for (const flag of ["--help", "-h"]) {
+    for (const args of [[flag], ["/nowhere", flag, "--known-answer"]]) {
+      const result = run(...args);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /^usage: agentrun-import <home> \[--sources claude-code,codex,pi\] --known-answer\n/);
+      assert.equal(result.stderr, "");
+    }
+  }
+  const bad = run("--nope");
+  assert.equal(bad.status, 2);
+  assert.equal(bad.stdout, "");
+  assert.match(bad.stderr, /usage: agentrun-import/);
+});
+
+test("without pi-ai the CLI fails at startup, loudly: it never prints lines that silently price nothing", async (t) => {
+  const dir = await home(t);
+  // A loader hook that makes every @earendil-works/pi-ai specifier unresolvable, as an install without the peer.
+  const hooks = `data:text/javascript,${encodeURIComponent('export async function resolve(s, c, next) { if (s.startsWith("@earendil-works/pi-ai")) { const e = new Error("Cannot find package " + s); e.code = "ERR_MODULE_NOT_FOUND"; throw e; } return next(s, c); }')}`;
+  const register = `data:text/javascript,${encodeURIComponent(`import { register } from "node:module"; register(${JSON.stringify(hooks)}, ${JSON.stringify(pathToFileURL(CLI).href)});`)}`;
+  const result = spawnSync(process.execPath, ["--import", register, CLI, dir, "--known-answer"], { encoding: "utf8", env: { PATH: process.env.PATH } });
+  assert.notEqual(result.status, 0, "exits non-zero");
+  assert.equal(result.stdout, "", "prints no line");
+  assert.match(result.stderr, /@earendil-works\/pi-ai/);
 });
 
 test("the sources are a registry: each reader names its source, its harness and its name, and reads its own files", () => {

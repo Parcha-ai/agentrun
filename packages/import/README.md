@@ -29,8 +29,10 @@ node dist/cli.js <home> [--sources claude-code,codex,pi] --known-answer
 ```
 
 One JSONL line per session, sorted by key: `{key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h},
-cost, turns, calls}`. Numbers only: no content, title, directory or path is printed. `src/cli.ts` compiles with
-`bun build --compile` and prints the same bytes as under Node.
+cost, turns, calls}`. Numbers only: no content, title, directory or path is printed. `--help` (`-h`) prints the usage
+and exits 0; a bad argument exits 2. The CLI imports pi-ai statically for its prices: a bundle (`bun build --compile`)
+carries it, prints the same bytes as under Node, and a build or run without pi-ai fails instead of pricing nothing. The
+library keeps pi-ai an optional peer.
 
 ## Usage
 
@@ -42,6 +44,8 @@ cost, turns, calls}`. Numbers only: no content, title, directory or path is prin
 | OpenAI, Codex | `input_tokens - cached_input_tokens` | | `reasoning_output_tokens` (part of `output`) |
 | pi | `input` | `cacheWrite1h` | |
 
+A Claude Code session's id is its file's name (`<id>.jsonl`): a resumed session's file is its own session, and a
+record copied into it from an earlier file counts only in that file; a file holding nothing but copies is no session.
 Codex sessions sum each request's `last_token_usage`, never `total_token_usage`. Claude Code writes one line per content
 block of a response, each with the response's usage: a request (`message.id`, `requestId`) counts once, at its last
 line's usage.

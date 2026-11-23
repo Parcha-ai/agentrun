@@ -3,7 +3,7 @@
 // into a resumed one's); a subagent's is no session of its own but its parent's.
 import { createHash } from "node:crypto";
 import { relative, sep } from "node:path";
-import { type Catalog, builtinCatalog, priceRequests } from "./price.js";
+import { type CalculateCost, type Catalog, builtinCatalog, priceRequests } from "./price.js";
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
@@ -47,6 +47,8 @@ export type ParseOptions = {
   state?: HomeState;
   /** The catalog to price requests with; false prices none (cost is then the source's own or null). Default: pi-ai's. */
   catalog?: Catalog | false;
+  /** pi-ai's calculateCost, when the caller imported pi-ai itself (the CLI); else priceRequests loads it. */
+  calculateCost?: CalculateCost;
   /** Where the readers look for a source's own directory (CLAUDE_CONFIG_DIR, CODEX_HOME). Default: none, the home's. */
   env?: Env;
 };
@@ -54,14 +56,14 @@ export type ParseOptions = {
 type Part = { locator: Locator; read: SessionRead };
 
 /** Every session of `sources` under `home`, as totals, sorted by key. */
-export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, env }: ParseOptions = {}): Promise<SessionTotals[]> {
+export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env }: ParseOptions = {}): Promise<SessionTotals[]> {
   let prices: Promise<Catalog | undefined> | undefined;
   const priceWith = () => (catalog === false ? Promise.resolve(undefined) : catalog ? Promise.resolve(catalog) : (prices ??= builtinCatalog()));
   const out: SessionTotals[] = [];
   if (state) state.read = 0;
   for (const source of sources) {
     const { tops, children } = await readSource(home, source, readers, env, state);
-    out.push(...(await totalsOf(home, source, tops, children, priceWith)));
+    out.push(...(await totalsOf(home, source, tops, children, priceWith, calculateCost)));
   }
   return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
@@ -101,7 +103,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
   }
 }
 
-async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>): Promise<SessionTotals[]> {
+async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined): Promise<SessionTotals[]> {
   // Sessions by id, their locators in the import's order; one naming its parent (a Codex subagent's thread) is the
   // parent's, as is each one beside a session's (Claude Code's subagents).
   const sessions = new Map<string, { parts: Part[]; children: Part[] }>();
@@ -139,6 +141,9 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
   for (const part of untied) sessions.set(`\0${locatorKey(part.locator)}`, { parts: [part], children: [] });
   const out: SessionTotals[] = [];
   for (const { parts, children: subagents } of sessions.values()) {
+    // A session whose every file holds only records an earlier file holds (copies) is no session: its records count where
+    // they were first read. serve's import leaves such a file out the same way.
+    if (parts.every(({ read }) => read.session.copies > 0 && read.session.users === 0 && read.requests.length === 0) && subagents.length === 0) continue;
     const first = parts[0]!;
     const tokens = noTokens();
     let reasoning = 0;
@@ -156,7 +161,7 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
     let cost: number | undefined = written.length === parts.length ? (source === "claude-code" ? Math.max(...written) : written.reduce((n, usd) => n + usd, 0)) : undefined;
     if (cost === undefined) {
       const catalog = await priceWith();
-      cost = catalog ? await priceRequests(requests, catalog) : undefined;
+      cost = catalog ? await priceRequests(requests, catalog, calculateCost) : undefined;
     }
     const file = relative(home, first.locator.file).split(sep).join("/");
     const id = first.locator.id;
