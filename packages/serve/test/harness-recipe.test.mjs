@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -16,7 +16,7 @@ import { planRecipesOf } from "../dist/harness-table.js";
 import { launchBody, readLaunchBody } from "../dist/run-launch.js";
 import { putSealedKey } from "../dist/server-keys.js";
 
-const [{ checkedNoteOf, installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, RecipeRefused, firstSeenOf, signedInNoteOf }, { ARCHIVE_CODES, archivePlatform, ArchiveInstallFailed }] = await Promise.all([
+const [{ checkedNoteOf, installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, RecipeRefused, firstSeenTreeOf, signedInNoteOf }, { ARCHIVE_CODES, archivePlatform, ArchiveInstallFailed }] = await Promise.all([
   import("../dist/harness-recipe.js"), import("../dist/harness-archive.js"),
 ]);
 const { fakeAnthropic } = await import(new URL("../../run-adapters-acp/test/fake-anthropic.mjs", import.meta.url).href);
@@ -51,7 +51,8 @@ async function release(t, extra = "", pack = "bz2", { sidecar } = {}) {
     assert.equal(packed.status, 0, packed.stderr);
     bytes = readFileSync(archive);
   }
-  return { bytes, tree, archiveSha: sha256(bytes), binarySha: sha256(Buffer.from(body)) };
+  const { treeDigest } = await import("@parcha/agentrun-harness-acp");
+  return { bytes, tree, archiveSha: sha256(bytes), treeSha: await treeDigest(tree) };
 }
 
 /** A recipe for the stand-in agent, `over` merged over it. */
@@ -220,7 +221,7 @@ test("rule 4: a check of a recipe its owner has not installed downloads nothing 
   assert.equal(existsSync(join(data, "harnesses")), false);
 });
 
-test("the owner's install: the archive's sha256 checked, the binary's first sha256 recorded, a binary that differs later refused", async (t) => {
+test("the owner's install: the archive's sha256 checked, the first tree recorded (the binary in it), a binary that differs later refused", async (t) => {
   const data = join(await scratch(t), "agents");
   const first = await release(t);
   const file = await recipeFile(t, recipeOf(first.archiveSha));
@@ -229,7 +230,8 @@ test("the owner's install: the archive's sha256 checked, the binary's first sha2
   const now = await installRecipe(recipe, file, data, { fetch: servedFetch(first.bytes, asked) });
   assert.equal(now.installed, "now");
   assert.equal(now.pinnedBy, "recorded");
-  assert.equal(readFileSync(firstSeenOf(data, recipe, PLATFORM), "utf8").trim(), first.binarySha, "the first sha256 recorded");
+  assert.equal(readFileSync(firstSeenTreeOf(data, recipe, PLATFORM), "utf8").trim(), first.treeSha, "the first tree recorded");
+  assert.deepEqual(readdirSync(join(data, "harnesses", ".first-seen")), [`model-agent@1.0.0-${PLATFORM}.tree.sha256`], "no record of the binary apart: the tree holds it");
   const again = await installRecipe(recipe, file, data, { fetch: servedFetch(first.bytes, asked) });
   assert.equal(again.installed, "already");
   assert.equal(again.pinnedBy, "first-seen");
@@ -244,7 +246,7 @@ test("the owner's install: the archive's sha256 checked, the binary's first sha2
   chmodSync(join(data, "harnesses", "model-agent"), 0o755);
   chmodSync(join(data, "harnesses", "model-agent", "agent"), 0o755);
   writeFileSync(join(data, "harnesses", "model-agent", "agent"), "#!/bin/sh\necho swapped\n");
-  await assert.rejects(installRecipe(movedRecipe, moved, data, { fetch: servedFetch(other.bytes) }), (error) => error instanceof ArchiveInstallFailed && error.code === "HARNESS_BINARY_MISMATCH" && error.message.includes(first.binarySha));
+  await assert.rejects(installRecipe(movedRecipe, moved, data, { fetch: servedFetch(other.bytes) }), (error) => error instanceof ArchiveInstallFailed && error.code === "HARNESS_BINARY_MISMATCH" && error.message.includes(first.treeSha));
   // And the check refuses the swapped binary by the installer's code: one pin, one code.
   const run = await check(t, file, data);
   assert.equal(run.status, 1);
@@ -262,7 +264,7 @@ test("a recipe's archive is in a format the installer unpacks: a .tar.gz install
     const { recipe } = loadRecipe(file);
     const now = await installRecipe(recipe, file, data, { fetch: servedFetch(built.bytes) });
     assert.equal(now.installed, "now", format);
-    assert.equal(readFileSync(firstSeenOf(data, recipe, PLATFORM), "utf8").trim(), built.binarySha, format);
+    assert.equal(readFileSync(firstSeenTreeOf(data, recipe, PLATFORM), "utf8").trim(), built.treeSha, format);
     assert.equal(statSync(join(data, "harnesses", "model-agent", "agent")).mode & 0o111, 0o111, `${format}: the binary is executable`);
   }
   // A format it does not unpack is the loader's refusal, by the one list the installer keeps.
@@ -909,10 +911,9 @@ test("AgentRun never reads, refreshes or sends an agent's sign-in, and has no us
 
 /** The note a passing check writes (harness-recipe.ts writeChecked), written here for the install as it now is. */
 async function noteChecked(data, file) {
-  const { pinnedDigest, pinnedTree, releaseFor, writeChecked } = await import("../dist/harness-recipe.js");
+  const { recipeInstall, writeChecked } = await import("../dist/harness-recipe.js");
   const { recipe, sha256: recipeSha } = loadRecipe(file);
-  const at = releaseFor(recipe, PLATFORM);
-  writeChecked(data, recipe.id, { recipe: recipeSha, binary: pinnedDigest(data, recipe, at, PLATFORM).sha256, tree: pinnedTree(data, recipe, at, PLATFORM).sha256, version: recipe.release.version, platform: PLATFORM });
+  writeChecked(data, recipe.id, { recipe: recipeSha, tree: recipeInstall(data, recipe, file, process.env, PLATFORM).tree.sha256, platform: PLATFORM });
 }
 
 test("a server takes a recipe it names only once its install is checked: hidden until then, by the code and the command that fix it, and a plan-billed one on keys saved for its harness, never the shell's", { timeout: 60_000 }, async (t) => {
@@ -936,9 +937,9 @@ test("a server takes a recipe it names only once its install is checked: hidden 
   assert.equal(statSync(checkedNoteOf(proxy.data, "model-agent")).mode & 0o777, 0o600);
   assert.equal(entry.hidden(env), undefined);
   assert.ok(harnessIds(env).includes("model-agent"));
-  // A pass noted for another binary is no pass for this one.
+  // A pass noted for another install (its tree, the binary among it) is no pass for this one.
   const note = JSON.parse(readFileSync(checkedNoteOf(proxy.data, "model-agent"), "utf8"));
-  writeFileSync(checkedNoteOf(proxy.data, "model-agent"), JSON.stringify({ ...note, binary: "0".repeat(64) }));
+  writeFileSync(checkedNoteOf(proxy.data, "model-agent"), JSON.stringify({ ...note, tree: "0".repeat(64) }));
   assert.match(entry.hidden(env), /^HARNESS_NOT_CHECKED: .*changed since the last check that passed/);
 
   // Plan-billed: on keys saved for its harness alone, whatever key the server's shell holds: until every one is saved,

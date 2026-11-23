@@ -338,10 +338,11 @@ with the archive's owners and permissions dropped; AgentRun makes none of the zi
 the host's `tar` extracts (symbolic links included). Either way the archive is the one the recipe pins by its digest,
 and every file it unpacks to is pinned by the tree's digest (rule 2).
 
-A digest the recipe leaves out is recorded at the first install, one file each under
-`~/.agentrun/harnesses/.first-seen/`: `<id>@<version>-<platform>.sha256` for the binary and `.tree.sha256` for the
-tree. A record is written once and never over another; to take a new release, change `version` in the recipe. A
-release whose binary or tree differs from its record is refused at every check, sign-in and reinstall.
+A tree digest the recipe leaves out is recorded at the first install, in
+`~/.agentrun/harnesses/.first-seen/<id>@<version>-<platform>.tree.sha256`. The tree holds the binary too, so no
+binary digest is recorded; one the recipe pins (`binarySha256`) is checked at the install. A record is written once and
+never over another; to take a new release, change `version` in the recipe. A release whose binary or any file beside
+it differs from its record is refused at every check, sign-in, start and reinstall.
 
 A failure names its code and the command to try again: `HARNESS_PLATFORM_UNSUPPORTED` (no archive for this platform),
 `HARNESS_DOWNLOAD_FAILED`, `HARNESS_ARCHIVE_MISMATCH` (the archive's sha256 or sha512 is not the recipe's),
