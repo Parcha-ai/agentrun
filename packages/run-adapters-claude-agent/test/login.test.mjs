@@ -12,6 +12,7 @@ import { createHarnessRunner } from '@parcha/agentrun-kernel';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { durableEnv } from '../dist/env.js';
+import { claudeSandboxSettings } from '../dist/harness.js';
 import { loginBooking } from '../dist/login.js';
 
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
@@ -164,4 +165,26 @@ test('a session on a login starts its CLI with no model URL, key or token, a con
   }
   // No host port: no request of the host's goes on a person's login.
   assert.deepEqual(ports, [undefined]);
+});
+
+test("the sandbox of a run on a login denies its commands the folder the CLI reads the credentials from when the server's env sets it apart; the macOS empty value adds nothing, and no folder is named twice", () => {
+  const machine = { root: '/workspace', dirs: { tmp: '/s/tmp', home: '/s/home', cache: '/s/cache', config: '/s/claude/config' } };
+  const denied = (login, platform) => claudeSandboxSettings(machine, 'deny-all', login, platform).filesystem.denyRead;
+  assert.deepEqual(claudeSandboxSettings(machine, 'deny-all').filesystem.denyRead, ['/s/claude']);
+  const folder = { dir: '/data/claude-login', profiles: '/data/claude-login/anthropic' };
+  const base = ['/s/claude', folder.dir, folder.profiles];
+  // CLAUDE_SECURESTORAGE_CONFIG_DIR=/u/p/secure in the server's env: the CLI reads the credentials there.
+  for (const platform of ['linux', 'darwin']) assert.deepEqual(denied({ ...folder, secure: '/u/p/secure' }, platform), [...base, '/u/p/secure'], platform);
+  // Set and empty: on Linux the CLI reads `<home>/.claude`; on macOS it gets the empty value (a Keychain item, no folder).
+  const empty = { ...folder, secure: '/u/p/.claude', unsuffixed: true };
+  assert.deepEqual(denied(empty, 'linux'), [...base, '/u/p/.claude']);
+  assert.deepEqual(denied(empty, 'darwin'), base);
+  // The credentials in the login's own folder (none set apart, or set to that folder): named once.
+  for (const platform of ['linux', 'darwin']) {
+    assert.deepEqual(denied(folder, platform), base, platform);
+    assert.deepEqual(denied({ ...folder, secure: folder.dir }, platform), base, platform);
+  }
+  // The CLI's default folder: its own folder on Linux, the empty value on macOS; nothing added either way.
+  const home = { dir: '/u/p/.claude', profiles: '/u/p/.claude/anthropic', home: '/u/p' };
+  for (const platform of ['linux', 'darwin']) assert.deepEqual(denied(home, platform), ['/s/claude', home.dir, home.profiles], platform);
 });
