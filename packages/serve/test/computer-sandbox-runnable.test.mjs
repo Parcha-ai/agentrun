@@ -241,7 +241,7 @@ test("Mode 1: an agent whose computer is a Docker sandbox still runs where Docke
   assert.deepEqual(said.refused, [], JSON.stringify(said));
   // What is left is the model key this test saves none of: nothing of its computer keeps it from running.
   assert.deepEqual(said.started.slice(0, 2), [409, "agent_not_runnable"], JSON.stringify(said));
-  assert.match(said.started[2], /^No model yet: add a model key in Settings → Model keys[^.]*\.$/, JSON.stringify(said));
+  assert.match(said.started[2], /^No model yet: start Ollama and pull a model with tools, or add a model key in Settings → Model keys[^.]*\.$/, JSON.stringify(said));
 });
 
 test("Mode 1: an agent saved with place {sandbox, docker} on a host where Docker does not answer is refused at its run's start (409), in the words Settings → Computers says, and its view says Docker is not ready", async (t) => {

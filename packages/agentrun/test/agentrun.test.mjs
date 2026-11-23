@@ -45,7 +45,7 @@ async function stopChild(child, exited) {
   await within(exited, 5_000);
 }
 
-/** This environment with a fresh home, no model key, no box, and no browser. */
+/** This environment with a fresh home, no model key, no box, and no browser (and no Ollama: support.mjs). */
 function bare(t) {
   const home = mkdtempSync(join(tmpdir(), "agentrun-npx-"));
   removeAtEnd(home);
