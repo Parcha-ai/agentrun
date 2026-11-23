@@ -1,6 +1,6 @@
 // A template eval's fake of the web tools for one case (template-eval.ts, `web:` in a case's case.yaml): its runs'
 // web_search and web_fetch answer from the case, never from the network, in the shapes and through the tool names the
-// model sees live. `unavailable`: every search fails as keyless search past its free limit does (exa-keyless.ts
+// model sees live. `unavailable`: every search fails as keyless search past its free limit does (keyless-mcp.ts
 // RATE_LIMITED), and every page fails as a fetch whose connection is refused does (the guarded direct fetch's own words,
 // web-fetch-direct.ts readDirect). A fixture: each search answered by the first answer whose `query` (a regular
 // expression, case-insensitive) matches the query, else its default; each page by the answer for exactly its URL, else
@@ -11,7 +11,7 @@
 //
 // Only the eval's own in-process runner binds it (runner/beside.ts `evalFakes`, by the agent the eval made for the run):
 // no package field, API field, setting or environment variable reaches it, so no other server's runs ever see a fake.
-import { RATE_LIMITED } from "./exa-keyless.js";
+import { RATE_LIMITED } from "./keyless-mcp.js";
 import { clip, type Page, type Part, partProblem, TITLE_CAP, URL_MAX } from "./web-fetch-direct.js";
 import { webFetch, type WebPage } from "./web-fetch.js";
 import { type Hit, type Search, searchArgs, snippetOf } from "./web-search.js";
@@ -136,5 +136,5 @@ export function fakeSaveOptions(fake: WebFake): Pick<PublicFetchOptions, "lookup
 /** A faked run's plane: web_search never a harness's own search (Claude's or Codex's, which would answer in its stead), so
  *  the run's own web_search tool, the one the fake answers through, is the one its harness offers. */
 export function fakedPlane(plane: Plane | undefined): Plane | undefined {
-  return plane?.web_search === "native" ? { ...plane, web_search: "exa-keyless" } : plane;
+  return plane?.web_search === "native" ? { ...plane, web_search: "firecrawl-keyless" } : plane;
 }

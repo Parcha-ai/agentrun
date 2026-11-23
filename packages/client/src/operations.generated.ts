@@ -215,11 +215,11 @@ export type DefinitionInput = {
       permission?: "allow" | "deny";
     };
     web_fetch?: {
-      provider?: "kernel" | "parallel";
+      provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
       permission?: "allow" | "ask" | "deny";
     };
     web_search?: {
-      provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+      provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
       permission?: "allow" | "ask" | "deny";
     };
     web_save?: {
@@ -548,6 +548,7 @@ export type Cost = {
   learning_usd?: number | null;
   tools_usd?: number | null;
   all_in_usd?: number | null;
+  degraded?: true;
   plan?: {
     requests: number;
     tokens: number;
@@ -3782,12 +3783,13 @@ export type SaveCalendarResponse = {
 
 /** Have Composio make a managed MCP server for a toolkit's chosen actions, and save it as an MCP server (PUT /settings/mcp-servers/{name}/composio). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type SaveComposioServerBody = {
-  api_key: string;
   toolkit: string;
   tools: Array<string>;
   user_id?: string;
   auth_config_id?: string;
   price_usd?: number;
+  api_key?: string;
+  api_key_env?: "COMPOSIO_API_KEY";
 };
 export type SaveComposioServerResponse = {
   server: {
@@ -3798,6 +3800,7 @@ export type SaveComposioServerResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -4121,6 +4124,7 @@ export type GetMcpServerResponse = {
   auth: {
     type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
     headers?: Array<string>;
+    api_key_env?: "COMPOSIO_API_KEY";
   };
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: {
@@ -4167,6 +4171,7 @@ export type ListMcpServersResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -4261,6 +4266,7 @@ export type RefreshMcpServerResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -4317,6 +4323,7 @@ export type SaveMcpServerResponse = {
   auth: {
     type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
     headers?: Array<string>;
+    api_key_env?: "COMPOSIO_API_KEY";
   };
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: {
@@ -5706,11 +5713,11 @@ export type SaveToolKeyBody = {
 /** The server's tool settings (GET /settings/tools). */
 export type GetToolSettingsResponse = {
   web_search: {
-    provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+    provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
     permission?: "allow" | "ask" | "deny";
   };
   web_fetch: {
-    provider: "kernel" | "parallel";
+    provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
     permission?: "allow" | "ask" | "deny";
   };
   browser: {
@@ -5738,11 +5745,11 @@ export type PutToolSettingsBody = {
     permission?: "allow" | "deny";
   };
   web_fetch?: {
-    provider?: "kernel" | "parallel";
+    provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
     permission?: "allow" | "ask" | "deny";
   };
   web_search?: {
-    provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+    provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
     permission?: "allow" | "ask" | "deny";
   };
   web_save?: {
@@ -5798,11 +5805,11 @@ export type PutToolSettingsBody = {
 };
 export type PutToolSettingsResponse = {
   web_search: {
-    provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+    provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
     permission?: "allow" | "ask" | "deny";
   };
   web_fetch: {
-    provider: "kernel" | "parallel";
+    provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
     permission?: "allow" | "ask" | "deny";
   };
   browser: {

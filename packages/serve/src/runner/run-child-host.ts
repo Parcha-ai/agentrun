@@ -34,7 +34,7 @@ import { vendorsOver } from "../sign-ins.js";
 import { decisionProvidersIn, fauxFetch } from "../decisions.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { cutDeep, heldRedactor, runnerSecrets } from "./redact.js";
+import { cutDeep, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
@@ -731,7 +731,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     mcp: (ask) => projectCall(async () => {
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach, capped: launch.maxCostUsd !== undefined, media: { env: deps.env, web: deps.evalFakes?.(run.agentId)?.web, slots: deps.saveSlots } });
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, capped: launch.maxCostUsd !== undefined, media: { env: deps.env, web: deps.evalFakes?.(run.agentId)?.web, slots: deps.saveSlots } });
       if (!made) return undefined;
       releases.push(() => made.release());
       const exposed = heldMcpOf(made, cut);
@@ -1184,10 +1184,10 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         }
         const savedGateway = savedGatewayIn(claimEnv);
         // The run's own keys: those its claim opens (claim-secrets.ts), the one list its loop in this process read.
-        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact ? heldRedactor(loopDeps.redact) : undefined }, revisionRow as never, launch, claim.runId);
+        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, launch, claim.runId);
         // With them, its revision's own model's (a launch pinned at its start to another model, a --faux start's, is still
         // handed its agent's model's key, as a run's own process was handed it before: run-secrets.ts secretsFor).
-        const ofRevision = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}) });
+        const ofRevision = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}) });
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
@@ -1293,6 +1293,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
             ...(deps.githubApi ? { githubApi: deps.githubApi } : {}),
             ...(deps.githubWeb ? { githubWeb: deps.githubWeb } : {}),
             ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}),
+            ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}),
           };
           const ended = channel.call("loop", "start", [init]) as Promise<LoopEnd>;
           // From here a command or a stop goes to the run's process, after its start on the channel.

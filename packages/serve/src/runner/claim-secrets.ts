@@ -40,10 +40,6 @@ export interface ClaimSecretsDeps {
   /** The runner's seal key: with none, no saved key is opened, and only the environment's values are read. */
   readonly sealKey: Buffer | undefined;
   readonly env?: NodeJS.ProcessEnv;
-  /** The runner's one redactor (redact.ts), for a claim given its run's id: the run's own tool keys it lays are carried
-   *  there first, cut from the run's journal as it is written, since no one holds them after the turn. A claim with run
-   *  keys to lay and no redactor lays none, and throws. */
-  readonly redact?: HeldRedact;
 }
 
 /** What reads a run's launch sealed column. */
@@ -52,10 +48,10 @@ type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8
 /** The environment a claimed run's tools run under: the runner's base (its secrets stripped), with the keys the run's
  *  revision needs read from the store on top — the tool keys its tools unlock, the model keys its model needs, and its
  *  decision provider keys — and, for claim `runId`, the run's own tool keys its revision declares (run-keys.ts) over the
- *  server's by the same name. A fresh object per claim, so no run's keys reach another's. */
-export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: HeldRedact | undefined }, revision: Revision, launch: Pick<RunLaunch, "plane" | "model">, runId: string): Promise<NodeJS.ProcessEnv>;
-export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, launch: Pick<RunLaunch, "plane" | "model">): Promise<NodeJS.ProcessEnv>;
-export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, launch: Pick<RunLaunch, "plane" | "model">, runId?: string): Promise<NodeJS.ProcessEnv> {
+ *  server's by the same name. A fresh object per claim, so no run's keys reach another's. `redact`: the runner's one
+ *  redactor, which the run's own tool keys are carried into before they are laid, so its journal is cut of them as it is
+ *  written (no one holds them after the turn); a plain JS caller that passes none lays no run key, and throws. */
+export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: HeldRedact }, revision: Revision, launch: Pick<RunLaunch, "plane" | "model">, runId?: string): Promise<NodeJS.ProcessEnv> {
   const base = withoutSecrets(deps.env ?? {});
   const working = await workingEnv(deps);
   const needs = await needsOf(revision);

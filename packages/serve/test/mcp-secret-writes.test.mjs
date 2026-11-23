@@ -56,30 +56,59 @@ test("MCP's operations are registered with the one gate, by this predicate; the 
   assert.equal(doc.paths["/settings/mcp-servers/{name}/oauth/start"].post.requestBody.content["application/json"].schema.properties.client_secret["x-agentrun-secret"], true, "client_secret");
 });
 
-test("a save that would drop or change a saved server's credential is a secret write, read from the store; one that keeps it is not", async () => {
+test("a save over a saved server is refused to the token unless the token saved it and it seals nothing (the delete's one rule), read from the store, on the generic save and the API-only Composio save; a new server's is not, and the check keeps what it read", async () => {
   const gate = await import("../dist/secret-writes.js");
   await import("../dist/mcp-servers-store.js");
-  const rows = { held: { auth: "bearer", sealed: "sealed-bytes" }, open: { auth: "none", sealed: null } };
-  const store = { mcp: { server: async (name) => rows[name] } };
+  const none = { auth: "none", sealed: null, credentialChangedAt: null };
+  const rows = { held: { auth: "bearer", sealed: "sealed-bytes", credentialChangedAt: 5, createdAt: 1 }, tokens: { ...none, createdAt: 2 }, owners: { ...none, createdAt: 3 }, stale: { ...none, createdAt: 4 } };
+  // The token's mark on held (sealed all the same) and tokens; none on owners; stale's was written for an earlier row.
+  const records = { "mcp.source/held": { source: "url", toolkit: null, of: 1, by: "token" }, "mcp.source/tokens": { source: "url", toolkit: null, of: 2, by: "token" }, "mcp.source/owners": { source: "url", toolkit: null, of: 3 }, "mcp.source/stale": { source: "url", toolkit: null, of: 1, by: "token" } };
+  const store = { mcp: { server: async (name) => rows[name] }, settings: { get: async (key) => records[key] } };
   const url = "https://mcp.example.test/mcp";
-  for (const [name, body, writes, why] of [
-    ["held", { url, auth: { type: "none" } }, true, "auth none over a saved bearer drops it"],
-    ["held", { url }, true, "no auth is none: drops it"],
-    ["held", { url, auth: { type: "oauth" } }, true, "another auth type replaces it"],
-    ["held", { url, auth: { type: "bearer" }, prices: { add: 0.01 } }, false, "the same type keeps the sealed bearer"],
-    ["open", { url, auth: { type: "none" } }, false, "a server with no credential has none to drop"],
-    ["new-one", { url, auth: { type: "none" } }, false, "a new server has none to drop"],
-  ]) assert.equal(await gate.writesSecretFor("saveMcpServer", body, { params: [name], store }), writes, `${name}: ${why}`);
+  const open = { auth: "none", sealed: false, changedAt: null };
+  for (const [name, body, writes, seen, why] of [
+    ["held", { url, auth: { type: "none" } }, true, { auth: "bearer", sealed: true, changedAt: 5 }, "auth none over a saved bearer drops it"],
+    ["held", { url }, true, { auth: "bearer", sealed: true, changedAt: 5 }, "no auth is none: drops it"],
+    ["held", { url, auth: { type: "oauth" } }, true, { auth: "bearer", sealed: true, changedAt: 5 }, "another auth type replaces it"],
+    ["held", { url, auth: { type: "bearer" }, prices: { add: 0.01 } }, true, { auth: "bearer", sealed: true, changedAt: 5 }, "it seals a credential: the token writes over none, keeping it or not"],
+    ["owners", { url, auth: { type: "none" } }, true, open, "the owner saved it: no token's mark"],
+    ["stale", { url, auth: { type: "none" } }, true, open, "the token's mark was for another row under the name"],
+    ["tokens", { url, auth: { type: "none" } }, false, open, "the token saved it with none"],
+    ["new-one", { url, auth: { type: "none" } }, false, null, "a new server: nothing to write over"],
+  ]) {
+    const request = { params: [name], store };
+    assert.equal(await gate.writesSecretFor("saveMcpServer", body, request), writes, `${name}: ${why}`);
+    assert.deepEqual(request.seen, seen, `${name}: the save lands only while the row is still this`);
+  }
+  // The Composio save names its key by api_key_env: on an API-only server the same rule decides it; elsewhere it is the
+  // owner's whatever the row.
+  const composio = { api_key_env: "COMPOSIO_API_KEY", toolkit: "gmail" };
+  for (const [name, writes] of [["held", true], ["owners", true], ["stale", true], ["tokens", false], ["new-one", false]]) {
+    assert.equal(await gate.writesSecretFor("saveComposioServer", composio, { params: [name], store, apiOnly: true }), writes, `API-only, Composio over ${name}`);
+    assert.equal(await gate.writesSecretFor("saveComposioServer", composio, { params: [name], store, apiOnly: false }), true, `full, Composio over ${name}`);
+  }
 });
 
-test("removing a saved server is a secret write when it holds a credential, read from the store; one with none is not, and the check keeps what it read", async () => {
+test("removing a saved server is refused to the token when it holds a credential or the token did not save it, read from the store; one the token saved with none is not, and the check keeps what it read", async () => {
   const gate = await import("../dist/secret-writes.js");
   await import("../dist/mcp-servers-store.js");
-  const rows = { held: { auth: "bearer", sealed: "sealed-bytes", credentialChangedAt: 5 }, open: { auth: "none", sealed: null, credentialChangedAt: null } };
-  const store = { mcp: { server: async (name) => rows[name] } };
-  for (const [name, writes, seen] of [["held", true, { auth: "bearer", sealed: true, changedAt: 5 }], ["open", false, { auth: "none", sealed: false, changedAt: null }], ["gone", false, null]]) {
+  const none = { auth: "none", sealed: null, credentialChangedAt: null };
+  const rows = { held: { auth: "bearer", sealed: "sealed-bytes", credentialChangedAt: 5, createdAt: 1 }, open: { ...none, createdAt: 2 }, owners: { ...none, createdAt: 3 }, stale: { ...none, createdAt: 4 }, unrecorded: { ...none, createdAt: 5 } };
+  // Each row's source record: the token's mark on held (sealed all the same) and open; none on owners; stale's was written
+  // for an earlier row under the name (of 1), so it is not this row's.
+  const records = { "mcp.source/held": { source: "url", toolkit: null, of: 1, by: "token" }, "mcp.source/open": { source: "url", toolkit: null, of: 2, by: "token" }, "mcp.source/owners": { source: "url", toolkit: null, of: 3 }, "mcp.source/stale": { source: "url", toolkit: null, of: 1, by: "token" } };
+  const store = { mcp: { server: async (name) => rows[name] }, settings: { get: async (key) => records[key] } };
+  const open = { auth: "none", sealed: false, changedAt: null };
+  for (const [name, refused, seen, why] of [
+    ["held", true, { auth: "bearer", sealed: true, changedAt: 5 }, "it holds a credential, whoever saved it"],
+    ["open", false, open, "the token saved it with none"],
+    ["owners", true, open, "the owner saved it: no token's mark"],
+    ["stale", true, open, "the token's mark was for another row under the name"],
+    ["unrecorded", true, open, "no record at all (a row written by hand, or saved before the mark): the owner's"],
+    ["gone", false, null, "no row: the delete answers 404"],
+  ]) {
     const request = { params: [name], store };
-    assert.equal(await gate.writesSecretFor("deleteMcpServer", undefined, request), writes, name);
+    assert.equal(await gate.writesSecretFor("deleteMcpServer", undefined, request), refused, `${name}: ${why}`);
     assert.deepEqual(request.seen, seen, `${name}: the removal lands only while the row is still this`);
   }
 });

@@ -131,7 +131,7 @@ export function claimPromotion(deps: Omit<PromotionDeps, "champion" | "kept"> & 
     ...deps,
     kept: async () => (deps.runId ? servedOf(await runEntries(deps.store, deps.runId, deps.context).catch(() => [])) : undefined),
     champion: async (name, commit) => (await workflowsAt({ folder: deps.folder, store: deps.store, shown: deps.shown }, commit)).find((one) => one.name === name),
-    refused: refusedIn(deps.folder, deps.store),
+    refused: refusedIn(deps.folder, deps.store, deps.log),
     newest: async (name) => {
       const folder = deps.folder();
       let main: string | undefined;
@@ -1119,7 +1119,7 @@ export async function askReplay(ask: ReplayAsk, name: string, digest: string, in
   const { launch, revisionId } = await ask.launchOf(picked[0]!.launch.input as Json);
   if (launch.sourceProject || sourceSyncOf((await ask.store.agents.revision(revisionId))?.body) && !ask.admitAuxiliary) throw new ReplayRefused("conflict", PROJECT_REPLAY_REFUSED);
   if (!launch.learning || launch.learning.noWorkflows) throw new ReplayRefused("conflict", `A replay runs ${name} as a run of the agent that learns does, and the agent's runs do not take learned workflows here (its learning is off, it takes no workflows, or this server's is off).`);
-  const deps: PromotionDeps = { store: ask.store, agentId: ask.agentId, revisionId, launch: { ...launch, learning: { ...launch.learning, seed: found.commit } }, context: ask.context, log: ask.log, shown: ask.shown, refused: refusedIn(ask.folder, ask.store), ...(ask.admitAuxiliary ? { admitAuxiliary: ask.admitAuxiliary } : {}), ...(ask.now ? { now: ask.now } : {}) };
+  const deps: PromotionDeps = { store: ask.store, agentId: ask.agentId, revisionId, launch: { ...launch, learning: { ...launch.learning, seed: found.commit } }, context: ask.context, log: ask.log, shown: ask.shown, refused: refusedIn(ask.folder, ask.store, ask.log), ...(ask.admitAuxiliary ? { admitAuxiliary: ask.admitAuxiliary } : {}), ...(ask.now ? { now: ask.now } : {}) };
   const bar: CheckBar = { ...loop, attempt: attemptOf(records, name, digest) };
   const said = `checking it on ${plural(picked.length, "input")} of the agent's own runs, as its owner asked`;
   // Kept only while the revision's newest record is still the one read here: each record write stamps a new `at`.

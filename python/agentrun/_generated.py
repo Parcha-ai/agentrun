@@ -1595,12 +1595,12 @@ class DefinitionToolSettingsAskPerson(TypedDict, total=False):
 
 
 class DefinitionToolSettingsWebFetch(TypedDict, total=False):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
 
 
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -2101,12 +2101,12 @@ class DefinitionInputToolSettingsAskPerson(TypedDict, total=False):
 
 
 class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
 
 
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -3271,6 +3271,7 @@ class Cost(_CostRequired, total=False):
     learning_usd: float | None
     tools_usd: float | None
     all_in_usd: float | None
+    degraded: Literal[True]
     plan: CostPlan
 
 
@@ -5703,7 +5704,6 @@ class SaveCalendarResponse(TypedDict):
 
 
 class _SaveComposioServerBodyRequired(TypedDict):
-    api_key: str
     toolkit: str
     tools: list[str]
 
@@ -5712,6 +5712,8 @@ class SaveComposioServerBody(_SaveComposioServerBodyRequired, total=False):
     user_id: str
     auth_config_id: str
     price_usd: float
+    api_key: str
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _SaveComposioServerResponseRequired(TypedDict):
@@ -5752,6 +5754,7 @@ class _SaveComposioServerResponseServerAuthRequired(TypedDict):
 
 class SaveComposioServerResponseServerAuth(_SaveComposioServerResponseServerAuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _SaveComposioServerResponseServerOauthRequired(TypedDict):
@@ -6166,6 +6169,7 @@ class _GetMcpServerResponseAuthRequired(TypedDict):
 
 class GetMcpServerResponseAuth(_GetMcpServerResponseAuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _GetMcpServerResponseOauthRequired(TypedDict):
@@ -6232,6 +6236,7 @@ class _ListMcpServersResponseServersItemAuthRequired(TypedDict):
 
 class ListMcpServersResponseServersItemAuth(_ListMcpServersResponseServersItemAuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _ListMcpServersResponseServersItemOauthRequired(TypedDict):
@@ -6365,6 +6370,7 @@ class _RefreshMcpServerResponseServerAuthRequired(TypedDict):
 
 class RefreshMcpServerResponseServerAuth(_RefreshMcpServerResponseServerAuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _RefreshMcpServerResponseServerOauthRequired(TypedDict):
@@ -6447,6 +6453,7 @@ class _SaveMcpServerResponseAuthRequired(TypedDict):
 
 class SaveMcpServerResponseAuth(_SaveMcpServerResponseAuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _SaveMcpServerResponseOauthRequired(TypedDict):
@@ -9173,7 +9180,7 @@ class GetToolSettingsResponse(TypedDict):
 
 
 class _GetToolSettingsResponseWebSearchRequired(TypedDict):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
 
 
 class GetToolSettingsResponseWebSearch(_GetToolSettingsResponseWebSearchRequired, total=False):
@@ -9181,7 +9188,7 @@ class GetToolSettingsResponseWebSearch(_GetToolSettingsResponseWebSearchRequired
 
 
 class _GetToolSettingsResponseWebFetchRequired(TypedDict):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
 
 
 class GetToolSettingsResponseWebFetch(_GetToolSettingsResponseWebFetchRequired, total=False):
@@ -9243,12 +9250,12 @@ class PutToolSettingsBodyAskPerson(TypedDict, total=False):
 
 
 class PutToolSettingsBodyWebFetch(TypedDict, total=False):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
 
 
 class PutToolSettingsBodyWebSearch(TypedDict, total=False):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -9324,7 +9331,7 @@ class PutToolSettingsResponse(TypedDict):
 
 
 class _PutToolSettingsResponseWebSearchRequired(TypedDict):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
 
 
 class PutToolSettingsResponseWebSearch(_PutToolSettingsResponseWebSearchRequired, total=False):
@@ -9332,7 +9339,7 @@ class PutToolSettingsResponseWebSearch(_PutToolSettingsResponseWebSearchRequired
 
 
 class _PutToolSettingsResponseWebFetchRequired(TypedDict):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
 
 
 class PutToolSettingsResponseWebFetch(_PutToolSettingsResponseWebFetchRequired, total=False):
