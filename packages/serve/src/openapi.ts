@@ -1672,7 +1672,7 @@ const COST_RUN = closed({
 const LEARNING_COST = closed({
   agent: { type: "string" },
   runs: { type: "array", items: COST_RUN, description: "The agent's agentic runs that ended (completed, stopped or failed), oldest first: the last `limit` of them, each keeping its number (a replay has none). A run still at work, an imported or archived run, a workflow revision's run and a run whose path is not known (`unknown_path_runs`) are left out; a run's grade is no run here, and its cost is that run's `learning_usd`." },
-  total_runs: { ...COUNT, description: "How many runs the series counts in all, `limit` aside." },
+  total_runs: { ...COUNT, description: "How many run rows the series holds in all, `limit` aside, replays included (a replay row's `n` is null); the jobs are the rows with an `n`, as `bill.points` numbers them." },
   unknown_cost_runs: { ...COUNT, description: "How many of them have no known all-in cost (`total_usd` null)." },
   unknown_path_runs: { ...COUNT, description: "How many runs that learn ended with no path on their record (their end could not read their cost and path in time, or no runner wrote their end): left out of `runs`, `total_runs` and `summary`, never counted as `agent` runs at $0." },
   workflows: { type: "array", items: closed({
@@ -1723,8 +1723,8 @@ const LEARNING_COST = closed({
       served: { ...COUNT, description: "How many runs it has served (`workflow` or `handed_back` at this digest), every one: its first `k` carry its spend." },
       attributed_usd: COST_USD("What they carry: spend over k each in whole micro-dollars (a micro-dollar more on the first ones, and the sub-micro-dollar rest on the k-th, so the split is exact), on their GET /runs/{id} `cost.learning_usd`."),
       unattributed_usd: COST_USD("The rest: on no run until it serves `k` runs; for a `stopped` revision, on none ever."),
-      state: { enum: ["checking", "serving", "stopped"], description: "`checking`: its check is at work; `serving`: it is its workflow's champion; `stopped`: held or replaced, so nothing more will carry it." },
-    }), description: "Each revision of the agent's learned workflows its promotion records name, in the order first recorded, and how its learning spend is passed on to the runs it serves." },
+      state: { enum: ["drafted", "checking", "serving", "stopped"], description: "`drafted`: a compile drafted it and its check has not started (no promotion record names it yet): a later run it fits starts the check while it is its workflow's newest revision, and until then nothing carries it; `checking`: its check is at work; `serving`: it is its workflow's champion; `stopped`: held or replaced, so nothing more will carry it." },
+    }), description: "Each revision of the agent's learned workflows its promotion records name, in the order first recorded, then each one a compile drafted whose check has not started (`drafted`, in compile order: its row is its record's once the check starts, one row, the same compile), and how its learning spend is passed on to the runs it serves." },
     unattributed_usd: COST_USD("What no run carries: `booked_usd` less every run's GET /runs/{id} `cost.all_in_usd`. A revision's spend its served runs have not carried yet (each revision's `unattributed_usd`), a compile whose drafts all failed its checks or that the spend cap stopped (it drafted no revision to serve), and the spend of a revision whose promotion records aged out of the kept history land here, never nowhere. Null while any run's cost or learning is unknown, or a run is `withheld`."),
     holds: { type: "array", items: closed({
       n: { type: ["integer", "null"], minimum: 1, description: "The first run that does a job started at or after the hold, by its place on the bill's index (as `points` number them), placed by the server over every run, `limit` aside. Null when none has started since." },

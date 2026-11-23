@@ -175,9 +175,9 @@ export type BillPoint = { n: number; run_id: string; actual_usd: number; agent_u
  *  drafted it (a recompile's turn is its recompiled revision's), `check_usd` its check's replay runs, `spend_usd` the
  *  two (each null when a part's cost is unknown), `k` the served runs it is spread over (its check's compile_after),
  *  `served` every run it served (its first `k` carry its spend), `attributed_usd` what they carry, `unattributed_usd` the rest, and `state`:
- *  `checking` (its check is at work), `serving` (it is the champion) or `stopped` (held or replaced: nothing more will
- *  carry it). */
-export type RevisionSpend = { workflow: string; digest: string; compile_usd: number | null; check_usd: number | null; spend_usd: number | null; k: number; state: "checking" | "serving" | "stopped" };
+ *  `drafted` (a compile drafted it and its check has not started: no record names it yet), `checking` (its check is at
+ *  work), `serving` (it is the champion) or `stopped` (held or replaced: nothing more will carry it). */
+export type RevisionSpend = { workflow: string; digest: string; compile_usd: number | null; check_usd: number | null; spend_usd: number | null; k: number; state: "drafted" | "checking" | "serving" | "stopped" };
 export type RevisionShare = RevisionSpend & { served: number; attributed_usd: number | null; unattributed_usd: number | null };
 
 /** A hold of a learned workflow, placed on the series by the server (agentCostOverStore): `n` the first run that does a

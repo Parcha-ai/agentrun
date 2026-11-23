@@ -348,7 +348,8 @@ function allInV2Of(run: Pick<CostRun, "run_id" | "cost_usd" | "learning_usd">, c
 async function agentLedgerOf(records: RunRecords, promotions: readonly PromotionRecord[], listed: readonly RunRecord[], reset: readonly ResetRevision[], refused?: Refused): Promise<ReturnType<typeof revisionLedgerOf> & { compiles: Map<string, CompileSpend[]> }> {
   const rows = listed.filter((one) => FINAL_STATES.includes(one.state) && !one.importedFrom && one.archivedAt === null && !isShadowRun(one.id));
   const compiles = new Map<string, CompileSpend[]>();
-  for (const row of rows) {
+  // Oldest first: a drafted revision's row is placed by its compile (revisionLedgerOf).
+  for (const row of [...rows].sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1))) {
     const asked = await compilesOf(records, row.id);
     if (asked.length) compiles.set(row.id, asked);
   }
@@ -366,7 +367,10 @@ async function agentLedgerOf(records: RunRecords, promotions: readonly Promotion
  *  at its digest), K its check's compile_after; `state` from its newest record. A revision an earlier reset of the agent's
  *  learning deleted (`reset`, learn/promote.ts keepResetLedger) is one too, first, stopped, at the K it was kept with,
  *  unless the records name it again. Serving is the champion's (championOf), skipping what `refused` names (the purge
- *  gate's), so a purged run's revision is never said to serve. */
+ *  gate's), so a purged run's revision is never said to serve. A revision a compile drafted that no record names yet, and
+ *  that no run ran (its check has not started), is one too, last, `drafted`, in compile order, at K its workflow's newest
+ *  checked record's compile_after (else the default): its compile is its own from the turn that drafted it, and once its
+ *  check starts its record names it instead (one row, the same compile). */
 export function revisionLedgerOf(records: readonly PromotionRecord[], rows: readonly LedgerRow[], compiles: readonly CompileSpend[] = [], reset: readonly ResetRevision[] = [], refused?: Refused): ReturnType<typeof amortize> {
   const ordered = [...rows].sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const newest = new Map<string, PromotionRecord>();
@@ -379,10 +383,23 @@ export function revisionLedgerOf(records: readonly PromotionRecord[], rows: read
     const compile = sum(compiles.filter((one) => one.workflow === workflow && one.digest === digest).map((one) => one.usd));
     return { workflow, digest, compile_usd: compile, check_usd: check, spend_usd: sum([compile, check]), k, state };
   };
+  const named = new Set([...reset.map((one) => `${one.workflow}\0${one.digest}`), ...newest.keys()]);
+  // A revision a compile drafted that no record names and no run ran: its check has not started (a later claim of a run
+  // it fits starts it, or none ever does: the spend is off, a newer revision replaced it, a rival's check holds the
+  // workflow). Its compile is its own still, never the unnamed rest. A revision a run ran with no record left (a replay
+  // or a served run of it) had its records age out of the kept feed: its spend stays the bill's unattributed.
+  const drafted = new Map<string, { workflow: string; digest: string }>();
+  for (const one of compiles) {
+    if (one.workflow === null || one.digest === null) continue;
+    const { workflow, digest } = one as { workflow: string; digest: string };
+    const key = `${workflow}\0${digest}`;
+    if (!named.has(key) && !drafted.has(key) && !ordered.some((row) => ran(row, workflow, digest))) drafted.set(key, { workflow, digest });
+  }
   const revisions = [
     ...reset.filter((one) => !newest.has(`${one.workflow}\0${one.digest}`)).map((one) => spendOf(one.workflow, one.digest, one.k ?? COMPILE_AFTER_DEFAULT, "stopped")),
     ...[...newest.values()].map((record) => spendOf(record.workflow, record.digest, record.check?.compile_after ?? COMPILE_AFTER_DEFAULT,
       record.decided === "replaying" ? "checking" : championOf(records, record.workflow, refused)?.digest === record.digest ? "serving" : "stopped")),
+    ...[...drafted.values()].map(({ workflow, digest }) => spendOf(workflow, digest, records.findLast((record) => record.workflow === workflow && record.check)?.check?.compile_after ?? COMPILE_AFTER_DEFAULT, "drafted")),
   ];
   const served = ordered.flatMap((row) => {
     const at = revisionOfRow(row);

@@ -4444,7 +4444,7 @@ class GetLearningCostResponseBillRevisionsItem(TypedDict):
     served: int
     attributed_usd: float | None
     unattributed_usd: float | None
-    state: Literal["checking", "serving", "stopped"]
+    state: Literal["drafted", "checking", "serving", "stopped"]
 
 
 class GetLearningCostResponseBillHoldsItem(TypedDict):

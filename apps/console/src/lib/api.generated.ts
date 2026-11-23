@@ -2950,7 +2950,7 @@ export interface operations {
           served: number;
           attributed_usd: number | null;
           unattributed_usd: number | null;
-          state: "checking" | "serving" | "stopped";
+          state: "drafted" | "checking" | "serving" | "stopped";
         }[];
         unattributed_usd: number | null;
         holds: {
