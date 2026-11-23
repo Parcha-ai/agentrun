@@ -401,6 +401,36 @@ const CASES = [
       exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]" },
     };
   })(),
+  // A held value with line breaks written in JSON: escaped once ("\n"), it is cut in place where it stands; escaped
+  // twice (JSON in a JSON string, "\\n"), or with its line breaks written "\r\n", it is found in the text decoded and
+  // withholds the text.
+  ...(() => {
+    const { lines, pem } = fakePem(6);
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    return [
+      {
+        name: "a held PEM-like value in JSON, escaped once, is cut in place where it stands (control)",
+        text: JSON.stringify({ private_key: pem }),
+        values: [pem],
+        hides: lines.map((line) => line.slice(0, 12)),
+        exact: all('{"private_key":"[redacted]"}'),
+      },
+      {
+        name: "a held PEM-like value in JSON in a JSON string, its line breaks escaped twice, withholds the text",
+        text: JSON.stringify({ out: JSON.stringify({ private_key: pem }) }),
+        values: [pem],
+        hides: lines.map((line) => line.slice(0, 12)),
+        exact: all("[redacted]"),
+      },
+      {
+        name: "a held PEM-like value in JSON, its line breaks written as \\r\\n, withholds the text",
+        text: JSON.stringify({ private_key: pem.replaceAll("\n", "\r\n") }),
+        values: [pem],
+        hides: lines.map((line) => line.slice(0, 12)),
+        exact: all("[redacted]"),
+      },
+    ];
+  })(),
   // A character that renders as nothing (a default-ignorable code point: a zero-width space, a soft hyphen) between a
   // held value's characters hides it from no view: the views drop it, as they drop whitespace. A text that holds such
   // characters and no held value shows as it came.
