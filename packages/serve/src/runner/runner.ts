@@ -702,8 +702,10 @@ export function startRunner(options: RunnerOptions): Runner {
   };
 
   /** Whether the run under `claim` has a computer its park kept pinned to a runner other than this one, this process
-   *  (computer-kept.ts: the row names a runner and incarnation, keptBy). A row that cannot be read says no (the claim's
-   *  loop applies the stop as it would). */
+   *  (computer-kept.ts: the row names a runner and incarnation, keptBy). A row that cannot be read says yes: a loop
+   *  started on a guess would read the row again in its claim's computer, take it and try the machine from here,
+   *  dropping the row that runner's timer ends it by. Ending the stop with no loop touches no computer, and the row's
+   *  runner (or any janitor, once that runner is gone) still ends it. */
   const keptElsewhere = async (claim: Claim): Promise<boolean> => {
     if (!store.settings) return false;
     try {
@@ -711,7 +713,7 @@ export function startRunner(options: RunnerOptions): Runner {
       const ours = (options.presence ?? presence)?.incarnation;
       return kept?.runner !== undefined && !keptBy(kept, ours ? { runner: name, incarnation: ours } : undefined);
     } catch {
-      return false;
+      return true;
     }
   };
 
@@ -996,8 +998,9 @@ export function startRunner(options: RunnerOptions): Runner {
       // - a run whose untaken stop row has tries, which failed to apply that stop before. Either source of tries counts: a
       //   refused stopped end (endRefused, released running) or a failed resume (resumeFailed's store.retry, released
       //   parked);
-      // - a parked run stopped or cancelled whose computer its park kept pinned to another runner (keptElsewhere): the
-      //   store gives a stop to any runner at once, never waiting on the pin, and this runner can't reach that machine.
+      // - a parked run stopped or cancelled whose computer its park kept pinned to another runner, or whose kept row can't
+      //   be read (keptElsewhere): the store gives a stop to any runner at once, never waiting on the pin, and this
+      //   runner can't reach that machine.
       //   A loop would take the kept row (takeKept) and try to attach it, orphaning it on that runner's host; ending here
       //   leaves the row that runner's, whose own timer at its time, or its janitor once the run is final, ends it.
       // One read of those claims' rows, made only when the batch has a queued or a released run.
