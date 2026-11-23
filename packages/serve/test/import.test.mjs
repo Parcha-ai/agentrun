@@ -2914,3 +2914,22 @@ test("an OpenCode run whose request ran through a Claude Code session no import 
   const { metrics } = await metricsOf(store, run.id);
   assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 9, 3]);
 });
+
+test("--from opencode: a run whose request ran through a Claude Code session no import brings in (a temp folder's) imports now, though this import reads no Claude Code", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  const temp = join(h.temp, "scratch");
+  for (const dir of [project, temp]) mkdirSync(dir, { recursive: true });
+  claudeSession(h.at, temp, 1);
+  openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] }]);
+  const opencode = options(h, { sources: ["opencode"] });
+  const plan = await planImport(opencode);
+  assert.deepEqual(plan.skipped.filter((s) => s.kind === "mirror"), [], "no wait for a session every import leaves out");
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, opencode);
+  const run = (await rowsOf(store)).find((r) => r.importedFrom.source === "opencode");
+  const { metrics } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 9, 3], "the request counts in OpenCode");
+});

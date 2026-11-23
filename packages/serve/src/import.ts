@@ -482,13 +482,9 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       // database, leaves the rest of its file importable.
       // Either one, when it is a subagent's, holds its run back (holdBack): the subagent is tied to its run as one read
       // would tie it, by its listing while it is written, by the parent its source's stat names when it is over the cap.
-      if (now - size.mtimeMs < LIVE_MS) {
-        leave({ what: locatorKey(locator), why: "written in the last 10 minutes: it may still be running", kind: "live" }, source);
-        await tie(locator, source, size);
-        continue;
-      }
-      if (size.bytes > MAX_SESSION_BYTES) {
-        leave({ what: locatorKey(locator), why: `over ${MAX_SESSION_BYTES} bytes`, kind: "large" }, source);
+      const unreadAs = leftUnread(locator, size, now);
+      if (unreadAs) {
+        leave(unreadAs, source);
         await tie(locator, source, size);
         continue;
       }
@@ -505,27 +501,12 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
         if (session.mirrors?.length) mirroring.set(locatorKey(locator), session.mirrors);
         continue;
       }
-      if (!session.cwd) {
-        leave({ what: file, why: "no project directory in it", kind: "no-project" }, source);
+      const readAs = await leftRead(session, file, temps, all, deleted);
+      if (readAs) {
+        leave(readAs, source, session.cwd);
         continue;
       }
-      if (!all && session.users === 0 && !session.child) {
-        leave({ what: file, why: "no message of the person's", kind: "no-words", session: `${source}:${session.id}` }, source, session.cwd);
-        continue;
-      }
-      const cwd = session.cwd;
-      if (!all) {
-        // A temp folder first, gone or not: only --all brings it in, as the left-out line says.
-        if (temps.some((temp) => cwd === temp || cwd.startsWith(temp + sep))) {
-          leave({ what: file, why: `its project ${cwd} is a temp directory`, kind: "temp", session: `${source}:${session.id}` }, source, cwd);
-          continue;
-        }
-        const there = await lstat(cwd).catch(() => null);
-        if (!there?.isDirectory() && !deleted) {
-          leave({ what: file, why: `its project ${cwd} is gone`, kind: "gone", session: `${source}:${session.id}` }, source, cwd);
-          continue;
-        }
-      }
+      const cwd = session.cwd!;
       if (session.child) {
         untied.push({ locator, source });
         continue;
@@ -573,16 +554,28 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   const waiting = [...projects.values()].flatMap((project) => byRun(project.sessions).flatMap((parts) => (targetsOf(parts).length ? [{ project, parts }] : [])));
   if (waiting.length) {
     const stored = store ? await importedIn(store) : new Map<string, string>();
-    const now = new Set([...projects.values()].filter((project) => !chosen || chosen.has(project.agentId)).flatMap((project) => project.sessions.filter((session) => session.source === "claude-code").map((session) => session.id)));
+    const comingIn = new Set([...projects.values()].filter((project) => !chosen || chosen.has(project.agentId)).flatMap((project) => project.sessions.filter((session) => session.source === "claude-code").map((session) => session.id)));
     const never = new Set(skipped.filter((entry) => leftFrom.get(entry)?.source === "claude-code" && NEVER_IN.has(entry.kind)).map((entry) => (entry.session?.startsWith("claude-code:") ? entry.session.slice("claude-code:".length) : basename(entry.what, ".jsonl"))));
-    const listed = new Set((await sessionLocators(home, "claude-code", { env }).catch((): Locator[] => [])).map((locator) => basename(locator.file, ".jsonl")));
+    const claude = await sessionLocators(home, "claude-code", { env }).catch((): Locator[] => []);
+    const listed = new Set(claude.map((locator) => basename(locator.file, ".jsonl")));
+    // An import that reads no Claude Code left none of it out above: each Claude Code session a run's request ran
+    // through goes by the same rules here, so one no import brings in leaves the request the run's own, not a wait.
+    if (!sources.includes("claude-code")) {
+      const targets = new Set(waiting.flatMap(({ parts }) => targetsOf(parts).map((link) => link.sessionId)));
+      for (const locator of claude) {
+        const id = basename(locator.file, ".jsonl");
+        if (!targets.has(id)) continue;
+        const kind = await neverKind(locator, now, temps, all, deleted);
+        if (kind && NEVER_IN.has(kind)) never.add(id);
+      }
+    }
     for (const { project, parts } of waiting) {
       const key = `${parts[0]!.source}:${parts[0]!.id}`;
       if (stored.has(key)) continue;
       let target: string | undefined;
       for (const link of targetsOf(parts)) {
         const kept = await idOf(link.sessionId, scan);
-        if (listed.has(link.sessionId) && !now.has(kept) && !stored.has(`claude-code:${kept}`) && !never.has(kept) && !never.has(link.sessionId)) target = kept;
+        if (listed.has(link.sessionId) && !comingIn.has(kept) && !stored.has(`claude-code:${kept}`) && !never.has(kept) && !never.has(link.sessionId)) target = kept;
       }
       if (target === undefined) continue;
       leave({ what: locatorKey(locatorOf(parts[0]!)), why: `a request of it ran through Claude Code session ${target}, on disk but not imported now: it comes in with that session`, kind: "mirror", session: key }, parts[0]!.source, project.cwd);
@@ -803,6 +796,38 @@ async function seenIn(store: ImportStore | undefined, agentId: string): Promise<
     }
   }
   return seen;
+}
+
+/** Why a session is left out before it is read, if it is: still written (live), or over the cap (large). */
+const leftUnread = (locator: Locator, size: LocatorSize, now: number): Skipped | undefined =>
+  now - size.mtimeMs < LIVE_MS ? { what: locatorKey(locator), why: "written in the last 10 minutes: it may still be running", kind: "live" } : size.bytes > MAX_SESSION_BYTES ? { what: locatorKey(locator), why: `over ${MAX_SESSION_BYTES} bytes`, kind: "large" } : undefined;
+
+/** Why a session read (turns: false) is no project's run, if it is not: no project folder, no message of the person's
+ *  (but with `all`), its project a temp folder (first, gone or not: only `all` brings it in, as the left-out line says)
+ *  or gone (but with `all` or `deleted`). */
+async function leftRead(session: Session, file: string, temps: readonly string[], all: boolean, deleted: boolean): Promise<Skipped | undefined> {
+  const { cwd, source, id } = session;
+  if (!cwd) return { what: file, why: "no project directory in it", kind: "no-project" };
+  if (!all && session.users === 0 && !session.child) return { what: file, why: "no message of the person's", kind: "no-words", session: `${source}:${id}` };
+  if (all) return undefined;
+  if (temps.some((temp) => cwd === temp || cwd.startsWith(temp + sep))) return { what: file, why: `its project ${cwd} is a temp directory`, kind: "temp", session: `${source}:${id}` };
+  const there = await lstat(cwd).catch(() => null);
+  if (!there?.isDirectory() && !deleted) return { what: file, why: `its project ${cwd} is gone`, kind: "gone", session: `${source}:${id}` };
+  return undefined;
+}
+
+/** How planImport would leave a Claude Code session out, by the same rules (leftUnread, unread, leftRead), when it is
+ *  not one of the sources it reads: none when it would be a run, or a subagent's part of one. */
+async function neverKind(locator: Locator, now: number, temps: readonly string[], all: boolean, deleted: boolean): Promise<LeftOut | undefined> {
+  const size = await locatorSize(locator, "claude-code").catch(() => undefined);
+  if (size === null) return undefined;
+  if (size === undefined) return "unread";
+  const unreadAs = leftUnread(locator, size, now);
+  if (unreadAs) return unreadAs.kind;
+  const session = await readSession(locator, "claude-code", { turns: false }).catch(() => undefined);
+  if (!session) return "unread";
+  if (session.child && session.parent) return undefined;
+  return (await leftRead(session, locator.file, temps, all, deleted))?.kind;
 }
 
 /** Why a Claude Code session is left out that no later import changes as it is: a request another run leaves to it
