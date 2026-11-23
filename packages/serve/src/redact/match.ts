@@ -272,8 +272,9 @@ const BEARER_TOKEN: Shape = {
   },
 };
 
-/** Each name a credential parameter goes by, as written after "?" or "&" and lowered. */
-const CREDENTIAL_NAMES = new Set([
+/** Each name a credential parameter goes by, as written after "?" or "&" and lowered; and each key, lowered, of a held
+ *  JSON value whose string is held as itself (learn/secrets.ts heldFields). */
+export const CREDENTIAL_NAMES: ReadonlySet<string> = new Set([
   ...["api", "access", "auth", "id", "refresh", "client"].flatMap((head) => {
     const tail = head === "api" ? "key" : head === "client" ? "secret" : "token";
     return [`${head}${tail}`, `${head}_${tail}`, `${head}-${tail}`];

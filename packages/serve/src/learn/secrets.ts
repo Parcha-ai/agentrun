@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import { cutSpans, holds, MONEY_SHAPES, type Needles, planCut, SECRET_SHAPES, type Shape, shapeKinds, type Span, squeeze } from "../redact/match.js";
+import { CREDENTIAL_NAMES, cutSpans, holds, MONEY_SHAPES, type Needles, planCut, SECRET_SHAPES, type Shape, shapeKinds, type Span, squeeze } from "../redact/match.js";
 
 /** Whether `text` ends in a `Bearer` scheme and the blanks after it: the one place a shape is read across whitespace
  *  (the scheme, then its token), so a reader that cuts a text at whitespace must not cut there (key-refusal.ts
@@ -74,14 +74,14 @@ function redactWith(text: string, values: readonly string[], max: number, shapes
 const DERIVED = new WeakMap<readonly string[], { readonly values: readonly string[]; readonly derived: Needles }>();
 
 /** What the matcher looks for of a set of values, whatever the text: each value, each string of a held JSON value
- *  that holds a line break (multiLineFields) and their path spellings, their forms found as they stand (as written, as
+ *  that may be printed alone (heldFields) and their path spellings, their forms found as they stand (as written, as
  *  JSON writes it, their plain needles and percent forms), their hex and folded needles, the needles the whole-text
  *  check reads (redact/match.ts Needles), and the parts of each of many lines (partsOf), as written and squeezed. */
 function derivedOf(values: readonly string[]): Needles {
   const kept = DERIVED.get(values);
   if (kept && kept.values.length === values.length && kept.values.every((value, at) => value === values[at])) return kept.derived;
   const held = values.filter((v) => v.length > 0);
-  const whole = [...held, ...held.flatMap(multiLineFields)];
+  const whole = [...held, ...held.flatMap(heldFields)];
   const given = withPathSpellings(whole);
   const needles = new Map(given.filter(longEnough).map((v) => [v, needlesOf(v)]));
   const parts = [...new Set(whole.flatMap(partsOf))];
@@ -226,11 +226,13 @@ function partsOf(value: string): string[] {
   return [...body.filter((line) => line.length >= LINE_MIN), body.join("")].filter(longEnough);
 }
 
-/** The strings of a held JSON value (an object or an array, as it parses) that hold a line break, each held as itself
- *  (trimmed), as any held value: a service account's private key, printed alone (`jq -r .private_key`). Its other
- *  strings are not: a service account's type, project, email and public URLs are no secret, and would be cut wherever a
- *  text names them. */
-function multiLineFields(value: string): string[] {
+/** The strings of a held JSON value (an object or an array, as it parses, at any depth) that may be printed alone, each
+ *  held as itself (trimmed), as any held value: one that holds a line break (a service account's private key, `jq -r
+ *  .private_key`), and one whose key, lowered, is a credential's whole name (redact/match.ts CREDENTIAL_NAMES: an OAuth
+ *  client's "client_secret", a token's "refresh_token"; never "page_token"). An array's strings go by the array's key.
+ *  Its other strings are not held: an id, a project, an email and public URLs ("client_id", "token_uri") are no secret,
+ *  and would be cut wherever a text names them. */
+function heldFields(value: string): string[] {
   const head = value.trimStart()[0];
   if (head !== "{" && head !== "[") return [];
   let parsed: unknown;
@@ -240,13 +242,13 @@ function multiLineFields(value: string): string[] {
     return [];
   }
   const out: string[] = [];
-  const walk = (node: unknown): void => {
+  const walk = (node: unknown, key: string | undefined): void => {
     if (typeof node === "string") {
-      if (/[\r\n]/.test(node)) out.push(node.trim());
-    } else if (Array.isArray(node)) for (const item of node) walk(item);
-    else if (node !== null && typeof node === "object") for (const item of Object.values(node)) walk(item);
+      if (/[\r\n]/.test(node) || (key !== undefined && CREDENTIAL_NAMES.has(key.toLowerCase()))) out.push(node.trim());
+    } else if (Array.isArray(node)) for (const item of node) walk(item, key);
+    else if (node !== null && typeof node === "object") for (const [name, item] of Object.entries(node)) walk(item, name);
   };
-  walk(parsed);
+  walk(parsed, undefined);
   return out.filter(longEnough);
 }
 
