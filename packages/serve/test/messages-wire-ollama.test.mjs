@@ -183,6 +183,31 @@ test("guard: what the translation does not run is never sent on to Ollama: conte
   assert.doesNotMatch(JSON.stringify(ollama.got.chat.at(-1)), /context_management|clear_tool_uses|output_config|defer_loading|tool_reference/);
 });
 
+test("a tool_choice that forces a call (any, or one naming a tool) is refused with a 400 in Messages' words and never reaches Ollama, as is any other type; auto, none and none at all run as before, their tools sent", async (t) => {
+  const { ollama, env } = await onOllama(t);
+  const { fetch: send } = await moduleLaunch(env, TOOLS);
+  const unkept = 'is not taken on this model\'s route: the model here cannot be made to call a tool, so send "auto"';
+  const refusals = [
+    [{ type: "any" }, `tool_choice "any" ${unkept}`],
+    [{ type: "tool", name: "read" }, `tool_choice naming the tool read ${unkept}`],
+    [{ type: "every" }, 'tool_choice "every" is not taken on this model\'s route: "auto" and "none" only'],
+  ];
+  for (const [choice, message] of refusals) {
+    for (const stream of [true, undefined]) {
+      const answer = await post(send, request({ tool_choice: choice, stream }));
+      assert.equal(answer.status, 400, `${JSON.stringify(choice)}, stream ${stream}`);
+      assert.deepEqual(await answer.json(), { type: "error", error: { type: "invalid_request_error", message } });
+    }
+  }
+  assert.equal(ollama.got.chat.length, 0, "no refused request reached the model");
+  for (const choice of [{ type: "auto" }, { type: "none" }, undefined]) {
+    const events = await eventsOf(await post(send, request(choice ? { tool_choice: choice } : {})));
+    assert.equal(events.at(-1)?.type, "message_stop", `${JSON.stringify(choice)}: ${JSON.stringify(events)}`);
+    assert.deepEqual(ollama.got.chat.at(-1).tools?.map((tool) => tool.function.name), ["read"], `${JSON.stringify(choice)}: its tools reach the model`);
+  }
+  assert.equal(ollama.got.chat.length, 3);
+});
+
 test("the cap counts an Ollama model's requests as local on every harness of the wire, so they never count toward the free-model limit; a key's model is not local", async (t) => {
   const { env } = await onOllama(t);
   for (const id of ["claude-agent", MESSAGES_MODULE]) {
