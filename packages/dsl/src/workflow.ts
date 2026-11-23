@@ -3061,8 +3061,13 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
 
 
 function sliceSop(sop: string, section: string): string {
-  const heading = sop.split(/\r?\n/).find(line => line.trimEnd() === `## ${section}`);
-  const start = heading ? sop.indexOf(heading) : -1;
+  // Offset of the heading line itself, not of the first place its text occurs.
+  let start = -1;
+  let at = 0;
+  for (const line of sop.split("\n")) {
+    if (line.trimEnd() === `## ${section}`) { start = at; break; }
+    at += line.length + 1;
+  }
   if (start < 0) return "";
   const rest = sop.slice(start + 3);
   const boundary = /^ROLE\s*:/i.test(section) ? /\n## (?:ROLE\s*:|APPENDIX)/i : /\n## /;
