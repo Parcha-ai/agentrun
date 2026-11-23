@@ -1,18 +1,26 @@
 // The five rules (HARNESS.md#the-five-rules), the owner's install and harness-check.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { follow, scratch, serve, startRun } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, scratch, serve, startRun, storeBytes, withEnv } from "./support.mjs";
+import { firings } from "./trigger-support.mjs";
+import { findPlanted, plantedValue } from "./fixtures/planted-secrets.mjs";
+import { storeOn } from "./store-helpers.mjs";
 import { zipOf } from "./fixtures/zip-of.mjs";
+import { HarnessKeysOverStore, layHarnessKeys } from "../dist/harness-keys.js";
+import { planRecipesOf } from "../dist/harness-table.js";
+import { launchBody, readLaunchBody } from "../dist/run-launch.js";
+import { putSealedKey } from "../dist/server-keys.js";
 
 const [{ checkedNoteOf, installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, RecipeRefused, firstSeenOf, signedInNoteOf }, { ARCHIVE_CODES, archivePlatform, ArchiveInstallFailed }] = await Promise.all([
   import("../dist/harness-recipe.js"), import("../dist/harness-archive.js"),
 ]);
 const { fakeAnthropic } = await import(new URL("../../run-adapters-acp/test/fake-anthropic.mjs", import.meta.url).href);
+const { Webhook } = (await import("node:module")).createRequire(import.meta.url)("standardwebhooks");
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const AGENT = new URL("./fixtures/model-acp-agent.mjs", import.meta.url).pathname;
@@ -308,9 +316,9 @@ test("every file the archive unpacks to is pinned, not the binary alone: a sidec
 });
 
 /** The stand-in agent installed from `recipe` (or `recipe(origin)`) into a fresh data directory, and a scripted origin
- *  for its model. */
-async function installed(t, recipe) {
-  const origin = await fakeAnthropic({ step: checkStep });
+ *  for its model (`step`'s answers, checkStep's by default). */
+async function installed(t, recipe, step = checkStep) {
+  const origin = await fakeAnthropic({ step });
   t.after(() => origin.close());
   if (typeof recipe === "function") recipe = recipe(origin);
   const data = join(await scratch(t), "agents");
@@ -919,7 +927,7 @@ async function noteChecked(data, file) {
   writeChecked(data, recipe.id, { recipe: recipeSha, binary: pins.pin.sha256, tree: pins.tree.sha256, platform: PLATFORM });
 }
 
-test("a server takes a recipe it names only once its install is checked: hidden until then, by the code and the command that fix it, and never on the recipe's keys", { timeout: 60_000 }, async (t) => {
+test("a server takes a recipe it names only once its install is checked: hidden until then, by the code and the command that fix it, and a plan-billed one on keys saved for its harness, never the shell's", { timeout: 60_000 }, async (t) => {
   const [{ harnessIds, harnessOf, harnessRecipesEnv, harnessTable, tableIds }, { checkedNoteOf, signedInNoteOf }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/harness-recipe.js")]);
   // Named but not installed: in the table, so a run naming it is refused in words, and listed nowhere.
   const bare = join(await scratch(t), "agents");
@@ -945,11 +953,28 @@ test("a server takes a recipe it names only once its install is checked: hidden 
   writeFileSync(checkedNoteOf(proxy.data, "model-agent"), JSON.stringify({ ...note, binary: "0".repeat(64) }));
   assert.match(entry.hidden(env), /^HARNESS_NOT_CHECKED: .*changed since the last check that passed/);
 
-  // Plan-billed: on keys saved for its harness alone, which no server saves yet, whatever key the server's shell holds.
+  // Plan-billed: on keys saved for its harness alone, whatever key the server's shell holds: until every one is saved,
+  // hidden, naming the console's page.
   const keyed = await installed(t, (o) => planOn(o));
   await noteChecked(keyed.data, keyed.file);
   const keyedEnv = { ...harnessRecipesEnv([keyed.file], keyed.data), MODEL_AGENT_API_KEY: "fake-test-key" };
-  assert.match(harnessOf(keyedEnv, "model-agent").hidden(keyedEnv), /^HARNESS_KEYS_NOT_SAVED: .*MODEL_AGENT_API_KEY.*saved for this harness alone/);
+  const keyedEntry = harnessOf(keyedEnv, "model-agent");
+  assert.match(keyedEntry.hidden(keyedEnv), /^HARNESS_KEYS_NOT_SAVED: .*MODEL_AGENT_API_KEY.*saved for this harness alone.*Settings → Harness keys \(\/#\/settings\/harness-keys; `agentrun harness keys` prints the link\)/);
+  // A start whose claim laid them (never enumerable) runs on them; the shell's own variable of that name never counts.
+  const laid = { ...keyedEnv };
+  delete laid.MODEL_AGENT_API_KEY;
+  const laidValue = plantedValue("laid");
+  layHarnessKeys(laid, Object.fromEntries([["MODEL_AGENT_API_KEY", laidValue]]));
+  assert.equal(keyedEntry.hidden(laid), undefined);
+  // The server's listing reads its own saved keys (harnessKeysSavedHere), where its environment holds none.
+  const { store } = await storeOn(t);
+  const saved = new HarnessKeysOverStore(store, randomBytes(32), planRecipesOf(keyedEnv), keyed.data);
+  await saved.load();
+  assert.deepEqual(saved.recipes, [{ id: "model-agent", label: "Model Agent", keys: ["MODEL_AGENT_API_KEY"] }]);
+  await saved.save(saved.recipe("model-agent"), "MODEL_AGENT_API_KEY", { value: "saved-test-key" });
+  assert.equal(keyedEntry.hidden(keyedEnv), undefined, "listed once every key is saved here");
+  await saved.remove(saved.recipe("model-agent"), "MODEL_AGENT_API_KEY");
+  assert.match(keyedEntry.hidden(keyedEnv), /^HARNESS_KEYS_NOT_SAVED: /, "and hidden again once one is removed");
 
   // With a sign-in too: still its keys, signed in or not, on a server its owner did not start with --harness-sign-in
   // (a shared one, a deployed one, a runner apart reading the owner's setting).
@@ -962,7 +987,11 @@ test("a server takes a recipe it names only once its install is checked: hidden 
   const ownEnv = harnessRecipesEnv([signing.file], signing.data, { signIn: true });
   assert.equal(harnessOf(ownEnv, "model-agent").hidden(ownEnv), undefined);
   rmSync(signedInNoteOf(signing.data, "model-agent"));
-  assert.match(harnessOf(ownEnv, "model-agent").hidden(ownEnv), /^HARNESS_NOT_SIGNED_IN: .*--harness-sign-in.*sign it in with: agentrun harness sign-in --recipe/);
+  assert.match(harnessOf(ownEnv, "model-agent").hidden(ownEnv), /^HARNESS_NOT_SIGNED_IN: .*Settings → Harness keys.*--harness-sign-in.*save its keys there, or sign it in with: agentrun harness sign-in --recipe/);
+  // Its keys come first there too: laid, a start runs on them, signed in or not.
+  const ownLaid = { ...ownEnv };
+  layHarnessKeys(ownLaid, Object.fromEntries([["MODEL_AGENT_GEMINI_API_KEY", laidValue]]));
+  assert.equal(harnessOf(ownEnv, "model-agent").hidden(ownLaid), undefined);
   // A proxy-billed recipe is the same on either: the model proxy.
   await noteChecked(proxy.data, proxy.file);
   assert.equal(harnessOf(harnessRecipesEnv([proxy.file], proxy.data, { signIn: true }), "model-agent").hidden(harnessRecipesEnv([proxy.file], proxy.data, { signIn: true })), undefined);
@@ -1006,11 +1035,13 @@ test("where each run is a user of its own, a run on a recipe's harness is refuse
   assert.equal(await host.staysInRunner(deps, "pi", launch, "run-own", { kind: "uid", helper: "/nonexistent/agentrun-runas", first: 0, slots: 1 }), false);
 });
 
-test("a run with no record of who started it (a schedule's, a trigger's, a learned workflow's audit shadow or replay, a start no owner's session or token made) on a plan-billed recipe is refused at its claim on every path, even on its owner's own machine: it runs on keys saved for its harness, never the owner's sign-in", async (t) => {
+test("a run with no record of who started it (a schedule's, a trigger's, a learned workflow's audit shadow or replay, a start no owner's session or token made) on a plan-billed recipe is refused at its claim on every path, even on its owner's own machine, until every key is saved for its harness: it runs on those keys, never the owner's sign-in", async (t) => {
   const [host, loops, { harnessRecipesEnv }] = await Promise.all([import("../dist/runner/run-child-host.js"), import("../dist/runner/harness-loops.js"), import("../dist/harness-table.js")]);
   const data = join(await scratch(t), "agents");
   const own = harnessRecipesEnv([await recipeFile(t, signingIn({ url: "http://127.0.0.1:9" }))], data, { signIn: true });
-  const deps = { data, env: own, sealKey: Buffer.alloc(32), store: { settings: { get: async () => null } } };
+  const { store: real } = await storeOn(t);
+  const store = { settings: { get: async () => null }, sealedKeys: real.sealedKeys };
+  const deps = { data, env: own, sealKey: Buffer.alloc(32), store };
   // A person's run: the owner's request made it (POST /agents/{id}/runs under their password session or the server's
   // token), which its launch says (startedBy). Every run the runner or a trigger makes says nothing.
   const unmarked = { input: {}, place: { mode: "runner" } };
@@ -1019,6 +1050,9 @@ test("a run with no record of who started it (a schedule's, a trigger's, a learn
   // The runner's own audit of a person's run (runner/audit.ts): its shadow copies the harness, sets `audit`, no trigger.
   const shadow = { ...unmarked, audit: { of: "run-1", workflow: "w", digest: "d" } };
   const replay = { ...unmarked, replay: { of: "run-1", workflow: "w", digest: "d" } };
+  // A trigger's run with a startedBy (none is made so; a damaged body could say it) is still no person's.
+  const markedTrigger = { ...scheduled, startedBy: "token" };
+  const noPerson = [[scheduled, "run-nightly"], [shadow, "run-audit"], [replay, "run-replay"], [unmarked, "run-unmarked"], [markedTrigger, "run-marked-trigger"]];
   const sameUser = { kind: "process", why: "AGENTRUN_RUN_USER=same" };
   const refusedFor = (error) => {
     assert.equal(error.name, "ClaimRefused", error.stack);
@@ -1026,19 +1060,32 @@ test("a run with no record of who started it (a schedule's, a trigger's, a learn
     assert.match(error.message, /^This run carries no record of who started it .*on its owner's own sign-in only for a run its owner started/);
     return true;
   };
-  for (const [launch, id] of [[scheduled, "run-nightly"], [shadow, "run-audit"], [replay, "run-replay"], [unmarked, "run-unmarked"]]) {
+  for (const [launch, id] of noPerson) {
     await assert.rejects(host.staysInRunner(deps, "model-agent", launch, id, sameUser), refusedFor, id);
     // The runner's own dispatch (no process of its own per run) refuses it too, before any loop is made.
     await assert.rejects(loops.resolveRunnerLoop(deps)("model-agent", launch, id), refusedFor, id);
-    assert.throws(() => loops.refuseRecipeRunNoPerson(own, "model-agent", launch), refusedFor, id);
+    await assert.rejects(loops.refuseRecipeTriggerRun(deps, "model-agent", launch), refusedFor, id);
   }
+  assert.match(host.RECIPE_SIGN_IN_PERSON_ONLY, /Settings → Harness keys \(\/#\/settings\/harness-keys\)/);
   // A person's run is not, under the owner's session or the token, nor a scheduled run on a proxy-billed recipe (the
   // model proxy) or a built-in harness.
   assert.equal(await host.staysInRunner(deps, "model-agent", person, "run-own", sameUser), false);
-  loops.refuseRecipeRunNoPerson(own, "model-agent", { ...unmarked, startedBy: "owner_session" });
+  await loops.refuseRecipeTriggerRun(deps, "model-agent", { ...unmarked, startedBy: "owner_session" });
   const proxied = harnessRecipesEnv([await recipeFile(t, recipeOf())], data, { signIn: true });
-  loops.refuseRecipeRunNoPerson(proxied, "model-agent", scheduled);
-  loops.refuseRecipeRunNoPerson(own, "pi", scheduled);
+  await loops.refuseRecipeTriggerRun({ ...deps, env: proxied }, "model-agent", scheduled);
+  await loops.refuseRecipeTriggerRun(deps, "pi", scheduled);
+  // A key saved for another harness, under the same name, is not this one's: still refused.
+  const seal = randomBytes(32);
+  const other = new HarnessKeysOverStore(real, seal, [{ id: "other-agent", label: "Other", keys: ["MODEL_AGENT_GEMINI_API_KEY"] }], data);
+  await other.save(other.recipe("other-agent"), "MODEL_AGENT_GEMINI_API_KEY", { value: "saved-test-key" });
+  await assert.rejects(loops.refuseRecipeTriggerRun(deps, "model-agent", scheduled), refusedFor);
+  // With every key saved for its harness, each of them runs, on every path: on those keys (the keys route alone).
+  const saved = new HarnessKeysOverStore(real, seal, planRecipesOf(own), data);
+  await saved.save(saved.recipe("model-agent"), "MODEL_AGENT_GEMINI_API_KEY", { value: "saved-test-key" });
+  for (const [launch, id] of noPerson) {
+    await loops.refuseRecipeTriggerRun(deps, "model-agent", launch);
+    assert.equal(await host.staysInRunner(deps, "model-agent", launch, id, sameUser), false, id);
+  }
 });
 
 test("only the owner's request marks a run as theirs: a start under the token or the owner's password session says who in its launch, a trigger's run and the runner's own say nothing, and a stored mark reads back", async () => {
@@ -1047,6 +1094,11 @@ test("only the owner's request marks a run as theirs: a start under the token or
   for (const by of ["token", "owner_session"]) assert.equal(readLaunchBody(launchBody({ ...base, startedBy: by })).startedBy, by);
   assert.equal(readLaunchBody(launchBody(base)).startedBy, undefined);
   assert.equal(readLaunchBody({ ...launchBody(base), started_by: "someone" }).startedBy, undefined, "only the two marks read back");
+  // The one rule (run-launch.ts personStarted): a mark, and no trigger, audit or replay.
+  const { personStarted } = await import("../dist/run-launch.js");
+  assert.equal(personStarted({ ...base, startedBy: "token" }), true);
+  assert.equal(personStarted(base), false, "no record of who started it");
+  for (const over of [{ trigger: { triggerId: "t", firingId: "f" } }, { audit: { of: "r" } }, { replay: { of: "r" } }]) assert.equal(personStarted({ ...base, startedBy: "token", ...over }), false, JSON.stringify(over));
 });
 
 test("--harness-sign-in starts only one owner's own server on their own machine: loopback with no public address, the SQLite store in its data directory, its runs beside it as its own user, an owner and one token; anything else refuses the start in words", async (t) => {
@@ -1194,4 +1246,263 @@ test("an agent on its owner's sign-in that prints its token as it dies leaves it
   assert.ok(files.some((file) => file.includes(`${run.run_id}`)), `the run's own files were scanned: ${files.length} files`);
   const holding = files.filter((file) => readFileSync(file).toString("latin1").includes(TOKEN));
   assert.deepEqual(holding.map((file) => file.slice(leaking.data.length)), [], "the sign-in's token is in no file of the data directory but its own folder");
+});
+
+/** The owner's session and the API token, each as a request to `server`'s /v2. */
+async function asOwnerAndToken(server) {
+  const { cookie, origin } = await clientOwnerSession(server);
+  // The owner's request as the console sends it (its cookie, the server's own origin, JSON); the token's as a script does.
+  const as = (headers, json) => (method, path, body) => call(server.port, { method, path: `/v2${path}`, headers: { ...(json || body !== undefined ? { "content-type": "application/json" } : {}), ...headers }, ...(body !== undefined ? { body } : {}) });
+  return { owner: as({ cookie, origin }, true), token: as({ authorization: `Bearer ${server.token}` }, false), cookie, origin };
+}
+
+test("Settings → Harness keys: a plan-billed recipe's keys are saved by the owner's session alone, for a recipe and a key the server names, and no read shows one", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const logs = [];
+  const file = await recipeFile(t, planOn({ url: "http://127.0.0.1:9" }));
+  const server = await serve(t, { harnessRecipes: [file], accounts: true, openSetup: true, runner: false, log: (line) => logs.push(line) });
+  const { owner, token, cookie, origin } = await asOwnerAndToken(server);
+  const caps = (await server.api("GET", "/capabilities")).body;
+  assert.deepEqual(caps.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: ["model-agent"] });
+  const listed = await token("GET", "/settings/harness-keys");
+  assert.equal(listed.status, 200, listed.text);
+  assert.deepEqual(JSON.parse(listed.text), { harnesses: [{ id: "model-agent", label: "Model Agent", ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }] }] });
+
+  const first = plantedValue("harness-key");
+  const second = plantedValue("harness-key");
+  // The token never writes one, and its refusal names the console's page.
+  const byToken = await token("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: first });
+  assert.equal(byToken.status, 403, byToken.text);
+  assert.match(byToken.text, /\/#\/settings\/harness-keys/);
+  assert.equal((await token("DELETE", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY")).status, 403);
+  // A harness the server has no plan-billed recipe for, and a key its recipe does not run on, are refused.
+  assert.equal((await owner("PUT", "/settings/harness-keys/pi/MODEL_AGENT_API_KEY", { value: first })).status, 404);
+  const notItsKey = await owner("PUT", "/settings/harness-keys/model-agent/OPENROUTER_API_KEY", { value: first });
+  assert.equal(notItsKey.status, 422, notItsKey.text);
+  assert.match(notItsKey.text, /not_an_option/);
+  // The owner's session saves it (204, no-store); a second value replaces it.
+  const saved = await owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: first });
+  assert.equal(saved.status, 204, saved.text);
+  assert.equal(saved.headers["cache-control"], "no-store");
+  assert.equal((await owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: second })).status, 204);
+  const view = JSON.parse((await token("GET", "/settings/harness-keys")).text).harnesses[0];
+  assert.deepEqual([view.ready, view.keys[0].set, view.keys[0].source], [true, true, "console"]);
+  const row = await server.store.sealedKeys.get("harness:model-agent:MODEL_AGENT_API_KEY");
+  assert.ok(row && !Buffer.from(row).toString("latin1").includes(second), "sealed at rest");
+
+  // Removed: no run gets it, and the listing says so.
+  assert.equal((await owner("DELETE", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY")).status, 204);
+  assert.equal(JSON.parse((await token("GET", "/settings/harness-keys")).text).harnesses[0].ready, false);
+  assert.equal(await server.store.sealedKeys.get("harness:model-agent:MODEL_AGENT_API_KEY"), undefined);
+
+  // Neither value, the one replaced nor the one removed (both kept sealed for the cut), shows in any GET of the API
+  // document (as the token and the owner; last, as one of them signs the session out), the store's bytes or the log.
+  const doc = (await server.api("GET", "/openapi.json")).body;
+  const sources = [];
+  for (const [path, item] of Object.entries(doc.paths)) {
+    if (!item.get || path.includes("{")) continue;
+    for (const [by, headers] of [["token", { authorization: `Bearer ${server.token}` }], ["session", { cookie, origin }]]) {
+      const res = await call(server.port, { path: `/v2${path}`, headers });
+      sources.push({ where: `GET ${path} (${by}, ${res.status})`, text: `${JSON.stringify(res.headers)}\n${res.text}` });
+    }
+  }
+  const bytes = storeBytes(server.data);
+  sources.push({ where: "the store's bytes", text: bytes.toString("latin1") }, { where: "the log", text: logs.join("\n") });
+  assert.ok(sources.length > 20, `the sweep read ${sources.length} answers`);
+  assert.deepEqual(findPlanted(sources, [first, second]), []);
+
+});
+
+test("a shared server runs a plan-billed recipe on the keys its owner saved for its harness: offered once saved with no restart, the vendor hears the saved key, the sign-in rule no longer refuses a trigger's message to its run, the key is cut from what the agent prints, and removing it stops its runs", { skip: linux, timeout: 240_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { data, file, origin } = await installed(t, (o) => planOn(o));
+  await noteChecked(data, file);
+  const server = await serve(t, { data, harnessRecipes: [file], accounts: true, openSetup: true });
+  const { owner } = await asOwnerAndToken(server);
+  const offer = async () => (await server.api("GET", "/capabilities")).body.harnesses.find((each) => each.id === "model-agent");
+  assert.equal((await offer())?.available ?? false, false, "not offered with no key saved");
+
+  const key = plantedValue("harness-vendor-key");
+  assert.equal((await owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: key })).status, 204);
+  assert.equal((await offer())?.available, true, "offered once saved, with no restart");
+  const started = await startRun(server.api, "on-keys", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const { last } = await follow(server.api, started.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(last.status, "completed", JSON.stringify(last));
+  const heard = origin.messages();
+  assert.ok(heard.length >= 1 && heard.every((r) => r.headers["x-api-key"] === key), "every vendor request on the saved key");
+  // With every key saved, a trigger's turn into its run would run on them: the sign-in rule, said before the cap rule,
+  // no longer refuses it, and what is left is the cap a trigger needs on any run.
+  const poke = await server.api("POST", "/triggers", { name: "poke", source: { kind: "webhook" }, target: { kind: "message_run", run_id: started.run_id, input: { content: "A new event came in." } } });
+  assert.equal(poke.status, 422, JSON.stringify(poke.body));
+  assert.doesNotMatch(JSON.stringify(poke.body), /owner's own sign-in only for what a person starts/);
+  assert.match(JSON.stringify(poke.body), /The run has no spend cap/);
+  const reads = async (runId) => JSON.stringify([(await server.api("GET", `/runs/${runId}`)).body, (await server.api("GET", `/runs/${runId}/timeline`)).body, (await server.api("GET", "/runs")).body]);
+  assert.deepEqual(findPlanted([{ where: "the run's reads", text: await reads(started.run_id) }], [key]), []);
+
+  // Removed: its next run is refused for its keys, and the vendor hears nothing more.
+  assert.equal((await owner("DELETE", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY")).status, 204);
+  const before = origin.messages().length;
+  const refused = await startRun(server.api, "keys-gone", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" }).catch((error) => ({ error }));
+  if (refused.run_id) {
+    const ended = await follow(server.api, refused.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+    assert.equal(ended.last.status, "failed", JSON.stringify(ended.last));
+    assert.match(JSON.stringify(ended.last), /HARNESS_KEYS_NOT_SAVED/);
+  } else assert.match(String(refused.error?.message), /HARNESS_KEYS_NOT_SAVED/);
+  assert.equal(origin.messages().length, before);
+  // A removed key is still cut: the run that ran on it shows it nowhere.
+  assert.deepEqual(findPlanted([{ where: "the run's reads after the removal", text: await reads(started.run_id) }], [key]), []);
+
+  // An agent that prints its saved key as it dies: its words reach the run's error with the key cut in place.
+  const leaky = await installed(t, (o) => planOn(o, { env: { MODEL_AGENT_MODE: "leak-key" } }));
+  await noteChecked(leaky.data, leaky.file);
+  const second = await serve(t, { data: leaky.data, harnessRecipes: [leaky.file], accounts: true, openSetup: true });
+  const leakKey = plantedValue("harness-leaked-key");
+  assert.equal((await (await asOwnerAndToken(second)).owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: leakKey })).status, 204);
+  const leaked = await startRun(second.api, "leaks", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const died = await follow(second.api, leaked.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(died.last.status, "failed", JSON.stringify(died.last));
+  const text = JSON.stringify([(await second.api("GET", `/runs/${leaked.run_id}`)).body, (await second.api("GET", `/runs/${leaked.run_id}/timeline`)).body]);
+  assert.deepEqual(findPlanted([{ where: "the leaking run's reads", text }, { where: "the store's bytes", text: storeBytes(second.data).toString("latin1") }], [leakKey]), []);
+});
+
+test("a run no person started (a scheduled run, a learned workflow's audit shadow) on a plan-billed recipe whose key rows are counted but do not open (removed or sealed under another key between the count and the claim) is refused at its claim, never run on its owner's sign-in", { skip: linux, timeout: 240_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { data, file, origin } = await installed(t, (o) => signingIn(o));
+  assert.equal((await signIn(file, data)).status, 0);
+  await noteChecked(data, file);
+  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true, accounts: true });
+  // A person's run goes on the sign-in: its agent and revision are the schedule's.
+  const person = await startRun(server.api, "nightly", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const ran = await follow(server.api, person.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(ran.last.status, "completed", JSON.stringify(ran.last));
+  // Its key's row is there, so the claim's count says saved, and it does not open under this server's seal key: the
+  // claim lays nothing.
+  await putSealedKey(server.store, randomBytes(32), "harness:model-agent:MODEL_AGENT_GEMINI_API_KEY", "fake-unopenable-key");
+  const row = await server.store.runs.get(person.run_id);
+  const launch = await server.store.runs.launch(person.run_id);
+  // A schedule's run carries its trigger; an audit shadow of the person's run carries no trigger but the audit it is
+  // (runner/audit.ts): neither is a person's run, so neither goes on the sign-in.
+  const made = {
+    scheduled: { trigger: { id: "trg_nightly", firing_key: "k1" } },
+    "audit shadow": { audit: { of: person.run_id, workflow: "nightly-flow", digest: "a".repeat(64) } },
+  };
+  for (const [kind, extra] of Object.entries(made)) {
+    const id = randomUUID();
+    const before = origin.messages().length;
+    await server.store.runs.create({ id, agentId: row.agentId, revisionId: row.revisionId }, { body: launchBody({ ...readLaunchBody(launch.body), ...extra }), sealed: launch.sealed });
+    const { last } = await follow(server.api, id, ["completed", "failed"], { deadlineMs: 120_000 });
+    const read = (await server.api("GET", `/runs/${id}`)).body;
+    assert.equal(last.status, "failed", `${kind}: ${JSON.stringify(read)}`);
+    assert.match(JSON.stringify(read), /runs on its owner's own sign-in only for a run its owner started/, kind);
+    assert.equal(origin.messages().length, before, `${kind}: the vendor heard nothing, no turn went on the sign-in`);
+  }
+});
+
+test("a scheduled run on a plan-billed recipe with every key saved for its harness runs in a process of its own, as the CLI's start runs it: the runner counted the rows before it made the process, the run's process (whose store lists no rows) never counts them again, and the vendor hears the saved key", { skip: linux, timeout: 240_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { data, file, origin } = await installed(t, (o) => planOn(o));
+  await noteChecked(data, file);
+  const lines = [];
+  const server = await serve(t, { data, harnessRecipes: [file], accounts: true, openSetup: true, childRuns: { log: (line) => void lines.push(line) } });
+  const { owner } = await asOwnerAndToken(server);
+  const key = plantedValue("harness-vendor-key");
+  assert.equal((await owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: key })).status, 204);
+  const person = await startRun(server.api, "nightly", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const ran = await follow(server.api, person.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(ran.last.status, "completed", JSON.stringify(ran.last));
+  // The schedule's run: the person's launch with the trigger it fired from, so no person started it.
+  const row = await server.store.runs.get(person.run_id);
+  const launch = await server.store.runs.launch(person.run_id);
+  const id = randomUUID();
+  const before = origin.messages().length;
+  await server.store.runs.create({ id, agentId: row.agentId, revisionId: row.revisionId }, { body: launchBody({ ...readLaunchBody(launch.body), trigger: { id: "trg_nightly", firing_key: "k1" } }), sealed: launch.sealed });
+  const { last } = await follow(server.api, id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(last.status, "completed", `${JSON.stringify((await server.api("GET", `/runs/${id}`)).body)}\n${lines.join("\n")}`);
+  const heard = origin.messages().slice(before);
+  assert.ok(heard.length >= 1 && heard.every((r) => r.headers["x-api-key"] === key), "every vendor request of the scheduled run on the saved key");
+});
+
+test("a start runs only on the keys its claim laid: the server's listing holding them saved, or the operator's shell exporting one, never puts it on the keys route", { skip: linux, timeout: 240_000 }, async (t) => {
+  const shell = plantedValue("operator-shell-key");
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), MODEL_AGENT_API_KEY: shell });
+  // Its owner saves the recipe's key: its runs go on that key, never the shell's.
+  const { data, file, origin } = await installed(t, (o) => planOn(o));
+  await noteChecked(data, file);
+  const server = await serve(t, { data, harnessRecipes: [file], accounts: true, openSetup: true });
+  const saved = plantedValue("harness-vendor-key");
+  assert.equal((await (await asOwnerAndToken(server)).owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: saved })).status, 204);
+  const on = await startRun(server.api, "on-keys", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const ran = await follow(server.api, on.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(ran.last.status, "completed", JSON.stringify(ran.last));
+  const heard = origin.messages().length;
+  assert.ok(heard >= 1 && origin.messages().every((r) => r.headers["x-api-key"] === saved), "every vendor request on the saved key");
+
+  // Its row is gone from the store behind the server's back (another server on this store removed it, or a removal
+  // landed between the listing and the claim): the server still lists the key saved, its next claim lays nothing, and
+  // that start is refused for its keys. The shell's key of that name never stands in, and the vendor hears nothing more.
+  await server.store.sealedKeys.remove("harness:model-agent:MODEL_AGENT_API_KEY");
+  const next = await startRun(server.api, "row-gone", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" }).catch((error) => ({ error }));
+  if (next.run_id) {
+    const ended = await follow(server.api, next.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+    const read = (await server.api("GET", `/runs/${next.run_id}`)).body;
+    assert.equal(ended.last.status, "failed", JSON.stringify(read));
+    assert.match(JSON.stringify(read), /HARNESS_KEYS_NOT_SAVED/);
+  } else assert.match(String(next.error?.message), /HARNESS_KEYS_NOT_SAVED/);
+  const more = origin.messages().slice(heard);
+  assert.equal(more.length, 0, `the vendor heard nothing more: ${JSON.stringify(more.map((r) => (r.headers["x-api-key"] === shell ? "the shell's key" : "another")))}`);
+});
+
+test("a trigger's message never runs in a session its claim started on its owner's sign-in: keys saved while the person's turn works let the trigger be made, and its message is refused in that session, never sent to the vendor", { skip: linux, timeout: 240_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  let go;
+  const held = new Promise((resolve) => (go = resolve));
+  // A failed assertion never leaves the held request open.
+  t.after(() => go());
+  // The person's first turn holds at the vendor until `go`: the run's session stays open on the sign-in meanwhile.
+  const step = async (body) => {
+    if (JSON.stringify(body.messages ?? []).includes("Hold the answer")) await held;
+    return checkStep(body);
+  };
+  const { data, file, origin } = await installed(t, (o) => signingIn(o), step);
+  assert.equal((await signIn(file, data)).status, 0);
+  await noteChecked(data, file);
+  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true, accounts: true });
+  const { owner } = await asOwnerAndToken(server);
+  assert.equal((await server.api("POST", "/agents", agent("held", { harness: "model-agent", model: "model-agent/default" }))).status, 201);
+  const run = (await server.api("POST", "/agents/held/runs", { input: { content: "Hold the answer until told." }, max_cost_usd: 1 })).body;
+  for (const end = Date.now() + 60_000; !origin.messages().some((r) => JSON.stringify(r.body).includes("Hold the answer")); ) {
+    assert.ok(Date.now() < end, "the person's turn reached the vendor");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(origin.messages().every((r) => r.headers["x-api-key"] === TOKEN), "the person's turn on the owner's sign-in");
+  // A person's run on the sign-in carries its warning (store-view.ts signInWarningOf, run-launch.ts personStarted).
+  assert.match((await server.api("GET", `/runs/${run.run_id}`)).body.sign_in_warning ?? "", /vendor's terms may not cover use through AgentRun/);
+
+  // Its harness's key saved now: a trigger's message to the run is no longer refused where it is made.
+  assert.equal((await owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_GEMINI_API_KEY", { value: plantedValue("harness-vendor-key") })).status, 204);
+  // And a person's run started now goes on that key, not the sign-in: no warning.
+  const onKeys = (await server.api("POST", "/agents/held/runs", { input: { content: "Reply with the word ready." }, max_cost_usd: 1 })).body;
+  assert.equal((await server.api("GET", `/runs/${onKeys.run_id}`)).body.sign_in_warning, undefined, "a run on keys carries no sign-in warning");
+  const made = await server.api("POST", "/triggers", { name: "poke", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const body = '{"ticket":8}';
+  const id = `msg_${randomBytes(8).toString("hex")}`;
+  const at = Math.floor(Date.now() / 1000);
+  const headers = { "webhook-id": id, "webhook-timestamp": String(at), "webhook-signature": new Webhook(made.body.signing_secret).sign(id, new Date(at * 1000), body) };
+  assert.equal((await call(server.port, { method: "POST", path: `/v2/hooks/${made.body.id}`, headers, body })).status, 202);
+  await firings(server.api, made.body.id, 1);
+  go();
+
+  // The session the person's claim started on the sign-in never sends the trigger's turn: refused in that session's
+  // words, the vendor hearing no request of it, on the sign-in or any key.
+  await follow(server.api, run.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  let rows = [];
+  for (const end = Date.now() + 30_000; ; await new Promise((resolve) => setTimeout(resolve, 100))) {
+    rows = (await server.store.commands(run.run_id, 0)).filter((c) => c.body?.origin?.trigger_id === made.body.id);
+    if (rows.length && rows.every((c) => c.takenAt !== null)) break;
+    assert.ok(Date.now() < end, `the trigger's message settled: ${JSON.stringify(rows)}`);
+  }
+  const heard = origin.messages().filter((r) => JSON.stringify(r.body).includes("A new event came in"));
+  assert.deepEqual(heard.map((r) => r.headers["x-api-key"] === TOKEN ? "the owner's sign-in" : "a key"), [], "the vendor heard no turn of the trigger's message");
+  assert.deepEqual(rows.map((c) => /started on its owner's own sign-in/.test(c.refused ?? "")), [true], JSON.stringify(rows.map((c) => c.refused)));
 });

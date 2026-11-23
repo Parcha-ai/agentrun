@@ -3,10 +3,9 @@
 //  - It starts with the environment allowlist (child.ts), in its own process group, watched by this process
 //    (parentWatched) inside the host's confinement: a SIGKILLed host leaves no agent behind.
 //  - Its stderr is kept, its tail only, for a failure's words; nothing it prints reaches the log whole. The keys it was
-//    handed are cut from the tail before it is shortened, a key's end at the head of a cut tail goes too, and so does a
-//    key's start at its end (one the agent is still writing, read mid-run) (key-cut.ts). With `stderr: "none"` (an
-//    agent run on a person's sign-in, whose token no key cut knows) nothing of it is kept or read: its end is said by
-//    its exit status alone.
+//    handed are cut from the tail before it is shortened, with any piece of one at either edge (key-cut.ts). With
+//    `stderr: "none"` (an agent run on a person's sign-in, whose token no key cut knows) nothing of it is kept or read:
+//    its end is said by its exit status alone.
 //  - kill() ends its whole group; so does an abort of `signal`.
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
@@ -55,9 +54,11 @@ export function startAgent(options: AgentProcessOptions): AgentProcess {
   const quiet = options.stderr === "none";
   const errTo = quiet ? "ignore" : "pipe";
   const child = spawn(run.command, run.args, { cwd: options.cwd, env: childEnv(options.from ?? process.env, options.env), detached: true, stdio: ["pipe", "pipe", errTo] });
-  // What it printed, raw, kept a key's length beyond the tail: a key split across chunks, or across the tail's start, is
-  // still whole here, and cut whole (stderrTail). `cut`: whether its start was ever dropped.
+  // What it printed, raw, its last `keep` characters: a key split across chunks is whole here and cut whole, and a piece
+  // of one the trim left at the head goes with the head edge (stderrTail). `cut`: whether its start was dropped.
   const keys = keysToCut(options.keys ?? []);
+  // The longest key's length kept beyond the tail: a key longer than the tail, cut short by the agent's end, is still its
+  // start here, which the tail edge drops; trimmed to the tail alone, it would leave a piece from inside it.
   const keep = STDERR_TAIL + (keys[0]?.length ?? 0);
   let raw = "";
   let cut = false;

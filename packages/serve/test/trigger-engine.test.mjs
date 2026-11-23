@@ -2,10 +2,12 @@
 // that fails mid-firing strands nothing, and edits that overlap keep each one's change. A restart is a new engine on the
 // same store; what a hand or an earlier build left is written into the store's rows.
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Cron } from "croner";
 import { ApiError } from "../dist/errors.js";
+import { mintSecret } from "../dist/standard-webhooks.js";
 import { firingKey, Triggers } from "../dist/triggers.js";
 import { storeOn } from "./store-helpers.mjs";
 import { fakeClock } from "./trigger-support.mjs";
@@ -540,6 +542,83 @@ async function hookEngine(t, deps = {}, live) {
   const runs = runner(on.store, live);
   return { ...(await engine(t, { statusOf: async () => "completed", start: runs.start, ...deps }, { on })), runs };
 }
+
+// Each write the engine makes on a hook's answer, with the host's start landed right before it: after the read the write
+// acts on (`on`: the firing's run, or for a failed try the firing's row) found the firing due with no run.
+for (const [write, answer, on] of [["sent", 204, "runOf"], ["failed", 400, "runOf"], ["failed try", 503, "firing"]]) test(`a host start that lands between the engine's last read and its ${write} write leaves the firing started with that run: no trigger.failed, no failure counted, and max_active_runs counts the run`, { timeout: 60_000 }, async (t) => {
+  const posts = [];
+  const host = createServer((req, res) => {
+    if (req.method === "POST") posts.push(req.url);
+    req.resume();
+    req.on("end", () => res.writeHead(req.method === "POST" ? answer : 404).end());
+  });
+  await new Promise((resolve) => host.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => {
+    host.closeAllConnections();
+    host.close(() => resolve());
+  }));
+  const opened = await shared(t, "2026-06-01T00:00:00Z");
+  const ran = new Map();
+  const told = [];
+  const writes = [];
+  const at = { id: undefined, read: false, landed: false };
+  // The host's start as the API runs one for trigger_firing: handedStart, its run written under the firing's key, handedRan.
+  const land = async (key) => {
+    at.landed = true;
+    const handed = await triggers.handedStart({ trigger_id: at.id, firing_id: key }, "a");
+    assert.equal(handed.key, key, JSON.stringify(handed));
+    await opened.store.runs.create({ id: "run-host", agentId: "a", revisionId: "rev-a", origin: { key } });
+    ran.set(key, { run_id: "run-host" });
+    await triggers.handedRan(at.id, key, "run-host");
+  };
+  const runOf = async (key) => {
+    const found = ran.get(key) ?? null;
+    if (posts.length > 0 && !at.landed) {
+      at.read = true;
+      if (on === "runOf") await land(key);
+    }
+    return found;
+  };
+  const watched = new Proxy(opened.store.triggers, {
+    get(target, name) {
+      const value = Reflect.get(target, name, target);
+      if (typeof value !== "function") return value;
+      if (name === "firing") return async (...args) => {
+        const row = await value.apply(target, args);
+        if (on === "firing" && at.read && !at.landed) await land(args[1]);
+        return row;
+      };
+      if (name === "settle") return async (...args) => {
+        const settled = await value.apply(target, args);
+        if (at.landed) writes.push(args[2]);
+        return settled;
+      };
+      return value.bind(target);
+    },
+  });
+  const { triggers } = await engine(t, {
+    store: { ...opened.store, triggers: watched, runs: opened.store.runs },
+    runOf,
+    notify: (failed) => (told.push(failed.firing_key), "queued"),
+    launchHook: { url: `http://127.0.0.1:${host.address().port}/agentrun/firings`, secret: mintSecret() },
+  }, { on: opened });
+  const made = await triggers.create({ ...hookBody, max_active_runs: 1 });
+  at.id = made.id;
+  const key = firingKey("webhook", made.id, "evt-1");
+  await triggers.receive(made.id, "evt-1", "{}");
+  await until(() => writes.some((change) => change.status === "sent" || change.status === "failed" || change.attempts !== undefined), `the engine's ${write} write`);
+  const row = await opened.store.triggers.firing(made.id, key);
+  assert.deepEqual([row.status, row.runId, row.attempts, row.error], ["started", "run-host", 0, null], JSON.stringify(row));
+  assert.equal((await opened.store.triggers.get(made.id)).failuresInARow, 0, "no failure counted");
+  assert.equal(await opened.store.triggers.activeRuns(made.id, opened.clocks.current.now()), 1, "the host's run counts toward max_active_runs");
+  // The next firing is driven after this one's turn ends: it waits on the host's run, and nothing was told.
+  await triggers.receive(made.id, "evt-2", "{}");
+  const second = firingKey("webhook", made.id, "evt-2");
+  await until(async () => /max_active_runs/.test((await opened.store.triggers.firing(made.id, second))?.reason ?? ""), "the next firing waits on the host's run");
+  const next = await opened.store.triggers.firing(made.id, second);
+  assert.deepEqual([next.status, next.waitsOn, posts.length], ["due", "run-host", 1], JSON.stringify(next));
+  assert.deepEqual(told, [], "no trigger.failed");
+});
 
 test("the keys kept for the day are capped: past the cap the oldest go first, and the log says so once", { timeout: 120_000 }, async (t) => {
   const said = [];

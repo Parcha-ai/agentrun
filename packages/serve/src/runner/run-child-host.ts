@@ -24,7 +24,8 @@ import { putLiveViewer, dropLiveViewer } from "../browser-live.js";
 import { CALENDAR_EVENTS } from "../calendar/names.js";
 import { openCalendar } from "../calendar/address.js";
 import { openAccount } from "../email/account.js";
-import { harnessOf, recipeHarness } from "../harness-table.js";
+import { harnessOf, recipeHarness, recipeKeysOf } from "../harness-table.js";
+import { openHarnessKeys } from "../harness-keys.js";
 import { installDirOf, installForClaim, shareInstall } from "../harness-install.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { planOf } from "../chatgpt-plan.js";
@@ -50,7 +51,7 @@ import type { Workspace } from "../workspace/workspace.js";
 import { keptKeyOf } from "../workspace/computer-kept.js";
 import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
-import { githubPullOf } from "../github.js";
+import { githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
 import { liveForRun, runnerLiveOf } from "../live-reach.js";
 import { type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
@@ -65,7 +66,7 @@ import { workflowsAt } from "./learning-seed.js";
 import { heldMcpOf, mcpForClaim } from "./mcp-run.js";
 import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
-import { refuseRecipeRunNoPerson, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
+import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
 import { loginForRun } from "../claude-login.js";
 import type { Held, HeldComputerAsk } from "./held.js";
@@ -740,12 +741,15 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // A run's process mints for one thing alone: its revision's pull-request checkout (pr-checkout.ts), of the pull
       // request its launch's payload names, contents read. Its MCP mints on the runner (mcp above). So the mint handed
       // here makes that token and no other, whatever repository or permissions the process names.
-      if (revision.body.checkout !== "pull_request") return undefined;
-      const pull = githubPullOf(isObject(launch.input) ? launch.input.content : launch.input, { payload: fromGitHub });
+      // A repository checkout's is the repository the run names (its start's repo, else the first https://github.com
+      // URL its owner's words name): the same one repository, contents read.
+      if (revision.body.checkout !== "pull_request" && revision.body.checkout !== "repository") return undefined;
+      const content = isObject(launch.input) ? launch.input.content : launch.input;
+      const pull = revision.body.checkout === "pull_request" ? githubPullOf(content, { payload: fromGitHub }) : launch.repo !== undefined ? { repo: launch.repo } : githubTargetOf(content, { payload: fromGitHub });
       if (!pull) return undefined;
       const access = await github();
       if (!access) return undefined;
-      const bound = { repo: pull.repo, ...(pull.installation !== undefined ? { installation: pull.installation } : {}) };
+      const bound = { repo: pull.repo, ...("installation" in pull && pull.installation !== undefined ? { installation: pull.installation } : {}) };
       const mint: GithubAppAccessAt["mint"] = async (to) => {
         if (to?.repo !== bound.repo || to.installation !== bound.installation) {
           log(`run ${claim.runId}: its process asked for a GitHub token of another repository than its pull request's, which a run's process may not`);
@@ -784,6 +788,13 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     serverKeyless: () => serverKeyless(keys),
     // The zone alone, from the claim's own launch's trigger: the process never reads a trigger's row.
     runZone: () => runZone(store, launch.inputOrigin),
+    // The keys saved for the claim's own harness alone (harness-keys.ts), whatever the process names: none unless that
+    // harness is a plan-billed recipe on this runner's table, and never another harness's.
+    harnessKeys: async () => {
+      const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
+      const names = harness === undefined ? undefined : recipeKeysOf(deps.env, harness);
+      return harness !== undefined && names?.length ? openHarnessKeys(store, sealKey, harness, names) : {};
+    },
     liveViewerPut: (handover) => putLiveViewer(store, sealKey, claim, handover),
     liveViewerDrop: (tag) => dropLiveViewer(store, claim, tag),
     // The claim's own run, whatever the process names: its view on this runner hears the change.
@@ -1042,9 +1053,9 @@ export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data"
   // A recipe's harness reads its install, its check's note and its owner's sign-in, each the server user's alone: never
   // opened to a slot's user (the sign-in least of all), so where each run is a user of its own it is refused here. And a
   // plan-billed one's run with no record of who started it (a schedule's, a trigger's, an audit's, a replay's, an
-  // imported one's) never runs on its owner's sign-in.
+  // imported one's: run-launch.ts personStarted) never runs on its owner's sign-in: only on keys saved for its harness.
   if (isolation.kind === "uid" && recipeHarness(deps.env ?? {}, harness)) throw new ClaimRefused(RECIPE_NEEDS_SERVER_USER);
-  refuseRecipeRunNoPerson(deps.env ?? {}, harness, launch);
+  await refuseRecipeTriggerRun(deps, harness, launch);
   if (runsInRunner(harness, launch)) return true;
   if (launch.documents !== undefined) {
     const run = await deps.store.runs.get(runId);

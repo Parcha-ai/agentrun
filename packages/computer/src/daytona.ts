@@ -12,7 +12,7 @@ import { type HostCall, type HostDescriptor, HostError, type HostFacts, type Mac
 import { type ExecPieces, type FramedEvent, framedExec } from "./hosted/framed-exec.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, timeoutsOf } from "./hosted/provider.js";
 import { boundOf, orThrow, seconds, pause as sleep, words } from "./hosted/process.js";
-import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
+import { allPages, httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { dialLaunch, shellLine } from "./hosted/scripts.js";
 import { dateOf, isWhole, sizeRefusals } from "./hosted/values.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
@@ -60,6 +60,13 @@ export interface DaytonaProviderOptions extends Omit<HostedOptions, "desktop" | 
 	 * with TLS end to end to the public host. Unset, it dials the public host; a machine on exec never reads it.
 	 */
 	attachEgress?: string;
+	/**
+	 * How long create waits for Daytona's label listing to show a new sandbox, in ms (timeouts.listedMs; serve's
+	 * DAYTONA_LISTED_MS): a whole number above 0, as a number or its digits. Daytona's `GET /sandbox` is eventually
+	 * consistent (an index, not the database), so a sandbox still unlisted then is read by its id and kept when it reads
+	 * started. Unset, the adapter's 15 s; timeouts.listedMs, when given, wins.
+	 */
+	listedMs?: number | string;
 	/**
 	 * The snapshot GPU computers are made from: one of ours, box/Dockerfile built with a GPU (box/build-daytona.py --gpu
 	 * H100 prints its name, agentrun-archil-gpu-h100-<hash>), whose user is root; its GPU is the one its name says.
@@ -111,6 +118,14 @@ interface Sandbox {
 	/** When Daytona made the sandbox, by its clock: the adapter keeps the oldest of two machines one request made. */
 	createdAt?: string;
 	toolboxProxyUrl?: string;
+}
+
+/** options.listedMs as a whole number of ms above 0 (a number, or its digits as DAYTONA_LISTED_MS gives them), or undefined when unset. */
+function listedMsOf(value: unknown): number | undefined {
+	if (value === undefined || value === "") return undefined;
+	const ms = typeof value === "string" && /^\s*\d+\s*$/.test(value) ? Number(value) : value;
+	if (!isWhole(ms) || ms <= 0) throw new Error(`listedMs (DAYTONA_LISTED_MS) is a whole number of ms above 0, not ${JSON.stringify(value)}`);
+	return ms;
 }
 
 /** A positive finite figure of Daytona's answer, else undefined (absent, zero or not a number: never guessed). */
@@ -712,14 +727,14 @@ export class DaytonaProvider extends HostedProvider {
 			webSocket,
 			pause,
 			timeouts = {},
+			listedMs,
 			...hosted
 		} = options ?? ({} as DaytonaProviderOptions);
 		const via = connectOf(DAYTONA, { connect });
 		const refused = kindRefusal(DAYTONA, { kind: hosted.kind, connect: via });
 		if (refused !== undefined) throw new Error(refused);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
-		const base = new URL(apiUrl);
-		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
+		const base = httpsBase(apiUrl, "the Daytona API URL");
 		if (arch !== "amd64" && arch !== "arm64") throw new Error(`options.arch is amd64 or arm64, not ${String(arch)}`);
 		if (sandboxClass !== "container" && sandboxClass !== "linux-vm") throw new Error(`options.sandboxClass is container or linux-vm, not ${String(sandboxClass)}`);
 		const minutes = (name: string, value: unknown) => {
@@ -727,7 +742,9 @@ export class DaytonaProvider extends HostedProvider {
 		};
 		minutes("autoStopMinutes", autoStopMinutes);
 		if (autoDeleteMinutes !== undefined) minutes("autoDeleteMinutes", autoDeleteMinutes);
-		const { retryMs = DEFAULT_RETRY_MS, ...hostedTimeouts } = timeouts;
+		const listed = listedMsOf(listedMs);
+		const { retryMs = DEFAULT_RETRY_MS, ...asked } = timeouts;
+		const hostedTimeouts = { ...(listed === undefined ? {} : { listedMs: listed }), ...asked };
 		if (!isWhole(retryMs) || retryMs <= 0) throw new Error(`timeouts.retryMs must be a whole number of ms above 0, not ${retryMs}`);
 		const { requestMs, pollMs } = timeoutsOf(hostedTimeouts);
 		const headers = headersOf(apiKey);
@@ -740,7 +757,7 @@ export class DaytonaProvider extends HostedProvider {
 		const host = new DaytonaHost({
 			// On dial its capabilities declare no GPU (DIAL_NO_GPU).
 			descriptor: { ...DAYTONA, ...mountsOf(DAYTONA, set), ...(via === "dial" ? { capabilities: DAYTONA.capabilities.map(({ gpu: _gpu, ...rest }) => rest) } : {}) },
-			rest: rest({ base: apiUrl, headers: () => headers, vendor: "daytona", fetch: fetcher ?? fetch, timeoutMs: requestMs, retry: { attempts: RETRY_ATTEMPTS, baseMs: retryMs, ...(pause ? { pause } : {}) }, explain }),
+			rest: rest({ base, headers: () => headers, vendor: "daytona", fetch: fetcher ?? fetch, timeoutMs: requestMs, retry: { attempts: RETRY_ATTEMPTS, baseMs: retryMs, ...(pause ? { pause } : {}) }, explain }),
 			headers,
 			webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike),
 			arch,

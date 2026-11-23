@@ -13,9 +13,11 @@ import { createNativeLoop } from "./native-loop.js";
 //     module adds with no adapter facts of its own, on its runner's adapter;
 //   - a CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter;
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
-import { harnessOf, recipeHarness } from "../harness-table.js";
+import { harnessOf, recipeKeysOf } from "../harness-table.js";
+import { harnessKeysSaved, RECIPE_SIGN_IN_PERSON_ONLY } from "../harness-keys.js";
+import type { SealedKeys } from "../store/index.js";
 import { hostMemory, neverFits } from "../host.js";
-import type { RunLaunch } from "../run-launch.js";
+import { personStarted, type RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
@@ -35,25 +37,29 @@ export class NeverFits extends ClaimRefused {
   override name = "NeverFits";
 }
 
-/** The words a run on a plan-billed harness recipe with no record of who started it is refused in (harness-recipe-entry.ts
- *  serverRoute): such a run takes keys saved for that harness, never its owner's own sign-in, and none are saved yet. */
-export const RECIPE_SIGN_IN_PERSON_ONLY = "This run carries no record of who started it (a scheduled or triggered run, a learned workflow's audit or replay, an imported run or one from before this server kept that record), and a harness recipe billed to its vendor's plan runs on its owner's own sign-in only for a run its owner started. Any other run goes on keys saved for that harness, and this server saves no harness's keys yet: start a new run yourself, or run the agent on a harness billed through this server's model proxy.";
+export { RECIPE_SIGN_IN_PERSON_ONLY };
 
-/** Refuses at its claim a run on a plan-billed recipe's harness (harness-table.ts recipeHarness) whose launch carries no
- *  record of who started it (no startedBy: server.ts startedByOf, the owner's password session or the API token). That
- *  is a schedule's or a trigger's run, the runner's own (an audit's shadow, a replay), any start the server made for no
- *  request, and an imported run or one made before launches kept the record, a person's message to it included, so a
- *  run the owner is not on record as starting never goes on their sign-in. On every path a claim takes
- *  (run-child-host.ts staysInRunner, and here). */
-export function refuseRecipeRunNoPerson(env: NodeJS.ProcessEnv, harness: string, launch: Pick<RunLaunch, "startedBy">): void {
-  if (launch.startedBy === undefined && recipeHarness(env, harness) === "plan") throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
+/** Refuses at its claim a run no person is on record as starting (run-launch.ts personStarted: no startedBy, or a
+ *  schedule's, a trigger's, a learned workflow's audit shadow or replay; an imported run or one from before launches kept
+ *  the record too) on a plan-billed recipe's harness (harness-table.ts recipeKeysOf) unless every key it runs on is saved
+ *  for that harness (harness-keys.ts): such a run goes on those keys, never its owner's own sign-in. On every path a
+ *  claim takes (run-child-host.ts staysInRunner, and here): the early word, before a process is made. Rows are counted,
+ *  never opened; the claim's spec opens them and refuses it again if not every one opened, since a row counted here can
+ *  be gone or not open by then (cli-run-spec.ts). */
+export async function refuseRecipeTriggerRun(deps: { readonly env?: NodeJS.ProcessEnv; readonly store: { readonly sealedKeys: Pick<SealedKeys, "all"> } }, harness: string, launch: Pick<RunLaunch, "startedBy" | "trigger" | "audit" | "replay">): Promise<void> {
+  if (personStarted(launch)) return;
+  const keys = recipeKeysOf(deps.env ?? {}, harness);
+  if (keys !== undefined && !(await harnessKeysSaved(deps.store, harness, keys))) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
 }
 
 /** The dispatch's `resolve`, built from the runner's deps: it reads the run's revision (for a workflow revision) and
- *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words). */
-export function resolveRunnerLoop(given: AdapterSpecDeps): (harness: string, launch: RunLaunch, runId: string) => Promise<LoopFactory | undefined> {
+ *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words).
+ *  `keysCounted`: a run's own process (run-child.ts), whose runner counted its harness's key rows before it made the
+ *  process (run-child-host.ts staysInRunner). The process's store lists no rows (STORE_CALLS has no sealedKeys.all), so
+ *  it never counts them again; its claim's spec opens the claim's own keys and refuses the run if not every one opened. */
+export function resolveRunnerLoop(given: AdapterSpecDeps, options: { readonly keysCounted?: boolean } = {}): (harness: string, launch: RunLaunch, runId: string) => Promise<LoopFactory | undefined> {
   return async (harness, launch, runId) => {
-    refuseRecipeRunNoPerson(given.env ?? {}, harness, launch);
+    if (!options.keysCounted) await refuseRecipeTriggerRun(given, harness, launch);
     // The model gateway saved in the console (model-gateway.ts), read from the store at each claim and laid over the run
     // environment as its variables would be, so a gateway saved or removed since reaches the next run with no restart. A
     // gateway the runner's environment names wins, and nothing saved is read over it.

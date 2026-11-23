@@ -18,7 +18,7 @@ import { folderAt, learningInit, type LearningFolder, learningWorkspace, readLea
 import { agentFolderOf, serialBy } from "./files.js";
 import { withoutLoopbackAddresses } from "./key-refusal.js";
 import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
-import { purgedWorkflows } from "./purged-workflow.js";
+import { purgeGate } from "./purged-workflow.js";
 import type { Store } from "./store/index.js";
 import type { Workspace } from "./workspace/index.js";
 
@@ -270,7 +270,7 @@ export async function seedAt(ws: Workspace, commit: string | null, store: Pick<S
   if (commit === null) return { sha: null, corrections: "", workflows: [] };
   const at = await folderAt(ws, commit);
   if (!at) throw new Error(`the learning folder's read at ${commit} is gone`);
-  const purged = store ? await purgedWorkflows(at.snapshot, store) : new Map();
+  const purged = store ? (await purgeGate(at.snapshot, store)).workflows : new Map();
   const seed = await seedIn(commit, at.snapshot, async (_path, oid) => {
     const bytes = at.blobs.get(oid);
     if (!bytes) throw new Error(`the learning folder's read at ${commit} holds no blob ${oid}`);

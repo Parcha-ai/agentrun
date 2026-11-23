@@ -17,7 +17,7 @@ import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filt
 import { COMPUTER_UNAVAILABLE_CODE, lostEndMessage } from "./computer-lost.js";
 import { refusedEndMessage, RUNNER_REFUSED_CODE } from "./runner/presence.js";
 import { launchOf } from "./handed-values.js";
-import { learningStartOf, type RunLaunch, seedFailed } from "./run-launch.js";
+import { learningStartOf, personStarted, type RunLaunch, seedFailed } from "./run-launch.js";
 import {
   momentOf,
   type Pending,
@@ -858,10 +858,11 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
   };
 }
 
-/** `sign_in_warning` for a run its owner started (launch.startedBy) on a harness whose person's runs go on the owner's own
- *  sign-in (ViewDeps.signInWarning); nothing for any other run. */
+/** `sign_in_warning` for a run its owner started (run-launch.ts personStarted, the one rule the claim takes too) on a
+ *  harness whose person's runs go on the owner's own sign-in (ViewDeps.signInWarning: none where its keys are saved, so
+ *  its runs go on them); nothing for any other run. */
 function signInWarningOf(deps: ViewDeps, launch: RunLaunch | undefined): { sign_in_warning?: string } {
-  const warning = launch?.harness !== undefined && launch.startedBy !== undefined ? deps.signInWarning?.(launch.harness) : undefined;
+  const warning = launch?.harness !== undefined && personStarted(launch) ? deps.signInWarning?.(launch.harness) : undefined;
   return warning ? { sign_in_warning: warning } : {};
 }
 

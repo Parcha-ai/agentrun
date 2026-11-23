@@ -91,8 +91,7 @@ export interface RunLaunch {
    *  (`owner_session`), stamped by the start routes alone (runs-over-store.ts startRun, startInline) from the request.
    *  Absent wherever there is no such record: a schedule's or trigger's run, a learned workflow's audit shadow or replay,
    *  a start from the console of a server with no owner's account, and an imported run or one made before launches kept
-   *  it. A plan-billed recipe runs on its owner's sign-in only for a run that carries it (runner/harness-loops.ts
-   *  refuseRecipeRunNoPerson). */
+   *  it. A plan-billed recipe runs on its owner's sign-in only for a run that carries it (personStarted). */
   readonly startedBy?: StartedBy;
   /** When the caller says the run started (an SDK start's `started_at`, ms), served as the run's created_at; the run's
    *  row keeps when it arrived. Absent: created_at is the arrival. */
@@ -251,6 +250,15 @@ export function launchOnItsDisk(launch: RunLaunch): RunLaunch {
   const { noWorkflows, model, use } = launch.learning;
   return { ...launch, learning: { seed: null, section: "", seedFailed: "other_disk", ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}) } };
 }
+
+/** Whether the owner is on record as starting the run: its launch carries startedBy (their request made it, under the
+ *  token or their password session), no trigger fired it (a schedule's, a webhook's, a trigger's turn into a run), and it
+ *  is no learned workflow's audit shadow (runner/audit.ts) or replay (runner/promotion.ts), which the server starts
+ *  itself. An imported run or one from before launches kept the record is not. The one rule for who goes on the owner's
+ *  own sign-in: only such a run does (runner/harness-loops.ts, run-child-host.ts, cli-run-spec.ts), and only such a run
+ *  carries sign_in_warning (store-view.ts). */
+export const personStarted = (launch: Pick<RunLaunch, "startedBy" | "trigger" | "audit" | "replay">): boolean =>
+  launch.startedBy !== undefined && launch.trigger === undefined && launch.audit === undefined && launch.replay === undefined;
 
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
  *  undefined when the body is not one (not an object, or it names no place: a damaged or hand-edited body). */

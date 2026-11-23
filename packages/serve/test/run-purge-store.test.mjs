@@ -174,6 +174,18 @@ test("agents.purge removes an upload once no agent left was applied from it: the
   assert.deepEqual((await store.importedTemplates.list()).map((row) => row.id), [GITHUB], "ids() names what list() reads");
 });
 
+test("agents.purge removes only the upload its agent was applied from: a newer upload of the same name, waiting for its apply, stays", async (t) => {
+  const { store } = await storeOn(t);
+  const UPLOAD = "upload:pr-alert";
+  await store.importedTemplates.put({ id: UPLOAD, source: UPLOAD, sha: "a".repeat(64), publisher: "", files: {} });
+  await store.agents.create({ id: "agent-1", name: "agent-1" }, { id: "rev-agent-1", kind: "agentic", body: { instructions: "Answer." }, package: { id: UPLOAD, version: "0.1.0", sha: "a".repeat(64) } });
+  await store.agents.archive("agent-1", true);
+  // Another folder of the same name uploaded since (a clone, another machine): its deploy has yet to apply it.
+  await store.importedTemplates.put({ id: UPLOAD, source: UPLOAD, sha: "b".repeat(64), publisher: "", files: {} });
+  await store.agents.purge("agent-1");
+  assert.deepEqual((await store.importedTemplates.list()).map((row) => [row.id, row.sha]), [[UPLOAD, "b".repeat(64)]]);
+});
+
 test("a purged agent takes no write: a revision (an edit's, an upgrade's), its current revision moved, its name or description, its archive, a run, a trigger or a pin of it, each refused (AgentPurged) or a no-op, nothing written", async (t) => {
   const { store, file } = await storeOn(t);
   await agentWithRevision(store, "agent-1", "rev-1");
