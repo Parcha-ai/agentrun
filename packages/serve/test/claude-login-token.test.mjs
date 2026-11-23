@@ -11,7 +11,7 @@
 // folders, and a fake token endpoint on loopback (the renewal's fetch is a seam; the request is sent there, never out).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -301,6 +301,91 @@ test("across processes the renewer holds the pinned CLI's refresh lock: while an
   assert.equal(await reader.token(), mine, "renewed under the lock taken over");
   assert.equal(endpoint.posts.length, 1);
   assert.ok(!existsSync(lock), "released after");
+});
+
+/** A fake token endpoint that answers as Anthropic does a rotating refresh token: each refresh token it took once is
+ *  spent, and posted again it is refused (400 invalid_grant); `pairs` answers each first post, by the token posted. */
+async function rotatingEndpoint(t, pairs) {
+  const taken = new Set();
+  return tokenEndpoint(t, (post) => {
+    const sent = post.body.refresh_token;
+    if (taken.has(sent) || !pairs.has(sent)) return { status: 400, json: { error: "invalid_grant" } };
+    taken.add(sent);
+    const { access, refresh } = pairs.get(sent);
+    return { json: { access_token: access, refresh_token: refresh, expires_in: 3600 } };
+  });
+}
+
+test("a renewal whose save fails keeps the new pair in memory: the next ask posts nothing and is handed the new token, each ask tries the save again and one with a working disk writes the pair back (0600, by a rename), and the spent refresh token is never posted again", async (t) => {
+  assert.equal(typeof tokens.LoginTokens, "function", "the runner has a reader of the login's access token");
+  const { data, login } = loginFolder(t);
+  const start = 1_900_000_000_000;
+  let clock = start;
+  const file = join(login.dir, ".credentials.json");
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  const third = { access: fake("access-third"), refresh: fake("refresh-third") };
+  const oldText = JSON.stringify({ claudeAiOauth: oauthOf(old.access, start + 60_000, old.refresh) });
+  // The login's file reached through a link: the runner reads it, and never replaces a file that is no plain file
+  // (replaceFile), so the save fails at its first step, as one on a full disk fails at its write.
+  const elsewhere = join(data, "credentials-elsewhere.json");
+  writeFileSync(elsewhere, oldText, { mode: 0o600 });
+  symlinkSync(elsewhere, file);
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next], [next.refresh, third]]));
+  const reader = new tokens.LoginTokens({ login, now: () => clock, fetch: endpoint.fetch });
+  assert.equal(await reader.token(), next.access, "renewed: the new token is handed, though its save failed");
+  assert.equal(endpoint.posts.length, 1);
+  assert.equal(readFileSync(elsewhere, "utf8"), oldText, "the save failed: the file still holds the old pair");
+  // The next ask finds the old pair in the file, its refresh token spent: the pair held in memory is handed.
+  assert.equal(await reader.token(), next.access, "the next ask is handed the new token, held in memory");
+  assert.equal(endpoint.posts.length, 1, "and posts nothing: the spent refresh token is never sent again");
+  assert.equal(await new tokens.LoginTokens({ login, now: () => clock, fetch: endpoint.fetch }).token(), next.access, "another reader in this process: the same");
+  assert.equal(endpoint.posts.length, 1);
+  assert.equal(readFileSync(elsewhere, "utf8"), oldText, "each ask tried the save again, and it still failed");
+  // The disk works again: the link is a plain file now, still holding the old pair. The next ask saves the held pair.
+  rmSync(file);
+  writeWhole(file, oldText);
+  const inode = statSync(file).ino;
+  assert.equal(await reader.token(), next.access);
+  assert.equal(endpoint.posts.length, 1, "the save posts nothing");
+  const saved = JSON.parse(readFileSync(file, "utf8")).claudeAiOauth;
+  assert.deepEqual([saved.accessToken, saved.refreshToken, saved.expiresAt], [next.access, next.refresh, start + 3_600_000], "the held pair written back, its end as its answer gave it");
+  assert.equal(statSync(file).mode & 0o777, 0o600, "at mode 0600");
+  assert.notEqual(statSync(file).ino, inode, "replaced by a rename, never written in place");
+  assert.deepEqual(listing(login.dir), [".credentials.json"], "no temp file or lock left");
+  // Saved: near its end, the saved pair is renewed as any other, its refresh token posted once.
+  clock = start + 3_600_000 - 60_000;
+  assert.equal(await reader.token(), third.access);
+  assert.deepEqual(endpoint.posts.map((post) => post.body.refresh_token), [old.refresh, next.refresh], "each refresh token posted once, the spent one never again");
+});
+
+test("a held pair whose save keeps failing is handed until its own token nears its end, then the ask is refused in words that say the renewal could not be saved and what to do, the token in none of them; nothing is posted and nothing retries", async (t) => {
+  assert.equal(typeof tokens.LOGIN_NOT_SAVED, "string", "a held pair near its end, never saved, has words of its own");
+  const { data, login } = loginFolder(t);
+  const start = 1_900_000_000_000;
+  let clock = start;
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  const elsewhere = join(data, "credentials-elsewhere.json");
+  writeFileSync(elsewhere, JSON.stringify({ claudeAiOauth: oauthOf(old.access, start + 60_000, old.refresh) }), { mode: 0o600 });
+  symlinkSync(elsewhere, join(login.dir, ".credentials.json"));
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  const reader = new tokens.LoginTokens({ login, now: () => clock, fetch: endpoint.fetch });
+  assert.equal(await reader.token(), next.access);
+  clock = start + 30 * 60_000;
+  assert.equal(await reader.token(), next.access, "half an hour on, still unsaved: the held token, with its time left");
+  // Its own token within the margin, still unsaved: refused, in its own words.
+  clock = start + 3_600_000 - 4 * 60_000;
+  for (const ask of ["first", "second"]) {
+    await assert.rejects(reader.token(), (error) => {
+      assert.equal(error.message, tokens.LOGIN_NOT_SAVED, ask);
+      assert.match(error.message, /could not save/);
+      assert.match(error.message, /Settings → Model keys/);
+      for (const value of [...Object.values(old), ...Object.values(next)]) assert.ok(!String(error.stack).includes(value), `${ask}: no token in the refusal`);
+      return true;
+    });
+  }
+  assert.equal(endpoint.posts.length, 1, "nothing posted after the one renewal: no loop, the spent refresh token never again");
 });
 
 test("a renewal Anthropic refuses (400 invalid_grant) or that fails (a 5xx) refuses the ask in LOGIN_RUNNING_OUT's words, posts once for that ask and never again on its own as the clock goes on, and leaves the file byte for byte as it was; a refresh token refused as invalid_grant is never posted again", async (t) => {
