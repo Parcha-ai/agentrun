@@ -36,7 +36,7 @@ jobs:
     # On Blacksmith for a merge-queue candidate and for a pull request from a branch of this repository, as the test
     # shards that wait for it. A fork's pull request, and main, run on GitHub's runners: a fork's code is not the
     # project's, and it gets neither the paid runners nor the caches they keep between runs.
-    runs-on: &shard-runner ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -87,7 +87,7 @@ jobs:
     needs: [build]
     # The build job's runner: Blacksmith for the merge queue and for this repository's own pull requests (a shard takes
     # about half as long there as on GitHub's runners), GitHub's for a fork's pull request and for main.
-    runs-on: *shard-runner
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -207,7 +207,7 @@ jobs:
     # for every shard of `test`. verify needs this job as it needs `test`.
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
     needs: [build]
-    runs-on: *shard-runner
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
