@@ -2653,3 +2653,26 @@ test("an OpenCode subagent's request run through Claude Code counts once when th
   assert.equal(timelineOf(await entriesOf(store, run.id), { settled: true }).findLast((r) => r.kind === "usage")?.usage.requests, 2, "the timeline's usage row counts the same");
   assert.equal((await store.runs.get(run.id)).costUsd, 0.625);
 });
+
+test("an OpenCode subagent's own subagent's request run through Claude Code counts once when the Claude Code session's project is written after the run's", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const [first, second] = [join(h.at, "code", "a"), join(h.at, "code", "b")];
+  for (const dir of [first, second]) mkdirSync(dir, { recursive: true });
+  claudeSession(h.at, second, 1);
+  openCodeDb(h.at, [
+    // Neither the parent nor its subagent mirrors anything: the subagent's own subagent does.
+    { id: "ses_P", cwd: first, answers: [{ input: 3, output: 2, cost: 0.5 }] },
+    { id: "ses_C", parent: "ses_P", cwd: first, prompt: "Find the notes.", answers: [{ input: 2, output: 1, cost: 0.0625 }] },
+    { id: "ses_G", parent: "ses_C", cwd: first, prompt: "Open the notes.", answers: [{ input: 4, output: 1, cost: 0.25, mirrors: sessionId(1) }, { input: 5, output: 1, cost: 0.125 }] },
+  ]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const runs = await rowsOf(store);
+  assert.deepEqual(runs.map((r) => r.importedFrom.source).sort(), ["claude-code", "opencode"]);
+  const run = runs.find((r) => r.importedFrom.source === "opencode");
+  const metrics = await storedMetrics(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [3, 10, 4], "the mirrored request counts in the Claude Code run alone");
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.6875);
+});
