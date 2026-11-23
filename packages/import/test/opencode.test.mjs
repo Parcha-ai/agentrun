@@ -422,17 +422,30 @@ test("a session OpenCode is still running is live whatever its rows' times: a 1.
   const recent = Date.now() - 60_000;
   const live = (size, what) => assert.ok(size.mtimeMs >= recent, `${what}: live`);
   const v1 = join(dir, "v1.db");
-  const parked = (id, info, parts) => ({
+  const parked = (id, info, parts, ended = {}) => ({
     session: { id, directory: "/fixture/p", title: id, time: { created: T0, updated: T0 } },
     messages: [
       { info: { id: `${id}_u`, role: "user", time: { created: T0 } }, parts: [{ id: `${id}_t`, type: "text", text: "Go." }] },
-      { info: { id: `${id}_m`, role: "assistant", providerID: "openai", modelID: "gpt-5", path: { cwd: "/fixture/p", root: "/fixture/p" }, time: { created: T0 + 1000, ...info }, cost: 0, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, parts },
+      { info: { id: `${id}_m`, role: "assistant", providerID: "openai", modelID: "gpt-5", path: { cwd: "/fixture/p", root: "/fixture/p" }, time: { created: T0 + 1000, ...info }, cost: 0, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }, ...ended }, parts },
     ],
   });
   const tool = (status) => ({ id: `prt_${status}`, type: "tool", callID: "call_p", tool: "bash", state: { status, input: { command: "ls" }, time: { start: T0 + 1000 } } });
-  await buildV1(v1, [parked("ses_open", {}, []), parked("ses_ask", { completed: T0 + 2000 }, [tool("pending")]), parked("ses_run", { completed: T0 + 2000 }, [tool("running")]), parked("ses_done", { completed: T0 + 2000 }, [tool("completed")])]);
+  // A request that failed or was aborted before it completed (text-free's ses_E1 shape: no time.completed, an error)
+  // has ended, as its read says (failed, stopped): never running.
+  const failed = { error: { name: "APIError", data: { message: "overloaded" } } };
+  const aborted = { error: { name: "MessageAbortedError", data: { message: "aborted" } } };
+  await buildV1(v1, [
+    parked("ses_open", {}, []),
+    parked("ses_ask", { completed: T0 + 2000 }, [tool("pending")]),
+    parked("ses_run", { completed: T0 + 2000 }, [tool("running")]),
+    parked("ses_done", { completed: T0 + 2000 }, [tool("completed")]),
+    parked("ses_failed", {}, [], failed),
+    parked("ses_aborted", {}, [{ ...tool("running"), id: "prt_aborted" }], aborted),
+  ]);
   for (const id of ["ses_open", "ses_ask", "ses_run"]) live(await locatorSize({ file: v1, id }, "opencode"), id);
-  assert.equal((await locatorSize({ file: v1, id: "ses_done" }, "opencode")).mtimeMs, T0 + 1000, "done: its rows' last write");
+  for (const id of ["ses_done", "ses_failed", "ses_aborted"]) assert.equal((await locatorSize({ file: v1, id }, "opencode")).mtimeMs, T0 + 1000, `${id}: ended, its rows' last write`);
+  // Each read alone: the parked sessions' requests share a fingerprint, so one read of all would take them for copies.
+  assert.deepEqual([(await readSession({ file: v1, id: "ses_failed" }, "opencode")).state, (await readSession({ file: v1, id: "ses_aborted" }, "opencode")).state], ["failed", "stopped"], "as its read ends them");
   // 2.x: time_busy (set as a run starts, never cleared) after time_idle (set as it ends): running.
   const v2 = join(dir, "v2.db");
   await buildV2(v2);
@@ -443,7 +456,7 @@ test("a session OpenCode is still running is live whatever its rows' times: a 1.
   db.close();
   live(await locatorSize({ file: v2, id: "ses_C" }, "opencode"), "2.x busy");
   assert.equal((await locatorSize({ file: v2, id: "ses_K" }, "opencode")).mtimeMs, T0 + 139_000, "2.x idle since: its rows' last write");
-  // The JSON storage: its last message not completed.
+  // The JSON storage: its last message not completed; one that failed has ended.
   const storage = join(dir, "storage");
   await buildLegacy(storage);
   const last = join(storage, "message", "ses_B", "msg_B2.json");
@@ -453,6 +466,9 @@ test("a session OpenCode is still running is live whatever its rows' times: a 1.
   // Every file of it written long ago.
   for (const entry of await readdir(storage, { recursive: true, withFileTypes: true })) if (entry.isFile()) await utimes(join(entry.parentPath, entry.name), new Date(T0), new Date(T0));
   live(await locatorSize({ file: join(storage, "session", "prj_fixture", "ses_B.json") }, "opencode"), "storage");
+  await writeFile(last, JSON.stringify({ ...info, error: failed.error }));
+  await utimes(last, new Date(T0), new Date(T0));
+  assert.equal((await locatorSize({ file: join(storage, "session", "prj_fixture", "ses_B.json") }, "opencode")).mtimeMs, T0, "storage, failed: its files' last write");
   assert.equal((await locatorSize({ file: join(storage, "session", "prj_fixture", "ses_A.json") }, "opencode")).mtimeMs, T0, "storage, completed: its files' last write");
 });
 
@@ -502,4 +518,36 @@ test("a closed database OpenCode opens or writes while it is read (its -wal made
   change = { at: 0, made: async () => {} };
   await rm(`${db}-wal`, { force: true });
   assert.equal((await reader.read({ file: db, id: "ses_C" })).sessions.length, 1);
+});
+
+test("a read that fails partway adds nothing to the import's `seen`: the session read again (or a fork after it) keeps every request of its own", async (t) => {
+  const home = await tempHome(t);
+  const db = join(home, ".local", "share", "opencode", "opencode.db");
+  await buildV2(db);
+  const own = new DatabaseSync(db);
+  own.exec("PRAGMA journal_mode = WAL");
+  own.close();
+  const whole = (await reader.read({ file: db, id: "ses_C" })).sessions[0].requests.length;
+  assert.ok(whole > 0);
+  // OpenCode opens the database while ses_C is read: its -wal there at the read's look after (the second -wal look).
+  const lstat = fs.lstat;
+  let looks = 0;
+  const mocked = t.mock.method(fs, "lstat", async (path, ...args) => {
+    if (path === `${db}-wal` && ++looks === 2) await writeFile(`${db}-wal`, "");
+    return lstat(path, ...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const seen = new Set();
+  await assert.rejects(reader.read({ file: db, id: "ses_C" }, undefined, { seen }), /changed while it was read/);
+  assert.deepEqual([...seen], [], "nothing of the failed read");
+  mocked.mock.restore();
+  syncBuiltinESMExports();
+  await rm(`${db}-wal`, { force: true });
+  const again = (await reader.read({ file: db, id: "ses_C" }, undefined, { seen })).sessions[0];
+  assert.equal(again.requests.length, whole, "no request of its own taken for a copy");
+  assert.ok(seen.size > 0, "a read that ends clean adds its own");
 });

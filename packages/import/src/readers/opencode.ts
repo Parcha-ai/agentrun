@@ -78,9 +78,16 @@ const fingerprint = (fields: unknown[]): string => `o:${createHash("sha256").upd
 export const FAILED = "failed";
 
 /** One read's sessions' share of the import: the records `seen` before (each a copy), those this read's locator added
- *  before (`before`: its own, read again), those it adds, and the time it is read at (no time is later). */
+ *  before (`before`: its own, read again), those it adds (`owned`: into `seen` only once the read ends clean, commit),
+ *  and the time it is read at (no time is later). */
 type Context = { seen: Set<string>; before: ReadonlySet<string>; owned: Set<string>; now: number; latest: number };
 const contextOf = (seen: Set<string> | undefined, before: readonly string[], latest: number): Context => ({ seen: seen ?? new Set(), before: new Set(before), owned: new Set(), now: Date.now(), latest });
+/** A read that ended clean (its database's look after passed, every file of it read) adds what it found to `seen`: one
+ *  that fails partway adds none, as a line source's file does not. */
+const commit = <T>(context: Context, out: T): T => {
+  for (const key of context.owned) context.seen.add(key);
+  return out;
+};
 
 /** What a time past now, which a clock set ahead wrote, reads as: when `file` (or its write-ahead log) was last written,
  *  never past now. The same at each look, so the session ages out as its file does: never live for ever. */
@@ -130,10 +137,9 @@ class Reading {
   }
   /** Whether a record keyed `key` is a copy of one the import has read (not one of this locator's own, read again). */
   copy(key: string): boolean {
-    return !this.context.before.has(key) && this.context.seen.has(key);
+    return !this.context.before.has(key) && (this.context.seen.has(key) || this.context.owned.has(key));
   }
   own(key: string): void {
-    this.context.seen.add(key);
     this.context.owned.add(key);
   }
   /** Where the read is, to go back to (back) when what came after is a copy. */
@@ -212,6 +218,10 @@ class Reading {
 const errorOf = (error: unknown): string | undefined =>
   isObject(error) ? (str(isObject(error.data) ? error.data.message : undefined) ?? str(error.message) ?? str(error.name) ?? str(error.type) ?? "unknown error") : undefined;
 
+/** How a 1.x request's message ended by its error, if it has one: stopped (the person aborted it), else failed. None:
+ *  no error. */
+const endedBy = (info: Row): Ended | undefined => (isObject(info.error) && info.error.name === "MessageAbortedError" ? "stopped" : errorOf(info.error) !== undefined ? "failed" : undefined);
+
 /** One 1.x session from its row or file, its messages (each with its parts) in the order OpenCode keeps them. A prompt
  *  or request a 1.x fork copied (fingerprint) that the import has read already is a copy: passed over, counted. */
 function v1Session(reading: Reading, messages: { info: Row; parts: Row[] }[]): Found {
@@ -289,7 +299,7 @@ function v1Session(reading: Reading, messages: { info: Row; parts: Row[] }[]): F
       if (cost !== undefined) into.costUsd = cost;
     }
     const error = errorOf(info.error);
-    const aborted = isObject(info.error) && info.error.name === "MessageAbortedError";
+    const aborted = endedBy(info) === "stopped";
     if (error && !aborted) (last ?? openTurn()).error = error;
     // Each request by its fingerprint: the message's time and model, its step, its tokens and cost as written. All of
     // them copies: the message is a fork's copy, passed over whole. Some: those are left out, the rest kept.
@@ -312,7 +322,7 @@ function v1Session(reading: Reading, messages: { info: Row; parts: Row[] }[]): F
       // The message's cost holds the copies' too: its own requests' instead, unknown when one that used tokens has none.
       for (const answer of mine) if (!copies.has(answer)) reading.priced(answer.costUsd, answer.usage !== undefined);
     } else reading.priced(info.cost, usage !== undefined || stepped);
-    reading.ended(aborted ? "stopped" : error ? "failed" : "completed");
+    reading.ended(endedBy(info) ?? "completed");
   }
   return reading.done();
 }
@@ -694,10 +704,12 @@ export async function openCodeFiles(home: string, env: Env = {}): Promise<{ dbs:
 }
 
 /** Whether a 1.x message (its info and parts) is a request OpenCode has not ended: not completed, or a tool part of it
- *  pending (a permission prompt waiting) or running. */
+ *  pending (a permission prompt waiting) or running. One its error ended (endedBy: failed, stopped) has ended, as its
+ *  read says, completed or not. */
 const running = (info: unknown, parts: unknown[]): boolean =>
   isObject(info) &&
   info.role === "assistant" &&
+  endedBy(info) === undefined &&
   (!(isObject(info.time) && num(info.time.completed) !== undefined) || parts.some((part) => isObject(part) && part.type === "tool" && isObject(part.state) && (part.state.status === "pending" || part.state.status === "running")));
 
 /** Whether OpenCode is running a database's session now, whatever its rows' times say (a run parked on a permission
@@ -825,16 +837,19 @@ export const opencode: Reader<"opencode", OpenCodeCursor> = {
       const stamp = await storageStamp(file);
       if (resumed && cursor.stamp === stamp) return result(stamp, [], 0);
       const bytes = { n: 0 };
-      return result(stamp, await storageSession(file, keep, bytes, context), bytes.n);
+      return commit(context, result(stamp, await storageSession(file, keep, bytes, context), bytes.n));
     }
-    return withDb(file, (db) => {
-      const tables = tablesOf(db);
-      const stamp = stampOf(db, tables.all, id);
-      if (resumed && cursor.stamp === stamp) return result(stamp, [], 0);
-      const before = db.read();
-      const sessions = dbSessions(db, file, tables, keep, id, context);
-      return result(stamp, sessions, db.read() - before);
-    });
+    return commit(
+      context,
+      await withDb(file, (db) => {
+        const tables = tablesOf(db);
+        const stamp = stampOf(db, tables.all, id);
+        if (resumed && cursor.stamp === stamp) return result(stamp, [], 0);
+        const before = db.read();
+        const sessions = dbSessions(db, file, tables, keep, id, context);
+        return result(stamp, sessions, db.read() - before);
+      }),
+    );
   },
   /** A database session's own (dbSize), not its database's: one live session leaves the others importable, and none
    *  is too large for the size of the rest. A storage session's files together; a database without an id, its file's. */
