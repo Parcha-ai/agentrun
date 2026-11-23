@@ -18,6 +18,7 @@ import { logLine } from "./print.js";
 import { runCutValues } from "./run-cut.js";
 import { runGraphView } from "./run-reads-over-store.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
+import type { TimelineEvent } from "./timeline/index.js";
 import type { SignInReader } from "./run-view.js";
 import { scrub } from "./secret-cut.js";
 import { hostSecrets, handedSecret, type StoredKeys, withSecrets } from "./secrets.js";
@@ -62,10 +63,50 @@ export function stringsOf(value: unknown): string[] {
   return out;
 }
 
-/** What a share of run `runId` would carry, as strings (object keys included: stringsOf), with the run's cut
- *  set read after them (the cut only grows, so the last read holds every value an earlier read cut); `unknown` for a run
- *  the store does not hold, `withheld` when its cut can't be read here. */
-export async function shareTexts(store: Store, runId: string, deps: ShareTextDeps): Promise<{ kind: string; texts: string[]; held: string[] } | "unknown" | "withheld"> {
+/** A tool's output with its call's context (ruling LVI): the file the call read whole (`path`) or the shell command it
+ *  ran (`command`), so the scrubber reads a credential file's or a dump command's output as the dump it is, though the
+ *  output stands alone in its result's field. A share's export reads the same (secret-cut.ts ScrubOptions). */
+export interface ShareText {
+  readonly text: string;
+  readonly path?: string;
+  readonly command?: string;
+}
+
+/** A call that prints one file whole, by its tool's name: its output is that file's content (a write's or an edit's is
+ *  not). Claude Code's and pi's `Read`, Gemini's `read_file`, ACP's `fs/read_text_file`. */
+const FILE_READ_TOOL = /^(?:read|read_?file|(?:fs\/)?read_text_file)$/i;
+/** A shell `-c` launch (`["bash", "-lc", "cat ~/.pgpass"]`): its script is the command. */
+const SHELL_LAUNCH = /^(?:(?:\/usr)?\/bin\/)?(?:ba|z|da)?sh$/;
+const SHELL_SCRIPT_FLAG = /^-l?c$/;
+
+/** The command a call's input runs, when it runs one: `command` or `cmd`, a string or an argv. */
+function commandOf(input: Record<string, unknown>): string | undefined {
+  const command = input.command ?? input.cmd;
+  if (typeof command === "string") return command;
+  if (!Array.isArray(command) || command.length === 0 || !command.every((part) => typeof part === "string")) return undefined;
+  const argv = command as string[];
+  return argv.length === 3 && SHELL_LAUNCH.test(argv[0]!) && SHELL_SCRIPT_FLAG.test(argv[1]!) ? argv[2] : argv.join(" ");
+}
+
+/** Each call's context by its tool_use_id, from a Timeline read with its calls' arguments (calls=whole: `tool_input`). */
+function callContexts(rows: readonly TimelineEvent[]): Map<string, { path?: string; command?: string }> {
+  const out = new Map<string, { path?: string; command?: string }>();
+  for (const row of rows) {
+    const input = (row as Record<string, unknown>).tool_input;
+    if (row.kind !== "tool_use" || row.tool_use_id === null || input === null || typeof input !== "object" || Array.isArray(input)) continue;
+    const args = input as Record<string, unknown>;
+    const file = args.file_path ?? args.path;
+    const path = row.tool_name !== null && FILE_READ_TOOL.test(row.tool_name) && typeof file === "string" ? file : undefined;
+    const command = commandOf(args);
+    if (path !== undefined || command !== undefined) out.set(row.tool_use_id, { ...(path !== undefined ? { path } : {}), ...(command !== undefined ? { command } : {}) });
+  }
+  return out;
+}
+
+/** What a share of run `runId` would carry, as strings (object keys included: stringsOf), a tool's output with its
+ *  call's context (ShareText), with the run's cut set read after them (the cut only grows, so the last read holds every
+ *  value an earlier read cut); `unknown` for a run the store does not hold, `withheld` when its cut can't be read here. */
+export async function shareTexts(store: Store, runId: string, deps: ShareTextDeps): Promise<{ kind: string; texts: (string | ShareText)[]; held: string[] } | "unknown" | "withheld"> {
   const row = await store.runs.get(runId).catch(() => undefined);
   if (!row) return "unknown";
   if ((await runCutValues(deps, store, runId)) === "unreadable") return "withheld";
@@ -74,12 +115,22 @@ export async function shareTexts(store: Store, runId: string, deps: ShareTextDep
   const viewDeps: ViewDeps = { origin: "http://scrub.invalid", serverSecrets: deps.serverSecrets, keyEnv: deps.keyEnv, ...(deps.signIns ? { signIns: deps.signIns } : {}) };
   const view = await viewOverStore(store, runId, viewDeps);
   if (!view) return "unknown";
-  const texts: string[] = [];
+  const texts: (string | ShareText)[] = [];
   const add = (value: unknown): void => void texts.push(...stringsOf(value));
   for (const field of SHARE_RUN_FIELDS) add(view[field]);
   add((view.imported_from as { source?: unknown } | undefined)?.source);
   add((await store.agents.get(row.agentId))?.name);
-  add(await servedTimelineRows(deps, store, runId, ctx, false));
+  // A result's output is scrubbed with its call's context (ruling LVI): its row's other strings as they are.
+  const calls = callContexts(await servedTimelineRows(deps, store, runId, ctx, true));
+  for (const row of await servedTimelineRows(deps, store, runId, ctx, false)) {
+    const call = row.kind === "tool_result" && row.tool_use_id !== null ? calls.get(row.tool_use_id) : undefined;
+    if (call === undefined || row.tool_result_preview === null) {
+      add(row);
+      continue;
+    }
+    add({ ...row, tool_result_preview: null });
+    texts.push({ text: row.tool_result_preview, ...call });
+  }
   if (view.kind === "workflow") {
     try {
       add(
@@ -128,15 +179,16 @@ export interface ShareCount {
   readonly blocked: boolean;
 }
 
-/** The scrubber's count over `texts` with `held` as its held values: each cut's rule, kind and whether it can be restored,
- *  never its value, shape or offsets. */
-export async function countCuts(runId: string, kind: string, texts: readonly string[], held: readonly string[]): Promise<ShareCount> {
+/** The scrubber's count over `texts` with `held` as its held values, a ShareText with its call's context: each cut's
+ *  rule, kind and whether it can be restored, never its value, shape or offsets. */
+export async function countCuts(runId: string, kind: string, texts: readonly (string | ShareText)[], held: readonly string[]): Promise<ShareCount> {
   const rules = new Map<string, { kind: string; restorable: boolean; count: number }>();
   let already = 0;
   let blocked = false;
-  for (const text of texts) {
+  for (const each of texts) {
+    const { text, path, command }: ShareText = typeof each === "string" ? { text: each } : each;
     already += text.split("[redacted]").length - 1;
-    const counted = await scrub(text, { mode: "count", held });
+    const counted = await scrub(text, { mode: "count", held, ...(path !== undefined ? { path } : {}), ...(command !== undefined ? { command } : {}) });
     blocked ||= counted.blocked;
     for (const cut of counted.cuts) {
       const line = rules.get(cut.rule) ?? { kind: cut.kind, restorable: cut.restorable, count: 0 };

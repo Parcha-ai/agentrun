@@ -13,7 +13,7 @@ import { keyShaped } from "./secret-name.js";
 import { secretValues } from "./api-token.js";
 import { MIN_SECRET, valueMatcher } from "./learn/secrets.js";
 import { userInfo } from "node:os";
-import { type Cut, type CutKind, decodedTimes, type Hit, inputSpan, isPlaceholder, KEY_RUN_MAX, lineBounds, lineCount, type LintFind, RESTORABLE, SCRUB_RULES, type ScrubContext, type ScrubRule, shapeOf, type View, viewsOf } from "./secret-rules.js";
+import { commandReadPath, type Cut, type CutKind, decodedTimes, type Hit, inputSpan, isPlaceholder, KEY_RUN_MAX, lineBounds, lineCount, type LintFind, RESTORABLE, SCRUB_RULES, type ScrubContext, type ScrubRule, shapeOf, type View, viewsOf } from "./secret-rules.js";
 
 export { type Cut, type CutKind, isPlaceholder, RESTORABLE, RULE_PATTERNS, SCRUB_RULES, type ScrubRule, viewsOf } from "./secret-rules.js";
 
@@ -134,6 +134,9 @@ export type ScrubOptions = {
   /** The path of the file `text` is the content of, when the caller knows it: a .env* file, one under ~/.ssh or a
    *  credentials file is dropped whole. */
   readonly path?: string;
+  /** The shell command whose output `text` is, when the caller knows it (a tool call's, ruling LVI): a command that reads
+   *  one file alone (`cat ~/.pgpass`) gives `path` when none is given, and an env command's output is a dump. */
+  readonly command?: string;
   /** The homes the caller holds (rulings E, VII): a bare `/home/<user>` with no segment after it, or a Claude project
    *  folder's `-home-<user>-` outside `.claude/projects/`, is cut only for one of these. When not given, this process's
    *  user's home and $HOME. */
@@ -386,11 +389,11 @@ export function processHomes(): string[] {
   return [...homes].filter((home) => home.length > 1);
 }
 
-/** What the rules read beside a view: the held values, the view's unblanked text, the homes, the path, and secretlint's
+/** What the rules read beside a view: the held values, the view's unblanked text, the homes, the path and the command, and secretlint's
  *  finds in the view (one pass a view, on first ask). */
 function contextOf(view: View, opts: ScrubOptions): ScrubContext {
   let lint: Promise<LintFind[]> | undefined;
-  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path ?? commandReadPath(opts.command), command: opts.command, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
 }
 
 /** Whether a cut text holds nothing the scrub must cut: no known format the format rules still find in any view of any

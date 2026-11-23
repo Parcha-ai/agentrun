@@ -14,7 +14,7 @@ import { ROOT_CONVERSATION_ID, UserEntry } from "@earendil-works/pi-durable";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { countCuts, countTable, couldNotCount, stringsOf } = await import("../dist/scrub-command.js");
+const { countCuts, countTable, couldNotCount, shareTexts, stringsOf } = await import("../dist/scrub-command.js");
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
 /** Fresh synthetic secrets: an sk- key (a known format), a PGPASSWORD= value (a label), an email (personal) and a value
@@ -216,4 +216,60 @@ test("P2 13 (ruling H): the error path cuts the run's held values out of the err
   const line = await couldNotCount("r", new Error(`read failed near ${s.held} in row 3`), [s.held]);
   assert.match(line, /could not be counted/);
   assertNoValue(line, s, "error line");
+});
+
+/** An imported session whose one tool call (`name` with `input`) printed `output`, that output alone in its result. */
+async function oneCallRun(store, id, name, input, output) {
+  const at = Date.now();
+  const C = ROOT_CONVERSATION_ID;
+  const n = Number(C);
+  await store.importRun({
+    id, agentId: "a1", revisionId: "r1", importedFrom: { source: "claude-code", session: `synthetic-${id}` },
+    launch: { body: { input: { content: "Look at it." }, title: "Look", place: { mode: "runner" } } }, state: "ended", summary: "Looked.", startedAt: at, endedAt: at,
+    transcript: [[
+      { type: "conversation", value: { id: C } },
+      { type: "entry", value: { id: n + 1, conversationId: C, kind: UserEntry.kind, model: [{ role: "user", content: [{ type: "text", text: "Look at it." }], timestamp: at }] } },
+      { type: "entry", value: { id: n + 2, conversationId: C, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "toolu_01", name, arguments: input }], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } }, timestamp: at }] } },
+      { type: "entry", value: { id: n + 3, conversationId: C, kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "toolu_01", toolName: name, content: [{ type: "text", text: output }], isError: false, timestamp: at }] } },
+    ]],
+  });
+  return id;
+}
+
+test("LVI: a tool's output is scrubbed with its call's context, so a read of a credential file or a dump command is a dump cut", async (t) => {
+  const { dir, store } = await dataDir(t);
+  const pw = `Cu${randomBytes(9).toString("hex")}`;
+  const pgpass = `db:5432:app:svc:${pw}`;
+  const deps = { serverSecrets: () => [], keyEnv: () => ({}) };
+  const counted = async (id) => {
+    const gathered = await shareTexts(store, id, deps);
+    return countCuts(id, gathered.kind, gathered.texts, gathered.held);
+  };
+  // Each output stands alone in its result field: only the call that printed it says what it is.
+  const cases = [
+    ["read-pgpass", "Read", { file_path: "~/.pgpass" }, pgpass, "credential-file"],
+    ["read-netrc", "Read", { file_path: "~/.netrc" }, `machine api.sample-host.zz login svc password ${pw}`, "credential-file"],
+    ["read-env", "Read", { file_path: ".env" }, `APP_REGION=north\nAPP_SEED=${pw}`, "env-file"],
+    ["read-ssh", "Read", { file_path: "~/.ssh/id_ed25519" }, `Host build\n  HostName 10.0.0.1\n  User svc\n  # seed ${pw}`, "ssh-file"],
+    ["shell-pgpass", "Bash", { command: "cat ~/.pgpass", description: "Show the pgpass file" }, pgpass, "credential-file"],
+    ["shell-env", "Bash", { command: "env | sort", description: "List the environment" }, `APP_REGION=north\nAPP_SEED=${pw}`, "env-dump"],
+  ];
+  for (const [id, name, input, output, rule] of cases) {
+    await oneCallRun(store, id, name, input, output);
+    const count = await counted(id);
+    assert.equal(count.by_kind.dump, 1, `${id}: ${JSON.stringify(count.rules)}`);
+    assert.equal(count.rules.find((line) => line.kind === "dump")?.rule, rule, id);
+  }
+  // The same outputs read from an unrelated file, or printed by a command that is no read or dump, are not cut.
+  for (const [id, name, input, output] of [["read-notes", "Read", { file_path: "notes.txt" }, pgpass], ["shell-notes", "Bash", { command: "cat notes.txt" }, pgpass], ["shell-echo", "Bash", { command: "echo ok" }, `APP_REGION=north\nAPP_SEED=${pw}`], ["read-notes-env", "Read", { file_path: "notes.txt" }, `APP_REGION=north\nAPP_SEED=${pw}`]]) {
+    await oneCallRun(store, id, name, input, output);
+    const count = await counted(id);
+    assert.equal(count.cuts, 0, `${id}: ${JSON.stringify(count.rules)}`);
+  }
+  // The CLI counts it the same way, and prints no piece of the value.
+  await store.close();
+  const ran = scrubCli(dir, { held: `held${randomBytes(16).toString("hex")}` }, "shell-pgpass", "--json");
+  assert.equal(ran.status, 0, ran.stderr);
+  assertNoValue(ran.stdout + ran.stderr, { pw }, "json");
+  assert.equal(JSON.parse(ran.stdout).by_kind.dump, 1, ran.stdout);
 });

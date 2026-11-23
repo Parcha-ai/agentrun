@@ -35,13 +35,16 @@ export type LintFind = { readonly id: string; readonly value: string };
 
 /** What a rule may read beside the view's text: the held values (8 characters or more), the view's text before its
  *  escapes were blanked (`source`: the held rule reads a held value holding a backslash there), the home folders the
- *  caller holds, the path the text is the content of when the caller knows it, and secretlint's finds in the view (read
+ *  caller holds, the path the text is the content of and the command it is the output of when the caller knows them, and secretlint's finds in the view (read
  *  once a view, on first ask). */
 export type ScrubContext = {
   readonly held: readonly string[];
   readonly source: string;
   readonly homes: readonly string[];
   readonly path?: string;
+  /** The shell command whose output the text is, when the caller knows it (ruling LVI): an env command's output is a
+   *  dump though the command stands in no line of the text. */
+  readonly command?: string;
   readonly lint: () => Promise<readonly LintFind[]>;
   /** Where the line holding an offset starts and ends: a line break, or a JSON string's own quote the view decoded
    *  (ruling XXVIII). Absent: line breaks alone. */
@@ -398,6 +401,13 @@ const YAML_NODE = /^(?:!{1,2}[A-Za-z][A-Za-z_.:/-]{0,63}|[*&][A-Za-z0-9_.-]{1,64
 /** The fewest characters a bare value holds (ruling II): `-p and`, `--api-key and kin` are prose. */
 const BARE_MIN = 4;
 const EDGE_BLANK = /^\s|\s$/;
+/** Blank-edged quoted contents whose first or last blank-separated token is punctuation alone (no letter, digit or `_`):
+ *  the quotes are one string's close and the next one's open, an operator between (`" + pw + "`, `" . $pw . "`,
+ *  `", pw, "`, `" || pw || "`), no value's bound (ruling LVII). Read on the trimmed contents; an edge token that mixes
+ *  punctuation with word characters (`" !Copper8 "`) is a value's. Bounded at 64 (ruling B). */
+const EDGE_TOKEN_PUNCT = /^[^\w\s]{1,64}(?:\s|$)|\s[^\w\s]{1,64}$/;
+/** The fewest characters quoted contents hold once trimmed (valueHit's least, ruling LVII). */
+const INNER_MIN = 3;
 /** A value that runs straight into an angle-bracket placeholder (`wk_live_<redacted>`) is a kept prefix, the rest
  *  elided; read in the 8 characters after the value. */
 const ELIDED_AFTER = /^<[A-Za-z][\w -]{0,6}(?:>|$)/;
@@ -423,6 +433,12 @@ const TYPE_AFTER = /^[ \t]{0,3}[[|=(]/;
 const typeName = (whole: string, after: string): boolean => PASCAL_TYPE.test(whole) && (TYPE_SUFFIX.test(whole) || TYPE_AFTER.test(after));
 
 export function isPlaceholder(value: string, slot: Slot = {}): boolean {
+  // Inside quotes the quotes are the bound (rulings LV, LVII): the inner value is judged without its edge blanks, and a
+  // cut takes the whole quoted contents. Only an unquoted value with an edge blank is no value.
+  if (slot.bare === false && EDGE_BLANK.test(value)) {
+    const inner = value.trim();
+    return inner.length < INNER_MIN || EDGE_TOKEN_PUNCT.test(inner) || isPlaceholder(inner, slot);
+  }
   if (EDGE_BLANK.test(value)) return true;
   if (REFERENCE.test(value) || ELIDED.test(value) || PLACEHOLDER.test(value)) return true;
   const trimmed = value.replace(TRAILING_PUNCTUATION, "");
@@ -960,18 +976,26 @@ const codeName = (value: string): boolean => {
 };
 /** An object's member chain right before a name (`self.`, `this.`, `settings.`, `app.config.`): a member write's. */
 const MEMBER_OBJECT_BEFORE = /(?:^|[^\w$.])([A-Za-z_$][\w$]{0,127}(?:\.[A-Za-z_$][\w$]{0,127}){0,16}\.)$/;
-const SELF_BEFORE = /(?:^|[^\w$.])(?:self|this)\.$/;
-/** Whether the name at `at` is written as an object's member (ruling LIII): after `self.` or `this.` always; after any
- *  other object when the name is upper-case (`settings.SECRET_KEY`) or its dotted key does not start its line (a
- *  lower-case dotted key opening a line is a `.properties` key's, config's, ruling XXX). */
-const memberWrite = (text: string, at: number, name: string, lines: LineBounds): boolean => {
+/** A member write's root that is code's beyond doubt: a language's own (`self.`, `this.`, `cls.`) or the environment's
+ *  (`process.env.`, `import.meta.env.`, XLVII/LI). */
+const CODE_ROOT_BEFORE = /(?:^|[^\w$.])(?:self|this|cls|process\.env|import\.meta\.env)\.$/;
+/** A statement's `;` right after a value, on its line. */
+const STATEMENT_END_AFTER = /^[ \t]{0,3};/;
+/** Whether the name at `at`, its value ending at `end`, is written as an object's member beyond doubt (rulings LIII,
+ *  LIX): after a language's root (`self.`, `this.`, `cls.`) or the environment's always; after any other object only when a `;` ends the
+ *  statement. A dotted name alone (`service.DB_PASSWORD=`, `spring.datasource.password=`) is a `.properties` or INI
+ *  key's as much as an object's: undecidable, so config's, cut. */
+const memberWrite = (text: string, at: number, end: number, lines: LineBounds): boolean => {
   const before = text.slice(Math.max(0, at - 320), at);
-  if (SELF_BEFORE.test(before)) return true;
-  const object = MEMBER_OBJECT_BEFORE.exec(before);
-  if (!object) return false;
-  if (UPPER_NAME.test(name)) return true;
-  return !keyStartAt(text, at - object[1]!.length, at, lines);
+  if (CODE_ROOT_BEFORE.test(before)) return true;
+  if (!MEMBER_OBJECT_BEFORE.test(before)) return false;
+  return STATEMENT_END_AFTER.test(text.slice(end, Math.min(end + 8, lines.end(end))));
 };
+/** A bare value that is an identifier with `[`, `(` or `.` and a name right after it (the character after the value
+ *  included: VALUE stops at a quote or `(`): an index, a call or a member read starts there (`config["password"]`,
+ *  `get_secret("db")`, `settings.db.password`), a reference where the left side is code's (ruling LX). */
+const REFERENCE_START = /^[A-Za-z_$][\w$]{0,127}(?:[[(]|\.[A-Za-z_$])/;
+const referenceStart = (text: string, value: string, end: number): boolean => REFERENCE_START.test(value + text.slice(end, end + 2));
 /** A write to the environment under a credential's name (ruling LI, XLVII's write side): `os.environ["X"] = v`,
  *  `ENV["X"]=v`, `process.env.X = v`, `import.meta.env.X = v`. The value is a label's. */
 const ENV_ASSIGN = new RegExp(String.raw`(?<![A-Za-z0-9_$.])(?:os\.environ|ENV|process\.env|import\.meta\.env)(?:\[(["'])([A-Za-z_][A-Za-z0-9_]{0,63})\1\]|\.([A-Za-z_][A-Za-z0-9_]{0,63}))[ \t]{0,3}=(?!=)[ \t]{0,3}${VALUE}`, "gd");
@@ -981,7 +1005,7 @@ const envAssign = (m: RegExpExecArray): Hit | undefined => {
   // Ruling LIII: a bare name is a variable's (`os.environ["PGPASSWORD"] = password`). Any other value is the
   // environment's, as NAME=value's is (code: false): the code-shape guesses are read here, never after the value (a
   // JSON string's end and its object's `}` after it read as an entry's end).
-  if (m[7] !== undefined && codeName(m[7])) return undefined;
+  if (m[7] !== undefined && (codeName(m[7]) || referenceStart(m.input, m[7], m.indices![7]![1]))) return undefined; // rulings LIII, LX
   const hit = valueHit(m, 4, 3, name);
   return hit && { ...hit, code: false };
 };
@@ -1027,7 +1051,8 @@ const assign = (text: string, lines: LineBounds, source?: string) => (m: RegExpE
   // A bare value ending with `,`, `)` or `}` ends an argument or an entry: code's evidence (ruling XLV), so the code
   // checks (XIX name==value, XXI identifier, a member chain) read it, the ending stripped.
   const entry = bare && ENDS_ENTRY.test(m[5]!);
-  if (bare && codeName(m[5]!) && memberWrite(text, m.index, name, lines)) return undefined; // ruling LIII
+  const end = m.indices![5]?.[1] ?? hit.end;
+  if (bare && (codeName(m[5]!) || referenceStart(text, m[5]!, end)) && memberWrite(text, m.index, end, lines)) return undefined; // rulings LIII, LIX, LX
   // NAME=value with an upper-case name is the environment's slot, quoted or not (rulings XII, XIX).
   if (UPPER_NAME.test(name)) return entry ? hit : { ...hit, code: false };
   if (!bare) return hit;
@@ -1055,7 +1080,7 @@ const configAssign = (text: string, nameGroup: number, lines: LineBounds, source
   if (!hit || value === undefined) return hit;
   // A bare value is its line's whole value (a flow map, `{password: x}`, is beta 2's backlog: it reads as code's).
   if (!lineEndAt(text, hit.end, lines)) return undefined;
-  if (nameGroup === 1 && codeName(value) && memberWrite(text, m.indices![1]![0], name, lines)) return undefined; // ruling LIII
+  if (nameGroup === 1 && (codeName(value) || referenceStart(text, value, hit.end)) && memberWrite(text, m.indices![1]![0], hit.end, lines)) return undefined; // rulings LIII, LIX, LX
   // The slot is config's unless code's evidence stands (ruling XXVII: what can't be decided is config's, cut); a
   // section's lines are config's whatever their value's shape (ruling XXX). A YAML key's slot (the name unquoted)
   // is one a type annotation fills too (`typed`, ruling XVI).
@@ -1265,6 +1290,17 @@ function envDumps(text: string): Hit[] {
 const READ_COMMAND = /^\s{0,8}(?:[$#%>❯]\s{0,3})?(?:sudo\s{1,3})?(?:cat|less|more|head|tail|bat|batcat|nl|type|Get-Content|gc)(?:\s{1,3}-{1,2}[A-Za-z0-9=-]{1,24}(?:\s{1,3}\d{1,6})?){0,4}\s{1,3}(["']?)([^\s"']{1,512})\1\s{0,8}$/;
 const READ_TOOL = /^\s{0,8}(?:⏺\s{0,2})?Read\(([^()\s]{1,512})\)\s{0,8}$/;
 const readPath = (body: string): string | undefined => READ_COMMAND.exec(body)?.[2] ?? READ_TOOL.exec(body)?.[1];
+/** The file a command prints whole, when it is one read alone (`cat ~/.pgpass`): its output is that file's content
+ *  (ruling LVI). */
+export const commandReadPath = (command: string | undefined): string | undefined => (command === undefined ? undefined : readPath(command));
+
+/** envDumps with `command` as the line before the text (ruling LVI): the output of `env`, `printenv NAME` or
+ *  `echo $KEY`, given apart from its command, is cut as it is when the command stands in the text. */
+function commandDumps(text: string, command: string | undefined): Hit[] {
+  if (command === undefined || command.trim() === "") return [];
+  const shift = command.length + 1;
+  return envDumps(`${command}\n${text}`).filter((hit) => hit.end > shift).map((hit) => ({ ...hit, start: Math.max(hit.start - shift, 0), end: hit.end - shift }));
+}
 
 const PATH_SEPARATOR = /[\\/]/;
 const ENV_FILE_NAME = /^(?:\.env(?:rc)?|\.env\.[A-Za-z0-9_.-]{1,64}|[A-Za-z0-9_.-]{1,64}\.env)$/;
@@ -1470,7 +1506,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
   ...VENDOR_RULES,
   SECRETLINT,
   HELD,
-  rule("env-dump", "dump", envDumps),
+  rule("env-dump", "dump", (text, ctx) => [...envDumps(text), ...commandDumps(text, ctx.command)]),
   rule("env-file", "dump", (text, ctx) => [...wholeText(text, ctx.path, envFilePath), ...fileReads(text, envFilePath, (body) => ENV_FILE_LINE.test(body))]),
   rule("credential-file", "dump", (text, ctx) => [...wholeText(text, ctx.path, credentialFilePath), ...fileReads(text, credentialFilePath, (body) => notPrompt(body) && notMarker(body))]),
   // A key file read (authorized_keys, known_hosts, a key) or a config read is a dump; key lines printed with no read
@@ -1505,8 +1541,8 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
  *  and fails on an unbounded quantifier outside its allowlist, and fails on a module-level pattern missing here. */
 export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   ESCAPE, CONTROLS, DRIVE_PATH, NOT_DIGIT, NOT_HEX, NOT_ALNUM, NOT_BASE64, PLACEHOLDER, ELLIPSIS, TYPE_WORD, GENERIC, PASCAL_TYPE, METAVAR, NAME_PARTS, LEADING_DASHES,
-  CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
-  UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, SELF_BEFORE, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, MYSQL_P, PASSWORD_FLAG, LOGIN_COMMAND, LOGIN_P,
+  CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
+  UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, MYSQL_P, PASSWORD_FLAG, LOGIN_COMMAND, LOGIN_P,
   REDIS_COMMAND, REDIS_A, OPENSSL_PASS, NETRC, AUTH_HEADER, TOKEN_RUN, CODE_KEY_BEFORE, URL_SAFE_RUN, BASE64_RUN_BEFORE, BASE64_RUN_AFTER, LETTER_OR_DIGIT, ENV_NAME_RUN, BASE64_CHARS, COOKIE_HEADER, COOKIE_PAIR, CURL_COMMAND, CURL_USER, NUMBERED, JSON_FIELD_OPEN, PROMPT_LINE,
   ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
   CREDENTIAL_FILE, ENV_FILE_LINE, KEY_LINE, SSH_CONFIG, COMMENT_LINE, PEM_LINE, BASE64_LINE, PEM_HEADER_LINE, HOME_UNIX, HOME_WINDOWS, SEGMENT_AFTER,

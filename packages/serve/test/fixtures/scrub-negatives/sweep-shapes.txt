@@ -141,3 +141,12 @@ srv = {"headers": {"x-api-key": os.environ["WIDGETS_MCP_KEY"]}}; log.write("ok\n
 
 # class Z7 (secret-assign): a JS object value that is a member expression (process.env.X) as its line's whole
   apiKey: process.env.WIDGETS_API_KEY
+
+# class Z9 (secret-assign, mysql-password): blank-edged quoted contents whose edge token is punctuation alone, a string concatenation's operator between one string's close and the next one's open (ruling LVII)
+cmd = "WIDGETS_DB_PASS=" + widget_pw + " psql -h widgets-db"
+$cmd = "SESSION_TOKEN=" . $widget_tok . " run";
+print("WIDGETS_SECRET=", widget_secret, " run")
+sql = "token=" || widget_tok || " x"
+local s = "token=" .. widget_tok .. " end"
+args = ["mysql -p" + "z".repeat(9)]
+s = "API_TOKEN=" & widget_tok & " end"

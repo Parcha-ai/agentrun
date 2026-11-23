@@ -1499,9 +1499,9 @@ test("LI: a write to the environment under a credential's name is a label on the
   for (const text of [`os.environ["DB_PASSWORD"] = os.environ["OLD_DB_PASSWORD"]`, `os.environ["DB_PASSWORD"] = get_secret("db")`, `os.environ["DB_HOST"] = "${v}"`]) await kept(text);
 });
 
-test("LIII: a bare name written to the environment or an object's member is a variable; a literal there is cut", async () => {
-  // The round-5 repros, and the same evidence in each form (an environment root, `self.`/`this.`, an object, `;`).
-  for (const text of [`os.environ["PGPASSWORD"] = password`, "self.DB_PASSWORD = password", "process.env.DB_PASSWORD = password;", "settings.SECRET_KEY = secret_key", `ENV["API_TOKEN"] = api_token`, "import.meta.env.VITE_API_TOKEN = cfg.apiToken", "self.DB_PASSWORD=password", "app.config.SECRET_KEY = secretKey,", "process.env.API_TOKEN = token;"]) {
+test("LIII, LIX: a bare name written to the environment or to a self./this./cls. member is a variable; a literal there is cut, and so is settings.SECRET_KEY = secret_key (a member chain alone is no code evidence)", async () => {
+  // The round-5 repros, and the same evidence in each form (an environment root, `self.`/`this.`, `;`).
+  for (const text of [`os.environ["PGPASSWORD"] = password`, "self.DB_PASSWORD = password", "process.env.DB_PASSWORD = password;", `ENV["API_TOKEN"] = api_token`, "import.meta.env.VITE_API_TOKEN = cfg.apiToken", "self.DB_PASSWORD=password", "app.config.SECRET_KEY = secretKey,", "process.env.API_TOKEN = token;"]) {
     await kept(text);
     await kept(JSON.stringify({ type: "tool_result", content: text }));
   }
@@ -1515,7 +1515,9 @@ test("LIII: a bare name written to the environment or an object's member is a va
   }
   // Declined for beta 1: the spaced `=` alone is no code's evidence (INI and my.cnf space it too). A restorable cut,
   // raw and in JSON (round 5's other repros).
-  for (const [text, secret] of [["PGPASSWORD = password", "password"], ["PGPASSWORD = db_password", "db_password"], ["DB_PASSWORD = password", "password"]]) {
+  // LIX: `settings.` alone is a dotted key's as much as an object's, so the round-5 `settings.SECRET_KEY = secret_key`
+  // is a restorable cut too (gray, the beta 2/3 grader's).
+  for (const [text, secret] of [["PGPASSWORD = password", "password"], ["PGPASSWORD = db_password", "db_password"], ["DB_PASSWORD = password", "password"], ["settings.SECRET_KEY = secret_key", "secret_key"]]) {
     for (const wrapped of [text, JSON.stringify({ type: "tool_result", content: text })]) {
       const out = await gone(wrapped, [secret]);
       assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["secret-assign", "label", true]], wrapped);
@@ -1587,4 +1589,95 @@ test("LII: npmrc's auth keys open after every line lead the line-anchored rules 
   }
   // A lead is a line's: mid-line, a `-` or a `12:` before the key opens nothing.
   for (const text of [`x -${"//"}npm.corp-sample.io/:_authToken=${v}`, `see 12:_auth=${v}`]) await kept(text);
+});
+
+test("LV, LVII: inside quotes the quotes bound the value; its edge blanks are judged trimmed and cut with it", async () => {
+  const v = "Copper8lumen80";
+  // The credential names built from parts, so the source export scan reads no credential literal in this file.
+  const PG = ["PGPASS", "WORD"].join("");
+  const DBP = ["DB_PASS", "WORD"].join("");
+  const PWD = ["pass", "word"].join("");
+  const wrappers = [
+    (s) => s,
+    (s) => JSON.stringify({ type: "text", text: s }),
+    (s) => JSON.stringify({ type: "progress", data: JSON.stringify({ type: "text", text: s }) }),
+    (s) => JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_01", content: s }] } }),
+  ];
+  // The Greptile repro and its kin: one label cut that takes the whole quoted contents, blanks included.
+  // An edge token that mixes punctuation with word characters is the value's (LVII).
+  for (const [text, inner] of [[`${PG}=" ${v} "`, ` ${v} `], [`export ${DBP}=' ${v}'`, ` ${v}`], [`${PWD}: "${v}  "`, `${v}  `], [`API_TOKEN=" ${v}"; curl -s x`, ` ${v}`], [`${PG}=" !Copper8 "`, " !Copper8 "], [`${PG}=" Copper8! "`, " Copper8! "], [`${PG}=" pa+ss word "`, " pa+ss word "]]) {
+    for (const wrap of wrappers) {
+      const wrapped = wrap(text);
+      const out = await gone(wrapped, [inner.trim()]);
+      assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind]), [["secret-assign", "label"]], wrapped);
+    }
+    const { cut } = await oneCut(text);
+    assert.equal(text.slice(cut.start, cut.end), inner, text);
+  }
+  // Blanks alone, under 3 characters once trimmed (as `ab` unquoted is), or a reference or a placeholder inside the
+  // blanks, stay.
+  for (const text of [`${PG}=" "`, `${PG}="   "`, `${PG}=" ab "`, `${PG}="  ab"`, `${PG}=" $PW "`, `${PG}=" \${PW} "`, `${DBP}=' <password> '`, `API_TOKEN=" op://Infra/db/password "`]) {
+    for (const wrap of wrappers) await kept(wrap(text));
+  }
+  // Blank-edged contents whose first or last token is punctuation alone sit between one string's close and the next
+  // one's open: no value, in any language's concatenation (EDGE_BLANK kept these before LV; sweep-shapes class Z9).
+  for (const text of [`cmd = "${PG}=" + pw + " psql -h db"`, `$cmd = "${PG}=" . $pw . " psql";`, `print("${PG}=", pw, " psql")`, `sql = "${PWD}=" || pw || " x"`, `local s = "token=" .. tok .. " end"`, `["mysql -p" + "y".repeat(9)]`, `s = "API_TOKEN=" & tok & " end"`]) {
+    for (const wrap of wrappers) await kept(wrap(text));
+  }
+});
+
+test("LVI: the command a text is the output of is its context: a read of a credential file or an env command's output is a dump", async () => {
+  const pw = "Copper8lumen80";
+  const pgpass = `db:5432:app:svc:${pw}`;
+  const env = `APP_REGION=north\nAPP_SEED=${pw}`;
+  for (const [text, command, rule] of [[pgpass, "cat ~/.pgpass", "credential-file"], [`machine h.sample.zz login svc password ${pw}`, "cat ~/.netrc", "credential-file"], [env, "cat .env", "env-file"], [env, "env", "env-dump"], [env, "$ env | sort", "env-dump"], [pw, "printenv APP_SEED", "env-dump"], [`a\nb\n${pw}`, "less ~/.ssh/id_ed25519", "ssh-file"]]) {
+    const out = await gone(text, [pw], { command });
+    assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [[rule, "dump", false]], `${command}: ${JSON.stringify(out.cuts)}`);
+  }
+  // No context, an unrelated read, or a command that is no read or dump: the output alone is no dump (no unanchored
+  // pgpass or env shape).
+  for (const [text, command] of [[pgpass, undefined], [pgpass, "cat notes.txt"], [pgpass, "echo ok"], [env, "echo ok"], [env, undefined], [pgpass, "cat ~/.pgpass | wc -l\nls"], [`no names here, just ${pw}`, "env"]]) {
+    const out = await scrub(text, { mode: "count", ...(command !== undefined ? { command } : {}) });
+    assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
+  }
+});
+
+test("LIX: a dotted name is no code evidence alone; a self./this./cls. root, a trailing `;` or an environment root is", async () => {
+  const wrappers = [
+    (s) => s,
+    (s) => JSON.stringify({ type: "text", text: s }),
+    (s) => JSON.stringify({ type: "progress", data: JSON.stringify({ type: "text", text: s }) }),
+    (s) => JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_01", content: s }] } }),
+  ];
+  // .properties, .ini and spring-style dotted keys: undecidable, so cut (restorable).
+  for (const text of ["service.DB_PASSWORD=sunshine", "spring.datasource.password=sunshine", "app.db.PASSWORD = sunshine", "x = 1; service.DB_PASSWORD=sunshine"]) {
+    for (const wrap of wrappers) {
+      const wrapped = wrap(text);
+      const out = await gone(wrapped, ["sunshine"]);
+      assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["secret-assign", "label", true]], wrapped);
+    }
+  }
+  // A language root, a statement's `;` or the environment's root: a variable, kept.
+  for (const text of ["self.DB_PASSWORD = password", "this.DB_PASSWORD = password;", "cls.DB_PASSWORD = password", "process.env.DB_PASSWORD = password;", "app.db.PASSWORD = password;", "service.DB_PASSWORD=db_password;"]) {
+    for (const wrap of wrappers) await kept(wrap(text));
+  }
+});
+
+test("LX: on a certain-code left side an identifier followed by `[`, `(` or `.` starts a reference; a literal is still cut", async () => {
+  const wrappers = [
+    (s) => s,
+    (s) => JSON.stringify({ type: "text", text: s }),
+    (s) => JSON.stringify({ type: "progress", data: JSON.stringify({ type: "text", text: s }) }),
+    (s) => JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_01", content: s }] } }),
+  ];
+  for (const text of [`os.environ["DB_PASSWORD"] = config["password"]`, `os.environ["DB_PASSWORD"] = get_secret("db")`, `os.environ["DB_PASSWORD"] = settings.db.password`, `process.env.DB_PASSWORD = cfg["pw"];`, `ENV["API_TOKEN"] = vault.read("api")`, `os.environ["DB_PASSWORD"] = keys[0]`, `self.DB_PASSWORD = get_secret("db")`, `this.apiToken = cfg["token"];`]) {
+    for (const wrap of wrappers) await kept(wrap(text));
+  }
+  for (const [text, secret] of [[`os.environ["DB_PASSWORD"] = "sunshine1"`, "sunshine1"], [`os.environ["DB_PASSWORD"] = sunshine1`, "sunshine1"], [`process.env.API_TOKEN = "Zq8RtYw2Lp4";`, "Zq8RtYw2Lp4"]]) {
+    for (const wrap of wrappers) {
+      const wrapped = wrap(text);
+      const out = await gone(wrapped, [secret]);
+      assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind]), [["secret-assign", "label"]], wrapped);
+    }
+  }
 });
