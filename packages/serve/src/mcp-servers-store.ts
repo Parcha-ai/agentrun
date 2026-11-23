@@ -15,7 +15,7 @@ import {
 import { listMcpServers, openMcpRow, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn, type RemovedMcpServer } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
-import { credentialMark } from "./mcp-secret-writes.js";
+import { credentialMark, ownersAuthConfig } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
@@ -808,6 +808,15 @@ export class McpServersOverStore {
    *  tokens, else its record, else url with none. */
   async sourceOf(row: RecordedRow & { name: string }): Promise<SourceRecord> {
     return sourceOf(row, await this.store.settings.get(mcpSourceKey(row.name)));
+  }
+
+  /** The API token's Composio save stands on no auth config a server the owner saved stands on (ownersAuthConfig,
+   *  mcp-secret-writes.ts): one the save named is the gate's refusal already (composioSaveDropsSecret); one Composio
+   *  answered as the toolkit's own is refused here, before anything is made at Composio (composio-preset.ts composioSave
+   *  `standsOn`): 403, naming the owner's server, nothing saved. */
+  async tokenStandsOn(authConfig: string): Promise<void> {
+    const owners = await ownersAuthConfig(this.store, authConfig);
+    if (owners) throw new ApiError("forbidden", `The Composio auth config ${authConfig} is the one the owner's MCP server ${owners} stands on: an API token's server never uses it, so it never acts as the owner's connected account or removes what the owner's server made. Name an auth config of the token's own (auth_config_id). Nothing was saved.`);
   }
 
   /** A server an API-only server's token saved at a listed origin (savedAtListedOrigin) is reached again only while its

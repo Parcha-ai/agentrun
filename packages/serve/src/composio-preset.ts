@@ -210,8 +210,10 @@ export const composioRunQuery = (binding: { readonly user_id: string; readonly c
  *  toolkit's Composio-managed one, found or made. `save` gets what the server stands on there too (`stands`,
  *  composio-made.ts): the auth config found or made and the account found or started, each marked whether this save made
  *  it, for its delete to remove what was made. The key is the body's `api_key`, or COMPOSIO_API_KEY's value when the body
- *  sends `api_key_env` (head): then `stands.key_env` names it, and the store seals no credential. */
-export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> }; prices?: Record<string, number> }, made: { source: "composio"; toolkit: string | null }, stands: ComposioMade) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
+ *  sends `api_key_env` (head): then `stands.key_env` names it, and the store seals no credential. `standsOn`: the caller's
+ *  check of the auth config named or found, before anything is made against it (an API token's save: never one a server
+ *  the owner saved stands on); it refuses by throwing, and the save makes nothing. */
+export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> }; prices?: Record<string, number> }, made: { source: "composio"; toolkit: string | null }, stands: ComposioMade) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>, standsOn?: (authConfig: string) => Promise<void>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
   // No address and no headers of the caller's own: Composio makes the server and answers its address, and the key is the
   // one header sent. Any field the save does not take is refused before anything is sent, never ignored.
   if (isObject(body)) {
@@ -280,6 +282,9 @@ export async function composioSave<T extends { tools?: readonly { name: string }
         madeHere.push({ kind: "auth_config", id: authConfig });
       }
     }
+    // The auth config found, or named, checked by the caller before anything is made against it (an API token's save:
+    // never one a server the owner saved stands on, McpServersOverStore.tokenStandsOn). One made just now is no other's.
+    if (authConfig && !madeConfig && standsOn) await standsOn(authConfig);
     const made = await ask("making the MCP server", "POST", "/api/v3.1/mcp/servers/custom", {
       name: `ar-${name.slice(0, 18)}-${randomBytes(3).toString("hex")}`, toolkits: [toolkit], ...(authConfig ? { auth_config_ids: [authConfig] } : {}), allowed_tools: tools, managed_auth_via_composio: true,
     });

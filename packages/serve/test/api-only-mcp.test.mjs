@@ -326,33 +326,41 @@ test("API-only: the token's Composio save over a Composio server it did not save
   assert.equal(own.status, 200, JSON.stringify(own.body));
 });
 
-test("API-only: the token's Composio save naming an auth config another saved server made uses it and takes nothing from that server's record: the owner's server still made it, the token's delete of its own removes it nowhere, and the owner's delete of theirs removes it at Composio", async (t) => {
+test("API-only: the token's Composio save over an auth config a server the owner saved stands on is 403, named or found: the owner's record is unchanged and nothing of it is removed at Composio; one a server the token saved made is used, and stays that server's", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const s = await setup(t);
   const store = s.server.store;
   assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
   // The owner's: its record without the token's mark (a server saved before this server was API-only, say).
-  await store.settings.put(mcpSourceKey("mail"), ownersRecord(await store.settings.get(mcpSourceKey("mail"))));
+  const tokens = await store.settings.get(mcpSourceKey("mail"));
+  await store.settings.put(mcpSourceKey("mail"), ownersRecord(tokens));
   const owners = await store.settings.get(composioMadeKey("mail"));
   const config = owners.auth_config;
   assert.equal(config?.made, true, "the owner's server made its auth config here");
-  const named = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, auth_config_id: config.id });
-  assert.equal(named.status, 200, JSON.stringify(named.body));
-  assert.deepEqual(await store.settings.get(composioMadeKey("mail")), owners, "the owner's record is unchanged: its delete still removes the auth config it made");
-  assert.deepEqual((await store.settings.get(composioMadeKey("notes"))).auth_config, { id: config.id, made: false }, "the token's server uses it, and made none");
-  const from = s.composio.calls.length;
-  const deleted = await s.token("DELETE", "/settings/mcp-servers/notes");
-  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
-  assert.deepEqual(s.composio.calls.slice(from).filter((call) => call.method === "DELETE" && call.path.includes(config.id)), [], "the auth config the owner's server stands on is not removed");
-  assert.deepEqual(await store.settings.get(composioMadeKey("mail")), owners, "and the owner's record still says its server made it");
-  // The same data served whole, where the owner has a session: the owner's delete of its server removes the auth config
-  // it made at Composio.
-  await s.server.stop();
-  const whole = await serve(t, { faux: FAUX_MCP, composioControl: { baseUrl: s.composio.baseUrl }, composioMcpOrigin: s.composio.mcpOrigin, data: s.server.data });
-  const before = s.composio.calls.length;
-  const gone = await asOwner(whole)("DELETE", "/settings/mcp-servers/mail");
-  assert.equal(gone.status, 200, JSON.stringify(gone.body));
-  assert.equal(s.composio.calls.slice(before).filter((call) => call.method === "DELETE" && call.path.includes(config.id)).length, 1, "the auth config the owner's server made is removed at Composio");
+  // Named: refused at the gate, before anything is sent.
+  let from = s.composio.calls.length;
+  const named = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun", auth_config_id: config.id });
+  assert.equal(named.status, 403, JSON.stringify(named.body));
+  assert.ok(String(named.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), named.body.error?.message);
+  assert.deepEqual(s.composio.calls.slice(from), [], "nothing reached Composio");
+  // Found: the toolkit's managed auth config Composio answers is the one the owner's server stands on, so the save is
+  // refused once that is known, and what it made at Composio is removed again; nothing of the owner's is.
+  from = s.composio.calls.length;
+  const found = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
+  assert.equal(found.status, 403, JSON.stringify(found.body));
+  assert.match(found.body.error?.message, new RegExp(`auth config ${config.id}.*owner`), found.body.error?.message);
+  const sent = s.composio.calls.slice(from);
+  assert.deepEqual(sent.filter((call) => call.method === "DELETE" && call.path.includes(config.id)), [], "the owner's auth config is not removed");
+  assert.equal(sent.filter((call) => call.method === "POST" && call.path.endsWith("/connected_accounts/link")).length, 0, "no account is connected for it");
+  for (const refused of [named, found]) assert.equal(JSON.stringify(refused.body).includes(KEY), false, "the key is not echoed");
+  assert.equal(await store.mcp.server("notes"), undefined, "no server saved");
+  assert.deepEqual([await store.settings.get(composioMadeKey("mail")), await store.settings.get(mcpSourceKey("mail"))], [owners, ownersRecord(tokens)], "the owner's records are unchanged");
+  // The token's own: an auth config a server the token saved made is the token's to use, and stays that server's.
+  await store.settings.put(mcpSourceKey("mail"), tokens);
+  const own = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, auth_config_id: config.id });
+  assert.equal(own.status, 200, JSON.stringify(own.body));
+  assert.deepEqual(await store.settings.get(composioMadeKey("mail")), owners, "the other server's record is unchanged: it still made the auth config");
+  assert.deepEqual((await store.settings.get(composioMadeKey("notes"))).auth_config, { id: config.id, made: false }, "the token's second server uses it, and made none");
 });
 
 test("API-only, AGENTRUN_MCP_TOKEN_ORIGINS unset: the token's per_run save is 422 url not_an_option naming the variable, any other auth the secret-write refusal (403); no list or read (404); the address gets nothing", async (t) => {
