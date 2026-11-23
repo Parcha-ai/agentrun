@@ -3284,8 +3284,9 @@ serves these routes alone:
   - a save over a saved name and a delete (`DELETE /settings/mcp-servers/{name}`) take only a server the token saved.
     One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
     nothing is sent to Composio. An owner's save over a server the token saved makes it the owner's once it lands (one
-    refused with `412` leaves it the token's), and one that lands while the token's is under way wins: the token's is
-    `412`.
+    refused with `412` leaves it the token's), as does the owner's sign-in on it, and one that lands while the token's
+    is under way wins: the token's is `412`. An `auth_config_id` the token names that another saved server made stays
+    that server's: its delete still removes it at Composio, or leaves it to a server that still uses it.
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
