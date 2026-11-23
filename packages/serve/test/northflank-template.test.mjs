@@ -1,16 +1,16 @@
 // The Northflank template (deploy/northflank/template.json), with no Northflank account: it runs the image the release
 // pins, the way the image runs itself, as one instance on a volume at /data; and Northflank's randomSecret, written here
-// from its documentation, makes a token and a seal key this server takes. Read from Northflank's public docs:
-// https://northflank.com/docs/v1/application/infrastructure-as-code/write-a-template (apiVersion v1.2),
-// https://northflank.com/docs/v1/application/infrastructure-as-code/template-nodes (node kinds, update modes),
-// https://northflank.com/docs/v1/application/infrastructure-as-code/make-a-template-dynamic (refs, ports.N.dns, fn.*),
-// https://northflank.com/docs/v1/application/databases-and-persistence/add-a-volume (one instance, old container first).
+// from its documentation, makes a token and a seal key this server takes. Read from Northflank's public docs pages
+// "Write a template" (apiVersion v1.2), "Template nodes" (node kinds, update modes), "Make a template dynamic" (refs,
+// ports.N.dns, fn.*) and "Add a volume" (one instance, old container first); the PR that added this file links them.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { tokenProblem } from "../dist/api-token.js";
 import { sealKeyOf } from "../dist/tool-keys.js";
+import { RUNNER_DRAIN_TIMEOUT } from "../dist/runner/main.js";
+import { runnerCloseBoundMs } from "../dist/runner/runner.js";
 
 const ROOT = new URL("../../../", import.meta.url);
 const read = (path) => readFile(new URL(path, ROOT), "utf8");
@@ -88,7 +88,11 @@ test("one instance, never scaled, on a single read/write volume at /data, so the
   // "will always be terminated before the new one starts". So no rollout strategy here, which could only surge.
   assert.equal(volume.spec.spec.accessMode, "ReadWriteOnce");
   assert.equal(service.spec.deployment.strategy, undefined);
-  assert.ok(service.spec.deployment.gracePeriodSeconds >= 30, "30 s after SIGTERM, above the runner's 6 s drain");
+  // The stop grace covers the runner's whole close (its drain, then the stop of a stuck run), so a restart never cuts a
+  // run's end and the release of its claim short: 35 s, as deploy/README.md asks of every host.
+  assert.equal(RUNNER_DRAIN_TIMEOUT, "6s");
+  assert.ok(service.spec.deployment.gracePeriodSeconds * 1000 > runnerCloseBoundMs(6_000), "the grace outlasts the runner's close");
+  assert.equal(service.spec.deployment.gracePeriodSeconds, 35);
   // 10 GB, as render.yaml's disk: Claude Code and Codex install themselves onto it on first use.
   assert.equal(volume.spec.spec.storageSize, 10240);
   // A run of the template again never replaces the data's volume.
@@ -113,7 +117,7 @@ test("one public HTTP port, the image's, which the health check reaches at rende
 });
 
 test("2 GB of memory, as render.yaml's plan, which the runner budgets runs by", () => {
-  // Northflank's compute plans (https://northflank.com/pricing): nf-compute-100-2 is 1 vCPU and 2 GB.
+  // Northflank's compute plans (its pricing page): nf-compute-100-2 is 1 vCPU and 2 GB.
   assert.equal(service.spec.billing.deploymentPlan, "nf-compute-100-2");
 });
 
@@ -151,7 +155,7 @@ test("AGENTRUN_PUBLIC_URL is the service's own Northflank domain, set once it ha
   const address = groupOf("AGENTRUN_PUBLIC_URL");
   const port = service.spec.ports.findIndex((p) => p.public && p.internalPort === 7340);
   assert.equal(variables.AGENTRUN_PUBLIC_URL, `https://${serviceRef(`ports.${port}.dns`)}`);
-  const domain = "http--agentrun--abcd1234.code.run";
+  const domain = "http--agentrun--abcd1234.example";
   assert.equal(render(variables.AGENTRUN_PUBLIC_URL, { [`refs.${service.ref}.ports.${port}.dns`]: domain }), `https://${domain}`);
   // The domain exists once the service does: the group comes after it, then a wait until it runs, then a restart that
   // starts it with the address (Northflank's own Payload template does the same).

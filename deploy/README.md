@@ -208,11 +208,11 @@ code at the first visit. Dokploy's generated domain is http. If you give the ser
 One deployment service in a project of its own, from [`northflank/template.json`](northflank/template.json), a
 Northflank template (spec v1.2). It runs the release's image as one instance, the server with its runner beside it, on
 the 1 vCPU / 2 GB plan (`nf-compute-100-2`) with a 10 GB volume at `/data`. Its health check is `GET /v2/health` on
-port 7340, which Northflank serves at the service's own `code.run` domain over HTTPS. Northflank gives the service no
+port 7340, which Northflank serves at the service's own Northflank domain over HTTPS. Northflank gives the service no
 Docker, so its agents get file tools and `web_fetch` but no shell, as on Render. No model key is needed.
 
 It costs about $25.17 a month: $24.00 for the plan and $1.17 for the volume ($0.11657 per GiB-month), at Northflank's
-prices on 2026-11-23 ([pricing](https://northflank.com/pricing)). That is more than the $20 a month of resources the
+prices on 2026-11-23 (its pricing page). That is more than the $20 a month of resources the
 free Sandbox tier covers, so the team needs Pay as you go, with a card.
 
 1. In your team's dashboard, open **Templates** and create a new template.
