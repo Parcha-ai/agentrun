@@ -155,24 +155,43 @@ function settingOf(input: Record<string, unknown>, field: string, named: readonl
   return { value, words: `${field} ${JSON.stringify(value)}${given === undefined ? ", its default" : ""}` };
 }
 type Tier = { rate: number; words: string } | { why: string };
-/** The endpoints fal bills at a rate a setting sets, while get_pricing states one rate. Each has `base`, the rate fal's
- *  model page gives for the setting get_pricing's rate is for, and `rate`, the page's rate for the job's settings: a job
- *  is priced at get_pricing's live rate times rate / base, so a price change at fal moves every tier. A setting the
- *  job leaves out is priced at its default; a value the page names no rate for is unpriceable. `extraUsd` is a flat
- *  charge the page adds. The rates are fal's model pages, read 2026-11-23:
- *  - Ideogram v3 (and its edit, remix, reframe and replace-background): $0.03 an image at TURBO (get_pricing's rate),
- *    $0.06 at BALANCED (the default), $0.09 at QUALITY: ratios 1, 2 and 3.
- *  - Veo 3.1 and its image-to-video: $0.20 a second without audio and $0.40 with (get_pricing's), at 720p (the
- *    default) or 1080p; at 4k $0.40 without and $0.60 with. Audio is on by default.
- *  - Veo 3.1 fast: $0.10 without audio and $0.15 with (get_pricing's) at 720p or 1080p; at 4k $0.30 and $0.35.
- *  - Veo 3 fast: $0.10 without audio and $0.15 with (get_pricing's), at either of its resolutions.
- *  - Kling v3 pro image-to-video: $0.112 a second with audio off, $0.168 with audio on (the default), $0.196 with voice
- *    control (an element with a voice_id, its OpenAPI); get_pricing states $0.14: ratios 0.8, 1.2 and 1.4.
+/** The endpoints fal bills at a rate a setting sets, while get_pricing states one rate. Each has `base`, the rate
+ *  get_pricing stated when its page was read, and `rate`, the page's rate for the job's settings: a job is priced at
+ *  get_pricing's live rate times rate / base, so a price change at fal moves every tier. A setting the job leaves out is
+ *  priced at its default; a value the page names no rate for is unpriceable. `perUnitUsd` is a charge the page adds,
+ *  held and booked per unit: one the page doesn't say is per unit or per request is held per unit, the higher of the
+ *  two, so an over-hold refuses and an under-hold can't spend past the cap. Where the page and get_pricing disagree, or
+ *  the page names no rate for a value the endpoint allows, the higher rate read is held. The rates are fal's model pages
+ *  and get_pricing, read 2026-11-23 between 12:23Z and 12:35Z:
+ *  - Ideogram v3 (and its edit, remix, reframe, replace-background and generate-transparent): $0.03 an image at TURBO
+ *    (get_pricing's rate), $0.06 at BALANCED (the default), $0.09 at QUALITY: ratios 1, 2 and 3.
+ *  - Ideogram character (and its edit and remix): the page states $0.10 an image at TURBO, $0.15 at BALANCED (the
+ *    default) and $0.20 at QUALITY (read 12:25:44Z), while get_pricing states $0.05 (read 12:23:57Z), a rate the page
+ *    names for no setting. Each is held at the page's rate, never scaled down from $0.05: ratios 2, 3 and 4.
+ *  - Veo 3.1 (and its image-to-video, first-last-frame-to-video and reference-to-video): $0.20 a second without audio
+ *    and $0.40 with (get_pricing's), at 720p (the default) or 1080p; at 4k $0.40 without and $0.60 with. Its
+ *    extend-video takes 720p only, at $0.20 and $0.40. Audio is on by default on every Veo endpoint.
+ *  - Veo 3.1 fast (and its image-to-video and first-last-frame-to-video): $0.10 without audio and $0.15 with
+ *    (get_pricing's) at 720p or 1080p; at 4k $0.30 and $0.35. Its reference-to-video page names no 4k rate though it
+ *    takes 4k, so 4k is held at the fast tier's $0.30 and $0.35. Its extend-video takes 720p only, at $0.10 and $0.15.
+ *  - Veo 3.1 lite (and its image-to-video and first-last-frame-to-video): at 720p (the default) $0.03 without audio and
+ *    $0.05 with (get_pricing's); at 1080p $0.05 and $0.08.
+ *  - Veo 3 (and its image-to-video): $0.20 without audio and $0.40 with (get_pricing's); Veo 3 fast (and its
+ *    image-to-video) $0.10 and $0.15 (get_pricing's). Both at 720p or 1080p. Their readmes state older, higher rates
+ *    ($0.50 and $0.75; $0.25 and $0.40) that both the price block and get_pricing contradict.
+ *  - Kling v3 pro (image-to-video and text-to-video): $0.112 a second with audio off, $0.168 with audio on (the
+ *    default), $0.196 with voice control (an element with a voice_id, its OpenAPI). Kling v3 standard: $0.084, $0.126
+ *    and $0.154. get_pricing states $0.14 for all four, a rate the page names for none of them, so each is held at the
+ *    higher of the page's rate and $0.14. Kling v3 4k image-to-video: $0.42 with audio on or off; the page names no rate
+ *    for voice control, which it takes.
  *  - sync-lipsync v2: $3 a minute for lipsync-2 (the default, get_pricing's), $5 for lipsync-2-pro: ratio 5/3.
- *  - Nano Banana Pro: $0.15 an image at 1K (the default) or 2K (get_pricing's), double at 4K; a web search adds $0.015.
- *  - Fabric: $0.08 a second at 480p (get_pricing's), $0.15 at 720p. Its resolution has no default (its OpenAPI).
- *  An endpoint not listed here is priced at get_pricing's one rate, whatever its settings. */
-type Tiers = { base: number; rate: (input: Record<string, unknown>) => Tier; extraUsd?: (input: Record<string, unknown>) => { usd: number; words: string } | { why: string } | undefined };
+ *  - Nano Banana Pro (and its edit): $0.15 an image at 1K (the default) or 2K (get_pricing's), double at 4K; a web
+ *    search adds $0.015 (per unit, as above).
+ *  - Fabric (and its text): $0.08 a second at 480p (get_pricing's), $0.15 at 720p; Fabric fast $0.10 at 480p
+ *    (get_pricing's) and $0.20 at 720p. Their resolution has no default (their OpenAPI).
+ *  An endpoint not listed here is priced at get_pricing's one rate, whatever its settings, unless it falls in a family
+ *  fal bills by its settings (TIERED_FAMILIES): there only ONE_RATE's endpoints are, and any other is unpriceable. */
+type Tiers = { base: number; rate: (input: Record<string, unknown>) => Tier; perUnitUsd?: (input: Record<string, unknown>) => { usd: number; words: string } | { why: string } | undefined };
 /** A rate set by one setting: `rates` by value. */
 const byOne = (field: string, base: number, rates: ReadonlyMap<unknown, number>, fallback?: unknown): Tiers => ({
   base,
@@ -181,63 +200,118 @@ const byOne = (field: string, base: number, rates: ReadonlyMap<unknown, number>,
     return "why" in setting ? setting : { rate: rates.get(setting.value)!, words: setting.words };
   },
 });
-/** Veo's rate: by resolution (`at4k`, the 4k rates, when it has one) and whether it makes audio. */
-const veo = (base: number, off: number, on: number, at4k?: { off: number; on: number }): Tiers => ({
+/** A rate without and with audio. */
+const audio = (off: number, on: number) => ({ off, on });
+/** Veo's rate: by its resolution (`rates`, one for each resolution it takes; 720p is the default) and whether it makes
+ *  audio (on by default). */
+const veo = (base: number, rates: Readonly<Record<string, { off: number; on: number }>>): Tiers => ({
   base,
   rate: (input) => {
-    const audio = settingOf(input, "generate_audio", [true, false], true);
-    if ("why" in audio) return audio;
-    if (!at4k) return { rate: audio.value ? on : off, words: audio.words };
-    const resolution = settingOf(input, "resolution", ["720p", "1080p", "4k"], "720p");
+    const sound = settingOf(input, "generate_audio", [true, false], true);
+    if ("why" in sound) return sound;
+    const resolution = settingOf(input, "resolution", Object.keys(rates), "720p");
     if ("why" in resolution) return resolution;
-    const rates = resolution.value === "4k" ? at4k : { off, on };
-    return { rate: audio.value ? rates.on : rates.off, words: `${resolution.words}, ${audio.words}` };
+    const at = rates[resolution.value as string]!;
+    return { rate: sound.value ? at.on : at.off, words: `${resolution.words}, ${sound.words}` };
   },
 });
+const VEO31 = veo(0.4, { "720p": audio(0.2, 0.4), "1080p": audio(0.2, 0.4), "4k": audio(0.4, 0.6) });
+const VEO31_FAST = veo(0.15, { "720p": audio(0.1, 0.15), "1080p": audio(0.1, 0.15), "4k": audio(0.3, 0.35) });
+const VEO31_LITE = veo(0.05, { "720p": audio(0.03, 0.05), "1080p": audio(0.05, 0.08) });
+/** Kling v3's rate: audio off, on (the default) or with voice control (any element naming a voice_id), each held at no
+ *  less than `floor` (get_pricing's rate where the page disagrees with it). `voice` is undefined where the page names
+ *  no rate for voice control. */
+const kling = (base: number, page: { off: number; on: number; voice?: number }, floor = 0): Tiers => ({
+  base,
+  rate: (input) => {
+    const sound = settingOf(input, "generate_audio", [true, false], true);
+    if ("why" in sound) return sound;
+    const elements = input.elements;
+    if (elements !== undefined && elements !== null && !Array.isArray(elements)) return { why: "voice control sets (an element's voice_id), and this job's elements are not a list" };
+    // Any element naming a voice_id, whatever its value: the page names no rate for one that turns out not to be a voice.
+    const voiced = Array.isArray(elements) && elements.some((element) => isObject(element) && element.voice_id !== undefined && element.voice_id !== null);
+    const held = (rate: number) => Math.max(rate, floor);
+    if (voiced && page.voice === undefined) return { why: "voice control sets (an element's voice_id), and fal's model page names no rate for voice control" };
+    if (voiced && !sound.value) return { why: "its generate_audio and voice control set, and fal's model page names no rate for voice control with generate_audio false" };
+    if (voiced) return { rate: held(page.voice!), words: `${sound.words}, with voice control (an element's voice_id)` };
+    return { rate: held(sound.value ? page.on : page.off), words: sound.words };
+  },
+});
+const IDEOGRAM_V3 = byOne("rendering_speed", 0.03, new Map([["TURBO", 0.03], ["BALANCED", 0.06], ["QUALITY", 0.09]]), "BALANCED");
+const NANO_BANANA_PRO: Tiers = {
+  ...byOne("resolution", 0.15, new Map([["1K", 0.15], ["2K", 0.15], ["4K", 0.3]]), "1K"),
+  perUnitUsd: (input) => {
+    const search = settingOf(input, "enable_web_search", [true, false], false);
+    return "why" in search ? search : search.value ? { usd: 0.015, words: "a web search" } : undefined;
+  },
+};
+const KLING_PRO = kling(0.14, { off: 0.112, on: 0.168, voice: 0.196 }, 0.14);
+const KLING_STANDARD = kling(0.14, { off: 0.084, on: 0.126, voice: 0.154 }, 0.14);
+const FABRIC = byOne("resolution", 0.08, new Map([["480p", 0.08], ["720p", 0.15]]));
 const RATE_TIERS: ReadonlyMap<string, Tiers> = new Map<string, Tiers>([
-  ...["fal-ai/ideogram/v3", "fal-ai/ideogram/v3/edit", "fal-ai/ideogram/v3/remix", "fal-ai/ideogram/v3/reframe", "fal-ai/ideogram/v3/replace-background"].map((endpoint) => [endpoint, byOne("rendering_speed", 0.03, new Map([["TURBO", 0.03], ["BALANCED", 0.06], ["QUALITY", 0.09]]), "BALANCED")] as const),
-  ["fal-ai/veo3.1", veo(0.4, 0.2, 0.4, { off: 0.4, on: 0.6 })],
-  ["fal-ai/veo3.1/image-to-video", veo(0.4, 0.2, 0.4, { off: 0.4, on: 0.6 })],
-  ["fal-ai/veo3.1/fast", veo(0.15, 0.1, 0.15, { off: 0.3, on: 0.35 })],
-  ["fal-ai/veo3/fast", veo(0.15, 0.1, 0.15)],
-  ["fal-ai/kling-video/v3/pro/image-to-video", {
-    base: 0.14,
-    rate: (input) => {
-      const audio = settingOf(input, "generate_audio", [true, false], true);
-      if ("why" in audio) return audio;
-      const elements = input.elements;
-      if (elements !== undefined && elements !== null && !Array.isArray(elements)) return { why: "voice control sets (an element's voice_id), and this job's elements are not a list" };
-      // Any element naming a voice_id, whatever its value: the page names no rate for one that turns out not to be a voice.
-      const voiced = Array.isArray(elements) && elements.some((element) => isObject(element) && element.voice_id !== undefined && element.voice_id !== null);
-      if (voiced && !audio.value) return { why: "its generate_audio and voice control set, and fal's model page names no rate for voice control with generate_audio false" };
-      if (voiced) return { rate: 0.196, words: `${audio.words}, with voice control (an element's voice_id)` };
-      return audio.value ? { rate: 0.168, words: audio.words } : { rate: 0.112, words: audio.words };
-    },
-  }],
+  ...["", "/edit", "/remix", "/reframe", "/replace-background", "/generate-transparent"].map((variant) => [`fal-ai/ideogram/v3${variant}`, IDEOGRAM_V3] as const),
+  ...["", "/edit", "/remix"].map((variant) => [`fal-ai/ideogram/character${variant}`, byOne("rendering_speed", 0.05, new Map([["TURBO", 0.1], ["BALANCED", 0.15], ["QUALITY", 0.2]]), "BALANCED")] as const),
+  ...["", "/image-to-video", "/first-last-frame-to-video", "/reference-to-video"].map((variant) => [`fal-ai/veo3.1${variant}`, VEO31] as const),
+  ["fal-ai/veo3.1/extend-video", veo(0.4, { "720p": audio(0.2, 0.4) })],
+  ...["/fast", "/fast/image-to-video", "/fast/first-last-frame-to-video", "/fast/reference-to-video"].map((variant) => [`fal-ai/veo3.1${variant}`, VEO31_FAST] as const),
+  ["fal-ai/veo3.1/fast/extend-video", veo(0.15, { "720p": audio(0.1, 0.15) })],
+  ...["/lite", "/lite/image-to-video", "/lite/first-last-frame-to-video"].map((variant) => [`fal-ai/veo3.1${variant}`, VEO31_LITE] as const),
+  ...["", "/image-to-video"].map((variant) => [`fal-ai/veo3${variant}`, veo(0.4, { "720p": audio(0.2, 0.4), "1080p": audio(0.2, 0.4) })] as const),
+  ...["/fast", "/fast/image-to-video"].map((variant) => [`fal-ai/veo3${variant}`, veo(0.15, { "720p": audio(0.1, 0.15), "1080p": audio(0.1, 0.15) })] as const),
+  ["fal-ai/kling-video/v3/pro/image-to-video", KLING_PRO],
+  ["fal-ai/kling-video/v3/pro/text-to-video", KLING_PRO],
+  ["fal-ai/kling-video/v3/standard/image-to-video", KLING_STANDARD],
+  ["fal-ai/kling-video/v3/standard/text-to-video", KLING_STANDARD],
+  ["fal-ai/kling-video/v3/4k/image-to-video", kling(0.42, { off: 0.42, on: 0.42 })],
   ["fal-ai/sync-lipsync/v2", byOne("model", 3, new Map([["lipsync-2", 3], ["lipsync-2-pro", 5]]), "lipsync-2")],
-  ["fal-ai/nano-banana-pro", {
-    ...byOne("resolution", 0.15, new Map([["1K", 0.15], ["2K", 0.15], ["4K", 0.3]]), "1K"),
-    extraUsd: (input) => {
-      const search = settingOf(input, "enable_web_search", [true, false], false);
-      return "why" in search ? search : search.value ? { usd: 0.015, words: "a web search" } : undefined;
-    },
-  }],
-  ["veed/fabric-1.0", byOne("resolution", 0.08, new Map([["480p", 0.08], ["720p", 0.15]]))],
+  ["fal-ai/nano-banana-pro", NANO_BANANA_PRO],
+  ["fal-ai/nano-banana-pro/edit", NANO_BANANA_PRO],
+  ["veed/fabric-1.0", FABRIC],
+  ["veed/fabric-1.0/text", FABRIC],
+  ["veed/fabric-1.0/fast", byOne("resolution", 0.1, new Map([["480p", 0.1], ["720p", 0.2]]))],
 ]);
+/** The families fal bills by their settings: an endpoint is in one when it is the family's id or under it. */
+const TIERED_FAMILIES: readonly string[] = ["fal-ai/ideogram/v3", "fal-ai/ideogram/character", "fal-ai/nano-banana-pro", "fal-ai/veo3", "fal-ai/veo3.1", "fal-ai/kling-video/v3", "fal-ai/sync-lipsync/v2", "veed/fabric-1.0"];
+/** The endpoints in those families with one rate, whatever their settings (their model pages, read 2026-11-23): Kling v3
+ *  4k text-to-video ($0.42 with audio on or off), turbo pro ($0.14) and turbo standard ($0.112), motion-control pro
+ *  ($0.168) and standard ($0.126); Ideogram v3 layerize-text ($0.09 an image); sync-lipsync v2 pro ($5 a minute). */
+const ONE_RATE: ReadonlySet<string> = new Set([
+  "fal-ai/kling-video/v3/4k/text-to-video",
+  "fal-ai/kling-video/v3/turbo/pro/image-to-video",
+  "fal-ai/kling-video/v3/turbo/pro/text-to-video",
+  "fal-ai/kling-video/v3/turbo/standard/image-to-video",
+  "fal-ai/kling-video/v3/turbo/standard/text-to-video",
+  "fal-ai/kling-video/v3/pro/motion-control",
+  "fal-ai/kling-video/v3/standard/motion-control",
+  "fal-ai/ideogram/v3/layerize-text",
+  "fal-ai/sync-lipsync/v2/pro",
+]);
+/** What is decided here, for the test that pins it against fal's catalog: the families billed by their settings, the
+ *  endpoints priced by their settings (RATE_TIERS), and those with one rate (ONE_RATE). */
+export function decidedRates(): { families: string[]; tiered: string[]; oneRate: string[] } {
+  return { families: [...TIERED_FAMILIES], tiered: [...RATE_TIERS.keys()], oneRate: [...ONE_RATE] };
+}
 
 /** The rate a job of `endpoint` is billed at, against get_pricing's (in `unit`): `ratio`, its tier's rate over the rate
- *  get_pricing states (RATE_TIERS), `extraUsd` a flat charge, and `words` the settings they came from (none at
- *  get_pricing's own rate); or `unknown`, why it can't be known. 1 and nothing for an endpoint with one rate. */
-export function rateOf(endpoint: string, unit: string, input: unknown): { ratio: number; extraUsd: number; words: string[] } | { unknown: string } {
+ *  get_pricing states (RATE_TIERS), `perUnitUsd` a charge added to each unit's price, and `words` the settings they came from (none at
+ *  get_pricing's own rate); or `unknown`, why it can't be known. 1 and nothing for an endpoint with one rate; unknown for
+ *  an endpoint in a family fal bills by its settings whose rate is not decided here (TIERED_FAMILIES). */
+export function rateOf(endpoint: string, unit: string, input: unknown): { ratio: number; perUnitUsd: number; words: string[] } | { unknown: string } {
   const tiers = RATE_TIERS.get(endpoint);
-  if (!tiers || !isObject(input)) return { ratio: 1, extraUsd: 0, words: [] };
+  if (!tiers) {
+    const family = TIERED_FAMILIES.find((id) => endpoint === id || endpoint.startsWith(`${id}/`));
+    // A variant fal adds to a family is refused until its rate is decided here, never held at get_pricing's one rate.
+    if (family && !ONE_RATE.has(endpoint)) return { unknown: `fal bills ${family} by its settings and ${endpoint} has no rate decided here` };
+    return { ratio: 1, perUnitUsd: 0, words: [] };
+  }
+  if (!isObject(input)) return { ratio: 1, perUnitUsd: 0, words: [] };
   const bills = `fal bills ${endpoint} per ${oneOf(unit)} at a rate`;
   const tier = tiers.rate(input);
   if ("why" in tier) return { unknown: `${bills} ${tier.why}` };
-  const extra = tiers.extraUsd?.(input);
+  const extra = tiers.perUnitUsd?.(input);
   if (extra && "why" in extra) return { unknown: `${bills} plus a charge ${extra.why}` };
   const ratio = tier.rate / tiers.base;
-  return { ratio, extraUsd: extra?.usd ?? 0, words: [...(ratio === 1 ? [] : [`× ${shown(ratio)} for ${tier.words} (fal's model page: $${tier.rate} against $${tiers.base})`]), ...(extra ? [`plus $${extra.usd} for ${extra.words}`] : [])] };
+  return { ratio, perUnitUsd: extra?.usd ?? 0, words: [...(ratio === 1 ? [] : [`× ${shown(ratio)} for ${tier.words} (fal's model page: $${tier.rate} against $${tiers.base})`]), ...(extra ? [`plus $${extra.usd} per ${oneOf(unit)} for ${extra.words}`] : [])] };
 }
 
 /** A talking head's voice: its input's audio_url when that is an https URL on fal's own media, written as it parses
@@ -370,9 +444,9 @@ export const publicMedia = (guard: () => Promise<Omit<PublicFetchOptions, "maxBy
  *  held, and settled, at its length rounded up to that step. */
 const BILLING_STEP: ReadonlyMap<string, number> = new Map([...[...TALKING_HEADS].map((endpoint) => [endpoint, 1] as const), ["fal-ai/elevenlabs/music", 60], ["fal-ai/elevenlabs/dubbing", 60]]);
 
-/** `unitPrice`: get_pricing's rate times its settings' ratio (RATE_TIERS); `extraUsd`: a flat charge its settings add.
+/** `unitPrice`: get_pricing's rate times its settings' ratio, plus any charge its settings add per unit (RATE_TIERS).
  *  `step`: billed by a length rounded up to that many seconds (BILLING_STEP), its stated length rounded up too. */
-type Priced = { job: FalJob; holdUsd: number; unitPrice: number; extraUsd: number; unit: string; words: string; at: number; step?: number };
+type Priced = { job: FalJob; holdUsd: number; unitPrice: number; unit: string; words: string; at: number; step?: number };
 type Unpriced = { job: FalJob; why: string };
 
 /** A reply in which fal says it refused the job's input: status "rejected", or an error of type validation_error or
@@ -382,7 +456,7 @@ const refusedInput = (item: Record<string, unknown>): boolean =>
 
 /** What one job charged, by its reply `item` (run_model's reply, or its own entry of submit_jobs'): $0 when the
  *  submission was replayed or fal refused its input; a completed job's stated units at its unit price (its settings'
- *  rate, RATE_TIERS; in whole steps for one billed so), plus its flat charge; else its hold (still running, or nothing stated). Null for a job with no price whose reply says
+ *  rate, RATE_TIERS; in whole steps for one billed so); else its hold (still running, or nothing stated). Null for a job with no price whose reply says
  *  it was accepted. A talking head whose output states no length (Fabric) is booked at its hold: the ledger books its
  *  voice's length, read before the call, not a length fal reports. */
 function chargeOfJob(quote: Priced | Unpriced, item: unknown): number | null {
@@ -395,7 +469,7 @@ function chargeOfJob(quote: Priced | Unpriced, item: unknown): number | null {
   if (!("holdUsd" in quote)) return null;
   const after = item.status === "completed" ? unitsAfter(quote.unit, item.result) : undefined;
   if (after === undefined) return quote.holdUsd;
-  return usd(quote.unitPrice * (quote.step ? roundedUp(after, quote.unit, quote.step) : after) + quote.extraUsd);
+  return usd(quote.unitPrice * (quote.step ? roundedUp(after, quote.unit, quote.step) : after));
 }
 
 /** `units` of `unit` (seconds or minutes) rounded up to a whole `step` of seconds, in `unit`. Rounded to the
@@ -496,9 +570,9 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
     if ("unknown" in units) return { job, why: units.unknown };
     const step = price.unit === "seconds" || price.unit === "minutes" ? BILLING_STEP.get(job.endpoint) : undefined;
     if (step) units = { units: roundedUp(units.units, price.unit, step), from: `${units.from}, in whole ${step === 60 ? "minutes" : "seconds"}` };
-    const rated = price.unitPrice * rate.ratio;
-    const words = [`fal's price for ${job.endpoint}: $${price.unitPrice} per ${oneOf(price.unit)}`, ...rate.words.filter((word) => word.startsWith("×")), `× ${shown(units.units)} (${units.from})`, ...rate.words.filter((word) => word.startsWith("plus"))].join(" ");
-    return { job, holdUsd: usd(rated * units.units + rate.extraUsd), unitPrice: rated, extraUsd: rate.extraUsd, unit: price.unit, at: price.at, words, ...(step ? { step } : {}) };
+    const rated = price.unitPrice * rate.ratio + rate.perUnitUsd;
+    const words = [`fal's price for ${job.endpoint}: $${price.unitPrice} per ${oneOf(price.unit)}`, ...rate.words, `× ${shown(units.units)} (${units.from})`].join(" ");
+    return { job, holdUsd: usd(rated * units.units), unitPrice: rated, unit: price.unit, at: price.at, words, ...(step ? { step } : {}) };
   };
   return {
     bills: falBills,

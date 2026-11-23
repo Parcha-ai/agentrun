@@ -4652,13 +4652,17 @@ voice to whole seconds, ElevenLabs Music and dubbing to whole minutes. That pric
 job the cap can't take is refused before it is submitted, and the job is booked as the run's tool cost, charged by the
 server, with the price and the count it came from. It is an estimate at fal's list price, not fal's invoice: fal
 reports no cost for a job, and a minimum charge or a discount `get_pricing` does not list is not in it. Where fal's rate
-depends on a setting and `get_pricing` states one rate (Ideogram v3's `rendering_speed`, Veo's audio and 4k, Kling v3's
-audio and voice control, sync-lipsync's pro model, Nano Banana Pro's 4K and web search, Fabric's resolution), a job
-is priced at `get_pricing`'s rate times the ratio fal's model page gives its settings, a setting it leaves out at its
-default, plus any flat charge the page adds; any other endpoint is priced at `get_pricing`'s one rate, whatever its
+depends on a setting and `get_pricing` states one rate (Ideogram v3's and Ideogram character's `rendering_speed`,
+Veo's audio and resolution, Kling v3's audio and voice control, sync-lipsync's pro model, Nano Banana Pro's 4K and web
+search, Fabric's resolution), a job is priced at `get_pricing`'s rate times the ratio fal's model page gives its
+settings, a setting it leaves out at its default, plus any charge the page adds per unit (a web search, per image).
+Where the page and `get_pricing` disagree, the higher is held. The endpoints of those families (Ideogram v3 and
+character, Nano Banana Pro, Veo 3 and 3.1, Kling v3, sync-lipsync v2, Fabric 1.0) are each decided: priced by their
+settings or at one rate. A variant fal adds to one of them is refused under a cap until it is decided, in words that
+name it, never held at `get_pricing`'s one rate. Any other endpoint is priced at `get_pricing`'s one rate, whatever its
 settings. A job whose units can't be known before it runs (one billed by compute time or tokens,
 one that names no size or length, media whose length can't be read, an endpoint with no listed price, a setting value
-the model page names no rate for) is refused under a cap,
+the model page names no rate for, a variant whose rate is not decided) is refused under a cap,
 in words that say why; with no cap it runs, booked as an unknown charge. A price saved for a fal tool takes the place
 of this. A request costs its input, plus the output it
 is sent with at the output price, plus any fee its tokens do not show (below). Its input is priced at its worst case:

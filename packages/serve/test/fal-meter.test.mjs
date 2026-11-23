@@ -33,6 +33,9 @@ const PRICES = {
   "fal-ai/elevenlabs/music": [0.6, "minutes"],
   "fal-ai/kling-video/v3/pro/image-to-video": [0.14, "seconds"],
   "fal-ai/nano-banana-pro": [0.15, "images"],
+  "fal-ai/nano-banana-pro/edit": [0.15, "images"],
+  "fal-ai/ideogram/character": [0.05, "images"],
+  "fal-ai/veo3.1/ultra": [0.5, "seconds"],
   "veed/fabric-1.0": [0.08, "seconds"],
   "fal-ai/bytedance/omnihuman/v1.5": [0.16, "seconds"],
   "fal-ai/infinitalk": [0.2, "seconds"],
@@ -150,7 +153,7 @@ test("a voiceover is booked per 1000 characters of its text", async (t) => {
 test("a job is held and booked at the rate its settings are billed at: get_pricing's rate times the model page's ratio, a default included", async (t) => {
   // fal's model pages (read 2026-11-23), against get_pricing's one rate: Ideogram v3 renders at BALANCED by default,
   // $0.06 an image against TURBO's $0.03; Kling v3 pro image-to-video makes audio by default, $0.168 a second against
-  // $0.14, and $0.196 with voice control; a Nano Banana Pro web search adds $0.015; Fabric at 720p is $0.15 a second
+  // $0.14, and $0.196 with voice control; a Nano Banana Pro web search adds $0.015, held and booked per image; Fabric at 720p is $0.15 a second
   // against 480p's $0.08.
   const run = await setup(t, { capUsd: 5, media: TALKING_MEDIA, run: (args) => reply(args, { status: "processing" }) });
   await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo" } });
@@ -163,24 +166,37 @@ test("a job is held and booked at the rate its settings are billed at: get_prici
   await run.call("run_model", { endpoint_id: kling3, input: start });
   near(run.admits[2].holdUsd, 0.168 * 5, "no generate_audio: audio on, its default");
   await run.call("run_model", { endpoint_id: kling3, input: { ...start, generate_audio: false } });
-  near(run.admits[3].holdUsd, 0.112 * 5, "audio off");
+  near(run.admits[3].holdUsd, 0.14 * 5, "audio off: the page's $0.112 is under get_pricing's $0.14, held at $0.14");
   await run.call("run_model", { endpoint_id: kling3, input: { ...start, elements: [{ voice_id: "v1" }] } });
   near(run.admits[4].holdUsd, 0.196 * 5, "voice control");
   await run.call("run_model", { endpoint_id: "fal-ai/nano-banana-pro", input: { prompt: "a poster", enable_web_search: true } });
   near(run.admits[5].holdUsd, 0.15 + 0.015, "a web search adds $0.015");
-  assert.equal(run.admits[5].basis, "fal's price for fal-ai/nano-banana-pro: $0.15 per image × 1 (1 image by default) plus $0.015 for a web search, from get_pricing at 2026-11-20T12:00:00.000Z");
+  assert.equal(run.admits[5].basis, "fal's price for fal-ai/nano-banana-pro: $0.15 per image plus $0.015 per image for a web search × 1 (1 image by default), from get_pricing at 2026-11-20T12:00:00.000Z");
+  await run.call("run_model", { endpoint_id: "fal-ai/nano-banana-pro", input: { prompt: "a poster", num_images: 4, resolution: "4K", enable_web_search: true } });
+  near(run.admits[6].holdUsd, 4 * (0.3 + 0.015), "4 images at 4K, each with the web search's $0.015");
   await run.call("run_model", head(FABRIC, { resolution: "720p" }));
-  near(run.admits[6].holdUsd, 0.15 * 4, "Fabric at 720p, the 4 s voice");
+  near(run.admits[7].holdUsd, 0.15 * 4, "Fabric at 720p, the 4 s voice");
   // A value the page names no rate for is refused unsent.
   const refused = await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo", rendering_speed: "turbo" } });
   assert.equal(textOf(refused), `mcp:fal/run_model was not sent: fal bills fal-ai/ideogram/v3 per image at a rate its rendering_speed sets, and fal's model page names no rate for rendering_speed "turbo", so a run with a spend cap can't send it. Nothing was sent.`);
-  assert.equal(run.received("run_model"), 7, "fal received the seven priced jobs, not the refused one");
-  // Settled at the images returned, at the same rate, and the flat charge once.
+  assert.equal(run.received("run_model"), 8, "fal received the eight priced jobs, not the refused one");
+  // The variants: Nano Banana Pro edit at Nano Banana Pro's rates; Ideogram character at its page's rates, $0.15 an image
+  // at BALANCED (its default) against get_pricing's $0.05; a variant of a family billed by its settings that is not
+  // decided here is refused unsent, never held at get_pricing's one rate.
+  const variants = await setup(t, { capUsd: 5, run: (args) => reply(args, { status: "processing" }) });
+  await variants.call("run_model", { endpoint_id: "fal-ai/nano-banana-pro/edit", input: { prompt: "a poster", image_urls: ["https://v3.fal.media/files/i.png"], num_images: 4, resolution: "4K", enable_web_search: true } });
+  near(variants.admits[0].holdUsd, 4 * (0.3 + 0.015), "edit: 4 images at 4K, each with the web search's $0.015");
+  await variants.call("run_model", { endpoint_id: "fal-ai/ideogram/character", input: { prompt: "a mascot", reference_image_urls: ["https://v3.fal.media/files/r.png"] } });
+  near(variants.admits[1].holdUsd, 0.15, "character: BALANCED, its default, at the page's $0.15");
+  const undecided = await variants.call("run_model", { endpoint_id: "fal-ai/veo3.1/ultra", input: { prompt: "a sunrise", duration: "8s" } });
+  assert.equal(textOf(undecided), "mcp:fal/run_model was not sent: fal bills fal-ai/veo3.1 by its settings and fal-ai/veo3.1/ultra has no rate decided here, so a run with a spend cap can't send it. Nothing was sent.");
+  assert.equal(variants.received("run_model"), 2, "fal received the two priced jobs, not the undecided one");
+  // Settled at the images returned, at the same rate, the web search's charge per image.
   const done = await setup(t, { capUsd: 5, run: (args) => reply(args, { result: { images: [{ url: "https://v3.fal.media/1.png" }, { url: "https://v3.fal.media/2.png" }] } }) });
   await done.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo", num_images: 2 } });
   near(done.spent(), 0.12, "2 images at BALANCED");
   await done.call("run_model", { endpoint_id: "fal-ai/nano-banana-pro", input: { prompt: "a poster", num_images: 2, resolution: "4K", enable_web_search: true } });
-  near(done.spent(), 0.12 + 2 * 0.3 + 0.015, "2 images at 4K, plus one web search");
+  near(done.spent(), 0.12 + 2 * (0.3 + 0.015), "2 images at 4K, each with the web search's charge");
 });
 
 test("a job fal bills in whole minutes is held and booked at its length rounded up to the minute", async (t) => {
