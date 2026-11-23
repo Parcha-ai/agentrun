@@ -4,7 +4,8 @@
 //  - The unit price is the server's own get_pricing, asked with exactly `{ endpoint_id: "<id>" }` (a contract: a fake
 //    server matches arguments by equality), one endpoint a call, kept PRICE_TTL_MS.
 //  - The units are read from the job's input (unitsBefore). Nothing is guessed: an input that leaves out the size or
-//    length its model would default is unpriceable.
+//    length its model would default is unpriceable. A job billed by its media's length reads that media first; a talking
+//    head reads its voice alone (TALKING_HEADS).
 //  - fal's reply states no cost, so the charge is this estimate (chargeOfJob).
 // fal can bill what get_pricing does not expose (a minimum, a discount, a rate that depends on a setting such as
 // resolution): a booked figure is fal's list price for the job, not its invoice.
@@ -26,6 +27,9 @@ export type FalMeterName = typeof FAL_METER;
 export const PRICE_TTL_MS = 5 * 60_000;
 /** One deadline for reading an input media file's length. */
 export const MEDIA_TIMEOUT_MS = 120_000;
+/** The most of a talking head's voice read to price it: a minute of 48 kHz stereo 32-bit WAV (23 MB) fits, and fal's
+ *  talking heads take a minute of voice at most (OmniHuman v1.5's OpenAPI). A larger voice is unpriceable. */
+export const VOICE_MAX_BYTES = 32 * 1024 * 1024;
 
 /** Whether `url` is on fal's MCP host. */
 const onFalHost = (url: string): boolean => URL.parse(url)?.hostname === FAL_MCP_HOST;
@@ -65,8 +69,9 @@ const megapixels = (width: number, height: number): number => Math.ceil((width *
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** A job's billed units before it runs: `units` and where the number came from (`from`); `media`, the audio and video
- *  URLs whose length it is billed by (the longest); or `unknown`, why they can't be known, in words. */
-export type Units = { units: number; from: string } | { media: string[] } | { unknown: string };
+ *  URLs whose length it is billed by (the longest); `voice`, a talking head's voice URL, whose length in whole seconds
+ *  it is billed by (TALKING_HEADS); or `unknown`, why they can't be known, in words. */
+export type Units = { units: number; from: string } | { media: string[] } | { voice: string } | { unknown: string };
 
 /** How many outputs the input asks for (num_images, else num_outputs, else 1), or undefined for a count that is none. */
 function countOf(input: Record<string, unknown>, unit: string): { n: number; from: string } | undefined {
@@ -97,11 +102,26 @@ function namedSeconds(input: Record<string, unknown>): { seconds: number; from: 
  *  dubbing and voice isolation return the media they are given, re-voiced or cleaned; speech-to-text returns text, so
  *  its input is the only media to bill; sync-lipsync v2 bills "per minute of video", held at the longest it is given.
  *  Each settles at the length its output states, if it states one. Another endpoint billed by length
- *  whose input names none bills its output's (a talking video made from a voice, LatentSync's video, an upscale), which
- *  no input states: it is unpriceable. */
+ *  whose input names none bills its output's (LatentSync's video, infinitalk's, a merge, an upscale), which no input
+ *  states: it is unpriceable, but for the talking heads (TALKING_HEADS). */
 const BY_INPUT_MEDIA: ReadonlySet<string> = new Set(["fal-ai/elevenlabs/dubbing", "fal-ai/elevenlabs/audio-isolation", "fal-ai/elevenlabs/speech-to-text", "fal-ai/sync-lipsync/v2"]);
 /** The input's audio_url and video_url. */
 const mediaOf = (input: Record<string, unknown>): string[] => [input.audio_url, input.video_url].filter((url): url is string => typeof url === "string" && url !== "");
+
+/** The talking heads fal bills per second of the video they make, which runs as long as the voice they lip-sync: fal's
+ *  OpenAPI (read 2026-11-23) gives OmniHuman v1.5's output `duration` as "Duration of audio input/video output as used
+ *  for billing", and Fabric's video is its voice's picture. Such a job is held at that voice's length, read from the audio
+ *  at its audio_url alone (https only, under VOICE_MAX_BYTES), never from a length its input states or from its image,
+ *  in whole seconds as fal bills them. Each value is why a job's input can't be priced, or undefined when it can:
+ *  Fabric's rate depends on its resolution (fal's page: $0.08 a second at 480p, $0.15 at 720p), get_pricing states the
+ *  480p one, and its OpenAPI gives resolution no default, so only a job that sends "480p" is priced. OmniHuman has one
+ *  rate. */
+const TALKING_HEADS: ReadonlyMap<string, (input: Record<string, unknown>) => string | undefined> = new Map<string, (input: Record<string, unknown>) => string | undefined>([
+  ["veed/fabric-1.0", (input) => (input.resolution === "480p" ? undefined : `fal bills veed/fabric-1.0 per second at the rate get_pricing states only for resolution "480p" (720p costs more), and this job's resolution is ${input.resolution === undefined ? "not set" : JSON.stringify(input.resolution)}`)],
+  ["fal-ai/bytedance/omnihuman/v1.5", () => undefined],
+]);
+/** A talking head's voice: its input's audio_url when that is an https URL. */
+const voiceOf = (input: Record<string, unknown>): string | undefined => (typeof input.audio_url === "string" && URL.parse(input.audio_url)?.protocol === "https:" ? input.audio_url : undefined);
 
 /** ffmpeg-api/compose's timeline end in seconds: the last keyframe's end across its tracks (timestamp and duration are
  *  milliseconds, by its OpenAPI). */
@@ -139,6 +159,13 @@ export function unitsBefore(endpoint: string, unit: string, input: unknown): Uni
     if (endpoint === COMPOSE) {
       const end = composeSeconds(input);
       return end ? { units: end / per, from: "its timeline's end" } : { unknown: `${bills}, and this job's tracks have no keyframes with a timestamp and a duration to read its length from` };
+    }
+    const head = TALKING_HEADS.get(endpoint);
+    if (head) {
+      const why = head(input);
+      if (why) return { unknown: why };
+      const voice = voiceOf(input);
+      return voice ? { voice } : { unknown: `fal bills ${endpoint} per ${oneOf(unit)} of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL` };
     }
     const named = namedSeconds(input);
     if (named === "bad") return { unknown: `${bills}, and the length this job's input names is not a number above 0` };
@@ -185,17 +212,20 @@ function bodyOf(result: Record<string, unknown>): unknown {
 
 const shown = (n: number) => String(usd(n));
 
+/** How a MediaReader reads: under `maxBytes` (lower than its own cap; never higher), and with `httpsOnly`, refusing http
+ *  on the first hop and at every redirect. */
+export type MediaRead = { maxBytes?: number; httpsOnly?: boolean };
 /** The bytes of a job's input media at `url`, read before the job is sent; it throws when they can't be read. */
-export type MediaReader = (url: string, signal: AbortSignal) => Promise<Uint8Array>;
+export type MediaReader = (url: string, signal: AbortSignal, read?: MediaRead) => Promise<Uint8Array>;
 
 /** A MediaReader over the public-host guard web_fetch and web_save download through (`guard`: their fetch options),
  *  within web_save's size cap and download slots. */
-export const publicMedia = (guard: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">>, slots: SaveSlots = SERVER_SLOTS): MediaReader => async (url, signal) => {
+export const publicMedia = (guard: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal" | "httpsOnly">>, slots: SaveSlots = SERVER_SLOTS): MediaReader => async (url, signal, read = {}) => {
   const { publicDownload } = await import("@parcha/pi-browser");
   const bound = AbortSignal.any([signal, AbortSignal.timeout(MEDIA_TIMEOUT_MS)]);
   const release = await slots.take(bound);
   try {
-    const file = await publicDownload(url, { ...(await guard()), maxBytes: SAVE_MAX_BYTES, signal: bound });
+    const file = await publicDownload(url, { ...(await guard()), maxBytes: Math.min(read.maxBytes ?? SAVE_MAX_BYTES, SAVE_MAX_BYTES), httpsOnly: read.httpsOnly === true, signal: bound });
     if (!file.bytes) throw new Error(`the host answered ${file.status}`);
     return file.bytes;
   } finally {
@@ -203,7 +233,8 @@ export const publicMedia = (guard: () => Promise<Omit<PublicFetchOptions, "maxBy
   }
 };
 
-type Priced = { job: FalJob; holdUsd: number; unitPrice: number; unit: string; words: string; at: number };
+/** `whole`: billed in whole seconds (a talking head), its stated length rounded up too. */
+type Priced = { job: FalJob; holdUsd: number; unitPrice: number; unit: string; words: string; at: number; whole?: true };
 type Unpriced = { job: FalJob; why: string };
 
 /** A reply in which fal says it refused the job's input: status "rejected", or an error of type validation_error or
@@ -212,8 +243,10 @@ const refusedInput = (item: Record<string, unknown>): boolean =>
   item.status === "rejected" || (isObject(item.error) && (item.error.type === "validation_error" || Array.isArray(item.error.field_errors)));
 
 /** What one job charged, by its reply `item` (run_model's reply, or its own entry of submit_jobs'): $0 when the
- *  submission was replayed or fal refused its input; a completed job's stated units at its unit price; else its hold
- *  (still running, or nothing stated). Null for a job with no price whose reply says it was accepted. */
+ *  submission was replayed or fal refused its input; a completed job's stated units at its unit price (in whole seconds
+ *  for one billed so); else its hold (still running, or nothing stated). Null for a job with no price whose reply says
+ *  it was accepted. A talking head whose output states no length (Fabric) is booked at its hold: the ledger books its
+ *  voice's length, read before the call, not a length fal reports. */
 function chargeOfJob(quote: Priced | Unpriced, item: unknown): number | null {
   const hold = "holdUsd" in quote ? quote.holdUsd : null;
   if (!isObject(item)) return hold;
@@ -223,8 +256,15 @@ function chargeOfJob(quote: Priced | Unpriced, item: unknown): number | null {
   if (typeof item.request_id !== "string" && refusedInput(item)) return 0;
   if (!("holdUsd" in quote)) return null;
   const after = item.status === "completed" ? unitsAfter(quote.unit, item.result) : undefined;
-  return after === undefined ? quote.holdUsd : usd(quote.unitPrice * after);
+  if (after === undefined) return quote.holdUsd;
+  return usd(quote.unitPrice * (quote.whole ? wholeSeconds(after, quote.unit) : after));
 }
+
+/** `units` of `unit` (seconds or minutes) rounded up to whole seconds, in `unit`. */
+const wholeSeconds = (units: number, unit: string): number => {
+  const per = unit === "minutes" ? 60 : 1;
+  return Math.ceil(units * per) / per;
+};
 
 /** fal's tools that take a submission_key: the three that submit jobs, and get_submission, which reads one back. */
 const KEYED = new Set(["run_model", "submit_job", "submit_jobs", "get_submission"]);
@@ -284,10 +324,10 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
     return read;
   };
   /** The longest of the media at `urls`, in seconds, or the URL whose length could not be read. */
-  const longest = async (urls: readonly string[], signal: AbortSignal): Promise<number | { unread: string }> => {
+  const longest = async (urls: readonly string[], signal: AbortSignal, read?: MediaRead): Promise<number | { unread: string }> => {
     const lengths = await Promise.all([...new Set(urls)].map(async (url) => {
       try {
-        return (media && mediaSeconds(await media(url, signal))) || { unread: url };
+        return (media && mediaSeconds(await media(url, signal, read))) || { unread: url };
       } catch {
         return { unread: url };
       }
@@ -304,8 +344,15 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
       if (typeof seconds !== "number") return { job, why: `fal bills ${job.endpoint} per ${oneOf(price.unit)} of its input media, and the length of ${seconds.unread.slice(0, 200)} could not be read` };
       units = { units: seconds / (price.unit === "minutes" ? 60 : 1), from: units.media.length > 1 ? "the longest of its input media, read before the call" : "its input media's length, read before the call" };
     }
+    let whole: { whole?: true } = {};
+    if ("voice" in units) {
+      const seconds = await longest([units.voice], signal, { maxBytes: VOICE_MAX_BYTES, httpsOnly: true });
+      if (typeof seconds !== "number") return { job, why: `fal bills ${job.endpoint} per ${oneOf(price.unit)} of the voice at its audio_url, and the length of ${seconds.unread.slice(0, 200)} could not be read` };
+      units = { units: Math.ceil(seconds) / (price.unit === "minutes" ? 60 : 1), from: "its voice at audio_url, read before the call, in whole seconds" };
+      whole = { whole: true };
+    }
     if ("unknown" in units) return { job, why: units.unknown };
-    return { job, holdUsd: usd(price.unitPrice * units.units), unitPrice: price.unitPrice, unit: price.unit, at: price.at, words: `fal's price for ${job.endpoint}: $${price.unitPrice} per ${oneOf(price.unit)} × ${shown(units.units)} (${units.from})` };
+    return { job, holdUsd: usd(price.unitPrice * units.units), unitPrice: price.unitPrice, unit: price.unit, at: price.at, words: `fal's price for ${job.endpoint}: $${price.unitPrice} per ${oneOf(price.unit)} × ${shown(units.units)} (${units.from})`, ...whole };
   };
   return {
     bills: falBills,
