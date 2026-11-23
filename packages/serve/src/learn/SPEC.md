@@ -373,9 +373,10 @@ is stale; code.storage deletes an old repository a flip left, or fails retryable
 server moves the agent's promotion records' commits by it. A promote record whose commit no longer holds its
 revision's text is refused by every champion reader (`promote.ts` refusedOf, refused too when the read fails), so the
 champion promoted before it serves again; a hold at such a commit is refused the same way, so no compile revises the
-purged revision; the trim drops nothing while that read fails, and keeps a chain of `CHAMPIONS_KEPT` (5) champions back
-from the one the gate's answer leaves, so a purge landing between a write's ask and its write still leaves the one
-before every champion its run wrote; a promote recorded later at a commit off main, or whose writer is purged, is kept
+purged revision; the trim drops nothing while that read fails; past each champion and the newest half of the bound (the record
+just written always), it keeps a chain of `CHAMPIONS_KEPT` (5) champions back from the one the gate's answer leaves,
+each one's promote and newest record whole or neither, so a purge landing between a write's ask and its write still
+leaves the one before every champion its run wrote; a promote recorded later at a commit off main, or whose writer is purged, is kept
 as a hold, and a replay check for one is refused. What it costs the
 owner: every commit id changes; on code.storage about 0.3 s a
 commit (the local folder is fast), learning waiting meanwhile; a run in flight merges nothing, as after a reset; every
