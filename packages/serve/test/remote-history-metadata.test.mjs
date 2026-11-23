@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { scratch } from './support.mjs';
-import { claudeSession, codexSession } from './fixtures/import-sessions.mjs';
+import { claudeSession, codexSession, cursorChat, sessionId } from './fixtures/import-sessions.mjs';
 import { exportRemoteHistory } from '../dist/import.js';
 import { remoteHistorySessions } from '../dist/native/history.js';
 
@@ -99,3 +99,14 @@ for (const [runtime, makeSession] of [['claude-code', claudeSession], ['codex', 
   const after=statSync(oversized);assert.equal(after.size,before.size);assert.equal(after.mtimeMs,before.mtimeMs);
  });
 }
+
+test('Cursor chats are told apart by their agent ids and found by the workspace the meta.json beside each store names',async t=>{
+ const f=await fixture(t),target={...f.target,runtime:'cursor'};
+ cursorChat(f.home,f.project,1);cursorChat(f.home,f.project,2);
+ const other=join(f.home,'unrelated');mkdirSync(other,{recursive:true});cursorChat(f.home,other,3,{prompt:'Unrelated secret'});
+ const preview=await exportRemoteHistory(target,{...f.options,preview:true});
+ assert.equal(preview.total,2,'two chats of the selected project, each its own session');assert.deepEqual(preview.skipped,[]);
+ const exported=await exportRemoteHistory(target,{...f.options,inventory:preview.inventory});
+ assert.deepEqual(exported.sessions.map(s=>s.id),[sessionId(1),sessionId(2)]);assert.deepEqual(exported.skipped,[]);
+ assert.doesNotMatch(JSON.stringify(exported),/Unrelated secret/);
+});

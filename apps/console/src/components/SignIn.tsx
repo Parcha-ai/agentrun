@@ -138,7 +138,7 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, onNewC
 }
 
 const count = (n: number, one: string) => `${n.toLocaleString("en-US")} ${one}${n === 1 ? "" : "s"}`;
-const SOURCE_NAMES: Record<string, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
+const SOURCE_NAMES: Record<string, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi", cursor: "Cursor" };
 const IMPORT_LABEL = "Import sessions from this machine";
 
 /** Setup's list of this machine's projects, each with a box, none ticked: the owner ticks the ones to import, and only
@@ -147,7 +147,7 @@ function ImportChooser({ offer, chosen, onChange }: { offer: ImportOffer; chosen
   if ("counting" in offer) {
     return (
       <Field group label={IMPORT_LABEL}>
-        <p className="flex items-center gap-2 text-small text-muted-foreground" role="status"><Spinner />Looking for this machine's Claude Code, Codex and pi sessions…</p>
+        <p className="flex items-center gap-2 text-small text-muted-foreground" role="status"><Spinner />Looking for this machine's Claude Code, Codex, pi and Cursor CLI sessions…</p>
       </Field>
     );
   }

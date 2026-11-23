@@ -231,7 +231,7 @@ describe("App, setup's import of this machine's sessions", () => {
   it("says at once that it is looking while the server counts, with nothing to tick, and lists the projects when they arrive", async () => {
     server({ offer: [[202, { counting: true }], [202, { counting: true }], [200, counted(ONE, TWO, THREE)]] });
     const host = await render();
-    expect(await until(host, () => /Looking for this machine's Claude Code, Codex and pi sessions/.test(host.textContent ?? ""))).toBe(true);
+    expect(await until(host, () => /Looking for this machine's Claude Code, Codex, pi and Cursor CLI sessions/.test(host.textContent ?? ""))).toBe(true);
     expect(box(host)).toBeNull();
     expect(await until(host, () => /12 sessions in 3 projects/.test(host.textContent ?? ""), 5000)).toBe(true);
     expect(host.textContent).not.toContain("Looking for this machine's");

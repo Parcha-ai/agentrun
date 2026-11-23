@@ -1,7 +1,8 @@
 # @parcha/agentrun-import
 
-Reads the coding-agent sessions under a home (Claude Code, Codex, pi) into one Session shape: normalized token usage,
-subagents counted under their parent, and byte-offset cursors so a second pass reads only what was appended. AgentRun's
+Reads the coding-agent sessions under a home (Claude Code, Codex, pi, Cursor's CLI) into one Session shape: normalized
+token usage, subagents counted under their parent, and byte-offset cursors so a second pass reads only what was
+appended. AgentRun's
 server imports past sessions through it.
 
 ## Totals for a home
@@ -26,12 +27,13 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   answer; a file that fails to read gives up what it held and is read from its start next time.
 - `failures: []` collects each file its reader could not read (`{ key, file, source, error }`) while the rest are
   totalled; without it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
-- `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); without it the home's.
+- `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CURSOR_CONFIG_DIR` or
+  `XDG_CONFIG_HOME`); without it the home's.
 
 ## Known answer
 
 ```sh
-node dist/cli.js <home> [--sources claude-code,codex,pi] --known-answer
+node dist/cli.js <home> [--sources claude-code,codex,pi,cursor] --known-answer
 ```
 
 One JSONL line per session, sorted by key: `{key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h},
@@ -57,6 +59,14 @@ record copied into it from an earlier file counts only in that file; a file hold
 Codex sessions sum each request's `last_token_usage`, never `total_token_usage`. Claude Code writes one line per content
 block of a response, each with the response's usage: a request (`message.id`, `requestId`) counts once, at its last
 line's usage.
+
+Cursor's CLI (`cursor-agent`) keeps each chat in a SQLite store of its own, `~/.cursor/chats/<workspace hash>/<agent
+id>/store.db` (an ACP session's under `~/.cursor/acp-sessions/<id>/`), with a `meta.json` beside it. The store is read
+once, whole and read-only, and no cursor is kept: each read reads it all again. A chat's id is its folder's name
+(`cursorSessionId(file)`). Cursor keeps no tokens, cost, error or time for a request on the machine (its usage is on
+Cursor's server): each answer counts as one request of unknown tokens, a chat's cost is `null`, and every turn is at the
+chat's start; it ends at `meta.json`'s `updatedAtMs`. The model is the agent's `lastUsedModel`, as `cursor/<model>`,
+when the store names one.
 
 ## Readers
 

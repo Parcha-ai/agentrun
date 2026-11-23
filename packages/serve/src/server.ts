@@ -304,7 +304,7 @@ export type ServeOptions = {
   openSetup?: boolean;
   /** With accounts: the address people open (AGENTRUN_PUBLIC_URL), which the printed setup link uses. */
   publicUrl?: string;
-  /** With open setup: the home whose Claude Code, Codex and pi sessions setup offers to import (default this user's),
+  /** With open setup: the home whose Claude Code, Codex, pi and Cursor CLI sessions setup offers to import (default this user's),
    *  and the temp directory whose projects it leaves out (default the OS's). */
   sessionsHome?: { home: string; temp?: string };
   /** With open setup on this machine, and no owner yet: count the sessions setup would import as the server starts, so

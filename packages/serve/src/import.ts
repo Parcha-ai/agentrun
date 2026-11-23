@@ -1,20 +1,20 @@
-// `agentrun-serve import`: the Claude Code, Codex and pi sessions under a person's own home, into this server's agent
-// store, once, when asked. Each project directory is one agent; each harness seen in it one revision of that agent, its
-// instructions the project's CLAUDE.md or AGENTS.md and its skills the project's skill folders; each session one run,
-// ended as it ended, its transcript the run's timeline. An imported run is history: it takes no message, stop or cancel.
-// Nothing leaves the machine, every string written has the environment's key values cut out, and every file written is
-// the owner's only. Read again, it imports only the sessions it has not.
+// `agentrun-serve import`: the Claude Code, Codex, pi and Cursor CLI sessions under a person's own home, into this
+// server's agent store, once, when asked. Each project directory is one agent; each harness seen in it one revision of
+// that agent, its instructions the project's CLAUDE.md or AGENTS.md and its skills the project's skill folders; each
+// session one run, ended as it ended, its transcript the run's timeline. An imported run is history: it takes no message,
+// stop or cancel. Nothing leaves the machine, every string written has the environment's key values cut out, and every
+// file written is the owner's only. Read again, it imports only the sessions it has not.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
-import { lstat, open, realpath, stat } from "node:fs/promises";
+import { lstat, open, readFile, realpath, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
+import { childrenOf, cursorSessionId, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -119,6 +119,7 @@ const REMOTE_HISTORY_SOURCE_BYTES = 8_000_000;
  * id, project and child status under its approved file stamp. Preview counts candidates, not guaranteed exports.
  * Keep at most one bounded JSONL record and never read past the remote source limit, even if a file grows. */
 async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:string;cwd:string;child:boolean}|undefined> {
+  if(source==='cursor')return cursorMetadata(file);
   const handle = await open(file, 'r');
   // Claude Code's id is its file's name (<id>.jsonl), as readSession reads it; the others' come from a record.
   let id:string|undefined=source==='claude-code'?basename(file,'.jsonl'):undefined,cwd:string|undefined,child=false;
@@ -166,6 +167,19 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
   } finally { await handle.close(); }
 }
 
+/** The most of a Cursor chat's meta.json read: a few fields, as cursor-agent writes it. */
+const CURSOR_META_BYTES = 64 * 1024;
+
+/** A Cursor chat's candidate identity, from the meta.json beside its store: its id as readSession reads it
+ *  (cursorSessionId), and its workspace. Whether it is a subagent's is in the store, which the full read opens. */
+async function cursorMetadata(file: string): Promise<{id:string;cwd:string;child:boolean}|undefined> {
+  const meta=join(dirname(file),'meta.json');
+  if((await stat(meta)).size>CURSOR_META_BYTES)return undefined;
+  const row=JSON.parse(await readFile(meta,'utf8')) as unknown;
+  const cwd=row && typeof row==='object' && !Array.isArray(row) && typeof (row as {cwd?:unknown}).cwd==='string' ? (row as {cwd:string}).cwd : '';
+  return cwd?{id:cursorSessionId(file),cwd,child:false}:undefined;
+}
+
 /** In the data directory while an import the owner asked for at setup has not ended: the server's next start goes on with it. */
 export const IMPORT_ASKED = ".import-at-setup";
 /** A session file written to this recently may still be running: it is left for a later import. */
@@ -180,12 +194,15 @@ export const MAX_CANDIDATES = 500;
 /** The most of one instructions or skill file read, and of one agent's skill files together. */
 export const MAX_FILE_BYTES = 256 * 1024;
 export const MAX_SKILL_BYTES = 1024 * 1024;
-/** The project's skill folders, each `<dir>/<name>/` with its SKILL.md, by where each harness keeps them. */
-export const SKILL_DIRS = [".agents/skills", ".claude/skills", ".codex/skills", ".pi/skills"];
+/** The project's skill folders, each `<dir>/<name>/` with its SKILL.md, by where each harness keeps them. Cursor's CLI
+ *  reads `.cursor/skills` besides `.agents/skills`. */
+export const SKILL_DIRS = [".agents/skills", ".claude/skills", ".codex/skills", ".pi/skills", ".cursor/skills"];
 const INSTRUCTIONS: Record<string, string[]> = {
   "claude-agent": ["CLAUDE.md", "AGENTS.md"],
   codex: ["AGENTS.md", "CLAUDE.md"],
   pi: ["AGENTS.md", "CLAUDE.md"],
+  // Cursor's CLI reads AGENTS.md, then CLAUDE.md, beside its own .cursor/rules.
+  cursor: ["AGENTS.md", "CLAUDE.md"],
 };
 
 export type ImportOptions = {
