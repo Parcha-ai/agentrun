@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import css from "@/tokens.css?raw";
 import { hslToRgb, readTokens } from "@/design/contrast";
-import { CARD_HEIGHT, CARD_WIDTH, cardAlt, chartCapacity, renderCard, textWidth, toPng, type CardBody } from "./cardImage";
+import { CARD_HEIGHT, CARD_WIDTH, cardAlt, cardCapacity, chartCapacity, renderCard, textWidth, toPng, type CardBody } from "./cardImage";
 
 // The one card renderer (a free run's receipt, each Wrapped card): a CardBody in, an SVG string and its data URL out.
 // Pure, every word from the body, every colour a token of the card's theme, nothing that loads from anywhere.
@@ -148,6 +148,29 @@ describe("renderCard", () => {
     expect(widths[0]! / widths[1]!).toBeCloseTo(2, 1);
     expect(widths.slice(2)).toEqual([0, 0]);
   });
+
+  it("draws every column of a year by day: the gap between columns narrows with them, so none goes below nothing", () => {
+    const primary = hex(tokens.dark.primary!);
+    const year: CardBody = { title: "Year", charts: [{ bars: Array.from({ length: 365 }, (_, i) => ({ label: "", value: i + 1 })) }] };
+    const columns = [...parse(renderCard(year).svg).querySelectorAll(`rect[fill="${primary}"]`)].filter((r) => r.getAttribute("y") !== "0.0");
+    expect(columns).toHaveLength(365);
+    for (const r of columns) expect(Number(r.getAttribute("width"))).toBeGreaterThan(0);
+    // The last column ends inside the card's side.
+    const last = columns.at(-1)!;
+    expect(Number(last.getAttribute("x")) + Number(last.getAttribute("width"))).toBeLessThanOrEqual(CARD_WIDTH - 64 + 0.1);
+    expect(chartCapacity(year)).toEqual([365]);
+  });
+
+  it("under a title that wraps, keeps the rows in reading order and drops them from the end, as cardCapacity says", () => {
+    const long = { ...receipt, title: "customer-onboarding-triage-bot ran for free" };
+    const words = texts(renderCard(long).svg);
+    expect(words.filter((t) => ["MODEL", "REQUESTS", "TOKENS", "TOOLS", "WALL", "RAN ON"].includes(t))).toEqual(["MODEL", "REQUESTS", "TOKENS", "TOOLS"]);
+    expect(cardCapacity(long)).toEqual({ rows: 4, charts: [] });
+    expect(cardCapacity(receipt)).toEqual({ rows: 6, charts: [] });
+    // The alt reads the rows drawn, not the ones dropped.
+    expect(renderCard(long).alt).toContain("Tools: web_fetch ×3");
+    expect(renderCard(long).alt).not.toContain("Wall");
+  });
 });
 
 describe("chartCapacity", () => {
@@ -244,5 +267,21 @@ describe("cardAlt", () => {
     expect(cardAlt({ eyebrow: "Receipt", title: "Free run", figure: { value: "$0.00" }, rows: [{ label: "Model", value: "qwen" }], charts: [{ label: "By day", bars: [{ label: "Mon", value: 3 }, { label: "Tue", value: 1, text: "1 run" }] }], footnote: "Local." }))
       .toBe("Receipt. Free run. $0.00. Model: qwen. By day: Mon 3, Tue 1 run. Local.");
     expect(renderCard(receipt).alt).toBe(cardAlt(receipt));
+  });
+
+  it("reads the card drawn: no chart with no bars, no bar past a rows chart's capacity, a value as its bar draws it", () => {
+    const b = (label: string) => ({ label, bars: [{ label: label.toLowerCase(), value: 1 }] });
+    const skipped = cardAlt({ title: "T", charts: [{ label: "E", bars: [] }, b("A"), b("B")] });
+    expect(skipped).toContain("A: a 1");
+    expect(skipped).toContain("B: b 1");
+    expect(skipped).not.toContain("E:");
+    // A rows chart of 12 reads only the bars it draws.
+    const models = Array.from({ length: 12 }, (_, i) => ({ label: `m/${i}`, value: 12 - i }));
+    const crowded: CardBody = { title: "Where it went", figure: { value: "48.2M", unit: "tokens" }, charts: [{ label: "By model", kind: "rows", bars: models }] };
+    const [drawn] = chartCapacity(crowded);
+    expect(drawn).toBeLessThan(12);
+    expect(cardAlt(crowded).match(/m\/\d+/g)).toHaveLength(drawn!);
+    // A value drawn as nothing reads as nothing.
+    expect(cardAlt({ title: "T", charts: [{ bars: [{ label: "broken", value: Number.NaN }, { label: "none", value: -4 }] }] })).toBe("T. broken 0, none 0");
   });
 });
