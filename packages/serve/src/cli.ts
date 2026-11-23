@@ -16,7 +16,7 @@ import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
-import { API_ONLY_ENV, RUN_KEYS_ENV, switchFrom } from "./env-switch.js";
+import { API_ONLY_ENV, RUN_KEYS_ENV, SHARE_HOST_ENV, switchFrom } from "./env-switch.js";
 import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
@@ -33,7 +33,7 @@ surviveClosedPipes();
 // (env-proxy.ts): for every command, before anything calls out. Neither set, nothing changes.
 installEnvProxy();
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...] [--harness-recipe FILE ...] [--harness-sign-in]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--share-host] [--harness-module MODULE ...] [--harness-recipe FILE ...] [--harness-sign-in]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve install-harness goose|cursor [--data DIR]
@@ -93,6 +93,11 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     sign-in), never a schedule's or a trigger's. One owner's own machine alone: the start is refused
                     unless the server listens on loopback with no public address, keeps its store in DIR (no
                     AGENTRUN_STORE_URL), runs its runs beside it as its own user, and takes one API token
+  --share-host      serve shares alone, under /r/ (as AGENTRUN_SHARE_HOST=1): a share's page at /r/<id>, its bundle at
+                    /r/<id>/bundle.json, the API at /r/v2/shares (a token's upload, re-scrubbed and refused on any
+                    value the scrubber finds; its list; its delete; 100 shares a token) and /r/v2/health. Every other
+                    address is a 404; no runner, model key or computer runs, and there is no console or owner. Its share
+                    URLs are on AGENTRUN_PUBLIC_URL, which a start on an address other than loopback needs
   --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
                     more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs;
                     each holds at most --loops N runs (default AGENTRUN_MAX_RUNS, else as many pi runs as its host's
@@ -470,6 +475,7 @@ try {
       "allow-code-nodes": { type: "boolean", default: false },
       learning: { type: "string" },
       "no-runner": { type: "boolean", default: false },
+      "share-host": { type: "boolean", default: false },
       "harness-module": { type: "string", multiple: true, default: [] },
       "harness-recipe": { type: "string", multiple: true, default: [] },
       "harness-sign-in": { type: "boolean", default: false },
@@ -537,9 +543,12 @@ process.on("SIGTERM", signalled);
 // AGENTRUN_RUN_KEYS=1: each run brings the tool keys this server does not hold (run-keys.ts), read the same way.
 let apiOnly: boolean;
 let runKeys: boolean;
+// --share-host, or AGENTRUN_SHARE_HOST=1: shares under /r/ alone (share-host.ts), with no runner beside the server.
+let shareHost: boolean;
 try {
   apiOnly = switchFrom(API_ONLY_ENV);
   runKeys = switchFrom(RUN_KEYS_ENV);
+  shareHost = values["share-host"] === true || switchFrom(SHARE_HOST_ENV);
 } catch (error) {
   console.error(`${(error as Error).message}\n\n${USAGE}`);
   process.exit(2);
@@ -553,7 +562,9 @@ try {
   console.error(`agentrun-serve: ${(error as Error).message}`);
   process.exit(2);
 }
-const accounts = !apiOnly && process.env.AGENTRUN_ACCOUNTS !== "0";
+const accounts = !apiOnly && !shareHost && process.env.AGENTRUN_ACCOUNTS !== "0";
+// No runner beside a share host, as --no-runner.
+const noRunner = values["no-runner"] === true || shareHost;
 // The address first (listen-first.ts): the port bound and named before the rest of the server loads, then answering that
 // the server is warming until it takes the socket over. A port already taken is left to the start's own listen below,
 // which waits for a server it replaces, as it always has: no early line then. The banner's "Open " line still means ready.
@@ -590,13 +601,13 @@ try {
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
-    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
+    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
     // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
     ...(trustedProxies.length ? { trustedProxies } : {}),
     // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
     ...(process.env.AGENTRUN_MCP_ALLOW_LOOPBACK === "1" ? { mcpLoopback: true } : {}),
     // No runner beside this server: a paired computer's socket stays here, where no run reaches it, which the pairing says.
-    ...(values["no-runner"] ? { runnerApart: true } : {}),
+    ...(noRunner ? { runnerApart: true } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
@@ -612,7 +623,7 @@ let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
 const telemetry = startTelemetry({ data: resolve(data), ...(values.faux ? { faux: true } : {}) });
 const { loops, loopsTold, drainMs } = besideRunnerOptions(serveOptions, process.env);
 // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
-if (!values["no-runner"] && askedAt === undefined) {
+if (!noRunner && askedAt === undefined) {
   try {
     // The beside-runner sees the server's test switches (server.ts fauxEnvOf: --faux and its modules), which the CLI hands
     // the server as options, never through this process's environment: without them a --faux start's runner looks its faux
@@ -643,7 +654,7 @@ if (!values["no-runner"] && askedAt === undefined) {
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : givenList ? "list" : serve.tokenMade ? "made" : "file";
-for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, tokenIds: serve.tokenIds, accounts, ...(apiOnly ? { apiOnly } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
+for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, tokenIds: serve.tokenIds, accounts, ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), ...(shareHost ? {} : { boxes: serve.boxesLine }), ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
 if (launchHook) console.log(`Launch hook (${LAUNCH_HOOK_URL_ENV}): trigger firings go to ${hookOrigin(launchHook)}, whose host starts their runs; this server starts none for them.`);
 // Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
 // setup link with its code as the code was made (owner.ts).
@@ -655,7 +666,7 @@ if (telemetry.notice) console.error(telemetry.notice);
 // first visit sets the password with nothing to look up. That code works once and for 30 minutes, unlike the token, so
 // the opener's arguments and the browser's history hold nothing that outlasts the setup.
 // API-only: there is no console, so nothing to open.
-if (values.open && !apiOnly && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [serve.setupUrl ?? `${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+if (values.open && !apiOnly && !shareHost && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [serve.setupUrl ?? `${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
 const record = join(resolve(data), SERVER_FILE);
 // The record goes only while it is this server's: a server that takes the lock next writes its own, which this stop must
 // not remove. One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once
