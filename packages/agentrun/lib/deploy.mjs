@@ -303,13 +303,16 @@ function remote(cli, values, env, io, base) {
   const client = cli.clientOf(target, io);
   const send = async (method, path, body) => {
     let response;
+    let bytes;
     try {
       response = await client.fetch(path, { method, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
+      // The body's read too: an answer whose connection closes after its headers is a server not reached, as one that
+      // never answered is.
+      bytes = Buffer.from(await response.arrayBuffer());
     } catch (error) {
       // Only the cause's code: a fetch error's message can quote a header, the token's among them.
       return { unreached: error?.cause?.code ?? error?.name };
     }
-    const bytes = Buffer.from(await response.arrayBuffer());
     let value;
     try {
       value = bytes.length ? JSON.parse(bytes.toString("utf8")) : undefined;
