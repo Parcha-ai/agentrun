@@ -340,9 +340,10 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
   });
 
   /** Agent `agentId` (learning on) with ended runs `first` and `gone`, `first`'s v1 of answer (unless `fresh`: none),
-   *  then `gone`'s v2 (held: its README pending, when `held`), and answer's status as main's README.md and the view read
-   *  it. A person's approve, retire or restore through the route: its status. */
-  const personCase = async (t, agentId, { fresh = false, held = false, firstHeld = false } = {}) => {
+   *  held when `firstHeld`, retired by a person when `firstRetired`), then `gone`'s v2 (held: its README pending, when
+   *  `held`), and answer's status as main's README.md and the view read it. A person's approve, retire or restore
+   *  through the route: its status. */
+  const personCase = async (t, agentId, { fresh = false, held = false, firstHeld = false, firstRetired = false } = {}) => {
     const mark = `PURGED-PERSON-${randomBytes(6).toString("hex")}`;
     // With accounts: an approve and a restore take the owner's password session (learn-restore.test.mjs's keeper).
     const { api, data, store, port } = await serve(t, { learning: "on", accounts: true, openSetup: true });
@@ -359,8 +360,6 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     const readme = "workflows/answer/README.md";
     const path = "workflows/answer/workflow.json";
     const [v1, v2] = [answerAt("in whole numbers"), answerAt(mark)];
-    if (!fresh) await learned(data, agentId, (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: filesOf("in whole numbers"), ...(firstHeld ? { held: [readme] } : {}) }));
-    await learned(data, agentId, (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: filesOf(mark), ...(held ? { held: [readme] } : {}) }));
     const { learnedStatus } = await import("../dist/learn/workflow-draft.js");
     const person = async (action) => {
       const etag = (await api("GET", `/agents/${agentId}/learning/files/${encodeURIComponent(readme)}`)).headers.get("etag");
@@ -369,6 +368,9 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
       assert.equal(res.status, 200, `${action}: ${res.text ?? JSON.stringify(res.body)}`);
       return learnedStatus(`${(await onMain(data, agentId)).files[readme]}\n`);
     };
+    if (!fresh) await learned(data, agentId, (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: filesOf("in whole numbers"), ...(firstHeld ? { held: [readme] } : {}) }));
+    if (firstRetired) assert.equal(await person("retire"), "retired", "a person retires first's v1");
+    await learned(data, agentId, (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: filesOf(mark), ...(held ? { held: [readme] } : {}) }));
     const stands = async () => {
       const files = (await onMain(data, agentId)).files;
       const view = (await api("GET", `/agents/${agentId}/learning`)).body.workflows.find(({ name }) => name === "answer");
@@ -381,15 +383,36 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     return { api, data, store, mark, readme, path, v1, v2, person, stands, purge };
   };
 
-  test(`${kind}: a purge keeps a person's approve made after the purged run's merge: its status lines replay on the put-back README (a held v1 reads active)`, { timeout: 300_000 }, async (t) => {
+  // A person's decision carries over a purge only to make the given-back text stricter (active > pending > retired):
+  // never more served than its own record.
+  test(`${kind}: a purge never makes the put-back text more served than it was: a person's approve of the purged run's held revision leaves a held v1 pending`, { timeout: 300_000 }, async (t) => {
     const c = await personCase(t, "approver", { held: true, firstHeld: true });
     assert.equal((await c.stands()).readme, "pending", "gone's v2 waits for its owner's OK");
     assert.equal(await c.person("approve"), "active");
     const after = await c.purge();
     assert.deepEqual({ file: after[c.path], holds: JSON.stringify(after).includes(c.mark) }, { file: c.v1[c.path], holds: false }, "the purge puts first's workflow.json back, and no file holds the purged run's text");
     assert.equal(after[c.readme].includes("Answers a question, in whole numbers"), true, "the README is first's text");
+    assert.deepEqual(await c.stands(), { readme: "pending", view: "pending" }, "nobody approved first's text: its README still reads pending, and the view waits for an OK");
+    assert.equal((await servedNow(c.api, c.store, "approver", "What is six?")).served, null, "no run is served first's unapproved text");
+  });
+
+  test(`${kind}: a person's approve of the purged run's held revision over an active v1 leaves v1 active after the purge`, { timeout: 300_000 }, async (t) => {
+    const c = await personCase(t, "approver-active", { held: true });
+    assert.equal(await c.person("approve"), "active");
+    const after = await c.purge();
+    assert.deepEqual({ file: after[c.path], holds: JSON.stringify(after).includes(c.mark) }, { file: c.v1[c.path], holds: false }, "the purge puts first's workflow.json back, and no file holds the purged run's text");
     const stands = await c.stands();
-    assert.deepEqual({ readme: stands.readme, waiting: stands.view === "pending" }, { readme: "active", waiting: false }, "the person's approve stands: first's README, held before, reads active, and the view does not read it as waiting for an OK");
+    assert.deepEqual({ readme: stands.readme, waiting: stands.view === "pending" }, { readme: "active", waiting: false }, "first's README reads active, as it did before the purged run's merge");
+  });
+
+  test(`${kind}: a put-back README a person had retired stays retired with its own retired_from after a person's retire of the purged run's held revision`, { timeout: 300_000 }, async (t) => {
+    const c = await personCase(t, "re-retired", { held: true, firstRetired: true });
+    assert.equal(await c.person("retire"), "retired", "a person retires gone's held v2 (retired from pending)");
+    const after = await c.purge();
+    assert.deepEqual({ file: after[c.path], holds: JSON.stringify(after).includes(c.mark) }, { file: c.v1[c.path], holds: false }, "the purge puts first's workflow.json back, and no file holds the purged run's text");
+    const lines = after[c.readme].split("\n").filter((line) => line.startsWith("status:") || line.startsWith("retired_from:"));
+    assert.deepEqual(lines, ["status: retired", "retired_from: active"], "first's README keeps its own retire: retired from active, not the purged revision's pending");
+    assert.equal((await servedNow(c.api, c.store, "re-retired", "What is six?")).served, null, "no run is served it");
   });
 
   test(`${kind}: a purge keeps a person's retire and then restore made after the purged run's merge: the restore's status lines replay on the put-back README (pending, as it was retired from)`, { timeout: 300_000 }, async (t) => {
