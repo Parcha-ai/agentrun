@@ -84,11 +84,13 @@ const run = (args, options = {}) => spawnSync(BINARY, args, { encoding: 'utf8', 
 const NODE_CLI = fileURLToPath(new URL('../packages/import/dist/cli.js', import.meta.url));
 const USAGE = /usage: agentrun-import <home> \[--sources claude-code,codex,pi\] --known-answer/;
 const tokens = (input, output, cacheRead, cacheWrite) => ({ input, output, cacheRead, cacheWrite, cacheWrite1h: 0 });
-// What the home holds, a line per session sorted by key: the resumed copy counts once, its subagent's requests join the
-// parent's, the cut pi request counts as a call and not as tokens, and the file too shallow for codex is no session.
+// What the home holds, a line per session sorted by key: the resumed copy counts once, in the file that held it first,
+// its subagent's requests join the parent's, the cut pi request counts as a call and not as tokens, and the file too
+// shallow for codex is no session.
 const EXPECTED = [
   { key: key('.codex/sessions/2026/01/02/rollout-2026-01-02-fixture.jsonl'), source: 'codex', tokens: tokens(600, 55, 900, 0), cost: null, turns: 2, calls: 2 },
-  { key: key('.claude/projects/-fixture-a/s-a.jsonl'), source: 'claude-code', tokens: tokens(1018, 1036, 300, 150), cost: null, turns: 1, calls: 4 },
+  { key: key('.claude/projects/-fixture-a/s-a.jsonl'), source: 'claude-code', tokens: tokens(1015, 1027, 100, 100), cost: null, turns: 1, calls: 3 },
+  { key: key('.claude/projects/-fixture-b/s-b.jsonl'), source: 'claude-code', tokens: tokens(3, 9, 200, 50), cost: null, turns: 0, calls: 1 },
   { key: key('.pi/agent/sessions/--fixture-project--/2026-01-01T00-00-00-000Z_pi-session.jsonl'), source: 'pi', tokens: tokens(40, 4, 60, 30), cost: 0.02, turns: 1, calls: 2 },
 ].sort((a, b) => (a.key < b.key ? -1 : 1));
 
@@ -119,9 +121,19 @@ test('the binary prints nothing under an empty home', { skip }, () => {
   assert.equal(result.stdout, '');
 });
 
-test('the binary exits 2 with its usage on no home, no --known-answer, an unknown source or an unknown option', { skip }, () => {
+test('the binary prints its usage to stdout and exits 0 for --help, alone or after a home', { skip }, () => {
   const dir = home();
-  for (const args of [[], ['--known-answer'], [dir], [dir, '--sources', 'nope', '--known-answer'], [dir, '--help'], ['--help']]) {
+  for (const args of [['--help'], [dir, '--help']]) {
+    const result = run(args);
+    assert.equal(result.status, 0, `${args.join(' ')}: ${result.stderr}`);
+    assert.match(result.stdout, USAGE);
+    assert.equal(result.stderr, '');
+  }
+});
+
+test('the binary exits 2 with its usage on stderr on no home, no --known-answer, an unknown source or an unknown option', { skip }, () => {
+  const dir = home();
+  for (const args of [[], ['--known-answer'], [dir], [dir, '--sources', 'nope', '--known-answer'], [dir, '--nope', '--known-answer']]) {
     const result = run(args);
     assert.equal(result.status, 2, `${args.join(' ')}: ${result.stderr}`);
     assert.match(result.stderr, USAGE);
