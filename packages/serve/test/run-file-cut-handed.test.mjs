@@ -93,15 +93,21 @@ async function cutRead({ baseUrl, token, runId }, path) {
   return res.status === 200 ? [200, await res.text()] : [res.status, (await res.json()).error?.code];
 }
 
-/** Run `runId`'s launch census set to `census` in the server's store, as an end that wrote it would leave it. */
-async function setCensus(data, runId, census) {
-  const db = await raw(join(data, "store.sqlite"));
+/** One raw write to the server's store under `data`, waiting out a live runner's write as long as a loaded box holds one. */
+async function write(data, sql, ...params) {
+  const db = await raw(join(data, "store.sqlite"), { timeout: 30_000 });
   try {
-    await db.run("UPDATE run_launch SET census = ? WHERE run_id = ?", census, runId);
+    await db.run(sql, ...params);
   } finally {
     await db.close();
   }
 }
+
+/** Run `runId`'s launch census set to `census` in the server's store, as an end that wrote it would leave it. */
+const setCensus = (data, runId, census) => write(data, "UPDATE run_launch SET census = ? WHERE run_id = ?", census, runId);
+
+/** Run `runId`'s launch sealed part replaced by bytes that don't open under any key. */
+const damageSeal = (data, runId) => write(data, "UPDATE run_launch SET sealed = ? WHERE run_id = ?", new Uint8Array(64).fill(9), runId);
 
 test("a run's own model_key is cut from its files by a cut read while it runs, and after its end by its census; a file edited or written after the end is withheld; read raw, the bytes as written", { timeout: 180_000 }, async (t) => {
   // The model's answer says the key too: what the runner keeps of the run (its view, its list row) is cut as it is written.
@@ -166,24 +172,14 @@ test("a run whose launch's sealed part doesn't open here is withheld, as a run w
   const run = await liveRun(t, { start: { model_key: KEY } });
   await writeFile(join(run.work, "notes.txt"), "plain words\n");
   assert.deepEqual(await cutRead(run, "notes.txt"), [200, "plain words\n"]);
-  const db = await raw(join(run.data, "store.sqlite"));
-  try {
-    await db.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", new Uint8Array(64).fill(9), run.runId);
-  } finally {
-    await db.close();
-  }
+  await damageSeal(run.data, run.runId);
   assert.deepEqual(await cutRead(run, "notes.txt"), [403, "forbidden"], "what it was handed can't be read back: withheld, never cut of less");
   const rawNotes = await get(run.baseUrl, run.token, `/runs/${run.runId}/files/notes.txt`);
   assert.equal(rawNotes.status, 403, "read raw too: the whole run is withheld, never shown cut of a shorter list");
   assert.equal((await run.api("GET", `/runs/${run.runId}`)).body.title, WITHHELD_TITLE, "its view withheld");
   // Its kept listing was built while its launch opened, cut of the key then: built again (a write that moves what its
   // view shows), it is withheld too.
-  const marks = await raw(join(run.data, "store.sqlite"));
-  try {
-    await marks.run("UPDATE runs SET list_mark = list_mark + 1 WHERE id = ?", run.runId);
-  } finally {
-    await marks.close();
-  }
+  await write(run.data, "UPDATE runs SET list_mark = list_mark + 1 WHERE id = ?", run.runId);
   const row = (await run.api("GET", "/runs")).body.runs.find((one) => one.run_id === run.runId);
   assert.equal(row?.title, WITHHELD_TITLE, `its list row withheld: ${JSON.stringify(row)}`);
   run.release();
@@ -238,12 +234,7 @@ test("a message that hands a new model_key mid-turn keeps the one it replaced cu
 test("a message sealed over a launch whose sealed part doesn't open here keeps the run withheld: what it held is not known", { timeout: 180_000 }, async (t) => {
   const run = await liveRun(t, { start: { model_key: KEY } });
   await writeFile(join(run.work, "notes.txt"), `first=${KEY}\n`);
-  const db = await raw(join(run.data, "store.sqlite"));
-  try {
-    await db.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", new Uint8Array(64).fill(9), run.runId);
-  } finally {
-    await db.close();
-  }
+  await damageSeal(run.data, run.runId);
   const sent = await run.api("POST", `/runs/${run.runId}/messages`, { content: "Go on.", model_key: KEY_TWO });
   assert.equal(sent.status, 202, JSON.stringify(sent.body));
   assert.deepEqual(await cutRead(run, "notes.txt"), [403, "forbidden"], "a fresh seal is no reason to read the run cut of the new key alone");
