@@ -5019,8 +5019,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles
   and fonts) hold no data; everything it shows comes through those routes. It loads one thing from the network: a
   provider's icon, from Google's favicon service (`www.google.com/s2/favicons`, which redirects to
-  `t0`-`t3.gstatic.com`), on every view that names a provider it knows: Settings, the agent pages and editor, a
-  run's header, timeline and graph, and the lists of models, tools and computers. The request names the provider's
+  `t0`-`t3.gstatic.com`), on every view that names a provider it knows, among them Settings, Mission Control, the
+  agent pages and editor, templates, and a run's header, timeline, graph and screen. The request names the provider's
   public site (`chatgpt.com`) and carries no referrer, no cookie of this server's and nothing of yours; Google sees
   the browser's address and which providers the page lists, so on a run's page that is the providers that run used.
   Offline, or with those hosts blocked, the page shows a mark bundled with the console or a plain icon instead. The
