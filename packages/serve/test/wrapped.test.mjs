@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { request } from "node:http";
 import { agent, follow, serve } from "./support.mjs";
 
 const WORDS = "Fixture prompt, never reported.";
@@ -75,4 +76,33 @@ test("a server with a public URL does not read the machine's files: 403", { time
   const { api } = await serve(t, { publicUrl: "https://agentrun.example.test" });
   const refused = await api("GET", "/wrapped");
   assert.deepEqual([refused.status, refused.body.error?.code], [403, "forbidden"], JSON.stringify(refused.body));
+});
+
+test("the route is under the token: no Bearer is 401, a wrong one is 401", { timeout: 120_000 }, async (t) => {
+  await homeWith(t);
+  const { api, baseUrl } = await serve(t);
+  assert.equal((await fetch(`${baseUrl}/wrapped`)).status, 401);
+  assert.equal((await fetch(`${baseUrl}/wrapped`, { headers: { authorization: "Bearer not-the-token" } })).status, 401);
+  assert.equal((await api("GET", "/wrapped")).status, 200);
+});
+
+test("a Host that is not a loopback name is 403 here even where the server's own Host check lets it through (an allowed name)", { timeout: 120_000 }, async (t) => {
+  await homeWith(t);
+  const { baseUrl, token, api } = await serve(t, { allowHosts: ["tunnel.example.test"] });
+  const asked = (hostHeader) => new Promise((resolve, reject) => {
+    const req = request(`${baseUrl}/wrapped`, { agent: false, headers: { authorization: `Bearer ${token}`, host: hostHeader } }, (res) => {
+      let text = "";
+      res.on("data", (chunk) => (text += chunk));
+      res.on("end", () => resolve({ status: res.statusCode, body: JSON.parse(text) }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+  const port = new URL(baseUrl).port;
+  const rebound = await asked(`tunnel.example.test:${port}`);
+  assert.deepEqual([rebound.status, rebound.body.error?.code], [403, "forbidden"], JSON.stringify(rebound.body));
+  // Another route answers the same Host: it is this one's check, not the server's.
+  const other = await asked(`127.0.0.1:${port}`);
+  assert.equal(other.status, 200, JSON.stringify(other.body));
+  assert.equal((await api("GET", "/wrapped")).status, 200);
 });

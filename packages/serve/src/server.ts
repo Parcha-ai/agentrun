@@ -84,7 +84,7 @@ import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { acceptedTokens, type ApiToken, bearerCheck, tokenProblem } from "./api-token.js";
 import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
-import { hostFix, hostName, loopbackNames, movedFix } from "./host-check.js";
+import { hostFix, hostName, isLoopbackName, loopbackNames, movedFix } from "./host-check.js";
 import { movedAddress, publicAddressChanged, readPublicAddress } from "./public-address.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
@@ -5536,7 +5536,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await capacityOverStore(store.runners, capacityWindowOf(url)));
       case "getWrapped": {
         // The session files of the machine this server runs on: only a server bound to loopback with no public URL answers.
-        if (options.apiOnly || options.publicUrl || !isLoopback(host)) throw new ApiError("forbidden", "wrapped reads this machine's own session files, so only a server on loopback with no public URL answers it");
+        // A name an operator allowed (--allow-host) passes the server's Host check for its other routes, but a page that rebound
+        // one to this address must not read the machine's files: here the Host is a loopback name or address, or it is refused.
+        if (options.apiOnly || options.publicUrl || !isLoopback(host) || !isLoopbackName(hostName(req.headers.host))) throw new ApiError("forbidden", "wrapped reads this machine's own session files, so only a server on loopback with no public URL, reached by a loopback name, answers it");
         const given = url.searchParams.get("year");
         const year = given === null ? new Date().getFullYear() : Number(given);
         if (given !== null && !/^\d{4}$/.test(given)) throw new ApiError("bad_request", "year is a four-digit year");
