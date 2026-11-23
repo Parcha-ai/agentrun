@@ -1,8 +1,8 @@
-// A tool call in flight when its runner lets the run go is never run again (GRE-4452 saw a bash command replayed after a
+// A tool call in flight when its runner lets the run go is never run again (a bash command was once replayed after a
 // sandbox was made anew). Two runners on one store (Postgres with AGENTRUN_TEST_PG_URL, else SQLite), the real loop
 // (startRunner over createDispatchLoop and the adapter spec pi really uses), the model a script, and each claim's computer
 // a sandbox of its own over the run's folder whose processes run for real on this machine (fixtures/streaming-sandbox.mjs):
-// the second claim gets a new sandbox, as a hand-back on grep gets a new Daytona sandbox.
+// the second claim gets a new sandbox, as a hand-back on a hosted runner gets a new sandbox.
 //   - hand-back: runner-a closes (what SIGTERM does, past its drain) while bash runs; runner-b claims the run at once;
 //   - crash: runner-a dies where it stands (runner.ts kill); runner-b claims the run once its lease lapses.
 // Either way the bash command ran once (its own count in the run's folder), its call ends "interrupted" in the run's
