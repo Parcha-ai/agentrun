@@ -1602,7 +1602,7 @@ the TTL.
   `started` (polling `GET /sandbox/{id}`), pushes in and starts the daemon, checks the daemon and probes its network
   none from inside, and waits until the label listing shows the new computer twice running. Daytona's `GET /sandbox`
   is eventually consistent (`daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/controllers/sandbox.controller.ts:130-146`:
-  an OpenSearch index the API never writes itself), and on 11-23 it left two new production sandboxes unlisted past
+  an OpenSearch index the API never writes itself), and on a hosted deployment it left new sandboxes unlisted past
   15 s. So a sandbox still unlisted after `listedMs` (15 s unset; `listedMs` or `DAYTONA_LISTED_MS`, in ms) is read by
   its id: one that reads `started` with its labels is kept, with a note naming the labels, the sandbox and the wait,
   and `list()` leaves it out until the listing shows it; a retry of its request on the same provider finds it by its
@@ -1796,8 +1796,8 @@ default snapshot whose `/opt` another user can write would now be refused at cre
   which snapshot Daytona names for a sandbox made with none, and how soon after `autoDestroyAt` Daytona destroys;
 - how long `GET /sandbox/{id}` takes to answer 404 after a delete, and the listing to hide the sandbox (release waits
   for both, up to `goneMs`); how long a stop takes to read `stopped`;
-- how soon the label listing shows a new sandbox: 0.7 to 1.6 s in pi-transport's runs, past 15 s twice on production
-  on 11-23 (create keeps a sandbox the listing trails, above);
+- how soon the label listing shows a new sandbox: 0.7 to 1.6 s in pi-transport's runs, past 15 s on a hosted
+  deployment (create keeps a sandbox the listing trails, above);
 - the ports a CIDR list opens on the production runner, and whether a domain list blocks every port but 80 and 443;
 - `network: none` against the live bypass cases (ruling 9), on each class;
 - the linux-vm class end to end.

@@ -456,7 +456,7 @@ test("create's listing wait backs off from 150 ms to the host's pollMs: a vendor
 });
 
 // A vendor's listing may trail its create past listedMs: Daytona's GET /sandbox is eventually consistent (an index the
-// API never writes itself), and agentrun-prod's Daytona left two new sandboxes unlisted for 15 s on 11-23, each started,
+// API never writes itself), and on a hosted deployment it left new sandboxes unlisted for 15 s, each started,
 // dialed and checked from inside, and each deleted for it ("the computer was not listed within 15 s of its creation").
 test("a computer the listing never shows within listedMs, which a read by its id finds running with its labels, is kept and answered, with a note naming the labels, the machine and the wait", async () => {
 	const fake = fakeHost();
