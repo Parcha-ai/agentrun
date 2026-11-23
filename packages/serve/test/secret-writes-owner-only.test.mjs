@@ -17,7 +17,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { call, clientOwnerSession, serve as serveOf, withEnv } from "./support.mjs";
+import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
+import { call, clientOwnerSession, cookieOf, serve as serveOf, withEnv } from "./support.mjs";
 
 const { openapiDocument } = await import("../dist/openapi.js");
 const { mcpSourceKey } = await import("../dist/mcp-sources.js");
@@ -259,6 +260,34 @@ test("the owner's save over a server the token saved makes it the owner's: the t
   const refused = await token("DELETE", "/settings/mcp-servers/fake");
   assert.equal(refused.status, 403, refused.text);
   assert.ok(await savedAuth(page), "still saved");
+});
+
+test("the owner's sign-in on a server the token saved makes it the owner's: its record loses the token's mark as the signed-in row is written, and the token's save over it and its delete are 403", async (t) => {
+  const server = await serve(t);
+  const plain = await startFakeMcp();
+  const as = await startFakeOAuth();
+  const mcp = await startFakeMcp({ token: as.accepts, oauth: as.issuer });
+  t.after(() => Promise.all([plain.close(), as.close(), mcp.close()]));
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: plain.url, auth: { type: "none" } })).status, 200);
+  assert.equal((await server.store.settings.get(mcpSourceKey("docs")))?.by, "token");
+  // The owner signs in on it, at the OAuth server's address: start, approve, and the callback with the start's cookie.
+  const started = await page("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(started.status, 200, started.text);
+  const asked = await fetch(started.json.authorization_url, { redirect: "manual" });
+  assert.equal(asked.status, 302, await asked.text());
+  const { cookie } = await clientOwnerSession(server);
+  const back = await fetch(asked.headers.get("location"), { redirect: "manual", headers: { cookie: [cookie, cookieOf(started)].filter(Boolean).join("; ") } });
+  assert.match(back.headers.get("location") ?? "", /sign_in=ok/, back.headers.get("location") ?? String(back.status));
+  const row = await server.store.mcp.server("docs");
+  assert.deepEqual([row?.auth, row?.url], ["oauth", mcp.url], "the owner's signed-in row");
+  assert.equal((await server.store.settings.get(mcpSourceKey("docs")))?.by, undefined, "the record no longer says the token saved it");
+  const over = await token("PUT", "/settings/mcp-servers/docs", { url: plain.url, auth: { type: "none" } });
+  assert.equal(over.status, 403, over.text);
+  const removed = await token("DELETE", "/settings/mcp-servers/docs");
+  assert.equal(removed.status, 403, removed.text);
+  assert.equal((await server.store.mcp.server("docs"))?.auth, "oauth", "it stays the owner's");
 });
 
 test("a sign-in's start is the owner's alone: the token is refused, and gets no state cookie to finish one with", async (t) => {
