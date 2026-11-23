@@ -10,9 +10,12 @@
 // folder and reads the file again once it holds it, so a token another holder (the CLI, another runner) renewed is
 // taken and nothing is posted. The answer is written back only to the file it came from, atomically (a temp file at mode
 // 0600 in the same folder before any byte is in it, synced, then renamed over it), every other field kept as it was. A
-// renewal that fails is refused after one more read of the file (another holder may have renewed meanwhile), in
-// LOGIN_REFUSED_NOT_RENEWED's words when Anthropic refused the token, else LOGIN_RUNNING_OUT's, and nothing retries it; a refresh token Anthropic refused for good (`invalid_grant`) is never
-// posted again by this process. No token is in a log field, an error or an event: a failure is told by its status and
+// pair whose write fails is held in this process's memory until it is saved: every ask hands its token and tries the
+// write again, and one whose token nears its own end still unsaved is refused in LOGIN_NOT_SAVED's words. A refresh
+// token Anthropic took (a 200 that rotated it) or refused for good (`invalid_grant`) is never posted again by this
+// process. A renewal that fails is refused after one more read of the file (another holder may have renewed meanwhile),
+// in LOGIN_REFUSED_NOT_RENEWED's words when Anthropic refused the token, else LOGIN_RUNNING_OUT's, and nothing retries
+// it. No token is in a log field, an error or an event: a failure is told by its status and
 // its OAuth error code alone, never a response body or a thrown error's words. Each value read or answered joins this
 // process's redaction (secrets.ts holdSecret), and each token handed joins every watcher's.
 //
@@ -49,6 +52,16 @@ export const LOGIN_RUNNING_OUT = "Claude Code's login on this machine runs out i
 /** The words a run gets when Anthropic refused the login's token (the run's CLI's 401), whatever time it had left, and
  *  the runner could not renew it. */
 export const LOGIN_REFUSED_NOT_RENEWED = "Claude refused this login and it could not be renewed; open Claude Code once to sign in again.";
+/** The words a run gets when the runner renewed the login but could not write the renewal to the login's file, and the
+ *  renewed token it holds in memory has less than the margin left: Anthropic took the file's refresh token, so only that
+ *  held pair can be renewed, and the runner renews only from the file. */
+export const LOGIN_NOT_SAVED = "Claude Code's login on this machine was renewed, but the runner could not save the renewal to the login's file, and the renewed token runs out in less than 5 minutes: make room on the disk (or fix the login folder's permissions) and start the run again; if the runner restarted meanwhile, sign in again under Settings → Model keys.";
+/** A renewal that holds a pair it could not save, whose token nears its end (LOGIN_NOT_SAVED). */
+class LoginNotSaved extends Error {
+  constructor() {
+    super(LOGIN_NOT_SAVED);
+  }
+}
 /** The words a run gets when the login is kept in a form this runner does not read (not the pinned CLI's plaintext file). */
 export const LOGIN_SEALED = "Claude Code's login on this machine is kept in a form this runner cannot hand to a run of its own user: set AGENTRUN_RUN_USER=same, or give the run a model_key.";
 
@@ -124,17 +137,24 @@ export class LoginTokens {
    *  near its end and not renewed), never with a value of the file in them. */
   async token(): Promise<string> {
     let read = await this.#read();
-    if (!("refused" in read) && (read.access === this.#refusedAccess || read.expiresAt - this.#now() < LOGIN_MARGIN_MS)) {
+    // A pair a renewal could not save yet (heldPairs) is the renewal's to hand, and to save, at every ask.
+    if (!("refused" in read) && (read.access === this.#refusedAccess || read.expiresAt - this.#now() < LOGIN_MARGIN_MS || heldPairs.has(this.#file))) {
       const seen = read.access;
       let renewed: Renewed | undefined;
+      let notSaved = false;
       try {
         renewed = await this.#renew(this.#login, seen);
-      } catch {
-        // Refused below in LOGIN_REFUSED_NOT_RENEWED's or LOGIN_RUNNING_OUT's words: a renewal's own never reach a run.
+      } catch (error) {
+        // Refused below in LOGIN_NOT_SAVED's, LOGIN_REFUSED_NOT_RENEWED's or LOGIN_RUNNING_OUT's words: a renewal's
+        // own never reach a run.
+        notSaved = error instanceof LoginNotSaved;
       }
       // The one read after it: the renewal's write, or another holder's that renewed meanwhile (a failed post included).
       read = await this.#read();
-      if (renewed && !("refused" in read) && read.access === seen) read = renewed;
+      if (!("refused" in read) && read.access === seen) {
+        if (notSaved) throw new Error(LOGIN_NOT_SAVED);
+        if (renewed) read = renewed;
+      }
     }
     if ("refused" in read) throw new Error(read.refused);
     // A token Anthropic refused is said so, whatever time it had left: "runs out in less than 5 minutes" would not be true.
@@ -148,7 +168,8 @@ export class LoginTokens {
    *  then (another holder renewed it, and that one is handed). */
   async refused(sent: string): Promise<void> {
     const read = await this.#read();
-    if (!("refused" in read) && read.access === sent) this.#refusedAccess = sent;
+    // The token of a pair held unsaved is the one handed while the file still holds the old one.
+    if (!("refused" in read) && (read.access === sent || heldPairs.get(this.#file)?.renewed.access === sent)) this.#refusedAccess = sent;
   }
 
   async #read(): Promise<Read> {
@@ -175,10 +196,45 @@ export interface RenewLoginOptions {
   readonly lockWaitMs?: number;
 }
 
-/** Refresh tokens Anthropic refused for good in this process (`invalid_grant`): never posted again. */
+/** Refresh tokens this process never posts again: one Anthropic refused for good (`invalid_grant`), and one it took (a
+ *  200 that answered another refresh token: the one posted is spent). */
 const dead = new Set<string>();
 /** The renewals in flight in this process, by the refresh token they spend: two asks on one login share one. */
 const flights = new Map<string, Promise<Renewed | undefined>>();
+
+/** A renewal's answer not yet written to its login's file: the refresh token it spent (`posted`), the fields it writes
+ *  into the file's `claudeAiOauth`, and the token it hands. */
+type HeldPair = { readonly posted: string; readonly fields: Record<string, unknown>; readonly renewed: Renewed };
+/** The pairs this process renewed and could not save yet, by the file they belong in: every ask on that login hands the
+ *  held token and tries the write again (saveHeld), until it lands, another holder writes the file, or the process ends. */
+const heldPairs = new Map<string, HeldPair>();
+
+/** `held` written into `file` as the pinned CLI writes a renewal back (login-refresh.ts): only while the file still holds
+ *  the refresh token it spent (or one the CLI cleared), the fields it gives over the file's, the rest kept as they are.
+ *  "saved" once written, "held" while the write fails (kept in heldPairs), and "dropped" when the file holds another
+ *  holder's pair (or no longer holds a login the runner reads): the file wins, as the CLI's own check lets it. */
+async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions): Promise<"saved" | "held" | "dropped"> {
+  const say = options.log ?? (() => undefined);
+  const forget = () => {
+    if (heldPairs.get(file) === held) heldPairs.delete(file);
+  };
+  const current = await credentialsNow(file);
+  if (!current || (current.oauth.refreshToken !== held.posted && current.oauth.refreshToken !== "")) {
+    forget();
+    say({ claude_login: "renewed", saved: "no", reason: "newer" });
+    return "dropped";
+  }
+  try {
+    await replaceFile(file, JSON.stringify({ ...current.json, claudeAiOauth: { ...current.oauth, ...held.fields } }));
+  } catch {
+    heldPairs.set(file, held);
+    say({ claude_login: "renewed", saved: "no", reason: "held" });
+    return "held";
+  }
+  forget();
+  say({ claude_login: "renewed", saved: "yes" });
+  return "saved";
+}
 
 /** The login's credentials file as it is now, in the pinned CLI's shape: its parsed object and its `claudeAiOauth`,
  *  every token in it held for redaction; none when it is not there or not that shape. */
@@ -199,14 +255,25 @@ async function credentialsNow(file: string): Promise<{ json: Record<string, unkn
 
 /** The pinned CLI's renewal of a login (the adapter's login-refresh.ts), as the runner does it in the CLI's place. */
 export function renewLogin(options: RenewLoginOptions = {}): Renew {
+  const now = options.now ?? Date.now;
   return async (login, seen) => {
     const file = join(login.dir, LOGIN_FILE);
+    // A pair renewed here and not saved yet: its token is handed and its write tried again, and nothing is posted, for
+    // the file's refresh token is spent. Once saved, a token near its own end is renewed from the file as any other.
+    const held = heldPairs.get(file);
+    if (held) {
+      const kept = await saveHeld(file, held, options);
+      if (kept === "dropped") return undefined;
+      if (held.renewed.expiresAt - now() >= LOGIN_MARGIN_MS) return held.renewed;
+      if (kept === "held") throw new LoginNotSaved();
+      seen = held.renewed.access;
+    }
     const read = await credentialsNow(file);
     // Another holder renewed it since it was read, or it changed: the caller reads it again.
     if (read?.oauth.accessToken !== seen) return undefined;
     const refresh = read.oauth.refreshToken;
     if (typeof refresh !== "string" || refresh === "") throw new Error("the login holds no refresh token");
-    if (dead.has(refresh)) throw new Error("the login's refresh token was refused for good");
+    if (dead.has(refresh)) throw new Error("the login's refresh token is spent or was refused for good");
     let flight = flights.get(refresh);
     if (!flight) {
       flight = renewUnderLock(login.dir, file, seen, refresh, options).finally(() => flights.delete(refresh));
@@ -341,6 +408,10 @@ async function postRefresh(oauth: Record<string, unknown>, refresh: string, opti
     say({ claude_login: "renew_failed", reason: "answer" });
     throw new Error("the login's renewal answer held no token");
   }
+  // Anthropic took the refresh token and answered another: the one posted is spent, and never posted again, whatever
+  // becomes of the answer's write. One answered with no new refresh token is the CLI's `refresh_token:K=e`: still the
+  // login's, kept.
+  if (typeof next === "string" && next !== "" && next !== refresh) dead.add(refresh);
   return {
     access,
     refresh: typeof next === "string" && next !== "" ? next : undefined,
@@ -350,34 +421,20 @@ async function postRefresh(oauth: Record<string, unknown>, refresh: string, opti
   };
 }
 
-/** The renewal's answer written into `file`, the one it came from, as the pinned CLI writes it back (login-refresh.ts):
- *  only while the file still holds the refresh token posted (or one the CLI cleared), and only the fields the answer
- *  gives, the rest kept as they are. The token it got, whether the write landed or not. */
+/** The renewal's answer written into `file`, the one it came from (saveHeld): the token it got, whether the write landed
+ *  or not. One that did not land is held in this process's memory (heldPairs) and written at a later ask; one the file
+ *  holds another holder's pair in place of is dropped, its token handed to this ask alone. */
 async function writeBack(file: string, posted: string, answer: Answer, options: RenewLoginOptions): Promise<Renewed> {
-  const say = options.log ?? (() => undefined);
   const now = (options.now ?? Date.now)();
   const renewed: Renewed = { access: answer.access, expiresAt: now + answer.expiresIn * 1000 };
-  const current = await credentialsNow(file);
-  if (!current || (current.oauth.refreshToken !== posted && current.oauth.refreshToken !== "")) {
-    // Written meanwhile by a holder that took no lock: its write wins, as the CLI's check lets it.
-    say({ claude_login: "renewed", saved: "no" });
-    return renewed;
-  }
-  const oauth = {
-    ...current.oauth,
+  const fields = {
     accessToken: answer.access,
     refreshToken: answer.refresh ?? posted,
     expiresAt: renewed.expiresAt,
     ...(answer.refreshExpiresIn === undefined ? {} : { refreshTokenExpiresAt: now + answer.refreshExpiresIn * 1000 }),
     ...(answer.scope === undefined ? {} : { scopes: answer.scope.split(" ").filter(Boolean) }),
   };
-  try {
-    await replaceFile(file, JSON.stringify({ ...current.json, claudeAiOauth: oauth }));
-  } catch {
-    say({ claude_login: "renewed", saved: "no" });
-    return renewed;
-  }
-  say({ claude_login: "renewed" });
+  await saveHeld(file, { posted, fields, renewed }, options);
   return renewed;
 }
 
