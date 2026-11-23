@@ -190,26 +190,32 @@ test("compose's layout, the read failing at the start: the server reads again in
   await writeFile(join(fake.state, "host-addresses-fail"), "");
   const lines = [];
   const waits = [];
+  // Settled at each retry wait begun and each line logged: what `until` looks again on. No clock; the test's timeout
+  // bounds a hang.
+  let changed;
+  let next = new Promise((resolve) => (changed = resolve));
+  const change = () => {
+    changed();
+    next = new Promise((resolve) => (changed = resolve));
+  };
   const hostReadWait = (ms, signal) => new Promise((go) => {
     waits.push({ ms, go });
+    change();
     signal.addEventListener("abort", () => go(), { once: true });
   });
-  /** Until `ready()` holds, looking again each 20 ms, a bounded number of times. */
-  const until = async (ready, what) => {
-    for (let tries = 0; !ready(); tries++) {
-      if (tries > 1_500) assert.fail(`${what} never came: ${JSON.stringify({ waits: waits.map((one) => one.ms), lines })}`);
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+  /** Until `ready()` holds, looking again at each retry wait begun or line logged. */
+  const until = async (ready) => {
+    while (!ready()) await next;
   };
   const logged = (event) => lines.filter((line) => line.includes(` event=${event} `) || line.endsWith(` event=${event}`));
-  const { api } = await serve(t, { data, faux: PROBE, fauxMountinfo: fake.mountinfo, log: (line) => lines.push(line), hostReadWait });
+  const { api } = await serve(t, { data, faux: PROBE, fauxMountinfo: fake.mountinfo, log: (line) => (lines.push(line), change()), hostReadWait });
   const before = await docker(api);
   assert.deepEqual([before.available, before.state], [false, "unavailable"], JSON.stringify(before));
-  await until(() => waits.length === 1, "the first retry's wait");
+  await until(() => waits.length === 1);
   assert.equal(waits[0].ms, 15_000);
   // The second read fails as the first did: the retry waits again, longer.
   waits[0].go();
-  await until(() => waits.length === 2, "the second retry's wait");
+  await until(() => waits.length === 2);
   assert.equal(waits[1].ms, 30_000);
   assert.equal(hostReads(fake).length, 2);
   assert.equal((await docker(api)).available, false);
@@ -218,7 +224,7 @@ test("compose's layout, the read failing at the start: the server reads again in
   const boxesBefore = logged("boxes").length;
   assert.equal(boxesBefore, 1, "the start's");
   waits[1].go();
-  await until(() => logged("boxes").length > boxesBefore, "the boxes line after the read answered");
+  await until(() => logged("boxes").length > boxesBefore);
   const after = await docker(api);
   assert.deepEqual([after.available, after.host_addresses], [true, ["172.17.0.1"]], JSON.stringify(after));
   assert.match(logged("docker_host_addresses").at(-1), /addresses=172\.17\.0\.1/);
