@@ -358,6 +358,7 @@ async function parentFile(file: string, parent: string, lookups?: Map<string, un
     index = rolloutsUnder(sessions);
     lookups?.set(key, index);
   }
+  // As the tree was when listed: a parent archived or deleted since is found missing when read (forkReplay).
   return (await index).get(parent)?.find((path) => path !== file);
 }
 
@@ -384,8 +385,11 @@ async function forkReplay(file: string, lookups?: Map<string, unknown>): Promise
     const parentStream = async () => {
       if (stream) return stream;
       const path = await parentFile(file, parent, lookups);
-      if (!path) return (stream = []);
-      const { uses, ats } = await usagesOf(path);
+      // A parent gone or unreadable by the time it is read (the walk's index is the import's, listed once) is one the
+      // import does not count: the fork's copy is the only count of that history, as when there is no parent.
+      const parentRead = path ? await usagesOf(path).catch(() => undefined) : undefined;
+      if (!parentRead) return (stream = []);
+      const { uses, ats } = parentRead;
       const cut = forkedAt === undefined ? -1 : ats.findIndex((t) => t !== undefined && t > forkedAt);
       return (stream = cut === -1 ? uses : uses.slice(0, cut));
     };

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
-import { appendFile } from "node:fs/promises";
+import { appendFile, rm } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { parseHome, READERS, readSession } from "../dist/index.js";
 import { at, codexAnswer, codexContext, codexUser, jsonl, openaiUsage, tempHome, writeJsonl } from "./fixtures.mjs";
@@ -159,4 +159,21 @@ test("forks whose parent is in no sessions directory walk the sessions tree once
   };
   const one = await walks(1);
   assert.equal(await walks(2), one, "a second fork of the same missing parent lists the sessions directory no more");
+});
+
+test("a parent the walk found that is gone by a later read of the same import is missing to that read, not an error", async (t) => {
+  const home = await tempHome(t);
+  // No UUIDv7, so it is found by the walk, whose index the import's reads share (lookups).
+  const old = "4b1d0c2e-1f3a-4c5d-8e6f-00000000000f";
+  const parent = await writeJsonl(rollout(home, old), [meta(old, 0), ...parentLines().slice(1)]);
+  const forkOf = (id) => [meta(id, 20, { forked_from_id: old }), ...replayed(), ...ownTurn()];
+  const sibling = CHILD.replace(/c$/, "e");
+  const first = await writeJsonl(rollout(home, FORK), forkOf(FORK));
+  const second = await writeJsonl(rollout(home, sibling), forkOf(sibling));
+  const lookups = new Map();
+  const requests = async (file) => (await READERS.codex.read({ file }, undefined, { lookups })).sessions[0].requests.length;
+  assert.equal(await requests(first), 1, "the parent is there: the copy is its, the fork's own request alone");
+  // Archived or deleted between the two reads.
+  await rm(parent);
+  assert.equal(await requests(second), 4, "the parent is gone: the fork's copy is the only count of that history");
 });
