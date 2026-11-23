@@ -1250,7 +1250,7 @@ test("a pi import keeps each request's usage as pi wrote it, its model, its thin
   assert.ok(Math.abs(runs[0].costUsd - 0.005) < 1e-12, "its cost as before");
 });
 
-test("a Cursor CLI chat imports as a run of Cursor's harness under its agent id: each answer a request of unknown tokens, never 0, on the model Cursor names, a failed tool call an error, and its cost unknown", async (t) => {
+test("a Cursor CLI chat imports as a run of Cursor's harness under its agent id: each answer a request of unknown tokens, never 0, on a model Cursor does not say, a failed tool call an error, and its cost unknown", async (t) => {
   const { store, runs } = await importedOne(t, (home, project) => cursorChat(home, project, 38, { readFails: true }));
   assert.deepEqual(
     runs.map((r) => [r.importedFrom.source, r.importedFrom.session]),
@@ -1264,8 +1264,9 @@ test("a Cursor CLI chat imports as a run of Cursor's harness under its agent id:
     output: 0,
     requests: 2,
     unmetered: 2,
-    models: { "cursor/fixture-model": 2 },
-    model: "cursor/fixture-model",
+    // Cursor encrypts each turn's model; the one it names last (lastUsedModel) is no request's.
+    models: { "imported/unknown": 2 },
+    model: "imported/unknown",
     tools: { read_file: { calls: 1, errors: 1 } },
     activeMs: 3 * 60_000,
   });

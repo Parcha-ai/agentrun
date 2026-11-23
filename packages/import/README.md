@@ -63,10 +63,15 @@ line's usage.
 Cursor's CLI (`cursor-agent`) keeps each chat in a SQLite store of its own, `~/.cursor/chats/<workspace hash>/<agent
 id>/store.db` (an ACP session's under `~/.cursor/acp-sessions/<id>/`), with a `meta.json` beside it. The store is read
 once, whole and read-only, and no cursor is kept: each read reads it all again. A chat's id is its folder's name
-(`cursorSessionId(file)`). Cursor keeps no tokens, cost, error or time for a request on the machine (its usage is on
-Cursor's server): each answer counts as one request of unknown tokens, a chat's cost is `null`, and every turn is at the
-chat's start; it ends at `meta.json`'s `updatedAtMs`. The model is the agent's `lastUsedModel`, as `cursor/<model>`,
-when the store names one.
+(`cursorSessionId(file)`).
+
+Cursor's CLI keeps no token usage on the machine: no tokens, cost or error for a request, and each turn's model only
+encrypted. Its usage is on Cursor's server (tokscale reads it from Cursor's usage CSV export; that is out of scope here).
+So each answer counts as one request of unknown tokens on an unknown model, keyed by Cursor's `requestId` where the
+message names one (a later message of the same request adds to it), else by its message id. A chat's cost is `null`.
+No message has a time of its own, so every turn is at the chat's start (the agent's `createdAt`) and the chat ends at
+`meta.json`'s `updatedAtMs`. The messages are JSON; only their order needs the root blob, a protobuf of which the reader
+reads one field.
 
 ## Readers
 

@@ -1,6 +1,6 @@
 // Cursor's CLI (cursor-agent) as a source: each chat a store.db of its own (blobs and meta), read once, whole. Cursor
-// keeps no tokens or cost for a request on this machine (its usage is on Cursor's server): each answer is a request of
-// unknown tokens. Every chat here is synthetic (fixtures/cursor/fixture.mjs).
+// keeps no tokens, cost or readable model for a request on this machine (its usage is on Cursor's server): each answer
+// is a request of unknown tokens on an unknown model. Every chat here is synthetic (fixtures/cursor/fixture.mjs).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile, stat, writeFile } from "node:fs/promises";
@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { serialize } from "node:v8";
 import { cursorSessionId, HARNESS_OF, parseHome, READERS, readSession, SOURCE_NAMES } from "../dist/index.js";
-import { AGENT, buildChat, T0, WORKSPACE } from "./fixtures/cursor/fixture.mjs";
+import { AGENT, buildChat, MESSAGES, T0, WORKSPACE } from "./fixtures/cursor/fixture.mjs";
 import { tempHome } from "./fixtures.mjs";
 
 const cursor = READERS.cursor;
@@ -35,7 +35,7 @@ test("a chat is found under ~/.cursor/chats and ~/.cursor/acp-sessions, else whe
   assert.deepEqual(await cursor.discover(join(home, "nobody"), {}), []);
 });
 
-test("a chat reads into one session: its prompts, its answers (each a request of unknown tokens), its tools' results", async (t) => {
+test("a chat reads into one session: its prompts, its answers (each a request of unknown tokens and model), its tools' results", async (t) => {
   const home = await tempHome(t);
   const file = await buildChat(join(home, ".cursor"), { lastUsedModel: "fixture-model", name: "Fixture chat" });
   const result = await cursor.read({ file });
@@ -49,7 +49,7 @@ test("a chat reads into one session: its prompts, its answers (each a request of
   assert.equal(session.id, cursorSessionId(file), "the id is the exported function's");
   assert.equal(session.file, file);
   assert.equal(session.cwd, WORKSPACE);
-  assert.equal(session.model, "cursor/fixture-model");
+  assert.equal(session.model, undefined, "the model Cursor names last is no request's: each turn's is encrypted, never read");
   assert.equal(session.sourceTitle, "Fixture chat");
   assert.equal(session.firstPrompt, "Tidy the fixture notes.");
   assert.equal(session.users, 2);
@@ -76,12 +76,12 @@ test("a chat reads into one session: its prompts, its answers (each a request of
   assert.equal(requests.length, 3);
   assert.deepEqual(
     requests.map((request) => request.key),
-    ["msg_fixture_1", "msg_fixture_2", "msg_fixture_3"],
+    ["req_fixture_1", "msg_fixture_2", "msg_fixture_3"],
   );
   for (const request of requests) {
     assert.equal(request.usage, undefined, "Cursor keeps no tokens here");
     assert.equal(request.costUsd, undefined);
-    assert.equal(request.model, "cursor/fixture-model");
+    assert.equal(request.model, undefined);
     assert.equal(request.error, undefined, "Cursor stores no request's error");
   }
 });
@@ -107,11 +107,10 @@ test("a message its root names but the store has not (written later, or lost) is
   );
 });
 
-test("an untitled chat has no source title, and one with no model named has none", async (t) => {
+test("an untitled chat has no source title", async (t) => {
   const home = await tempHome(t);
   const session = await readSession(await buildChat(join(home, ".cursor")), "cursor");
   assert.equal(session.sourceTitle, undefined, "Cursor's default name, New Agent, is no title");
-  assert.equal(session.model, undefined);
   assert.equal(session.titleText, "Tidy the fixture notes.");
 });
 
@@ -124,9 +123,9 @@ test("a subagent's chat is its parent's child", async (t) => {
   assert.equal(session.parent, parent);
 });
 
-test("the start is the root's, else the agent's createdAt; a chat with no updatedAtMs ends where it started", async (t) => {
+test("the start is the agent's createdAt; a chat with no updatedAtMs ends where it started", async (t) => {
   const home = await tempHome(t);
-  const file = await buildChat(join(home, ".cursor"), { started: null, created: T0 + 1000 });
+  const file = await buildChat(join(home, ".cursor"), { created: T0 + 1000 });
   const meta = join(dirname(file), "meta.json");
   const { updatedAtMs: _gone, ...rest } = JSON.parse(await readFile(meta, "utf8"));
   await writeFile(meta, JSON.stringify(rest));
@@ -149,6 +148,7 @@ test("turns false keeps no text: no prompt, answer, tool output or argument, in 
   const result = await cursor.read({ file }, undefined, { turns: false });
   const [{ session, requests }] = result.sessions;
   assert.deepEqual(session.turns, []);
+  assert.equal(session.cwd, WORKSPACE, "the workspace still names its project, as a listing needs");
   assert.equal(requests.length, 3, "every request still counts");
   for (const request of requests) {
     assert.equal(request.text, "");
@@ -158,6 +158,24 @@ test("turns false keeps no text: no prompt, answer, tool output or argument, in 
   const bytes = serialize({ requests, cursor: result.cursor, calls: requests.flatMap((r) => r.calls) });
   for (const text of ["Reading the notes.", "Tidied.", "Three fixture lines.", "No such fixture file.", "/fixture/notes/todo.md", "/fixture/notes/scratch.md"]) assert.equal(bytes.includes(Buffer.from(text)), false, text);
   assert.equal(serialize(result.cursor).includes(Buffer.from("Tidy the fixture notes.")), false);
+});
+
+test("a later message of a request read already (Cursor's requestId) is more of that request: one request, its calls all kept", async (t) => {
+  const home = await tempHome(t);
+  const more = { role: "assistant", id: "msg_fixture_1b", content: [{ type: "text", text: "And the index." }, { type: "tool-call", toolCallId: "call_fixture_1b", toolName: "read_file", args: { path: "/fixture/notes/index.md" } }], providerOptions: { cursor: { requestId: "req_fixture_1" } } };
+  const file = await buildChat(join(home, ".cursor"), { messages: [...MESSAGES.slice(0, 4), more, ...MESSAGES.slice(4)] });
+  const { sessions } = await cursor.read({ file });
+  const [{ session, requests }] = sessions;
+  assert.deepEqual(
+    requests.map((request) => [request.key, request.calls.map((call) => call.id)]),
+    [
+      ["req_fixture_1", ["call_fixture_1", "call_fixture_1b"]],
+      ["msg_fixture_2", []],
+      ["msg_fixture_3", ["call_fixture_2"]],
+    ],
+  );
+  assert.equal(session.turns[1].text, "Reading the notes.\nAnd the index.");
+  assert.equal(session.turns.filter((turn) => turn.role === "assistant").length, 3);
 });
 
 test("a read is one pass: no cursor to go on from, and a second read reads it all again", async (t) => {

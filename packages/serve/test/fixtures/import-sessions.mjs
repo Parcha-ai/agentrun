@@ -470,7 +470,8 @@ export function claudeSubagent(home, cwd, n, k, { model = "claude-haiku-5", slug
  *  (each id the sha256 of its bytes: the messages, as AI SDK JSON, and the root, a protobuf naming them in order (field
  *  1) and the chat's start (field 26)), its meta "0" (the agent's metadata, hex JSON), and a meta.json beside it. A
  *  prompt, an answer reading a file, the read's result (failed with `readFails`) and a last answer: two requests, of
- *  tokens Cursor does not keep. Dated an hour ago unless `fresh`. */
+ *  tokens and a model Cursor does not keep (its lastUsedModel is the chat's, not a request's). Dated an hour ago unless
+ *  `fresh`. */
 export function cursorChat(home, cwd, n, { prompt = "Tidy the notes.", model = "fixture-model", readFails = false, fresh = false } = {}) {
   const id = sessionId(n);
   const dir = join(home, ".cursor", "chats", createHash("md5").update(cwd).digest("hex"), id);

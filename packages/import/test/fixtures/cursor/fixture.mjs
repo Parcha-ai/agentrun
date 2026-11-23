@@ -2,7 +2,8 @@
 // meta.json beside it. store.db is a content-addressed store: blobs(id, data), each blob's id the sha256 of its bytes,
 // and meta(key, value), whose key "0" holds the agent's metadata as hex-encoded JSON. The latest root blob (its id in the
 // metadata) is an agent.v1.ConversationStateStructure: field 1 the ids of the conversation's messages in order (each an AI
-// SDK message as JSON), field 26 when the conversation started. Every id, prompt and time here is made up.
+// SDK message as JSON, its id the 32 raw bytes of its sha256), with fields the reader passes over beside it (22, a string;
+// 26, a varint). Every id, prompt and time here is made up.
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -63,9 +64,8 @@ export const MESSAGES = [
 ];
 
 /** A chat under `config` (the Cursor config directory): its store.db and meta.json, the store's path returned.
- *  `messages` in the root's order; `stored` the order the blobs are written in (the root's, by default); `started` null for a
- *  root that names no start. */
-export async function buildChat(config, { agent = AGENT, workspace = WORKSPACE, messages = MESSAGES, stored, started = T0, created = T0 - 1000, updated = T0 + 5 * 60_000, name = "New Agent", lastUsedModel, subagentInfo, layout = "chats" } = {}) {
+ *  `messages` in the root's order; `stored` the order the blobs are written in (the root's, by default). */
+export async function buildChat(config, { agent = AGENT, workspace = WORKSPACE, messages = MESSAGES, stored, created = T0, updated = T0 + 5 * 60_000, name = "New Agent", lastUsedModel, subagentInfo, layout = "chats" } = {}) {
   const dir = layout === "acp" ? join(config, "acp-sessions", agent) : join(config, "chats", createHash("md5").update(workspace).digest("hex"), agent);
   await mkdir(dir, { recursive: true });
   const file = join(dir, "store.db");
@@ -78,8 +78,8 @@ export async function buildChat(config, { agent = AGENT, workspace = WORKSPACE, 
   };
   const json = messages.map((message) => blobOf(Buffer.from(JSON.stringify(message))));
   for (const blob of stored ? stored.map((i) => json[i]) : json) put.run(blob.id, blob.bytes);
-  // The root: the messages' ids (raw 32 bytes each), the conversation's start, and a field this reader does not read.
-  const root = blobOf(Buffer.concat([...json.map((blob) => field(1, Buffer.from(blob.id, "hex"))), field(22, Buffer.from("agent")), ...(started === null ? [] : [field(26, started)])]));
+  // The root: the messages' ids (raw 32 bytes each), and two fields this reader does not read.
+  const root = blobOf(Buffer.concat([...json.map((blob) => field(1, Buffer.from(blob.id, "hex"))), field(22, Buffer.from("agent")), field(26, T0 - 60_000)]));
   put.run(root.id, root.bytes);
   const meta = { agentId: agent, latestRootBlobId: root.id, name, createdAt: created, mode: "default", isRunEverything: false, ...(lastUsedModel ? { lastUsedModel } : {}), ...(subagentInfo ? { subagentInfo } : {}) };
   db.prepare("INSERT INTO meta VALUES ('0', ?)").run(Buffer.from(JSON.stringify(meta)).toString("hex"));

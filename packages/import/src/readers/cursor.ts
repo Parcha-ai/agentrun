@@ -1,12 +1,12 @@
 // Cursor's CLI (cursor-agent): each chat a SQLite store of its own, <config>/chats/<md5 of the workspace>/<agent id>/store.db
 // (an ACP session's in <config>/acp-sessions/<id>/store.db), with a meta.json beside it (the workspace, when the chat was
 // made and last written). The store is content-addressed: blobs(id, data), each id the sha256 of its bytes, and
-// meta(key, value), whose key "0" holds the agent's metadata as hex-encoded JSON (its latest root blob, its name, the
-// model it last used, the agent it ran under when it is a subagent). The root is a protobuf
-// (agent.v1.ConversationStateStructure): its field 1 the ids of the chat's messages in order, each an AI SDK message as
-// JSON; its field 26 when the chat started. Cursor keeps no tokens, cost or error of a request here (its usage is on
-// Cursor's server), nor a message's time: each answer is a request of unknown tokens, and every turn is at the chat's
-// start. A store is read once, whole, read-only: no cursor to go on from.
+// meta(key, value), whose key "0" holds the agent's metadata as hex-encoded JSON (its latest root blob, its name, when it
+// was made, the agent it ran under when it is a subagent). The messages are AI SDK messages as JSON blobs; their order is
+// only in the root, a protobuf (rootOf). Cursor keeps no tokens, cost or error of a request here (its usage is on
+// Cursor's server), no model a person can read (each turn's is encrypted, and is never read), nor a message's time: each
+// answer is a request of unknown tokens on an unknown model, and every turn is at the chat's start. A store is read once,
+// whole, read-only: no cursor to go on from.
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { entries, type Env, type Reader, type ReadOptions, type ReadResult, rememberUser } from "../reader.js";
@@ -70,11 +70,12 @@ async function openDb(file: string): Promise<Db> {
   };
 }
 
-/** The parts of a root this reader reads: its messages' blob ids in order (field 1, 32 bytes each), and when the chat
- *  started (field 26, ms). A root that is no protobuf throws. */
-function rootOf(bytes: Uint8Array): { ids: string[]; started?: number } {
+/** The ids of a chat's messages, in order: the root's field 1. The root is agent.v1.ConversationStateStructure (as
+ *  cursor-agent 2026.07.09-a3815c0 declares it), and field 1, root_prompt_messages_json, its repeated message blob ids,
+ *  each stored as the 32 raw bytes of the blob's sha256. Every other field is passed over by its wire type; nothing is
+ *  generated from Cursor's schema. A root that is no protobuf throws. */
+function rootOf(bytes: Uint8Array): string[] {
   const ids: string[] = [];
-  let started: number | undefined;
   let at = 0;
   const varint = (): number => {
     let value = 0;
@@ -89,10 +90,8 @@ function rootOf(bytes: Uint8Array): { ids: string[]; started?: number } {
     const tag = varint();
     const field = Math.floor(tag / 8);
     const wire = tag % 8;
-    if (wire === 0) {
-      const value = varint();
-      if (field === 26) started = value;
-    } else if (wire === 2) {
+    if (wire === 0) varint();
+    else if (wire === 2) {
       const length = varint();
       if (at + length > bytes.length) throw new Error("not a Cursor chat root: a field runs past its end");
       if (field === 1 && length === 32) ids.push(Buffer.from(bytes.subarray(at, at + length)).toString("hex"));
@@ -102,7 +101,7 @@ function rootOf(bytes: Uint8Array): { ids: string[]; started?: number } {
     else throw new Error(`not a Cursor chat root: wire type ${wire}`);
   }
   if (at > bytes.length) throw new Error("not a Cursor chat root: a field runs past its end");
-  return { ids, started };
+  return ids;
 }
 
 /** The agent's metadata (meta key "0"): hex-encoded JSON, as cursor-agent writes it. */
@@ -139,19 +138,17 @@ async function readChat(file: string, { turns: keep = true }: ReadOptions): Prom
     };
     const rootId = str(agent.latestRootBlobId);
     const root = rootId ? blob(rootId) : undefined;
-    const { ids, started } = root ? rootOf(root) : { ids: [] };
-    const first = started ?? num(agent.createdAt) ?? num(chat.createdAtMs);
+    const ids = root ? rootOf(root) : [];
+    const first = num(agent.createdAt) ?? num(chat.createdAtMs);
     const last = Math.max(num(chat.updatedAtMs) ?? first ?? 0, first ?? 0);
     const at = first ?? last;
     const subagent = isObject(agent.subagentInfo) ? agent.subagentInfo : undefined;
-    const model = str(agent.lastUsedModel) ? `cursor/${agent.lastUsedModel as string}` : undefined;
     const name = str(agent.name);
     const session: SessionOf<"cursor"> = {
       source: "cursor",
       id: cursorSessionId(file),
       file,
       ...(str(chat.cwd) ? { cwd: chat.cwd as string } : {}),
-      ...(model ? { model } : {}),
       ...(first !== undefined ? { startedAt: new Date(first).toISOString(), endedAt: new Date(last).toISOString() } : {}),
       state: "completed",
       ...(name && name !== "New Agent" ? { sourceTitle: name } : {}),
@@ -163,6 +160,8 @@ async function readChat(file: string, { turns: keep = true }: ReadOptions): Prom
       copies: 0,
     };
     const requests: Answer[] = [];
+    /** Each request by its key: Cursor's requestId where the message names one, else the message's id. */
+    const byKey = new Map<string, Answer>();
     const add = (turn: Turn) => {
       rememberUser(session, turn);
       if (keep) session.turns.push(turn);
@@ -185,7 +184,17 @@ async function readChat(file: string, { turns: keep = true }: ReadOptions): Prom
           .filter((part) => part.type === "tool-call")
           .map((part) => ({ type: "toolCall", id: String(part.toolCallId ?? ""), name: String(part.toolName ?? ""), arguments: keep ? argsOf(part.args) : {} }));
         const text = typeof message.content === "string" ? message.content : content.filter((part) => part.type === "text" && typeof part.text === "string").map((part) => part.text as string).join("\n");
-        add({ role: "assistant", text: keep ? text : "", calls, at, ...(str(message.id) ? { key: message.id as string } : {}), ...(model ? { model } : {}) });
+        const key = str(cursorOptions(message)?.requestId) ?? str(message.id);
+        const held = key === undefined ? undefined : byKey.get(key);
+        // A later message of a request read already is more of it: its text and calls join the first, which counts once.
+        if (held) {
+          if (keep && text) held.text = held.text ? `${held.text}\n${text}` : text;
+          held.calls.push(...calls);
+          continue;
+        }
+        const answer: Answer = { role: "assistant", text: keep ? text : "", calls, at, ...(key !== undefined ? { key } : {}) };
+        if (key !== undefined) byKey.set(key, answer);
+        add(answer);
       } else if (message.role === "tool") {
         const outcome = cursorOptions(message)?.highLevelToolCallResult;
         for (const part of parts(message.content)) {
