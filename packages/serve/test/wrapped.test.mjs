@@ -130,3 +130,19 @@ test("a session file that cannot be read is counted, as a number and no path, no
   assert.equal(body.requests, 2, "the rest of the year is read");
   assert.equal(JSON.stringify(body).includes("00000000-0000-4000-8000-000000000002"), false, "no path or id");
 });
+
+test("a read still going is shared past the minute, and its minute starts when it ends", { timeout: 120_000 }, async (t) => {
+  await homeWith(t);
+  const { readWrapped } = await import("../dist/wrapped.js");
+  // A year no other test reads: readWrapped keeps a result per home and year.
+  const started = Date.now();
+  const first = readWrapped(2024, started);
+  // By the clock it is handed a minute and more has gone, but the first read has not ended: the same read, not a second.
+  assert.equal(readWrapped(2024, started + 61_000), first, "a read still going is shared");
+  await first;
+  const ended = Date.now();
+  assert.equal(readWrapped(2024, ended + 59_000), first, "kept for the minute after it ended");
+  const again = readWrapped(2024, ended + 61_000);
+  assert.notEqual(again, first, "read again once that minute is over");
+  await again;
+});
