@@ -859,7 +859,8 @@ test("a run's purge takes its text out of its agent's learning: its feedback lin
   assert.equal(Number(git(repo, ["rev-list", "--count", "main"])), commits + 1, "one commit more");
   assert.match(git(repo, ["log", "-1", "--format=%s", "main"]), /^host: /);
   // c. The history reads serve none of its merges (their commits, their reasons) and no marker: the log and the view's log
-  //    leave them out, the workflow's revisions skip its merge, and its revision's digest reads as one no commit holds.
+  //    leave them out, the workflow's revisions skip its merge, and no champion is named: the gate refuses its record's
+  //    commit, so championOf skips it, and no other promotion is left (#3458).
   const after = await reads();
   const said = JSON.stringify(after);
   assert.ok(!said.includes(mark), `no history read serves the marker: ${said}`);
@@ -871,7 +872,8 @@ test("a run's purge takes its text out of its agent's learning: its feedback lin
   }
   assert.ok(after.log.items.some(({ by }) => by.run === kept), "another run's merge stays in the log");
   assert.deepEqual([after.revisions.revisions.length, after.revisions.total], [1, 1], "the workflow's one revision left is the other run's");
-  assert.deepEqual(championOf(after, "answer"), { digest, commit: null, nodes: null, check: null }, "its digest reads as one no commit holds");
+  const servingOf = (workflow) => after.promotions.serving.filter((line) => line.workflow === workflow).map((line) => ({ digest: line.digest, champion: line.champion }));
+  assert.deepEqual(servingOf("answer"), [{ digest: null, champion: null }], "its revision is no champion: none serves, none is read");
   // A cursor read before the purge named a main of the history rewritten: its page starts again at main's first item
   // (the other run's two merges, all the log serves).
   const next = (await api("GET", `/agents/keeper/learning/log?limit=2&cursor=${first.next_cursor}`)).body;
@@ -884,7 +886,7 @@ test("a run's purge takes its text out of its agent's learning: its feedback lin
   assert.equal(git(repo, ["show", `${other.commit}:workflows/other/workflow.json`]), other1);
   // A workflow it was the last to change reads so too: the purge took it off main.
   assert.equal(git(repo, ["ls-tree", "-r", "--name-only", "main", "workflows/solo/"]), "");
-  assert.deepEqual(championOf(after, "solo"), { digest: soloDigest, commit: null, nodes: null, check: null }, "nor at main after it");
+  assert.deepEqual(servingOf("solo"), [{ digest: null, champion: null }], "nor its workflow off main");
 
   // A DELETE again re-runs the purge (a run purged before it): the purge is marked on main, so nothing is committed.
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);

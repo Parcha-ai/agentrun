@@ -136,7 +136,7 @@ export function folderSuite(backend, make, { skew = 0 } = {}) {
     ]);
     assert.deepEqual(second.log.map((c) => [c.commit, c.by, c.reason, c.files]), [[second.main, { run: "run-1" }, "Compiled the job; the owner's correction.", [CORRECTIONS, "workflows/weekly-report/README.md", "workflows/weekly-report/workflow.json"]]]);
     assert.equal(await textOn(store, CORRECTIONS), UNITS);
-    assert.equal(await textOn(store, ".agentrun/runs/run-1"), "", "the run's marker, in the same commit");
+    assert.equal(await textOn(store, ".agentrun/runs/run-1"), `${JSON.stringify({ v: 1, wrote: [CORRECTIONS, "workflows/weekly-report/README.md", "workflows/weekly-report/workflow.json"] })}\n`, "the run's marker, in the same commit: the paths its merge wrote");
     const [commit] = await store.log(second.main, { limit: 1 });
     assert.equal(commit.message.trimEnd(), "learning: run-1: merged\n\nCompiled the job; the owner's correction.\n\nRun-Id: run-1");
   });

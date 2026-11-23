@@ -66,7 +66,7 @@ async function expire(server, receipt) {
 }
 const settleDeps = async (server, receipt) => {
   const { sdkInbox } = await import('../dist/sdk/runs.js');
-  return { store: server.store, agentId: server.id, launch: (await server.store.runs.launch(receipt.run_id)).body, inbox: await sdkInbox(server.store, receipt.run_id), shown: async () => secretsShown([]), log() {} };
+  return { store: server.store, agentId: server.id, learning: learningStoreOf(server.data, server.id), launch: (await server.store.runs.launch(receipt.run_id)).body, inbox: await sdkInbox(server.store, receipt.run_id), shown: async () => secretsShown([]), log() {} };
 };
 
 for (const runtime of ['claude-agent-sdk', 'codex-sdk', 'eve']) test(`${runtime}: a compiled draft is withheld, checked against a native answer, then promoted for a fresh run`, async t => {
@@ -208,7 +208,7 @@ test('a turn lands once: a deadline, a give-back or a second settle that read th
   const collected = stillChecking(await server.records(), 1);
   // Each read the reservation before the completion's row landed, as a deadline sweep and a settle can at once.
   const { releaseSdkCheck, sdkCheckDeadline, sdkCheckTurn } = await import('../dist/runner/promotion.js');
-  const deps = { store: server.store, agentId: server.id, shown: async () => secretsShown([]), log() {} };
+  const deps = { store: server.store, agentId: server.id, learning: learningStoreOf(server.data, server.id), shown: async () => secretsShown([]), log() {} };
   const late = [
     await sdkCheckDeadline(deps, reserved),
     await releaseSdkCheck(deps, reserved, 'its native turn ended before the backend completed it'),
@@ -398,14 +398,14 @@ test('a revise of a give-back hold whose draft fails is asked once more; a secon
   const { recordDraftFailed } = await import('../dist/runner/learning-end.js');
   const runId = held.runs[0];
   const compile = { mode: 'revise', workflow: flow.name, held: { workflow: flow.name, digest: held.digest, reason: held.reason, check: held.check }, reference: '', traces: [], tools: [], judges: false };
-  await recordDraftFailed({ store: server.store, log() {} }, { runId, agentId: server.id, compile, workflow: flow.name, errors: ['workflow: no root'] });
+  await recordDraftFailed({ store: server.store, log() {}, learningStore: (agentId) => learningStoreOf(server.data, agentId) }, { runId, agentId: server.id, compile, workflow: flow.name, errors: ['workflow: no root'] });
   const first = await server.latest(flow.name);
   assert.deepEqual([first.check.attempt, first.check.stopped], [1, undefined], 'the held attempt, not the recompile');
   assert.match(first.reason, /compiles it once more/);
   assert.ok(heldNamesOf(await server.records()).has(flow.name), 'still asks a revision');
   const later = await server.start('compiles-again');
   await cancel(server, later);
-  await recordDraftFailed({ store: server.store, log() {} }, { runId: later.run_id, agentId: server.id, compile, workflow: flow.name, errors: ['workflow: no root'] });
+  await recordDraftFailed({ store: server.store, log() {}, learningStore: (agentId) => learningStoreOf(server.data, agentId) }, { runId: later.run_id, agentId: server.id, compile, workflow: flow.name, errors: ['workflow: no root'] });
   const second = await server.latest(flow.name);
   assert.deepEqual([second.check.attempt, second.check.stopped], [2, true], 'the second failed revise is the recompile, and it stops');
 });
@@ -479,7 +479,7 @@ test('a start that could not be admitted gives its turn back uncounted', async t
   const { releaseSdkCheck } = await import('../dist/runner/promotion.js');
   const first = await server.start('admitted');
   const pending = await server.latest(flow.name);
-  await releaseSdkCheck({ store: server.store, agentId: server.id, shown: async () => secretsShown([]), log() {} }, pending, 'its start could not be admitted', false);
+  await releaseSdkCheck({ store: server.store, agentId: server.id, learning: learningStoreOf(server.data, server.id), shown: async () => secretsShown([]), log() {} }, pending, 'its start could not be admitted', false);
   const waiting = await server.latest(flow.name);
   assert.equal(waiting.decided, 'replaying');
   assert.equal(waiting.check.released, undefined, 'no turn ran, so none counts');
@@ -525,7 +525,7 @@ test('a newer revision\'s hold that lands while a release is written is not hidd
   const owner = { workflow: flow.name, digest: workflowDigest({ workflow: JSON.stringify(nextFlow.workflow) }), at: new Date().toISOString(), decided: 'hold', reason: 'The owner held this revision for correction.' };
   // The newer hold lands during the release's own await, after its first read of the records.
   const shown = async () => { await recordPromotion(server.store.settings, server.id, owner, () => true); return secretsShown([]); };
-  await releaseSdkCheck({ store: server.store, agentId: server.id, shown, log() {} }, pending, 'its native turn was cancelled');
+  await releaseSdkCheck({ store: server.store, agentId: server.id, learning: learningStoreOf(server.data, server.id), shown, log() {} }, pending, 'its native turn was cancelled');
   assert.deepEqual(await server.latest(flow.name), owner);
 });
 
@@ -554,7 +554,7 @@ test('shadow report is bound to one run, candidate, and immutable event sequence
 test('server-native learned_workflow tool also withholds drafts without promotion records', async t => {
   const server = await setup(t, 'eve', false);
   const laid = [{ ...flow, workflow: JSON.stringify(flow.workflow) }];
-  const deps = { store: server.store, agentId: server.id, log() {} };
+  const deps = { store: server.store, agentId: server.id, learning: learningStoreOf(server.data, server.id), log() {} };
   assert.deepEqual(await toolFlowsFor(deps, {}, laid, {}), []);
   await promoteChecked(server.store.settings, server.id, [flow]);
   assert.deepEqual(await toolFlowsFor(deps, {}, laid, {}), laid);

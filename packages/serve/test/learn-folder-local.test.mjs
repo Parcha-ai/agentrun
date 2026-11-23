@@ -38,7 +38,7 @@ test("local: git sees what the snapshot says: main, each blob, the commit's auth
   assert.equal(git(root, ["rev-parse", "main:workflows/weekly-report/README.md"]), snapshot.workflows[0].oid);
   assert.equal(git(root, ["log", "-1", "--format=%B", "main"]), "learning: run-1: merged\n\nCompiled the job.\n\nRun-Id: run-1");
   assert.equal(git(root, ["log", "-1", "--format=%(trailers:key=Run-Id,valueonly)", "main"]), "run-1");
-  assert.equal(git(root, ["show", "main:.agentrun/runs/run-1"]), "", "the run's marker is a file of the same commit");
+  assert.equal(git(root, ["show", "main:.agentrun/runs/run-1"]), JSON.stringify({ v: 1, wrote: ["corrections.md", "workflows/weekly-report/README.md", "workflows/weekly-report/workflow.json"] }), "the run's marker is a file of the same commit: the paths its merge wrote");
   assert.equal(git(root, ["status", "--porcelain"]), "", "the working tree is main's");
   assert.equal(git(root, ["for-each-ref"]), `${merged.main} commit\trefs/heads/main`, "main alone: no temporary ref is left");
   assert.equal(spawnSync("git", ["-C", root, "config", "--local", "core.worktree"], { encoding: "utf8" }).stdout, "", "no work tree path recorded");
