@@ -62,8 +62,9 @@ export const HANDED_NO_RUN = "Handed to the host by the launch hook, which start
 export const HOST_RELEASED = "host_released";
 /** The reason of such a firing; its error's message is the host's own words. */
 export const HOST_RELEASED_REASON = "Released by the launch hook's host, which took it and will start no run for it.";
-/** The code on the not_due field of a release refused because the firing's run started (Triggers.release), for a host to
- *  match beside the words, which name the run. */
+/** The `details.reason` of a release refused because the firing's run started (Triggers.release), beside `details.run_id`:
+ *  for a host to match without reading the words. A start refused because its host released the firing carries
+ *  HOST_RELEASED there. */
 export const RUN_STARTED = "run_started";
 /** The most characters of the host's words a release keeps. */
 export const RELEASE_WORDS_MAX = 500;
@@ -326,8 +327,12 @@ const failedReason = (error: unknown): string | undefined => (error instanceof H
 const tookWithNoRun = (firing: FiringRow): boolean => firing.status === "sent" && firing.runId === null && firing.startBy !== null;
 /** Whether firing `firing` is one its launch hook's host released (Triggers.release). */
 const released = (firing: FiringRow): boolean => firing.status === "failed" && firing.error?.code === HOST_RELEASED;
-/** The refusal of a host start of firing `key`, which its host released: code HOST_RELEASED, for a host to match. */
-const releasedRefusal = (key: string) => invalid([{ field: "trigger_firing.firing_id", reason: "not_due", code: HOST_RELEASED, message: `Firing ${key} was released by the launch hook's host, which said it will start no run for it: no run starts for it now.` }]);
+/** The refusal of a host start of firing `firing`, which its host released: its words, and `details.reason`
+ *  HOST_RELEASED for a host to match. */
+const releasedRefusal = (firing: FiringRow) => {
+  const message = `Firing ${firing.key} starts no run: its host released it: ${firing.error?.message ?? ""}`;
+  return new ApiError("input_invalid", message, { fields: [{ field: "trigger_firing.firing_id", reason: "not_due", message }], details: { reason: HOST_RELEASED } });
+};
 /** How long a host start of such a firing holds its trigger's room from its check, at least: a startBy sooner than this
  *  is pushed out to it before the run is written (handedStart), so the window never closes while the run is written. */
 const START_WINDOW_MS = 60_000;
@@ -1421,7 +1426,7 @@ export class Triggers {
     };
     const firing = await this.store.triggers.firing(trigger.id, key);
     if (!firing) throw refused("not_found", `Trigger ${trigger.id} has no firing ${key}.`);
-    if (released(firing)) throw releasedRefusal(key);
+    if (released(firing)) throw releasedRefusal(firing);
     const now = this.clock.now();
     const minutes = LAUNCH_HOOK_LATE_START_MS / 60_000;
     if (tookWithNoRun(firing)) {
@@ -1453,7 +1458,7 @@ export class Triggers {
    *  its host, or another not_due naming what it is now. */
   private async movedRefusal(triggerId: string, key: string): Promise<ApiError> {
     const firing = await this.store.triggers.firing(triggerId, key);
-    if (firing && released(firing)) return releasedRefusal(key);
+    if (firing && released(firing)) return releasedRefusal(firing);
     const now = firing ? `${firing.status}${firing.reason ? ` (${firing.reason})` : ""}` : "gone";
     return invalid([{ field: "trigger_firing.firing_id", reason: "not_due", message: `Firing ${key} moved while its run was written, and is ${now}: no run started for it.` }]);
   }
@@ -1465,7 +1470,7 @@ export class Triggers {
    *  trigger's streak and a trigger.failed, as any failed firing. Its trigger's room is free from that write, so a firing
    *  waiting on it is driven on the next tick. The same call on a firing it released already answers that firing as it
    *  is. Refused in words: 422 not_allowed on a server with no launch hook, not_due for a firing whose run started, one
-   *  still due (not handed yet) or any other, with code RUN_STARTED on the field when its run started; 404 for a trigger or
+   *  still due (not handed yet) or any other, with `details` { reason: RUN_STARTED, run_id } when its run started; 404 for a trigger or
    *  firing this server does not have. A host start of the firing being written on this server is waited for first: a run
    *  it writes makes the firing started, and refused. One on another server is decided by the store: its run's write and
    *  this release's are each conditional on the firing being sent with no run, so one of them finds it moved. */
@@ -1481,7 +1486,7 @@ export class Triggers {
       const starting = this.starting.get(key);
       if (starting) {
         const run = await starting;
-        if (run) throw this.notDue(key, `its run ${run.run_id} started`, RUN_STARTED);
+        if (run) throw this.ranRefusal(key, run.run_id);
         continue;
       }
       const firing = await this.checked(triggerId, () => this.releaseOnce(triggerId, key, message));
@@ -1501,7 +1506,7 @@ export class Triggers {
     const ran = firing.status === "started" ? firing.runId : firing.status === "due" || tookWithNoRun(firing) ? (await this.deps.runOf(key))?.run_id : undefined;
     if (ran) {
       await this.handedRan(triggerId, key, ran);
-      throw this.notDue(key, `its run ${ran} started`, RUN_STARTED);
+      throw this.ranRefusal(key, ran);
     }
     if (firing.status === "due") throw this.notDue(key, "it has not been handed to the launch hook's host yet");
     if (!tookWithNoRun(firing)) throw this.notDue(key, `it is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}, not a firing the launch hook's host took with no run`);
@@ -1513,9 +1518,16 @@ export class Triggers {
     return failed;
   }
 
-  /** A release refused for firing `key`, `why` saying what it is, and `code` when a host matches it (RUN_STARTED). */
-  private notDue(key: string, why: string, code?: string) {
-    return invalid([{ field: "firing_id", reason: "not_due", message: `Firing ${key} is not released: ${why}.`, ...(code ? { code } : {}) }]);
+  /** A release refused for firing `key`, `why` saying what it is. */
+  private notDue(key: string, why: string) {
+    return invalid([{ field: "firing_id", reason: "not_due", message: `Firing ${key} is not released: ${why}.` }]);
+  }
+
+  /** A release refused for firing `key` because its run `runId` started: in words, and in `details` (RUN_STARTED and the
+   *  run) for a host to match. Never retryable: the run stays started. */
+  private ranRefusal(key: string, runId: string) {
+    const refused = this.notDue(key, `its run ${runId} started`);
+    return new ApiError(refused.code, refused.message, { ...refused.extra, details: { reason: RUN_STARTED, run_id: runId } });
   }
 
   /** Each sent firing whose host's run is in the store under its key, though the server stopped before the firing was

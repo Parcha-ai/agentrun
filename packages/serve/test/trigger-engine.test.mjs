@@ -1476,10 +1476,10 @@ async function twoServers(t, settle = (write) => write()) {
   const b = await engine(t, { launchHook: host.launchHook, notify, store: { ...a.store, triggers, runs: a.store.runs } }, { on: a });
   return { a, b, id: made.id, key, told, store: a.store };
 }
-/** The 422 not_due a release is refused with once firing's run `runId` started: code run_started, the run named. */
+/** The 422 not_due a release is refused with once firing's run `runId` started: details run_started and the run. */
 const runStarted = (runId) => (error) => {
   const [issue] = error?.extra?.fields ?? [];
-  assert.deepEqual([issue?.field, issue?.reason, issue?.code], ["firing_id", "not_due", "run_started"], String(error?.stack ?? error));
+  assert.deepEqual([error?.code, issue?.field, issue?.reason, error?.extra?.details], ["input_invalid", "firing_id", "not_due", { reason: "run_started", run_id: runId }], String(error?.stack ?? error));
   assert.match(issue.message, new RegExp(`its run ${runId} started`));
   return true;
 };
@@ -1531,8 +1531,8 @@ test("a host start that read its firing sent before a release wrote it, and writ
   writing.resolve();
   await assert.rejects(start, (error) => {
     const [issue] = error?.extra?.fields ?? [];
-    assert.deepEqual([issue?.field, issue?.reason, issue?.code], ["trigger_firing.firing_id", "not_due", "host_released"], String(error?.stack ?? error));
-    assert.match(issue.message, /released by the launch hook's host/);
+    assert.deepEqual([error?.code, issue?.field, issue?.reason, error?.extra?.details], ["input_invalid", "trigger_firing.firing_id", "not_due", { reason: "host_released" }], String(error?.stack ?? error));
+    assert.match(error.message, /its host released it: The job failed at launch\./);
     return true;
   });
   assert.equal(await store.runs.get("run-host"), undefined, "no run written");
