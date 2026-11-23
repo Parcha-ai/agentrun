@@ -15,6 +15,7 @@ import { CHATGPT_PLAN_ROW } from "../chatgpt-plan.js";
 import { calendarRowSecrets } from "../calendar/address.js";
 import { CALENDAR_ROW } from "../calendar/names.js";
 import { accountRowSecrets, EMAIL_ACCOUNT_ROW } from "../email/account.js";
+import { MIN_SECRET } from "../learn/secrets.js";
 import { GATEWAY_KEY_ROW, gatewayKeyRowSecrets } from "../model-gateway.js";
 import { unseal } from "../sealing.js";
 import { besideTheStore, ServerSecrets } from "../server-secrets.js";
@@ -30,9 +31,16 @@ export type StoreSecretsStore = Pick<Store, "sealedSecrets">;
 /** The keys of a sealed JSON value that hold secrets: OAuth tokens, a client's secret, a PKCE verifier. */
 const JSON_SECRETS = ["access_token", "refresh_token", "id_token", "client_secret", "verifier"];
 
-/** The secret strings of an opened JSON value: each header's value, and its credential alone where it is a scheme's
- *  (`Bearer <token>`, `Basic <credential>`, `Token <key>`: a value with a space is never listed whole, server-secrets.ts),
- *  a Basic credential's `user:password` and password too; and every string under one of JSON_SECRETS, wherever nested. */
+/** The authorization schemes whose header value is the scheme's word then its credential (`Bearer <token>`), in any case.
+ *  A header value of two words under no scheme here (a client's name, `Acme Integration`) is not split: a word of it is
+ *  no credential, and listed alone it would be cut from every run and refused in every learned draft. */
+const CREDENTIAL_SCHEMES = new Set(["bearer", "basic", "token", "digest", "apikey", "key"]);
+
+/** The secret strings of an opened JSON value: each header's value, and its credential alone where it is one of
+ *  CREDENTIAL_SCHEMES' (`Bearer <token>`, `Basic <credential>`, `Token <key>`: a value with a space is never listed
+ *  whole, server-secrets.ts); a Basic credential's `user:password`, its password, and its user when the password is too
+ *  short to be the secret (a key sent as the user, `-u KEY:`); and every string under one of JSON_SECRETS, wherever
+ *  nested. */
 function jsonSecrets(text: string): string[] {
   let value: unknown;
   try {
@@ -54,12 +62,16 @@ function jsonSecrets(text: string): string[] {
       if (typeof header !== "string") continue;
       out.push(header);
       const scheme = /^([A-Za-z][\w.-]*)\s+(\S+)\s*$/.exec(header);
-      if (!scheme) continue;
+      if (!scheme || !CREDENTIAL_SCHEMES.has(scheme[1]!.toLowerCase())) continue;
       out.push(scheme[2]!);
       if (scheme[1]!.toLowerCase() !== "basic") continue;
       const pair = Buffer.from(scheme[2]!, "base64").toString("utf8");
       const colon = pair.indexOf(":");
-      if (colon > 0 && !/[\u0000-\u001f\ufffd]/.test(pair)) out.push(pair, pair.slice(colon + 1));
+      if (colon < 0 || /[\u0000-\u001f\ufffd]/.test(pair)) continue;
+      const user = pair.slice(0, colon);
+      const password = pair.slice(colon + 1);
+      out.push(pair, password);
+      if (password.length < MIN_SECRET) out.push(user);
     }
   }
   walk(value);

@@ -12,6 +12,7 @@ import { createServer } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { WITHHELD_TITLE } from "../dist/run-view.js";
 import { raw } from "./store-target.mjs";
@@ -64,13 +65,15 @@ async function heldFront(t, gw) {
 }
 
 /** A run started with `start` (extra start fields) on a server whose model gateway answers `text`, held at its first model
- *  call: the server, the run, its work folder, and `release` to let its turn go on. `serverKey`: the server's own key. */
-async function liveRun(t, { start = {}, serverKey, text = "Answered." } = {}) {
+ *  call: the server, the run, its work folder, and `release` to let its turn go on. `serverKey`: the server's own key.
+ *  `setup`: what to do on the server before the run starts. */
+async function liveRun(t, { start = {}, serverKey, text = "Answered.", setup } = {}) {
   const gw = await startFauxGateway({ text });
   t.after(() => gw.close());
   const front = await heldFront(t, gw);
   withEnv(t, { AGENT_MODEL_BASE_URL: front.url, AGENT_MODEL: "claude-sonnet-5-5", ...(serverKey ? { AGENT_MODEL_API_KEY: serverKey } : {}) }, NAMES);
   const server = await serve(t, { faux: undefined });
+  if (setup) await setup(server);
   assert.equal((await server.api("POST", "/agents", agent("handed"))).status, 201);
   const started = await server.api("POST", "/agents/handed/runs", { input: { content: "Answer." }, ...start });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -254,4 +257,21 @@ test("a file that starts with a byte order mark, or holds one later, is cut at t
   const ended = [await cutRead(run, "bom.txt"), await cutRead(run, "inner.txt")];
   assert.deepEqual(ended, live, "ended: the census cuts the same characters, no end of the key left over");
   assert.deepEqual(live, [[200, "\uFEFFkey=[redacted]\nthe rest stays.\n"], [200, "\uFEFFfirst\n\uFEFFkey=[redacted] done\n"]], "the mark served as written, as a raw read serves it");
+});
+
+test("a handed MCP Basic header whose key is the user (`-u KEY:`) has the key cut from the run's files alone, live and after its end by its census", { timeout: 180_000 }, async (t) => {
+  // The lead's case: an API that takes its key as the Basic user with no password, and a file that holds the key bare.
+  const user = "k3y_live_abcdef123456";
+  const fake = await startFakeMcp({ token: () => true });
+  t.after(() => fake.close());
+  const setup = async (server) => {
+    const saved = await server.api("PUT", "/settings/mcp-servers/gw", { url: fake.url, auth: { type: "per_run", headers: { authorization: "Bearer listing-only" } } }, { authorization: `Bearer ${server.token}` });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  };
+  const basic = Buffer.from(`${user}:`).toString("base64");
+  const run = await liveRun(t, { setup, serverKey: SERVER_KEY, start: { mcp_auth: { gw: { headers: { authorization: `Basic ${basic}` } } } } });
+  await writeFile(join(run.work, "env.txt"), `KEY=${user}\nthe rest stays.\n`);
+  assert.deepEqual(await cutRead(run, "env.txt"), [200, "KEY=[redacted]\nthe rest stays.\n"], "live: the key alone is cut");
+  await run.ended();
+  assert.deepEqual(await cutRead(run, "env.txt"), [200, "KEY=[redacted]\nthe rest stays.\n"], "ended: its census counted the key alone");
 });

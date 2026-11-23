@@ -64,3 +64,19 @@ test("a handed Bearer header's token is cut alone, whichever case the scheme is 
     assert.equal(cutHanded(`H: ${scheme} ${token} and TOKEN=${token}`, values), `H: ${scheme} [redacted] and TOKEN=[redacted]`, `the ${scheme} token is cut with or without its scheme word`);
   }
 });
+
+test("a Basic credential with its key as the user, or with no user, has the key listed alone; a header that names no scheme is never split", () => {
+  const key = `not-a-secret-${"basic-user-key"}-6a20`;
+  const asUser = handedSecretValues({ mcp: { files: { headers: { authorization: `Basic ${Buffer.from(`${key}:`).toString("base64")}` }, origin: ORIGIN } } });
+  assert.ok(asUser.includes(key), "-u KEY: lists the key, the user, alone");
+  assert.equal(cutHanded(`KEY=${key}`, asUser), "KEY=[redacted]");
+  const shortPassword = handedSecretValues({ mcp: { files: { headers: { authorization: `Basic ${Buffer.from(`${key}:x`).toString("base64")}` }, origin: ORIGIN } } });
+  assert.ok(shortPassword.includes(key), "a password too short to be the secret: the user is");
+  const noUser = handedSecretValues({ mcp: { files: { headers: { authorization: `Basic ${Buffer.from(`:${key}`).toString("base64")}` }, origin: ORIGIN } } });
+  assert.ok(noUser.includes(key), ":KEY lists the key, the password, alone");
+  const apiKey = handedSecretValues({ mcp: { files: { headers: { "x-auth": `ApiKey ${key}` }, origin: ORIGIN } } });
+  assert.ok(apiKey.includes(key), "an ApiKey scheme's credential");
+  const named = handedSecretValues({ mcp: { files: { headers: { "x-client": "Acme Integration", authorization: `Bearer ${key}` }, origin: ORIGIN } } });
+  assert.equal(named.includes("Integration"), false, "a client's name is no scheme: no word of it is listed");
+  assert.equal(cutHanded("the Acme Integration client", named), "the Acme Integration client");
+});
