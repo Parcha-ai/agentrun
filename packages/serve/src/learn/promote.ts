@@ -406,22 +406,24 @@ const writtenOf = (items: readonly PromotionRecord[]): PromotionRecord[] => item
 export const promotionsOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<PromotionRecord[]> =>
   writtenOf(itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId))));
 
-/** The newest of `was` (the feed's `dropped_at` so far, an ISO time; anything else is none) and the `at` of each record in
- *  `gone` (those a trim just dropped): undefined while none is. It only grows: a trim may drop a record older than one an
- *  earlier trim dropped (a champion or a replaying record it kept until then). */
-function droppedAtAfter(was: unknown, gone: readonly PromotionRecord[]): string | undefined {
-  let newest = typeof was === "string" && !Number.isNaN(Date.parse(was)) ? was : undefined;
+/** The newest of `was` (the feed's `dropped_at` so far, an ISO time; undefined while none was dropped) and the `at` of
+ *  each record in `gone` (those a trim just dropped). It only grows: a trim may drop a record older than one an earlier
+ *  trim dropped (a champion or a replaying record it kept until then). A `was` that is no time stays as it is: when the
+ *  newest drop was is unknown, and a later drop never makes it known. */
+function droppedAtAfter(was: unknown, gone: readonly PromotionRecord[]): unknown {
+  if (was !== undefined && !(typeof was === "string" && !Number.isNaN(Date.parse(was)))) return was;
+  let newest = was as string | undefined;
   for (const { at } of gone) if (typeof at === "string" && !Number.isNaN(Date.parse(at)) && (newest === undefined || Date.parse(at) > Date.parse(newest))) newest = at;
   return newest;
 }
 
 /** The agent's promotion records (promotionsOf) and when the newest record a trim ever dropped was written (`droppedAt`,
- *  epoch ms; undefined when no trim has dropped one): a revision no record names whose compile is not after it may be one
- *  whose records were dropped. */
+ *  epoch ms; undefined when no trim has dropped one, NaN when its `dropped_at` is no time): a revision no record names
+ *  whose compile is not after it may be one whose records were dropped. */
 export async function promotionFeedOf(settings: Pick<Settings, "get">, agentId: string): Promise<{ records: PromotionRecord[]; droppedAt: number | undefined }> {
   const value = await settings.get(promotionsKey(agentId));
-  const at = droppedAtAfter(restOf(value).dropped_at, []);
-  return { records: writtenOf(itemsOf<PromotionRecord>(value)), droppedAt: at === undefined ? undefined : Date.parse(at) };
+  const at = restOf(value).dropped_at;
+  return { records: writtenOf(itemsOf<PromotionRecord>(value)), droppedAt: at === undefined ? undefined : typeof at === "string" ? Date.parse(at) : Number.NaN };
 }
 
 /** The newest record of `workflow` at `digest`, or undefined. */
