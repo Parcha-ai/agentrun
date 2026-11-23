@@ -80,7 +80,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `race`: a race's label (lib/race.ts). `settings`: a settings page. */
-type Where = { repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; source?: string; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   if (h === "#/dojo") return { section: "dojo" };
@@ -151,15 +151,19 @@ export function route(h: string = location.hash): Where {
   // The runs list's filters live in the address, so a reload keeps them: one agent, one state, the archived runs.
   const q = new URLSearchParams(h.slice("#/runs?".length));
   const agent = q.get("agent"), status = q.get("status") as RunStatus | null;
-  return { section: "runs", ...(agent ? { runsOf: agent } : {}), ...(status && RUN_STATUSES.includes(status) ? { status } : {}), ...(q.get("archived") === "true" ? { archived: true } : {}) };
+  return { section: "runs", ...(agent ? { runsOf: agent } : {}), ...(status && RUN_STATUSES.includes(status) ? { status } : {}), ...(q.get("archived") === "true" ? { archived: true } : {}), ...(!agent && SOURCE_NAME.test(q.get("source") ?? "") ? { source: q.get("source")! } : {}) };
 }
 
+/** A source's name as GET /v2/runs' `source` takes it (the server's own pattern). */
+const SOURCE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+
 /** The runs list's address for these filters. Exported for its test. */
-export function runsHash({ runsOf, status, archived }: { runsOf?: string } & RunsFilter): string {
+export function runsHash({ runsOf, status, archived, source }: { runsOf?: string } & RunsFilter): string {
   const q = new URLSearchParams();
   if (runsOf) q.set("agent", runsOf);
   if (status) q.set("status", status);
   if (archived) q.set("archived", "true");
+  if (source && !runsOf) q.set("source", source);
   return `#/runs${q.size ? `?${q}` : ""}`;
 }
 
@@ -385,7 +389,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const [statsRange, setStatsRange] = useState<StatsRange>("30d");
   const observedDays = statsRange === "7d" ? 7 : 30;
   // A race's page (where.race) is under Runs too, but shows no runs list: nothing there reads observations.
-  const observations = useObservations(v2, { active: where.section === "mission" || (where.section === "runs" && !where.run && !where.race && !where.runsOf && !where.archived && !where.status), days: observedDays });
+  const observations = useObservations(v2, { active: where.section === "mission" || (where.section === "runs" && !where.run && !where.race && !where.runsOf && !where.archived && !where.status && !where.source), days: observedDays });
   const [statsAgent, setStatsAgent] = useState<string | null>(null);
   // Keep the selected identity through refreshes that temporarily clear the connection list.
   const [sessionSelected, setSessionSelected] = useState(false);
@@ -494,7 +498,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
       setNamesRead(whole);
     });
   }, [v2, where, refreshed]);
-  const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
+  const runsFilter: RunsFilter = { status: where.status, archived: where.archived, source: where.source };
   useEffect(() => {
     // A race's page reads its own runs (lib/race.ts), and its lanes keep their reads few: no runs list behind it.
     if (where.section !== "runs" || where.run || where.race) return;
@@ -835,7 +839,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
           : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
         : where.race ? <Race key={where.race} v2={v2} label={where.race} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
-        : <RunsList observations={!where.runsOf && !where.archived && !where.status ? observations : undefined} runs={runs} agentName={agentName} agentId={where.runsOf} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
+        : <RunsList observations={!where.runsOf && !where.archived && !where.status && !where.source ? observations : undefined} runs={runs} agentName={agentName} agentId={where.runsOf} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
             onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); setError(null); } }).catch((e) => setError(problem(e, "more runs"))).finally(() => setMore(false)); } : undefined} />}
     </Shell>

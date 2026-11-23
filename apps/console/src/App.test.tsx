@@ -64,6 +64,15 @@ describe("route", () => {
     expect(runsHash({ runsOf: "calc", status: "failed", archived: true })).toBe("#/runs?agent=calc&status=failed&archived=true");
     for (const f of [{}, { status: "failed" as const }, { archived: true }, { runsOf: "c a", status: "completed" as const, archived: true }]) expect(route(runsHash(f))).toEqual({ section: "runs", ...f });
   });
+  it("keeps the runs list's source in the address: the runs imported from one source, or live; an agent's list has none, a bad name is dropped", () => {
+    expect(route("#/runs?source=claude-code")).toEqual({ section: "runs", source: "claude-code" });
+    expect(route("#/runs?source=live&status=failed")).toEqual({ section: "runs", status: "failed", source: "live" });
+    expect(route("#/runs?agent=calc&source=codex")).toEqual({ section: "runs", runsOf: "calc" });
+    expect(route("#/runs?source=Claude%20Code")).toEqual({ section: "runs" });
+    expect(runsHash({ status: "failed", source: "codex" })).toBe("#/runs?status=failed&source=codex");
+    expect(runsHash({ runsOf: "calc", source: "codex" })).toBe("#/runs?agent=calc");
+    expect(route(runsHash({ source: "pi", archived: true }))).toEqual({ section: "runs", archived: true, source: "pi" });
+  });
   it("opens an agent's page at its address, and its editor under /edit; a new agent and the archived list are unchanged", () => {
     expect(route("#/agents/x")).toEqual({ section: "agents", agent: "x" });
     expect(route("#/agents/x/workflow")).toEqual({ section: "agents", agent: "x", tab: "workflow" });

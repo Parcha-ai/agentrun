@@ -39,6 +39,7 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
             <Picker label="Runs in one state" value={filter.status ?? ""} onChange={(v) => onFilter({ ...filter, status: (v || undefined) as RunStatus | undefined })} className="h-control-sm w-48"
               options={[{ value: "", label: "Any state" }, ...RUN_STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s] }))]} />
             <Button size="sm" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onFilter({ ...filter, archived: !archived })}><Archive aria-hidden /> Archived</Button>
+            {filter.source && <Button size="sm" variant="primary" aria-pressed onClick={() => onFilter({ ...filter, source: undefined })}><History aria-hidden /> {filter.source === "live" ? "Made here" : `From ${filter.source}`}</Button>}
           </>
         )}
         <CodingAgentAction label="Query" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}.`} playgroundHref={queryPlaygroundHref(agentId, filter)} />
@@ -46,7 +47,7 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
       <div className="min-h-0 flex-1 overflow-auto">
       {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />
         : !runs ? <ListSkeleton label="Loading the runs" />
-        : !runs.length && (filter.status || archived) ? <p className="px-4 py-16 text-center text-body text-muted-foreground">{filter.status ? "No run matches." : "No archived runs."}</p>
+        : !runs.length && (filter.status || archived || filter.source) ? <p className="px-4 py-16 text-center text-body text-muted-foreground">{filter.status || filter.source ? "No run matches." : "No archived runs."}</p>
         : !runs.length && (sourceAgents || sourceUnknown) ? <div className="space-y-3 p-5 md:p-8">
           <h2 className="text-lg font-semibold">No captured runs yet</h2>
           <p className="text-body text-muted-foreground">Continue working with your agents. Completed prompts appear here when they are recorded.</p>

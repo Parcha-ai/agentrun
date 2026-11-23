@@ -95,6 +95,14 @@ const LABEL_PARAMETER: Json = {
   "x-agentrun-serve": "runlabels/1",
 };
 
+/** runsource/1: GET /runs' filter on where a run came from. */
+const SOURCE_PARAMETER: Json = {
+  name: "source", in: "query", required: false,
+  description: "Only runs imported from this source (`claude-code`, `codex`, `gemini`, `pi`: a session read from that tool's history), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400.",
+  schema: { type: "string" },
+  "x-agentrun-serve": "runsource/1",
+};
+
 /** Why each capability this server turns off answers 501, by the route's capability. */
 export const UNSUPPORTED: Readonly<Record<string, string>> = {
   quotes: "This server has no billing, so it gives no quotes.",
@@ -2191,6 +2199,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         { name: "status", in: "query", required: false, description: "Only runs with this status.", schema: ref("schemas/RunStatus") },
         { name: "archived", in: "query", required: false, description: "true lists only archived runs; false, the default, the others.", schema: { type: "boolean" } },
         LABEL_PARAMETER,
+        SOURCE_PARAMETER,
       ],
       responses: { "200": json(ref("schemas/RunList"), "One page of runs, newest first."), ...errors(400, 401, 429, 500) },
     },

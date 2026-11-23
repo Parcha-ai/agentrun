@@ -4065,7 +4065,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return value === "true";
   }
 
-  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string) {
+  /** GET /runs' `source`, once: a source's name (claude-code, codex, ...) keeps the runs imported from it, `live` the runs not imported. */
+  function sourceParam(url: URL): string | undefined {
+    const given = url.searchParams.getAll("source");
+    if (given.length === 0) return undefined;
+    if (given.length > 1 || !/^[a-z][a-z0-9-]{0,31}$/.test(given[0]!)) throw new ApiError("bad_request", "source is one source's name (claude-code, codex, ...), or live; once");
+    return given[0];
+  }
+
+  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string, source?: string) {
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
     const status = url.searchParams.get("status");
@@ -4079,7 +4087,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // ordered and cut to the page in one query, so a list costs the same at ten runs and at thousands, however long their
     // journals. An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served
     // run's. A run's archive is its own or its agent's.
-    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), archived };
+    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), ...(source !== undefined ? { source } : {}), archived };
     // A listing is built by the server's lister (run-listing.ts) once per change, so a list finds it current. One that is
     // behind (a write landed since, or the lister has not reached it since the store was upgraded) is built here, written
     // back, and shown as built: for a status filter, first every run still going whose listing is behind (its row's
@@ -5130,7 +5138,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "listAllRuns": {
         const agent = url.searchParams.get("agent") ?? undefined;
         const revision = url.searchParams.get("revision") ?? undefined;
-        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req)));
+        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req), sourceParam(url)));
       }
       case "getRun": {
         const run = await runRead(id, linkOrigin(req));
