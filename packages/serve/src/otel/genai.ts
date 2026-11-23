@@ -46,11 +46,17 @@ export interface TracedRun {
   readonly serverAddress?: string;
   /** The model it runs on, named on a plan turn's span (its requests are never seen). */
   readonly model?: string;
+  /** The session's other routes (a subagent's tier, a grader's), by the name a request that came by one carries
+   *  (ModelRequest.route): its provider and host, in place of the run's. */
+  readonly routes?: ReadonlyMap<string, RouteTrace>;
 }
+
+/** A route as a trace names it: its provider id, its host, its model (routeTrace). */
+export type RouteTrace = { readonly provider?: string; readonly serverAddress?: string; readonly model?: string };
 
 /** A spec's route as its trace names it (AdapterRunSpec.trace): the provider id a `provider/model` name begins with, the
  *  host of the origin its requests go to, its model id. Each only where given and well formed. */
-export function routeTrace(route: { readonly named?: string; readonly origin?: string; readonly model?: string }): { provider?: string; serverAddress?: string; model?: string } {
+export function routeTrace(route: { readonly named?: string; readonly origin?: string; readonly model?: string }): RouteTrace {
   const slash = route.named?.indexOf("/") ?? -1;
   let host: string | undefined;
   try {
@@ -106,17 +112,19 @@ export function requestError(ended: Ended | undefined, usage: Pick<ModelUsage, "
   return ended.label;
 }
 
-/** A model request's span: the run's route, the model asked, how it ended and, when it answered and is billed by the
- *  token, its counts. A plan's request has no counts at all, and says it is the plan's. */
-export function chatAttributes(run: TracedRun, request: { readonly model?: string }, usage?: ModelUsage, ended?: Ended): Attributes {
+/** A model request's span: its route (the run's, or the one it came by: `route`, a name the run does not know naming
+ *  none), the model asked, how it ended and, when it answered and is billed by the token, its counts. A plan's request
+ *  has no counts at all, and says it is the plan's. */
+export function chatAttributes(run: TracedRun, request: { readonly model?: string; readonly route?: string }, usage?: ModelUsage, ended?: Ended): Attributes {
   const model = request.model ?? run.model;
+  const via: RouteTrace = request.route === undefined ? run : (run.routes?.get(request.route) ?? {});
   const plan = run.plan === true || usage?.billing === "plan";
   const error = usage ? requestError(ended, usage) : undefined;
   return {
     ...common(run, "chat"),
-    ...(run.provider ? { "gen_ai.provider.name": providerName(run.provider) } : {}),
+    ...(via.provider ? { "gen_ai.provider.name": providerName(via.provider) } : {}),
     ...(model ? { "gen_ai.request.model": model, "gen_ai.response.model": model } : {}),
-    ...(run.serverAddress ? { "server.address": run.serverAddress } : {}),
+    ...(via.serverAddress ? { "server.address": via.serverAddress } : {}),
     ...(ended?.end === "answered" && ended.label === "filtered" ? { "gen_ai.response.finish_reasons": ["content_filter"] } : {}),
     ...(plan ? { "agentrun.billing": "plan" } : usage && error === undefined ? usageAttributes(usage) : {}),
     ...(error ? { "error.type": error } : {}),

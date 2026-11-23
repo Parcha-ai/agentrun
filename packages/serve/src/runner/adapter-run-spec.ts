@@ -277,6 +277,9 @@ const SUBAGENT_ROUTE = "subagent-";
 const subagentRoute = (tier: SubagentTier): string => `${SUBAGENT_ROUTE}${tier}`;
 const isSubagentRoute = (key: string): boolean => key.startsWith(SUBAGENT_ROUTE);
 
+/** A model route as the run's GenAI trace names it: its provider, its host, its model. */
+const traceOfRoute = (route: ModelRoute) => routeTrace({ ...(route.named ? { named: route.named } : {}), origin: route.provider.origin, model: route.model });
+
 /** A replay run's or an audit shadow's grader route (runner/compare-end.ts): its fast model (the revision's
  *  modelTiers.fast, else AGENT_MODEL_FAST) when its revision names no agree_on, on pi's wires. A fast model may be another
  *  provider's than the run's own, whose key claimSecrets never opened: so its route reads every model key the server
@@ -903,8 +906,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The answer's schema: a miss is asked again once (adapter-loop.ts, the output contract's retry).
     ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
     ...(cap ? { cap } : {}),
-    // Its route, as its GenAI trace names it (otel/genai.ts).
-    trace: routeTrace({ ...(route.named ? { named: route.named } : {}), origin: route.provider.origin, model: route.model }),
+    // Its routes, as its GenAI trace names them (otel/genai.ts): the session's, and each tier's by its name.
+    trace: {
+      ...traceOfRoute(route),
+      routes: new Map([...tierRoutes].map(([tier, routed]) => [tier, traceOfRoute(routed)])),
+    },
     // The run's MCP for a harness with its own client (mcp-run.ts), with its monid endpoints beside it (monid-run.ts):
     // the catalog tools the session mounts; absent when none.
     ...(catalog ? { mcp: catalog } : {}),

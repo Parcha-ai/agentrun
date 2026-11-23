@@ -27,6 +27,7 @@ import { CAP_REFUSED, CAP_WRAPUP, COMPUTER_NOTE, endsTurn, HOST_PHASE, MESSAGE_O
 import { raiseFollowUpId } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
 import { genAiTracing, type GenAiTracing, type RunTrace } from "../otel/tracer.js";
+import type { RouteTrace } from "../otel/genai.js";
 
 /** The root entries a claim writes before its turn, whatever the run's turns are (its session's key, a phase row, a
  *  takeover's note, its computer's hold, the learning seed it laid, the computer it made): read past when a claim asks
@@ -295,8 +296,9 @@ export interface AdapterRunSpec {
    *  the run's answer is never checked here. */
   readonly outputSchema?: unknown;
   /** The model route its requests take, as the run's GenAI trace names it (otel/genai.ts TracedRun): the provider id its
-   *  model is named by, the host its requests go to, its model. Each where the spec knows it; absent, its spans name none. */
-  readonly trace?: { readonly provider?: string; readonly serverAddress?: string; readonly model?: string };
+   *  model is named by, the host its requests go to, its model. Each where the spec knows it; absent, its spans name none.
+   *  `routes`: the session's other routes (a subagent's tier), by the name its requests carry (ModelRequest.route). */
+  readonly trace?: RouteTrace & { readonly routes?: ReadonlyMap<string, RouteTrace> };
 }
 
 /** A tool host's lifecycle, as its bindings registered it: run by the adapter loop (AdapterRunSpec.lifecycle). */
@@ -2537,7 +2539,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               else carried = undefined;
             }
             unbooked += 1;
-            if (ticket && trace && request.paid === undefined) chats.set(ticket.turn, trace.request(request.model));
+            if (ticket && trace && request.paid === undefined) chats.set(ticket.turn, trace.request(request.model, request.route));
             // The conversation that asked, as its client named it (pi's, one of several asking at once): whose answer reads
             // this request's booking (bookedCost).
             const conversation = (request as { conversation?: string }).conversation;

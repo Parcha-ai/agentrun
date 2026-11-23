@@ -6,15 +6,19 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { test } from "node:test";
+import { after, test } from "node:test";
+import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace";
 import { normalizeUsage } from "@parcha/agentrun-import";
+import { closeOpenSessions, MODEL, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { queue, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { genAiTracing, otelOn, traceIdOf } = await import("../dist/otel/tracer.js");
 const { chatAttributes, routeTrace, toolAttributes, USAGE_ATTRIBUTES } = await import("../dist/otel/genai.js");
+const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+after(closeOpenSessions);
 const TIMING = { leaseMs: 60_000, renewEveryMs: 10_000, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const ON = { OTEL_EXPORTER_OTLP_ENDPOINT: "http://otlp.invalid:4318" };
@@ -240,4 +244,87 @@ test("the mapping: an MCP tool is an extension called with tools/call; a request
   assert.deepEqual(USAGE_ATTRIBUTES.cacheWrite, ["gen_ai.usage.cache_write.input_tokens", "gen_ai.usage.cache_creation.input_tokens"]);
   assert.deepEqual(routeTrace({ named: "anthropic/claude-opus-4-1", origin: "https://api.anthropic.com/v1", model: "claude-opus-4-1" }), { provider: "anthropic", serverAddress: "api.anthropic.com", model: "claude-opus-4-1" });
   assert.deepEqual(routeTrace({ named: "nameless", origin: "not a url" }), {});
+});
+
+test("the mapping: a request that came by another route (a subagent's tier) names that route's provider and host, never the run's", () => {
+  const run = { runId: "run-1", harness: "pi", provider: "anthropic", serverAddress: "api.anthropic.com", routes: new Map([["fast", { provider: "openai", serverAddress: "api.openai.com" }]]) };
+  const own = chatAttributes(run, { model: "claude-sonnet-4.5" });
+  assert.equal(own["gen_ai.provider.name"], "anthropic");
+  assert.equal(own["server.address"], "api.anthropic.com");
+  const tier = chatAttributes(run, { model: "gpt-5-mini", route: "fast" });
+  assert.equal(tier["gen_ai.provider.name"], "openai");
+  assert.equal(tier["server.address"], "api.openai.com");
+  // A route the run does not know names no provider at all, never the run's by mistake.
+  const unknown = chatAttributes(run, { model: "x", route: "strong" });
+  assert.equal(unknown["gen_ai.provider.name"], undefined);
+  assert.equal(unknown["server.address"], undefined);
+});
+
+/** A trace made directly (no run), into memory: its finished spans once `steps` ran on it and it ended. */
+async function directTrace(steps) {
+  const exporter = new InMemorySpanExporter();
+  const tracing = await genAiTracing(ON, { exporter });
+  const trace = tracing.open({ startedAt: Date.now() });
+  await steps(trace);
+  await trace.end();
+  return exporter.getFinishedSpans();
+}
+
+test("a plan harness's turn whose only event is its turn_end (no text, no tool) still has its chat span", async () => {
+  const spans = await directTrace((trace) => {
+    trace.known({ runId: "run-1", harness: "plan-cli", plan: true, model: "auto" });
+    trace.event({ type: "turn_end", status: "completed" });
+  });
+  const chats = chatSpans(spans);
+  assert.equal(chats.length, 1, `one turn, one chat span: ${spans.map((span) => span.name)}`);
+  assert.equal(chats[0].attributes["agentrun.billing"], "plan");
+  assert.equal(chats[0].status.code, 0, "it ended as its turn did, not interrupted");
+});
+
+test("pi: a native extension's tool and a session's native tool each have one execute_tool span, as a host tool has, none twice", { timeout: 90_000 }, async (t) => {
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const exporter = new InMemorySpanExporter();
+  const parameters = { type: "object", properties: {} };
+  const browse = defineTool({ name: "browse", description: "Browses.", parameters, replay: "safe", execute: async () => ({ output: [{ type: "text", text: SECRET_ARG }] }) });
+  const ask = defineTool({ name: "ask_person", description: "Asks.", parameters, replay: "safe", execute: async () => ({ output: [{ type: "text", text: "no one" }], isError: true }) });
+  const write = { name: "write", description: "Write a line.", inputSchema: parameters, replay: "never", call: async () => ({ text: "wrote" }) };
+  const script = [{ calls: [{ call: "browse" }, { call: "ask_person" }, { call: "write" }] }, { say: "done" }];
+  const createLoop = createAdapterLoop(
+    (_claim, run) => ({
+      adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin(script), price: () => 0, extensions: [defineExtension({ name: "native-browse", tools: [browse] })], tools: [ask] }),
+      session: { key: "root", label: "root", system: ["Follow the script."], tools: [write], context: "fresh" },
+      input: "Follow the script.",
+      hooks: quiet,
+      gate: () => "allow",
+      runCap: { capUsd: () => undefined, modelOf: () => undefined },
+    }),
+    { tracing: genAiTracing(ON, { exporter }) },
+  );
+  const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  const row = await until(async () => {
+    const now = await opened.server.runs.get("run-1");
+    return (now.state === "ended" || now.state === "failed") && now.runner === null && now;
+  }, "the run ended and released", 60_000);
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  const spans = exporter.getFinishedSpans();
+  const tools = spans.filter((span) => span.attributes["gen_ai.operation.name"] === "execute_tool").map((span) => span.name).sort();
+  assert.deepEqual(tools, ["execute_tool ask_person", "execute_tool browse", "execute_tool write"], `one span per call: ${spans.map((span) => span.name)}`);
+  const asked = spans.find((span) => span.name === "execute_tool ask_person");
+  assert.equal(asked.status.code, 2, "a native tool's error result fails its span");
+  assert.equal(asked.attributes["error.type"], "tool_error");
+  assert.ok(spans.every((span) => Object.values(span.attributes).every((value) => !String(value).includes(SECRET_ARG))), "no result text on any span");
+});
+
+test("a request still open when the claim ends has its chat span ended interrupted, exported with the rest", async () => {
+  const spans = await directTrace((trace) => {
+    trace.known({ runId: "run-1", harness: "pi", provider: "anthropic" });
+    trace.request("claude-sonnet-4.5");
+  });
+  const [chat] = chatSpans(spans);
+  assert.ok(chat, `the open request's span was exported: ${spans.map((span) => span.name)}`);
+  assert.equal(chat.status.code, 2);
+  assert.equal(chat.attributes["error.type"], "interrupted");
+  assert.deepEqual(Object.keys(chat.attributes).filter((key) => key.startsWith("gen_ai.usage.")), [], "no usage on a request that never answered");
 });

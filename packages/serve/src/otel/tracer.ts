@@ -34,8 +34,9 @@ export interface RunTrace {
   /** The run's facts, once its spec is known: its invoke_agent span starts then, at the claim's start. Said again (a
    *  restart's spec), nothing changes. */
   known(run: TracedRun): void;
-  /** A model request admitted: its chat span starts now, and the function it returns ends it with how it ended. */
-  request(model: string | undefined): (usage: ModelUsage, ended?: Ended) => void;
+  /** A model request admitted (`route`: the session's route it came by, where it names one): its chat span starts now,
+   *  and the function it returns ends it with how it ended. One the claim's end finds still open ends interrupted. */
+  request(model: string | undefined, route?: string): (usage: ModelUsage, ended?: Ended) => void;
   /** An event of the session: a tool call's start and end; on a plan-billed harness, its turns. */
   event(event: AdapterEvent): void;
   /** The claim ended (`failed`: why, when it failed): every span still open ends, then its spans are flushed, waited for
@@ -110,6 +111,8 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
       let root: Span | undefined;
       let rootContext: Context | undefined;
       const tools = new Map<string, Span>();
+      // The chat spans of requests still waiting for their end (RunTrace.request).
+      const chats = new Set<Span>();
       let turn: Span | undefined;
       const child = (name: string, kind: number, attributes: Record<string, unknown>, parent?: Context): Span =>
         tracer.startSpan(name, { kind, attributes: attributes as never }, parent ?? rootContext);
@@ -139,15 +142,15 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
           ids.next = undefined;
           rootContext = api.trace.setSpan(api.ROOT_CONTEXT, root);
         },
-        request: (model) => {
+        request: (model, route) => {
           if (!run || run.plan) return () => {};
           const on = run;
-          const span = child(spanName.chat(model ?? on.model), api.SpanKind.CLIENT, chatAttributes(on, { ...(model ? { model } : {}) }));
-          let done = false;
+          const asked = { ...(model ? { model } : {}), ...(route === undefined ? {} : { route }) };
+          const span = child(spanName.chat(model ?? on.model), api.SpanKind.CLIENT, chatAttributes(on, asked));
+          chats.add(span);
           return guarded((usage: ModelUsage, ended?: Ended) => {
-            if (done) return;
-            done = true;
-            const attributes = chatAttributes(on, { ...(model ? { model } : {}) }, usage, ended);
+            if (!chats.delete(span)) return;
+            const attributes = chatAttributes(on, asked, usage, ended);
             span.setAttributes(attributes);
             if (attributes["error.type"] !== undefined) span.setStatus({ code: api.SpanStatusCode.ERROR });
             span.end();
@@ -156,8 +159,9 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
         event: (event) => {
           if (!run) return;
           const on = run;
-          // A plan-billed harness's turn is its model's: a chat span from its first event to its end, with no usage.
-          if (on.plan && event.type !== "turn_end" && !turn) turn = child(spanName.chat(on.model), api.SpanKind.CLIENT, chatAttributes(on, {}));
+          // A plan-billed harness's turn is its model's: a chat span from its first event to its end, with no usage. A turn
+          // that ends with no event before (its drive failed at once) has one too, from its end.
+          if (on.plan && !turn) turn = child(spanName.chat(on.model), api.SpanKind.CLIENT, chatAttributes(on, {}));
           if (event.type === "tool_start") {
             if (tools.has(event.callId)) return;
             const parent = event.parent ? tools.get(event.parent) : undefined;
@@ -189,6 +193,13 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
               span.end();
             }
             tools.clear();
+            // A request whose end the claim's end did not wait for (a booking still writing, a session closed past its
+            // bound): its chat span ends with the claim, interrupted, before the flush.
+            for (const span of chats) {
+              failed(span, "interrupted");
+              span.end();
+            }
+            chats.clear();
             if (turn) {
               failed(turn, "interrupted");
               turn.end();
