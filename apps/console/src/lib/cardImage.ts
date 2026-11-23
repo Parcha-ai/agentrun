@@ -10,12 +10,14 @@
 import tokensCss from "@/tokens.css?raw";
 import { hslToRgb, readTokens } from "@/design/contrast";
 
-/** One bar of a chart: its label, its value (any unit; bars of a chart are drawn against its largest), and the words
- *  shown for it (absent: none). */
-export type CardBar = { readonly label: string; readonly value: number; readonly text?: string };
+/** One bar of a chart: its label, its value (any unit; bars of a chart are drawn against its largest measured one), and
+ *  the words shown for it (absent: none). `measured: false`: a bar not measured yet, drawn as a dashed outline (at its
+ *  value where it has one, an estimate, else the whole track) and left out of the chart's scale. */
+export type CardBar = { readonly label: string; readonly value: number; readonly text?: string; readonly measured?: false };
 
-/** A chart on a card: bars as columns (a run of many: hours, days, months) or as rows (a few named shares, each label
- *  beside its bar). Absent `kind`: columns for more than six bars, rows otherwise. */
+/** A chart on a card: bars as columns (a run of many: hours, days, months; every bar drawn) or as rows (named shares,
+ *  each label beside its bar; as many as fit, chartCapacity). Absent `kind`: columns for more than six bars, rows
+ *  otherwise, so a chart whose bars a mapper folds to fit says `kind: "rows"`. */
 export type CardChart = { readonly label?: string; readonly kind?: "columns" | "rows"; readonly bars: readonly CardBar[] };
 
 /** What a card says. Every word on the image is one of these; nothing else is read. */
@@ -27,7 +29,7 @@ export type CardBody = {
   readonly figure?: { readonly value: string; readonly unit?: string };
   /** Label and value pairs, two columns of up to three. */
   readonly rows?: readonly { readonly label: string; readonly value: string }[];
-  /** Up to two charts, side by side, each as wide as its share of their bars. */
+  /** Up to two charts, side by side: two columns charts each as wide as its share of their bars, a rows chart a fixed share. */
   readonly charts?: readonly CardChart[];
   /** One line at the foot. */
   readonly footnote?: string;
@@ -111,7 +113,12 @@ const rect = (x: number, y: number, width: number, height: number, fill: string)
 /** A finite value of zero or more, for a bar's length. */
 const measure = (value: number): number => (Number.isFinite(value) && value > 0 ? value : 0);
 
-function chartEl(chart: CardChart, x: number, y: number, width: number, height: number, paint: (name: string) => string): string[] {
+/** A bar not measured yet: its outline, dashed, inset by half the stroke so it stays inside its box. */
+const outline = (x: number, y: number, width: number, height: number, stroke: string): string =>
+  width < 4 || height < 4 ? "" : `<rect x="${(x + 1).toFixed(1)}" y="${(y + 1).toFixed(1)}" width="${(width - 2).toFixed(1)}" height="${(height - 2).toFixed(1)}" fill="none" stroke="${stroke}" stroke-width="2" stroke-dasharray="6 4"/>`;
+
+/** A chart's marks and how many of its bars they show (a rows chart shows as many as fit its height; columns show all). */
+function chartEl(chart: CardChart, x: number, y: number, width: number, height: number, paint: (name: string) => string): { marks: string[]; shown: number } {
   const out: string[] = [];
   let top = y;
   if (chart.label) {
@@ -119,12 +126,18 @@ function chartEl(chart: CardChart, x: number, y: number, width: number, height: 
     top += 32;
   }
   const bars = chart.bars;
-  if (!bars.length || height - (top - y) < 24) return out;
-  const most = Math.max(...bars.map((bar) => measure(bar.value)), 0);
-  const rows = (chart.kind ?? (bars.length > 6 ? "columns" : "rows")) === "rows";
+  if (!bars.length || height - (top - y) < 24) return { marks: out, shown: 0 };
+  // The scale is the largest measured bar; with none measured yet, the largest estimate.
+  const measured = bars.filter((bar) => bar.measured !== false);
+  const most = Math.max(...(measured.length ? measured : bars).map((bar) => measure(bar.value)), 0);
+  /** A bar's length on a track of `track`: its share of the scale, capped at the track; an unmeasured bar with no value
+   *  fills its track, as an outline. */
+  const lengthOf = (bar: CardBar, track: number) =>
+    bar.measured === false && measure(bar.value) === 0 ? track : most > 0 ? Math.min(track, (measure(bar.value) / most) * track) : 0;
+  const rows = kindOf(chart) === "rows";
   const room = height - (top - y);
   if (rows) {
-    const shown = bars.slice(0, Math.max(1, Math.floor(room / 36)));
+    const shown = bars.slice(0, rowsThatFit(room));
     const pitch = Math.min(44, room / shown.length);
     const labelWidth = Math.min(260, width * 0.32);
     const textWidth = shown.some((bar) => bar.text) ? Math.min(180, width * 0.22) : 0;
@@ -132,12 +145,12 @@ function chartEl(chart: CardChart, x: number, y: number, width: number, height: 
     shown.forEach((bar, i) => {
       const middle = top + i * pitch + pitch / 2;
       out.push(textEl({ x, y: middle + 7, size: 20, face: "mono", fill: paint("card-foreground"), text: line(bar.label, labelWidth - 12, 20, "mono") }));
-      const length = most > 0 ? (measure(bar.value) / most) * barWidth : 0;
+      const length = lengthOf(bar, barWidth);
       out.push(rect(x + labelWidth, middle - 9, barWidth, 18, paint("muted")));
-      out.push(rect(x + labelWidth, middle - 9, length, 18, paint("primary")));
+      out.push(bar.measured === false ? outline(x + labelWidth, middle - 9, length, 18, paint("primary")) : rect(x + labelWidth, middle - 9, length, 18, paint("primary")));
       if (bar.text) out.push(textEl({ x: x + width, y: middle + 7, size: 20, face: "mono", fill: paint("muted-foreground"), text: line(bar.text, textWidth, 20, "mono"), anchor: "end" }));
     });
-    return out;
+    return { marks: out, shown: shown.length };
   }
   // Columns: each bar a column from the baseline, its label under it where the labels fit (else the first and last).
   const gap = bars.length > 16 ? 4 : 8;
@@ -148,16 +161,26 @@ function chartEl(chart: CardChart, x: number, y: number, width: number, height: 
   const everyLabel = bars.every((bar) => [...bar.label].length * 14 * ADVANCE.mono <= column + gap);
   bars.forEach((bar, i) => {
     const left = x + i * (column + gap);
-    const length = most > 0 ? (measure(bar.value) / most) * tallest : 0;
+    const length = lengthOf(bar, tallest);
     out.push(rect(left, baseline - 2, column, 2, paint("border")));
-    out.push(rect(left, baseline - length, column, length, paint("primary")));
+    out.push(bar.measured === false ? outline(left, baseline - length, column, length, paint("primary")) : rect(left, baseline - length, column, length, paint("primary")));
     if (bar.text && column >= 40) out.push(textEl({ x: left + column / 2, y: baseline - length - 8, size: 14, face: "mono", fill: paint("muted-foreground"), text: line(bar.text, column + gap, 14, "mono"), anchor: "middle" }));
     if (labelled && (everyLabel || i === 0 || i === bars.length - 1)) {
       out.push(textEl({ x: left + column / 2, y: baseline + 22, size: 14, face: "mono", fill: paint("muted-foreground"), text: everyLabel ? bar.label : line(bar.label, 80, 14, "mono"), anchor: "middle" }));
     }
   });
-  return out;
+  return { marks: out, shown: bars.length };
 }
+
+/** A chart's kind as drawn: the one it says, else columns for more than six bars. */
+const kindOf = (chart: CardChart): "columns" | "rows" => chart.kind ?? (chart.bars.length > 6 ? "columns" : "rows");
+
+/** A chart's share of the width beside another: a columns chart's grows with its bars (each column as wide as the
+ *  other's), a rows chart's is fixed (its bars stack, and its labels need the room). */
+const weightOf = (chart: CardChart): number => (kindOf(chart) === "rows" ? 10 : Math.max(chart.bars.length, 4));
+
+/** How many rows of bars fit a rows chart's `room` (its height under its label): one at the least. */
+const rowsThatFit = (room: number): number => Math.max(1, Math.floor(room / 36));
 
 /** The words of `body` in reading order, one sentence each, for an <img>'s alt. */
 export function cardAlt(body: CardBody): string {
@@ -167,15 +190,34 @@ export function cardAlt(body: CardBody): string {
   if (body.figure) parts.push(body.figure.unit ? `${body.figure.value} ${body.figure.unit}` : body.figure.value);
   for (const row of (body.rows ?? []).slice(0, MAX_ROWS)) parts.push(`${row.label}: ${row.value}`);
   for (const chart of (body.charts ?? []).slice(0, MAX_CHARTS)) {
-    const bars = chart.bars.map((bar) => `${bar.label} ${bar.text ?? String(bar.value)}`).join(", ");
+    const bars = chart.bars.map((bar) => `${bar.label} ${bar.text ?? (bar.measured === false ? "not measured yet" : String(bar.value))}`).join(", ");
     parts.push(chart.label ? `${chart.label}: ${bars}` : bars);
   }
   if (body.footnote) parts.push(body.footnote);
   return parts.map((part) => part.trim()).filter(Boolean).join(". ");
 }
 
-/** `body` as a 1200 by 675 card image. */
+/** `body` as a 1200 by 675 card image. A rows chart shows as many bars as fit (chartCapacity says how many): fold the
+ *  rest into one "other" bar before rendering, or they are not drawn. */
 export function renderCard(body: CardBody): CardImage {
+  const { marks } = draw(body);
+  const alt = cardAlt(body);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_WIDTH}" height="${CARD_HEIGHT}" viewBox="0 0 ${CARD_WIDTH} ${CARD_HEIGHT}" role="img"><title>${escape(alt)}</title>${marks.join("")}</svg>`;
+  return { svg, dataUrl: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, width: CARD_WIDTH, height: CARD_HEIGHT, alt };
+}
+
+/** How many bars of each of `body.charts` (by its index) renderCard draws, laid out as `body` is (its title, figure, rows
+ *  and footnote take their room first): every bar of a columns chart, as many as fit of a rows chart, none of a chart past
+ *  the second, one with no bars, or one with no room left. A mapper with more bars than fit shows the first count − 1
+ *  and one "other" bar for the rest; the count does not change with how many bars a chart is given. */
+export function chartCapacity(body: CardBody): number[] {
+  const { shown } = draw(body);
+  return (body.charts ?? []).map((_, i) => shown[i] ?? 0);
+}
+
+/** The card's marks, and how many bars of each chart of `body.charts` (by its index) they show. */
+function draw(body: CardBody): { marks: string[]; shown: number[] } {
+  const shownBars: number[] = [];
   const theme = body.theme ?? "dark";
   const paint = (name: string) => colour(theme, name);
   const out: string[] = [];
@@ -211,7 +253,8 @@ export function renderCard(body: CardBody): CardImage {
 
   // The rows: two columns, each pair a caps label over its value, as many as fit above the charts and the foot.
   const rows = (body.rows ?? []).slice(0, MAX_ROWS);
-  const charts = (body.charts ?? []).filter((chart) => chart.bars.length > 0).slice(0, MAX_CHARTS);
+  // Each drawn chart with its index in body.charts, which chartCapacity answers by.
+  const charts = (body.charts ?? []).map((chart, index) => ({ chart, index })).filter(({ chart }) => chart.bars.length > 0).slice(0, MAX_CHARTS);
   if (rows.length) {
     const columns = rows.length > 3 ? 2 : Math.min(rows.length, 3);
     const perColumn = Math.ceil(rows.length / columns);
@@ -231,28 +274,27 @@ export function renderCard(body: CardBody): CardImage {
     y += 28 + shownPerColumn * pitch;
   }
 
-  // The charts, side by side below, each as wide as its share of the bars.
+  // The charts, side by side below, each as wide as its share (weightOf).
   if (charts.length) {
     const top = y + 32;
     const height = bottom - top;
     if (height >= 64) {
       const gap = 48;
-      const weights = charts.map((chart) => Math.max(chart.bars.length, 4));
+      const weights = charts.map(({ chart }) => weightOf(chart));
       const total = weights.reduce((a, b) => a + b, 0);
       let x = PAD;
-      charts.forEach((chart, i) => {
+      charts.forEach(({ chart, index }, i) => {
         const width = ((INNER - gap * (charts.length - 1)) * weights[i]!) / total;
-        out.push(...chartEl(chart, x, top, width, height, paint));
+        const { marks, shown } = chartEl(chart, x, top, width, height, paint);
+        out.push(...marks);
+        shownBars[index] = shown;
         x += width + gap;
       });
     }
   }
 
   if (body.footnote) out.push(textEl({ x: PAD, y: CARD_HEIGHT - PAD + 8, size: 20, face: "sans", fill: paint("muted-foreground"), text: line(body.footnote, INNER, 20, "sans") }));
-
-  const alt = cardAlt(body);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_WIDTH}" height="${CARD_HEIGHT}" viewBox="0 0 ${CARD_WIDTH} ${CARD_HEIGHT}" role="img"><title>${escape(alt)}</title>${out.join("")}</svg>`;
-  return { svg, dataUrl: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, width: CARD_WIDTH, height: CARD_HEIGHT, alt };
+  return { marks: out, shown: shownBars };
 }
 
 /** `image` as a PNG at `scale` times its size, in the browser (a canvas draws it). For a download or a share. */

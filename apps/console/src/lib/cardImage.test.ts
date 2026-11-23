@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import css from "@/tokens.css?raw";
 import { hslToRgb, readTokens } from "@/design/contrast";
-import { CARD_HEIGHT, CARD_WIDTH, cardAlt, renderCard, toPng, type CardBody } from "./cardImage";
+import { CARD_HEIGHT, CARD_WIDTH, cardAlt, chartCapacity, renderCard, toPng, type CardBody } from "./cardImage";
 
 // The one card renderer (a free run's receipt, each Wrapped card): a CardBody in, an SVG string and its data URL out.
 // Pure, every word from the body, every colour a token of the card's theme, nothing that loads from anywhere.
@@ -116,6 +116,59 @@ describe("renderCard", () => {
     const widths = marks(svg).map((r) => Number(r.getAttribute("width")));
     expect(widths[0]! / widths[1]!).toBeCloseTo(2, 1);
     expect(widths.slice(2)).toEqual([0, 0]);
+  });
+});
+
+describe("chartCapacity", () => {
+  const models = (n: number) => Array.from({ length: n }, (_, i) => ({ label: `m/${i}`, value: n - i, text: `${n - i}%` }));
+  const split = (n: number, extra: Partial<CardBody> = {}): CardBody => ({ title: "Where it went", figure: { value: "48.2M", unit: "tokens" }, charts: [{ label: "By harness", kind: "rows", bars: [{ label: "codex", value: 3 }, { label: "goose", value: 2 }, { label: "pi", value: 1 }] }, { label: "By model", kind: "rows", bars: models(n) }], ...extra });
+  const drawnLabels = (body: CardBody) => texts(renderCard(body).svg).filter((t) => t.startsWith("m/"));
+
+  it("says how many bars of each chart the card draws, the same count renderCard draws, by the chart's index", () => {
+    const [harnesses, many] = chartCapacity(split(12));
+    expect(harnesses).toBe(3);
+    expect(many).toBeGreaterThan(1);
+    expect(many).toBeLessThan(12);
+    // The model chart draws exactly that many of its 12.
+    expect(drawnLabels(split(12))).toHaveLength(many!);
+    // A mapper that folds to the count draws every bar it gives: the count does not move with the bars given.
+    const folded = [...models(12).slice(0, many! - 1), { label: "m/other", value: 1, text: "other" }];
+    const body = { ...split(12), charts: [split(12).charts![0]!, { label: "By model", kind: "rows" as const, bars: folded }] };
+    expect(chartCapacity(body)).toEqual([3, many]);
+    expect(drawnLabels(body)).toContain("m/other");
+    // Two rows charts share the width evenly, whatever their bar counts: the harness labels are drawn whole.
+    expect(texts(renderCard(body).svg)).toEqual(expect.arrayContaining(["codex", "goose", "pi"]));
+  });
+
+  it("counts the room the card's rows and footnote take, every column of a columns chart, and nothing for a chart not drawn", () => {
+    const [, bare] = chartCapacity(split(12));
+    const [, crowded] = chartCapacity(split(12, { rows: [{ label: "Sessions", value: "1,284" }, { label: "Requests", value: "9,310" }], footnote: "All yours." }));
+    expect(crowded).toBeLessThan(bare!);
+    expect(chartCapacity({ title: "Hours", charts: [{ bars: models(24) }] })).toEqual([24]);
+    expect(chartCapacity({ title: "Three", charts: [{ bars: [] }, { bars: models(2) }, { bars: models(2) }, { bars: models(2) }] })).toEqual([0, 2, 2, 0]);
+    expect(chartCapacity({ title: "None" })).toEqual([]);
+  });
+});
+
+describe("a bar not measured yet", () => {
+  it("is a dashed outline, at its estimate or the whole track, and left out of the scale", () => {
+    const primary = hex(tokens.dark.primary!);
+    const body: CardBody = { title: "Launch", charts: [{ kind: "rows", bars: [
+      { label: "agentrun", value: 40, text: "40 s" },
+      { label: "other", value: 0, measured: false, text: "measuring" },
+      { label: "guess", value: 80, measured: false },
+    ] }] };
+    const doc = parse(renderCard(body).svg);
+    const solid = [...doc.querySelectorAll(`rect[fill="${primary}"]`)].filter((r) => r.getAttribute("y") !== "0.0");
+    const dashed = [...doc.querySelectorAll(`rect[stroke="${primary}"]`)];
+    expect(solid).toHaveLength(1);
+    expect(dashed).toHaveLength(2);
+    for (const r of dashed) expect([r.getAttribute("fill"), r.getAttribute("stroke-dasharray")]).toEqual(["none", "6 4"]);
+    // The measured bar is the scale's whole: an estimate twice it is capped at the track, as is the one with no value.
+    const track = Number(doc.querySelector(`rect[fill="${hex(tokens.dark.muted!)}"]`)!.getAttribute("width"));
+    expect(Number(solid[0]!.getAttribute("width"))).toBeCloseTo(track, 0);
+    for (const r of dashed) expect(Number(r.getAttribute("width"))).toBeCloseTo(track - 2, 0);
+    expect(cardAlt(body)).toContain("other measuring, guess not measured yet");
   });
 });
 
