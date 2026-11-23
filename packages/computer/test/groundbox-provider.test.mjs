@@ -249,21 +249,30 @@ test("a long write goes in calls of at most 256 KiB, one after another, and ever
 	assert.deepEqual(sizes, [262_144, 262_144, bytes.length - 524_288]);
 });
 
-test("a socket that goes while the command runs is no end: another attaches from the position read to, no output lost or read twice, and writes go on meanwhile", async (t) => {
+test("a socket that goes while the command runs is no end: another attaches from the position read to, no output lost or read twice, and writes go on meanwhile", { timeout: 30_000 }, async (t) => {
 	const { host, streams } = hostOf(() => undefined);
 	t.after(streams.stopAll);
 	const proc = await host.exec(ID, ["sh", "-c", 'while read -r l; do echo "echo $l"; [ "$l" = end ] && exit 0; done'], CTX);
 	let read = "";
+	let ended = false;
 	let more = () => {};
 	const reading = (async () => {
-		for await (const chunk of proc.stdout) {
-			read += Buffer.from(chunk).toString();
+		try {
+			for await (const chunk of proc.stdout) {
+				read += Buffer.from(chunk).toString();
+				more();
+			}
+		} finally {
+			ended = true;
 			more();
 		}
 	})();
-	/** Answers once what was read holds text: woken by each chunk, never by a clock. */
+	/** Answers once what was read holds text: woken by each chunk and by the stream's end, never by a clock; fails if the stream ends without it. */
 	const until = async (text) => {
-		while (!read.includes(text)) await new Promise((done) => (more = done));
+		while (!read.includes(text)) {
+			assert.ok(!ended, `stdout ended without ${JSON.stringify(text)}: it read ${JSON.stringify(read)}`);
+			await new Promise((done) => (more = done));
+		}
 	};
 	await proc.write(Buffer.from("a\n"));
 	await until("echo a\n");
@@ -482,7 +491,7 @@ test("a socket silent from its `started` on, with no output, heartbeat or close,
 	assert.equal(await reading, "a\n");
 });
 
-test("output the reader has not taken is bounded: past the high mark the socket is let go, and reading resumes from the position read to once the reader catches up", async () => {
+test("output the reader has not taken is bounded: past the high mark the socket is let go, and reading resumes from the position read to once the reader catches up", { timeout: 30_000 }, async () => {
 	const streams = scriptedSockets();
 	const { host } = hostOf(() => undefined, streams, { streamBounds: { queueHighBytes: 200_000, queueLowBytes: 50_000 } });
 	const starting = host.exec(ID, ["yes"], CTX);
@@ -508,7 +517,11 @@ test("output the reader has not taken is bounded: past the high mark the socket 
 	// The reader catches up: a new socket attaches from the last position queued, and nothing is lost or read twice.
 	const reading = textOf(proc.stdout);
 	let second;
-	while ((second = streams.opened[1]) === undefined || second.sent.length === 0) await turn();
+	// Bounded in turns, not time: a reconnect that never comes fails here in words instead of stalling the run.
+	for (let turns = 0; (second = streams.opened[1]) === undefined || second.sent.length === 0; turns++) {
+		assert.ok(turns < 1_000, "the reader caught up and no socket attached");
+		await turn();
+	}
 	assert.deepEqual(second.sent, [{ type: "attach", exec_id: "ex_0123456789abcdef", seq: 350_000, encoding: "base64" }]);
 	// The new socket reads on from there: the chunk the old one said after it was let go comes again, once.
 	second.say(out(chunks[7], 400_000));
