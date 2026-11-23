@@ -166,22 +166,30 @@ const RUNNING_STATE: Record<RunningComputer["computer"]["state"], { words: strin
 const RUN_WAITS: Partial<Record<RunningComputer["status"], string>> = { input_required: "Waiting for you", paused: "Paused", queued: "Queued" };
 
 /** Running now: each run still going whose agent has a computer (GET /v2/computers/running), newest first, read when
- *  the page opens and again every RUNNING_POLL_MS. A row says the run and its agent, the computer's kind and provider
- *  (the provider's name as Settings → Computers lists it, else its id), its state as the run read says it, what a run
- *  that isn't working waits on, and a held run's hold; its link opens the run, whose Screen tab is the live view and
- *  the take-over. A read that fails keeps the last list and says so; with none going, the section says that. An
- *  agent's own computer kept between runs is on its agent's page, and a paired computer in the section below. */
+ *  the page opens and again every RUNNING_POLL_MS, one read at a time. A row says the run and its agent, the
+ *  computer's kind and provider (the provider's name as Settings → Computers lists it, else its id), its state as the
+ *  run read says it, what a run that isn't working waits on, and a held run's hold; its link opens the run, whose
+ *  Screen tab is the live view and the take-over. A read that fails keeps the last list and says so; with none going,
+ *  the section says that. An agent's own computer kept between runs is on its agent's page, and a paired computer in
+ *  the section below. */
 function RunningSection({ v2, kinds }: { v2: Client; kinds: ComputerKindView[] }) {
   const [running, setRunning] = useState<RunningComputer[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
-    const read = () => v2.runningComputers().then(
-      (answer) => { if (alive) { setRunning(Array.isArray(answer?.computers) ? answer.computers : []); setProblem(null); } },
-      (e) => { if (alive) setProblem(problemOf(e)); },
-    );
-    void read();
-    const poll = setInterval(() => void read(), RUNNING_POLL_MS);
+    // One read at a time: a tick while a read is out starts none, so a slow answer is never overtaken by a newer one
+    // and then put back over it.
+    let reading = false;
+    const read = () => {
+      if (reading) return;
+      reading = true;
+      void v2.runningComputers().then(
+        (answer) => { if (alive) { setRunning(Array.isArray(answer?.computers) ? answer.computers : []); setProblem(null); } },
+        (e) => { if (alive) setProblem(problemOf(e)); },
+      ).finally(() => { reading = false; });
+    };
+    read();
+    const poll = setInterval(read, RUNNING_POLL_MS);
     return () => { alive = false; clearInterval(poll); };
   }, [v2]);
   const providerName = (kind: string, id: string) => kinds.find((k) => k.kind === kind)?.providers.find((p) => p.id === id)?.name ?? id;

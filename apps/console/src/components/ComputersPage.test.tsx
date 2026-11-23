@@ -62,15 +62,16 @@ type Call = { method: string; path: string; type: string | null; body: unknown }
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 /** A server that answers GET with `views` in turn (the last one again after), a provider's choices GET with `choices`
  *  in turn, and PUT and POST with `write`. GET /computers/running is its own read, answered with `running` in turn
- *  (none going, unless given) and counted apart (`runningReads`): `calls` are the page's other requests. */
-function server(views: (Computers | Response)[], write: (call: Call) => Response | Promise<Response> = () => json(200, {}), choices: (ComputerChoices | Response)[] = [{ choices: [] }], running: (RunningComputer[] | Response)[] = [[]]) {
+ *  (none going, unless given; a promise answers when it settles) and counted apart (`runningReads`): `calls` are the
+ *  page's other requests. */
+function server(views: (Computers | Response)[], write: (call: Call) => Response | Promise<Response> = () => json(200, {}), choices: (ComputerChoices | Response)[] = [{ choices: [] }], running: (RunningComputer[] | Response | Promise<Response>)[] = [[]]) {
   const calls: Call[] = [];
   let read = 0;
   let chose = 0;
   const counts = { runningReads: 0 };
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: String(url), type: new Headers(init?.headers).get("content-type"), body: init?.body ? JSON.parse(String(init.body)) : undefined };
-    if (call.method === "GET" && call.path.endsWith("/computers/running")) { const r = running[Math.min(counts.runningReads++, running.length - 1)]!; return r instanceof Response ? r : json(200, { computers: r }); }
+    if (call.method === "GET" && call.path.endsWith("/computers/running")) { const r = running[Math.min(counts.runningReads++, running.length - 1)]!; return r instanceof Response || r instanceof Promise ? r : json(200, { computers: r }); }
     calls.push(call);
     if (call.method === "GET" && call.path.endsWith("/choices")) { const c = choices[Math.min(chose++, choices.length - 1)]!; return c instanceof Response ? c : json(200, c); }
     if (call.method === "GET") { const v = views[Math.min(read++, views.length - 1)]!; return v instanceof Response ? v : json(200, v); }
@@ -593,6 +594,33 @@ describe("Settings → Computers: Running now", () => {
       act(() => root!.unmount()); root = undefined;
       await vi.advanceTimersByTimeAsync(RUNNING_POLL_MS * 3);
       expect(counts.runningReads).toBe(3);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("reads one at a time: a slow read is not overtaken, so its late answer never puts back a list a newer read replaced", async () => {
+    vi.useFakeTimers();
+    try {
+      let answer!: (r: Response) => void;
+      const slow = new Promise<Response>((resolve) => (answer = resolve));
+      const { v2, counts } = server([view(true)], undefined, undefined, [[going("run_AAAA1111")], slow, []]);
+      const host = document.body.appendChild(document.createElement("div"));
+      root = createRoot(host);
+      act(() => root!.render(createElement(ComputersPage, { v2, writable: true })));
+      const settle = async (ms = 0) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+      await settle();
+      await settle(RUNNING_POLL_MS);
+      expect(counts.runningReads).toBe(2);
+      // While the second read is out, the timer starts no other.
+      await settle(RUNNING_POLL_MS * 2);
+      expect(counts.runningReads).toBe(2);
+      expect(rowsOf(host).map((li) => li.dataset.running)).toEqual(["run_AAAA1111"]);
+      answer(json(200, { computers: [going("run_BBBB2222")] }));
+      await settle();
+      expect(rowsOf(host).map((li) => li.dataset.running)).toEqual(["run_BBBB2222"]);
+      // Then the next tick reads again, and its answer stands.
+      await settle(RUNNING_POLL_MS);
+      expect(counts.runningReads).toBe(3);
+      expect(rowsOf(host)).toHaveLength(0);
     } finally { vi.useRealTimers(); }
   });
 

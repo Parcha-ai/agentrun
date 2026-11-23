@@ -124,3 +124,30 @@ test("a run gone or ended between the list and its read is left out", async () =
   });
   assert.deepEqual(computers.map((c) => c.run_id), ["up"]);
 });
+
+test("a run that moves from queued to running while the states are listed is listed once", async () => {
+  // The queued list still has the run; by the running list's turn it is running there too.
+  const moved = row("moved", "queued", "desk");
+  const viewed = [];
+  const store = {
+    runs: { list: async ({ state }) => (state === "queued" || state === "running" ? [{ ...moved, state }] : []) },
+    agents: { revision: async () => DESKTOP },
+  };
+  const { computers } = await runningComputers(store, {
+    view: async (runId) => { viewed.push(runId); return { title: "t", status: "working", state: "working", created_at: "2026-11-05T09:00:00.000Z" }; },
+    computer: async () => ({ computer: { kind: "desktop", provider: "e2b", state: "ready" } }),
+  });
+  assert.deepEqual(computers.map((c) => c.run_id), ["moved"]);
+  assert.deepEqual(viewed, ["moved"], "the run is read once");
+});
+
+test("a run that failed for want of its computer between the list and its read is left out", async () => {
+  const store = storeOf([row("unavailable", "running", "desk"), row("up", "running", "desk")], { desk: DESKTOP });
+  const view = { title: "t", status: "working", state: "working", created_at: "2026-11-05T09:00:00.000Z" };
+  const { computers } = await runningComputers(store, {
+    view: viewOf({ unavailable: { ...view, status: "failed", state: "ended" }, up: view }),
+    // As runComputerField says it: a computer_unavailable failure reads `failed`, not `ended`.
+    computer: async (runId) => ({ computer: { kind: "desktop", provider: "e2b", state: runId === "unavailable" ? "failed" : "ready" } }),
+  });
+  assert.deepEqual(computers.map((c) => c.run_id), ["up"]);
+});

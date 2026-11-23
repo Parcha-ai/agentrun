@@ -5,8 +5,9 @@
 //
 // A run is going while its row is queued, running or parked. Its agent has a computer when its revision's setting names
 // one (or its place stands for one); a run with none is left out before anything of it is read, so the read costs a
-// run read for each going run that has a computer, and nothing for the rest. A run that ended between the list and its
-// read is left out: its computer went with it.
+// run read for each going run that has a computer, and nothing for the rest. A run moving between states while the
+// rows are listed is listed once. A run whose read no longer says it is going (it ended, or failed for want of its
+// computer, between the list and its read) is left out: its computer went with it.
 import { computerOfPlace, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import type { RunState, Store } from "./store/index.js";
 
@@ -31,6 +32,8 @@ export type RunningDeps = {
 
 /** A run's row states while it is still going. */
 const GOING: readonly RunState[] = ["queued", "running", "parked"];
+/** A run read's statuses while it is still going (run-view.ts Status): any other has ended. */
+const GOING_STATUS: ReadonlySet<string> = new Set(["queued", "working", "paused", "input_required"]);
 
 /** GET /v2/computers/running's answer: the runs still going that have a computer, newest first. */
 export async function runningComputers(store: Pick<Store, "runs" | "agents">, deps: RunningDeps): Promise<{ computers: RunningComputer[] }> {
@@ -48,16 +51,18 @@ export async function runningComputers(store: Pick<Store, "runs" | "agents">, de
     }
     return known;
   };
+  // Every going row first, once by id: a run listed as queued can be running by the next state's list.
+  const rows = new Map<string, Awaited<ReturnType<Store["runs"]["list"]>>[number]>();
+  for (const state of GOING) for (const row of await store.runs.list({ state })) if (!rows.has(row.id)) rows.set(row.id, row);
   const computers: RunningComputer[] = [];
-  for (const state of GOING) {
-    for (const row of await store.runs.list({ state })) {
-      if (!(await hasComputer(row.revisionId))) continue;
-      const view = await deps.view(row.id);
-      if (!view) continue;
-      const { computer } = await deps.computer(row.id, view);
-      if (!computer || computer.state === "ended") continue;
-      computers.push({ run_id: row.id, agent_id: row.agentId, title: String(view.title ?? ""), status: String(view.status), state: String(view.state), created_at: String(view.created_at), computer });
-    }
+  for (const row of rows.values()) {
+    if (!(await hasComputer(row.revisionId))) continue;
+    const view = await deps.view(row.id);
+    // A run gone, or ended (failed for want of its computer included), between the list and its read is left out.
+    if (!view || !GOING_STATUS.has(String(view.status))) continue;
+    const { computer } = await deps.computer(row.id, view);
+    if (!computer) continue;
+    computers.push({ run_id: row.id, agent_id: row.agentId, title: String(view.title ?? ""), status: String(view.status), state: String(view.state), created_at: String(view.created_at), computer });
   }
   computers.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
   return { computers };
