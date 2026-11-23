@@ -51,6 +51,12 @@ export type BootedSealKey = SealKey & { readonly release: () => void };
 
 const HOW = `Hand the server ${SEAL_KEY_ENV} (32 random bytes in base64, e.g. \`openssl rand -base64 32\`), or let it keep one in ${SEAL_KEY_DIR}/${SEAL_KEY_FILE} in its data directory, made at the first start.`;
 const refused = (why: string) => new SealKeyRefused(`No seal key: ${why}. ${HOW}`);
+/** Why `text` is no seal key, by its length alone (never its value, a secret): a host whose generator counts bytes where
+ *  characters were meant hands 60 characters, and this says so in the log of the start it stops. */
+const notAKey = (text: string): string => {
+  const length = text.trim().length;
+  return `is not 32 bytes in base64 (43 characters, or 44 ending in =; it has ${length}${length === 43 || length === 44 ? ", but not in that form" : ""})`;
+};
 
 function lstatOf(path: string): Stats | undefined {
   try {
@@ -85,7 +91,7 @@ function keptIn(dir: string): SealKey | undefined {
   }
   const text = readFileSync(file, "utf8").split("\n")[0]!.trim();
   const key = sealKeyOf(text);
-  if (!key) throw refused(`${file} does not hold 32 bytes in base64`);
+  if (!key) throw refused(`${file} holds a key that ${notAKey(text)}`);
   return { key, text, path: file, generated: false };
 }
 
@@ -135,7 +141,7 @@ function writeIn(dir: string, text: string): boolean {
 export function ensureSealKey(given: string | undefined, { dataDir }: { dataDir: string }): SealKey {
   if (given) {
     const key = sealKeyOf(given);
-    if (!key) throw refused(`${SEAL_KEY_ENV} is set but is not 32 bytes in base64`);
+    if (!key) throw refused(`${SEAL_KEY_ENV} is set but ${notAKey(given)}`);
     return { key, text: given, path: null, generated: false };
   }
   const dir = join(dataDir, SEAL_KEY_DIR);
@@ -229,7 +235,7 @@ async function sealKeyFor(store: SealKeyStore, dataDir: string, given: string | 
   let seal: SealKey | undefined;
   if (given) {
     const key = sealKeyOf(given);
-    if (!key) throw refused(`${SEAL_KEY_ENV} is set but is not 32 bytes in base64`);
+    if (!key) throw refused(`${SEAL_KEY_ENV} is set but ${notAKey(given)}`);
     const why = notTheStoresWhy(kept, key);
     if (why !== undefined) throw notTheStores(`The ${SEAL_KEY_ENV} handed now is not it${why}.`);
     seal = { key, text: given, path: null, generated: false };

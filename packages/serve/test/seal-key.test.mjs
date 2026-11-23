@@ -91,6 +91,40 @@ test("no seal key and nowhere to keep one: refused in words, never a start witho
   assert.throws(() => mod.ensureSealKey(undefined, { dataDir: data }), mod.SealKeyRefused);
 });
 
+test("a key of the wrong shape is refused with the length it wants and the length it has, never its value", async (t) => {
+  const mod = await sealKey();
+  assert.ok(mod, "seal-key.js exists");
+  const wants = "43 characters, or 44 ending in =";
+  // What a host's generator makes when it counts bytes, not characters: 43 random bytes are 60 base64 characters.
+  const long = randomBytes(43).toString("base64");
+  const short = randomBytes(24).toString("base64");
+  const wrongForm = `${randomBytes(32).toString("base64").slice(0, 42)}.`;
+  const said = (error) => String(error.message);
+  const refusedFor = (key, length) => (error) => {
+    assert.ok(error instanceof mod.SealKeyRefused, said(error));
+    assert.ok(said(error).includes(`AGENTRUN_SEAL_KEY is set but is not 32 bytes in base64 (${wants}; it has ${length}`), said(error));
+    assert.equal(said(error).split(key).length - 1, 0, "the key's value is never in the refusal");
+    return true;
+  };
+  const home = await scratch(t);
+  assert.throws(() => mod.ensureSealKey(long, { dataDir: home }), refusedFor(long, 60));
+  assert.throws(() => mod.ensureSealKey(short, { dataDir: home }), refusedFor(short, 32));
+  assert.throws(() => mod.ensureSealKey(wrongForm, { dataDir: home }), refusedFor(wrongForm, "43, but not in that form"));
+  // The start's path, over a store that holds nothing yet: the same words.
+  const empty = { settings: { get: async () => undefined }, sealedSecrets: { all: async () => [] } };
+  await assert.rejects(mod.bootSealKey(empty, await scratch(t), { given: long, say: () => {} }), refusedFor(long, 60));
+  // A kept key file that holds no key: its length too, never its text.
+  const data = await scratch(t);
+  mkdirSync(join(data, "seal"), { mode: 0o700 });
+  writeFileSync(join(data, "seal", "seal.key"), `${long}\n`, { mode: 0o600 });
+  assert.throws(() => mod.ensureSealKey(undefined, { dataDir: data }), (error) => {
+    assert.ok(error instanceof mod.SealKeyRefused, said(error));
+    assert.ok(said(error).includes(`seal.key holds a key that is not 32 bytes in base64 (${wants}; it has 60)`), said(error));
+    assert.equal(said(error).split(long).length - 1, 0, "the key's value is never in the refusal");
+    return true;
+  });
+});
+
 test("the server does not start without a seal key it can keep: in words, naming AGENTRUN_SEAL_KEY", async (t) => {
   const mod = await sealKey();
   assert.ok(mod, "seal-key.js exists");
