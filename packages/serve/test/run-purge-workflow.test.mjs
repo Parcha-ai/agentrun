@@ -800,6 +800,56 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     assert.deepEqual({ decided: (await v2Of())?.decided, champion: promotions.serving.find((line) => line.workflow === "answer")?.champion?.commit ?? null }, { decided: "hold", champion: await mergeAt(data, "unread", "unread-first") }, "once the store reads again, the decision lands a hold for v2, and v1 is still the champion");
   });
 
+  // The same check decided with each read on its decision's path failing in turn (the head and history standsNot's
+  // onMain reads, the file its holds reads): each records no promote, and once the store reads again it lands a hold.
+  test(`${kind}: a check of a purged run's revision whose learning read fails at any read of its decision (head, history, file) records no promote`, { timeout: 120_000 }, async (t) => {
+    const { api, data, store } = await serve(t, { runner: false });
+    onStore(t, data, settingsOf());
+    assert.equal((await api("POST", "/agents", agent("blinded", { learning: true }))).status, 201);
+    const revisionId = (await store.agents.get("blinded")).currentRevision;
+    for (const runId of ["blinded-first", "blinded-gone"]) {
+      await store.runs.create({ id: runId, agentId: "blinded", revisionId }, { body: launchBody({ input: { content: "Q" }, title: "t", place: { mode: "runner" } }) });
+      await store.runs.update(await store.claim(runId, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 0.1 });
+    }
+    const path = "workflows/answer/workflow.json";
+    const [v1, v2] = [answerAt("in whole numbers"), answerAt("in words")];
+    const kept = await learned(data, "blinded", (ws) => learningCommit(ws, { runId: "blinded-first", reason: "It learned answer.", files: filesOf("in whole numbers") }));
+    const revised = await learned(data, "blinded", (ws) => learningCommit(ws, { runId: "blinded-gone", reason: "It revised answer.", files: filesOf("in words") }));
+    const at = new Date().toISOString();
+    const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+    await store.settings.put("learning.promotions.blinded", { v: 1, items: [
+      { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit: kept },
+      { workflow: "answer", digest: digestOf(v2[path]), at, decided: "replaying", reason: "checking", check: bar, commit: revised, runs: ["blinded-replay-1"], replay_id: "blinded-replay" },
+    ] });
+    assert.equal((await api("DELETE", "/runs/blinded-gone")).status, 204);
+    const { promotionOf } = await import("../dist/learn/promote.js");
+    const { FolderUnreadable } = await import("../dist/learn/store.js");
+    const { decideCheck } = await import("../dist/runner/promotion.js");
+    const { secretsShown } = await import("../dist/learning.js");
+    const v2Of = async () => promotionOf((await store.settings.get("learning.promotions.blinded")).items, "answer", digestOf(v2[path]));
+    const record = await v2Of();
+    const extra = { runs: record.runs, replay_id: record.replay_id, commit: record.commit };
+    const learning = learningStoreOf(data, "blinded");
+    const failing = (method) => new Proxy(learning, {
+      get(target, key) {
+        if (key === method) return async () => { throw new FolderUnreadable(false, `the learning store's ${method} could not be read`); };
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const rows = ["a", "b", "c", "d", "e"].map((one) => ({ of: `blinded-input-${one}`, input: "What is six?", agent: "6", outcome: "answered", answer: "6" }));
+    const read = { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 };
+    const decide = (over) => decideCheck({ store, agentId: "blinded", log: () => {}, shown: async () => secretsShown([]), learning: over }, "answer", digestOf(v2[path]), bar, read, (was) => was?.decided === "replaying", extra).then(() => "written", () => "refused");
+    const seen = {};
+    for (const method of ["head", "log", "read"]) {
+      const write = await decide(failing(method));
+      seen[method] = { write, decided: (await v2Of())?.decided };
+    }
+    assert.deepEqual(seen, { head: { write: "refused", decided: "replaying" }, log: { write: "refused", decided: "replaying" }, read: { write: "refused", decided: "replaying" } }, "each failed read refuses the decision: nothing is written, v2's record still replays");
+    await decide(learning);
+    assert.equal((await v2Of())?.decided, "hold", "once the store reads again, the decision lands a hold for v2");
+  });
+
   // #3458 (0695220cf9), on both stores. A check that outlives its revision's run, with the inputs it did not agree on:
   // the run's purge puts v1 back on main while v2's check replays other runs' inputs, and the check lands a hold for v2
   // at the commit it was checked at. The gate refuses that hold as it refuses a promote there, so the compile's held
