@@ -76,8 +76,9 @@ jobs:
     # consumers, which took 2 and 2.5 min one after the other in `checks`. The rest are test shards
     # (scripts/ci-shard.mjs): each suite's files assigned by time to the shards of its pool (scripts/ci-shards.json), and
     # every shard job fails unless the shards cover every test file once, so a new package or test file is tested without
-    # an edit here. A shard's name is its pool and number; the pools' counts there and the list below must agree
-    # (scripts/ci-plan.test.mjs). On a pull request the any pool's shards run only the tests its changes reach
+    # an edit here. A shard's name is its pool and number; the pools' counts there and the lists here and in test-lean must
+    # agree (scripts/ci-plan.test.mjs). The lean pool's shards run in test-lean, on these same steps, so the lean job waits
+    # for them alone. On a pull request the any pool's shards run only the tests its changes reach
     # (scripts/ci-affected.mjs), or every test when it changes a shared root such as scripts/ or this file; the merge queue
     # and main run every test, so a test that selection misses fails there.
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
@@ -92,8 +93,8 @@ jobs:
         # One Node: the supported floor (engines, .nvmrc) is the current pin, 24.22.3, the November 2026 security
         # release. An older 24 is not supported, so no leg tests one.
         node: ['24.22.3']
-        shard: [checks, packages, source, lean-1, lean-2, any-1, any-2, any-3, any-4, any-5, any-6, any-7, any-8, any-9, any-10, any-11]
-    steps:
+        shard: [checks, packages, source, any-1, any-2, any-3, any-4, any-5, any-6, any-7, any-8, any-9, any-10, any-11]
+    steps: &test-steps
       - uses: actions/checkout@v4
         with:
           # A pull request's any shards also fetch the merge commit's parents: the first is the base its changes are
@@ -197,6 +198,21 @@ jobs:
           path: .release/
           include-hidden-files: true
           if-no-files-found: ignore
+
+  test-lean:
+    # The lean pool's test shards: the test job's steps, runner and name, in a job of their own. `needs` names a whole
+    # job, never one matrix instance, so the lean job, which reads only these shards' captures, would otherwise wait
+    # for every shard of `test`. verify needs this job as it needs `test`.
+    name: test (${{ matrix.node }}, ${{ matrix.shard }})
+    needs: [build]
+    runs-on: ${{ github.event_name == 'merge_group' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['24.22.3']
+        shard: [lean-1, lean-2]
+    steps: *test-steps
 
   serve-postgres:
     # @parcha/agentrun-serve's store on Postgres (`npm run test:pg`), against a Postgres service container. Advisory: not
@@ -319,9 +335,10 @@ jobs:
   verify:
     # The one required check: it passes when every test shard (both Node versions) and the console passed. It reads
     # `needs`, not the jobs API, so an API error cannot fail a required check. `needs.test.result` is the result of
-    # every matrix instance of `test`, so a red shard on either Node fails this job.
+    # every matrix instance of `test`, and `needs.test-lean.result` of every lean shard, so a red shard on either Node
+    # fails this job.
     name: verify
-    needs: [test, console]
+    needs: [test, test-lean, console]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -329,8 +346,9 @@ jobs:
       - name: Every test shard and the console passed
         env:
           RESULT: ${{ needs.test.result }}
+          LEAN_SHARDS: ${{ needs.test-lean.result }}
           CONSOLE: ${{ needs.console.result }}
-        run: test "$RESULT" = success && test "$CONSOLE" = success
+        run: test "$RESULT" = success && test "$LEAN_SHARDS" = success && test "$CONSOLE" = success
 
   computer-docker:
     # @parcha/agentrun-computer on real Docker: the daemon's vet and Go tests, then the live demo of a command run in a
@@ -660,9 +678,9 @@ jobs:
     # The Lean model of the workflow language (spec/lean): proofs, axiom audit, the model's
     # side of the conformance corpus, and the validator sweep. The TypeScript side of the
     # conformance corpus runs in `npm test` above. The sweep's workflows come from the lean
-    # pool's test shards, so it waits for them; it runs when one failed too, and the sweep fails
-    # if a shard's captures are missing. verify does not need it.
-    needs: [test]
+    # pool's test shards (test-lean), so it waits for them and for no other shard; it runs when
+    # one failed too, and the sweep fails if a shard's captures are missing. verify does not need it.
+    needs: [test-lean]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20

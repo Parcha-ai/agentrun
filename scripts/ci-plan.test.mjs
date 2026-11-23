@@ -130,10 +130,23 @@ test("this repository's shards cover every test file of every suite once, and ci
   const files = (list) => [...new Set(list.filter((u) => u.kind !== 'typecheck').map((u) => u.id))].sort();
   assert.deepEqual(files(Object.values(shards).flatMap((s) => s.units)), files(unitsOf(suites, readConfig(root).timings)));
   const workflow = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
-  const testJob = workflow.jobs.test.strategy.matrix.shard;
-  assert.deepEqual(testJob, ['checks', 'packages', 'source', ...Object.keys(shards)], 'the test job runs checks, packages, source and every shard');
+  const leanShards = Object.keys(shards).filter((name) => name.startsWith('lean-'));
+  const testJob = workflow.jobs.test, leanTests = workflow.jobs['test-lean'];
+  assert.deepEqual(testJob.strategy.matrix.shard, ['checks', 'packages', 'source', ...Object.keys(shards).filter((name) => !leanShards.includes(name))], 'the test job runs checks, packages, source and every shard but the lean pool\'s');
+  assert.deepEqual(leanTests.strategy.matrix.shard, leanShards, 'test-lean runs the lean pool\'s shards');
+  for (const key of ['name', 'needs', 'runs-on', 'timeout-minutes', 'steps']) assert.deepEqual(leanTests[key], testJob[key], `test-lean's ${key} is the test job's`);
+  assert.deepEqual(leanTests.strategy.matrix.node, testJob.strategy.matrix.node, 'on the same Node');
+  // The lean job waits for the lean pool's shards and no other; verify fails on a red shard of either job.
+  assert.deepEqual(workflow.jobs.lean.needs, ['test-lean']);
+  const verify = workflow.jobs.verify;
+  assert.deepEqual(verify.needs, ['test', 'test-lean', 'console']);
+  const gate = verify.steps.find((step) => step.env);
+  for (const job of verify.needs) {
+    const name = Object.entries(gate.env).find(([, value]) => value === `\${{ needs.${job}.result }}`)?.[0];
+    assert.ok(name && gate.run.includes(`test "$${name}" = success`), `verify passes only when ${job} succeeded`);
+  }
   const lean = workflow.jobs.lean.steps.find((step) => /collect\.mjs/.test(step.run ?? '')).run;
-  assert.deepEqual([...lean.matchAll(/lean-sweep-([\w-]+)/g)].map((m) => m[1]), Object.keys(shards).filter((name) => name.startsWith('lean-')), 'the lean job reads every lean shard\'s captures');
+  assert.deepEqual([...lean.matchAll(/lean-sweep-([\w-]+)/g)].map((m) => m[1]), leanShards, 'the lean job reads every lean shard\'s captures');
   // The any pool's shards install poppler for serve's pdf_pages.
   assert.ok(Object.values(shards).some((s) => s.pool === 'any' && s.suites.some((x) => x.name === '@parcha/agentrun-serve')), 'serve is in the any pool');
 });
