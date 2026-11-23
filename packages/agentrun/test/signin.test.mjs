@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
 import { main } from "../lib/cli.mjs";
-import { SignInError, capabilitiesOf, deviceOffer, deviceSignIn, retryAfterMs } from "../lib/device.mjs";
+import { SignInError, capabilitiesOf, deviceOffer, deviceSignIn, elsewhereOf, retryAfterMs } from "../lib/device.mjs";
 import { CLOUD_URL } from "../lib/target.mjs";
 import { removeAtEnd } from "./support.mjs";
 
@@ -409,6 +409,24 @@ test("an address to open on another origin than the server's is said on a line o
   assert.equal(quiet.token, TOKEN);
   assert.ok(quiet.said.includes(`Open ${home.origin}/device and enter the code KQ7-4MZ`), quiet.said);
   assert.doesNotMatch(quiet.said, /approved at/);
+});
+
+test("the origins the cross-origin line names: AgentRun cloud's API with its device page on its console is the one pair it names none of; every other pair is named", () => {
+  const CONSOLE = "https://console.agentrun.ai";
+  const cloudPage = [`${CONSOLE}/device`, `${CONSOLE}/device?code=KQ7-4MZ`];
+  // Cloud's own sign-in: the metadata's verification_uri and the grant's complete one, both on its console.
+  assert.deepEqual(elsewhereOf(new URL(`${CLOUD_URL}/v2`), cloudPage), []);
+  // Cloud's console handed out by any other target: a hostile one (the case the line is for), cloud's host on another
+  // port, or a server AGENTRUN_CLOUD_URL names in cloud's place.
+  for (const target of ["https://evil.example/v2", "https://api.agentrun.ai:8443/v2", "https://staging.agentrun.example/v2"]) {
+    assert.deepEqual(elsewhereOf(new URL(target), cloudPage), [CONSOLE], target);
+  }
+  // Cloud's API with its code page on any other origin, and the pair the other way round.
+  assert.deepEqual(elsewhereOf(new URL(`${CLOUD_URL}/v2`), ["https://console.agentrun.example/device", undefined]), ["https://console.agentrun.example"]);
+  assert.deepEqual(elsewhereOf(new URL(`${CONSOLE}/v2`), [`${CLOUD_URL}/device`]), [CLOUD_URL]);
+  // The server's own origin: none. Two other origins: both, each once.
+  assert.deepEqual(elsewhereOf(new URL("https://api.example/v2"), ["https://api.example/device", "https://api.example/device?code=KQ7-4MZ"]), []);
+  assert.deepEqual(elsewhereOf(new URL("https://api.example/v2"), ["https://a.example/device", "https://b.example/device?code=x", "https://a.example/other"]), ["https://a.example", "https://b.example"]);
 });
 
 // A server named by --base-url, from a terminal, whose device sign-in the CLI does not take: the reason, then the
