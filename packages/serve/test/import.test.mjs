@@ -2570,3 +2570,45 @@ test("a Codex thread whose child thread is over the cap is left out as large, sa
   await runImport(store, plan, options(h));
   assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), [sessionId(3)], "no run of it without its child's usage");
 });
+
+test("an OpenCode request run through Claude Code keeps its usage and cost when that Claude Code session, planned, is not saved: it could not be read", { skip: process.getuid?.() === 0 && "root reads any file" }, async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const target = claudeSession(h.at, project, 1);
+  openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] }]);
+  const plan = await planImport(options(h));
+  assert.equal(plan.projects[0].sessions.length, 2, "both planned");
+  // Unreadable once planned: the Claude Code run is never saved.
+  chmodSync(target, 0);
+  t.after(() => chmodSync(target, 0o644));
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const report = await runImport(store, plan, options(h));
+  assert.deepEqual(report.skipped.filter((s) => s.kind === "unread").map((s) => s.what), [target]);
+  const runs = await rowsOf(store);
+  assert.deepEqual(runs.map((r) => r.importedFrom.source), ["opencode"]);
+  const { metrics } = await metricsOf(store, runs[0].id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 9, 3], "the request counts in the OpenCode run, the only one holding it");
+  assert.equal((await store.runs.get(runs[0].id)).costUsd, 0.5625);
+});
+
+test("an OpenCode request run through Claude Code counts once when the Claude Code session's project is written after the OpenCode one's", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  // Projects are written in path order: a before b.
+  const [first, second] = [join(h.at, "code", "a"), join(h.at, "code", "b")];
+  for (const dir of [first, second]) mkdirSync(dir, { recursive: true });
+  claudeSession(h.at, second, 1);
+  openCodeDb(h.at, [{ id: "ses_K", cwd: first, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] }]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const runs = await rowsOf(store);
+  assert.deepEqual(runs.map((r) => r.importedFrom.source).sort(), ["claude-code", "opencode"]);
+  const run = runs.find((r) => r.importedFrom.source === "opencode");
+  const { metrics } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [1, 6, 1], "the Claude Code run's request counts there alone");
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.0625);
+});
