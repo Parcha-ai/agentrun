@@ -73,3 +73,59 @@ test("bytes that are none of these, or cut short of their header, read no length
   // A box whose size runs past the file, and one of size 0 inside moov: never read past the bytes, never looped on.
   assert.equal(mediaSeconds(new Uint8Array([...box("ftyp", ascii("isom")), ...u32(0x7fffffff), ...ascii("moov"), 0, 0, 0, 0, ...ascii("mvhd")])), undefined, "a moov that runs past the file");
 });
+
+// A talking head's voice is priced by its length, and whoever sends the job made the file: voiceSeconds reads what a
+// decoder plays, never a length a header states.
+const find = (bytes, text) => Buffer.from(bytes).indexOf(text);
+const u32le = (n) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
+/** MPEG-1 Layer III frames at 48 kHz, 32 kbit/s, stereo: 1152 samples (24 ms) and 96 bytes each. */
+const frames48 = (n) => Array.from({ length: n }, () => [0xff, 0xfb, (1 << 4) | (1 << 2), 0x00, ...new Array(92).fill(0)]).flat();
+
+test("a voice's MP3 length is every frame walked from its first byte to its last; a frame count its header states is not read", async () => {
+  const { voiceSeconds, mediaSeconds } = await load();
+  near(voiceSeconds(SAMPLES.mp3Cbr.bytes), SAMPLES.mp3Cbr.seconds, 0.05, "constant bitrate");
+  near(voiceSeconds(SAMPLES.mp3Info.bytes), SAMPLES.mp3Info.seconds, 0.05, "with an Info header, its frames walked");
+  // An Info header that claims 1 frame over a file of 129.
+  const forged = Uint8Array.from(SAMPLES.mp3Info.bytes);
+  forged.set(u32(1), find(forged, "Info") + 8);
+  assert.ok(mediaSeconds(forged) < 0.1, "mediaSeconds takes the header's count");
+  near(voiceSeconds(forged), SAMPLES.mp3Info.seconds, 0.05, "voiceSeconds walks the frames");
+  // A VBRI header that claims 1 frame, on a frame followed by 200 more.
+  const vbri = [0xff, 0xfb, 0x90, 0x00, ...new Array(32).fill(0), ...ascii("VBRI"), 0, 1, 0, 0, 0, 0, ...u32(417), ...u32(1), ...new Array(417 - 54).fill(0)];
+  const vbriFile = new Uint8Array([...vbri, ...Array.from({ length: 200 }, () => [0xff, 0xfb, 0x90, 0x00, ...new Array(413).fill(0)]).flat()]);
+  near(voiceSeconds(vbriFile), (201 * 1152) / 44_100, 1e-9, "201 frames, not VBRI's 1");
+  // An ID3v2 tag and the zeros after it, and an ID3v1 tag at the end, are not frames and not refused.
+  const tagged = new Uint8Array([...ascii("ID3"), 3, 0, 0, 0, 0, 2, 44, ...new Array(300).fill(0), 0, 0, 0, ...frames48(50), ...ascii("TAG"), ...new Array(125).fill(0)]);
+  near(voiceSeconds(tagged), 50 * 0.024, 1e-9, "50 frames between the tags");
+  // A last frame cut short is counted whole.
+  near(voiceSeconds(new Uint8Array([...frames48(50), ...frames48(1).slice(0, 40)])), 51 * 0.024, 1e-9, "51 frames, the last cut short");
+  // Any other bytes, before, between or after the frames: no length.
+  for (const [what, bytes] of [
+    ["bytes after the frames", [...frames48(50), ...new Array(500).fill(0x41)]],
+    ["bytes between frames", [...frames48(20), ...new Array(500).fill(0x41), ...frames48(30)]],
+    ["bytes before the first frame", [...new Array(64).fill(0x41), ...frames48(50)]],
+    ["no frame", [...ascii("ID3"), 3, 0, 0, 0, 0, 0, 10, ...new Array(10).fill(0)]],
+  ]) assert.equal(voiceSeconds(new Uint8Array(bytes)), undefined, what);
+});
+
+test("a voice's WAV length is its PCM bytes, from its data chunk's header to the end of the file, at its sample rate; fields that disagree are refused", async () => {
+  const { voiceSeconds } = await load();
+  near(voiceSeconds(SAMPLES.wav.bytes), SAMPLES.wav.seconds, 1e-9, "2 s");
+  const fmt = find(SAMPLES.wav.bytes, "fmt ");
+  const data = find(SAMPLES.wav.bytes, "data");
+  const edited = (at, bytes) => { const copy = Uint8Array.from(SAMPLES.wav.bytes); copy.set(bytes, at); return copy; };
+  // A data chunk that states 100 bytes of the 8000 after it: all of them play.
+  near(voiceSeconds(edited(data + 4, u32le(100))), SAMPLES.wav.seconds, 1e-9, "the bytes to the end, not the stated size");
+  // A byte rate 60 times what the sample rate and block align give.
+  assert.equal(voiceSeconds(edited(fmt + 16, u32le(4000 * 60))), undefined, "a byte rate that disagrees");
+  assert.equal(voiceSeconds(edited(fmt + 20, [2, 0])), undefined, "a block align that disagrees");
+  assert.equal(voiceSeconds(edited(fmt + 8, [0x55, 0])), undefined, "a compressed format (MP3 in a WAV)");
+  // Bytes appended after the data chunk count as voice: a decoder may play them.
+  near(voiceSeconds(new Uint8Array([...SAMPLES.wav.bytes, ...new Array(4000).fill(0x80)])), 3, 1e-9, "4000 more bytes, 1 s more");
+});
+
+test("a voice in an ISO file (mp4, m4a, mov) reads no length: its only length is the one its movie header states", async () => {
+  const { voiceSeconds } = await load();
+  for (const name of ["mp4", "mp4Fast", "m4a", "mov"]) assert.equal(voiceSeconds(SAMPLES[name].bytes), undefined, name);
+  for (const bytes of [new Uint8Array(0), new TextEncoder().encode("<html></html>")]) assert.equal(voiceSeconds(bytes), undefined);
+});

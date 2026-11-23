@@ -297,7 +297,21 @@ test("only an endpoint fal bills by the length of the media it is given is price
 // A talking head (veed/fabric-1.0, fal-ai/bytedance/omnihuman/v1.5) makes a video as long as the voice it is given: fal
 // bills it per second of that video, in whole seconds. Its hold is that voice's length, read from the audio at its
 // audio_url alone (never its image, never a length its input states), https only and under a byte cap.
-const TALKING_MEDIA = { "https://media.example/face.png": SAMPLES.mp4.bytes, "https://media.example/voice.mp3": SAMPLES.mp3Info.bytes, "https://media.example/voice.wav": SAMPLES.wav.bytes, "https://media.example/page.html": new TextEncoder().encode("<html></html>") };
+/** The sample MP3 with its Info header edited to claim 1 frame; the sample WAV with its byte rate 60 times what it plays. */
+const forgedMp3 = () => { const bytes = Uint8Array.from(SAMPLES.mp3Info.bytes); new DataView(bytes.buffer).setUint32(Buffer.from(bytes).indexOf("Info") + 8, 1); return bytes; };
+const forgedWav = () => { const bytes = Uint8Array.from(SAMPLES.wav.bytes); new DataView(bytes.buffer).setUint32(Buffer.from(bytes).indexOf("fmt ") + 16, 4000 * 60, true); return bytes; };
+/** 125 MPEG-1 Layer III frames at 48 kHz, 24 ms each: 3 s, which a sum of 125 times 0.024 reads a hair over. */
+const threeSeconds = new Uint8Array(Array.from({ length: 125 }, () => [0xff, 0xfb, (1 << 4) | (1 << 2), 0x00, ...new Array(92).fill(0)]).flat());
+const TALKING_MEDIA = {
+  "https://media.example/face.png": SAMPLES.mp4.bytes,
+  "https://media.example/voice.mp3": SAMPLES.mp3Info.bytes,
+  "https://media.example/voice.wav": SAMPLES.wav.bytes,
+  "https://media.example/page.html": new TextEncoder().encode("<html></html>"),
+  "https://media.example/forged.mp3": forgedMp3(),
+  "https://media.example/forged.wav": forgedWav(),
+  "https://media.example/voice.m4a": SAMPLES.m4a.bytes,
+  "https://media.example/three.mp3": threeSeconds,
+};
 const head = (endpoint_id, input) => ({ endpoint_id, input: { image_url: "https://media.example/face.png", audio_url: "https://media.example/voice.mp3", ...input } });
 
 test("a talking head is held at its voice's length in whole seconds, read before the call from its audio_url alone, https only, under the voice's byte cap", async (t) => {
@@ -319,6 +333,14 @@ test("a talking head is held at its voice's length in whole seconds, read before
   // OmniHuman's output states the length fal billed ("Duration of audio input/video output as used for billing"): it
   // settles there, in whole seconds.
   near(omni.spent(), 3 * 0.16, "settled at the 2.4 s it states, billed as 3 whole seconds");
+
+  // The voice's length is what plays, never what its header states: an Info header claiming 1 frame is not read.
+  const forged = await setup(t, { media: TALKING_MEDIA, run: (args) => reply(args, { result: { video: { url: "https://v3.fal.media/o.mp4" } } }) });
+  await forged.call("run_model", head(FABRIC, { resolution: "480p", audio_url: "https://media.example/forged.mp3" }));
+  near(forged.admits[0].holdUsd, 4 * 0.08, "the forged MP3's frames, 4 whole seconds, not its header's 1 frame");
+  // A length a hair over a whole second from summing its frames is that whole second.
+  await forged.call("run_model", head(FABRIC, { resolution: "480p", audio_url: "https://media.example/three.mp3" }));
+  near(forged.admits[1].holdUsd, 3 * 0.08, "125 frames of 24 ms: 3 s, not 4");
 });
 
 test("a talking head whose voice can't be read, or whose rate get_pricing doesn't state, is refused unsent under a cap", async (t) => {
@@ -341,9 +363,9 @@ test("a talking head whose voice can't be read, or whose rate get_pricing doesn'
     assert.match(text, /^mcp:fal\/run_model was not sent: fal bills fal-ai\/bytedance\/omnihuman\/v1\.5 per second of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL/, String(audio_url));
   }
   assert.deepEqual(run.asked.media, [], "never read");
-  // A voice whose length can't be read: not there, not media, or refused by the reader (too big, a private host, its
-  // deadline): fail closed.
-  for (const audio_url of ["https://media.example/gone.mp3", "https://media.example/page.html"]) {
+  // A voice whose length can't be read: not there, not media, a WAV whose fields disagree, an ISO file (whose only
+  // length is the one its header states), or refused by the reader (too big, a private host, its deadline): fail closed.
+  for (const audio_url of ["https://media.example/gone.mp3", "https://media.example/page.html", "https://media.example/forged.wav", "https://media.example/voice.m4a"]) {
     const text = await refusedFor(head(FABRIC, { resolution: "480p", audio_url }));
     assert.equal(text, `mcp:fal/run_model was not sent: fal bills veed/fabric-1.0 per second of the voice at its audio_url, and the length of ${audio_url} could not be read, so a run with a spend cap can't send it. Nothing was sent.`);
   }
