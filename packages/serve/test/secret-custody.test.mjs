@@ -373,7 +373,7 @@ process.stdout.write("AGENTRUN_RUNNER_READY\\n");`;
 test("started by their launchers, the server and the runner hold COMPOSIO_API_KEY in neither environment, nor does a run's process of the same user; a run granted the Composio server's tool still reaches Composio with it", { timeout: 180_000 }, async (t) => {
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
   const key = `${canary}-COMPOSIO_API_KEY`;
-  const user = "grep-user-alice-0001";
+  const user = "user-alice-0001";
   const account = "ca_alice_gmail_0001";
   const composio = await startFakeComposio({ apiKey: key, toolkits: { gmail: { no_auth: false, tools: [{ slug: "add", name: "Add", description: "Add two numbers." }] } }, mcpAccounts: { [user]: [account] } });
   t.after(() => composio.close());
