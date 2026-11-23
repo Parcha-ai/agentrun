@@ -448,6 +448,14 @@ __all__ = [
     "GetObservationsResponseUsageDailyItem",
     "GetObservationsResponseUsageModelsItem",
     "GetOpenapiResponse",
+    "GetRunExportResponse",
+    "GetRunExportResponseAgent",
+    "GetRunExportResponseCutsItem",
+    "GetRunExportResponseFilesItem",
+    "GetRunExportResponseOmittedItem",
+    "GetRunExportResponseRestoredItem",
+    "GetRunExportResponseSource",
+    "GetRunExportResponseSourceScrubber",
     "GetRunGraphResponse",
     "GetRunGraphResponseDecisionsItem",
     "GetRunGraphResponseDecisionsItemImagesItem",
@@ -6430,6 +6438,72 @@ class CreateRunComputerViewerResponse(TypedDict):
     expires_at: str
 
 
+class GetRunExportResponse(TypedDict):
+    format: Literal["agentrun.share/1"]
+    sha256: str
+    source: GetRunExportResponseSource
+    agent: GetRunExportResponseAgent
+    run: dict[str, Any]
+    rows: list[dict[str, Any]]
+    graph: dict[str, Any] | None
+    files: list[GetRunExportResponseFilesItem]
+    omitted: list[GetRunExportResponseOmittedItem]
+    cuts: list[GetRunExportResponseCutsItem]
+    restored: list[GetRunExportResponseRestoredItem]
+
+
+class GetRunExportResponseSource(TypedDict):
+    agentrun: str
+    scrubber: GetRunExportResponseSourceScrubber
+
+
+class GetRunExportResponseSourceScrubber(TypedDict):
+    version: int
+    rules: str
+
+
+class GetRunExportResponseAgent(TypedDict):
+    name: str
+    kind: Literal["agentic", "workflow"]
+
+
+class GetRunExportResponseFilesItem(TypedDict):
+    path: str
+    bytes: int
+    sha256: str
+    encoding: Literal["utf8"]
+    content: str
+
+
+class _GetRunExportResponseOmittedItemRequired(TypedDict):
+    what: Literal["file", "files", "recordings"]
+    why: Literal["binary", "too_large", "over_total", "over_count", "unreadable", "list_truncated", "never"]
+
+
+class GetRunExportResponseOmittedItem(_GetRunExportResponseOmittedItemRequired, total=False):
+    path: str
+
+
+class GetRunExportResponseCutsItem(TypedDict):
+    id: str
+    at: str
+    start: int
+    end: int
+    rule: str
+    kind: Literal["format", "held", "dump", "label", "personal", "jev"]
+    restorable: bool
+    shape: str
+
+
+class GetRunExportResponseRestoredItem(TypedDict):
+    id: str
+    at: str
+    start: int
+    end: int
+    rule: str
+    kind: Literal["label", "personal", "jev"]
+
+
 ListRunFilesResponse: TypeAlias = "RunFileList"
 
 
@@ -10680,6 +10754,7 @@ OPERATIONS: dict[str, Operation] = {
     "createInlineRun": Operation(method="POST", path="/runs", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createRunComputerViewer": Operation(method="POST", path="/runs/{run_id}/computer/viewer", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteRun": Operation(method="DELETE", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "getRunExport": Operation(method="GET", path="/runs/{run_id}/export", path_params=("run_id",), multi_segment=(), query=("restore",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRun": Operation(method="GET", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gradeRun": Operation(method="PUT", path="/runs/{run_id}/grade", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -11288,6 +11363,10 @@ class RunsResource(Group):
     def delete(self, run_id: str, *, timeout: float | None = None) -> None:
         """Purge a run's content and keep its cost (DELETE /runs/{run_id})."""
         return self._call("deleteRun", (run_id,), None, None, timeout=timeout)
+
+    def export(self, run_id: str, *, restore: str | None = None, timeout: float | None = None) -> GetRunExportResponse:
+        """An ended run as a share bundle, every string cut (GET /runs/{run_id}/export)."""
+        return self._call("getRunExport", (run_id,), None, {"restore": restore}, timeout=timeout)
 
     def files(self, run_id: str, *, timeout: float | None = None) -> ListRunFilesResponse:
         """The files the run wrote (GET /runs/{run_id}/files)."""

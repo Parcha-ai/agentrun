@@ -81,6 +81,7 @@
     "getRunGraph": ["runs", "graph"],
     "getRunTrace": ["runs", "trace"],
     "getRunUsage": ["runs", "usage"],
+    "getRunExport": ["runs", "export"],
     "listRunFiles": ["runs", "files"],
     "readRunFile": ["runs", "read-file"],
     "getRunLearning": ["runs", "learning"],

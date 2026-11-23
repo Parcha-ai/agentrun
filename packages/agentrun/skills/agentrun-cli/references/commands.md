@@ -939,6 +939,14 @@ Purge a run's content and keep its cost.
 
 Route: `DELETE /runs/{run_id}`.
 
+### `agentrun runs export RUN_ID`
+
+An ended run as a share bundle, every string cut.
+
+Route: `GET /runs/{run_id}/export`.
+
+- `--restore STRING` (string): Cut ids to restore, comma-separated (the parameter may repeat): each a label, personal or jev cut of this run's bundle.
+
 ### `agentrun runs files RUN_ID`
 
 The files the run wrote.
