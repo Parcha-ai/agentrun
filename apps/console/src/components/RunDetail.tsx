@@ -270,7 +270,10 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
         // The Dev tools tab is a page of data: it fills the width and scrolls in its own panes.
         : tab === "trace" && readTrace ? <RunTrace run={run} read={readTrace} readUsage={readUsage} version={`${moved.current.times}:${run.status}:${run.ended_at ?? ""}`} live={view.live} panel={tabPanelProps("run-views", tab)} {...traceAt} />
         : <div {...tabPanelProps("run-views", tab)} data-scroll-pane className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
-        <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
+        {/* The reading column, then the Screen tab's panel in a box of its own: it is wider than the column when the
+            run's steps sit beside its screen. A column with nothing in it takes no room above the panel. */}
+        <div className="flex flex-col gap-6 py-8">
+        <div className="mx-auto w-full max-w-4xl space-y-6 px-5 empty:hidden md:px-8">
           {native && <NativeRun native={native} agentId={run.agent_id} />}
           {cli && <CliLearningRun cli={cli} ended={view.final} />}
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
@@ -302,8 +305,9 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "learning" && <RunLearningResult key={run.run_id} run={run} read={readLearningResult} onViewChanges={changes ? () => setTab("report") : undefined} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}
+        </div>
           {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered} waitsFor={run.status === "input_required" && run.pending?.kind !== "stopped" ? run.pending?.kind : undefined} keptUntil={run.status === "input_required" ? keptUntil : undefined}
-            onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} recordings={run.recordings} fileUrl={fileUrl} />}
+            onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} recordings={run.recordings} fileUrl={fileUrl} rows={rows} working={view.live} />}
         </div>
       </div>}
       {native && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">Native sessions cannot receive steering or follow-up messages. <a href={`#/playground?agent=${encodeURIComponent(run.agent_id)}`} className="underline underline-offset-2">Start a new native run</a> for another task.</p>}

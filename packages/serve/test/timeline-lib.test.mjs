@@ -32,7 +32,7 @@ const groups = (rows) => groupTimeline(rows.filter((row) => row.kind !== "usage"
 const norm = (line) => line.slice(10).replace(/(\S) {2,}/g, "$1 ");
 const summaries = (rows) => rows.map((row) => row.summary);
 
-test("every row carries Grep's 13 fields, a known kind, an ISO time and Grep's caps", () => {
+test("every row carries the 13 base fields, a known kind, an ISO time and the base caps", () => {
   const long = "x".repeat(5000);
   const rows = timelineOf([
     user(long, 0),

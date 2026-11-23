@@ -3,7 +3,7 @@
 // valid header value before any request; no error holds it. A path argument is encoded whole (a file path keeps its
 // slashes), and one that would read as another route is refused before anything is sent. Only a GET, or a request that
 // carries an Idempotency-Key, is tried again. A secret body's values are cut from the answer to it.
-import { AgentRunAuthError, AgentRunError, AgentRunRefused, AgentRunUnreachable, AgentRunUnsupported, AgentRunUsage, type ServerError } from "./errors.js";
+import { AgentRunAuthError, AgentRunError, AgentRunRefused, AgentRunUnreachable, AgentRunUnsupported, AgentRunUsage, said, type ServerError } from "./errors.js";
 import { BAD_HEADER, backoff, LATE, MAX_RETRY_AFTER_MS, pause, segmentOf, wholeMs, type Exchange } from "./http.js";
 import { followRun, waitRun, type FollowOptions, type WaitOptions } from "./live.js";
 import { OPERATIONS, resources, type Resources, type Run, type TimelinePage } from "./operations.generated.js";
@@ -227,8 +227,8 @@ function secretAt(method: string, url: string): Operation | undefined {
 }
 
 /** A refused answer as its outcome. The server's error object is kept with every copy of the key cut from it; after a
- *  secret body, with the body's values cut too, only its code, and a code that held one is no code. Its text is never
- *  read into a message. A caller's abort while the body is still coming is thrown as the caller's own reason, and a read
+ *  secret body, with the body's values cut too, only its code, and a code that held one is no code. Its message, as
+ *  kept, is the error's reason (said); a body that is not a JSON error object is never read into one. A caller's abort while the body is still coming is thrown as the caller's own reason, and a read
  *  that ends at or past the exchange's deadline (a wait's timeout) as LATE: cancelled or late work is never reported as a
  *  refusal or a bad key. */
 async function refusal(x: Exchange, response: Response, apiKey: string, late: () => boolean): Promise<AgentRunError> {
@@ -243,7 +243,7 @@ async function refusal(x: Exchange, response: Response, apiKey: string, late: ()
   }
   const code = typeof error?.code === "string" && /^[a-z0-9_]+$/.test(error.code) ? error.code : undefined;
   if (x.secret) error = code ? { code } : undefined;
-  if (response.status === 401 || response.status === 403) return new AgentRunAuthError("refused", `The server refused the API key for ${x.route}: ${response.status}${code ? ` ${code}` : ""}.`, { status: response.status, code, error });
+  if (response.status === 401 || response.status === 403) return new AgentRunAuthError("refused", `The server refused the API key for ${x.route}: ${response.status}${code ? ` ${code}` : ""}${said(error) || "."}`, { status: response.status, code, error });
   if (response.status === 501) return new AgentRunUnsupported(x.route, response.status, code, error);
   const wait = retryAfterOf(response);
   return new AgentRunRefused(x.route, response.status, code, error, undefined, wait > 0 ? wait : undefined);

@@ -42,7 +42,10 @@ export const PLAN_HARNESSES: readonly string[] = Object.freeze(["pi", "codex"] s
 export type HarnessOffer = { id: string; label: string; promises: HarnessPromises; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use"; card?: string };
 /** A harness as capabilities list it: an offer with its `default_model` resolved (harnessOffers), never left out, and
  *  the memory a run of it reserves (`run_memory_mib`). */
-export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; free_models: { id: string; context_window: number }[]; run_memory_mib: number; needs?: HarnessNeed[] };
+export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; free_models: { id: string; context_window: number }[]; run_memory_mib: number; needs?: HarnessNeed[]; noModelRuns?: true };
+/** `noModelRuns` (never served): a harness this server runs, its default model lacking a key (`needs`), and no model it
+ *  offers runs here now either, so capabilities serve it `available: false` (server.ts capabilitiesWith). Absent where
+ *  any model it offers runs, though its default does not: a revision that names that model runs. */
 /** What would give a harness that runs nothing here a model, any one of them: a model key (`key`), or the ChatGPT sign-in
  *  (`chatgpt`: codex and pi, on a server that signs in, not signed in or signed in no longer, AGENT_MODEL naming no key's
  *  model the harness runs: planWouldRun). */
@@ -108,6 +111,9 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
         // so the picker never offers one a save would refuse. None for a harness that does not run here.
         const entry = harnessOf(env, offer.id)!;
         const models: string[] = [];
+        // Whether any model it offers runs here now, not only lacks a key: its default lacking one leaves it available
+        // where another runs (noModelRuns).
+        let runsOne = false;
         // Its free models (model-form.ts freeCandidates) are offered after the others, by the same checks.
         const free = offer.available ? await freeCandidates(env, offer.id) : [];
         if (offer.available) {
@@ -124,14 +130,17 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
             if (!MODEL_REF.test(id)) continue;
             const chosen = await entry.model(env, id, true);
             if (!chosen || !("model" in chosen || chosen.needs === "key")) continue;
+            let lacksKey = !("model" in chosen);
             if (facts && "model" in chosen && !env[FAUX_ENV]) {
               try {
                 providerFor(facts.wire, env, chosen.model, offer.id);
               } catch (error) {
                 if (!(error instanceof HarnessUnavailable && error.keys?.length)) continue;
+                lacksKey = true;
               }
             }
             models.push(id);
+            if (!lacksKey) runsOne = true;
           }
         }
         // One that runs nothing here for want of a key (unavailable with `keys`, or available with no default model for
@@ -140,7 +149,7 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
         const wantsKey = offer.available ? resolved !== undefined && "why" in resolved && resolved.needs === "key" : Boolean(offer.keys?.length);
         const sayWhy = !wantsKey ? {} : offer.available ? { reason: (resolved as { why: string }).why } : offer.reason ? { reason: withPlanWords(env, offer.id, offer.reason) } : {};
         const needs: HarnessNeed[] = wantsKey ? ["key", ...(planWouldRun(env, offer.id) ? (["chatgpt"] as const) : [])] : [];
-        return { ...offer, ...sayWhy, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, free_models: free.filter((m) => models.includes(m.id)), run_memory_mib: entry.runMib, ...(needs.length ? { needs } : {}) };
+        return { ...offer, ...sayWhy, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, free_models: free.filter((m) => models.includes(m.id)), run_memory_mib: entry.runMib, ...(needs.length ? { needs } : {}), ...(offer.available && needs.length && !runsOne ? { noModelRuns: true as const } : {}) };
       }));
     })();
     offered.set(env, offers);

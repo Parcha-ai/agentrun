@@ -8,13 +8,14 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { main as cli, NOUNS, words } from "./cli.mjs";
+import { OWN_VERSION } from "./own.mjs";
 import { chosenPublicUrl } from "./public-url.mjs";
 import { tailnetHint, tailnetNameOf } from "./tailscale.mjs";
 
 export const SERVE_PACKAGE = "@parcha/agentrun-serve";
 /** This command's package at its version, handed to the server it starts (AGENTRUN_NPX_PACKAGE), so the server's hints
  *  name this command. */
-export const OWN_SPEC = `@parcha/agentrun@${JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version}`;
+export const OWN_SPEC = `@parcha/agentrun@${OWN_VERSION}`;
 /** Where the server listens and the console is opened: this machine only. */
 export const HOST = "127.0.0.1"; // key-gate: loopback-rule the server this starts listens on this machine only
 
@@ -265,7 +266,7 @@ const inCi = (env) => Boolean(env.CI) && env.CI !== "false" && env.CI !== "0";
 
 /** The server's own commands (its CLI's first word), which this command runs on its store: every other first word is
  *  the CLI's, which names a command it has or says it has none. */
-export const SERVER_COMMANDS = ["check-harness", "eval-template", "import", "install-harness", "learning", "native", "remote-bridge", "reset-password", "runner", "store-schema", "validate-template"];
+export const SERVER_COMMANDS = ["check-harness", "eval-template", "import", "install-harness", "learning", "native", "remote-bridge", "reset-password", "runner", "sign-in-harness", "store-schema", "validate-template"];
 
 /** How many of the server's refusals and ignored deliveries a start says, each route and reason once, before one line
  *  that says the rest are not: under this command the server's log goes nowhere else (its stdout is read here and dropped). */
@@ -311,6 +312,42 @@ export function tellerOf() {
     said.add(key);
     return said.size === 1 ? `${words} (Each route and reason is said once.)` : words;
   };
+}
+
+/** Runs one of the server's commands (`argv[0]`; an eval among them, which spends while it runs) to its end and answers
+ *  its exit code. A stop sent to this command alone (a job runner's SIGTERM, a SIGHUP) is passed on, and this waits for
+ *  the command to clean up and end: 130, 143 or 129 when a stop ended it. A hangup is passed on as a SIGTERM, which every
+ *  server command stops on. Its output comes to this terminal as it is; a command that could not be started, or that a
+ *  signal this command did not pass on ended, is said here (failureText). `agentrun template eval` runs its eval here
+ *  too. */
+export function runServerCommand(launcher, argv, env) {
+  const child = spawn(launcher, argv, { stdio: "inherit", env });
+  const codes = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+  const sent = [];
+  const pass = Object.fromEntries(Object.keys(codes).map((signal) => [signal, () => {
+    const passed = signal === "SIGHUP" ? "SIGTERM" : signal;
+    sent.push(passed);
+    child.kill(passed);
+  }]));
+  for (const [signal, on] of Object.entries(pass)) process.on(signal, on);
+  const step = `run the server's ${argv[0]} command (${launcher})`;
+  return new Promise((resolve) => {
+    let over = false;
+    const done = (code) => {
+      if (over) return;
+      over = true;
+      for (const [signal, on] of Object.entries(pass)) process.off(signal, on);
+      resolve(code);
+    };
+    child.on("error", (error) => {
+      if (child.pid === undefined && !over) console.error(failureText({ command: argv[0], step, error }));
+      done(1);
+    });
+    child.on("exit", (code, signal) => {
+      if (signal !== null && !sent.includes(signal)) console.error(failureText({ command: argv[0], step, code, signal, sent }));
+      done(code ?? codes[signal] ?? 1);
+    });
+  });
 }
 
 export async function main(argv, env = process.env) {
@@ -363,39 +400,7 @@ export async function main(argv, env = process.env) {
   const dataDir = dir ?? join(homedir(), ".agentrun");
   // A name that starts with a dash keeps the equals form: the server's parser reads "--data -x" as a missing value.
   const data = dataDir.startsWith("-") ? [`--data=${dataDir}`] : ["--data", dataDir];
-  if (rest[0] && !rest[0].startsWith("-")) {
-    // A server command (an eval among them, which spends while it runs): a stop sent to this command alone (a job
-    // runner's SIGTERM, a SIGHUP) is passed on, and this waits for the command to clean up and end. A hangup is passed
-    // on as a SIGTERM, which every server command stops on. Its output comes to this terminal as it is; a command that
-    // could not be started, or that a signal this command did not pass on ended, is said here (failureText).
-    const child = spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv });
-    const codes = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
-    const sent = [];
-    const pass = Object.fromEntries(Object.keys(codes).map((signal) => [signal, () => {
-      const passed = signal === "SIGHUP" ? "SIGTERM" : signal;
-      sent.push(passed);
-      child.kill(passed);
-    }]));
-    for (const [signal, on] of Object.entries(pass)) process.on(signal, on);
-    const step = `run the server's ${rest[0]} command (${launcher})`;
-    return new Promise((resolve) => {
-      let over = false;
-      const done = (code) => {
-        if (over) return;
-        over = true;
-        for (const [signal, on] of Object.entries(pass)) process.off(signal, on);
-        resolve(code);
-      };
-      child.on("error", (error) => {
-        if (child.pid === undefined && !over) console.error(failureText({ command: rest[0], step, error }));
-        done(1);
-      });
-      child.on("exit", (code, signal) => {
-        if (signal !== null && !sent.includes(signal)) console.error(failureText({ command: rest[0], step, code, signal, sent }));
-        done(code ?? codes[signal] ?? 1);
-      });
-    });
-  }
+  if (rest[0] && !rest[0].startsWith("-")) return runServerCommand(launcher, [rest[0], ...data, ...rest.slice(1)], childEnv);
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line; the lines SAID names go to stderr after it, for the person, so stdout stays that one line.
   // What it prints on stderr comes through as it is, as it prints it, at the pace this command's stderr is read (forward).

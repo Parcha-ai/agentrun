@@ -31,7 +31,7 @@ const REVIEWER_PARAMS: Record<string, Declared> = {
 const REVIEWER: TemplateView = {
   id: "pr-reviewer", bundled: true, source: null, sha: null, publisher: null,
   name: "pr-reviewer", display_name: "PR reviewer", version: "1.0.0", description: "Reviews a pull request and leaves one review.",
-  license: "MIT", author: null, repository: null, output: null, harness: ["claude-agent"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, computer_here: null, checkout: null,
+  license: "MIT", author: null, repository: null, output: null, harness: ["claude-agent"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, needs: null, computer_here: null, checkout: null,
   mcp: [{ source: "github", toolkit: "github", required: true, reason: "Reads the pull request and posts the review.", tools: [
     { name: "get_pull_request", tool: "mcp:github/get_pull_request", asks: "allow" },
     { name: "create_review", tool: "mcp:github/create_review", asks: "ask" },
@@ -663,7 +663,7 @@ describe("applying a template", () => {
     expect(t.host.querySelector('section[aria-label="Applied"] h2')!.textContent).toContain("Code review: acme/web applied");
   });
 
-  it("a webhook trigger the apply made: the server's warning in its words, with a link to that trigger for its signing secret", async () => {
+  it("a webhook trigger the apply kept (no webhook_secrets item): the server's warning in its words, and its row links that trigger for its signing secret", async () => {
     const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", triggers: [{ name: "lead-webhook", source: { kind: "webhook" } }, { name: "weekly", source: { kind: "schedule" } }] };
     const SAYS = "This webhook trigger's signing secret is not in an apply answer. Open its trigger in the console to get it (Rotate).";
     const t = await open("inbound-lead", { templates: [LEAD], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", triggers: LEAD_TRIGGERS,
@@ -673,10 +673,13 @@ describe("applying a template", () => {
     expect(t.went).toEqual([]);
     const made = t.host.querySelector('section[aria-label="Applied"]')!;
     expect(made.textContent).toContain(SAYS);
-    const link = [...made.querySelectorAll("a")].find((a) => a.getAttribute("href") === "#/triggers/trg_hook");
-    expect(link?.textContent).toBe("Open lead-webhook to get its signing secret (Rotate)");
-    // Only the webhook's: the schedule (trg_cron) has no secret and gets no link.
+    // Its row opens the trigger, where its secret is shown with Rotate, and says so beside its name.
+    const row = made.querySelector('ul[aria-label="Triggers"] li[data-trigger="trg_hook"]')!;
+    expect([...row.querySelectorAll('a[href="#/triggers/trg_hook"]')].map((a) => a.textContent)).toEqual(["lead-webhook"]);
+    expect(row.textContent).toContain("to get its signing secret (Rotate)");
+    // Only the webhook's: the schedule (trg_cron) has no secret, and its row says nothing of one.
     expect([...made.querySelectorAll('a[href="#/triggers/trg_cron"]')].map((a) => a.textContent)).toEqual(["weekly"]);
+    expect(made.querySelector('li[data-trigger="trg_cron"]')!.textContent).not.toContain("signing secret");
     // No secret is shown here any more.
     expect(made.textContent).not.toContain("You won't see this secret again.");
   });
@@ -715,13 +718,13 @@ describe("applying a template", () => {
   });
 
   // A trigger the apply skipped (a feed given no feeds) is not in the answer's triggers, so the package's index of a
-  // trigger is not its place in the answer: the webhook after it is found by its name.
+  // trigger is not its place in the answer: the webhook after it is named by its trigger id.
   const SKIPPED_FIRST: TemplateView = { ...REVIEWER, name: "inbound-lead", triggers: [{ name: "news", source: { kind: "feed" } }, { name: "inbound", source: { kind: "webhook" } }, { name: "weekly", source: { kind: "schedule" } }] };
   const AFTER_SKIP = [{ trigger_id: "trg_in", name: "inbound", kind: "webhook", enabled: true }, { trigger_id: "trg_cron", name: "weekly", kind: "schedule", enabled: true }];
   const FEED_SKIPPED = { field: "triggers.0", reason: "not_set_up_here" as const, message: "The inbound-lead template's feed trigger news was not made: no feeds given in feeds." };
   const INBOUND_WARNING = { field: "triggers.1.secret", reason: "not_allowed" as const, message: "This webhook trigger's signing secret is shown once." };
 
-  it("after a skipped trigger, a webhook's once-shown secret carries its own trigger's name, and its warning folds into that row", async () => {
+  it("after a skipped trigger, a webhook's once-shown secret carries its own trigger's name, and its warning is a plain line", async () => {
     const SECRET = "CANARY-VALUE-41b7e0c2dd";
     const t = await open("inbound-lead", { templates: [SKIPPED_FIRST], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", triggers: AFTER_SKIP,
       warnings: [INBOUND_WARNING, FEED_SKIPPED], webhook_secrets: [{ trigger_id: "trg_in", secret: { ...META, name: "trigger:trg_in" }, signing_secret: SECRET }] }) });
@@ -735,25 +738,6 @@ describe("applying a template", () => {
     const warnings = made.querySelector('ul[aria-label="Warnings"]')!;
     expect(warnings.textContent).toContain(INBOUND_WARNING.message);
     expect([...warnings.querySelectorAll("a")].map((a) => `${a.getAttribute("href")} ${a.textContent}`)).toEqual([]);
-  });
-
-  it("after a skipped trigger, a webhook's warning without its secret opens that webhook's own trigger", async () => {
-    const t = await open("inbound-lead", { templates: [SKIPPED_FIRST], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", triggers: AFTER_SKIP,
-      warnings: [INBOUND_WARNING, FEED_SKIPPED] }) });
-    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
-    await t.click(t.button(/^Apply/));
-    const warnings = t.host.querySelector('section[aria-label="Applied"] ul[aria-label="Warnings"]')!;
-    expect([...warnings.querySelectorAll("a")].map((a) => `${a.getAttribute("href")} ${a.textContent}`)).toEqual(["#/triggers/trg_in Open inbound to get its signing secret (Rotate)"]);
-  });
-
-  it("a package trigger name with spaces around it still finds its trigger, which the server named trimmed", async () => {
-    const SPACED: TemplateView = { ...SKIPPED_FIRST, triggers: [SKIPPED_FIRST.triggers[0]!, { name: "  inbound ", source: { kind: "webhook" } }, SKIPPED_FIRST.triggers[2]!] };
-    const t = await open("inbound-lead", { templates: [SPACED], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", triggers: AFTER_SKIP,
-      warnings: [INBOUND_WARNING, FEED_SKIPPED] }) });
-    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
-    await t.click(t.button(/^Apply/));
-    const warnings = t.host.querySelector('section[aria-label="Applied"] ul[aria-label="Warnings"]')!;
-    expect([...warnings.querySelectorAll("a")].map((a) => `${a.getAttribute("href")} ${a.textContent}`)).toEqual(["#/triggers/trg_in Open inbound to get its signing secret (Rotate)"]);
   });
 
   it("offers a parameter whose pattern is a plain alternation as a choice of its values, and never prints a raw pattern", async () => {

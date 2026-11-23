@@ -13,8 +13,9 @@ import { nativeOf } from "./native/binding.js";
 import { type MessageOrigin, originOf } from "./timeline/index.js";
 import type { Plane } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
-import { isObject, type Json } from "./validate.js";
+import { ID, isObject, type Json } from "./validate.js";
 import type { Place } from "./workspace/place.js";
+import { relativeSegments } from "./workspace/paths.js";
 
 /** What a run is launched with: everything its runner needs to build the run's spec at its claim, nothing derived later.
  *  The server writes it once at start; the runner reads it at each claim (its claim rebuilds the run from the store, this
@@ -54,9 +55,12 @@ export interface RunLaunch {
    *  runner copies them into the run's work/inputs/ at its claim, as the old start copied them before the process ran. */
   readonly files?: readonly string[];
   /** The server copied `files` into the run's folder (work/inputs/) when it started the run, before its row was written:
-   *  a run on an Archil disk (Mode 2, uploads-archil.ts placeRunFiles). Its claim reads no upload (uploads.ts
+   *  a run on an Archil disk (Mode 2, uploads-archil.ts placeRunFiles), or a moved project's local placement. Its claim reads no upload (uploads.ts
    *  filesToCopy). Absent: the claim copies them from the server's data directory, as before. */
   readonly filesPlaced?: true;
+  /** A moved project's completed, private pre-admission placement. Claims verify this receipt; they never seed again.
+   *  The control marker is outside the run's tool workspace. No source path or credential is kept in this record. */
+  readonly sourceProject?: SourceProjectLaunch;
   /** The run's learning start, when its agent learns and the server's learning is on, decided once here so the runner reads
    *  no learning folder or git: `seed`, the learning commit's sha (or null when the seed could not be read); `section`,
    *  the exact # Learned text to lay into the prompt (its owner's corrections, learning.ts learnedSection); `workflows`,
@@ -91,6 +95,32 @@ export interface RunLaunch {
   /** A run started with `hold: true` (computer-held.ts): its computer waits for its owner's start, and stays the owner's
    *  after the agent's end until released, each wait for at most `minutes` with no call. */
   readonly hold?: { readonly minutes: number };
+}
+
+/** Immutable placement identity for a project copied before admission. */
+export interface SourceProjectLaunch {
+  readonly version: 1;
+  readonly sourceId: string;
+  readonly baselineRevision: string;
+  readonly digest: string;
+  /** SHA-256 of the private complete marker's exact bytes. */
+  readonly receipt: string;
+  /** Exact preplaced upload paths, pinned in the private marker; never a whole inputs/ exclusion. */
+  readonly inputs?: readonly string[];
+}
+
+export function sourceProjectOf(value: unknown): SourceProjectLaunch | undefined {
+  if (!isObject(value) || value.version !== 1 || Object.keys(value).length !== (value.inputs === undefined ? 5 : 6)
+    || typeof value.baselineRevision !== "string" || !ID.test(value.baselineRevision)) return undefined;
+  for (const key of ["sourceId", "digest", "receipt"]) if (typeof value[key] !== "string" || !/^[a-f0-9]{64}$/.test(value[key])) return undefined;
+  if (value.inputs !== undefined) {
+    if (!Array.isArray(value.inputs) || value.inputs.length > 20 || !value.inputs.length || new Set(value.inputs).size !== value.inputs.length) return undefined;
+    for (const input of value.inputs) {
+      if (typeof input !== "string" || input.length > 4096 || /[\x00-\x1f\x7f]/.test(input) || !input.startsWith("inputs/") || input === "inputs/message.md") return undefined;
+      try { relativeSegments(input); } catch { return undefined; }
+    }
+  }
+  return value as unknown as SourceProjectLaunch;
 }
 
 /** What a replay run replays: the graded run, and the learned workflow at the digest it decides. */
@@ -171,6 +201,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.boxAllowSet ? { box_allow_set: true } : {}),
     ...(launch.files?.length ? { files: launch.files } : {}),
     ...(launch.filesPlaced ? { files_placed: true } : {}),
+    ...(launch.sourceProject ? { source_project: launch.sourceProject } : {}),
     ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}), ...(launch.learning.seededAt !== undefined ? { seededAt: launch.learning.seededAt } : {}) } } : {}),
     ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
     ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest } } : {}),
@@ -205,10 +236,18 @@ export function launchOnItsDisk(launch: RunLaunch): RunLaunch {
   return { ...launch, learning: { seed: null, section: "", seedFailed: "other_disk", ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}) } };
 }
 
+/** Whether a person started the run: no trigger fired it (a schedule's, a webhook's, a trigger's turn into a run), and it
+ *  is no learned workflow's audit shadow (runner/audit.ts) or replay (runner/promotion.ts), which the server starts
+ *  itself. Only such a run goes on its owner's own sign-in (runner/harness-loops.ts, cli-run-spec.ts). */
+export const personStarted = (launch: Pick<RunLaunch, "trigger" | "audit" | "replay">): boolean =>
+  launch.trigger === undefined && launch.audit === undefined && launch.replay === undefined;
+
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
  *  undefined when the body is not one (not an object, or it names no place: a damaged or hand-edited body). */
 export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   if (!isObject(stored)) return undefined;
+  const sourceProject = sourceProjectOf(stored.source_project);
+  if (stored.source_project !== undefined && !sourceProject) return undefined;
   const place = readPlace(stored.place);
   if (!place) return undefined;
   const trigger = readTrigger(stored.trigger);
@@ -235,6 +274,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(stored.box_allow_set === true ? { boxAllowSet: true as const } : {}),
     ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
     ...(stored.files_placed === true ? { filesPlaced: true as const } : {}),
+    ...(sourceProject ? { sourceProject } : {}),
     ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { seed: null, section: "" } } : {}),
     ...(stored.workflow_first === false ? { workflowFirst: false as const } : {}),
     ...(readReplay(stored.replay) ? { replay: readReplay(stored.replay)! } : {}),

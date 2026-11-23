@@ -1,5 +1,5 @@
 // The commands that take a secret, from stdin and never from the command line: `login` (the token for a server, checked
-// and kept in the config file) and `logout`. No command writes a key or any other secret to the server: those are set in
+// and kept in the config file, or one a device sign-in ends with: device.mjs) and `logout`. No command writes a key or any other secret to the server: those are set in
 // the console, signed in, and the server refuses the token on them (secret-writes.ts). A secret is never in argv, so
 // never in shell history or `ps`, and never in any output or error. Each command is `{ command, pathParams, summary,
 // route?, help, options, run }`; cli.mjs runs it with `{ values, args, env, io, cli }`, where `cli` is its own
@@ -8,6 +8,8 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { SignInError, capabilitiesOf, deviceOffer, deviceSignIn } from "./device.mjs";
+import { CLOUD_URL, toUrl } from "./target.mjs";
 
 /** The config file `login` writes and every command reads (cli.mjs's targetOf, which refuses it unless it is a private
  *  file of this user's): $XDG_CONFIG_HOME/agentrun/config.json, else
@@ -122,21 +124,73 @@ function syncFolder(dir) {
 
 const print = (io, value) => io.stdout.write(`${io.stdout.isTTY ? JSON.stringify(value, null, 2) : JSON.stringify(value)}\n`);
 
+/** `{ base_url, api_key }` in the config file, then its path printed: what every login ends with, whichever way the token
+ *  came. */
+function keep(base, token, env, io, cli) {
+  const file = configFileOf(env);
+  // Written whole beside it under a name no one could have planted (random, opened only if it is new, through no
+  // link), then moved over it: a reader never sees half a file, and it is never wider than 0600. Any failure is said
+  // plainly, its code alone, and leaves nothing behind.
+  const temp = join(dirname(file), `.config.json.${randomBytes(8).toString("hex")}.tmp`);
+  let made = false;
+  try {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    chmodSync(dirname(file), 0o700);
+    const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    made = true;
+    try {
+      // Every byte, however few one write takes (a full disk, a quota), and on the disk before it takes the old one's
+      // place: the rename never puts half a config where a whole one was.
+      const bytes = Buffer.from(`${JSON.stringify({ base_url: base, api_key: token }, null, 2)}\n`);
+      for (let at = 0; at < bytes.length; ) {
+        const wrote = writeSync(fd, bytes, at, bytes.length - at);
+        if (!(wrote > 0)) throw Object.assign(new Error("a write wrote nothing"), { code: "EIO" });
+        at += wrote;
+      }
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temp, file);
+    made = false;
+    syncFolder(dirname(file));
+  } catch (error) {
+    throw cli.fail(4, `Cannot write the config file ${file} (${/^E[A-Z]+$/.test(error?.code ?? "") ? error.code : "an error"}); nothing was written.`);
+  } finally {
+    if (made) rmSync(temp, { force: true });
+  }
+  print(io, { base_url: base, config_file: file });
+  return 0;
+}
+
 export const LOGIN = {
   command: ["login"],
   pathParams: [],
-  summary: "Check a server's token, read from stdin, and keep it with the server's address in the config file",
-  route: "GET /agents?limit=1, to check the token",
+  summary: "Sign in to a server, with a device code when it offers one, else a token read from stdin, and keep the token with the server's address in the config file",
+  route: "GET /capabilities, then its device sign-in; else GET /agents?limit=1, to check a token from stdin",
   help: [
-    ["--base-url URL", "the server's API, ending /v2 (default AGENTRUN_BASE_URL)"],
+    ["--to URL|cloud", `the server, /v2 added when its address's path holds none; cloud is AgentRun cloud (AGENTRUN_CLOUD_URL, else ${CLOUD_URL}). When its capabilities offer a device sign-in, prints an address and a code to approve there, else reads the token from stdin`],
+    ["--base-url URL", "the server, /v2 added as for --to (default AGENTRUN_BASE_URL); the token from stdin, or on a terminal a device sign-in when the server offers one"],
     ["(stdin)", "the token: agentrun login --base-url URL < FILE"],
   ],
-  options: {},
+  options: { to: { type: "string" } },
   async run({ values, env, io, cli }) {
+    if (values.to !== undefined && values["base-url"] !== undefined) throw cli.fail(2, "agentrun login takes the server once: --to or --base-url, not both.");
+    const named = values.to !== undefined;
     const flagged = values["base-url"] !== undefined;
-    const given = flagged ? values["base-url"] : env.AGENTRUN_BASE_URL;
-    if (given === undefined) throw cli.fail(2, "agentrun login needs the server: --base-url URL (its API, ending /v2) or AGENTRUN_BASE_URL.");
-    const base = cli.baseOf(given, flagged ? "--base-url" : "AGENTRUN_BASE_URL");
+    const given = named ? toUrl(values.to, env) : flagged ? values["base-url"] : env.AGENTRUN_BASE_URL;
+    if (given === undefined) throw cli.fail(2, "agentrun login needs the server: --to URL, --base-url URL or AGENTRUN_BASE_URL.");
+    const base = cli.baseOf(given, named ? "--to" : flagged ? "--base-url" : "AGENTRUN_BASE_URL");
+    // The device sign-in for --to, or when stdin is a terminal, which can hold no token.
+    if (named || io.stdin.isTTY) {
+      try {
+        const offer = deviceOffer(await capabilitiesOf(base), base);
+        if (offer) return keep(base, await deviceSignIn(base, offer, io), env, io, cli);
+      } catch (error) {
+        if (error instanceof SignInError) throw cli.fail(error.code, error.message);
+        throw error;
+      }
+    }
     const token = (await readSecret(io, cli.fail, "The token", "agentrun login --base-url URL < FILE")).trim();
     if (!token) throw cli.fail(2, "stdin holds no token: one line, the token alone.");
     // Refused before it is sent, as every command refuses one: fetch would quote a bad header value in its error.
@@ -158,40 +212,7 @@ export const LOGIN = {
       client.io.stderr.write(`The server at ${base} answered the check with ${checked.response.status}, not an agents list; nothing was written.\n`);
       return 1;
     }
-    const file = configFileOf(env);
-    // Written whole beside it under a name no one could have planted (random, opened only if it is new, through no
-    // link), then moved over it: a reader never sees half a file, and it is never wider than 0600. Any failure is said
-    // plainly, its code alone, and leaves nothing behind.
-    const temp = join(dirname(file), `.config.json.${randomBytes(8).toString("hex")}.tmp`);
-    let made = false;
-    try {
-      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-      chmodSync(dirname(file), 0o700);
-      const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-      made = true;
-      try {
-        // Every byte, however few one write takes (a full disk, a quota), and on the disk before it takes the old one's
-        // place: the rename never puts half a config where a whole one was.
-        const bytes = Buffer.from(`${JSON.stringify({ base_url: base, api_key: token }, null, 2)}\n`);
-        for (let at = 0; at < bytes.length; ) {
-          const wrote = writeSync(fd, bytes, at, bytes.length - at);
-          if (!(wrote > 0)) throw Object.assign(new Error("a write wrote nothing"), { code: "EIO" });
-          at += wrote;
-        }
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      renameSync(temp, file);
-      made = false;
-      syncFolder(dirname(file));
-    } catch (error) {
-      throw cli.fail(4, `Cannot write the config file ${file} (${/^E[A-Z]+$/.test(error?.code ?? "") ? error.code : "an error"}); nothing was written.`);
-    } finally {
-      if (made) rmSync(temp, { force: true });
-    }
-    print(io, { base_url: base, config_file: file });
-    return 0;
+    return keep(base, token, env, io, cli);
   },
 };
 

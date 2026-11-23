@@ -15,7 +15,7 @@ const template: TemplateView = {
   id: "review-kit", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   name: "review-kit", display_name: "Review kit", version: "1.2.0", description: "Review changes with the package's checked skills.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,
-  computer: null, computer_here: null, checkout: null, mcp: [], secrets: [], budget: null, learning: true, approvals_default: "ask", triggers: [], skills: ["review"], evals: [],
+  computer: null, needs: null, computer_here: null, checkout: null, mcp: [], secrets: [], budget: null, learning: true, approvals_default: "ask", triggers: [], skills: ["review"], evals: [],
   parameters: { type: "object", additionalProperties: false, required: ["repo"], properties: { repo: { type: "string", description: "Repository to review" } } },
 };
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };

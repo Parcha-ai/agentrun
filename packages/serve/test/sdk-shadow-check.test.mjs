@@ -301,28 +301,93 @@ test('a cancelled turn is given back uncounted: cancels never stop the check', a
   assert.equal(championOf(await server.records(), flow.name)?.digest, DIGEST);
 });
 
-test(`${RELEASES} give-backs in a row hold the check, never for good: the next compile's revision is checked afresh`, async t => {
-  const server = await setup(t);
-  for (let at = 1; at <= RELEASES; at++) await giveBack(server, `failed-${at}`);
-  const held = await server.latest(flow.name);
+/** A turn the native agent completes with no check reserved, and whether its run's end asked the compile turn for a
+ *  revision of the status workflow (its kept learning compiled it: runner/learning-end.ts compileAskOf). */
+async function byHand(server, key) {
+  const receipt = await server.start(key);
+  assert.equal(receipt.learning.check, undefined, `${key}: a held digest is not checked again`);
+  await finish(server, receipt);
+  const kept = await server.store.learning.proposals(server.id, { limit: 50 });
+  return kept.some(one => one.runId === receipt.run_id && one.proposal?.compiled?.workflow === flow.name);
+}
+/** Five give-backs in a row on `digest`, then the hold they write: never stopped, a revise a compile asks. */
+async function heldOnGiveBacks(server, digest, tag) {
+  for (let at = 1; at <= RELEASES; at++) {
+    const receipt = await server.start(`${tag}-failed-${at}`);
+    assert.equal(receipt.learning.check?.digest, digest, `${tag} give-back ${at} is reserved`);
+    await finish(server, receipt, report(receipt), { status: 'failed' });
+  }
+  const held = promotionOf(await server.records(), flow.name, digest);
   assert.equal(held.decided, 'hold');
   assert.equal(held.check.stopped, undefined, 'give-backs never stop it for good');
   assert.equal(held.check.released, RELEASES);
   assert.equal(held.check.n, 0);
   assert.match(held.reason, /the connected agent gave back 5 reserved native turns in a row/);
-  assert.ok(heldNamesOf(await server.records()).has(flow.name), 'its hold asks the next compile for a revision');
-  const after = await server.start('after-hold');
-  assert.equal(after.learning.check, undefined, 'the held digest is not checked again');
-  await cancel(server, after);
+  assert.ok(heldNamesOf(await server.records()).has(flow.name), 'its hold asks a compile for a revision');
+  return held;
+}
+/** The revise of a give-back hold is asked by the compile_after-th run of the agent's own since the hold, never earlier. */
+async function revisedAfter(server, compileAfter, tag) {
+  for (let at = 1; at < compileAfter; at++) assert.equal(await byHand(server, `${tag}-after-${at}`), false, `${tag}: ${at} run(s) since the hold ask no revise`);
+  assert.equal(await byHand(server, `${tag}-after-${compileAfter}`), true, `${tag}: run ${compileAfter} since the hold asks it`);
+}
+const NEXT_DIGEST = workflowDigest({ workflow: JSON.stringify(nextFlow.workflow) });
+
+// Batch 28 item 1: a give-back hold has no disagreements to revise from, so its revise comes at a first compile's
+// cadence: once the agent has compile_after completed runs of its own since the hold, the ending one counted. A client
+// that never sends a shadow check then costs one compile per compile_after runs, never one per hold.
+test(`${RELEASES} give-backs in a row hold the check, never for good: the revise is asked after compile_after runs`, async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  await heldOnGiveBacks(server, DIGEST, 'first');
+  await revisedAfter(server, 3, 'first');
   await land(server);
   const next = await server.start('recompiled');
-  const digest = workflowDigest({ workflow: JSON.stringify(nextFlow.workflow) });
-  assert.equal(next.learning.check?.digest, digest, 'the revision reserves a turn');
+  assert.equal(next.learning.check?.digest, NEXT_DIGEST, 'the revision reserves a turn');
   const fresh = await server.latest(flow.name);
   assert.equal(fresh.check.released, undefined, 'its give-back count starts at 0');
   assert.equal(fresh.check.attempt, 1, 'give-backs spend no recompile');
-  await finish(server, next, report(next));
-  assert.equal(championOf(await server.records(), flow.name)?.digest, digest, 'and it can promote');
+  await cancel(server, next);
+});
+
+// #3411 review (P1): the fifth give-back can be a completed turn with no shadow report. Its hold is written before that
+// run ends, so the run neither asks the revise itself nor counts as one of the compile_after runs since the hold.
+test('a hold written by a completed turn with no shadow report: that turn is not one of the compile_after runs since it', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  for (let at = 1; at < RELEASES; at++) await giveBack(server, `failed-${at}`);
+  const last = await server.start('no-report');
+  assert.equal(last.learning.check?.digest, DIGEST, 'the fifth turn is reserved');
+  await finish(server, last);
+  const held = await server.latest(flow.name);
+  assert.deepEqual([held.decided, held.check.released, held.check.stopped], ['hold', RELEASES, undefined], held.reason);
+  const kept = await server.store.learning.proposals(server.id, { limit: 50 });
+  assert.ok(!kept.some(one => one.runId === last.run_id && one.proposal?.compiled?.workflow === flow.name), 'the turn that wrote the hold asks no revise');
+  await revisedAfter(server, 3, 'after');
+});
+
+// A turn that landed before the give-backs keeps its disagreement on the hold, and the revise prompt shows it.
+test('a give-back hold written after a landed turn carries that turn\'s disagreements into its revise prompt', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  const differs = await checkTurn(server, 'differs', '{"ready":false}');
+  for (let at = 1; at <= RELEASES; at++) await giveBack(server, `failed-${at}`);
+  const held = await server.latest(flow.name);
+  assert.deepEqual([held.decided, held.check.n, held.check.turns.n], ['hold', 0, 1], held.reason);
+  assert.deepEqual(held.check.disagreements.map(one => one.run), [differs.run_id], 'the landed turn\'s disagreement is on the hold');
+  const { compilePrompt } = await import('../dist/learn/compile.js');
+  const prompt = compilePrompt({ mode: 'revise', workflow: flow.name, current: '{}', held: { workflow: flow.name, digest: held.digest, reason: held.reason, check: held.check }, reference: '', traces: [], tools: [], judges: false });
+  assert.match(prompt, /Your answer: \{"ready":true\}\nThe draft's answer: \{"ready":false\}/);
+  assert.match(prompt, /1 of your inputs were checked before it was held/);
+  assert.doesNotMatch(prompt, /no disagreements to show/);
+});
+
+test('two give-back holds in a row: neither revise comes before compile_after runs, and the second works as the first', async t => {
+  const server = await setup(t, 'eve', true, { compile_after: 3 });
+  const first = await heldOnGiveBacks(server, DIGEST, 'first');
+  await revisedAfter(server, 3, 'first');
+  await land(server);
+  const second = await heldOnGiveBacks(server, NEXT_DIGEST, 'second');
+  assert.equal(second.check.attempt, first.check.attempt, 'the second hold spends no recompile either');
+  await revisedAfter(server, 3, 'second');
+  assert.equal(promotionOf(await server.records(), flow.name, NEXT_DIGEST).check.stopped, undefined, 'still never stopped for good');
 });
 
 // #3390 review: the revise a give-back hold asks is no recompile either. Its draft failing its checks is that attempt's

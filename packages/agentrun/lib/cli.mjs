@@ -5,22 +5,20 @@
 // validate and template eval, which check and run a package folder on this machine, are template.mjs's, harness install
 // (the harness its owner installs: goose) is harness.mjs's, and service
 // (AgentRun as a launchd or systemd user service) and stop (the AgentRun the installer started in the background) are
-// service.mjs's, and doctor (how this AgentRun is set up, read-only) is doctor.mjs's.
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+// service.mjs's, doctor (how this AgentRun is set up, read-only) is doctor.mjs's, export (an agent written as a template
+// package folder) is export.mjs's, and deploy (an agent's package sent to another AgentRun, with its lock, rollback and
+// delete) is deploy.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
+import { spawn } from "node:child_process";
+import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
+import { homedir, constants as osConstants } from "node:os";
+import { delimiter, isAbsolute, join, resolve, win32 } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { ALL, FLAGS, MAX_PAGES, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
-import { SECRETS, guarded, refusalExit } from "./login.mjs";
-import { DOCTOR } from "./doctor.mjs";
-import { OPEN, SERVICE, STOP } from "./service.mjs";
-import { SKILL_INSTALL } from "./skill.mjs";
-import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from "./template.mjs";
-import { HARNESS_CHECK, HARNESS_INSTALL } from "./harness.mjs";
+import { guarded, refusalExit } from "./login.mjs";
+import { LOCAL } from "./local.mjs";
+import { apiBase } from "./target.mjs";
 
-/** The hand-written commands that run as they are given (`run`), beside the table's. */
-const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, HARNESS_INSTALL, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR];
 export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
 const START = "start it with `npx @parcha/agentrun`, or pass --base-url (or set AGENTRUN_BASE_URL) to the address the server printed";
@@ -40,12 +38,15 @@ class Exit extends Error {
 const usageError = (message) => new Exit(2, message);
 const flag = (name) => name.replace(/_/g, "-").toLowerCase();
 
-/** The words of `argv` that are not flags, past the values of the flags placed before a command (--data, --base-url,
- *  and the server's --port). */
+/** The flags that take the next word as their value: --data, --base-url, the server's --port, and each hand-written
+ *  command's own (login's and deploy's --to, deploy's --params). */
+const VALUED = new Set(["--data", "--base-url", "--port", ...LOCAL.flatMap((entry) => Object.entries(entry.options ?? {}).filter(([, option]) => option.type === "string").map(([name]) => `--${name}`))]);
+
+/** The words of `argv` that are not flags, past the values of the flags placed before a command or a verb. */
 export function words(argv) {
   const found = [];
   for (let i = 0; i < argv.length; i++) {
-    if (["--data", "--base-url", "--port"].includes(argv[i])) i++;
+    if (VALUED.has(argv[i])) i++;
     else if (!argv[i].startsWith("-")) found.push(argv[i]);
   }
   return found;
@@ -62,10 +63,17 @@ const HELP = () => {
     ...[...groups].map(([noun, verbs]) => `  ${noun.padEnd(width)}  ${verbs.join(", ")}`),
     `  ${"api".padEnd(width)}  METHOD PATH [${BODY}] [--header 'NAME: VALUE'], any route, PATH under the base URL (/agents)`,
     "",
+    "Any other NAME, when it comes first: agentrun NAME [args] runs the program agentrun-NAME from an absolute folder of",
+    "PATH with the rest of the arguments and passes on its exit code, as git runs git-NAME; a tool adds a command by",
+    "installing agentrun-NAME.",
+    "",
     "The server: --base-url, else AGENTRUN_BASE_URL, else base_url in $XDG_CONFIG_HOME/agentrun/config.json, else the",
-    "server started on this machine with the data directory (--data, default ~/.agentrun). The token: AGENTRUN_API_KEY,",
-    "else api_key in the config file, else that server's own; it is never a flag and never printed. agentrun login",
-    "--base-url URL checks a token read from stdin and writes the config file (0600); agentrun logout removes it.",
+    "server started on this machine with the data directory (--data, default ~/.agentrun); /v2 is added to an address",
+    "whose path holds none, its path prefix kept. The token: AGENTRUN_API_KEY, else api_key in the config file (for",
+    "the same address, with or without /v2), else that server's own; it is never a flag and never printed. agentrun login",
+    "--base-url URL checks a token read from stdin and writes the config file (0600), or on a terminal signs in with a",
+    "device code when the server offers one; agentrun login --to URL (or cloud) signs in with a device code when the",
+    "server offers one, else reads the token from stdin; agentrun logout removes it.",
     "Keys and other secrets are set in the console, signed in: the token can't write one, so no command does.",
     "Output: the response's JSON on stdout, a file's bytes as they are; an error's on stderr. Exit codes: 0 ok, 1 the",
     "server refused, 2 bad usage (a bad base URL among it), 3 the server cannot be reached, 4 no token, the token was",
@@ -137,6 +145,7 @@ function privateFile(file) {
   }
 }
 
+/** Whether process `pid` runs: one of another user's still counts. Hand-written commands get it as `cli.alive`. */
 const alive = (pid) => {
   try {
     return process.kill(pid, 0);
@@ -145,17 +154,16 @@ const alive = (pid) => {
   }
 };
 
-const trim = (url) => url.replace(/\/+$/, "");
-
 /** A base URL as every command takes it: http or https, with no query, fragment, user or password, which would carry
- *  the token elsewhere or swallow the path appended to it. `where` names it in the refusal; the URL itself is never
- *  echoed, as it may hold a password. */
+ *  the token elsewhere or swallow the path appended to it; then its API base (target.mjs apiBase: /v2 added when its
+ *  path holds no v2 segment, the origin unchanged). `where` names it in the refusal; the URL itself is never echoed, as
+ *  it may hold a password. */
 function baseOf(given, where) {
   const url = URL.canParse(given) ? new URL(given) : undefined;
   if (!url || !/^https?:$/.test(url.protocol) || /[?#]/.test(given) || url.username || url.password) {
-    throw usageError(`${where} must be an http or https URL with no query, fragment, user or password: the API's base, ending /v2.`);
+    throw usageError(`${where} must be an http or https URL with no query, fragment, user or password: the server's address, or its API's base ending /v2.`);
   }
-  return trim(given);
+  return apiBase(given);
 }
 
 const isBase = (url) => {
@@ -187,7 +195,9 @@ function targetOf(values, env) {
     : env.AGENTRUN_BASE_URL !== undefined ? baseOf(env.AGENTRUN_BASE_URL, "AGENTRUN_BASE_URL")
     : config.base_url !== undefined ? baseOf(config.base_url, `base_url in ${configFile}`)
     : local;
-  let token = env.AGENTRUN_API_KEY || (config.base_url && base === trim(config.base_url) ? config.api_key : undefined);
+  // The config's token goes only to the API base its address names, by the same rule: kept with or without /v2, the
+  // same server. apiBase changes no origin, so a token never reaches another one.
+  let token = env.AGENTRUN_API_KEY || (config.base_url && base === apiBase(config.base_url) ? config.api_key : undefined);
   const isLocal = base === local;
   if (isLocal && record && !alive(record.pid)) throw new Exit(3, stale);
   if (!token && isLocal) {
@@ -516,8 +526,90 @@ async function local(entry, argv, env, io) {
   const count = entry.pathParams.length;
   // An entry whose arguments a flag can stand in for (`harness install --recipe FILE`) takes none too; its run checks.
   if (args.length !== count && !(entry.argsOptional && args.length === 0)) throw usageError(`${helpOf(entry, entry.help)}\n\n${usageOf(entry)} takes ${count || "no"} argument${count === 1 ? "" : "s"}, given ${args.length}.`);
-  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, clientOf, request, privateFile, BAD_HEADER };
+  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, clientOf, request, privateFile, alive, BAD_HEADER };
   return entry.run({ values, args, env, io, cli });
+}
+
+/** An external command's name: one plain word, so agentrun-NAME is a file in a folder of PATH, never a path below one. */
+const EXTERNAL_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/** The extensions a program has on Windows, tried in this order (.bat and .cmd to refuse them by name: external). */
+const WINDOWS_PROGRAMS = [".com", ".exe", ".bat", ".cmd"];
+
+const isFile = (file) => {
+  try {
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/** The program agentrun-NAME: the first regular file of that name this user may run, in PATH's folders in order. A
+ *  relative or empty entry means the working directory, which any checkout can fill, so it is never searched. On
+ *  Windows, which has no execute bit, it is agentrun-NAME with .com, .exe, .bat or .cmd, in that order in each folder
+ *  (its file names match in any case there); PATHEXT is not read. `platform` is for the tests; the paths are this
+ *  machine's. */
+export function externalOf(name, env, platform = process.platform) {
+  if (!EXTERNAL_NAME.test(name)) return undefined;
+  const stem = `agentrun-${name}`;
+  for (const dir of (env.PATH ?? "").split(delimiter)) {
+    if (!isAbsolute(dir)) continue;
+    try {
+      if (platform === "win32") {
+        const found = WINDOWS_PROGRAMS.map((ext) => join(dir, `${stem}${ext}`)).find(isFile);
+        if (found !== undefined) return found;
+        continue;
+      }
+      const file = join(dir, stem);
+      if (!isFile(file)) continue;
+      accessSync(file, constants.X_OK);
+      return file;
+    } catch {
+      // Not there, or not one this user may run: the next folder.
+    }
+  }
+  return undefined;
+}
+
+/** `file` run with `args`: no shell, this process's stdin, stdout and stderr, and its exit code, or 128 plus the number
+ *  of the signal that ended it. A signal sent to this process is passed on to it, and this process waits for it rather
+ *  than end first. A terminal's Ctrl-C or Ctrl-\ goes to its whole process group, so the command gets that one twice,
+ *  from the terminal and from here, as under foreground-child: the cost of never swallowing one sent to agentrun alone.
+ *  On Windows a Ctrl-C reaches every process on the console and Node's kill ends a process outright, so there it is only
+ *  held. `platform` is for the tests. */
+export function external(file, args, env, io, platform = process.platform) {
+  // Node runs a .bat or .cmd only through cmd.exe, which reads the arguments again (% expands; " ^ & | < > ! are its
+  // own), and no quoting holds for every argument: none is run.
+  if (platform === "win32" && /\.(?:bat|cmd)$/i.test(file)) {
+    io.stderr.write(`${file} is a batch file, which Node runs only through cmd.exe, and cmd.exe would read the arguments again: agentrun runs no command through a shell. Run it yourself, or install ${win32.basename(file).replace(/\.(?:bat|cmd)$/i, "")}.exe.\n`);
+    return Promise.resolve(126);
+  }
+  return new Promise((resolve) => {
+    let child;
+    // The handlers are on before the command starts: it may print, and be sent a signal for it, before this process runs
+    // again after the spawn. A signal's handler runs only once this turn is over, so `child` is set by then.
+    const pass = (signal) => child?.kill(signal);
+    const handlers = [["SIGINT", platform === "win32" ? () => {} : pass], ["SIGQUIT", pass], ["SIGTERM", pass], ["SIGHUP", pass]];
+    for (const [signal, handler] of handlers) process.on(signal, handler);
+    let done = false;
+    const end = (code) => {
+      if (done) return;
+      done = true;
+      for (const [signal, handler] of handlers) process.off(signal, handler);
+      resolve(code);
+    };
+    try {
+      child = spawn(file, args, { stdio: "inherit", env, shell: false });
+    } catch (error) {
+      io.stderr.write(`Cannot run ${file} (${error.code ?? error.name}).\n`);
+      return end(126);
+    }
+    child.once("error", (error) => {
+      io.stderr.write(`Cannot run ${file} (${error.code ?? error.name}).\n`);
+      end(error.code === "ENOENT" ? 127 : 126);
+    });
+    child.once("exit", (code, signal) => end(code ?? 128 + (osConstants.signals[signal] ?? 0)));
+  });
 }
 
 async function run(argv, env, io) {
@@ -525,11 +617,17 @@ async function run(argv, env, io) {
   if (noun === undefined || noun === "help") return io.stdout.write(`${HELP()}\n`), 0;
   if (noun === "api") return api(argv, env, io);
   if (noun === WAIT.command[0] && verb === WAIT.command[1]) return wait(argv, env, io);
-  const own = LOCAL.find((e) => e.command[0] === noun && (e.command.length === 1 || e.command[1] === verb));
+  // A command's own verb first (deploy rollback), then the command of one word (deploy, its verb being its argument).
+  const own = LOCAL.find((e) => e.command[0] === noun && e.command[1] === verb) ?? LOCAL.find((e) => e.command[0] === noun && e.command.length === 1);
   if (own) return local(own, argv, env, io);
   const entries = COMMANDS.filter((entry) => entry.command[0] === noun);
   const listed = [...entries, ...LOCAL.filter((e) => e.command[0] === noun), ...(noun === WAIT.command[0] ? [WAIT] : [])];
-  if (!listed.length) throw usageError(`agentrun has no command ${noun}.\n\n${HELP()}`);
+  if (!listed.length) {
+    // No command of the CLI's own: agentrun-NAME from PATH, when NAME is the first argument, with every argument after it.
+    const file = argv[0] === noun ? externalOf(noun, env) : undefined;
+    if (file) return external(file, argv.slice(1), env, io);
+    throw usageError(`agentrun has no command ${noun}.\n\n${HELP()}`);
+  }
   const entry = entries.find((e) => e.command.length === 1 || e.command[1] === verb);
   if (entry) return command(entry, argv, env, io);
   if (verb === undefined) return io.stdout.write(`${nounHelp(noun, listed)}\n`), 0;

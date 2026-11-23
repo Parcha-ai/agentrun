@@ -8,7 +8,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { MAX_TAR_MTIME, TarReader, tarOf, tarStream, untar, untarStream } from "../dist/index.js";
+import { TarReader, tarOf, tarStream, untar, untarStream } from "../dist/index.js";
+
+/** The latest mtime a ustar header holds: 11 octal digits of seconds. */
+const MAX_TAR_MTIME = 8 ** 11 - 1;
 
 const dir = mkdtempSync(join(tmpdir(), "computer-tar-"));
 after(() => rmSync(dir, { recursive: true, force: true }));

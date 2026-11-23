@@ -375,7 +375,10 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const hook = await receiver(t, (n) => (n === 1 ? held.then(() => 200) : 200));
     t.after(() => release());
     const data = join(await scratch(t), "agents");
-    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    // The held try's own bound is past anything a slow machine stalls for (and under its claim's 60 s): at the default
+    // 15 s, a runner starved that long before the close let the bound fire first, so the try failed as a timeout
+    // (attempts 1) and this case saw no try cut.
+    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s", webhookTimeoutMs: 59_000 });
     let stopped = false;
     t.after(() => stopped || first.close());
     let api = client(first.baseUrl, first.token);
@@ -415,12 +418,35 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
   test("a notice the store refuses is told again once it takes the write: none is lost, and it is sent once", async (t) => {
     const hook = await receiver(t);
     const log = logged();
-    const { api, data } = await serve(t, { ...PRIVATE_OK, log: log.push });
+    const { api, data, store, runnerBeats } = await serve(t, { ...PRIVATE_OK, log: log.push });
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     // The store refuses the webhook's messages, as on a full disk; the run's own rows are written as ever.
     const release = await refusing(t, data, "outbox");
     const run = await startRun(api, "unsaved", "hi");
-    await follow(api, run.run_id, ["completed"]);
+    const beatsBefore = runnerBeats();
+    try {
+      await follow(api, run.run_id, ["completed"]);
+    } catch (error) {
+      // Progress only, on failure: never the row's input, summary, runner id, or raw logs. Diagnostics cannot replace
+      // the original failure or wait indefinitely for a store that stopped answering.
+      try {
+        const lines = log.lines.slice(-200);
+        const progress = { beats_before: beatsBefore, beats_after: runnerBeats(), run: "unreadable",
+          events: Object.fromEntries(["event=run_started", "event=run_ended", "condition=outbox_unwritable"].map((event) =>
+            [event, lines.filter((line) => line.slice(0, 512).split(" ").includes(event)).length])) };
+        let timer;
+        try {
+          const row = await Promise.race([store.runs.get(run.run_id), new Promise((resolve) => { timer = setTimeout(() => resolve(undefined), 1_000); })]);
+          if (row) progress.run = { state: row.state, epoch: row.epoch, runner_present: row.runner !== null,
+            claimed_until: row.claimedUntil, wake_at: row.wakeAt, backoff_until: row.backoffUntil,
+            started_at: row.startedAt, ended_at: row.endedAt };
+          else progress.run = row === null ? "absent" : "read_timed_out";
+        } catch { /* retain unreadable, without the store error's possibly private text */ }
+        finally { clearTimeout(timer); }
+        t.diagnostic(`webhook run progress: ${JSON.stringify(progress)}`);
+      } catch { /* the assertion remains the failure even if diagnostic collection fails */ }
+      throw error;
+    }
     // Its notice was tried as its end was read, and refused: not queued, so nothing is sent.
     await log.when("condition=outbox_unwritable");
     assert.equal(endNotice(data, run.run_id), undefined, "not in the ledger: the store took none of it");

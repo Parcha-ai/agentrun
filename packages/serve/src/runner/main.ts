@@ -23,10 +23,11 @@ import { type RunnerRelay, startRunnerRelay } from "../dial-relay.js";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { ArchilSettingsEnvInvalid, archilSettingsFromEnv } from "../archil-settings.js";
 import { dockerPathsForRuns } from "../box-paths.js";
+import { COMPOSIO_KEY_ENV } from "../composio-made.js";
 import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
 import { claimInstallsStopped } from "../harness-install.js";
-import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_TABLE_ENV, harnessModulesEnv, harnessModulesOf, harnessTable } from "../harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessModulesEnv, harnessModulesOf, harnessRecipesEnv, harnessRecipesOf, harnessTable } from "../harness-table.js";
 import { DEFAULT_PORT, maxRunsOf } from "../host.js";
 import { FAUX_ENV, FAUX_PREFIX, withoutFaux } from "../model.js";
 import { durationMs, runLine } from "../print.js";
@@ -35,6 +36,7 @@ import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, RunnerBelowFloor, SchemaVersionUnknown, type Store, StoreAwaitsServer, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
+import { LAUNCH_HOOK_SECRET_ENV } from "../trigger-launch-hook.js";
 import { FAUX_BROWSER_ENV } from "../tools.js";
 import { claimViewOpener } from "../computer-live.js";
 import { LOOPBACK as LIVE_LOOPBACK, runnerLiveOf } from "../live-reach.js";
@@ -46,6 +48,7 @@ import { envValue, type KeyEnv } from "../key-meta.js";
 import { fauxComputers } from "../faux-computers.js";
 import { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
 import { startJanitor } from "../workspace/computer-janitor.js";
+import { projectRunEnded } from "../source-sync/checkpoints.js";
 import { runEndComputers } from "../workspace/run-end-computers.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
@@ -146,9 +149,10 @@ export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, w
 }
 
 /** The runner's own secrets, which a run never gets, not even in the runner's in-process environment: the server's
- *  tokens (the token and the token list) and API key, the seal key (the runner holds it as its sealKey), and the store's connection (its URL holds a
- *  database password). */
-const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name.startsWith("AGENTRUN_STORE_");
+ *  tokens (the token and the token list) and API key, the seal key (the runner holds it as its sealKey), the store's connection (its URL holds a
+ *  database password), the launch hook's signing secret (the server's alone), and the Composio account key, which the
+ *  runner's claim alone reads (composio-made.ts composioEnvKey) and sends only as a granted Composio server's MCP header. */
+const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name === LAUNCH_HOOK_SECRET_ENV || name === COMPOSIO_KEY_ENV || name.startsWith("AGENTRUN_STORE_");
 
 /** A run's environment as the runner hands its loops (AdapterSpecDeps.env): this process's, less the runner's own
  *  secrets, with every other secret the launcher's pipe handed it (a model key, a tool key, a box key) readable by name
@@ -182,7 +186,7 @@ export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own:
  *  drops them. */
 export function besideRunEnv(env: NodeJS.ProcessEnv, switches: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out = runEnv(env);
-  for (const name of Object.keys(out)) if (name.startsWith(FAUX_PREFIX) || name === HARNESS_TABLE_ENV || name === HARNESS_MODULES_ENV) delete out[name];
+  for (const name of Object.keys(out)) if (name.startsWith(FAUX_PREFIX) || name === HARNESS_TABLE_ENV || name === HARNESS_MODULES_ENV || name === HARNESS_RECIPES_ENV) delete out[name];
   return Object.assign(out, switches);
 }
 
@@ -318,7 +322,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts), said as warnings.
     await sweepEndedScratch(store, options.dataDir, { log: warn });
     // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
-    const runEnded = typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn }) : undefined;
+    const runEnded = projectRunEnded(store, typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn }) : undefined);
     runner = startRunner({
       store,
       createLoop,
@@ -328,7 +332,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),
-      ...(runEnded ? { runEnded } : {}),
+      runEnded,
       // A runner on a disk of its own claims nothing while the server keeps runs' folders on the server's disk (Mode 1),
       // and says why on its presence row (disk-free.ts): those runs wait for a runner on the server's disk.
       claimGate: diskFreeGate(store, options.dataDir, env, kind),
@@ -461,7 +465,7 @@ export function runnerHolds(args: { loops?: number; drainMs?: number }, env: Nod
  *  directory that starts with "-" so, never read as an option); an empty one is refused like a missing one. `--faux`: the
  *  faux model module, a test switch, as the server's own --faux; the only way a runner loads one. `--faux-browser`: the
  *  fake browser's module, with --faux only, as the server's. */
-export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: number; drainMs?: number; name?: string; faux?: string; fauxBrowser?: string; check?: true; envOnly?: true; heartbeatOnly?: true; harnessModules?: string[] } {
+export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: number; drainMs?: number; name?: string; faux?: string; fauxBrowser?: string; check?: true; envOnly?: true; heartbeatOnly?: true; harnessModules?: string[]; harnessRecipes?: string[] } {
   let dataDir: string | undefined;
   let envOnly = false;
   let heartbeatOnly = false;
@@ -472,9 +476,10 @@ export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: 
   let fauxBrowser: string | undefined;
   let check = false;
   const harnessModules: string[] = [];
+  const harnessRecipes: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const given = argv[i]!;
-    const equals = /^(--(?:data|loops|drain-timeout|name|faux|faux-browser|harness-module))=(.*)$/s.exec(given);
+    const equals = /^(--(?:data|loops|drain-timeout|name|faux|faux-browser|harness-module|harness-recipe))=(.*)$/s.exec(given);
     const arg = equals ? equals[1]! : given;
     const value = () => {
       const next = equals ? equals[2] : argv[++i];
@@ -494,20 +499,21 @@ export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: 
     else if (arg === "--faux") faux = value();
     else if (arg === "--faux-browser") fauxBrowser = value();
     else if (arg === "--harness-module") harnessModules.push(value());
+    else if (arg === "--harness-recipe") harnessRecipes.push(value());
     else if (arg === "--check") check = true;
     else if (arg === "--env") envOnly = true;
     else if (arg === "--heartbeat") heartbeatOnly = true;
-    else throw new RunnerRefused(`unknown argument ${JSON.stringify(arg)}: a runner takes --data D [--loops N] [--drain-timeout D] [--name N] [--faux M [--faux-browser M]] [--harness-module M ...], or --check --data D [--name N], or --check --env [--data D], or --check --heartbeat --data D [--name N]`);
+    else throw new RunnerRefused(`unknown argument ${JSON.stringify(arg)}: a runner takes --data D [--loops N] [--drain-timeout D] [--name N] [--faux M [--faux-browser M]] [--harness-module M ...] [--harness-recipe F ...], or --check --data D [--name N], or --check --env [--data D], or --check --heartbeat --data D [--name N]`);
   }
   if (envOnly && !check) throw new RunnerRefused("--env goes with --check: runner --check --env [--data D]");
   if (heartbeatOnly && !check) throw new RunnerRefused("--heartbeat goes with --check: runner --check --heartbeat --data D [--name N]");
   if (heartbeatOnly && envOnly) throw new RunnerRefused("--check takes --env (its environment alone) or --heartbeat (its heartbeat alone), not both: give neither to check both");
   // `--check --env` checks the environment alone, which needs no data directory where the store is AGENTRUN_STORE_URL's.
-  if (envOnly) return { dataDir: dataDir ?? "", check: true, envOnly: true, ...(harnessModules.length ? { harnessModules } : {}), ...(loops === undefined ? {} : { loops }), ...(drainMs === undefined ? {} : { drainMs }), ...(name === undefined ? {} : { name }) };
+  if (envOnly) return { dataDir: dataDir ?? "", check: true, envOnly: true, ...(harnessModules.length ? { harnessModules } : {}), ...(harnessRecipes.length ? { harnessRecipes } : {}), ...(loops === undefined ? {} : { loops }), ...(drainMs === undefined ? {} : { drainMs }), ...(name === undefined ? {} : { name }) };
   if (!dataDir) throw new RunnerRefused("a runner needs its data directory: --data D");
   if (heartbeatOnly) return { dataDir, check: true, heartbeatOnly: true, ...(name === undefined ? {} : { name }) };
   if (fauxBrowser !== undefined && faux === undefined) throw new RunnerRefused("--faux-browser goes with --faux");
-  return { dataDir, ...(harnessModules.length ? { harnessModules } : {}),...(loops === undefined ? {} : { loops }), ...(drainMs === undefined ? {} : { drainMs }), ...(name === undefined ? {} : { name }), ...(faux === undefined ? {} : { faux }), ...(fauxBrowser === undefined ? {} : { fauxBrowser }), ...(check ? { check: true as const } : {}) };
+  return { dataDir, ...(harnessModules.length ? { harnessModules } : {}), ...(harnessRecipes.length ? { harnessRecipes } : {}), ...(loops === undefined ? {} : { loops }), ...(drainMs === undefined ? {} : { drainMs }), ...(name === undefined ? {} : { name }), ...(faux === undefined ? {} : { faux }), ...(fauxBrowser === undefined ? {} : { fauxBrowser }), ...(check ? { check: true as const } : {}) };
 }
 
 /** Runs until SIGTERM or SIGINT, or until the store's runner floor rises above this runner (RunnerProcess.outdated),
@@ -584,9 +590,10 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   // here, as the server's start checks them (harness-table.ts harnessTable), before the runner opens the store or claims a
   // run: a module that names a built-in, repeats an id, gives an id the API does not carry or lacks a member refuses the
   // start in words naming the module and the id, never failing every run the runner would claim.
+  // Its harness recipes the same way: --harness-recipe, else AGENTRUN_SERVE_HARNESS_RECIPES, each loaded here.
   let modules: NodeJS.ProcessEnv;
   try {
-    modules = harnessModulesEnv(harnessModulesOf(args.harnessModules, given), args.dataDir);
+    modules = { ...harnessModulesEnv(harnessModulesOf(args.harnessModules, given), args.dataDir), ...harnessRecipesEnv(harnessRecipesOf(args.harnessRecipes, given), args.dataDir) };
     harnessTable(modules);
   } catch (error) {
     console.error(`agentrun-serve runner: ${(error as Error).message}`);
@@ -710,7 +717,8 @@ async function runnerCheck(args: ReturnType<typeof runnerArgs>, env: NodeJS.Proc
   // Harness modules given as --harness-module hold what AGENTRUN_SERVE_HARNESS_MODULES would (harness-table.ts
   // harnessModulesOf): a runner started with the flag is checked with it.
   const flagged = "harnessModules" in args && args.harnessModules?.length ? args.harnessModules.join(",") : undefined;
-  const read = (one: string) => (one === HARNESS_MODULES_SETTING && flagged !== undefined ? flagged : (secret(one) ?? env[one]));
+  const recipesFlagged = "harnessRecipes" in args && args.harnessRecipes?.length ? args.harnessRecipes.join(",") : undefined;
+  const read = (one: string) => (one === HARNESS_MODULES_SETTING && flagged !== undefined ? flagged : one === HARNESS_RECIPES_SETTING && recipesFlagged !== undefined ? recipesFlagged : (secret(one) ?? env[one]));
   const rows: CheckRow[] = args.heartbeatOnly ? [] : await checkRunnerEnv({ ...(args.dataDir ? { dataDir: args.dataDir } : {}), env, read });
   // What the runner's start refuses before it claims (runnerMain): its run slots, drain and free-model requests, the
   // Archil settings it is given, and its runs' isolation (the user each run runs as, and the image's helper that switches

@@ -279,6 +279,8 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
   await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
   return {
     baseUrl: `http://127.0.0.1:${http.address().port}${own}`,
+    /** Its MCP endpoint's origin, where every MCP server it makes is: the server's and runner's composioMcpOrigin seam. */
+    mcpOrigin,
     apiKey, calls, strays, mcpKeys, mcpId: id, mcpIds, mcpLive,
     /** The auth configs it made that it still has, by toolkit slug; and the connected accounts its links started that it
      *  still has. */

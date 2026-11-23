@@ -4,7 +4,7 @@
 // above it and for a new tree). Run on a computerd on this host in a user namespace (sync-folder.test.mjs), and in a
 // Docker computer (docker/sync-folder.docker.test.mjs).
 import assert from "node:assert/strict";
-import { FolderSync, PUSHED_MTIME, pushTar, tarStream } from "../dist/index.js";
+import { FolderSync } from "../dist/index.js";
 
 const RACY_MS = 1000;
 
@@ -193,6 +193,20 @@ export const CASES = [
 			assert.deepEqual(await folder.sync(10_000), { put: 0, mkdir: 0, removed: 0, meta: false });
 		},
 	},
+	{
+		// computerd runs under umask 077 where init on the exec path does (sync-folder.test.mjs starts it so): a mode the
+		// extraction took from the umask would be recorded as the folder's own and written to the sink with the next change.
+		name: "a push under any umask: a directory the tar names gets its own mode and one only a file's path names gets 0755, so the modes recorded are the user's alone",
+		setup: "true",
+		async run(folder) {
+			const file = (name, text) => ({ name, type: "file", mode: 0o644, body: Buffer.from(text) });
+			// The runner's push names every directory (synced-folder.ts); a push may also name a file alone.
+			await folder.push([{ name: "named", type: "dir", mode: 0o755 }, file("named/a", "a"), { name: "private", type: "dir", mode: 0o700 }, file("unnamed/deep/b", "b")]);
+			await folder.sh("chmod 0600 named/a");
+			assert.deepEqual(await folder.sync(10_000), { put: 0, mkdir: 0, removed: 0, meta: true });
+			assert.deepEqual(folder.sink.calls, [["meta", { modes: { "named/a": 0o600, private: 0o700 }, links: {} }]]);
+		},
+	},
 ];
 
 /**
@@ -221,12 +235,10 @@ export async function folderOf(client, base, name, setup) {
 		sh,
 		sink,
 		reads,
-		/** `entries` pushed into the folder as one tar, each file at PUSHED_MTIME as a runner pushes it, then its baseline taken again. */
+		/** `entries` pushed into the folder as a runner pushes them (FolderSync.push), its baseline taken again. */
 		async push(entries) {
-			const pushed = await pushTar(client, root, tarStream(entries.map((entry) => (entry.type === "file" ? { ...entry, mtime: PUSHED_MTIME } : entry))));
+			const pushed = await engine.push(entries);
 			assert.equal(pushed.ok, true, JSON.stringify(pushed));
-			const again = await engine.baseline();
-			assert.equal(again.ok, true, JSON.stringify(again));
 		},
 		async sync(now) {
 			clock = now;

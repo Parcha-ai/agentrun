@@ -10,8 +10,9 @@ const kindName = (kind: string) => kind.charAt(0).toUpperCase() + kind.slice(1);
 /** The agent's computer, in the editor's Computer step: a card per kind the server lists (one it can't give here greyed,
  *  with its words and a link to the Computers settings), then the picked kind's providers (one not ready disabled, with
  *  why; a metered one says so, and, but for a browser, that its minutes aren't counted in a run's spending cap), the
- *  Recording switch, from the kind's served `record` (off with its why where a run of it can't record here; a switch keeps each setting the new pick can take; the card names any it
- *  drops), and the tools that kind brings its loop, as served. A pick is the computer `onChange` gets. */
+ *  Recording switch, from the kind's served `record` (off, with its why, where a run of it can't record here), and the
+ *  tools that kind brings its loop, as served. A switch of kind or provider keeps each setting the new pick can take; the
+ *  card names any it drops. A pick is the computer `onChange` gets. */
 export function ComputerSetting({ kinds, value, onChange, error, warning }: {
   kinds: ComputerKindView[]; value: Computer; onChange: (computer: Computer) => void; error?: string; warning?: string;
 }) {
@@ -84,7 +85,7 @@ export function ComputerSetting({ kinds, value, onChange, error, warning }: {
               {/* Off where the server can't record this kind; a saved record: true can still be turned off. */}
               <Switch labelledBy="computer-record" checked={value.record === true} disabled={!picked.record.available && value.record !== true} onChange={(on) => onChange(recorded(value, on))} />
             </div>
-            {!picked.record.available && <p className="mt-1 text-small" role="note">Recording isn't possible here: {picked.record.why ?? "this server can't record it"}.</p>}
+            {!picked.record.available && <p className="mt-1 text-small" role="note">Recording isn't possible here: {picked.record.why}.</p>}
             <p className="mt-1 text-small text-muted-foreground">It records everything on the screen, including what a person types after taking over and any password shown. Pixels can't be redacted.</p>
           </div>
         </>

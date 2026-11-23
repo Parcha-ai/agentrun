@@ -167,6 +167,24 @@ test("a server with no model key: a run and a message without model_key are 422 
   await assertNowhere(server, runId, [KEY_ONE, KEY_TWO, KEY_THREE], logs);
 });
 
+test("model_key is 8 or more visible ASCII characters: a shorter one, an empty one, one with a space or a newline, or one with a character past ASCII (4 astral characters, 8 UTF-16 units; 8 accented letters) is 422 at model_key, never echoed, nothing made", async (t) => {
+  const gw = await startFauxGateway({ text: "Answered." });
+  t.after(() => gw.close());
+  withEnv(t, keylessEnv(gw.url), NAMES);
+  const { api, store } = await serve(t, { faux: undefined, runner: false });
+  assert.equal((await api("POST", "/agents", agent("keyed"))).status, 201);
+  const short = KEY_ONE.slice(-7);
+  for (const [given, shown] of [[short, short], ["", KEY_ONE], [`${KEY_ONE} x`, KEY_ONE], [`${KEY_ONE}\n`, KEY_ONE], ["𝐀𝐁𝐂𝐃", "𝐀𝐁𝐂𝐃"], ["é".repeat(8), "é".repeat(8)]]) {
+    const refused = await api("POST", "/agents/keyed/runs", { input: { content: "Answer." }, model_key: given });
+    assert.deepEqual([refused.status, refused.body.error?.fields?.map((one) => [one.field, one.reason])], [422, [["model_key", "invalid"]]], `${JSON.stringify(given)}: ${JSON.stringify(refused.body)}`);
+    assert.ok(!JSON.stringify(refused.body).includes(shown), "the refusal never echoes the key");
+  }
+  const tooShort = await api("POST", "/agents/keyed/runs", { input: { content: "Answer." }, model_key: short });
+  assert.match(tooShort.body.error.fields[0].message, /\b8\b/, "the refusal names the minimum");
+  assert.equal((await store.runs.list({})).length, 0, "no run made");
+  assert.equal(gw.requests.length, 0, "nothing reached the gateway");
+});
+
 test("model_key where the run's model never goes through a gateway is 422 at model_key, nothing made", async (t) => {
   withEnv(t, {}, NAMES);
   const { api, store } = await serve(t, { runner: false });

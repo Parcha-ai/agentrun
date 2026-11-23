@@ -20,6 +20,13 @@ import type { ReplayOutcome } from "../runner/workflow-first.js";
 /** How many grades, and how many promotion records, an agent keeps (newest kept). */
 export const GRADES_KEPT = 500;
 export const PROMOTIONS_KEPT = 200;
+/** How many champions of a workflow the promotions trim keeps back from the one the purge gate's answer leaves, that
+ *  one included (trimPromotions): a purge that lands inside one write's ask-to-write window and refuses fewer than this
+ *  many champions in a row still leaves one before them that serves. */
+export const CHAMPIONS_KEPT = 5;
+/** How many of the newest records the promotions trim keeps ahead of the champions before (CHAMPIONS_KEPT): those only
+ *  take the room the newest leave, so they never crowd out a decision a check just landed. */
+const RECENT_KEPT = PROMOTIONS_KEPT / 2;
 
 /** The most characters a grade's words (`label`) may hold, and the most of them and of an answer a compile ask shows. */
 export const LABEL_MAX = 4_000;
@@ -173,8 +180,8 @@ export type CheckRecord = CheckBar & {
   readonly disagreements?: readonly CheckDisagreement[];
   readonly stopped?: true;
   /** A connected agent's check: how many of its reserved native turns in a row gave no answer to check the draft against
-   *  (a refused turn, a subagent, redacted evidence, no shadow report; never a cancel) and were given back to wait for
-   *  the next one (runner/promotion.ts SDK_CHECK_RELEASES holds it for the next compile). Absent: none. */
+   *  and were given back to wait for the next one (see runner/promotion.ts SDK_CHECK_RELEASES for the causes, and the
+   *  hold it ends in). Absent: none. */
   readonly released?: number;
   /** A connected agent's check: how many fresh read-only calls its shadow made where the native turn's recording had
    *  no result (the client's opt-in shadowReadFallback). Absent: none, every call was answered from the recording. */
@@ -396,12 +403,24 @@ export const promotionOf = (records: readonly PromotionRecord[], workflow: strin
 /** The champion of `workflow`: the newest record of the digest promoted last, while that digest's newest record still
  *  says promote. A newer revision replaying or held never stops it; it stops when a newer revision's check promotes that
  *  one (then the champion), or when its own newest record is a hold (a held revision its owner replays, askReplay, that
- *  promotes wins again). The money rule stops it on its own (runner/workflow-first.ts). Undefined: none. */
-export function championOf(records: readonly PromotionRecord[], workflow: string): PromotionRecord | undefined {
-  const last = lastPromotedOf(records, workflow);
-  const now = last === undefined ? undefined : promotionOf(records, workflow, last);
+ *  promotes wins again). The money rule stops it on its own (runner/workflow-first.ts). A record `refused` names is
+ *  skipped, as if absent: one whose commit holds its workflow as a purged run wrote it (purged-workflow.ts refusedOf), so
+ *  after a purge of the champion's run the newest promotion the purge gate lets through serves again. Undefined: none. */
+export function championOf(records: readonly PromotionRecord[], workflow: string, refused: Refused = NONE_REFUSED): PromotionRecord | undefined {
+  const kept = records.filter((one) => one.workflow === workflow && !refused(one));
+  const last = lastPromotedOf(kept, workflow);
+  const now = last === undefined ? undefined : promotionOf(kept, workflow, last);
   return now?.decided === "promote" ? now : undefined;
 }
+
+/** The promotion records championOf skips (purged-workflow.ts refusedOf: the purge gate refuses each at its commit, so
+ *  it names a record by its workflow and commit, a copy read later included). Every reader that serves or names the
+ *  champion passes it, and the trim keeps the champion past it (trimPromotions). `unread`: a commit it asked could not be
+ *  read, so it may refuse too few, and the trim trims nothing on it (recordPromotion fails closed). */
+export type Refused = ((record: PromotionRecord) => boolean) & { readonly unread?: boolean };
+const NONE_REFUSED: Refused = () => false;
+/** The gate's answer when it could not be asked at all: refuses none, said unread. */
+const UNREAD: Refused = Object.assign(() => false, { unread: true });
 
 /** The newest promotion of `workflow` at `digest`: the promote record that began its newest run of promote records (its
  *  first, or the first after a record of that digest that was not promote: an owner's replay that promoted a held
@@ -437,11 +456,11 @@ export function replayingOf(records: readonly PromotionRecord[], workflow: strin
 
 /** What each learned workflow with a record serves, by name: `digest`, its champion's (championOf; null: none serves,
  *  the agent takes its runs), and `replaying`, the revision other than it whose check is at work (null: none). What the
- *  promotions list says beside the records (GET /agents/{id}/learning/promotions). */
-export function servingOf(records: readonly PromotionRecord[]): { workflow: string; digest: string | null; replaying: string | null }[] {
+ *  promotions list says beside the records (GET /agents/{id}/learning/promotions), its champion skipping `refused`. */
+export function servingOf(records: readonly PromotionRecord[], refused?: Refused): { workflow: string; digest: string | null; replaying: string | null }[] {
   const names = [...new Set(records.map((one) => one.workflow))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   return names.map((workflow) => {
-    const digest = championOf(records, workflow)?.digest ?? null;
+    const digest = championOf(records, workflow, refused)?.digest ?? null;
     return { workflow, digest, replaying: replayingOf(records, workflow, digest)[0]?.digest ?? null };
   });
 }
@@ -457,10 +476,10 @@ export type ServingState = "serving" | "checking" | "held" | "stopped";
 /** Whether the money rule stops `workflow` at `digest` from running first: runner/workflow-first.ts costStopOf over the
  *  agent's runs, the decision a run's claim reads (workflowFirstOf). */
 export type CostStop = (workflow: string, digest: string) => boolean;
-export function servingStateOf(records: readonly PromotionRecord[], workflow: string, costStop: CostStop): ServingState {
+export function servingStateOf(records: readonly PromotionRecord[], workflow: string, costStop: CostStop, refused?: Refused): ServingState {
   const newest = records.findLast((one) => one.workflow === workflow);
   if (newest === undefined || newest.decided === "replaying") return "checking";
-  const champion = championOf(records, workflow);
+  const champion = championOf(records, workflow, refused);
   if (champion) return costStop(workflow, champion.digest) ? "stopped" : "serving";
   return newest.decided === "hold" && (newest.check?.stopped || newest.audit?.stopped) ? "stopped" : "held";
 }
@@ -469,9 +488,9 @@ export function servingStateOf(records: readonly PromotionRecord[], workflow: st
  *  text in them cut by `shown` (learning.ts secretsShown, as the other learning reads cut theirs), at any depth and under
  *  any field, so a field added later is cut too: a workflow's name whole (`shown.name`), any other text of its part
  *  (`shown.text`: a reason, a digest, a run id). Numbers and the rest as they are. A replaying record's `launch` (a run
- *  launch: its notes, model and plane) never leaves: aggregates only. */
-export function promotionsShown(records: readonly PromotionRecord[], shown: { readonly text: (text: string) => string; readonly name: (name: string) => string }): { promotions: PromotionRecord[]; serving: ReturnType<typeof servingOf> } {
-  return { promotions: records.map(({ launch: _, ...one }) => shownDeep(one, shown) as PromotionRecord), serving: servingOf(records).map((one) => shownDeep(one, shown) as ReturnType<typeof servingOf>[number]) };
+ *  launch: its notes, model and plane) never leaves: aggregates only. Its champions skip `refused` (championOf). */
+export function promotionsShown(records: readonly PromotionRecord[], shown: { readonly text: (text: string) => string; readonly name: (name: string) => string }, refused?: Refused): { promotions: PromotionRecord[]; serving: ReturnType<typeof servingOf> } {
+  return { promotions: records.map(({ launch: _, ...one }) => shownDeep(one, shown) as PromotionRecord), serving: servingOf(records, refused).map((one) => shownDeep(one, shown) as ReturnType<typeof servingOf>[number]) };
 }
 
 /** `value` cut as the promotions read cuts its records (promotionsShown), at any depth and under any field: a workflow's
@@ -498,43 +517,93 @@ const blankedRuns = (record: PromotionRecord | undefined): string[] =>
  *  and of every record kept (`items`: a check across revisions, one at a time, in the same guarded write): so of two
  *  claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). What the one
  *  there now has blanked is blanked in `record` too (forgetRunIn): a record built on a copy read before a run's purge
- *  (a connected agent's next turn, release or decision carries its turns on) never writes that run's text back. */
-export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean): Promise<Recorded> {
-  let out: Recorded = { record, won: true };
-  await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
-    const items = writtenOf(saved);
-    const now = promotionOf(items, record.workflow, record.digest);
-    if (!still(now, items)) {
-      out = { record: now, won: false };
-      return items;
-    }
-    const kept = blankedRuns(now).reduce(forgetRunIn, record);
-    out = { record: kept, won: true };
-    return trimPromotions([...items, kept]);
-  });
-  return out;
+ *  (a connected agent's next turn, release or decision carries its turns on) never writes that run's text back. The trim
+ *  keeps the champion past what the purge gate refuses too (`refused`, purged-workflow.ts refusedIn: asked before the
+ *  guarded write when it would trim, over the records that write reads and `record` after them, so a promotion it lands
+ *  for a revision the gate refuses is skipped as its readers skip it; a write that would trim records other than those
+ *  it asked over, another writer's landing in between, reads and asks again). Fails closed: a gate that could not read
+ *  a commit (Refused.unread) or could not be asked leaves every record, the write trims nothing. */
+export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, refused?: (records: readonly PromotionRecord[]) => Promise<Refused>): Promise<Recorded> {
+  for (let tries = 0; tries < 20; tries++) {
+    let out: Recorded | undefined;
+    const before = refused ? writtenOf(itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId)))) : [];
+    const skip = refused && before.length >= PROMOTIONS_KEPT ? await refused([...before, record]).catch(() => UNREAD) : undefined;
+    const asked = JSON.stringify(before);
+    await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
+      const items = writtenOf(saved);
+      const now = promotionOf(items, record.workflow, record.digest);
+      if (!still(now, items)) {
+        out = { record: now, won: false };
+        return items;
+      }
+      const kept = blankedRuns(now).reduce(forgetRunIn, record);
+      if (refused && items.length >= PROMOTIONS_KEPT && JSON.stringify(items) !== asked) {
+        out = undefined;
+        return items;
+      }
+      out = { record: kept, won: true };
+      return skip?.unread ? [...items, kept] : trimPromotions([...items, kept], skip);
+    });
+    if (out) return out;
+  }
+  throw new Error(`${promotionsKey(agentId)} kept changing under this write; try again`);
 }
 
 /** The newest records, at most PROMOTIONS_KEPT, in order, with each workflow's champion (championOf) the same after as
  *  before, whatever was dropped: championOf reads the digest promoted last and its newest record, so the trim keeps both
- *  (a held last revision is never trimmed into handing the champion back), and a replaying revision's newest record (what
- *  its settle, its runs' claims and the one-check-at-a-time rule read: dropped, a newer revision would start a second
- *  check while its runs run, and its verdict would never land). The rest is the newest records. */
-export function trimPromotions(items: readonly PromotionRecord[]): PromotionRecord[] {
+ *  (a held last revision is never trimmed into handing the champion back), read over every record and again past those
+ *  `refused` names (the purge gate's: a champion its readers skip, so the earlier one they serve is kept), and a
+ *  replaying revision's newest record (what its settle, its runs' claims and the one-check-at-a-time rule read: dropped,
+ *  a newer revision would start a second check while its runs run, and its verdict would never land). Then the newest
+ *  RECENT_KEPT records (the newest one, the record a write just landed, always: its write said it won, so its decision
+ *  is there for the next claim). Then, in the room those leave, the champions before the one `refused` leaves, nearest
+ *  first, CHAMPIONS_KEPT in all from that one (a purge landing after the gate answered refuses every champion its run
+ *  wrote, two or more in a row: the newest one before them still serves), each one's promote and newest record whole
+ *  or neither. The rest is the newest records. */
+export function trimPromotions(items: readonly PromotionRecord[], refused: Refused = NONE_REFUSED): PromotionRecord[] {
   if (items.length <= PROMOTIONS_KEPT) return [...items];
   const keep = new Set<number>();
+  // The champions before, by how far back: [0] is each workflow's nearest one, so the room goes to those first. Each is
+  // its promote and its newest record together.
+  const before: { workflow: string; found: number[] }[][] = [];
   for (const workflow of new Set(items.map((one) => one.workflow))) {
     for (const one of replayingOf(items, workflow, null)) keep.add(items.lastIndexOf(one));
-    const last = lastPromotedOf(items, workflow);
-    if (last === undefined) continue;
-    keep.add(items.findLastIndex((one) => one.workflow === workflow && one.digest === last && one.decided === "promote"));
-    keep.add(items.findLastIndex((one) => one.workflow === workflow && one.digest === last));
+    const passes: Refused[] = [NONE_REFUSED, refused];
+    for (let pass = 0; pass < passes.length; pass++) {
+      const skip = passes[pass]!;
+      const own = (one: PromotionRecord) => one.workflow === workflow && !skip(one);
+      const last = items.findLast((one) => own(one) && one.decided === "promote")?.digest;
+      if (last === undefined) continue;
+      const found = [items.findLastIndex((one) => own(one) && one.digest === last && one.decided === "promote"), items.findLastIndex((one) => own(one) && one.digest === last)];
+      if (pass < 2) for (const i of found) keep.add(i);
+      else (before[pass - 2] ??= []).push({ workflow, found });
+      // The champions before the one `refused` leaves: a purge that lands between the write's ask of the gate and its
+      // write refuses each one its run wrote, and the guard (the records read) never sees it, so its readers serve the
+      // newest one before them. Past CHAMPIONS_KEPT, or past the room, it fails closed: none serves, never a purged
+      // run's text.
+      if (pass >= 1 && pass < CHAMPIONS_KEPT) passes.push((one) => skip(one) || (one.workflow === workflow && one.digest === last));
+    }
   }
-  for (let i = items.length - 1, room = PROMOTIONS_KEPT - keep.size; i >= 0 && room > 0; i--) {
-    if (keep.has(i)) continue;
-    keep.add(i);
-    room -= 1;
+  const newest = (count: number) => {
+    for (let i = items.length - 1; i >= 0 && count > 0; i--) {
+      if (keep.has(i)) continue;
+      keep.add(i);
+      count -= 1;
+    }
+  };
+  newest(Math.max(keep.has(items.length - 1) ? 0 : 1, Math.min(RECENT_KEPT, PROMOTIONS_KEPT - keep.size)));
+  // A champion before goes in whole or not at all: its promote kept without the hold after it would read as promoted, and
+  // a revision held for its answers would serve again. One that does not fit cuts its workflow's chain there, so none
+  // further back is kept past it (that one would serve in place of the nearer one). The newest records that fill the
+  // rest never split one either: a promote they keep, they kept every record after it first.
+  const cut = new Set<string>();
+  for (const { workflow, found } of before.flat()) {
+    if (cut.has(workflow)) continue;
+    const missing = new Set(found.filter((i) => !keep.has(i)));
+    if (keep.size + missing.size > PROMOTIONS_KEPT) cut.add(workflow);
+    else for (const i of missing) keep.add(i);
   }
+  newest(PROMOTIONS_KEPT - keep.size);
   return items.filter((_, i) => keep.has(i));
 }
 

@@ -59,6 +59,13 @@ export const ERROR_STATUS = {
   github_no_public_url: 409,
   github_wrong_origin: 409,
   github_failed: 502,
+  // Suggested agents (suggestions.ts): a repository the GitHub App is not installed on, an installation that lacks the
+  // permissions a pull request needs (contents and pull requests, write), a file the pull request would add that the
+  // repository already has, and a suggestion already decided (created, or discarded and not restored).
+  github_not_installed: 409,
+  github_permission_missing: 409,
+  github_file_exists: 409,
+  suggestion_decided: 409,
   // Composio triggers (composio-triggers.ts): one made with no public address Composio could send to, one whose project's
   // webhook subscription is at another address (moved here only when asked), one whose server's Composio user has no
   // connected account (answered with the link to connect it) or several (naming them: never one picked), and a Composio
@@ -87,6 +94,9 @@ export const ERROR_STATUS = {
   // PUT /runs/{id}/grade on a run that reads ended while it still learns from that end (its look-back: a fresh run's
   // end-of-run step, or a grade's round): graded once that ends. The same grade sent then is taken.
   run_learning: 409,
+  // GET /agents/{id}/package (agent-package.ts) of an agent whose source is elsewhere (a native, CLI learning, SDK or
+  // another system's agent), a workflow, or one with no revision: there is no package of it to write.
+  not_exportable: 409,
   // A run or an agent that was purged (DELETE /runs/{id}, /agents/{id}): every route of it reads its tombstone in the
   // error's details, and its DELETE answers 204 again.
   purged: 410,

@@ -13,9 +13,9 @@ import { scratch } from "./support.mjs";
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 /** Every .ts file under serve/src, as a path relative to it. */
 const sources = (dir = SRC, prefix = "") => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? sources(join(dir, entry.name), `${prefix}${entry.name}/`) : entry.name.endsWith(".ts") ? [`${prefix}${entry.name}`] : []));
-/** Transcript formats name the tools they import from, not the harness that runs (import.ts, import-sources.ts); the
- *  table is where an id meets its entry. */
-const EXCLUDED = new Set(["import.ts", "import-sources.ts", "harness-table.ts"]);
+/** Transcript formats name the tools they import from, not the harness that runs (import.ts; the readers themselves are
+ *  @parcha/agentrun-import's); the table is where an id meets its entry. */
+const EXCLUDED = new Set(["import.ts", "harness-table.ts"]);
 const NAMES = "pi|claude-agent|codex|opencode";
 const BRANCH = new RegExp(`(===|!==)\\s*"(${NAMES})"|"(${NAMES})"\\s*(===|!==)|\\bcase\\s+"(${NAMES})"|(===|!==)\\s*DEFAULT_HARNESS\\b|\\bDEFAULT_HARNESS\\s*(===|!==)`);
 

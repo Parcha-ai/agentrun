@@ -49,11 +49,12 @@ import {
   usersOf,
   withAsks,
   withApprovalRows,
+  windDownOf,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
 import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
 import { booksDecisions, decisionsOverStore, parallelChargedDecisions } from "./store-reads/decisions.js";
-import { type BookedSpend, bookedDecisionsOf, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, endCostOf, planSpend, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
+import { type BookedSpend, bookedDecisionsOf, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, endCostOf, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { laidOf, pathViewOf, roundsOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
@@ -237,6 +238,8 @@ interface StoreRun {
   /** The budget card the run shows while it stands parked at its cap (pending, kind budget), or undefined when it is not
    *  parked there. Also the source of the `budgetWaiting` fact. */
   readonly budget: Pending | undefined;
+  /** How the run wound down for its cap (run-view.ts windDownOf): its `stopped_for` and `budget_refused_calls`. */
+  readonly windDown: ReturnType<typeof windDownOf>;
   /** Whether a workflow run stands paused in its process now (pausedOf): the source of the `paused` fact. */
   readonly paused: boolean;
   /** The browser hand-over the run's agent waits on (the newest ask still waiting), or undefined. Also the `browserAsk`
@@ -260,8 +263,6 @@ interface StoreRun {
   /** What the run's decisions booked (their own session, metrics.ts bookedSpend), undefined when it booked none: the run's cost
    *  adds it to its usage row's, as the timeline adds their receipts. */
   readonly decisions: BookedSpend | undefined;
-  /** Its model requests billed to a ChatGPT plan (metrics.ts planSpend), undefined when it made none. */
-  readonly plan: { readonly requests: number; readonly tokens: number } | undefined;
   /** What its model requests booked (metrics.ts bookedSpend "model": every session but its paid tools' and its
    *  decisions'): their tokens and how they were priced, for its cost's `tokens` and `basis`. */
   readonly model: BookedSpend;
@@ -392,7 +393,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const terminal = row.state !== "running";
   // Its structured answer, from the final answer as the journal keeps it: never the served text, which a held value
   // (a number among them) or a long answer's cut would have changed, so a block that meets the schema reads as written.
-  const rawAnswer = outputSchema !== undefined && terminal ? answerOf(await runTimeline(store, runId, context, { settled: true, caps: { text: Number.POSITIVE_INFINITY } })) : null;
+  const rawAnswer = outputSchema !== undefined && terminal ? answerOf(await runTimeline(store, runId, context, { settled: true, caps: { text: Number.POSITIVE_INFINITY } }, records)) : null;
   const structured = outputSchema !== undefined && terminal ? (rawAnswer !== null ? structuredAnswer(rawAnswer, outputSchema) : { why: "the run gave no final answer" }) : undefined;
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
@@ -400,7 +401,9 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far. One
   // looking back is still going: its look-back's rows come yet.
   const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values) };
-  const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions), timelineOptions, wholeAnswerFor(values), since));
+  // Rendered from the records read above, so its usage row and the cost's `plan` (bookedSpend over the same entries) are
+  // of one read.
+  const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions, records), timelineOptions, wholeAnswerFor(values), since));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
   const ended = await runLearningEnd(store, runId);
@@ -481,6 +484,10 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
   const budget = budgetOf(records.entries, { meta, rows, updatedAt: iso(updatedAtMs) });
+  // How it wound down for its cap (run-view.ts windDownOf), under the cap it has now; its end-of-run turns' entries are
+  // learning's, never the job's.
+  const reflectTurns = reflectRanges(records.submissions ?? [], records.entries);
+  const windDown = windDownOf(records.entries, capUsd, (id) => inReflect(reflectTurns, id));
   const pause = activePauseOf(records.entries);
   // Whether a workflow run stands paused in its process now (its parked row with the pause's words, its newest pause not
   // resumed), the `paused` fact the status table reads for a paused workflow.
@@ -541,8 +548,6 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // What its decisions booked (their own session, never on the usage row, which counts its model requests and paid tools).
   const booked = bookedSpend(records.entries as never, "decisions");
   const decisions = booked.requests ? booked : undefined;
-  const onPlan = planSpend(records.entries as never);
-  const plan = onPlan.requests ? onPlan : undefined;
   const model = bookedSpend(records.entries as never, "model");
   // An ended run's booking by the one rule its end stored its cost by (metrics.ts runCostOf), read in the same snapshot as
   // its state: its so-far figures beside a stored unknown (costOfView reads the figure itself from the stored column). A
@@ -556,7 +561,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const endSaidCost = endCost && !lookingBack ? endSaid !== undefined : false;
   const endUnread = !lookingBack && bookedCost !== undefined && !endCost && endSaid === null;
   const heal = lookingBack ? undefined : healOf(endCost, runRow);
-  return { ...(cli_learning ? {cli_learning}:{}), ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}) };
+  return { ...(cli_learning ? {cli_learning}:{}), ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, model, windDown, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}) };
 }
 
 /** Run read `read` (a run still going, as the store holds it) as the end `ended` keeps (its state, summary and end time:
@@ -618,8 +623,9 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   const upper = words.upper_bound ? { upper_bound: true as const } : undefined;
   // A request billed to a person's plan costs no dollars, however it ended (the kernel's turnCostOf): every reader counts it
   // $0, so it is in no unpriced count; what it used on the plan is said beside the figure, and which plan: a run on the
-  // login's harness was on Claude Code's login (claude-login.ts), any other on the ChatGPT sign-in.
-  const plan = run.plan;
+  // login's harness was on Claude Code's login (claude-login.ts), any other on the ChatGPT sign-in. Read with its model
+  // requests (bookedSpend "model"): a request booked twice is one, as it is one request.
+  const plan = run.model.plan.requests ? run.model.plan : undefined;
   const on = run.harness === LOGIN_HARNESS ? "claude_code" : "chatgpt";
   // Beside its figure: while it is unknown, what is known so far; at $0 with every model request on a free model (and no
   // decision of its own), that it is free.
@@ -814,6 +820,11 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
     pending,
     // Its own spend: an audit's shadow run of it is learning (GET /runs/{id}'s cost.learning_usd), never its cost.usd.
     cost: costOfView(run),
+    // Why a completed run stopped: `budget` when it wound down to stay under its cap (its model told to wrap up, or its
+    // tool calls refused, under the cap it has now: windDownOf), else null; and how many tool calls the cap's wrap-up
+    // refused (stoppedfor/1). A run paused at its cap (pending budget) or failed for it (spend_cap_reached) says so there.
+    stopped_for: status === "completed" && run.windDown.woundDown ? "budget" : null,
+    budget_refused_calls: run.windDown.refusedCalls,
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
     // The path it took and the learned workflow that served it, as its record keeps them: the read the cost per run makes
@@ -846,14 +857,14 @@ export async function summaryOverStore(store: Store, runId: string, deps: ViewDe
 
 /** What a list shows of a run's view (summaryOverStore). */
 export function summaryOfView(view: Record<string, unknown>): Record<string, unknown> {
-  const { run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, labels, learning } = view as Record<string, unknown>;
+  const { run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, stopped_for, budget_refused_calls, archived_at, imported_from, trigger, labels, learning } = view as Record<string, unknown>;
   return {
     run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title,
     ...(view.cli_learning ? {cli_learning:view.cli_learning} : {}),
     ...(view.sdk ? {sdk:view.sdk} : {}),
     ...(view.native ? {native:view.native} : {}),
     ...(effort ? { effort } : {}),
-    created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, labels,
+    created_at, ended_at, error, review, pending, cost, stopped_for, budget_refused_calls, archived_at, imported_from, trigger, labels,
     learning: learning ? shortOf(learning as Parameters<typeof shortOf>[0]) : null,
     // Read off the run's record, so a list carries it with no read of the run's journal.
     path: view.path, workflow: view.workflow,
@@ -893,8 +904,12 @@ export async function listingOverStore(store: Store, runId: string, deps: ViewDe
  *  (server.ts runsPage): the run's view cuts a value whole where it holds a secret (a note's name reads [redacted]), which
  *  cutting the built item again could not do. */
 export function builtOfNow(listing: KeptListing, serverSecrets: readonly string[]): boolean {
-  return listing.cut === secretsDigest(serverSecrets);
+  return listing.cut === secretsDigest(serverSecrets) && LISTING_SINCE.every((field) => field in listing.item);
 }
+
+/** List item fields an earlier server's listing was built without: a listing that lacks one is built again, once, so
+ *  every list item carries them (stoppedfor/1). */
+const LISTING_SINCE = ["stopped_for", "budget_refused_calls"] as const;
 
 /** A listing's list item as a list serves it (listingOverStore): its console link at `origin`, its archive time now
  *  (`archivedAt`, ms, the run's or its agent's), and, when the server's secrets moved between its build and this (within

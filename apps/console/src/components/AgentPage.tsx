@@ -1,3 +1,4 @@
+import { SourceSyncPanel } from "@/components/SourceSync";
 import { cliLearningOf, cliLearningLabel } from "@/lib/cliLearning";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { useScrollQuiet } from "@/lib/useScrollQuiet";
@@ -171,10 +172,13 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   // Explicit models and older servers leave readiness to the execution path.
   const needsModel = !sdk && !cli && !native && !workflow && !off && !d.model && !fallback && harnesses?.some((h) => h.id === (d.harness ?? "pi") && h.default_model === null);
   // What the run's own check would refuse now (the agent read's run_blockers), each once: a harness this server doesn't
-  // run, or a model it has none of, is said by its own banner above, not twice.
+  // run, or a model it has none of, is said by its own banner above, not twice. A harness off for want of a model key
+  // (its `needs`: pi with no key) says the default model it lacks in its banner, so a model blocker in those same words
+  // is not said again below it; one in other words (a model the agent names, which lacks its own key) still is.
   const refused = agent.archived_at ? null : agent.run_blockers;
+  const offForKey = off?.needs?.length ? off.reason : undefined;
   const blockers = !refused ? [] : !refused.fields.length ? [refused.message]
-    : refused.fields.filter((b) => !(offText && b.field === "definition.harness") && !(needsModel && b.field === "definition.model")).map((b) => b.message);
+    : refused.fields.filter((b) => !(offText && b.field === "definition.harness") && !(needsModel && b.field === "definition.model") && !(offForKey !== undefined && b.field === "definition.model" && b.message === offForKey)).map((b) => b.message);
   const facts: [string, string, string?][] = [
     ...(cli ? [["Runtime", cliLearningLabel(cli.runtime)], ["Model", "Reported per run"], ["Execution", "Your CLI"], ["Project", cli.project]] as [string, string, string?][] : sdk ? [["Runtime", backendSdkLabel(sdk)], ["Model", "Reported per run"], ["Execution", "Your backend"]] as [string, string, string?][] : native ? [["Runtime", native.runtime], ["Model", native.model ?? "Native default"], ["Selector", native.selector.kind === "project" ? "Project default" : native.selector.name ?? native.selector.kind], ["Machine", native.machine_id]] as [string, string, string?][] : workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", runsLabel]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
@@ -229,6 +233,7 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
             ))}
             {!workflow && !native && !sdk && !cli && <div className="col-span-2 border bg-card p-4"><dt className="mb-2 text-label text-muted-foreground">Tools</dt><dd className="break-words text-small">{!workflow && agent.tools ? (agent.tools.length ? <ul className="space-y-2" aria-label="Tools">{agent.tools.map((tool) => <li key={tool.name}><span title={tool.blurb}>{tool.name}</span>{tool.provider ? ` · ${providerLabel(tool.provider, tool.name)}` : ""}{tool.permission ? ` · ${tool.permission}` : ""}{resolution(tool.resolved, tool.name).unavailable && <span data-unavailable className="text-warning-text" title={tool.resolved}> · unavailable</span>}</li>)}</ul> : "none") : d.tools.join(", ") || "None configured"}</dd></div>}
           </dl>
+          {(native || cli || agent.source_sync) && <SourceSyncPanel agent={agent} v2={v2} onAgent={onAgent} />}
           {offText && <Banner tone="warning" aria-label="Harness not available">{offText}</Banner>}
           {!agent.archived_at && needsModel && <Banner>Running this agent needs a configured model. <a href="#/settings/keys" className="text-primary-text underline underline-offset-2">Set up models in Settings</a></Banner>}
           {blockers.length > 0 && (

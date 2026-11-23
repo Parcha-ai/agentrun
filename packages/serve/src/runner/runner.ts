@@ -20,11 +20,12 @@ import { HAND_BACK } from "./hand-back.js";
 import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
+import { FrameTooLarge } from "./run-channel.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
 import { FINAL_STATES, type RunState } from "../store/store.js";
 import { Unanswered } from "../store/postgres/connection.js";
 import { clearWaitEnded } from "../browser-wait-ended.js";
-import { heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
+import { cutDeep, heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 import { keepPresence, type Presence } from "./presence.js";
 
@@ -55,6 +56,9 @@ export const runnerName = (): string => `${hostname()}:${process.pid}:${randomUU
 
 /** A failed end's code when the claim was refused for good before any loop started (loop-contract's ClaimRefused). */
 const CLAIM_REFUSED = "claim-refused";
+/** A failed end's code when the run's records no longer cross the channel to its process (run-channel's FrameTooLarge):
+ *  every try reads the same records, so none can go on. */
+const TOO_LARGE = "frame-too-large";
 
 /** The untaken row a run ends on when no loop can: a cancel before a stop (it ends the run for good, in its words). */
 const endingRow = (untaken: readonly Command[]): Command | undefined => untaken.find((row) => row.kind === "cancel") ?? untaken.find((row) => row.kind === "stop");
@@ -357,17 +361,23 @@ export function startRunner(options: RunnerOptions): Runner {
    *  then the run is ending, before the loop's teardown, so a renew answered Fenced by that end's epoch is never a lost
    *  claim. The patch lands exactly when the batch that writes its effect (the record it is staged with) is stored
    *  (RunStorage.commit): a group commit stores its batches in order up to the first it refuses, so the end's batch can
-   *  land while a later sibling is refused, and an end whose own batch is refused has not landed. */
+   *  land while a later sibling is refused, and an end whose own batch is refused has not landed. What it writes and
+   *  stages is cut of the run's own tool keys (redact.ts carry), its names too: they are erased at its turn's end, so no
+   *  read could. */
   const fenced = (journal: Journal, fence: { lost: boolean }, runId: string, ended: () => void): Journal => {
     /** The effect of the final patch staged and not yet landed, as the store keeps it until a commit stores it. */
     let finalEffect: number | undefined;
+    const carriedOut = <T>(given: T): T => {
+      const carried = redact.carried(runId);
+      return carried ? cutDeep(given, carried, true) : given;
+    };
     return new Proxy(journal, {
       get(target, property) {
         const value: unknown = Reflect.get(target, property, target);
         if (typeof value !== "function") return value;
         if (property === "stage") {
           return (staged: { run?: { state?: string }; also?: unknown; effect?: unknown } | undefined, ...rest: unknown[]) => {
-            const result = value.call(target, staged, ...rest);
+            const result = value.call(target, carriedOut(staged), ...rest);
             // As the store keeps it: a run patch or rows staged again replace the one staged before.
             if (staged?.run !== undefined || staged?.also !== undefined) finalEffect = FINAL.has(staged.run?.state ?? "") ? Number(staged.effect) : undefined;
             return result;
@@ -381,7 +391,7 @@ export function startRunner(options: RunnerOptions): Runner {
           const effect = finalEffect;
           const batches = (Array.isArray(args[0]) ? args[0] : [args[0]]) as unknown[];
           const at = effect === undefined ? -1 : batches.findIndex((batch) => (Array.isArray(batch) ? batch : [batch]).some((write) => Number((write as { value?: { id?: unknown } } | undefined)?.value?.id) === effect));
-          return (value.apply(target, args) as Promise<{ stored?: number }>).then((result) => {
+          return (value.apply(target, [carriedOut(args[0]), ...args.slice(1)]) as Promise<{ stored?: number }>).then((result) => {
             if (at >= 0 && at < (result?.stored ?? 0) && finalEffect === effect) {
               finalEffect = undefined;
               ended();
@@ -724,8 +734,10 @@ export function startRunner(options: RunnerOptions): Runner {
       // with why, and a person can raise again or stop it (#1944-5). A claim its spec refuses (ClaimRefused: a handed
       // sign-in that won't read back, an MCP pin refused) never comes here: the loop writes that end itself, final, the run
       // failed in the refusal's words.
-      // A claim refused for good (CLAIM_REFUSED) is no resume to try again: it fails the run below, parked or not.
-      if (threw && end.state === "failed" && claim.from === "parked" && end.error.code !== CLAIM_REFUSED) return await resumeFailed(held, end.error.message);
+      // A claim refused for good (CLAIM_REFUSED), or a run whose records no longer cross to its process (TOO_LARGE), is no
+      // resume to try again: it fails the run below, parked or not, and the row that woke it (an approval already answered
+      // 204) is refused as a failed run's, never left to wait.
+      if (threw && end.state === "failed" && claim.from === "parked" && end.error.code !== CLAIM_REFUSED && end.error.code !== TOO_LARGE) return await resumeFailed(held, end.error.message);
       if (threw && end.state === "failed") {
         // A loop that failed with no end written: a person's stop waiting now is the run's end (stopped, its row taken),
         // never refused as a failed run's; else the run ends failed with why. Either way its end is in the journal.
@@ -771,8 +783,12 @@ export function startRunner(options: RunnerOptions): Runner {
     } catch (error) {
       emit({ type: "error", runId: claim.runId, step: isFenced(error) ? "release (fenced)" : "release", message: message(error) });
     } finally {
-      // Only its own entry: a run this runner lost and claimed again holds a new one under the same id.
-      if (runs.get(claim.runId) === held) runs.delete(claim.runId);
+      // Only its own entry: a run this runner lost and claimed again holds a new one under the same id. Its own keys go
+      // with it: a next claim opens them again.
+      if (runs.get(claim.runId) === held) {
+        runs.delete(claim.runId);
+        redact.dropCarried(claim.runId);
+      }
     }
   };
 
@@ -851,7 +867,9 @@ export function startRunner(options: RunnerOptions): Runner {
         threw = true;
         // A claim refused before any loop could start (the dispatch's ClaimRefused: a harness this host never holds) is
         // for good: the run fails in its words, whatever woke it.
-        end = { state: "failed", error: { code: error instanceof ClaimRefused ? CLAIM_REFUSED : "loop-threw", message: message(error) } };
+        end = error instanceof FrameTooLarge
+          ? { state: "failed", error: { code: TOO_LARGE, message: `the run's records no longer fit the channel to its process (${error.message}), so it cannot go on` } }
+          : { state: "failed", error: { code: error instanceof ClaimRefused ? CLAIM_REFUSED : "loop-threw", message: message(error) } };
       }
       await finish(held, end, threw);
     })();

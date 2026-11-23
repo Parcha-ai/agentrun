@@ -17,7 +17,7 @@ export type Observations = {
 export const observationHash = (id: string) => `#/observations/${encodeURIComponent(id)}`;
 export const observedHarness = (value: string) => value === "claude" ? "Claude Code" : value === "codex" ? "Codex" : value;
 /** Search the same identity and provenance shown on a connected agent's card and detail page. */
-export const observedSearchText = (session: ObservedSession) => [session.display_name, session.project_name ?? "", observedHarness(session.harness), ...session.models, session.id, session.external_session_id, session.source_id, session.connector_id].join(" ").toLowerCase();
+export const observedSearchTexts = (session: ObservedSession) => [session.display_name, session.project_name, observedHarness(session.harness), ...session.models, session.id, session.external_session_id, session.source_id, session.connector_id];
 export function observedState(session: ObservedSession): string {
   if (session.connection_state === "revoked") return "Revoked";
   if (session.connection_state === "disconnected") return "Disconnected";

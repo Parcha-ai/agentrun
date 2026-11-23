@@ -116,6 +116,11 @@ test("with two saved Composio servers of the toolkit, the trigger binds to the o
 
 test("an apply on a server that can't set up a composio trigger yet (no public URL) makes the agent and skips the trigger, in the refusal's words and the console's path, as a github trigger with GitHub not connected is", async (t) => {
   const { api, composio } = await withSaved(t, ["work-github"], { publicUrl: null });
+  // Its plan says so first, in the same words, asking Composio nothing.
+  const plan = await api("POST", "/templates/issues/apply", { parameters: {}, dry_run: true });
+  assert.equal(plan.status, 200, JSON.stringify(plan.body));
+  assert.deepEqual(plan.body.plan.triggers.map((one) => [one.kind, one.action, one.code]), [["composio", "skip", "not_set_up_here"]]);
+  assert.match(plan.body.plan.triggers[0].reason, /public URL/);
   const applied = await api("POST", "/templates/issues/apply", { parameters: {} });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   assert.deepEqual(applied.body.triggers, [], "no trigger made");

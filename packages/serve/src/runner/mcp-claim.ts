@@ -27,6 +27,10 @@
 //
 // A per-run Composio server (composio-made.ts composioPerRun) is bound by each run's caller ({composio_user_id,
 // connected_account_id?} in mcp_auth, sealed in its launch): its entry carries them as `query` (mcp-gateway.ts).
+// A Composio server saved with api_key_env (composio-made.ts key_env) seals no key: each open reads the variable's value
+// as the runner was handed it at its start (secrets.ts secret, never its environment), for an address on Composio's origin
+// alone (composioEnvKey), and only for a server the run is granted: the run's process never holds it. Unset, or a row at
+// another address, the claim is refused before the loop starts (pinOf), in words naming it, and nothing is sent.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again
@@ -54,9 +58,10 @@ import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent,
 import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
 import { type PinListing, pinFirst } from "../mcp-pin-first.js";
 import { mcpNameOf } from "../tool-names.js";
-import { composioMadeKey, composioPerRun } from "../composio-made.js";
+import { composioEnvKey, composioMadeKey, composioPerRun, recordedMade } from "../composio-made.js";
 import { composioRunQuery } from "../composio-preset.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
+import { resourceToolProblem } from "../mcp-resources.js";
 import { credentialInQuery, credentialInQueryWords, shownUrl } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
@@ -112,6 +117,9 @@ export interface McpClaimOptions {
   /** For tests only (no environment or CLI flag maps onto it): the one origin a github_app server may have, a fake for
    *  GitHub's hosted MCP (GITHUB_MCP_ORIGIN). */
   githubMcpOrigin?: string;
+  /** For tests only (no environment or CLI flag maps onto it): the one origin a key read from the environment is sent to,
+   *  a fake for Composio's (COMPOSIO_ORIGIN; composioEnvKey). */
+  composioMcpOrigin?: string;
   /** The run's redactors (runner/redact.ts, the spec's `cut`): every credential value this step hands the gateway (each
    *  header's value and a Bearer's bare token: a saved one, a refreshed OAuth token, a minted GitHub App token, a per_run
    *  server's handed one at the claim and at each fresh()) is held by them as it is handed over, before any call carries
@@ -280,6 +288,13 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     const account = row.auth === "headers" ? await composioAccount(name, row) : undefined;
     if (account && "unopened" in account) return entry({ unopened: account.unopened }), { awaited: false };
     const query = account?.query;
+    // Its key named by api_key_env: the value the runner was handed at its start, for an address on Composio's origin
+    // alone; else its calls refused unsent, naming why (composioEnvKey).
+    const keyEnv = await keyEnvOf(store, name, row);
+    if (keyEnv) {
+      const got = composioEnvKey(name, row.url, keyEnv, options.composioMcpOrigin);
+      return entry("key" in got ? { headers: { "x-api-key": got.key }, ...(query ? { query } : {}) } : { unopened: got.refused }), { awaited: false };
+    }
     if (row.sealed === null) return entry({ ...(query ? { query } : {}) }), { awaited: false };
     // A seal problem first: no refresh is ever sent for a credential this runner cannot open.
     const opened = openMcpRow(sealKey, row);
@@ -481,7 +496,7 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
 
 /** The run's pin: its revision's, as its save made it, held to the run's grants and checked against the meta tools known
  *  now; undefined when it grants no MCP tool. A granted tool the pin does not hold refuses the claim in words. */
-async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN, pinListing, signal }: McpClaimOptions): Promise<McpPin | undefined> {
+async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN, composioMcpOrigin, pinListing, signal }: McpClaimOptions): Promise<McpPin | undefined> {
   // A github_app server anywhere but GitHub's hosted MCP ends the run here, before any token is minted or anything sent:
   // the App's tokens go to GitHub alone (github.ts githubMcpUrl, the one check).
   const offGithub = (server: string, url: string, auth: string | undefined) => {
@@ -506,7 +521,11 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
   const saved = (found ?? {}) as McpPin;
   // Every tool the revision pinned, granted or not, against the meta tools known now (the list grows after a save).
   for (const [server, { url, tools }] of Object.entries(saved)) {
-    for (const tool of tools) if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+    for (const tool of tools) {
+      if (metaToolOf(url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
+      const problem = resourceToolProblem(tool);
+      if (problem) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${problem}. Save the agent again. Nothing was sent.`);
+    }
   }
   // The granted tools alone, keyed by server with no prototype (a server named `constructor` is a server like any other).
   const pinned: McpPin = Object.create(null);
@@ -524,9 +543,21 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     // A server moved to a provider's host since the save: its pinned tool is a meta tool there.
     for (const tool of tools) if (row && metaToolOf(row.url, tool.name)) throw new McpClaimRefused(`mcp:${server}/${tool.name} can't be granted: ${META_REASON}`);
     offGithub(server, url, row?.auth);
+    // A Composio server whose key variable is unset, or whose address is off Composio's origin: the run never starts
+    // without its tools, and nothing is sent.
+    const keyEnv = row ? await keyEnvOf(store, server, row) : undefined;
+    const got = row && keyEnv ? composioEnvKey(server, row.url, keyEnv, composioMcpOrigin) : undefined;
+    if (got && "refused" in got) throw new McpClaimRefused(`${got.refused} Nothing was sent.`);
   }
   // As plain JSON, as the stored pin reads (the harnesses and the run's directory take it as such).
   return JSON.parse(JSON.stringify(pinned)) as McpPin;
+}
+
+/** The variable a Composio server saved with api_key_env reads its key from (its record's key_env): a headers row that
+ *  seals none. None for every other row. */
+async function keyEnvOf(store: Pick<Store, "settings">, name: string, row: Pick<McpServerRow, "auth" | "sealed" | "createdAt">) {
+  if (row.auth !== "headers" || row.sealed !== null) return undefined;
+  return recordedMade(await store.settings.get(composioMadeKey(name)), row.createdAt)?.key_env;
 }
 
 /** The claim still the run's: its epoch unchanged, else Fenced. */

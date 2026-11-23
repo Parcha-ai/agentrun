@@ -9,14 +9,17 @@ const command = schema => commandsOf(operationsOf({ paths: { '/things': { post: 
   operationId: 'createThing', tags: ['things'], requestBody: { required: true, content: { 'application/json': { schema } } }, responses: {},
 } } } }), map)[0];
 
-test('SDK start keeps the existing scalar flags and adds the external platform label', () => {
+test('SDK start keeps the existing scalar flags and adds the start time, the title and the external platform label', () => {
   const operations = operationsOf({ paths: SDK_PATHS });
   const start = commandsOf(operations, map).find(row => row.operationId === 'startSdkRun');
+  // `labels` is an object, so it is no flag: a caller passes it in the body.
   assert.deepEqual(start.bodyFlags.map(({ name, type, required }) => ({ name, type, required })), [
     { name: 'runtime', type: 'string', required: true },
     { name: 'input', type: 'string', required: true },
     { name: 'instructions', type: 'string', required: true },
     { name: 'model', type: 'string', required: false },
+    { name: 'started_at', type: 'string', required: false },
+    { name: 'title', type: 'string', required: false },
     { name: 'platform', type: 'string', required: false },
   ]);
   assert.deepEqual(start.bodyFlags.find(row => row.name === 'runtime').enum, ['claude-agent-sdk', 'codex-sdk', 'eve', 'external']);

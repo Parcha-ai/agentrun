@@ -186,9 +186,11 @@ export function skillText(commands) {
     '',
     '## Commands',
     '',
-    ...[...groups].map(([noun, entries]) => entries.length === 1 && entries[0].command.length === 1
-      ? `- \`${usage(entries[0])}\`: ${entries[0].summary}`
-      : `- \`agentrun ${noun}\`: ${entries.map((entry) => entry.command[1]).join(', ')}`),
+    // A command of one word is its usage and summary, even with verbs of its own (deploy: its summary names them).
+    ...[...groups].map(([noun, entries]) => {
+      const own = entries.find((entry) => entry.command.length === 1);
+      return own ? `- \`${usage(own)}\`: ${own.summary}` : `- \`agentrun ${noun}\`: ${entries.map((entry) => entry.command[1]).join(', ')}`;
+    }),
     '- `agentrun api METHOD PATH [--body JSON|@FILE|-]`: any route, PATH under the base URL',
     '',
   ].join('\n');
@@ -210,7 +212,7 @@ export function referenceText(commands) {
   let group;
   for (const entry of commands) {
     if (entry.command[0] !== group) lines.push('', `## ${(group = entry.command[0])}`);
-    lines.push('', `### \`${usage(entry)}\``, '', `${cell(entry.summary)}.`.replace(/\.\.$/, '.'), '', `Route: ${entry.route ? `\`${entry.route}\`` : 'none, it runs on this machine'}.${entry.raw ? ' It prints the answer\'s bytes as they are.' : ''}${entry.multiSegment?.length ? ` ${entry.multiSegment.map((name) => name.toUpperCase()).join(', ')} keeps its slashes.` : ''}`);
+    lines.push('', `### \`${usage(entry)}\``, '', `${cell(entry.summary)}.`.replace(/\.\.$/, '.'), '', `Route: ${entry.route ? [entry.route].flat().map((route) => `\`${route}\``).join(', ') : 'none, it runs on this machine'}.${entry.raw ? ' It prints the answer\'s bytes as they are.' : ''}${entry.multiSegment?.length ? ` ${entry.multiSegment.map((name) => name.toUpperCase()).join(', ')} keeps its slashes.` : ''}`);
     if (entry.flags.length) {
       lines.push('');
       for (const f of entry.flags) lines.push(`- \`${f.name}${f.value ? ` ${f.value}` : ''}\` (${wildcard(f.type)}${f.required ? ', required' : ''}${f.own ? ', this CLI\'s own' : ''})${cell(f.description) ? `: ${wildcard(cell(f.description))}` : ''}`);

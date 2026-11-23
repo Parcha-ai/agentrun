@@ -15,7 +15,8 @@ import { test } from "node:test";
 import { serialize } from "node:v8";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { shadowRunId } from "../dist/learn/audit.js";
-import { Channel, ChannelClosed, MAX_FRAME } from "../dist/runner/run-channel.js";
+import { Channel, ChannelClosed, FrameTooLarge, MAX_FRAME } from "../dist/runner/run-channel.js";
+import { registerRunErrors } from "../dist/runner/run-errors.js";
 import { FIRST_RUN_ID, reapSlot, RUN_SLOTS, RunIsolationRefused, runIsolationOf, SlotHold, slotId, Slots, storeCall } from "../dist/runner/run-child-host.js";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
@@ -309,17 +310,34 @@ test("a call past the channel's cap fails alone, and the channel goes on", async
   child.close();
 });
 
+test("a call or an answer past the channel's cap fails as FrameTooLarge on the caller's side, naming its bytes and the cap", async () => {
+  registerRunErrors();
+  const [a, b] = duplexPair();
+  const runner = new Channel(a, { maxFrame: 4096 });
+  const child = new Channel(b, { maxFrame: 4096 });
+  child.expose("big", () => "y".repeat(8192));
+  child.expose("echo", (_method, args) => args[0]);
+  const named = (error) => error instanceof FrameTooLarge && error.limit === 4096 && error.bytes > 8192 && error.message.includes(String(error.bytes)) && error.message.includes("4096");
+  // The answer is refused on the child's side and crosses back as an error: still a FrameTooLarge here.
+  await assert.rejects(runner.call("big", "it", []), named, "an answer");
+  await assert.rejects(runner.call("echo", "it", ["x".repeat(8192)]), named, "a call");
+  assert.equal(runner.closed, false);
+  runner.close();
+  child.close();
+});
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The whole server: a run whose process breaks its channel fails, and the store's files are the server's alone.
 
 /** The launcher's server on a data directory of its own, its runs each a process of their own (no helper: process
  *  isolation). `faux`: its --faux module (false: none, the model the environment names). `keys`: false hands it no provider key,
- *  only its token and seal key. `extra`: more of its environment. */
+ *  only its token and seal key. `extra`: more of its environment. No launch hook: its triggers start their runs here (the
+ *  hook's secret's custody is secret-custody.test.mjs's and run-custody.test.mjs's). */
 async function launched(t, { faux = BREAKER, keys = true, extra = {} } = {}) {
   const dir = scratchDir(t, "run-isolation-");
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
   const own = (name) => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_SEAL_KEY";
-  const secrets = Object.fromEntries(SECRET_NAMES.map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-token-0123456789abcdef` : name === "AGENTRUN_TOKENS" ? `custody:${canary}-tokens-0123456789abcdef0123456789` : name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_STORE_URL" || (!keys && !own(name)) ? undefined : `${canary}-${i}`]));
+  const secrets = Object.fromEntries(SECRET_NAMES.map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-token-0123456789abcdef` : name === "AGENTRUN_TOKENS" ? `custody:${canary}-tokens-0123456789abcdef0123456789` : name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_STORE_URL" || name === "AGENTRUN_LAUNCH_HOOK_SECRET" || (!keys && !own(name)) ? undefined : `${canary}-${i}`]));
   const env = { ...process.env, ...secrets, ...extra, XDG_CONFIG_HOME: join(dir, "config"), TMPDIR: dir };
   for (const [name, value] of Object.entries(env)) if (value === undefined) delete env[name];
   delete env.AGENTRUN_RUN_USER;

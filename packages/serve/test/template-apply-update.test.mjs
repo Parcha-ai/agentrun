@@ -264,6 +264,25 @@ test("a fresh apply of a template whose same parameters already made a live agen
   assert.deepEqual(named, [[false, true]], "an archived one is not live: only the second is named");
 });
 
+test("a fresh apply's plan names its twins, each live agent the template made with the same parameters, by the apply's own rule; a plan onto an agent names none", { timeout: 60_000 }, async (t) => {
+  const { api } = await served(t);
+  const twins = async (body) => {
+    const answer = await api("POST", "/templates/digest/apply", { ...body, dry_run: true });
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    assert.ok(Array.isArray(answer.body.plan.twins), `the plan lists its twins: ${JSON.stringify(answer.body.plan)}`);
+    return [...answer.body.plan.twins].sort();
+  };
+  assert.deepEqual(await twins({ parameters: { topic: "cats" } }), [], "none made yet");
+  const first = await applied(api, "digest", { parameters: { topic: "cats" } });
+  assert.deepEqual(await twins({ parameters: { topic: "cats" } }), [first.agent_id]);
+  assert.deepEqual(await twins({ parameters: { topic: "dogs" } }), [], "other parameters: none");
+  assert.deepEqual(await twins({ parameters: { topic: "cats" }, agent_id: first.agent_id }), [], "onto an agent: none");
+  const second = await applied(api, "digest", { parameters: { topic: "cats" } });
+  assert.deepEqual(await twins({ parameters: { topic: "cats" } }), [first.agent_id, second.agent_id].sort());
+  assert.equal((await api("POST", `/agents/${first.agent_id}/archive`)).status, 200);
+  assert.deepEqual(await twins({ parameters: { topic: "cats" } }), [second.agent_id], "an archived one is not live");
+});
+
 test("an apply keeps no parameter in the store, only a keyed digest of them, and the duplicate warning still tells equal parameters from different ones", { timeout: 60_000 }, async (t) => {
   const server = await served(t);
   const { api } = server;
