@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunDetail } from "@/components/RunDetail";
 import { RunTrace } from "@/components/RunTrace";
-import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI, USAGE_REDO } from "@/components/RunTrace.sample";
+import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI, USAGE_MACHINES, USAGE_REDO } from "@/components/RunTrace.sample";
 import { messageFeatures } from "@/fixtures";
 import type { Run, RunTrace as Trace, RunUsage } from "@/lib/v2";
 
@@ -456,6 +456,37 @@ describe("the Dev tools tab", () => {
     const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => USAGE_CLI), view: "breakdown" });
     expect(host.querySelector("[data-redo]")).toBeNull();
     expect(host.textContent).not.toMatch(/Attempt \d|sent twice|sent again/);
+  });
+
+  it("draws the run's computers and browser sessions under its calls, each on the same time axis, and lists them in the Breakdown", async () => {
+    const host = await open(TRACE, { readUsage: vi.fn(async () => USAGE_MACHINES) });
+    const lanes = [...overviewOf(host).querySelectorAll("[data-stretches]")];
+    expect(lanes.map((lane) => lane.querySelector("p")!.textContent)).toEqual(["Computers (1)", "Browser sessions (1)"]);
+    // The sandbox outlasts the window at both ends; the session is a quarter of the way in, for a quarter of it.
+    const [computer, session] = lanes.map((lane) => lane.querySelector<HTMLElement>("[data-stretch]")!);
+    expect([computer!.style.left, computer!.style.width, computer!.title]).toEqual(["0%", "100%", "daytona sandbox, up 3m 59s, from 2.4 s before the first request"]);
+    expect([Number.parseFloat(session!.style.left).toFixed(1), Number.parseFloat(session!.style.width).toFixed(1), session!.title]).toEqual(["25.2", "26.7", "browserbase browser, up 1m 00s, from +0:56.6"]);
+    // A stretch is no call: a press on one opens no panel, and the overview's words count them.
+    await click(computer);
+    expect(panel(host)).toBeNull();
+    expect(overviewOf(host).querySelector("[role=img]")!.getAttribute("aria-label")).toMatch(/Under them, 1 computer and 1 browser session: the Breakdown lists each\.$/);
+
+    await pick(host, "trace-view", "breakdown");
+    const table = host.querySelector("section[aria-label='Computers and browser sessions'] table")!;
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["What", "Started", "Up for", "In the run's cost", "Note"]);
+    expect([...table.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["daytona sandbox2 vCPU · 4 GB · 10 GB disk", "2.4 s before the first request", "3m 59s", "3m 46s", "–None"],
+      ["browserbase browserbb_9d2c41", "+0:56.6", "1m 00s", "1m 00s", "Closed by the agent"],
+    ]);
+  });
+  it("draws no such lane and lists none for a run that made no computer and opened no browser, or whose usage is not read", async () => {
+    for (const readUsage of [vi.fn(async () => USAGE_CLI), undefined]) {
+      const host = await open(TRACE, { readUsage, view: "breakdown" });
+      expect(host.querySelector("section[aria-label='Computers and browser sessions']")).toBeNull();
+      await pick(host, "trace-view", "calls");
+      expect(overviewOf(host).querySelector("[data-stretches]")).toBeNull();
+      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    }
   });
 
   it("shows lines only as read at the run's version now: lines left by a reread that failed after the run moved are not shown as its own", async () => {

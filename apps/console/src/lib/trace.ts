@@ -75,6 +75,51 @@ export function lane(spans: readonly TraceSpan[], window: { from: number; ms: nu
   return { bars, rows: Math.max(1, ends.length) };
 }
 
+/** Something of the run's that was up for a stretch of it and is no call: a computer the run made, or a browser session
+ *  it opened (GET /usage's `computer_intervals` and `browser_sessions`). Its time is the provider's to bill, in the run's
+ *  cost by line. `to` null: no end is recorded (a computer still up, a session whose release was never told). `counted`:
+ *  the seconds of it in the run's cost (a computer's, what a claim of the run held; a session's, what was charged); null
+ *  when not known. `notes`: what else its record says, in words. */
+export type Stretch = { key: string; kind: "computer" | "browser"; name: string; about: string | null; from: number; to: number | null; counted: number | null; notes: string[] };
+const RELEASE_WORDS: Record<string, string> = { tool: "Closed by the agent", idle: "Closed for being idle", relaunch: "Closed to open another", close: "Let go by the run", ended: "Ended by its provider", lost: "Lost", create_failed: "Never opened" };
+/** A run's computers and browser sessions as stretches, each kind in the order they started. A session with no start
+ *  recorded has no place on a time axis and is left out. An attempt is said only where one was cut and worked again. */
+export function stretches(usage: Pick<RunUsage, "computer_intervals" | "browser_sessions"> | null | undefined): { computers: Stretch[]; browsers: Stretch[] } {
+  const cut = (of: { attempt: number | null; billable: boolean }) => (of.billable ? [] : [`${of.attempt === null ? "An attempt" : `Attempt ${of.attempt}`}: cut and worked again`]);
+  const byStart = (a: Stretch, b: Stretch) => a.from - b.from;
+  const computers = (usage?.computer_intervals ?? []).map((c, i): Stretch => {
+    const gpus = c.gpu && (c.gpu.count ?? 1) > 0 ? `${c.gpu.count ?? 1} ${c.gpu.type ?? ""} GPU`.replace("  ", " ") : null;
+    const size = [c.cpus !== null ? `${c.cpus} vCPU` : null, c.memory_mb !== null ? `${(c.memory_mb / 1024).toLocaleString("en-US", { maximumFractionDigits: 1 })} GB` : null, gpus, c.disk_gb !== null ? `${c.disk_gb} GB disk` : null].filter((part) => part !== null);
+    return { key: `c:${i}:${c.provider_id}`, kind: "computer", name: `${c.provider} ${c.kind ?? "computer"}`, about: size.length ? size.join(" · ") : null, from: at(c.started_at), to: c.ended_at ? at(c.ended_at) : null, counted: c.booked_seconds, notes: [...(c.kept ? ["Kept while the run waited for a person"] : []), ...cut(c)] };
+  }).sort(byStart);
+  const browsers = (usage?.browser_sessions ?? []).flatMap((b, i): Stretch[] => (b.started_at ? [{
+    key: `b:${i}:${b.tag}`, kind: "browser", name: `${b.provider} browser`, about: b.provider_session_id, from: at(b.started_at), to: b.ended_at ? at(b.ended_at) : null, counted: b.charged_seconds,
+    notes: [...(b.release_reason ? [RELEASE_WORDS[b.release_reason] ?? b.release_reason] : []), ...cut(b)],
+  }] : [])).sort(byStart);
+  return { computers, browsers };
+}
+
+export type StretchBar = { stretch: Stretch; left: number; width: number; row: number; before: boolean; after: boolean };
+/** Each stretch's place on its lane, in percent of the trace's window, as `lane` places spans. The window is the run's
+ *  requests and calls, and a computer is made before the first and may outlast the last: the part outside is not drawn,
+ *  and `before` and `after` say there is one. One with no end is drawn to `now`. */
+export function stretchLane(items: readonly Stretch[], window: { from: number; ms: number }, now: number, gap = 0.2): { bars: StretchBar[]; rows: number } {
+  const ends: number[] = [];
+  const share = (ms: number) => (window.ms > 0 ? ((ms - window.from) / window.ms) * 100 : 0);
+  const bars = items.map((stretch) => {
+    const [start, end] = [share(stretch.from), window.ms > 0 ? share(stretch.to ?? Math.max(now, stretch.from)) : 100];
+    const left = Math.min(100, Math.max(0, start));
+    const width = Math.max(0, Math.min(100, end) - left);
+    let row = ends.findIndex((free) => free + gap <= left);
+    if (row < 0) row = ends.push(0) - 1;
+    ends[row] = left + width;
+    return { stretch, left, width, row, before: start < 0, after: end > 100 };
+  });
+  return { bars, rows: Math.max(1, ends.length) };
+}
+/** When a stretch started, against the trace's start: a time since it, or how long before it. */
+export const since = (ms: number) => (ms < 0 ? `${duration(-ms)} before the first request` : offset(ms));
+
 const STEPS = [100, 200, 500, 1000, 2000, 5000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000, 3_600_000, 7_200_000, 14_400_000, 28_800_000, 86_400_000];
 /** The axis's marks for `ms` of the trace that begin `from` ms into it (0: its start): at most `most`, at a round step,
  *  each with its place in percent of what shows and its label, the time since the trace began (seconds with a decimal

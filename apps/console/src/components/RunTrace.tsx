@@ -8,7 +8,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { Spinner } from "@/components/ui/spinner";
 import { tabPanelProps, Tabs } from "@/components/ui/tabs";
 import { bytes, capDollars, compact, isEstimate, runEnded, soFar } from "@/lib/format";
-import { attemptWords, BASIS_WORDS, type Bar, between, bookedWords, budgetStop, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, redoOf, redoWords, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { attemptWords, BASIS_WORDS, type Bar, between, bookedWords, budgetStop, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, redoOf, redoWords, since, type SpanKind, type SpanSort, type Spend, spanMs, type StretchBar, stretches, stretchLane, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
 import { cn } from "@/lib/utils";
 import type { Run, RunTrace as Trace, RunUsage, TraceSpan, UsageLine } from "@/lib/v2";
 
@@ -148,6 +148,23 @@ function Lane({ title, swatch, bars, rows, selected, dimmed, onPick, at }: {
           <span key={span.id} data-span={span.id} data-open={span.id === selected ? "" : undefined} title={at(span)} onClick={() => onPick(span.id)}
             style={{ left: `${left}%`, width: `${width}%`, top: row * 12 }}
             className={cn("trace-mark absolute h-2 min-w-0.5 cursor-pointer hover:opacity-80", mark(span), dimmed(span) && "opacity-25", span.id === selected && "ring-2 ring-foreground ring-offset-1 ring-offset-card")} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** A lane of the overview for what was up beside the run's calls: its computers, or its browser sessions. A bar opens
+ *  nothing (it is no call) and says what it is where the pointer rests; the Breakdown lists each. One that began before
+ *  the first request or outlasted the last has no edge on that side. */
+function StretchLane({ title, swatch, bars, rows, now, from }: { title: string; swatch: string; bars: StretchBar[]; rows: number; now: number; from: number }) {
+  return (
+    <div className="mt-2.5 first:mt-0" data-stretches>
+      <p className="caps flex items-center gap-1.5 text-label text-muted-foreground"><Swatch className={swatch} />{title}</p>
+      <div className="relative mt-1.5" style={{ height: rows * 12 - 4 }}>
+        {bars.map(({ stretch, left, width, row, before, after }) => (
+          <span key={stretch.key} data-stretch={stretch.key} title={`${stretch.name}, ${stretch.to === null ? "no end recorded" : `up ${duration(stretch.to - stretch.from)}`}, from ${since(stretch.from - from)}`}
+            style={{ left: `${left}%`, width: `${width}%`, top: row * 12 }} className={cn("trace-mark absolute h-2 min-w-0.5", swatch, before && "border-l-0", after && "border-r-0", stretch.to === null && now > stretch.from && "border-r-0")} />
         ))}
       </div>
     </div>
@@ -391,6 +408,10 @@ const MODEL_TONES = ["bg-trace-model", `bg-trace-model ${HATCH}`, TINT];
 const TOOL_TONES = ["bg-trace-tool", `bg-trace-tool ${HATCH}`, "border border-trace-tool bg-trace-tool/30"];
 /** Browser and computer time's mark: its own colour, hollow, told from a tool vendor's by more than its hue. */
 const BROWSER_TONE = "border border-trace-tool bg-card";
+/** A computer's stretch on the time axis: light with an edge, so one that spans the whole run still reads as a band. A
+ *  browser session's: hollow, as its time's line is. Each has a lane of its own, named. */
+const COMPUTER_TONE = "border border-trace-tool bg-trace-tool/30";
+const SESSION_TONE = BROWSER_TONE;
 
 /** Each usage line as a part of the split, with its mark: a model's tones in turn, a tool vendor's, browser time's. A line
  *  whose cost is not known counts what is known of it, and says so. */
@@ -491,6 +512,41 @@ function CostByLine({ usage, lines }: { usage: RunUsage; lines: readonly UsageLi
   );
 }
 
+/** The run's computers and browser sessions, a row each: when it started against the first request, how long it was up,
+ *  and how much of that is in the run's cost. The overview draws the same on its time axis. */
+function Stretches({ usage, from, now }: { usage: RunUsage; from: number; now: number }) {
+  const { computers, browsers } = useMemo(() => stretches(usage), [usage]);
+  const all = [...computers, ...browsers];
+  if (!all.length) return null;
+  const th = "caps whitespace-nowrap px-3 py-2 text-right text-label font-normal text-muted-foreground first:text-left last:text-left";
+  const td = "whitespace-nowrap px-3 py-2 text-right align-top font-mono";
+  return (
+    <section aria-label="Computers and browser sessions">
+      <Heading level="h2" aside="up beside the run's calls">Computers and browser sessions</Heading>
+      <div className="overflow-x-auto border bg-card" tabIndex={0} role="region" aria-label="The run's computers and browser sessions">
+        <table className="w-full text-small">
+          <thead><tr className="border-b">{["What", "Started", "Up for", "In the run's cost", "Note"].map((h) => <th key={h} scope="col" className={th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {all.map((stretch) => (
+              <tr key={stretch.key} className="border-b last:border-b-0">
+                <th scope="row" className="px-3 py-2 text-left font-normal">
+                  <span className="flex items-center gap-2 font-mono"><Swatch className={stretch.kind === "computer" ? COMPUTER_TONE : SESSION_TONE} />{stretch.name}</span>
+                  {stretch.about && <span className="block break-all pl-4 text-muted-foreground">{stretch.about}</span>}
+                </th>
+                <td className={td}>{since(stretch.from - from)}</td>
+                <td className={td}>{stretch.to !== null ? duration(stretch.to - stretch.from) : `No end recorded · ${duration(Math.max(0, now - stretch.from))} so far`}</td>
+                <td className={td}>{stretch.counted !== null ? duration(stretch.counted * 1000) : "Unknown"}</td>
+                <td className="px-3 py-2 text-left align-top text-muted-foreground">{stretch.notes.length ? stretch.notes.join(". ") : NONE}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2 max-w-prose text-small text-muted-foreground">A computer's and a browser session's time is billed by its provider, apart from any call. What of it is in the run's cost is on its lines above: a computer's time while a claim of the run held it, a session's as it was charged.</p>
+    </section>
+  );
+}
+
 /** The run's requests and calls added up: what stands out, where the time and the cost went, each request's input and
  *  cost in the order they ran, and the same by model and by tool. */
 function Breakdown({ trace, usage, run, now, onPick, selected }: { trace: Trace; usage: RunUsage | null; run: Run; now: number; onPick: (id: string) => void; selected: string | null }) {
@@ -571,6 +627,8 @@ function Breakdown({ trace, usage, run, now, onPick, selected }: { trace: Trace;
           )}
         </section>
       </div>
+
+      {usage && <Stretches usage={usage} from={traceWindow(trace.spans, now).from} now={now} />}
 
       {requests.length > 0 && (
         <section aria-label="Each request" className="border bg-card p-4">
@@ -701,6 +759,8 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
   const window = useMemo(() => traceWindow(spans, now), [spans, now]);
   const totals = useMemo(() => (trace ? traceTotals(trace, now) : null), [trace, now]);
   const lanes = useMemo(() => ({ model: lane(spans.filter((s) => s.kind === "model"), window, now), tool: lane(spans.filter((s) => s.kind === "tool"), window, now) }), [spans, window, now]);
+  // What was up beside the calls, once the run's usage says: its computers and its browser sessions, a lane each.
+  const beside = useMemo(() => { const { computers, browsers } = stretches(usage); return { computers: stretchLane(computers, window, now), browsers: stretchLane(browsers, window, now) }; }, [usage, window, now]);
   const marks = useMemo(() => ticks(window.ms, 8), [window.ms]);
   // The table's own axis: what of the window shows, with a mark every quarter or so of it.
   const shownMs = (range.to - range.from) * window.ms;
@@ -788,6 +848,7 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
   const ofCap = cap === null ? null : typeof runUsd === "number" && cap > 0 ? `${run.cost?.upper_bound ? "at most " : ""}${percent(runUsd / cap)} of its ${capDollars(cap)} cap` : `cap ${capDollars(cap)}`;
   const costParts = priced ? `requests ${spendWords(priced)}${totals!.cost.charged ? ` · tools ${spendWords(totals!.cost.charges)}` : ""}` : totals!.cost.charged ? `tools ${spendWords(totals!.cost.charges)}` : "Booked for the run as a whole";
   const stopped = budgetStop(run);
+  const besideWords = [[beside.computers.bars.length, "computer"], [beside.browsers.bars.length, "browser session"]].filter(([n]) => (n as number) > 0).map(([n, word]) => `${n} ${word}${n === 1 ? "" : "s"}`).join(" and ");
   const zoomedIn = range !== WHOLE;
   const filtered = kind !== "all" || query.trim() !== "" || zoomedIn;
   // A zoom goes in about the open span's middle, so it stays in view; with none open, about the middle of what shows.
@@ -864,10 +925,12 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
                 </div>
               </div>
               {/* A picture of the run for the eye and the mouse. The table lists every span it draws. */}
-              <div className="px-4 pb-2 pt-3" role="img" aria-label={`The run on a time axis: ${totals!.requests} model request${totals!.requests === 1 ? "" : "s"} and ${totals!.calls} tool call${totals!.calls === 1 ? "" : "s"} over ${duration(window.ms)}. The table lists each.`}>
+              <div className="px-4 pb-2 pt-3" role="img" aria-label={`The run on a time axis: ${totals!.requests} model request${totals!.requests === 1 ? "" : "s"} and ${totals!.calls} tool call${totals!.calls === 1 ? "" : "s"} over ${duration(window.ms)}. The table lists each.${besideWords ? ` Under them, ${besideWords}: the Breakdown lists each.` : ""}`}>
                 <Overview marks={marks} view={range} onView={setRange}>
                   {trace.model_requests !== "not_recorded" && <Lane title={`Model requests (${totals!.requests})`} swatch="bg-trace-model" {...lanes.model} selected={selected?.id ?? null} dimmed={(s) => !keeps(s, kind, query)} onPick={pickBar} at={say} />}
                   <Lane title={`Tool calls (${totals!.calls})`} swatch="bg-trace-tool" {...lanes.tool} selected={selected?.id ?? null} dimmed={(s) => !keeps(s, kind, query)} onPick={pickBar} at={say} />
+                  {beside.computers.bars.length > 0 && <StretchLane title={`Computers (${beside.computers.bars.length})`} swatch={COMPUTER_TONE} {...beside.computers} now={now} from={window.from} />}
+                  {beside.browsers.bars.length > 0 && <StretchLane title={`Browser sessions (${beside.browsers.bars.length})`} swatch={SESSION_TONE} {...beside.browsers} now={now} from={window.from} />}
                 </Overview>
                 <div className="relative mt-1.5 h-5 border-t">
                   {/* A mark near the right edge writes its label to its left, inside the panel. */}

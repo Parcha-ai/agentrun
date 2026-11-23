@@ -122,3 +122,13 @@ export const USAGE_REDO: RunUsage = {
   ],
   infra_usd: 0.0312,
 };
+
+/** The supplier-screening run's computer and browser session, beside its cost lines: a sandbox made 2.4 s before the
+ *  run's first request and deleted 12.1 s after its last call ended (3m 59s up, 226 s of it held by the run), and a
+ *  browser session the agent opened a minute in and closed a minute later. */
+export const USAGE_MACHINES: RunUsage = {
+  ...USAGE_CLI,
+  run_id: TRACE.run_id,
+  computer_intervals: [{ provider: "daytona", provider_id: "sbx_41f0a2", kind: "sandbox", gpu: null, cpus: 2, memory_mb: 4096, disk_gb: 10, started_at: new Date(TRACE_START + 1000).toISOString(), ended_at: new Date(TRACE_START + 240_000).toISOString(), kept: false, booked_seconds: 226, attempt: 1, billable: true }],
+  browser_sessions: [{ provider: "browserbase", tag: "browser-1", provider_session_id: "bb_9d2c41", started_at: new Date(TRACE_START + 60_000).toISOString(), ended_at: new Date(TRACE_START + 120_000).toISOString(), release_reason: "tool", charged_seconds: 60, provider_record: null, provider_record_status: "not_offered", attempt: 1, billable: true }],
+};

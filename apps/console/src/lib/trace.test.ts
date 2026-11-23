@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI, USAGE_REDO } from "@/components/RunTrace.sample";
-import { attemptWords, between, budgetStop, byModel, byTool, costSplit, duration, findings, keeps, lane, offset, ordered, panned, percent, percentile, place, redoOf, redoWords, spanMs, ticks, timing, traceTotals, traceWindow, usd, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI, USAGE_MACHINES, USAGE_REDO } from "@/components/RunTrace.sample";
+import { attemptWords, between, budgetStop, byModel, byTool, costSplit, duration, findings, keeps, lane, offset, ordered, panned, percent, percentile, place, redoOf, redoWords, since, spanMs, stretches, stretchLane, ticks, timing, traceTotals, traceWindow, usd, vitals, WHOLE, zoomed } from "@/lib/trace";
 import type { TraceSpan } from "@/lib/v2";
 
 // The Dev tools tab's figures over the sample trace (RunTrace.sample.ts): each expected value here is worked out by hand
@@ -384,5 +384,39 @@ describe("a run that wound down for its spend cap", () => {
     const found = findings(TRACE, TRACE_END, { run: { stopped_for: "budget", budget_refused_calls: 3, cost: { cap_usd: 0.75 } } });
     expect(found.map((f) => f.id).slice(0, 2)).toEqual(["budget", "failed"]);
     expect([found[0]!.bad, found[0]!.span]).toEqual([true, undefined]);
+  });
+});
+
+describe("what was up beside the run's calls: its computers and browser sessions", () => {
+  const window = traceWindow(TRACE.spans, TRACE_END);
+  it("reads each as a stretch: what it is, its size or its provider's id, when it was up, and how much of that is in the run's cost", () => {
+    expect(stretches(null)).toEqual({ computers: [], browsers: [] });
+    expect(stretches(USAGE_CLI)).toEqual({ computers: [], browsers: [] });
+    const { computers, browsers } = stretches(USAGE_MACHINES);
+    expect(computers).toEqual([{ key: "c:0:sbx_41f0a2", kind: "computer", name: "daytona sandbox", about: "2 vCPU · 4 GB · 10 GB disk", from: TRACE_START + 1000, to: TRACE_START + 240_000, counted: 226, notes: [] }]);
+    expect(browsers).toEqual([{ key: "b:0:browser-1", kind: "browser", name: "browserbase browser", about: "bb_9d2c41", from: TRACE_START + 60_000, to: TRACE_START + 120_000, counted: 60, notes: ["Closed by the agent"] }]);
+  });
+  it("says what a record says beside its times: a GPU, a computer kept for a person, an attempt that was cut, a session with no end", () => {
+    const computer = { ...USAGE_MACHINES.computer_intervals![0]!, gpu: { type: "H100", count: 2 }, disk_gb: null, ended_at: null, kept: true, attempt: 1, billable: false };
+    const session = { ...USAGE_MACHINES.browser_sessions![0]!, ended_at: null, release_reason: null, charged_seconds: null };
+    const { computers, browsers } = stretches({ computer_intervals: [computer], browser_sessions: [session, { ...session, tag: "browser-2", started_at: null }] });
+    expect([computers[0]!.about, computers[0]!.to, computers[0]!.notes]).toEqual(["2 vCPU · 4 GB · 2 H100 GPU", null, ["Kept while the run waited for a person", "Attempt 1: cut and worked again"]]);
+    // A session whose start is not recorded has no place on the axis: left out, never drawn at the run's start.
+    expect(browsers.map((b) => [b.key, b.to, b.counted, b.notes])).toEqual([["b:0:browser-1", null, null, []]]);
+  });
+  it("places each on the trace's window: the part before the first request or after the last call is not drawn, and is said", () => {
+    const { computers, browsers } = stretches(USAGE_MACHINES);
+    // The sandbox was made 2.4 s before the window and deleted 12.1 s after it: the whole lane, open at both ends.
+    expect(stretchLane(computers, window, TRACE_END)).toEqual({ rows: 1, bars: [{ stretch: computers[0], left: 0, width: 100, row: 0, before: true, after: true }] });
+    // The session: from 56.6 s into the window's 224.5 s, for 60 s.
+    const [bar] = stretchLane(browsers, window, TRACE_END).bars;
+    expect([bar!.left, bar!.width].map((n) => Number(n.toFixed(2)))).toEqual([25.21, 26.73]);
+    expect([bar!.before, bar!.after]).toEqual([false, false]);
+    // One with no end is drawn to now.
+    const open = stretchLane([{ ...browsers[0]!, to: null }], window, TRACE_START + 3400 + 112_250).bars[0]!;
+    expect(Number((open.left + open.width).toFixed(2))).toBe(50);
+  });
+  it("says when one started against the first request", () => {
+    expect([since(-2400), since(0), since(56_600)]).toEqual(["2.4 s before the first request", "+0:00.0", "+0:56.6"]);
   });
 });
