@@ -115,7 +115,9 @@ test("a run's graph reads while it goes and while it is paused mid-map at maxCon
   const docs = join(dir, "docs");
   await mkdir(docs);
   const names = ["a", "b", "c", "d", "e", "f"];
-  for (const name of names) pdf(join(docs, `${name}.pdf`), `Document ${name}`);
+  // The faux System One draws a verdict from a hash of the page's text, which this host's pdftotext shapes: FAUX_YES in
+  // the text pins every judge to a confident yes, so each item ends done wherever it runs.
+  for (const name of names) pdf(join(docs, `${name}.pdf`), `Document ${name} FAUX_YES`);
   withEnv(t, { TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_MS: "300", AGENTRUN_SMOKE_DECISION_CALLS: join(dir, "calls.jsonl") }, ["PARALLEL_API_KEY", "OPENROUTER_API_KEY"]);
   const { api } = await serve(t, { documents: docs, allowCodeNodes: true, fauxJev: FAUX_DECISIONS });
   const flow = {
