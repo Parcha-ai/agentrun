@@ -7,11 +7,46 @@ export const LOGIN_RUNS = "Claude Agent runs on your Claude plan through the Cla
 /** The owner's word, asked before it turns on. */
 export const ONLY_ME = "Only I run agents on this server";
 export const ONLY_ME_WHY = "Runs here would use your Claude plan, which is yours alone.";
-/** Where the login is: AgentRun's own (the default), or this machine's own Claude Code login, by name. */
-export const PLACES: Record<ClaudeLoginView["place"], string> = {
-  agentrun: "A login of AgentRun's own (sign in once for it)",
-  machine: "This machine's Claude Code login (~/.claude)",
-};
+/** Where the login is: AgentRun's own (the default), or this machine's own Claude Code login, by name and by the folder
+ *  the server finds it in. */
+export function placeWords(place: ClaudeLoginView["place"], v: ClaudeLoginView): string {
+  return place === "agentrun" ? "A login of AgentRun's own (sign in once for it)" : `This machine's Claude Code login (${v.machine.folder})`;
+}
+/** Which folder the status is read from. */
+export const checksFolder = (folder: string): string => `AgentRun asks the CLI about the login in ${folder}.`;
+/** Said of this machine's login where the server's environment names no CLAUDE_CONFIG_DIR. */
+export const MACHINE_DEFAULT_FOLDER = "That is Claude Code's default folder. If your Claude Code keeps its login in another one (it runs with CLAUDE_CONFIG_DIR set), start AgentRun with CLAUDE_CONFIG_DIR set to that folder as well.";
+
+/** "10 minutes", "30 seconds": a sign-in's limit in words. */
+export function limitWords(ms: number): string {
+  if (ms >= 60_000) {
+    const minutes = Math.round(ms / 60_000);
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  const seconds = Math.max(1, Math.round(ms / 1_000));
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
+/** What the server says of the CLI's sign-in it started, in words, or null when there is nothing to say: none started,
+ *  or the login reads signed in. */
+export function signInWords(v: ClaudeLoginView): string | null {
+  const s = v.sign_in;
+  if (!s || v.state === "signed_in") return null;
+  switch (s.state) {
+    case "waiting":
+      return `Waiting for the browser: finish signing in on the page the CLI opened. The sign-in stops after ${limitWords(s.limit_ms)}.`;
+    case "timed_out":
+      return `The sign-in stopped after ${limitWords(s.limit_ms)} with no answer from the browser, so a sign-in page still open can't finish. Open the CLI's sign-in here starts it again.`;
+    case "failed": {
+      const how = s.exit_code !== undefined ? `exit code ${s.exit_code}` : s.signal ? `ended by ${s.signal}` : "no exit code";
+      return `The CLI's sign-in ended without signing in (${how}). Open the CLI's sign-in here starts it again, or run the line above in a terminal.`;
+    }
+    case "not_started":
+      return `The CLI's sign-in could not start${s.error ? `: ${s.error}` : ""}. Run the line above in a terminal.`;
+    case "signed_in":
+      return `The CLI's sign-in ended signed in, but the CLI says the login in ${v.folder} is not signed in. Run the line above in a terminal on the server's machine.`;
+  }
+}
 export const SIGNED_OUT = "Not signed in. Run this in a terminal on the server's machine; the CLI opens a browser there:";
 export const NO_CLI = "No Claude Code CLI here yet: the first Claude Agent run installs it. Or run this with a claude CLI of your own:";
 export const UNKNOWN = "The Claude Code CLI didn't say whether it is signed in. Sign in again with:";

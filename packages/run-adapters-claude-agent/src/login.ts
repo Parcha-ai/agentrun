@@ -6,7 +6,7 @@
 // environment), and the host asks the CLI whether it is signed in (`claude auth status`), reading nothing but that answer.
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelPort, ModelUsage } from "@parcha/agentrun-kernel";
 
@@ -25,10 +25,19 @@ export function loginEnv(login: ClaudeAgentLogin): Record<string, string> {
   return { CLAUDE_SECURESTORAGE_CONFIG_DIR: login.dir, ANTHROPIC_CONFIG_DIR: login.profiles };
 }
 
-/** The line a person runs to sign the CLI in at `login` (the CLI opens a browser itself). Its config dir is the login's
- *  too, so a CLI older than the credentials variable keeps the login there as well. */
+/** The variables of the CLI's own sign-in at `login` and of its status check there: the login's two directories, and its
+ *  config dir too (`CLAUDE_CONFIG_DIR`). `auth login` writes the account it signed in to its config dir's `.claude.json`
+ *  and `auth status` reads it from there, so a sign-in in any other config dir leaves the login's folder without it. The
+ *  line a person runs (loginCommand), the sign-in this host starts (startClaudeLogin) and the status check
+ *  (claudeLoginStatus) all take these, so they cannot drift apart. Neither is a session, whose config dir stays its own
+ *  (loginEnv). */
+export function signInEnv(login: ClaudeAgentLogin): Record<string, string> {
+  return { CLAUDE_CONFIG_DIR: login.dir, ...loginEnv(login) };
+}
+
+/** The line a person runs to sign the CLI in at `login` (the CLI opens a browser itself), with signInEnv's variables. */
 export const loginCommand = (login: ClaudeAgentLogin, cli = "claude"): string =>
-  `CLAUDE_CONFIG_DIR=${shellWord(login.dir)} CLAUDE_SECURESTORAGE_CONFIG_DIR=${shellWord(login.dir)} ANTHROPIC_CONFIG_DIR=${shellWord(login.profiles)} ${shellWord(cli)} auth login`;
+  `${Object.entries(signInEnv(login)).map(([name, value]) => `${name}=${shellWord(value)}`).join(" ")} ${shellWord(cli)} auth login`;
 
 const shellWord = (word: string): string => (/^[A-Za-z0-9_./:@%+=-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`);
 
@@ -66,15 +75,16 @@ export function parseLoginStatus(stdout: string): ClaudeLoginStatus | undefined 
 /** The longest a status check may take. */
 export const LOGIN_STATUS_MS = 15_000;
 
-/** Ask the CLI at `cli` whether it is signed in at `login`: `auth status --json`, in an empty home and config dir of its
- *  own (removed after), with only PATH and the login's two variables beside them. Throws when the CLI gives no answer
- *  that reads as one. */
+/** Ask the CLI at `cli` whether it is signed in at `login`: `auth status --json`, in an empty home of its own (removed
+ *  after), with only PATH and the sign-in's variables (signInEnv) beside it, so it reads the login as the sign-in left it,
+ *  the account's `.claude.json` in the login's folder included. A status check is no session: nothing resumes in that
+ *  config dir, so loginEnv's rule does not apply to it. Throws when the CLI gives no answer that reads as one. */
 export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string } = {}): Promise<ClaudeLoginStatus> {
   const scratch = mkdtempSync(join(tmpdir(), "agentrun-claude-status-"));
   try {
     const stdout = await new Promise<string>((resolve, reject) => {
       const child = spawn(cli, ["auth", "status", "--json"], {
-        env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: scratch, CLAUDE_CONFIG_DIR: scratch, XDG_CONFIG_HOME: join(scratch, ".config"), ...loginEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+        env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: scratch, XDG_CONFIG_HOME: join(scratch, ".config"), ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
         stdio: ["ignore", "pipe", "ignore"],
         timeout: options.timeoutMs ?? LOGIN_STATUS_MS,
       });
@@ -95,22 +105,67 @@ export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, op
   }
 }
 
-/** Start the CLI's own sign-in at `login` (`auth login`): it opens a browser on this machine and keeps what it gets in its
- *  own files. Nothing of it is read here: its output goes nowhere, and it is ended after `timeoutMs`. */
-export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; home?: string; display?: Readonly<Record<string, string | undefined>> } = {}): void {
-  const scratch = mkdtempSync(join(tmpdir(), "agentrun-claude-login-"));
+/** How long the CLI's own sign-in waits for its browser before it is ended. */
+export const SIGN_IN_MS = 10 * 60_000;
+/** After asking an ending sign-in to stop, how long before it is killed. */
+const SIGN_IN_KILL_MS = 5_000;
+
+/** How a sign-in ended: the CLI exited by itself (`exited`: `code` 0 when it signed in, or the signal that ended it),
+ *  it was ended at its limit (`timed_out`) or by the host (`stopped`), or it never started (`failed`, in the spawn's
+ *  words). */
+export type ClaudeSignInEnd = { end: "exited"; code: number | null; signal: string | null } | { end: "timed_out" } | { end: "stopped" } | { end: "failed"; message: string };
+
+/** A sign-in startClaudeLogin started: `ended` settles once, with how it ended; `stop()` ends it (nothing once ended). */
+export interface ClaudeSignIn {
+  ended: Promise<ClaudeSignInEnd>;
+  stop(): void;
+}
+
+/** Start the CLI's own sign-in at `login` (`auth login`), with the line's own variables (signInEnv) in the person's home
+ *  (`home`) and desktop (`display`): it opens a browser on this machine and keeps what it gets in the login's folder.
+ *  Nothing of it is read here: its output goes nowhere. It is ended after `timeoutMs` (SIGN_IN_MS by default), which
+ *  `ended` says apart from any other end. */
+export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; home?: string; display?: Readonly<Record<string, string | undefined>> } = {}): ClaudeSignIn {
   // What a browser needs to open on this desktop, when the server has it.
   const display = Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "BROWSER"].flatMap((name) => {
     const value = options.display?.[name];
     return typeof value === "string" ? [[name, value]] : [];
   }));
-  const child = spawn(cli, ["auth", "login", "--claudeai"], {
-    env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: options.home ?? scratch, CLAUDE_CONFIG_DIR: scratch, ...display, ...loginEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
-    stdio: "ignore",
-    timeout: options.timeoutMs ?? 10 * 60_000,
-  });
-  child.once("error", () => {});
-  child.once("close", () => rmSync(scratch, { recursive: true, force: true }));
+  let settle!: (end: ClaudeSignInEnd) => void;
+  const ended = new Promise<ClaudeSignInEnd>((resolve) => { settle = resolve; });
+  const failed = (error: unknown): ClaudeSignInEnd => ({ end: "failed", message: String((error as Error)?.message ?? error).slice(0, 200) });
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(cli, ["auth", "login", "--claudeai"], {
+      env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: options.home ?? homedir(), ...display, ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
+      stdio: "ignore",
+    });
+  } catch (error) {
+    settle(failed(error));
+    return { ended, stop: () => {} };
+  }
+  let done = false;
+  let ending: "timed_out" | "stopped" | undefined;
+  let kill: ReturnType<typeof setTimeout> | undefined;
+  const end = (why: "timed_out" | "stopped") => {
+    if (done || ending) return;
+    ending = why;
+    child.kill("SIGTERM");
+    kill = setTimeout(() => child.kill("SIGKILL"), SIGN_IN_KILL_MS);
+    kill.unref();
+  };
+  const limit = setTimeout(() => end("timed_out"), options.timeoutMs ?? SIGN_IN_MS);
+  limit.unref();
+  const finish = (result: ClaudeSignInEnd) => {
+    if (done) return;
+    done = true;
+    clearTimeout(limit);
+    if (kill) clearTimeout(kill);
+    settle(result);
+  };
+  child.once("error", (error) => finish(ending ? { end: ending } : failed(error)));
+  child.once("close", (code, signal) => finish(ending ? { end: ending } : { end: "exited", code, signal }));
+  return { ended, stop: () => end("stopped") };
 }
 
 /** A model response's usage, as Anthropic's stream says it (`message_start`, then `message_delta`). */

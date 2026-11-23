@@ -1,0 +1,9 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-harness-claude
+kind: fix
+---
+Settings → Model keys' "Open the CLI's sign-in here" signs the claude CLI in at the login's own folder, so the login reads signed in afterwards. The sign-in ran with a temporary config dir, where `auth login` wrote the account it signed in (`.claude.json`); that folder was removed when the sign-in ended, and the login's folder stayed without it, so AgentRun kept saying "not signed in" while running the shown command by hand worked. The sign-in, the shown command and the status check now take their variables from one function (`claudeSignInEnv`), and the status check reads the login's folder as its config dir.
+
+- `GET /v2/settings/claude-login` says what became of a sign-in the server started, as `sign_in`: `waiting` for the browser since `started_at`, `signed_in`, `timed_out`, `failed` with the CLI's `exit_code`, or `not_started`. The console shows "Waiting for the browser…" from it, after a reload too. A sign-in no browser answers within 10 minutes is ended and says so, with the button to start it again; before, it ended silently and the browser's page then failed to reach it. A second press, or turning the mode off, ends a sign-in that still waits.
+- The view names the folder it asks about (`folder`), and this machine's own login folder for the claude CLI (`machine`). That folder follows the CLI's rule: `CLAUDE_CONFIG_DIR` when the server's environment sets it to an absolute path, else `~/.claude`. The console shows it in place of the fixed "(~/.claude)", and where the server saw no `CLAUDE_CONFIG_DIR` it says that a CLI using another folder needs AgentRun started with `CLAUDE_CONFIG_DIR` set to it.
+- The harness's `startClaudeLogin` returns the sign-in (`ended`, which says how it ended, and `stop()`) in place of nothing, and starts the CLI in the person's home rather than a temporary one when no home is given.

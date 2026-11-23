@@ -1546,15 +1546,24 @@ has the row **Use Claude Code's login on this machine**, over these routes:
 
 - `PUT /v2/settings/claude-login` `{"only_me": true, "place": "agentrun"}` turns it on. `only_me` is the owner's word
   that they alone run agents on this server. `place` is where the login is: `agentrun` (the default) is AgentRun's own
-  login directory in the data folder, which you sign in once; `machine` is this machine's own Claude Code login
-  (`~/.claude`), which you opt into by name. A server where more than one person can start runs (more than one API
-  token, the API-only profile) refuses it with `403` and one line saying why, and a turn-on saved before is dropped
-  when such a server starts.
+  login directory in the data folder, which you sign in once; `machine` is this machine's own Claude Code login, which
+  you opt into by name. Its folder is the one the CLI uses: `CLAUDE_CONFIG_DIR` when the server's environment sets it to
+  an absolute path, else `~/.claude`. A Claude Code that keeps its login in another folder is found only when AgentRun
+  is started with `CLAUDE_CONFIG_DIR` set to that folder. A server where more than one person can start runs (more
+  than one API token, the API-only profile) refuses it with `403` and one line saying why, and a turn-on saved before
+  is dropped when such a server starts.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
   organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
-  `other_machine`. `command` is the line that signs the CLI in at the login's place, for a terminal on the server's
-  machine. Where the console is on that machine (a server on loopback with no public address), `can_start` is true and
-  `POST /v2/settings/claude-login/login` starts the pinned CLI's own `auth login`, which opens a browser there.
+  `other_machine`. `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
+  login folder (`machine.source`: `CLAUDE_CONFIG_DIR` or `default`). `command` is the line that signs the CLI in at
+  the login's place, for a terminal on the server's machine. Where the console is on that machine (a server on loopback
+  with no public address), `can_start` is true and `POST /v2/settings/claude-login/login` starts the pinned CLI's own
+  `auth login`, which opens a browser there. It runs with the same variables as `command`, so it signs in at `folder`,
+  and the status is read there too, since `auth login` writes the account it signed in to its config dir. `sign_in`
+  says what became of that sign-in while the server runs: `waiting` for the browser since `started_at`, `signed_in`,
+  `timed_out` (no answer from the browser within 10 minutes, so it was ended and a sign-in page still open can't
+  finish), `failed` (the CLI ended without signing in, with its `exit_code`), or `not_started`. A second start ends a
+  sign-in that still waits, and so does turning the mode off.
 - `DELETE /v2/settings/claude-login` turns it off. The login stays as the CLI keeps it.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no

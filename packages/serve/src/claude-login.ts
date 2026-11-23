@@ -16,6 +16,7 @@ import { delimiter, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus } from "@parcha/agentrun-harness-claude";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { registerSecretWrite } from "./secret-writes.js";
+import type { ClaudeSignIns, SignInView } from "./claude-sign-in.js";
 import type { Settings } from "./store/index.js";
 
 // Every operation here is the owner's session's alone (secret-writes.ts): no answer holds a credential, but turning a
@@ -53,12 +54,25 @@ export const LOGIN_PLACES = ["agentrun", "machine"] as const;
 export type LoginPlace = (typeof LOGIN_PLACES)[number];
 type Setting = { v: 1; place: LoginPlace; host: string; only_me: true };
 
-/** The directories of a login at `place`: AgentRun's in `data`, or this machine's (the CLI's own defaults for its user). */
+/** This machine's own Claude Code login folder as the CLI finds it for the server's user, by the CLI's own rule: its
+ *  config dir is `CLAUDE_CONFIG_DIR` when set, else `~/.claude`, and its credentials are kept there too unless
+ *  `CLAUDE_SECURESTORAGE_CONFIG_DIR` says otherwise. Read from the server's env, so a Claude Code started with another
+ *  `CLAUDE_CONFIG_DIR` is found only when AgentRun was started with it as well. A relative one is not taken: the CLI would
+ *  read it against a working directory this server does not share. `source` says which rule gave the folder. */
+export function machineFolder(env: Readonly<Record<string, string | undefined>> = process.env): { folder: string; source: "CLAUDE_CONFIG_DIR" | "default" } {
+  if (env.CLAUDE_CONFIG_DIR && isAbsolute(env.CLAUDE_CONFIG_DIR)) return { folder: env.CLAUDE_CONFIG_DIR, source: "CLAUDE_CONFIG_DIR" };
+  const home = env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir();
+  return { folder: join(home, ".claude"), source: "default" };
+}
+
+/** The directories of a login at `place`: AgentRun's in `data`, or this machine's (machineFolder, and the Anthropic
+ *  profiles where the CLI looks for them: `ANTHROPIC_CONFIG_DIR`, else `$XDG_CONFIG_HOME/anthropic`, else
+ *  `~/.config/anthropic`). */
 export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<string, string | undefined>> = process.env): ClaudeAgentLogin {
   if (place === "agentrun") return { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic") };
   const home = env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir();
   const config = env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : join(home, ".config");
-  return { dir: join(home, ".claude"), profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic") };
+  return { dir: machineFolder(env).folder, profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic") };
 }
 
 /** The setting as saved, or undefined when the mode is not on (or the row is not one this reads). */
@@ -142,6 +156,12 @@ export type ClaudeLoginView = {
   /** Why the mode can't be turned on here, in one line. */
   refused?: string;
   account?: { method?: string; email?: string; organization?: string; plan?: string };
+  /** The folder whose login the CLI is asked about: the login's directory at `place`. */
+  folder: string;
+  /** This machine's own Claude Code login as this server finds it (machineFolder). */
+  machine: { folder: string; source: "CLAUDE_CONFIG_DIR" | "default" };
+  /** The CLI's sign-in this server started, while this server runs (claude-sign-in.ts). */
+  sign_in?: SignInView;
 };
 
 /** The account's words, as the view shows them. */
@@ -177,8 +197,10 @@ export const claudeLoginRouteOff = (name: string, why: string): string => `${nam
 /** What the routes need of the server. `pinned`: the pinned CLI's path when installed. `refused`: whyNotOneOwner of this
  *  server. `sameMachine`: the request comes from a browser on this machine to a server bound to loopback with no public
  *  address, so a sign-in the CLI opens in a browser here reaches the person. `status`/`start`: the harness's
- *  claudeLoginStatus and startClaudeLogin. `changed`: env read again after a turn on or off. */
+ *  claudeLoginStatus and startClaudeLogin. `changed`: env read again after a turn on or off. `signIns`: the sign-in this
+ *  server started, one per server process (claude-sign-in.ts). */
 export type ClaudeLoginDeps = {
+  signIns: ClaudeSignIns;
   settings: Pick<Settings, "get" | "put" | "remove">;
   data: string;
   env: Readonly<Record<string, string | undefined>>;
@@ -205,7 +227,8 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   const place = setting?.place ?? "agentrun";
   const login = loginAt(place, deps.data, deps.env);
   const cli = loginCli(await deps.pinned(), deps.env);
-  const base = { place, command: (await deps.claude()).claudeLoginCommand(login, cli ?? "claude"), can_start: deps.sameMachine && cli !== undefined && deps.refused === undefined, ...(deps.refused ? { refused: deps.refused } : {}) };
+  const signIn = deps.signIns.view();
+  const base = { place, command: (await deps.claude()).claudeLoginCommand(login, cli ?? "claude"), can_start: deps.sameMachine && cli !== undefined && deps.refused === undefined, ...(deps.refused ? { refused: deps.refused } : {}), folder: login.dir, machine: machineFolder(deps.env), ...(signIn ? { sign_in: signIn } : {}) };
   if (!setting) return { state: "off", ...base };
   if (setting.host !== hostname()) return { state: "other_machine", ...base, can_start: false };
   if (!cli) return { state: "no_cli", ...base };
@@ -227,15 +250,19 @@ export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): P
   return claudeLoginView(deps);
 }
 
-/** DELETE /settings/claude-login: turned off. The login itself stays as the CLI keeps it; nothing here signs it out. */
+/** DELETE /settings/claude-login: turned off, and a sign-in this server started that still waits is ended. The login
+ *  itself stays as the CLI keeps it; nothing here signs it out. */
 export async function turnOffClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeLoginView> {
+  await deps.signIns.stop();
   await deps.settings.remove(CLAUDE_LOGIN_SETTING);
   await deps.changed();
   return claudeLoginView(deps);
 }
 
-/** POST /settings/claude-login/login: the CLI's own sign-in, started on this machine, where it opens a browser. The
- *  browser code goes to the CLI, never here; the answer is the view as it is when the sign-in starts. */
+/** POST /settings/claude-login/login: the CLI's own sign-in, started on this machine, where it opens a browser, with the
+ *  shown line's own variables (the harness's signInEnv), so it signs in at the folder the status reads. A sign-in that
+ *  still waits is ended first (deps.signIns). The browser code goes to the CLI, never here; the answer is the view as it
+ *  is when the sign-in starts, its `sign_in` waiting. */
 export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLoginView> {
   if (deps.refused) throw new ClaudeLoginRefused("forbidden", deps.refused);
   const setting = await claudeLoginSetting(deps.settings);
@@ -245,7 +272,9 @@ export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLogin
   const cli = loginCli(await deps.pinned(), deps.env);
   if (!cli) throw new ClaudeLoginRefused("agent_not_runnable", "No Claude Code CLI here yet: claude-agent's first run installs it, or run the command shown.");
   // The person's home and desktop, so the CLI can open their browser.
-  (await deps.claude()).startClaudeLogin(cli, loginAt(setting.place, deps.data, deps.env), { ...pathOf(deps.env), ...(deps.env.HOME ? { home: deps.env.HOME } : {}), display: deps.env });
+  const claude = await deps.claude();
+  const login = loginAt(setting.place, deps.data, deps.env);
+  await deps.signIns.start((timeoutMs) => claude.startClaudeLogin(cli, login, { ...pathOf(deps.env), ...(deps.env.HOME ? { home: deps.env.HOME } : {}), display: deps.env, timeoutMs }));
   return claudeLoginView(deps);
 }
 
