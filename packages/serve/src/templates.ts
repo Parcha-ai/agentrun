@@ -643,8 +643,10 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     if (new Set(value).size !== value.length) bad(MANIFEST, `${field} names one item twice`);
     return value as string[];
   };
-  /** `path` is a regular file inside the package. */
-  const inside = (path: unknown) => typeof path === "string" && !path.startsWith("/") && !path.split("/").some((part) => part === ".." || part === "." || part === "") && kind(path) === "file";
+  /** `path`, named in agent.md, passes through a hidden file or folder: one the package leaves out (entries), so never read. */
+  const hidden = (path: unknown) => typeof path === "string" && path.split("/").some((part) => part.startsWith("."));
+  /** `path` is a regular file inside the package, none of its parts hidden (".", ".." and ".env" alike) or empty. */
+  const inside = (path: unknown) => typeof path === "string" && !path.startsWith("/") && !hidden(path) && !path.split("/").includes("") && kind(path) === "file";
 
   const name = src.name;
   if (src.kind("") !== "dir") throw new PackageError(dir, ["it is not a folder: a package is one"]);
@@ -797,7 +799,8 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   if (f.output !== undefined) {
     const at = isObject(f.output) ? f.output.schema : undefined;
     const evalSize = typeof at === "string" && at.startsWith("evals/") && inside(at) ? src.size(at) : 0;
-    if (!isObject(f.output) || unknownFields(f.output, ["schema"]).length || !inside(at)) bad(MANIFEST, "output is {schema: a JSON Schema file in the package}");
+    if (isObject(f.output) && typeof at === "string" && hidden(at) && !at.split("/").some((part) => part === "." || part === "..")) bad(MANIFEST, `output.schema ${at} is a hidden file: a hidden file or folder is no part of a package, so it is never read. Name a file with no part of its path starting with "."`);
+    else if (!isObject(f.output) || unknownFields(f.output, ["schema"]).length || !inside(at)) bad(MANIFEST, "output is {schema: a JSON Schema file in the package}");
     else if (evalSize > MAX_FILE_BYTES || agentBytes + evalSize > MAX_PACKAGE_BYTES) {
       bad(at as string, evalSize > MAX_FILE_BYTES ? `is over ${MAX_FILE_BYTES} bytes, a package file's limit: the answer's schema is given to the agent, so it keeps an agent file's limits, under evals/ too` : `takes the agent's files over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit: the answer's schema is given to the agent, so it counts as an agent file, under evals/ too`);
     } else {

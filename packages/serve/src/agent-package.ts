@@ -21,7 +21,7 @@ import { PAIRED_ID_PREFIX } from "./workspace/attached-computers.js";
 export type PackageFile = { path: string; encoding: "utf8" | "base64"; content: string };
 /** What an export's note can be about: the document's enum of them (openapi.ts), so a note of a kind not here fails the
  *  build, and an answer the document does not list fails its schema check. */
-export const EXPORT_NOTE_KINDS = ["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"] as const;
+export const EXPORT_NOTE_KINDS = ["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "secrets", "input_schema", "budget", "package"] as const;
 /** One thing an export could not carry as it is here: what it is, which one, and why, in words. */
 export type ExportNote = { kind: (typeof EXPORT_NOTE_KINDS)[number]; name: string; reason: string };
 export type AgentPackage = { name: string; files: PackageFile[]; sha256: string; report: { blocked: ExportNote[]; remade: ExportNote[] } };
@@ -33,8 +33,8 @@ export type ExportInput = {
   definition: Json;
   /** The revision's skill files, by path under the agent's skills folder. */
   skills: Readonly<Record<string, string>>;
-  /** The package the agent was applied from (agentView's `template`) with the key names its apply kept, and that package
-   *  as this server holds it now. */
+  /** The package the agent was applied from (agentView's `template`) with the key names its apply kept (absent on a
+   *  revision applied before an apply kept them), and that package as this server holds it now. */
   template: { id: string; version: string; secrets?: readonly string[] } | null;
   origin: Package | undefined;
   servers: ReadonlyMap<string, SavedServer>;
@@ -287,8 +287,10 @@ export function agentPackage(input: ExportInput): AgentPackage {
   const inputSchema = isObject(definition.input_schema) ? definition.input_schema : undefined;
   const inputs = inputSchema && inputsOf(inputSchema);
   if (inputSchema && !inputs) blocked.push({ kind: "input_schema", name: "inputs", reason: "Its input schema is not a closed object of fields, which is what a package's inputs are." });
-  // The keys its package declared, as its apply kept them.
+  // The keys its package declared, as its apply kept them. A revision applied before an apply kept them names none here,
+  // so the package says none, and the note says the target sets them up.
   const secrets = [...new Set([...(template?.secrets ?? []), ...((plain ?? []).some(isMonidName) ? ["MONID_API_KEY"] : [])])].sort();
+  if (template && !template.secrets) remade.push({ kind: "secrets", name: template.id, reason: `The key names version ${template.version} of ${template.id} declares were not kept when it was applied here, so the package names none: save the keys the agent uses on the target, and name them under secrets in ${MANIFEST}.` });
   const bash = settings.bash?.policy;
   // Bash's policy holds every shell tool, and a package writes it only beside bash: a shell tool kept without bash would
   // run there what the policy refuses here.
