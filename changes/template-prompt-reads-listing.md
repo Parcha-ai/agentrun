@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+The console's template prompts ("Use this template", "Run", "Set it up with an agent") now send the coding agent to the package's entry in `GET /v2/templates`, not to the whole package at `GET /v2/templates/{template}`. The entry has what an apply needs (parameters, defaults, secrets, MCP servers, tool grants, harness, model, triggers, budget) and none of the package's instructions or skill files. An imported package's instructions and skill files are a third party's text, and they no longer reach the coding agent. Applying still copies them to the new agent. This reverses #3439's pointer to the package's own URL. `template get` and `GET /v2/templates/{template}` still read a package whole, so a person can read it before applying, and their summary still says the text is the new agent's, not instructions to the reader.
