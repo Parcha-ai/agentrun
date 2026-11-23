@@ -104,6 +104,24 @@ describe("runs' figures side by side", () => {
     const told = compareFigures([FIRST, sideOf(SECOND.run, none, 0)]);
     expect([told[3]!.cells[1]!.words, told[4]!.cells[1]!.words, differenceWords(told[3]!)]).toEqual(["–", "–", null]);
   });
+  it("says a time as at least where a span's length is not kept, and unknown where none of its kind has one; never a run made faster by it", () => {
+    // The second request answered, and its record keeps no duration: its 20 s are in no sum.
+    const noEnd = { ...SMALL, spans: SMALL.spans.map((s) => (s.id === "m2" ? { ...s, ended_at: null } : s)) };
+    const rows = compareFigures([FIRST, sideOf(SECOND.run, noEnd, 0)]);
+    const said = (label: string) => { const row = rows.find((r) => r.label === label)!; return [row.cells[1]!.words, row.cells[1]!.exact, differenceWords(row)]; };
+    // The window ends where the last span with a length does (the request's start, 20 s in), and 10 s of a model answering is known.
+    expect([said("Time"), said("A model answering")]).toEqual([["at least 20.0 s", false, null], ["at least 10.0 s", false, null]]);
+    // That request may have answered while a tool ran: the tools' 6 s is said as partial, with no difference.
+    expect(said("A tool running")).toEqual(["6.0 s, partial", false, null]);
+    // A call cut with no result has no length either: the tools' time is at least the two that have.
+    const cutCall = { ...SMALL, spans: SMALL.spans.map((s) => (s.id === "t2" ? { ...s, ended_at: null, status: "interrupted" as const } : s)) };
+    const cut = compareFigures([FIRST, sideOf(SECOND.run, cutCall, 0)]);
+    expect([cut[8]!.cells[1], cut[7]!.cells[1]!.exact, differenceWords(cut[8]!)]).toEqual([{ value: 4000, words: "at least 4.0 s", exact: false }, true, null]);
+    // No span of a kind with a length: its time is unknown, never 0 with −100% beside it.
+    const none = { ...SMALL, spans: SMALL.spans.map((s) => (s.kind === "model" ? { ...s, ended_at: null } : s)) };
+    const model = compareFigures([FIRST, sideOf(SECOND.run, none, 0)])[7]!;
+    expect([model.cells[1]!.words, differenceWords(model)]).toEqual(["–", null]);
+  });
   it("says a difference from nothing with no percent, and a share that rounds to no point as the same", () => {
     expect(differenceWords({ cells: [exact(0), exact(3)], say: String })).toBe("+3");
     expect(differenceWords({ cells: [exact(0.5), exact(0.504)], say: String, share: true })).toBe("Same");
