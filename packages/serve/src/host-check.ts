@@ -16,6 +16,13 @@ export function hostName(header: string | undefined): string | undefined {
  *  machine's files asks for more. */
 export const isLoopbackName = (name: string | undefined): boolean => name === "localhost" || name === "[::1]" || (name !== undefined && /^127(\.\d{1,3}){3}$/.test(name));
 
+/** The port a Host header names (1 to 65535), or undefined for none, or for a header that is not `name` or `name:port`. */
+export function hostPort(header: string | undefined): number | undefined {
+  const match = /^(?:\[[0-9a-f:.]+\]|[a-z0-9._-]+):(\d{1,5})$/.exec(String(header ?? "").trim().toLowerCase());
+  const port = match ? Number(match[1]) : 0;
+  return port >= 1 && port <= 65535 ? port : undefined;
+}
+
 /** The names a server listening on loopback `host` answers to: this machine's (localhost, 127.0.0.1, [::1], and `host`
  *  itself), each --allow-host name, and the name of the address people open (AGENTRUN_PUBLIC_URL), which a proxy in
  *  front of it sends. */

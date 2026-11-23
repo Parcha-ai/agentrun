@@ -20,6 +20,7 @@ import type { Wire } from "@parcha/agentrun-kernel";
 import { onOpenRouter, openRouterAttribution, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
 import type { ToolsAs } from "../local-models.js";
 import { chooseModel, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
+import { OLLAMA_PROVIDER } from "../ollama-provider.js";
 import { gatewayHeadersAt, providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
 import { callsOfText, type PiContext, toolsAsText } from "./text-tools.js";
@@ -67,6 +68,9 @@ export interface ModelRoute {
   readonly unpriced?: boolean;
   /** The model's most output tokens (its catalog ceiling): the cap's output bound, null when the catalog names none. */
   readonly outputCeiling?: number | null;
+  /** A model on this machine's own Ollama (ollama-provider.ts): $0, and its requests never count toward the run's
+   *  free-model limit (the cap's CapModel.local), which guards a provider's shared quota this model has none of. */
+  readonly local?: boolean;
 }
 
 
@@ -133,8 +137,11 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   // thinking level by name (LEVELS_BY_NAME), which the translation hands to pi-ai (levelOf): the run's effort reaches the
   // model, mapped and clamped by its own catalog entry. Direct Particle states no cost (its usage is priced from the
   // catalog), and its session also takes the model's window and ceiling and replays unsigned reasoning.
-  const like = target.provider === "particle" ? { ...settings, ...LEVELS_BY_NAME, translatedChatCompletions: true } : target.reasoning ? { ...sees, ...LEVELS_BY_NAME } : undefined;
-  return { ...route, ...(like ? { like } : {}), provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
+  // An Ollama model's session also takes its window, the context every request asks Ollama for (num_ctx), so pi compacts
+  // before Ollama would cut the prompt.
+  const local = target.provider === OLLAMA_PROVIDER;
+  const like = target.provider === "particle" ? { ...settings, ...LEVELS_BY_NAME, translatedChatCompletions: true } : local ? { ...settings, ...(target.reasoning ? LEVELS_BY_NAME : {}) } : target.reasoning ? { ...sees, ...LEVELS_BY_NAME } : undefined;
+  return { ...route, ...(like ? { like } : {}), ...(local ? { local: true } : {}), provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
 }
 
 /** Whether pi-ai sends `target`'s requests to OpenRouter (pi-ai's own test, utils/openrouter-cost.js isOpenRouterModel). */
