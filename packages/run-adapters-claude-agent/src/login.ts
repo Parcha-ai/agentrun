@@ -7,6 +7,7 @@
 // On a login the person's own CLI uses too, that check runs the CLI on a private copy of the account file
 // (`.claude.json`), which the CLI rewrites on start, so the person's own file is only ever opened to read. The copy
 // leaves out the fields that hold secrets (an API key, exported variables, MCP servers' tokens) and lasts the check.
+// The check runs in the person's own home, as does a run on macOS, where the CLI's tokens are in the login keychain.
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -43,7 +44,7 @@ export function loginEnv(login: ClaudeAgentLogin, platform: NodeJS.Platform = pr
 
 /** The variables of the CLI's own sign-in at `login`. The line a person runs (loginCommand) and the sign-in this host
  *  starts (startClaudeLogin) both take these, and so does the status check (claudeLoginStatus) on AgentRun's own login,
- *  so they cannot drift apart. Neither is a session, whose config dir stays its own (loginEnv). On a login the person's
+ *  both in the person's home (personHome), so they cannot drift apart. Neither is a session, whose config dir stays its own (loginEnv). On a login the person's
  *  own CLI uses too (`home`, `shared`) the status check runs on a copy of the account file instead.
  *  - On the CLI's default folder (`home`): the person's own CLI as it runs, with no config or credentials dir, in their
  *    home (`HOME`; a terminal of theirs has it already, so the shown line leaves it out, and clears the two folder
@@ -166,27 +167,33 @@ function accountCopy(from: string, to: string): string {
   return to;
 }
 
+/** The home of the person whose CLI keeps `login`: the login's own (`home`, the CLI's default folder), else `given`, else
+ *  the server's (`os.homedir()`). On macOS the CLI reads its tokens from the login keychain, which is under that home:
+ *  in any other home (an empty one, a session's) it finds no keychain and reads signed out, whatever the variables. */
+export const personHome = (login: ClaudeAgentLogin, given?: string): string => login.home ?? given ?? homedir();
+
 /** Ask the CLI at `cli` whether it is signed in at `login`: `auth status --json`, with only PATH and the login's
- *  variables beside it, in a folder of its own (`scratch`, one per check, removed after it answers or throws). The CLI
- *  rewrites its account file (`.claude.json`, in its config dir) whenever that file's migration number is not its own,
- *  and adds a settings file, a backup and a lock beside it the first time, so the check never runs it on a file the
- *  person's own CLI keeps:
+ *  variables beside it, in the person's home (personHome; `home` given, else the server's) on every place and platform.
+ *  The CLI rewrites its account file (`.claude.json`, in its config dir) whenever that file's migration number is not its
+ *  own, and adds a settings file, a backup and a lock beside it the first time, all in its config dir, so the check never
+ *  runs it on a file the person's own CLI keeps:
  *  - AgentRun's own login: the sign-in's variables (signInEnv), so it reads the account `auth login` left in the login's
- *    folder, in an empty home inside `scratch`.
+ *    folder, which is AgentRun's alone.
  *  - A login the person's own CLI uses too (the default folder, `home`; their `CLAUDE_CONFIG_DIR`, `shared`): the config
- *    dir is a copy of their account file inside `scratch`, less its secrets (accountCopy), and the credentials dir is
- *    a run's (loginEnv), which reaches the tokens they keep without the folder as config dir. On the default folder it runs in their home, elsewhere in an
- *    empty one inside `scratch`.
+ *    dir is a copy of their account file in a folder of its own (`scratch`, one per check, removed after it answers or
+ *    throws), less its secrets (accountCopy), and the credentials dir is a run's (loginEnv): on macOS it names the
+ *    Keychain item ahead of the config dir (empty: the item with no suffix, the default folder's; else hashed from the
+ *    folder), so the copy never renames it.
  *  A status check is no session: nothing resumes in its config dir. `platform`: the one the CLI runs on, this host's.
  *  Throws when the CLI gives no answer that reads as one. */
-export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<ClaudeLoginStatus> {
+export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform; home?: string } = {}): Promise<ClaudeLoginStatus> {
   const scratch = mkdtempSync(join(tmpdir(), "agentrun-claude-status-"));
   try {
     const account = sharedAccount(login);
-    const ownHome = { HOME: scratch, XDG_CONFIG_HOME: join(scratch, ".config") };
+    const HOME = personHome(login, options.home);
     const where = account === undefined
-      ? { ...ownHome, ...signInEnv(login) }
-      : { ...(login.home === undefined ? ownHome : { HOME: login.home }), ...loginEnv(login, options.platform), CLAUDE_CONFIG_DIR: accountCopy(account, join(scratch, "config")) };
+      ? { ...signInEnv(login), HOME }
+      : { HOME, ...loginEnv(login, options.platform), CLAUDE_CONFIG_DIR: accountCopy(account, join(scratch, "config")) };
     const stdout = await new Promise<string>((resolve, reject) => {
       const child = spawn(cli, ["auth", "status", "--json"], {
         env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", ...where, DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
@@ -242,7 +249,7 @@ export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: 
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(cli, ["auth", "login", "--claudeai"], {
-      env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: options.home ?? homedir(), ...display, ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
+      env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: personHome(login, options.home), ...display, ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
       stdio: "ignore",
     });
   } catch (error) {

@@ -1573,7 +1573,9 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   dir and the tokens as a run reads them, and removes the folder however the check ends. The copy (0600, in a 0700
   folder) leaves out the fields that hold secrets: `primaryApiKey` (the API key an older Claude Code signed in with),
   `env` and every `mcpServers`, whose env and headers hold tokens; a file that doesn't parse as a JSON object is not
-  copied at all. A run's config dir has none of them either, so the status says what a run gets. `sign_in`
+  copied at all. A run's config dir has none of them either, so the status says what a run gets. The status check
+  runs in the person's home (the server's `HOME`) on every place, as the sign-in does, and so does a run on the login
+  on macOS: the CLI reads its tokens there from the login keychain, which is under that home. `sign_in`
   says what became of that sign-in while the server runs: `waiting` for the browser since `started_at`, `signed_in`,
   `timed_out` (no answer from the browser within 10 minutes, so it was ended and a sign-in page still open can't
   finish), `failed` (the CLI ended without signing in, with its `exit_code`), or `not_started`. A second start ends a
