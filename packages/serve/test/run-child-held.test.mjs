@@ -267,6 +267,52 @@ test("where runs have users of their own, a claude-agent run on the login is ref
   assert.equal(await host.staysInRunner(staysDeps(data, "agentic", true, fresh), "claude-agent", launch, "run-own", PER_RUN_USERS), false, "runner-beside started again with users of its own: claimed");
 });
 
+test("every token of the login the runner hands a run's process (held claudeLogin), a renewed one included, is carried into the runner's own redactor for that run before it is handed: model text that repeats it is cut from the run's journal as the runner writes it, from what it stages and from its rows", async (t) => {
+  const { cutDeep, heldRedactor, keepText } = await import("../dist/runner/redact.js");
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-cut-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  // AgentRun's own login folder, turned on for this machine, signed in: the pinned CLI's file shape, every value fake.
+  await store.settings.put("claude_login", { v: 1, place: "agentrun", host: hostname(), only_me: true });
+  const dir = join(data, "claude-login");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const write = (accessToken, expiresAt, refreshToken) => writeFileSync(join(dir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken, refreshToken, expiresAt, scopes: ["user:inference"], subscriptionType: null, rateLimitTier: null } }), { mode: 0o600 });
+  const first = `not-a-secret-login-access-${randomBytes(6).toString("hex")}`;
+  const refresh = `not-a-secret-login-refresh-${randomBytes(6).toString("hex")}`;
+  write(first, Date.now() + 3_600_000, refresh);
+  // The runner's one redactor, as runner.ts makes it (heldRedactor): it knows none of the login's values yet.
+  const cut = heldRedactor(keepText);
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." }, harness: "claude-agent", place: { mode: "runner" } }, revision: { kind: "agentic", body: { harness: "claude-agent" } }, claimed: {} };
+  const held = host.heldFor({ store, sealKey: KEY, env: {}, data }, reads, cut, () => {}).held;
+  const login = await held.claudeLogin();
+  assert.ok(login, "a run on AgentRun's own login folder is handed its reader");
+  // What the runner writes for the run, each with model text that repeats `token`: a journal batch as the run's process
+  // commits it (the runner's journal cuts it by what the run carries: runner.ts fenced), a staged entry (journalTarget's
+  // stage), and its row's summary.
+  const written = (token) => {
+    const said = `The CLI printed ${token}; again: ${token}`;
+    const batch = [[{ table: "entries", value: { kind: "message", data: { role: "assistant", content: [{ type: "text", text: said }] } } }]];
+    const carried = cut.carried("run-own");
+    return [
+      ["journal", JSON.stringify(carried ? cutDeep(batch, carried, true) : batch)],
+      ["staged", JSON.stringify(cutDeep({ run: { state: "failed", summary: said } }, cut))],
+      ["row", cut(said)],
+    ];
+  };
+  assert.equal(await login.token(), first);
+  for (const [where, text] of written(first)) assert.ok(!text.includes(first), `the handed token is cut from the run's ${where}: ${text}`);
+  // Near its end: the runner renews it (the pinned CLI's request, on the global fetch, faked) and hands the new one.
+  const renewed = `not-a-secret-login-renewed-${randomBytes(6).toString("hex")}`;
+  const real = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ access_token: renewed, refresh_token: `not-a-secret-login-refresh-${randomBytes(6).toString("hex")}`, expires_in: 3600 }), { status: 200, headers: { "content-type": "application/json" } });
+  t.after(() => (globalThis.fetch = real));
+  write(first, Date.now() + 60_000, refresh);
+  assert.equal(await login.token(), renewed, "renewed, and handed");
+  for (const token of [first, renewed]) {
+    for (const [where, text] of written(token)) assert.ok(!text.includes(token), `${token === first ? "the first" : "the renewed"} token is cut from the run's ${where}: ${text}`);
+  }
+});
+
 test("the install a run's process asks for is readable by every user and writable by none, an install from before installs were shared too", { skip: process.getuid?.() === 0 && "root reads every folder" }, async (t) => {
   const { store } = await storeOn(t);
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-install-"));
