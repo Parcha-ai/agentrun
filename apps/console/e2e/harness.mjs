@@ -173,9 +173,10 @@ export async function launchBrowser() {
   return chromium.launch({ executablePath, headless: true });
 }
 
-/** The one address the console asks outside its origin: a provider's icon on Settings → Keys, from Google's favicon
- *  service (ProviderIcon.tsx). Answered here with a 1 by 1 PNG, so no flow reaches the network and the page shows an
- *  icon; recorded in `icons` so a flow can say what was asked. Any other path on that host is blocked like the rest. */
+/** The one address the console asks outside its origin: a provider's icon, on every view that names a provider, from
+ *  Google's favicon service (ProviderIcon.tsx). Answered here with a 1 by 1 PNG, so no flow reaches the network and
+ *  the page shows an icon; recorded in `icons` so a flow can say what was asked. Any other path on that host is
+ *  blocked like the rest. */
 const ICON = { origin: "https://www.google.com", path: "/s2/favicons" };
 const PIXEL = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==", "base64");
 

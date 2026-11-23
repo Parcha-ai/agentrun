@@ -5017,12 +5017,14 @@ carries no cost at all, as from a provider that does not price the model. The te
   It sends no CORS headers, so a page on another origin cannot read an answer.
 - Every route but `GET /capabilities` needs `Authorization: Bearer <the token>`, compared in constant time, or the
   browser's cookie under the rules of [the console](#the-console). The console's own files (its HTML, scripts, styles
-  and fonts) hold no data; everything it shows comes through those routes. It loads one thing from the network: on
-  Settings → Keys, each provider's icon, from Google's favicon service (`www.google.com/s2/favicons`, which redirects
-  to `t0`-`t3.gstatic.com`). The request names the provider's public site (`chatgpt.com`) and carries no referrer,
-  no cookie of this server's and nothing of yours; Google sees the browser's address and which providers the page
-  lists. Offline, or with those hosts blocked, the page shows a key icon instead. The CSP's `img-src` allows those
-  five hosts; everything else is this origin only.
+  and fonts) hold no data; everything it shows comes through those routes. It loads one thing from the network: a
+  provider's icon, from Google's favicon service (`www.google.com/s2/favicons`, which redirects to
+  `t0`-`t3.gstatic.com`), on every view that names a provider it knows: Settings, the agent pages and editor, a
+  run's header, timeline and graph, and the lists of models, tools and computers. The request names the provider's
+  public site (`chatgpt.com`) and carries no referrer, no cookie of this server's and nothing of yours; Google sees
+  the browser's address and which providers the page lists, so on a run's page that is the providers that run used.
+  Offline, or with those hosts blocked, the page shows a mark bundled with the console or a plain icon instead. The
+  CSP's `img-src` allows those five hosts; everything else is this origin only.
 - A run has no door of its own. The server and a run's runner meet in the store: a message, stop or approval is a
   command row the runner reads, so no port a run listens on takes a token.
 - A run's tools run under the runner's environment (the `AGENT_MODEL` variables among it) without the server's token or
