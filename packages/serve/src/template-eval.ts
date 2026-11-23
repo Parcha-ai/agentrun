@@ -23,7 +23,6 @@ import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
 import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf, parseToolName } from "./tool-names.js";
 import type { EvalFakes } from "./runner/adapter-run-spec.js";
-import { processSecretRedactor } from "./runner/redact.js";
 import { type EvalClock, evalClock, type Layout, LAYOUTS, type MailboxAfter, type MailboxFixture, mailboxAfter, mailboxFixtureOf, type MailboxRecord, mailboxText, mailboxVerdict, seed, seededFaux, type Snapshot, snapshot } from "./eval-mailbox.js";
 import type { EmailFaux } from "./email/email-faux.js";
 import { type CaseFeeds, caseFeeds, type FeedFixture, feedFixtureOf } from "./eval-feed.js";
@@ -913,14 +912,14 @@ async function bytesOf(req: IncomingMessage): Promise<Buffer> {
 
 // ---- the API ---------------------------------------------------------------------------------------------------------
 
-type Answered = { status: number; body: unknown };
+type Answered = { status: number; body: unknown; headers?: Headers };
 /** `statusOnly`: the answer's status alone, its body cancelled unread (a file's existence, never its bytes). `text`: its
- *  body as the text it is, never parsed (a file's bytes: a JSON file's text, as it was written). `signal`: the request
- *  and the read of its body stop when it aborts, and the call rejects. */
+ *  body as the text it is, never parsed (a file's bytes: a JSON file's text, as it was written), with the answer's headers.
+ *  `signal`: the request and the read of its body stop when it aborts, and the call rejects. */
 export type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>, options?: { statusOnly?: true; text?: true; signal?: AbortSignal }) => Promise<Answered>;
 
 /** A client of the v2 API at `baseUrl` (ending in /v2) with `token`. */
-function apiOf(baseUrl: string, token: string): Api {
+export function apiOf(baseUrl: string, token: string): Api {
   return async (method, path, body, headers = {}, options = {}) => {
     const raw = typeof body === "string";
     // The console's page takes a write from its session only with a JSON body type, a body or not (page.ts answerPage):
@@ -941,7 +940,7 @@ function apiOf(baseUrl: string, token: string): Api {
       return { status: res.status, body: null };
     }
     const text = await res.text();
-    if (options.text) return { status: res.status, body: text };
+    if (options.text) return { status: res.status, body: text, headers: res.headers };
     let json: unknown = text;
     try {
       json = JSON.parse(text);
@@ -1040,7 +1039,7 @@ export function callsOf(rows: readonly Json[], harness: string, toolkits: Readon
 
 /** A file of a run's work folder as its listing names it: its size, its type (null for an extension the server does not
  *  type) and whether the server could read it. */
-type Listed = { path: string; bytes: number; type: string | null; unreadable: boolean };
+export type Listed = { path: string; bytes: number; type: string | null; unreadable: boolean };
 /** Every file of a run's work folder (the files route, page by page). */
 async function filesOf(api: Api, runId: string): Promise<Listed[]> {
   const files: Listed[] = [];
@@ -1057,29 +1056,41 @@ async function filesOf(api: Api, runId: string): Promise<Listed[]> {
 
 const filePath = (runId: string, path: string) => `/runs/${runId}/files/${path.split("/").map(encodeURIComponent).join("/")}`;
 /** A type a file's bytes are text in: text/*, JSON and NDJSON. A file the server gives no type (an extension it does not
- *  know: .srt, .vtt, .yaml) is read too, and kept as text when its bytes decode as UTF-8 with no NUL. */
+ *  know: .srt, .vtt, .yaml) is read too: the server answers its text when its bytes are UTF-8 with no NUL, else 415. */
 const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson)\b)/;
+/** How long one read of a run's final file may take, its body included: a server that stalls mid-file leaves that file's
+ *  text out, and the eval goes on. */
+export const FILE_READ_TIMEOUT_MS = 10_000;
+/** How long all of a run's final file reads may take together: past it, the files not yet read are listed by size alone. */
+export const FILE_READS_TIMEOUT_MS = 30_000;
+
 /** A run's final files for its llm graders: each text file's whole text, read smallest first while the texts read stay
- *  within GRADER_PROMPT_MAX characters in all (what one grader input can hold), every other file by its size alone. A
- *  read that fails leaves that file's text out, never the grade. In the listing's order. The files route serves a file's
- *  bytes as they are, where a call's reach a grader through the run's redaction: each text is cut of every secret value
- *  this process's environment holds (the runner's own redactor, processSecretRedactor), the server's when the eval runs
- *  its own, before it can reach a grader's model or its words. */
-async function finalFilesOf(api: Api, runId: string, listed: readonly Listed[], signal?: AbortSignal): Promise<FinalFile[]> {
-  const redact = processSecretRedactor();
+ *  within GRADER_PROMPT_MAX UTF-8 bytes in all (one grader input holds that many characters, and a character is at least
+ *  a byte), every other file by its size alone. Each is read under the run's own cut, on the server that holds its
+ *  secrets (`?cut=run`, run-reads-over-store.ts cutRunFile): every value its timeline's calls are cut of, and every secret
+ *  shape, is "[redacted]" in the text a grader sees. An answer without the cut's mark (`x-agentrun-cut: run`: a server
+ *  that doesn't know the cut and would serve the raw bytes) leaves the text out. A read that fails, is refused (403, 413,
+ *  415), takes longer than `readTimeoutMs`, or would pass the budget leaves that file's text out, never the grade, and
+ *  the files after it are still read; past FILE_READS_TIMEOUT_MS in all, the rest are left out. In the listing's order. */
+export async function finalFilesOf(api: Api, runId: string, listed: readonly Listed[], signal?: AbortSignal, readTimeoutMs = FILE_READ_TIMEOUT_MS): Promise<FinalFile[]> {
   const texts = new Map<string, string>();
   let left = GRADER_PROMPT_MAX;
+  const until = Date.now() + Math.max(FILE_READS_TIMEOUT_MS, readTimeoutMs);
   for (const file of [...listed].filter((one) => !one.unreadable && (one.type === null || TEXT_TYPE.test(one.type))).sort((a, b) => a.bytes - b.bytes)) {
-    if (file.bytes > left) break;
+    if (file.bytes > left) continue;
     signal?.throwIfAborted();
-    const read = await api("GET", filePath(runId, file.path), undefined, {}, { text: true, ...(signal ? { signal } : {}) }).catch((error: unknown) => {
+    const remaining = until - Date.now();
+    if (remaining <= 0) break;
+    const bound = AbortSignal.timeout(Math.min(readTimeoutMs, remaining));
+    const read = await api("GET", `${filePath(runId, file.path)}?cut=run`, undefined, {}, { text: true, signal: signal ? AbortSignal.any([signal, bound]) : bound }).catch((error: unknown) => {
       if (signal?.aborted) throw error;
       return undefined;
     });
-    if (read?.status !== 200 || typeof read.body !== "string" || read.body.includes("\uFFFD") || read.body.includes("\u0000") || read.body.length > left) continue;
-    const text = redact(read.body);
-    texts.set(file.path, text);
-    left -= text.length;
+    if (read?.status !== 200 || read.headers?.get("x-agentrun-cut") !== "run" || typeof read.body !== "string") continue;
+    const bytes = Buffer.byteLength(read.body);
+    if (bytes > left) continue;
+    texts.set(file.path, read.body);
+    left -= bytes;
   }
   return listed.map((file) => ({ path: file.path, bytes: file.bytes, ...(texts.has(file.path) ? { text: texts.get(file.path)! } : {}) }));
 }
@@ -1143,6 +1154,8 @@ export type EvalOptions = {
   runTimeoutMs?: number;
   /** How long one run may stay queued with no runner taking it (default QUEUE_TIMEOUT_MS). */
   queueTimeoutMs?: number;
+  /** How long one read of a run's final file may take, its body included (default FILE_READ_TIMEOUT_MS). */
+  fileReadTimeoutMs?: number;
   /** Told each step as one line (the CLI's stderr). */
   log?: (line: string) => void;
   /** Stops the eval: the run in progress is cancelled, what the eval made is cleaned up as at its end, and the eval
@@ -1685,7 +1698,7 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     : undefined;
   const output = ended.status === "completed" ? outputVerdict(ctx.pkg, view.result) : undefined;
   // The files it left, read whole for its llm graders: only a run they grade, so a case of other graders reads none.
-  if (graded && one.graders.some((grader) => grader.type === "llm")) record.finalFiles = await finalFilesOf(api, runId, listed, options.signal);
+  if (graded && one.graders.some((grader) => grader.type === "llm")) record.finalFiles = await finalFilesOf(api, runId, listed, options.signal, options.fileReadTimeoutMs);
   const graders: GraderResult[] = output ? [output] : [];
   for (const grader of one.graders) {
     stopped();

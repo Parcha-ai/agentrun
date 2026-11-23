@@ -1119,6 +1119,7 @@ One file's raw bytes.
 Route: `GET /runs/{run_id}/files/{path}`. It prints the answer's bytes as they are. PATH keeps its slashes.
 
 - `--download INTEGER` (integer): `1` forces a download.
+- `--cut run` (string, one of these): `run`: the file's text cut of every value the run's own cut holds (the server's keys, the keys a person saved, its secret stores' values, the sign-in refs the run was handed), each one and each secret shape replaced by `[redacted]` in place, as the run's timeline cuts its calls; the text is `[redacted]` whole when a value still shows in a form not cut in place. Answered `text/plain; charset=utf-8` with `x-agentrun-cut: run` (a server that doesn't know `cut` answers the raw bytes, without it), the whole file (`Range` is not read). A file whose type is not text (text/*, JSON, NDJSON, or an extension the server doesn't type), or whose bytes are not UTF-8 or hold a NUL, is `415 unsupported_media_type`; one over 262144 bytes is `413 payload_too_large`; a run whose cut can't be read (the sign-in it was handed doesn't open) is `403 forbidden`. Without `cut`, the file's bytes as written.
 - `--range STRING` (string): One byte range, `bytes=<start>-<end>`.
 
 ### `agentrun runs resume RUN_ID`

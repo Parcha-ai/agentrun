@@ -2,12 +2,15 @@
 // shows a file only in its arguments or its output, each cut where the timeline cuts it: a write's content at 2,000
 // characters, ending "...". Graded on its calls alone, a run whose 2,888-byte timestamps file was whole read to its
 // grader as a run that wrote less, and failed (a release-film eval). The package's agent and its grader are played by
-// fixtures/faux-template-eval.mjs, whose grader reads a file's text from its <file> block alone.
+// fixtures/faux-template-eval.mjs, whose grader reads a file's text from its <file> block alone. The eval reads each file
+// under the run's own cut, on the server (GET /runs/{id}/files/{path}?cut=run), each read bounded, within a budget in
+// UTF-8 bytes.
 import assert from "node:assert/strict";
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { evalTemplate, fitFiles, GRADER_PROMPT_MAX, graderInput } from "../dist/template-eval.js";
+import { apiOf, evalTemplate, finalFilesOf, fitFiles, GRADER_PROMPT_MAX, graderInput } from "../dist/template-eval.js";
 import { scratch } from "./support.mjs";
 
 const PKG = new URL("./fixtures/templates-eval/evalpkg", import.meta.url).pathname;
@@ -22,7 +25,8 @@ const WORDS = Array.from({ length: 60 }, (_, i) => ({ word: `w${i}`, start: i * 
 WORDS.push({ word: "END-OF-VOICEOVER", start: 24, end: 24.6 });
 const TIMESTAMPS = JSON.stringify({ voice: "narrator", words: WORDS, padding: "x".repeat(400) });
 // A held value, made at runtime (no credential-shaped literal for the source export), in this process's environment
-// under a key's name: the eval's own server holds it, so its runner cuts it from the calls, and a file holding it is cut too.
+// under a key's name: the eval's own server holds it (hostSecrets), so it is in the run's cut, which cuts it from the
+// calls and from a file read under the cut.
 const HELD = ["not", "a", "real", "key", "0123456789abcdef"].join("-");
 process.env.AGENTRUN_TEST_FINAL_FILES_API_KEY = HELD;
 
@@ -92,4 +96,51 @@ test("a run with no files read gets the grader input it got before", () => {
   const before = graderInput(GRADER, "Write it.", { answer: "done", calls, mcpCalls: [], files: [] });
   assert.doesNotMatch(before, /<files/);
   assert.match(before, /<answer untrusted>\ndone\n<\/answer>\n\n<tool-calls untrusted>\n1\. read/);
+});
+
+/** A server for finalFilesOf's reads, answering each `?cut=run` path as `answers` says: `stall` sends its head and a
+ *  first part, then nothing; `old` the text with no cut mark (a server that doesn't know the cut); a number that status;
+ *  any other string the text, marked as the cut. Each request's path is kept in `asked`, and `closed` counts the
+ *  requests whose connection the client closed. */
+async function filesServer(t, answers) {
+  const asked = [];
+  let closed = 0;
+  const server = createServer((req, res) => {
+    asked.push(req.url);
+    req.socket.on("close", () => { closed++; });
+    const name = decodeURIComponent(req.url.replace(/^\/v2\/runs\/r1\/files\//, "").replace(/\?cut=run$/, ""));
+    const answer = req.url.endsWith("?cut=run") ? answers[name] : 404;
+    if (answer === "stall") {
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "x-agentrun-cut": "run" });
+      return void res.write("the first part ");
+    }
+    if (typeof answer === "number") return void res.writeHead(answer, { "content-type": "application/json" }).end("{}");
+    res.writeHead(200, { "content-type": "text/plain; charset=utf-8", ...(answer.startsWith("old:") ? {} : { "x-agentrun-cut": "run" }) });
+    res.end(answer.replace(/^old:/, ""));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  return { api: apiOf(`http://127.0.0.1:${server.address().port}/v2`, "t"), asked, closed: () => closed };
+}
+const listedOf = (files) => files.map(([path, bytes]) => ({ path, bytes, type: null, unreadable: false }));
+
+test("a final file whose server stalls mid-body is cut at the read's bound, and the files after it are still read", { timeout: 30_000 }, async (t) => {
+  const { api, asked, closed } = await filesServer(t, { "a-stalls.txt": "stall", "b.txt": "the next file", "c.txt": "old:raw bytes", "d.json": 415 });
+  const began = Date.now();
+  const files = await finalFilesOf(api, "r1", listedOf([["a-stalls.txt", 5], ["b.txt", 13], ["c.txt", 14], ["d.json", 15]]), undefined, 500);
+  const took = Date.now() - began;
+  assert.ok(took >= 450 && took < 5_000, `cut at the bound: ${took} ms`);
+  assert.deepEqual(files, [{ path: "a-stalls.txt", bytes: 5 }, { path: "b.txt", bytes: 13, text: "the next file" }, { path: "c.txt", bytes: 14 }, { path: "d.json", bytes: 15 }]);
+  assert.deepEqual(asked, ["a-stalls.txt", "b.txt", "c.txt", "d.json"].map((name) => `/v2/runs/r1/files/${name}?cut=run`), "every read through the run's cut");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.ok(closed() >= 1, "the stalled read's connection is closed");
+});
+
+test("the files' budget is in UTF-8 bytes: a text past it in bytes is left out, under it in characters or not, and the next file is read", { timeout: 30_000 }, async (t) => {
+  // Listed small, then grown: 70,000 two-byte characters, 140,000 bytes, past GRADER_PROMPT_MAX in bytes alone.
+  const grown = "é".repeat(70_000);
+  assert.ok(grown.length < GRADER_PROMPT_MAX && Buffer.byteLength(grown) > GRADER_PROMPT_MAX);
+  const { api } = await filesServer(t, { "grown.txt": grown, "after.txt": "after" });
+  const files = await finalFilesOf(api, "r1", listedOf([["grown.txt", 10], ["after.txt", 11]]));
+  assert.deepEqual(files, [{ path: "grown.txt", bytes: 10 }, { path: "after.txt", bytes: 11, text: "after" }]);
 });
