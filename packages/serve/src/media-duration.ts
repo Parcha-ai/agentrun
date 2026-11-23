@@ -154,26 +154,28 @@ function playedMp3Seconds(b: Uint8Array): number | undefined {
   return length(seconds);
 }
 
-/** The WAV formats whose bytes play at the sample rate: integer PCM, IEEE float, and the extensible header. */
-const PCM_FORMATS = new Set([1, 3, 0xfffe]);
+/** The WAV formats whose bytes play at the sample rate, by format tag, and the bits a sample each takes: integer PCM and
+ *  IEEE float. Not the extensible header (0xFFFE): its GUID names the codec, which may be a compressed one. */
+const PCM_BITS: ReadonlyMap<number, readonly number[]> = new Map([[1, [8, 16, 24, 32]], [3, [32, 64]]]);
 
 /** A WAV voice: every byte after its data chunk's header, to the end of the file (a decoder may play past a data size
- *  stated short), over its sample rate times its block align, a last frame cut short counted whole. Its fmt chunk must
- *  come first, name a PCM format of whole bytes a sample at 1 to 384 kHz, and agree with itself: block align is the
- *  channels times the bytes a sample, byte rate the sample rate times the block align. Anything else gives no length. */
+ *  stated short), over its sample rate times its block align, a last frame cut short counted whole. Its one fmt chunk
+ *  (a decoder plays by the first; a second is refused) must come before the data, name integer PCM or IEEE float
+ *  (PCM_BITS) at 1 to 384 kHz, and agree with itself: block align is the channels times the bytes a sample, byte rate
+ *  the sample rate times the block align. Anything else gives no length. */
 function playedWavSeconds(b: Uint8Array): number | undefined {
   let frame: { rate: number; align: number } | undefined;
   for (let at = 12; at + 8 <= b.length; ) {
     const size = u32le(b, at + 4);
     if (tag(b, at, "fmt ")) {
-      if (size < 16 || at + 24 > b.length) return undefined;
+      if (frame || size < 16 || at + 24 > b.length) return undefined;
       const format = u16le(b, at + 8);
       const channels = u16le(b, at + 10);
       const rate = u32le(b, at + 12);
       const byteRate = u32le(b, at + 16);
       const align = u16le(b, at + 20);
       const bits = u16le(b, at + 22);
-      if (!PCM_FORMATS.has(format) || channels < 1 || bits < 8 || bits % 8 !== 0 || align !== channels * (bits / 8) || byteRate !== rate * align || rate < 1000 || rate > 384_000) return undefined;
+      if (!PCM_BITS.get(format)?.includes(bits) || channels < 1 || align !== channels * (bits / 8) || byteRate !== rate * align || rate < 1000 || rate > 384_000) return undefined;
       frame = { rate, align };
     } else if (tag(b, at, "data")) return frame ? length(Math.ceil((b.length - at - 8) / frame.align) / frame.rate) : undefined;
     at += 8 + size + (size % 2);
