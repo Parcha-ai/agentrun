@@ -5,7 +5,7 @@ import { App } from "./App";
 import { LOGIN_ROW } from "@/lib/claudeLogin";
 import { servedKey } from "@/test/keys";
 
-// Settings → Keys asks for Claude Code's login only where capabilities say its routes answer (features.claude_login), so
+// Settings → API Keys asks for Claude Code's login only where capabilities say its routes answer (features.claude_login), so
 // a Docker server, where they are 404, gets no request the browser would log. Capabilities that can't be read hide
 // nothing: the row asks as it did before the field, and a 404 there still shows no row.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -39,7 +39,7 @@ async function open(capabilities: () => Response) {
   return { host, logins: () => asked.filter((path) => path === "/v2/settings/claude-login").length, row: () => host.querySelector(`[aria-label="${LOGIN_ROW}"]`) };
 }
 
-describe("Settings → Keys asks capabilities before Claude Code's login", () => {
+describe("Settings → API Keys asks capabilities before Claude Code's login", () => {
   it("claude_login false: no request and no row", async () => {
     const page = await open(() => json(200, { ...CAPS, features: { ...CAPS.features, claude_login: false } }));
     expect(page.logins()).toBe(0);
