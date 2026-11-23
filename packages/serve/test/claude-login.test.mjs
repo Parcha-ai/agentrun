@@ -393,6 +393,24 @@ test("a sign-in that waits for the browser ends with the server's stop, which wa
   assert.equal(alive(pid), false, "the server's stop ended the sign-in that waited");
 });
 
+test("a turn-on that moves the login to another place ends a sign-in that waits, which signed in at the old place; one that keeps the place leaves it waiting", { timeout: 120_000 }, async (t) => {
+  const { api, fake } = await signInServer(t, "wait");
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true, place: "agentrun" })).status, 200);
+  assert.equal((await api("POST", "/settings/claude-login/login")).body.sign_in?.state, "waiting");
+  await until(() => fake.pids().length === 1, "the sign-in waits");
+  const [pid] = fake.pids();
+  // The same place again: the sign-in still signs in where the login is.
+  const same = (await api("PUT", "/settings/claude-login", { only_me: true, place: "agentrun" })).body;
+  assert.equal(same.sign_in?.state, "waiting", JSON.stringify(same.sign_in));
+  assert.equal(alive(pid), true, "a turn-on at the same place left the sign-in waiting");
+  // Another place: the waiting CLI would sign in at the old one, so the PUT ends it and answers once it is gone.
+  const moved = (await api("PUT", "/settings/claude-login", { only_me: true, place: "machine" })).body;
+  assert.equal(moved.place, "machine");
+  assert.equal(alive(pid), false, "the turn-on that moved the login ended the sign-in that waited at the old place");
+  assert.equal(moved.sign_in, undefined, JSON.stringify(moved.sign_in));
+  assert.notEqual((await api("GET", "/settings/claude-login")).body.sign_in?.state, "waiting");
+});
+
 test("this machine's login is the folder the CLI uses: CLAUDE_CONFIG_DIR when the server has it as an absolute path, else ~/.claude; the view names it", { timeout: 120_000 }, async (t) => {
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p" }).dir, "/u/p/.claude");
   assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }), { dir: "/u/p/elsewhere", profiles: "/u/p/.config/anthropic" });
