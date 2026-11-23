@@ -2,9 +2,11 @@
 // read and a `tools` line on /usage, inside the run's `usd`. The real server and runner, a faux model at a fixed price a
 // request, and a fake MCP server saved with the toolkit `fal` that answers fal's get_pricing and run_model.
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { test } from "node:test";
 import { REQUEST_USD } from "./fixtures/faux-tools-cost.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { SAMPLES } from "./fixtures/media-samples.mjs";
 import { agent, follow, serve } from "./support.mjs";
 
 const FAUX = new URL("./fixtures/faux-tools-cost.mjs", import.meta.url).pathname;
@@ -264,3 +266,53 @@ test("a stop for good stays: a paid call admitted after it and refused for room 
   assert.deepEqual([view.status, view.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(view.error));
   assert.match(view.error?.message ?? "", /over its cap of \$1\.$/, "ended in the stop's words");
 });
+
+/** A run's speech-to-text job (fal bills it per minute of its input audio, read before the job is sent) whose audio_url
+ *  is on this machine's loopback, where a real MP3 answers. The runner reads that length only through the public-host
+ *  guard web_fetch and web_save download through, so the read is refused before it connects: the MP3's server is never
+ *  asked. Under a cap the job is refused unsent, naming the URL; with no cap it is sent and booked as an unknown charge.
+ *  `childRuns`: the run in a process of its own, its MCP the runner's (run-child-host.ts). */
+async function mediaOnLoopback(t, { cap, childRuns } = {}) {
+  const { api } = await serve(t, { faux: FAUX, ...(childRuns ? { childRuns } : {}) });
+  const asked = [];
+  const media = createServer((request, response) => {
+    asked.push(request.url);
+    response.writeHead(200, { "content-type": "audio/mpeg" }).end(Buffer.from(SAMPLES.mp3Info.bytes));
+  });
+  await new Promise((done) => media.listen(0, "127.0.0.1", done));
+  t.after(() => new Promise((done) => media.close(done)));
+  const audioUrl = `http://127.0.0.1:${media.address().port}/voice.mp3`;
+  const fake = await startFakeMcp({});
+  t.after(() => fake.close());
+  fake.tools.get_pricing = { description: "fal's price for an endpoint.", input: { type: "object", properties: { endpoint_id: { type: "string" } }, required: ["endpoint_id"], additionalProperties: false }, run: ({ endpoint_id }) => ({ content: [{ type: "text", text: JSON.stringify({ prices: [{ endpoint_id, unit_price: 0.4, unit: "minutes", currency: "USD" }], next_cursor: null, has_more: false }) }] }) };
+  fake.tools.run_model = { description: "Run a fal model.", input: { type: "object", properties: {} }, run: (args) => ({ content: [{ type: "text", text: JSON.stringify({ status: "completed", submission_replayed: false, endpoint_id: args.endpoint_id, request_id: "r-stt", result: { text: "hello" }, has_result: true }) }] }) };
+  assert.equal((await api("PUT", "/settings/mcp-servers/fal", { url: fake.url, auth: { type: "none" }, toolkit: "fal" })).status, 200);
+  const made = await api("POST", "/agents", agent("listen", { tools: [RUN_MODEL], tool_settings: { [RUN_MODEL]: { permission: "allow" } } }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const job = { endpoint_id: "fal-ai/elevenlabs/speech-to-text", input: { audio_url: audioUrl } };
+  const run = await api("POST", "/agents/listen/runs", { input: { content: `Call mcp__fal__run_model with ${JSON.stringify(job)}` }, ...(cap === undefined ? {} : { max_cost_usd: cap }) });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  const sent = fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === "run_model").length;
+  return { rows, view, sent, asked, audioUrl };
+}
+
+for (const childRuns of [undefined, {}]) {
+  const where = childRuns ? " (in a run's own process)" : "";
+  test(`a fal job priced by its input media's length reads it only through the public-host guard: on loopback, under a cap, it is refused unsent, by its URL${where}`, { timeout: 120_000 }, async (t) => {
+    const { rows, sent, asked, audioUrl } = await mediaOnLoopback(t, { cap: 1, childRuns });
+    assert.deepEqual(asked, [], "the guard refused the read before it connected");
+    assert.equal(sent, 0, "the job was never sent");
+    const words = `mcp:fal/run_model was not sent: fal bills fal-ai/elevenlabs/speech-to-text per minute of its input media, and the length of ${audioUrl} could not be read, so a run with a spend cap can't send it. Nothing was sent.`;
+    assert.ok(rows.some((row) => JSON.stringify(row).includes(JSON.stringify(words).slice(1, -1))), "the run's timeline gives the refusal in words, by the URL");
+  });
+
+  test(`a fal job priced by its input media's length whose media the guard refuses runs with no cap, booked as an unknown charge, never $0${where}`, { timeout: 120_000 }, async (t) => {
+    const { view, sent, asked } = await mediaOnLoopback(t, { childRuns });
+    assert.deepEqual(asked, [], "the guard refused the read before it connected");
+    assert.equal(sent, 1, "with no cap the job was sent");
+    assert.equal(view.status, "completed", JSON.stringify(view.error));
+    assert.equal(view.cost.tools_usd, null, "the run's tool cost reads unknown");
+  });
+}

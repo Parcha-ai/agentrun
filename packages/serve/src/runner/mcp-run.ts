@@ -90,6 +90,14 @@ export interface McpForClaimOptions {
   readonly hold?: (values: string[]) => void;
 }
 
+/** What a spec builder gives a claim's MCP for its metered jobs (`capped` and `media`), the same for every builder:
+ *  whether its launch has a cap, and where a job's input media are read from: the agent's eval web fake, else the
+ *  builder's `env`, in web_save's slots. */
+export function claimMetering(deps: { readonly env: NodeJS.ProcessEnv; readonly evalFakes?: (agentId: string) => { readonly web?: WebFake } | undefined; readonly saveSlots?: SaveSlots }, agentId: string, launch: { readonly maxCostUsd?: number | undefined }): Pick<McpForClaimOptions, "capped" | "media"> {
+  const web = deps.evalFakes?.(agentId)?.web;
+  return { capped: launch.maxCostUsd !== undefined, media: { env: deps.env, ...(web ? { web } : {}), ...(deps.saveSlots ? { slots: deps.saveSlots } : {}) } };
+}
+
 /** A claim's MCP (AdapterRunSpec.mcp): what the loop reaches the gateway by, and the claim step's own hooks. */
 export interface ClaimMcp {
   /** One host tool per pinned tool, under its wire name, on every harness. Each reaches the gateway only as the loop
