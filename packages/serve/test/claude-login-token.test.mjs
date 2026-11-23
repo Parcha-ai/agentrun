@@ -11,7 +11,8 @@
 // folders, and a fake token endpoint on loopback (the renewal's fetch is a seam; the request is sent there, never out).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import * as fsp from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -386,6 +387,97 @@ test("a held pair whose save keeps failing is handed until its own token nears i
     });
   }
   assert.equal(endpoint.posts.length, 1, "nothing posted after the one renewal: no loop, the spent refresh token never again");
+});
+
+/** `lock` taken over as another runner takes a stale one (proper-lockfile): removed, made again, its mtime the new
+ *  holder's own (`at`). */
+function takeOver(lock, at) {
+  rmSync(lock, { recursive: true, force: true });
+  mkdirSync(lock);
+  utimesSync(lock, at, at);
+}
+
+test("a holder whose locks are taken over while its post is out (paused past the 60 s stale time) neither touches nor removes the new holder's locks, and writes its answer back by the pinned CLI's own check, as the CLI does after a compromised lock", async (t) => {
+  assert.equal(typeof tokens.LoginTokens, "function", "the runner has a reader of the login's access token");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const locks = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
+  let answer;
+  const answered = new Promise((resolve) => (answer = resolve));
+  const endpoint = await tokenEndpoint(t, async () => {
+    await answered;
+    return { json: { access_token: next.access, refresh_token: next.refresh, expires_in: 3600 } };
+  });
+  const asked = new tokens.LoginTokens({ login, now: () => now, fetch: endpoint.fetch }).token();
+  asked.catch(() => undefined);
+  await until(() => endpoint.posts.length === 1, "the old holder's post");
+  assert.ok(locks.every((lock) => existsSync(lock)), "the old holder holds both locks while it posts");
+  // Another runner finds both stale (the old holder paused past 60 s) and takes them over. Its mtime is a whole second
+  // away from any the old holder set, so a filesystem that keeps seconds alone still tells them apart.
+  const taken = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2_000);
+  for (const lock of locks) takeOver(lock, taken);
+  answer();
+  assert.equal(await asked, next.access, "the answer is handed");
+  assert.equal(endpoint.posts.length, 1);
+  for (const [lock, where] of [[locks[0], "in the folder"], [locks[1], "beside it"]]) {
+    assert.ok(existsSync(lock), `the new holder's lock ${where} is not removed`);
+    assert.equal(statSync(lock).mtimeMs, taken.getTime(), `the new holder's lock ${where} is not touched`);
+  }
+  const saved = JSON.parse(readFileSync(join(login.dir, ".credentials.json"), "utf8")).claudeAiOauth;
+  assert.deepEqual([saved.accessToken, saved.refreshToken], [next.access, next.refresh], "written back without the lock, by the CLI's own check (the file still held the refresh token posted)");
+});
+
+test("a holder whose locks are taken over before its post (paused past the 60 s stale time) never posts, and neither touches nor removes the new holder's locks: its heartbeat finds the lock another's and stops, its release leaves both, and the ask waits for the new holder as for any other", async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  write(oauthOf(fake("access-old"), now + 60_000));
+  const [current, legacy] = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
+  const endpoint = await tokenEndpoint(t, () => ({ json: { access_token: fake("access-new"), expires_in: 3600 } }));
+  const taken = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2_000);
+  let takenOver = false;
+  let heartbeats = 0;
+  /** What the old holder did to a lock once it was another's: a touch or a removal. */
+  const after = [];
+  // The renewal's lock operations (its file ops seam), each the real one. The old holder pauses as it sets its mtime on
+  // the second lock, holding both: another runner takes both over then, and the pause lasts until the old holder's
+  // heartbeat has read its first lock again.
+  const lockFs = {
+    mkdir: (path) => fsp.mkdir(path),
+    stat: (path) => {
+      if (takenOver && path === current) heartbeats += 1;
+      return fsp.stat(path);
+    },
+    utimes: async (path, atime, mtime) => {
+      if (takenOver) {
+        after.push(["touch", path]);
+        return fsp.utimes(path, atime, mtime);
+      }
+      await fsp.utimes(path, atime, mtime);
+      if (path !== legacy) return;
+      takeOver(current, taken);
+      takeOver(legacy, taken);
+      takenOver = true;
+      await until(() => heartbeats >= 1, "the old holder's heartbeat after the takeover");
+    },
+    rm: (path, options) => {
+      if (takenOver) after.push(["remove", path]);
+      return fsp.rm(path, options);
+    },
+  };
+  const renew = tokens.renewLogin({ fetch: endpoint.fetch, now: () => now, lockFs, lockUpdateMs: 100, lockWaitMs: 600 });
+  const outcome = await new tokens.LoginTokens({ login, now: () => now, renew }).token().then((token) => ({ token }), (error) => ({ error }));
+  assert.equal(endpoint.posts.length, 0, "the old holder never posts once its locks are another's");
+  assert.equal(takenOver, true, "the old holder held both locks and was taken over");
+  assert.deepEqual(after, [], "the old holder neither touched nor removed a lock once it was another's");
+  for (const lock of [current, legacy]) {
+    assert.ok(existsSync(lock), "the new holder's lock is there");
+    assert.equal(statSync(lock).mtimeMs, taken.getTime(), "with its own mtime");
+  }
+  assert.equal(outcome.error?.message, tokens.LOGIN_RUNNING_OUT, "the new holder kept its locks past the wait and wrote nothing: the ask is refused in words, having posted nothing");
 });
 
 test("a renewal Anthropic refuses (400 invalid_grant) or that fails (a 5xx) refuses the ask in LOGIN_RUNNING_OUT's words, posts once for that ask and never again on its own as the clock goes on, and leaves the file byte for byte as it was; a refresh token refused as invalid_grant is never posted again", async (t) => {
