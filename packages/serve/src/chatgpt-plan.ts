@@ -466,16 +466,16 @@ export class ChatGPTPlan implements PlanReader {
    *  a time: a read while one is out waits for that one (the console polls, and each change relists and probes). */
   changeAgain(): Promise<void> {
     if (!this.#changeOwed) return Promise.resolve();
+    // Cleared in a reaction, never inside the try: a callback that throws at once would run a `finally` there before the
+    // assignment, and leave a settled promise in flight for good.
     return (this.#changing ??= (async () => {
       try {
         await this.#deps.changed?.();
         this.#changeOwed = false;
       } catch {
         // Owed still: the next read takes it again.
-      } finally {
-        this.#changing = undefined;
       }
-    })());
+    })().finally(() => (this.#changing = undefined)));
   }
 
   /** The plan's models from OpenAI's list (GET /v1/models with the token), those of the current families; the fallback

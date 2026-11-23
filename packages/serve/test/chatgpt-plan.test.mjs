@@ -940,6 +940,26 @@ test("reads at once take an owed change once: a second read waits for the change
   assert.equal(calls, 2, "taken: nothing owed");
 });
 
+test("a change callback that throws at once, not in a promise, is still taken again at the next read", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  let calls = 0;
+  const changed = () => {
+    calls += 1;
+    if (calls <= 2) throw Object.assign(new Error("relist failed"), { code: "SQLITE_BUSY" });
+  };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: () => {}, changed });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(authorize_url));
+  await plan.changeAgain();
+  assert.equal(calls, 2, "taken again, and failed again");
+  await plan.changeAgain();
+  assert.equal(calls, 3, "a failed retry leaves no change in flight behind it");
+  await plan.changeAgain();
+  assert.equal(calls, 3, "taken: nothing owed");
+});
+
 const TIMED_OUT = "The sign-in timed out before OpenAI sent the code back: start it again.";
 
 test("a sign-in whose code OpenAI answered never times out: saved, with the server's change still out at the 10 minutes, it reads signed in with no problem", { timeout: 30_000 }, async (t) => {
