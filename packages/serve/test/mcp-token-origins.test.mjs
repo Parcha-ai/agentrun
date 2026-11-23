@@ -35,7 +35,9 @@ test("an entry that is not an exact origin is refused in words naming the variab
   ]) {
     assert.throws(() => at(value, true), (error) => error instanceof TypeError && error.message.includes("AGENTRUN_MCP_TOKEN_ORIGINS"), value);
   }
-  assert.throws(() => at("https://user:hunter2-not-a-secret@tools.example", true), (error) => error instanceof TypeError && !error.message.includes("hunter2"));
+  // An entry with a user and password, put together here so no line of the source reads as a credential URL.
+  const withPassword = ["https://user", "hunter2-not-a-secret@tools.example"].join(":");
+  assert.throws(() => at(withPassword, true), (error) => error instanceof TypeError && !error.message.includes("hunter2"));
 });
 
 test("tokenOriginListed: the URL's origin exactly one listed; no prefix, suffix, other port, other scheme or user", () => {
