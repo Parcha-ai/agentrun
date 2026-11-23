@@ -10,6 +10,7 @@ import { appendFileSync, chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
@@ -2350,4 +2351,39 @@ test("a session whose subagents are over the run's cap together is left out whol
   assert.match(large[0].why, new RegExp(`over ${MAX_RUN_BYTES} bytes together`));
   assert.deepEqual(report.agents.map((a) => [a.name, a.runs]).sort(), [["big", 1], ["small", 1]], "every other session, its own project's too");
   assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), [sessionId(2), sessionId(3)], "no run of the session left out, whole or cut short");
+});
+
+test("a plan lists the Codex sessions tree for a missing parent once, however many forks look for it", async (t) => {
+  // Session 10 is a subagent whose parent (session 1010) is in no sessions directory, and its id is no UUIDv7, so the
+  // reader looks for it across the whole tree. Every read of the plan shares one listing of it: three forks of that
+  // parent cost what one does, one listing more than none.
+  const h = home(await scratch(t));
+  const sessions = join(h.at, ".codex", "sessions");
+  const fork = readdirSync(join(sessions, "2026", "10", "20")).find((name) => name.endsWith(`-${sessionId(10)}.jsonl`));
+  const forkFile = join(sessions, "2026", "10", "20", fork);
+  const forkBody = readFileSync(forkFile);
+  const { atime, mtime } = statSync(forkFile);
+  const fs = createRequire(import.meta.url)("node:fs/promises");
+  const listings = async () => {
+    const readdir = t.mock.method(fs, "readdir");
+    syncBuiltinESMExports();
+    try {
+      await planImport(options(h));
+      return readdir.mock.calls.filter((call) => call.arguments[0] === sessions).length;
+    } finally {
+      readdir.mock.restore();
+      syncBuiltinESMExports();
+    }
+  };
+  rmSync(forkFile);
+  const none = await listings();
+  // Back as it was, dated as written: a file written in the last minutes is left out as live, and not read.
+  writeFileSync(forkFile, forkBody);
+  utimesSync(forkFile, atime, mtime);
+  const one = await listings();
+  codexSession(h.at, h.site, 11, { subagent: true, parent: sessionId(1010) });
+  codexSession(h.at, h.site, 12, { subagent: true, parent: sessionId(1010) });
+  const three = await listings();
+  assert.equal(one, none + 1, "one fork of a missing parent: one listing of the tree for the whole plan");
+  assert.equal(three, one, "two more forks of the same parent: no more listings");
 });
