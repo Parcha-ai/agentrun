@@ -49,9 +49,9 @@ function memorySettings() {
 const SYNCED = runKey("acme", "r1");
 
 /** A fake sandbox over a folder of its own, reading back a synced folder under epoch 3: a push into it is extracted for
- *  real, each file at its header's mtime as computerd's extraction keeps it (PUSHED_MTIME), and its exec writes
- *  out.txt, the same bytes each time. Written again in the millisecond of the push that brought them, they keep its
- *  size, and the write still moves its mtime off PUSHED_MTIME, so the next sync sees it. */
+ *  real, each file at its header's mtime as computerd's extraction keeps it (the one FolderSync.push gives), and its
+ *  exec writes out.txt, the same bytes each time. Written again in the millisecond of the push that brought them, they
+ *  keep its size, and the write still moves its mtime off the pushed one, so the next sync sees it. */
 function syncedComputer() {
   const root = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-lost-synced-")));
   dirs.push(root);

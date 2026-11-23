@@ -94,8 +94,6 @@ export interface ComputerRoutesOptions {
    *  relays each socket to it, so a dial provider's runs can use it and its row says nothing. Read once per view and per
    *  test. Absent: none does. A paired computer's socket is never relayed. */
   readonly relayed?: () => Promise<boolean>;
-  /** The PATH a kind's `record` looks for ffmpeg on. Absent: the server's, read at each view, as a save's check reads it. */
-  readonly path?: string;
 }
 
 /** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor);
@@ -287,7 +285,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const why = offered ? undefined
           : serving.length && serving.every(refusedOpen) ? `every provider of a ${kind} computer needs a network, and this server's ${BOX_ALLOW_ENV} is none (no network)`
           : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
-        return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], settings: kindSettings(kind), record: recordOf(kind, options.path), providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
+        return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], settings: kindSettings(kind), record: recordOf(kind, options.env?.PATH), providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
       }),
       paired,
     };

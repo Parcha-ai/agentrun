@@ -17,10 +17,11 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const ready = (id: string, name: string) => ({ id, name, secrets: [], required: [], ready: true, metered: false });
 // Each kind's `record` as serve words it (computer-setting.ts recordOf), on a server with ffmpeg on its PATH.
 const CAN = { available: true };
-const NO_FFMPEG = "ffmpeg isn't installed on this server (no ffmpeg command on PATH)";
+const NO_FFMPEG = "fixture: no ffmpeg on this server";
+const NO_SCREEN = "fixture: a sandbox has no screen to record";
 const KINDS = [
   { kind: "none", offered: true, groups: [], tools: ["read"], settings: [], record: { available: false, why: "with no computer, there is no screen to record" }, providers: [] },
-  { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "bash"], settings: ["image", "persistent", "gpu"], record: { available: false, why: "a sandbox has no screen to record (a desktop, a phone or a browser does)" }, providers: [ready("docker", "Docker")] },
+  { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "bash"], settings: ["image", "persistent", "gpu"], record: { available: false, why: NO_SCREEN }, providers: [ready("docker", "Docker")] },
   { kind: "desktop", offered: true, groups: ["screen", "input.pointer", "input.keys"], tools: ["read", "screen.shot"], settings: ["image", "persistent", "surface", "exec", "record"], record: CAN, providers: [ready("orgo", "Orgo"), ready("e2b", "E2B")] },
   { kind: "phone", offered: true, groups: ["screen", "input.touch", "apps"], tools: ["read", "screen.shot"], settings: ["image", "persistent", "surface", "exec", "record"], record: CAN, providers: [ready("phone-harness", "Phone harness")] },
   { kind: "browser", offered: true, groups: ["cdp"], tools: ["browser"], settings: ["image", "persistent", "record"], record: CAN, providers: [ready("browserbase", "Browserbase")] },
@@ -110,7 +111,7 @@ describe("AgentEditor, the Computer step's recording", () => {
     const { host, click, kind, recording } = mount(agent({ kind: "sandbox", provider: "docker" }));
     expect(recording()!.disabled).toBe(true);
     expect(recording()!.getAttribute("aria-checked")).toBe("false");
-    expect(host.querySelector('[aria-label="Recording"] [role="note"]')!.textContent).toBe("Recording isn't possible here: a sandbox has no screen to record (a desktop, a phone or a browser does).");
+    expect(host.querySelector('[aria-label="Recording"] [role="note"]')!.textContent).toContain(NO_SCREEN);
     click(kind("none"));
     expect(recording()).toBeNull();
   });
